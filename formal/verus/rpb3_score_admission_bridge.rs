@@ -28,6 +28,37 @@ pub open spec fn bridge_well_formed(bridge: ScoreAdmissionBridge) -> bool {
                 == bridge.transcript.entries[i].transcript
 }
 
+/// The next insertion handle is shared by the transcript and admission arena.
+pub open spec fn bridge_append_certificate(
+    bridge: ScoreAdmissionBridge, next_handle: usize,
+) -> bool {
+    &&& bridge_well_formed(bridge)
+    &&& score::append_certificate(bridge.transcript, next_handle)
+    &&& bridge.admission.arena.len() == next_handle as int
+}
+
+pub open spec fn bridge_certified_interval(
+    bridge: ScoreAdmissionBridge, checkpoint: usize, next_handle: usize,
+) -> bool {
+    &&& bridge_append_certificate(bridge, next_handle)
+    &&& checkpoint <= next_handle
+}
+
+pub proof fn bridge_certified_interval_entries_exact(
+    bridge: ScoreAdmissionBridge, checkpoint: usize, next_handle: usize,
+)
+    requires bridge_certified_interval(bridge, checkpoint, next_handle),
+    ensures forall|i: int| checkpoint as int <= i < next_handle as int ==> {
+        &&& score::entry_well_formed(bridge.transcript.entries, i)
+        &&& bridge.admission.arena[i].encoded_len
+            == bridge.transcript.entries[i].encoded_len
+        &&& bridge.admission.arena[i].transcript_bytes
+            == bridge.transcript.entries[i].transcript
+    },
+{
+    score::certified_interval_entries_valid(bridge.transcript, checkpoint, next_handle);
+}
+
 pub open spec fn bridge_binding_bytes_exact(
     bridge: ScoreAdmissionBridge, handle: usize, bytes: Seq<u8>,
 ) -> bool {
@@ -101,6 +132,13 @@ pub proof fn bridge_initial_exact(root: admission::AdmissionFrameState)
     ensures bridge_well_formed(bridge_initial(root)),
 {
     score::empty_arena_well_formed();
+}
+
+pub proof fn bridge_initial_append_certificate(root: admission::AdmissionFrameState)
+    ensures bridge_append_certificate(bridge_initial(root), 0usize),
+{
+    bridge_initial_exact(root);
+    score::empty_append_certificate();
 }
 
 pub open spec fn bridge_typed_record_step(
@@ -507,6 +545,138 @@ pub proof fn bridge_append_unattached_exact(
     }
 }
 
+pub proof fn bridge_append_preserves_certificate(
+    bridge: ScoreAdmissionBridge, kind: score::ScoreNode, body_id: u64,
+    next_handle: usize,
+)
+    requires bridge_append_certificate(bridge, next_handle),
+    ensures match bridge_append(bridge, kind, body_id) {
+        Some((next, handle)) => {
+            &&& handle == next_handle
+            &&& bridge_append_certificate(
+                next, next.transcript.entries.len() as usize,
+            )
+            &&& next.transcript.entries.take(next_handle as int)
+                == bridge.transcript.entries
+            &&& score::entry_well_formed(next.transcript.entries, next_handle as int)
+            &&& bridge_binding_bytes_exact(
+                next, handle,
+                score::kind_transcript(bridge.transcript.entries, kind),
+            )
+        },
+        None => true,
+    },
+{
+    score::checked_append_preserves_certificate(bridge.transcript, kind, next_handle);
+    bridge_append_exact(bridge, kind, body_id);
+    if let Some((next, handle)) = bridge_append(bridge, kind, body_id) {
+        assert(score::checked_append(bridge.transcript, kind)
+            == Some((next.transcript, handle)));
+    }
+}
+
+pub proof fn bridge_append_unattached_preserves_certificate(
+    bridge: ScoreAdmissionBridge, kind: score::ScoreNode, next_handle: usize,
+)
+    requires bridge_append_certificate(bridge, next_handle),
+    ensures match bridge_append_unattached(bridge, kind) {
+        Some((next, handle)) => {
+            &&& handle == next_handle
+            &&& bridge_append_certificate(
+                next, next.transcript.entries.len() as usize,
+            )
+            &&& next.transcript.entries.take(next_handle as int)
+                == bridge.transcript.entries
+            &&& next.admission.arena.take(next_handle as int)
+                == bridge.admission.arena
+            &&& score::entry_well_formed(next.transcript.entries, next_handle as int)
+            &&& bridge_binding_bytes_exact(
+                next, handle,
+                score::kind_transcript(bridge.transcript.entries, kind),
+            )
+        },
+        None => true,
+    },
+{
+    score::checked_append_preserves_certificate(bridge.transcript, kind, next_handle);
+    bridge_append_unattached_exact(bridge, kind);
+    if let Some((next, handle)) = bridge_append_unattached(bridge, kind) {
+        assert(score::checked_append(bridge.transcript, kind)
+            == Some((next.transcript, handle)));
+    }
+}
+
+/// A reserve failure, score overflow, or rejected admission append does not
+/// commit either arena, so the same next handle remains available.
+pub open spec fn bridge_append_unattached_attempt(
+    bridge: ScoreAdmissionBridge, kind: score::ScoreNode,
+    reservation_granted: bool,
+) -> (ScoreAdmissionBridge, Option<usize>) {
+    if !reservation_granted {
+        (bridge, None)
+    } else {
+        match bridge_append_unattached(bridge, kind) {
+            None => (bridge, None),
+            Some((next, handle)) => (next, Some(handle)),
+        }
+    }
+}
+
+pub proof fn bridge_append_unattached_attempt_preserves_certificate(
+    bridge: ScoreAdmissionBridge, kind: score::ScoreNode,
+    next_handle: usize, reservation_granted: bool,
+)
+    requires bridge_append_certificate(bridge, next_handle),
+    ensures match bridge_append_unattached_attempt(
+        bridge, kind, reservation_granted,
+    ) {
+        (next, Some(handle)) => {
+            &&& reservation_granted
+            &&& handle == next_handle
+            &&& bridge_append_certificate(
+                next, next.transcript.entries.len() as usize,
+            )
+            &&& next.transcript.entries.take(next_handle as int)
+                == bridge.transcript.entries
+            &&& next.admission.arena.take(next_handle as int)
+                == bridge.admission.arena
+            &&& score::entry_well_formed(next.transcript.entries, next_handle as int)
+        },
+        (unchanged, None) => {
+            &&& unchanged.transcript.entries == bridge.transcript.entries
+            &&& unchanged.admission.arena == bridge.admission.arena
+            &&& unchanged.transcript.entries.len() == next_handle as int
+            &&& unchanged.admission.arena.len() == next_handle as int
+            &&& bridge_append_certificate(unchanged, next_handle)
+        },
+    },
+{
+    if reservation_granted {
+        bridge_append_unattached_preserves_certificate(bridge, kind, next_handle);
+    }
+}
+
+pub proof fn bridge_append_unattached_attempt_preserves_certified_interval(
+    bridge: ScoreAdmissionBridge, kind: score::ScoreNode,
+    checkpoint: usize, next_handle: usize, reservation_granted: bool,
+)
+    requires bridge_certified_interval(bridge, checkpoint, next_handle),
+    ensures match bridge_append_unattached_attempt(
+        bridge, kind, reservation_granted,
+    ) {
+        (next, Some(_)) => bridge_certified_interval(
+            next, checkpoint, next.transcript.entries.len() as usize,
+        ),
+        (unchanged, None) => bridge_certified_interval(
+            unchanged, checkpoint, next_handle,
+        ),
+    },
+{
+    bridge_append_unattached_attempt_preserves_certificate(
+        bridge, kind, next_handle, reservation_granted,
+    );
+}
+
 pub proof fn bridge_append_unattached_preserves_admission_wf(
     bridge: ScoreAdmissionBridge, kind: score::ScoreNode,
 )
@@ -584,6 +754,8 @@ pub open spec fn bridge_score_step_shape(
     before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
 ) -> bool {
     &&& before.admission.frames.len() > 0
+    &&& after.admission.pushed == before.admission.pushed
+    &&& after.admission.completed == before.admission.completed
     &&& after.admission.frames.len() == before.admission.frames.len()
     &&& forall|i: int| 0 <= i < before.admission.frames.len() - 1
         ==> after.admission.frames[i] == before.admission.frames[i]
@@ -2219,7 +2391,9 @@ pub open spec fn bridge_ordered_sequence_parts(
 ) -> Option<(i32, Seq<usize>, Option<usize>, bool)> {
     if frame.family != admission::AdmissionFamily::Other
         || frame.frame_kind != 1
-        || (frame.program_type_id != 27 && frame.program_type_id != 28)
+        || (frame.program_type_id != 27 && frame.program_type_id != 28
+            && frame.program_type_id != 29)
+        || frame.slot_count != (if frame.program_type_id == 28 { 3usize } else { 4usize })
     {
         None
     } else {
@@ -2231,13 +2405,15 @@ pub open spec fn bridge_ordered_sequence_parts(
             (Some(elements), Some(remainders), Some(connective_used))
                 if frame.seen.contains(0) == (elements.len() > 0)
                     && frame.returns.len() == elements.len() + remainders.len()
-                    && (if frame.program_type_id == 27 {
+                    && (if frame.program_type_id != 28 {
                         remainders.len() <= 1
                             && frame.seen.contains(3) == (remainders.len() == 1)
                     } else {
                         remainders.len() == 0 && !frame.seen.contains(3)
                     }) =>
-                Some((if frame.program_type_id == 27 { 6i32 } else { 7i32 },
+                Some((if frame.program_type_id == 27 { 6i32 }
+                    else if frame.program_type_id == 28 { 7i32 }
+                    else { 8i32 },
                     elements,
                     if remainders.len() == 0 { None } else { Some(remainders[0]) },
                     connective_used)),
@@ -2257,7 +2433,7 @@ pub open spec fn bridge_ordered_sequence_step(
         ) {
             None => None,
             Some((constructor, elements, remainder, connective_used)) => {
-                let after_remainder = if constructor == 6 {
+                let after_remainder = if constructor != 7 {
                     match bridge_append_unattached(
                         bridge, score::ScoreNode::Integer(-1i64),
                     ) {
@@ -2337,7 +2513,7 @@ pub proof fn bridge_ordered_sequence_exact(bridge: ScoreAdmissionBridge)
                 bridge.admission.frames.last(), bridge.admission.arena,
             )
         {
-            if constructor == 6 {
+            if constructor != 7 {
                 let default_kind = score::ScoreNode::Integer(-1i64);
                 bridge_append_unattached_exact(bridge, default_kind);
                 bridge_append_unattached_preserves_admission_wf(bridge, default_kind);
@@ -2345,7 +2521,7 @@ pub proof fn bridge_ordered_sequence_exact(bridge: ScoreAdmissionBridge)
             } else {
                 bridge_score_step_shape_reflexive(bridge);
             }
-            let after_remainder = if constructor == 6 {
+            let after_remainder = if constructor != 7 {
                 match bridge_append_unattached(
                     bridge, score::ScoreNode::Integer(-1i64),
                 ) {
@@ -8579,6 +8755,773 @@ pub proof fn bridge_primary_component_finish_selected_exact(
     }
 }
 
+pub proof fn bridge_primary_component_source_step_has_unique_finish(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        bridge_primary_component_frame(before),
+        admission::admission_family_complete(before.admission.frames.last()),
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+        forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) ==> bridge_same(after, other),
+{
+    let top = before.admission.frames.last();
+    assert(bridge_raw_par_step(before).is_none());
+    assert(bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge_cost_bound_step(before).is_none());
+    assert(bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge_cost_signature_step(before).is_none());
+    assert(bridge_cost_region_step(before).is_none());
+    assert(bridge_cost_token_stack_step(before).is_none());
+    assert(bridge_absent_specialized_constructor_step(before).is_none());
+    assert(bridge_absent_connective_step(before).is_none());
+    assert(bridge_receive_bind_step(before).is_none());
+    assert(bridge_match_case_step(before).is_none());
+    assert(bridge_bool_oneof_step(before).is_none());
+    assert(bridge_expr_atom_step(before).is_none());
+    assert(bridge_expr_numeric_step(before).is_none());
+    assert(bridge_expr_big_rational_step(before).is_none());
+    assert(bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge_sys_auth_token_step(before).is_none());
+    assert(bridge_new_empty_collections_step(before).is_none());
+    assert(bridge_new_one_injection_step(before).is_none());
+    assert(bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge_new_one_uri_step(before).is_none());
+    assert(bridge_new_collections_step(before).is_none());
+    assert(bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge_expr_structural_step(before).is_none());
+    assert(bridge_evar_step(before).is_none());
+    assert(bridge_ordered_sequence_step(before).is_none());
+    assert(bridge_emethod_step(before).is_none());
+    assert(bridge_emap_finish_step(before).is_none());
+    assert(bridge_connective_not_step(before).is_none());
+    assert(bridge_connective_varref_step(before).is_none());
+    assert(bridge_connective_collection_step(before).is_none());
+    assert(bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge_receive_present_condition_step(before).is_none());
+    assert(bridge_receive_absent_condition_step(before).is_none());
+    assert(bridge_nonsemantic_step(before).is_none());
+    match top.family {
+        admission::AdmissionFamily::Send => {
+            assert(bridge_bundle_step(before).is_none());
+            assert(bridge_if_step(before).is_none());
+            assert(bridge_match_step(before).is_none());
+        },
+        admission::AdmissionFamily::Bundle => {
+            assert(bridge_send_step(before).is_none());
+            assert(bridge_if_step(before).is_none());
+            assert(bridge_match_step(before).is_none());
+        },
+        admission::AdmissionFamily::If => {
+            assert(bridge_send_step(before).is_none());
+            assert(bridge_bundle_step(before).is_none());
+            assert(bridge_match_step(before).is_none());
+        },
+        admission::AdmissionFamily::Match => {
+            assert(bridge_send_step(before).is_none());
+            assert(bridge_bundle_step(before).is_none());
+            assert(bridge_if_step(before).is_none());
+        },
+        _ => {},
+    }
+    bridge_primary_component_finish_selected_exact(before);
+    assert(bridge_nonsemantic_finish_candidate(before).is_none());
+    assert forall|other: ScoreAdmissionBridge|
+        bridge_score_source_step(before, other)
+            implies match bridge_primary_component_finish(before) {
+                Some(next) => bridge_same(next, other),
+                None => false,
+            } by {
+        assert(bridge_score_source_step(before, other));
+    }
+    assert(bridge_primary_component_finish(before).is_some());
+    let next = bridge_primary_component_finish(before).unwrap();
+    assert(bridge_score_finish_selected(before) == Some(next));
+    assert(bridge_same(next, after));
+    assert forall|other: ScoreAdmissionBridge|
+        bridge_score_source_step(before, other) implies bridge_same(after, other) by {
+        assert(bridge_same(next, other));
+    }
+}
+
+pub proof fn bridge_cost_token_stack_source_step_has_unique_finish(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 0,
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames.last().family == admission::AdmissionFamily::CostTokenStack,
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+        forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) ==> bridge_same(after, other),
+{
+    assert(bridge_raw_par_step(before).is_none());
+    assert(bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge_cost_bound_step(before).is_none());
+    assert(bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge_cost_signature_step(before).is_none());
+    assert(bridge_cost_region_step(before).is_none());
+    assert(bridge_send_step(before).is_none());
+    assert(bridge_bundle_step(before).is_none());
+    assert(bridge_if_step(before).is_none());
+    assert(bridge_match_step(before).is_none());
+    assert(bridge_absent_specialized_constructor_step(before).is_none());
+    assert(bridge_absent_connective_step(before).is_none());
+    assert(bridge_receive_bind_step(before).is_none());
+    assert(bridge_match_case_step(before).is_none());
+    assert(bridge_bool_oneof_step(before).is_none());
+    assert(bridge_expr_atom_step(before).is_none());
+    assert(bridge_expr_numeric_step(before).is_none());
+    assert(bridge_expr_big_rational_step(before).is_none());
+    assert(bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge_sys_auth_token_step(before).is_none());
+    assert(bridge_new_empty_collections_step(before).is_none());
+    assert(bridge_new_one_injection_step(before).is_none());
+    assert(bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge_new_one_uri_step(before).is_none());
+    assert(bridge_new_collections_step(before).is_none());
+    assert(bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge_expr_structural_step(before).is_none());
+    assert(bridge_evar_step(before).is_none());
+    assert(bridge_ordered_sequence_step(before).is_none());
+    assert(bridge_emethod_step(before).is_none());
+    assert(bridge_emap_finish_step(before).is_none());
+    assert(bridge_connective_not_step(before).is_none());
+    assert(bridge_connective_varref_step(before).is_none());
+    assert(bridge_connective_collection_step(before).is_none());
+    assert(bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge_receive_present_condition_step(before).is_none());
+    assert(bridge_receive_absent_condition_step(before).is_none());
+    assert(bridge_nonsemantic_step(before).is_none());
+    assert(bridge_cost_token_stack_step(before).is_some());
+    let (next, _, _) = bridge_cost_token_stack_step(before).unwrap();
+    let empty = BridgeScoreFinishSelection::NoCandidate;
+    reveal(bridge_score_finish_selection_group_1);
+    assert(bridge_score_finish_selection_group_1(before, empty)
+        == BridgeScoreFinishSelection::Unique(next));
+    let first = bridge_score_finish_selection_group_1(before, empty);
+    reveal(bridge_score_finish_selection_group_2);
+    let second = bridge_score_finish_selection_group_2(before, first);
+    assert(second == BridgeScoreFinishSelection::Unique(next));
+    reveal(bridge_score_finish_selection_group_3);
+    let third = bridge_score_finish_selection_group_3(before, second);
+    assert(third == BridgeScoreFinishSelection::Unique(next));
+    reveal(bridge_score_finish_selection_group_4);
+    let fourth = bridge_score_finish_selection_group_4(before, third);
+    assert(fourth == BridgeScoreFinishSelection::Unique(next));
+    reveal(bridge_score_finish_selection_group_5);
+    let fifth = bridge_score_finish_selection_group_5(before, fourth);
+    assert(fifth == BridgeScoreFinishSelection::Unique(next));
+    reveal(bridge_score_finish_selected);
+    assert(bridge_score_finish_selected(before) == Some(next));
+    assert(bridge_same(next, after));
+    assert forall|other: ScoreAdmissionBridge|
+        bridge_score_source_step(before, other) implies bridge_same(after, other) by {
+        assert(bridge_score_source_step(before, other));
+        assert(bridge_same(next, other));
+    }
+}
+
+pub proof fn bridge_gunforgeable_source_step_matches_selected(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 0,
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames.last().family == admission::AdmissionFamily::GUnforgeable,
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+{
+    let top = before.admission.frames.last();
+    assert(bridge_raw_par_step(before).is_none());
+    assert(bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge_cost_bound_step(before).is_none());
+    assert(bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge_cost_signature_step(before).is_none());
+    assert(bridge_cost_region_step(before).is_none());
+    assert(bridge_cost_token_stack_step(before).is_none());
+    assert(bridge_send_step(before).is_none());
+    assert(bridge_bundle_step(before).is_none());
+    assert(bridge_if_step(before).is_none());
+    assert(bridge_match_step(before).is_none());
+    assert(bridge_absent_connective_step(before).is_none());
+    assert(bridge_receive_bind_step(before).is_none());
+    assert(bridge_match_case_step(before).is_none());
+    assert(bridge_bool_oneof_step(before).is_none());
+    assert(bridge_expr_atom_step(before).is_none());
+    assert(bridge_expr_numeric_step(before).is_none());
+    assert(bridge_expr_big_rational_step(before).is_none());
+    assert(bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge_new_empty_collections_step(before).is_none());
+    assert(bridge_new_one_injection_step(before).is_none());
+    assert(bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge_new_one_uri_step(before).is_none());
+    assert(bridge_new_collections_step(before).is_none());
+    assert(bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge_expr_structural_step(before).is_none());
+    assert(bridge_evar_step(before).is_none());
+    assert(bridge_ordered_sequence_step(before).is_none());
+    assert(bridge_emethod_step(before).is_none());
+    assert(bridge_emap_finish_step(before).is_none());
+    assert(bridge_connective_not_step(before).is_none());
+    assert(bridge_connective_varref_step(before).is_none());
+    assert(bridge_connective_collection_step(before).is_none());
+    assert(bridge_receive_present_condition_step(before).is_none());
+    assert(bridge_receive_absent_condition_step(before).is_none());
+    assert(bridge_nonsemantic_step(before).is_none());
+    let absent = match bridge_absent_specialized_constructor_step(before) {
+        None => None,
+        Some((next, _, _)) => Some(next),
+    };
+    let token = match bridge_sys_auth_token_step(before) {
+        None => None,
+        Some((next, _, _)) => Some(next),
+    };
+    let bytes = match bridge_unforgeable_bytes_step(before) {
+        None => None,
+        Some((next, _, _, _)) => Some(next),
+    };
+    if absent.is_some() {
+        assert(top.returns.len() == 0);
+        assert(token.is_none());
+        assert(bytes.is_none());
+    }
+    if token.is_some() {
+        assert(top.returns.len() == 1);
+        assert(top.returns[0].tag == 4);
+        assert(absent.is_none());
+        assert(bytes.is_none());
+    }
+    if bytes.is_some() {
+        assert(top.returns.len() == 1);
+        assert(top.returns[0].tag != 4);
+        assert(absent.is_none());
+        assert(token.is_none());
+    }
+    assert(absent.is_some() || token.is_some() || bytes.is_some());
+    let empty = BridgeScoreFinishSelection::NoCandidate;
+    reveal(bridge_score_finish_selection_group_1);
+    let first = bridge_score_finish_selection_group_1(before, empty);
+    assert(first == empty);
+    reveal(bridge_score_finish_selection_group_2);
+    let second = bridge_score_finish_selection_group_2(before, first);
+    assert(second == match absent {
+        Some(next) => BridgeScoreFinishSelection::Unique(next),
+        None => empty,
+    });
+    reveal(bridge_score_finish_selection_group_3);
+    let third = bridge_score_finish_selection_group_3(before, second);
+    assert(third == if absent.is_some() {
+        second
+    } else {
+        match token {
+            Some(next) => BridgeScoreFinishSelection::Unique(next),
+            None => empty,
+        }
+    });
+    reveal(bridge_score_finish_selection_group_4);
+    let fourth = bridge_score_finish_selection_group_4(before, third);
+    assert(fourth == third);
+    reveal(bridge_score_finish_selection_group_5);
+    let fifth = bridge_score_finish_selection_group_5(before, fourth);
+    assert(fifth == if absent.is_some() || token.is_some() {
+        fourth
+    } else {
+        match bytes {
+            Some(next) => BridgeScoreFinishSelection::Unique(next),
+            None => empty,
+        }
+    });
+    reveal(bridge_score_finish_selected);
+    if absent.is_some() {
+        assert(bridge_score_finish_selected(before) == absent);
+        assert(bridge_same(absent.unwrap(), after));
+    } else if token.is_some() {
+        assert(bridge_score_finish_selected(before) == token);
+        assert(bridge_same(token.unwrap(), after));
+    } else {
+        assert(bytes.is_some());
+        assert(bridge_score_finish_selected(before) == bytes);
+        assert(bridge_same(bytes.unwrap(), after));
+    }
+}
+
+pub proof fn bridge_gunforgeable_source_step_has_unique_finish(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 0,
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames.last().family == admission::AdmissionFamily::GUnforgeable,
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+        forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) ==> bridge_same(after, other),
+{
+    bridge_gunforgeable_source_step_matches_selected(before, after);
+    assert forall|other: ScoreAdmissionBridge|
+        bridge_score_source_step(before, other) implies bridge_same(after, other) by {
+        bridge_gunforgeable_source_step_matches_selected(before, other);
+    }
+}
+
+pub proof fn bridge_connective_source_step_matches_selected(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 0,
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames.last().family == admission::AdmissionFamily::Connective,
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+{
+    let top = before.admission.frames.last();
+    assert(bridge_raw_par_step(before).is_none());
+    assert(bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge_cost_bound_step(before).is_none());
+    assert(bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge_cost_signature_step(before).is_none());
+    assert(bridge_cost_region_step(before).is_none());
+    assert(bridge_cost_token_stack_step(before).is_none());
+    assert(bridge_send_step(before).is_none());
+    assert(bridge_bundle_step(before).is_none());
+    assert(bridge_if_step(before).is_none());
+    assert(bridge_match_step(before).is_none());
+    assert(bridge_absent_specialized_constructor_step(before).is_none());
+    assert(bridge_receive_bind_step(before).is_none());
+    assert(bridge_match_case_step(before).is_none());
+    assert(bridge_expr_atom_step(before).is_none());
+    assert(bridge_expr_numeric_step(before).is_none());
+    assert(bridge_expr_big_rational_step(before).is_none());
+    assert(bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge_sys_auth_token_step(before).is_none());
+    assert(bridge_new_empty_collections_step(before).is_none());
+    assert(bridge_new_one_injection_step(before).is_none());
+    assert(bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge_new_one_uri_step(before).is_none());
+    assert(bridge_new_collections_step(before).is_none());
+    assert(bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge_expr_structural_step(before).is_none());
+    assert(bridge_evar_step(before).is_none());
+    assert(bridge_ordered_sequence_step(before).is_none());
+    assert(bridge_emethod_step(before).is_none());
+    assert(bridge_emap_finish_step(before).is_none());
+    assert(bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge_receive_present_condition_step(before).is_none());
+    assert(bridge_receive_absent_condition_step(before).is_none());
+    assert(bridge_nonsemantic_step(before).is_none());
+    let absent = match bridge_absent_connective_step(before) {
+        None => None,
+        Some((next, _)) => Some(next),
+    };
+    let boolean = match bridge_bool_oneof_step(before) {
+        None => None,
+        Some((next, _, _, _)) => Some(next),
+    };
+    let not = match bridge_connective_not_step(before) {
+        None => None,
+        Some((next, _, _)) => Some(next),
+    };
+    let varref = match bridge_connective_varref_step(before) {
+        None => None,
+        Some((next, _, _, _, _)) => Some(next),
+    };
+    let collection = match bridge_connective_collection_step(before) {
+        None => None,
+        Some((next, _, _)) => Some(next),
+    };
+    if absent.is_some() {
+        assert(top.returns.len() == 0);
+        assert(top.scalar_occurrences.len() == 0);
+        assert(boolean.is_none());
+        assert(not.is_none());
+        assert(varref.is_none());
+        assert(collection.is_none());
+    }
+    if boolean.is_some() {
+        assert(top.returns.len() == 0);
+        assert(top.scalar_occurrences.len() == 1);
+        assert(absent.is_none());
+        assert(not.is_none());
+        assert(varref.is_none());
+        assert(collection.is_none());
+    }
+    if not.is_some() {
+        assert(top.returns.len() == 1);
+        assert(top.returns[0].tag == 3);
+        assert(absent.is_none());
+        assert(boolean.is_none());
+        assert(varref.is_none());
+        assert(collection.is_none());
+    }
+    if varref.is_some() {
+        assert(top.returns.len() == 1);
+        assert(top.returns[0].tag == 4);
+        assert(absent.is_none());
+        assert(boolean.is_none());
+        assert(not.is_none());
+        assert(collection.is_none());
+    }
+    if collection.is_some() {
+        assert(top.returns.len() == 1);
+        assert(top.returns[0].tag == 1 || top.returns[0].tag == 2);
+        assert(absent.is_none());
+        assert(boolean.is_none());
+        assert(not.is_none());
+        assert(varref.is_none());
+    }
+    assert(absent.is_some() || boolean.is_some() || not.is_some()
+        || varref.is_some() || collection.is_some());
+    let empty = BridgeScoreFinishSelection::NoCandidate;
+    reveal(bridge_score_finish_selection_group_1);
+    let first = bridge_score_finish_selection_group_1(before, empty);
+    assert(first == empty);
+    reveal(bridge_score_finish_selection_group_2);
+    let second = bridge_score_finish_selection_group_2(before, first);
+    assert(second == match absent {
+        Some(next) => BridgeScoreFinishSelection::Unique(next),
+        None => empty,
+    });
+    reveal(bridge_score_finish_selection_group_3);
+    let third = bridge_score_finish_selection_group_3(before, second);
+    assert(third == if absent.is_some() {
+        second
+    } else {
+        match boolean {
+            Some(next) => BridgeScoreFinishSelection::Unique(next),
+            None => empty,
+        }
+    });
+    reveal(bridge_score_finish_selection_group_4);
+    let fourth = bridge_score_finish_selection_group_4(before, third);
+    assert(fourth == third);
+    reveal(bridge_score_finish_selection_group_5);
+    let fifth = bridge_score_finish_selection_group_5(before, fourth);
+    assert(fifth == if absent.is_some() || boolean.is_some() {
+        fourth
+    } else if not.is_some() {
+        BridgeScoreFinishSelection::Unique(not.unwrap())
+    } else if varref.is_some() {
+        BridgeScoreFinishSelection::Unique(varref.unwrap())
+    } else {
+        match collection {
+            Some(next) => BridgeScoreFinishSelection::Unique(next),
+            None => empty,
+        }
+    });
+    reveal(bridge_score_finish_selected);
+    if absent.is_some() {
+        assert(bridge_score_finish_selected(before) == absent);
+        assert(bridge_same(absent.unwrap(), after));
+    } else if boolean.is_some() {
+        assert(bridge_score_finish_selected(before) == boolean);
+        assert(bridge_same(boolean.unwrap(), after));
+    } else if not.is_some() {
+        assert(bridge_score_finish_selected(before) == not);
+        assert(bridge_same(not.unwrap(), after));
+    } else if varref.is_some() {
+        assert(bridge_score_finish_selected(before) == varref);
+        assert(bridge_same(varref.unwrap(), after));
+    } else {
+        assert(collection.is_some());
+        assert(bridge_score_finish_selected(before) == collection);
+        assert(bridge_same(collection.unwrap(), after));
+    }
+}
+
+pub proof fn bridge_connective_source_step_has_unique_finish(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 0,
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames.last().family == admission::AdmissionFamily::Connective,
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+        forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) ==> bridge_same(after, other),
+{
+    bridge_connective_source_step_matches_selected(before, after);
+    assert forall|other: ScoreAdmissionBridge|
+        bridge_score_source_step(before, other) implies bridge_same(after, other) by {
+        bridge_connective_source_step_matches_selected(before, other);
+    }
+}
+
+pub proof fn bridge_expr_source_step_matches_selected(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 0,
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames.last().family == admission::AdmissionFamily::Expr,
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+{
+    let top = before.admission.frames.last();
+    assert(bridge_raw_par_step(before).is_none());
+    assert(bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge_cost_bound_step(before).is_none());
+    assert(bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge_cost_signature_step(before).is_none());
+    assert(bridge_cost_region_step(before).is_none());
+    assert(bridge_cost_token_stack_step(before).is_none());
+    assert(bridge_send_step(before).is_none());
+    assert(bridge_bundle_step(before).is_none());
+    assert(bridge_if_step(before).is_none());
+    assert(bridge_match_step(before).is_none());
+    assert(bridge_absent_connective_step(before).is_none());
+    assert(bridge_receive_bind_step(before).is_none());
+    assert(bridge_match_case_step(before).is_none());
+    assert(bridge_sys_auth_token_step(before).is_none());
+    assert(bridge_new_empty_collections_step(before).is_none());
+    assert(bridge_new_one_injection_step(before).is_none());
+    assert(bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge_new_one_uri_step(before).is_none());
+    assert(bridge_new_collections_step(before).is_none());
+    assert(bridge_expr_structural_step(before).is_none());
+    assert(bridge_evar_step(before).is_none());
+    assert(bridge_ordered_sequence_step(before).is_none());
+    assert(bridge_emethod_step(before).is_none());
+    assert(bridge_emap_finish_step(before).is_none());
+    assert(bridge_connective_not_step(before).is_none());
+    assert(bridge_connective_varref_step(before).is_none());
+    assert(bridge_connective_collection_step(before).is_none());
+    assert(bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge_receive_present_condition_step(before).is_none());
+    assert(bridge_receive_absent_condition_step(before).is_none());
+    let absent = match bridge_absent_specialized_constructor_step(before) {
+        None => None,
+        Some((next, _, _)) => Some(next),
+    };
+    let boolean = match bridge_bool_oneof_step(before) {
+        None => None,
+        Some((next, _, _, _)) => Some(next),
+    };
+    let atom = match bridge_expr_atom_step(before) {
+        None => None,
+        Some((next, _, _, _)) => Some(next),
+    };
+    let numeric = match bridge_expr_numeric_step(before) {
+        None => None,
+        Some((next, _, _, _)) => Some(next),
+    };
+    let rational = match bridge_expr_big_rational_step(before) {
+        None => None,
+        Some((next, _, _, _, _)) => Some(next),
+    };
+    let fixed = match bridge_expr_fixed_point_step(before) {
+        None => None,
+        Some((next, _, _, _, _, _)) => Some(next),
+    };
+    let forwarded = match bridge_expr_payload_forward_step(before) {
+        None => None,
+        Some((next, _)) => Some(next),
+    };
+    let nonsemantic = bridge_nonsemantic_finish_candidate(before);
+    if absent.is_some() {
+        assert(!top.seen.contains(0));
+        assert(top.returns.len() == 0);
+        assert(top.scalar_occurrences.len() == 0);
+        assert(admission::admission_family_complete(top));
+        assert(boolean.is_none() && atom.is_none() && numeric.is_none());
+        assert(rational.is_none() && fixed.is_none() && forwarded.is_none());
+        assert(nonsemantic.is_none());
+    }
+    if boolean.is_some() {
+        assert(top.scalar_occurrences.len() == 1);
+        assert(top.scalar_occurrences[0].tag == 1);
+        assert(top.returns.len() == 0);
+        assert(admission::admission_family_complete(top));
+        assert(absent.is_none() && atom.is_none() && numeric.is_none());
+        assert(rational.is_none() && fixed.is_none() && forwarded.is_none());
+        assert(nonsemantic.is_none());
+    }
+    if atom.is_some() {
+        assert(top.scalar_occurrences.len() == 1);
+        assert(top.scalar_occurrences[0].tag == 3
+            || top.scalar_occurrences[0].tag == 4
+            || top.scalar_occurrences[0].tag == 25
+            || top.scalar_occurrences[0].tag == 35);
+        assert(top.returns.len() == 0);
+        assert(admission::admission_family_complete(top));
+        assert(absent.is_none() && boolean.is_none() && numeric.is_none());
+        assert(rational.is_none() && fixed.is_none() && forwarded.is_none());
+        assert(nonsemantic.is_none());
+    }
+    if numeric.is_some() {
+        assert(top.scalar_occurrences.len() == 1);
+        assert(top.scalar_occurrences[0].tag == 2
+            || top.scalar_occurrences[0].tag == 34);
+        assert(top.returns.len() == 0);
+        assert(admission::admission_family_complete(top));
+        assert(absent.is_none() && boolean.is_none() && atom.is_none());
+        assert(rational.is_none() && fixed.is_none() && forwarded.is_none());
+        assert(nonsemantic.is_none());
+    }
+    if rational.is_some() {
+        assert(top.returns.len() == 1);
+        assert(top.returns[0].tag == 36);
+        assert(top.returns[0].score_handle.is_none());
+        assert(top.scalar_occurrences.len() == 0);
+        assert(admission::admission_family_complete(top));
+        assert(absent.is_none() && boolean.is_none() && atom.is_none());
+        assert(numeric.is_none() && fixed.is_none() && forwarded.is_none());
+        assert(nonsemantic.is_none());
+    }
+    if fixed.is_some() {
+        assert(top.returns.len() == 1);
+        assert(top.returns[0].tag == 37);
+        assert(top.returns[0].score_handle.is_none());
+        assert(top.scalar_occurrences.len() == 0);
+        assert(admission::admission_family_complete(top));
+        assert(absent.is_none() && boolean.is_none() && atom.is_none());
+        assert(numeric.is_none() && rational.is_none() && forwarded.is_none());
+        assert(nonsemantic.is_none());
+    }
+    if forwarded.is_some() {
+        assert(top.returns.len() == 1);
+        assert(top.returns[0].score_handle.is_some());
+        assert(top.scalar_occurrences.len() == 0);
+        assert(admission::admission_family_complete(top));
+        assert(absent.is_none() && boolean.is_none() && atom.is_none());
+        assert(numeric.is_none() && rational.is_none() && fixed.is_none());
+        assert(nonsemantic.is_none());
+    }
+    if nonsemantic.is_some() {
+        assert(!admission::admission_family_complete(top));
+        assert(absent.is_none() && boolean.is_none() && atom.is_none());
+        assert(numeric.is_none() && rational.is_none() && fixed.is_none());
+        assert(forwarded.is_none());
+    }
+    assert(absent.is_some() || boolean.is_some() || atom.is_some()
+        || numeric.is_some() || rational.is_some() || fixed.is_some()
+        || forwarded.is_some() || nonsemantic.is_some());
+    let empty = BridgeScoreFinishSelection::NoCandidate;
+    reveal(bridge_score_finish_selection_group_1);
+    let first = bridge_score_finish_selection_group_1(before, empty);
+    assert(first == empty);
+    reveal(bridge_score_finish_selection_group_2);
+    let second = bridge_score_finish_selection_group_2(before, first);
+    assert(second == match absent {
+        Some(next) => BridgeScoreFinishSelection::Unique(next),
+        None => empty,
+    });
+    reveal(bridge_score_finish_selection_group_3);
+    let third = bridge_score_finish_selection_group_3(before, second);
+    assert(third == if absent.is_some() {
+        second
+    } else if boolean.is_some() {
+        BridgeScoreFinishSelection::Unique(boolean.unwrap())
+    } else if atom.is_some() {
+        BridgeScoreFinishSelection::Unique(atom.unwrap())
+    } else if numeric.is_some() {
+        BridgeScoreFinishSelection::Unique(numeric.unwrap())
+    } else if rational.is_some() {
+        BridgeScoreFinishSelection::Unique(rational.unwrap())
+    } else {
+        match fixed {
+            Some(next) => BridgeScoreFinishSelection::Unique(next),
+            None => empty,
+        }
+    });
+    reveal(bridge_score_finish_selection_group_4);
+    let fourth = bridge_score_finish_selection_group_4(before, third);
+    assert(fourth == if absent.is_some() || boolean.is_some()
+        || atom.is_some() || numeric.is_some() || rational.is_some()
+        || fixed.is_some()
+    {
+        third
+    } else {
+        match forwarded {
+            Some(next) => BridgeScoreFinishSelection::Unique(next),
+            None => empty,
+        }
+    });
+    reveal(bridge_score_finish_selection_group_5);
+    let fifth = bridge_score_finish_selection_group_5(before, fourth);
+    assert(fifth == if absent.is_some() || boolean.is_some()
+        || atom.is_some() || numeric.is_some() || rational.is_some()
+        || fixed.is_some() || forwarded.is_some()
+    {
+        fourth
+    } else {
+        match nonsemantic {
+            Some(next) => BridgeScoreFinishSelection::Unique(next),
+            None => empty,
+        }
+    });
+    reveal(bridge_score_finish_selected);
+    if absent.is_some() {
+        assert(bridge_score_finish_selected(before) == absent);
+        assert(bridge_same(absent.unwrap(), after));
+    } else if boolean.is_some() {
+        assert(bridge_score_finish_selected(before) == boolean);
+        assert(bridge_same(boolean.unwrap(), after));
+    } else if atom.is_some() {
+        assert(bridge_score_finish_selected(before) == atom);
+        assert(bridge_same(atom.unwrap(), after));
+    } else if numeric.is_some() {
+        assert(bridge_score_finish_selected(before) == numeric);
+        assert(bridge_same(numeric.unwrap(), after));
+    } else if rational.is_some() {
+        assert(bridge_score_finish_selected(before) == rational);
+        assert(bridge_same(rational.unwrap(), after));
+    } else if fixed.is_some() {
+        assert(bridge_score_finish_selected(before) == fixed);
+        assert(bridge_same(fixed.unwrap(), after));
+    } else if forwarded.is_some() {
+        assert(bridge_score_finish_selected(before) == forwarded);
+        assert(bridge_same(forwarded.unwrap(), after));
+    } else {
+        assert(nonsemantic.is_some());
+        assert(bridge_score_finish_selected(before) == nonsemantic);
+        assert(bridge_same(nonsemantic.unwrap(), after));
+    }
+}
+
+pub proof fn bridge_expr_source_step_has_unique_finish(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 0,
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames.last().family == admission::AdmissionFamily::Expr,
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+        forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) ==> bridge_same(after, other),
+{
+    bridge_expr_source_step_matches_selected(before, after);
+    assert forall|other: ScoreAdmissionBridge|
+        bridge_score_source_step(before, other) implies bridge_same(after, other) by {
+        bridge_expr_source_step_matches_selected(before, other);
+    }
+}
+
 pub open spec fn bridge_other_incomplete_frame(before: ScoreAdmissionBridge) -> bool {
     before.admission.frames.len() > 0
         && admission::admission_frame_wf(before.admission.frames.last())
@@ -8738,6 +9681,82 @@ pub proof fn bridge_nonsemantic_incomplete_finish_selected_exact(
     }
 }
 
+pub proof fn bridge_nonsemantic_incomplete_source_step_matches_selected(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        bridge_nonsemantic_incomplete_frame(before),
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+{
+    let top = before.admission.frames.last();
+    assert(bridge_raw_par_step(before).is_none());
+    assert(bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge_cost_bound_step(before).is_none());
+    assert(bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge_cost_signature_step(before).is_none());
+    assert(bridge_cost_region_step(before).is_none());
+    assert(bridge_cost_token_stack_step(before).is_none());
+    assert(bridge_send_step(before).is_none());
+    assert(bridge_bundle_step(before).is_none());
+    assert(bridge_if_step(before).is_none());
+    assert(bridge_match_step(before).is_none());
+    assert(bridge_absent_specialized_constructor_step(before).is_none());
+    assert(bridge_absent_connective_step(before).is_none());
+    assert(bridge_receive_bind_step(before).is_none());
+    assert(bridge_match_case_step(before).is_none());
+    assert(bridge_bool_oneof_step(before).is_none());
+    assert(bridge_expr_atom_step(before).is_none());
+    assert(bridge_expr_numeric_step(before).is_none());
+    assert(bridge_expr_big_rational_step(before).is_none());
+    assert(bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge_sys_auth_token_step(before).is_none());
+    assert(bridge_new_empty_collections_step(before).is_none());
+    assert(bridge_new_one_injection_step(before).is_none());
+    assert(bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge_new_one_uri_step(before).is_none());
+    assert(bridge_new_collections_step(before).is_none());
+    assert(bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge_expr_structural_step(before).is_none());
+    assert(bridge_evar_step(before).is_none());
+    assert(bridge_ordered_sequence_step(before).is_none());
+    assert(bridge_emethod_step(before).is_none());
+    assert(bridge_emap_finish_step(before).is_none());
+    assert(bridge_connective_not_step(before).is_none());
+    assert(bridge_connective_varref_step(before).is_none());
+    assert(bridge_connective_collection_step(before).is_none());
+    assert(bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge_receive_present_condition_step(before).is_none());
+    assert(bridge_receive_absent_condition_step(before).is_none());
+    assert(bridge_nonsemantic_step(before).is_some());
+    bridge_nonsemantic_incomplete_finish_selected_exact(before);
+    let (next, _, _) = bridge_nonsemantic_step(before).unwrap();
+    assert(bridge_score_finish_selected(before) == Some(next));
+    assert(bridge_same(next, after));
+}
+
+pub proof fn bridge_nonsemantic_incomplete_source_step_has_unique_finish(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        bridge_nonsemantic_incomplete_frame(before),
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+        forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) ==> bridge_same(after, other),
+{
+    bridge_nonsemantic_incomplete_source_step_matches_selected(before, after);
+    assert forall|other: ScoreAdmissionBridge|
+        bridge_score_source_step(before, other) implies bridge_same(after, other) by {
+        bridge_nonsemantic_incomplete_source_step_matches_selected(before, other);
+    }
+}
+
 pub open spec fn bridge_no_score_child_frame(before: ScoreAdmissionBridge) -> bool {
     before.admission.frames.len() > 0
         && admission::admission_frame_wf(before.admission.frames.last())
@@ -8876,6 +9895,297 @@ pub proof fn bridge_match_case_required_absent_selected_none(before: ScoreAdmiss
 {
     assert(bridge_no_score_child_frame(before));
     bridge_no_score_child_finish_selected_none(before);
+}
+
+pub proof fn bridge_receive_bind_absent_source_has_derived_no_score_return(
+    before: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 1,
+        admission::admission_frame_wf(before.admission.frames[before.admission.frames.len() - 2]),
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames[before.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Receive,
+        before.admission.frames.last().family
+            == admission::AdmissionFamily::ReceiveBindFrame,
+        !admission::admission_returned_par(before.admission.frames.last(), 1),
+    ensures
+        bridge_score_finish_selected(before).is_none(),
+        admission::concrete_derived_summary_with_arena(
+            before.admission.frames[before.admission.frames.len() - 2],
+            before.admission.frames.last(), before.admission.arena,
+        ) == Some(admission::AdmissionReturnedKind::ReceiveBind {
+            source_present: false,
+        }),
+{
+    bridge_receive_bind_source_absent_selected_none(before);
+    let parent = before.admission.frames[before.admission.frames.len() - 2];
+    let child = before.admission.frames.last();
+    assert(parent.program_type_id == 19);
+    assert(child.program_type_id == 16);
+    assert(admission::concrete_derived_summary(parent, child)
+        == Some(admission::AdmissionReturnedKind::ReceiveBind {
+            source_present: false,
+        }));
+}
+
+pub proof fn bridge_match_case_missing_required_has_derived_no_score_return(
+    before: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 1,
+        admission::admission_frame_wf(before.admission.frames[before.admission.frames.len() - 2]),
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames[before.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Match,
+        before.admission.frames.last().family
+            == admission::AdmissionFamily::MatchCaseFrame,
+        !admission::admission_returned_par(before.admission.frames.last(), 0)
+            || !admission::admission_returned_par(before.admission.frames.last(), 1),
+    ensures
+        bridge_score_finish_selected(before).is_none(),
+        admission::concrete_derived_summary_with_arena(
+            before.admission.frames[before.admission.frames.len() - 2],
+            before.admission.frames.last(), before.admission.arena,
+        ) == Some(admission::AdmissionReturnedKind::MatchCase {
+            required_present: false,
+            canonical_fixed_point: !admission::admission_returned_default_par(
+                before.admission.frames.last(), 3,
+            ),
+        }),
+{
+    bridge_match_case_required_absent_selected_none(before);
+    let parent = before.admission.frames[before.admission.frames.len() - 2];
+    let child = before.admission.frames.last();
+    assert(parent.program_type_id == 22);
+    assert(child.program_type_id == 21);
+    assert(admission::concrete_derived_summary(parent, child)
+        == Some(admission::AdmissionReturnedKind::MatchCase {
+            required_present: false,
+            canonical_fixed_point: !admission::admission_returned_default_par(child, 3),
+        }));
+}
+
+pub proof fn bridge_unforgeable_unit_child_has_derived_no_score_return(
+    before: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 1,
+        admission::admission_frame_wf(before.admission.frames[before.admission.frames.len() - 2]),
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames[before.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::GUnforgeable,
+        before.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.admission.frames.last().frame_kind == 1,
+        before.admission.frames.last().program_type_id == 64,
+    ensures
+        bridge_score_finish_selected(before).is_none(),
+        admission::concrete_derived_summary_with_arena(
+            before.admission.frames[before.admission.frames.len() - 2],
+            before.admission.frames.last(), before.admission.arena,
+        ) == Some(admission::AdmissionReturnedKind::Unit),
+{
+    assert(bridge_structural_no_score_child_frame(before));
+    bridge_structural_no_score_child_finish_selected_none(before);
+    let parent = before.admission.frames[before.admission.frames.len() - 2];
+    let child = before.admission.frames.last();
+    assert(parent.program_type_id == 60);
+    assert(admission::concrete_derived_summary(parent, child)
+        == Some(admission::AdmissionReturnedKind::Unit));
+}
+
+pub proof fn bridge_connective_varref_child_has_derived_no_score_return(
+    before: ScoreAdmissionBridge, index: i32, depth: i32,
+)
+    requires
+        before.admission.frames.len() > 1,
+        admission::admission_frame_wf(before.admission.frames[before.admission.frames.len() - 2]),
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames[before.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Connective,
+        before.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.admission.frames.last().frame_kind == 1,
+        before.admission.frames.last().program_type_id == 56,
+        admission::admission_var_ref_fields(before.admission.frames.last())
+            == Some((index, depth)),
+    ensures
+        bridge_score_finish_selected(before).is_none(),
+        admission::concrete_derived_summary_with_arena(
+            before.admission.frames[before.admission.frames.len() - 2],
+            before.admission.frames.last(), before.admission.arena,
+        ) == Some(admission::AdmissionReturnedKind::VarRef { index, depth }),
+{
+    assert(bridge_structural_no_score_child_frame(before));
+    bridge_structural_no_score_child_finish_selected_none(before);
+    let parent = before.admission.frames[before.admission.frames.len() - 2];
+    let child = before.admission.frames.last();
+    assert(parent.program_type_id == 55);
+    assert(admission::concrete_derived_summary(parent, child)
+        == Some(admission::AdmissionReturnedKind::VarRef { index, depth }));
+}
+
+pub proof fn bridge_connective_body_child_has_derived_no_score_return(
+    before: ScoreAdmissionBridge, par_handles: Seq<usize>,
+)
+    requires
+        before.admission.frames.len() > 1,
+        admission::admission_frame_wf(before.admission.frames[before.admission.frames.len() - 2]),
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames[before.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Connective,
+        before.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.admission.frames.last().frame_kind == 1,
+        before.admission.frames.last().program_type_id == 57,
+        admission::admission_connective_body_handles(before.admission.frames.last())
+            == Some(par_handles),
+    ensures
+        bridge_score_finish_selected(before).is_none(),
+        admission::concrete_derived_summary_with_arena(
+            before.admission.frames[before.admission.frames.len() - 2],
+            before.admission.frames.last(), before.admission.arena,
+        ) == Some(admission::AdmissionReturnedKind::ConnectiveBody { par_handles }),
+{
+    assert(bridge_structural_no_score_child_frame(before));
+    bridge_structural_no_score_child_finish_selected_none(before);
+    let parent = before.admission.frames[before.admission.frames.len() - 2];
+    let child = before.admission.frames.last();
+    assert(parent.program_type_id == 55);
+    assert(admission::concrete_derived_summary(parent, child)
+        == Some(admission::AdmissionReturnedKind::ConnectiveBody { par_handles }));
+}
+
+pub proof fn bridge_unforgeable_bytes_child_has_derived_no_score_return(
+    before: ScoreAdmissionBridge, value: Seq<u8>,
+)
+    requires
+        before.admission.frames.len() > 1,
+        admission::admission_frame_wf(before.admission.frames[before.admission.frames.len() - 2]),
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames[before.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::GUnforgeable,
+        before.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.admission.frames.last().frame_kind == 1,
+        before.admission.frames.last().program_type_id == 61
+            || before.admission.frames.last().program_type_id == 62
+            || before.admission.frames.last().program_type_id == 63,
+        admission::admission_bytes_leaf_payload(before.admission.frames.last())
+            == Some(value),
+    ensures
+        bridge_score_finish_selected(before).is_none(),
+        admission::concrete_derived_summary_with_arena(
+            before.admission.frames[before.admission.frames.len() - 2],
+            before.admission.frames.last(), before.admission.arena,
+        ) == Some(admission::AdmissionReturnedKind::Bytes { value }),
+{
+    assert(bridge_structural_no_score_child_frame(before));
+    bridge_structural_no_score_child_finish_selected_none(before);
+    let parent = before.admission.frames[before.admission.frames.len() - 2];
+    let child = before.admission.frames.last();
+    assert(parent.program_type_id == 60);
+    assert(admission::concrete_derived_summary(parent, child)
+        == Some(admission::AdmissionReturnedKind::Bytes { value }));
+}
+
+pub proof fn bridge_big_rational_child_has_derived_no_score_return(
+    before: ScoreAdmissionBridge, numerator: Seq<u8>, denominator: Seq<u8>,
+)
+    requires
+        before.admission.frames.len() > 1,
+        admission::admission_frame_wf(before.admission.frames[before.admission.frames.len() - 2]),
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames[before.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Expr,
+        before.admission.frames[before.admission.frames.len() - 2].waiting_tag == Some(36),
+        before.admission.frames.last().family
+            == admission::AdmissionFamily::BigRationalFrame,
+        admission::admission_big_rational_fields(before.admission.frames.last())
+            == Some((numerator, denominator)),
+    ensures
+        bridge_score_finish_selected(before).is_none(),
+        admission::concrete_derived_summary_with_arena(
+            before.admission.frames[before.admission.frames.len() - 2],
+            before.admission.frames.last(), before.admission.arena,
+        ) == Some(admission::AdmissionReturnedKind::BigRational {
+            numerator, denominator,
+        }),
+{
+    assert(bridge_structural_no_score_child_frame(before));
+    bridge_structural_no_score_child_finish_selected_none(before);
+    let parent = before.admission.frames[before.admission.frames.len() - 2];
+    let child = before.admission.frames.last();
+    assert(parent.program_type_id == 24);
+    assert(child.program_type_id == 25);
+    assert(admission::concrete_derived_summary(parent, child)
+        == Some(admission::AdmissionReturnedKind::BigRational {
+            numerator, denominator,
+        }));
+}
+
+pub proof fn bridge_fixed_point_child_has_derived_no_score_return(
+    before: ScoreAdmissionBridge, unscaled: Seq<u8>, scale: u32,
+)
+    requires
+        before.admission.frames.len() > 1,
+        admission::admission_frame_wf(before.admission.frames[before.admission.frames.len() - 2]),
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames[before.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Expr,
+        before.admission.frames[before.admission.frames.len() - 2].waiting_tag == Some(37),
+        before.admission.frames.last().family
+            == admission::AdmissionFamily::FixedPointFrame,
+        admission::admission_fixed_point_fields(before.admission.frames.last())
+            == Some((unscaled, scale)),
+    ensures
+        bridge_score_finish_selected(before).is_none(),
+        admission::concrete_derived_summary_with_arena(
+            before.admission.frames[before.admission.frames.len() - 2],
+            before.admission.frames.last(), before.admission.arena,
+        ) == Some(admission::AdmissionReturnedKind::FixedPoint { unscaled, scale }),
+{
+    assert(bridge_structural_no_score_child_frame(before));
+    bridge_structural_no_score_child_finish_selected_none(before);
+    let parent = before.admission.frames[before.admission.frames.len() - 2];
+    let child = before.admission.frames.last();
+    assert(parent.program_type_id == 24);
+    assert(child.program_type_id == 26);
+    assert(admission::concrete_derived_summary(parent, child)
+        == Some(admission::AdmissionReturnedKind::FixedPoint { unscaled, scale }));
+}
+
+pub proof fn bridge_evar_absent_child_has_derived_no_score_return(
+    before: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.len() > 1,
+        admission::admission_frame_wf(before.admission.frames[before.admission.frames.len() - 2]),
+        admission::admission_frame_wf(before.admission.frames.last()),
+        before.admission.frames[before.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Expr,
+        before.admission.frames[before.admission.frames.len() - 2].waiting_tag == Some(19),
+        before.admission.frames.last().family == admission::AdmissionFamily::EVarFrame,
+        !admission::admission_returned_var(before.admission.frames.last(), 0),
+    ensures
+        bridge_score_finish_selected(before).is_none(),
+        admission::concrete_derived_summary_with_arena(
+            before.admission.frames[before.admission.frames.len() - 2],
+            before.admission.frames.last(), before.admission.arena,
+        ) == Some(admission::AdmissionReturnedKind::ExprPayload {
+            score_present: false,
+            canonical_fixed_point: true,
+            canonical_path_stable: false,
+        }),
+{
+    bridge_evar_missing_var_finish_selected_none(before);
+    let parent = before.admission.frames[before.admission.frames.len() - 2];
+    let child = before.admission.frames.last();
+    assert(parent.program_type_id == 24);
+    assert(child.program_type_id == 35);
+    assert(admission::concrete_derived_summary(parent, child)
+        == Some(admission::AdmissionReturnedKind::ExprPayload {
+            score_present: false,
+            canonical_fixed_point: true,
+            canonical_path_stable: false,
+        }));
 }
 
 pub proof fn bridge_par_handles_for_slot_absent(
@@ -9024,6 +10334,99 @@ pub proof fn bridge_receive_complete_finish_selected_exact(
     }
     reveal(bridge_score_finish_selection_group_5);
     reveal(bridge_score_finish_selected);
+}
+
+pub proof fn bridge_receive_complete_source_step_has_unique_finish(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        bridge_receive_complete_frame(before),
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+        forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) ==> bridge_same(after, other),
+{
+    let top = before.admission.frames.last();
+    assert(bridge_raw_par_step(before).is_none());
+    assert(bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge_cost_bound_step(before).is_none());
+    assert(bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge_cost_signature_step(before).is_none());
+    assert(bridge_cost_region_step(before).is_none());
+    assert(bridge_cost_token_stack_step(before).is_none());
+    assert(bridge_send_step(before).is_none());
+    assert(bridge_bundle_step(before).is_none());
+    assert(bridge_if_step(before).is_none());
+    assert(bridge_match_step(before).is_none());
+    assert(bridge_absent_specialized_constructor_step(before).is_none());
+    assert(bridge_absent_connective_step(before).is_none());
+    assert(bridge_receive_bind_step(before).is_none());
+    assert(bridge_match_case_step(before).is_none());
+    assert(bridge_bool_oneof_step(before).is_none());
+    assert(bridge_expr_atom_step(before).is_none());
+    assert(bridge_expr_numeric_step(before).is_none());
+    assert(bridge_expr_big_rational_step(before).is_none());
+    assert(bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge_sys_auth_token_step(before).is_none());
+    assert(bridge_new_empty_collections_step(before).is_none());
+    assert(bridge_new_one_injection_step(before).is_none());
+    assert(bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge_new_one_uri_step(before).is_none());
+    assert(bridge_new_collections_step(before).is_none());
+    assert(bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge_expr_structural_step(before).is_none());
+    assert(bridge_evar_step(before).is_none());
+    assert(bridge_ordered_sequence_step(before).is_none());
+    assert(bridge_emethod_step(before).is_none());
+    assert(bridge_emap_finish_step(before).is_none());
+    assert(bridge_connective_not_step(before).is_none());
+    assert(bridge_connective_varref_step(before).is_none());
+    assert(bridge_connective_collection_step(before).is_none());
+    assert(bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge_nonsemantic_step(before).is_none());
+    if top.seen.contains(7) {
+        assert(bridge_receive_absent_finish_candidate(before).is_none());
+    } else {
+        bridge_receive_absent_condition_excludes_present(before);
+    }
+    bridge_receive_complete_finish_selected_exact(before);
+    assert forall|other: ScoreAdmissionBridge|
+        bridge_score_source_step(before, other)
+            implies if top.seen.contains(7) {
+                match bridge_receive_present_finish_candidate(before) {
+                    Some(next) => bridge_same(next, other),
+                    None => false,
+                }
+            } else {
+                match bridge_receive_absent_finish_candidate(before) {
+                    Some(next) => bridge_same(next, other),
+                    None => false,
+                }
+            } by {
+        assert(bridge_score_source_step(before, other));
+    }
+    if top.seen.contains(7) {
+        assert(bridge_receive_present_finish_candidate(before).is_some());
+        let next = bridge_receive_present_finish_candidate(before).unwrap();
+        assert(bridge_score_finish_selected(before) == Some(next));
+        assert(bridge_same(next, after));
+        assert forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) implies bridge_same(after, other) by {
+            assert(bridge_same(next, other));
+        }
+    } else {
+        assert(bridge_receive_absent_finish_candidate(before).is_some());
+        let next = bridge_receive_absent_finish_candidate(before).unwrap();
+        assert(bridge_score_finish_selected(before) == Some(next));
+        assert(bridge_same(next, after));
+        assert forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) implies bridge_same(after, other) by {
+            assert(bridge_same(next, other));
+        }
+    }
 }
 
 pub open spec fn bridge_new_complete_frame(before: ScoreAdmissionBridge) -> bool {
@@ -9281,6 +10684,92 @@ pub proof fn bridge_new_complete_finish_selected_exact(
         assert(u.is_none() && g.is_none());
     } else if u.is_some() {
         assert(g.is_none());
+    }
+}
+
+pub proof fn bridge_new_complete_source_step_matches_selected(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        bridge_new_complete_frame(before),
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+{
+    assert(bridge_raw_par_step(before).is_none());
+    assert(bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge_cost_bound_step(before).is_none());
+    assert(bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge_cost_signature_step(before).is_none());
+    assert(bridge_cost_region_step(before).is_none());
+    assert(bridge_cost_token_stack_step(before).is_none());
+    assert(bridge_send_step(before).is_none());
+    assert(bridge_bundle_step(before).is_none());
+    assert(bridge_if_step(before).is_none());
+    assert(bridge_match_step(before).is_none());
+    assert(bridge_absent_specialized_constructor_step(before).is_none());
+    assert(bridge_absent_connective_step(before).is_none());
+    assert(bridge_receive_bind_step(before).is_none());
+    assert(bridge_match_case_step(before).is_none());
+    assert(bridge_bool_oneof_step(before).is_none());
+    assert(bridge_expr_atom_step(before).is_none());
+    assert(bridge_expr_numeric_step(before).is_none());
+    assert(bridge_expr_big_rational_step(before).is_none());
+    assert(bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge_sys_auth_token_step(before).is_none());
+    assert(bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge_expr_structural_step(before).is_none());
+    assert(bridge_evar_step(before).is_none());
+    assert(bridge_ordered_sequence_step(before).is_none());
+    assert(bridge_emethod_step(before).is_none());
+    assert(bridge_emap_finish_step(before).is_none());
+    assert(bridge_connective_not_step(before).is_none());
+    assert(bridge_connective_varref_step(before).is_none());
+    assert(bridge_connective_collection_step(before).is_none());
+    assert(bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge_receive_present_condition_step(before).is_none());
+    assert(bridge_receive_absent_condition_step(before).is_none());
+    assert(bridge_nonsemantic_step(before).is_none());
+    let e = bridge_new_empty_finish_candidate(before);
+    let i = bridge_new_one_injection_finish_candidate(before);
+    let a = bridge_new_one_absent_injection_finish_candidate(before);
+    let u = bridge_new_one_uri_finish_candidate(before);
+    let g = bridge_new_collections_finish_candidate(before);
+    bridge_new_specialized_parts_disjoint(before);
+    bridge_new_complete_finish_selected_exact(before);
+    assert(e.is_some() || i.is_some() || a.is_some() || u.is_some() || g.is_some());
+    if e.is_some() {
+        assert(bridge_same(e.unwrap(), after));
+    } else if i.is_some() {
+        assert(bridge_same(i.unwrap(), after));
+    } else if a.is_some() {
+        assert(bridge_same(a.unwrap(), after));
+    } else if u.is_some() {
+        assert(bridge_same(u.unwrap(), after));
+    } else {
+        assert(g.is_some());
+        assert(bridge_same(g.unwrap(), after));
+    }
+}
+
+pub proof fn bridge_new_complete_source_step_has_unique_finish(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        bridge_new_complete_frame(before),
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+        forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) ==> bridge_same(after, other),
+{
+    bridge_new_complete_source_step_matches_selected(before, after);
+    assert forall|other: ScoreAdmissionBridge|
+        bridge_score_source_step(before, other) implies bridge_same(after, other) by {
+        bridge_new_complete_source_step_matches_selected(before, other);
     }
 }
 
@@ -12087,6 +13576,20 @@ pub proof fn bridge_score_source_step_preserves_shape(
     assert(false);
 }
 
+pub proof fn bridge_score_source_step_preserves_driver_counts(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+        bridge_score_source_step(before, after),
+    ensures
+        after.admission.pushed == before.admission.pushed,
+        after.admission.completed == before.admission.completed,
+{
+    bridge_score_source_step_preserves_shape(before, after);
+}
+
 pub proof fn bridge_score_source_step_preserves_par_source_trace(
     before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
 )
@@ -12412,6 +13915,109 @@ pub proof fn bridge_reachable_has_exact_binding(
     bridge_trace_prefix_preserves_exact(root, trace, trace.len() - 1);
     assert(bridge_well_formed(trace[trace.len() - 1]));
     assert(admission::admission_state_wf(trace[trace.len() - 1].admission));
+}
+
+pub open spec fn bridge_component_score_eof_scope(bridge: ScoreAdmissionBridge) -> bool {
+    bridge.admission.frames.len() > 0
+        && bridge.admission.frames.last().cursor
+            == bridge.admission.frames.last().region_end
+        && bridge.admission.frames.last().waiting_id.is_none()
+        && bridge.admission.frames.last().score_handle.is_none()
+        && match bridge.admission.frames.last().family {
+            admission::AdmissionFamily::Send
+            | admission::AdmissionFamily::Receive
+            | admission::AdmissionFamily::New
+            | admission::AdmissionFamily::Match
+            | admission::AdmissionFamily::Bundle
+            | admission::AdmissionFamily::If
+            | admission::AdmissionFamily::CostTokenStack
+            | admission::AdmissionFamily::Expr
+            | admission::AdmissionFamily::Connective
+            | admission::AdmissionFamily::GUnforgeable => true,
+            _ => false,
+        }
+}
+
+pub proof fn bridge_reachable_component_score_eof_source_finish_unique(
+    before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
+)
+    requires
+        bridge_reducer_reachable(before),
+        bridge_component_score_eof_scope(before),
+        bridge_score_source_step(before, after),
+    ensures
+        bridge_score_finish_selected(before).is_some(),
+        bridge_same(bridge_score_finish_selected(before).unwrap(), after),
+        bridge_score_source_step(
+            before, bridge_score_finish_selected(before).unwrap(),
+        ),
+        bridge_well_formed(bridge_score_finish_selected(before).unwrap()),
+        admission::admission_state_wf(
+            bridge_score_finish_selected(before).unwrap().admission,
+        ),
+        bridge_score_step_shape(
+            before, bridge_score_finish_selected(before).unwrap(),
+        ),
+        forall|other: ScoreAdmissionBridge|
+            bridge_score_source_step(before, other) ==> bridge_same(after, other),
+{
+    bridge_reachable_has_exact_binding(before);
+    let index = before.admission.frames.len() - 1;
+    assert(0 <= index < before.admission.frames.len());
+    assert(admission::admission_frame_wf(before.admission.frames[index]));
+    let top = before.admission.frames.last();
+    assert(admission::admission_frame_wf(top));
+    match top.family {
+        admission::AdmissionFamily::Send
+        | admission::AdmissionFamily::Bundle
+        | admission::AdmissionFamily::If
+        | admission::AdmissionFamily::Match => {
+            if admission::admission_family_complete(top) {
+                assert(bridge_primary_component_frame(before));
+                bridge_primary_component_source_step_has_unique_finish(before, after);
+            } else {
+                assert(bridge_nonsemantic_incomplete_frame(before));
+                bridge_nonsemantic_incomplete_source_step_has_unique_finish(before, after);
+            }
+        },
+        admission::AdmissionFamily::Receive => {
+            if admission::admission_family_complete(top) {
+                assert(bridge_receive_complete_frame(before));
+                bridge_receive_complete_source_step_has_unique_finish(before, after);
+            } else {
+                assert(bridge_nonsemantic_incomplete_frame(before));
+                bridge_nonsemantic_incomplete_source_step_has_unique_finish(before, after);
+            }
+        },
+        admission::AdmissionFamily::New => {
+            if admission::admission_family_complete(top) {
+                assert(bridge_new_complete_frame(before));
+                bridge_new_complete_source_step_has_unique_finish(before, after);
+            } else {
+                assert(bridge_nonsemantic_incomplete_frame(before));
+                bridge_nonsemantic_incomplete_source_step_has_unique_finish(before, after);
+            }
+        },
+        admission::AdmissionFamily::Expr => {
+            if admission::admission_family_complete(top) {
+                bridge_expr_source_step_has_unique_finish(before, after);
+            } else {
+                assert(bridge_nonsemantic_incomplete_frame(before));
+                bridge_nonsemantic_incomplete_source_step_has_unique_finish(before, after);
+            }
+        },
+        admission::AdmissionFamily::CostTokenStack => {
+            bridge_cost_token_stack_source_step_has_unique_finish(before, after);
+        },
+        admission::AdmissionFamily::Connective => {
+            bridge_connective_source_step_has_unique_finish(before, after);
+        },
+        admission::AdmissionFamily::GUnforgeable => {
+            bridge_gunforgeable_source_step_has_unique_finish(before, after);
+        },
+        _ => {},
+    }
+    bridge_score_finish_selected_preserves_checked(before);
 }
 
 pub open spec fn bridge_first_difference(

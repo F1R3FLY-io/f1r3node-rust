@@ -6,6 +6,12 @@ pub mod admission;
 #[cfg(rpb3_integrated)]
 use crate::rpb3_admission_cursor as admission;
 
+#[cfg(not(rpb3_integrated))]
+#[path = "rpb3_path_parser_refinement.rs"]
+pub mod parser;
+#[cfg(rpb3_integrated)]
+pub use crate::rpb3_path_parser_refinement as parser;
+
 verus! {
 
 pub enum PathObligationKind {
@@ -81,6 +87,7 @@ pub struct PathCheckpoint {
     pub pending: Option<PathObligation>,
     pub gate: PathGate,
     pub path_len: usize,
+    pub ghost parser: parser::ParserImage,
 }
 
 pub struct PathTopology {
@@ -91,6 +98,7 @@ pub struct PathTopology {
     pub ghost path_bytes: Seq<u8>,
     pub ghost path_positions: Seq<SourceAnchor>,
     pub gate: PathGate,
+    pub ghost parser: parser::ParserImage,
 }
 
 pub enum EpmWait {
@@ -2102,6 +2110,17 @@ pub open spec fn path_finish_ok(path: PathTopology) -> bool {
     &&& path.restore.len() == 0
 }
 
+pub open spec fn parser_gate_matches(gate: PathGate, image: parser::ParserImage) -> bool {
+    let expected = parser::parser_root_gate(image);
+    &&& gate.dead == expected.dead
+    &&& gate.stack_empty == expected.stack_empty
+    &&& gate.split_complete == expected.split_complete
+    &&& gate.completed_segments as int == expected.completed_segments as int
+    &&& gate.first_is_list == expected.first_is_list
+    &&& gate.stable == expected.stable
+    &&& gate.escape_allowed == expected.escape_allowed
+}
+
 pub open spec fn can_step(frame: EpmFrame) -> bool {
     frame.wait.is_none()
 }
@@ -2110,6 +2129,16 @@ pub open spec fn obligation_tag_byte(kind: PathObligationKind) -> u8 {
     match kind {
         PathObligationKind::RawParEscape => 0x0f,
         PathObligationKind::NestedEpm1 => 0x10,
+    }
+}
+
+pub open spec fn parser_kind_matches(
+    kind: PathObligationKind, parser_kind: parser::ParserObligationKind,
+) -> bool {
+    match (kind, parser_kind) {
+        (PathObligationKind::RawParEscape, parser::ParserObligationKind::RawParEscape)
+        | (PathObligationKind::NestedEpm1, parser::ParserObligationKind::NestedEpm1) => true,
+        _ => false,
     }
 }
 
@@ -2145,6 +2174,7 @@ pub open spec fn start_obligation(
         pending: before.pending,
         gate: before.gate,
         path_len: before.path_bytes.len() as usize,
+        parser: before.parser,
     })
     &&& after.gate == before.gate
 }
@@ -2178,8 +2208,229 @@ pub open spec fn consume_obligation_byte(
         pending: before.pending,
         gate: before.gate,
         path_len: before.path_bytes.len() as usize,
+        parser: before.parser,
     })
     &&& after.gate == before.gate
+}
+
+/// The path/restore part of a plain edge. The parser gate needs its own
+/// transition: an exact append does not imply an unchanged gate.
+pub open spec fn plain_edge_path_shape(
+    before: PathTopology, after: PathTopology, byte: u8, source: SourceAnchor,
+) -> bool {
+    &&& after.next_obligation == before.next_obligation
+    &&& after.pending == before.pending
+    &&& after.root_left == before.root_left
+    &&& after.path_bytes == before.path_bytes.push(byte)
+    &&& after.path_positions == before.path_positions.push(source)
+    &&& after.restore == before.restore.push(PathCheckpoint {
+        pending: before.pending,
+        gate: before.gate,
+        path_len: before.path_bytes.len() as usize,
+        parser: before.parser,
+    })
+}
+
+/// Exact gate outcomes for two ordinary tags on a fresh root path. In
+/// `CanonicalPathMachine::feed_tag`, 0x06 opens the byte-array length Varint
+/// frame, whereas 0x02 completes a Boolean segment through `bubble`. This
+/// source-shaped special case is checkable from the input byte and initial
+/// parser state; it is not a general gate transition for later frame kinds.
+pub open spec fn initial_plain_tag_after(
+    byte: u8, source: SourceAnchor,
+) -> PathTopology
+    recommends byte == 0x06 || byte == 0x02,
+{
+    let before = initial_epm_path();
+    PathTopology {
+        restore: before.restore.push(PathCheckpoint {
+            pending: before.pending,
+            gate: before.gate,
+            path_len: 0,
+            parser: before.parser,
+        }),
+        path_bytes: before.path_bytes.push(byte),
+        path_positions: before.path_positions.push(source),
+        parser: parser::feed_parser_byte(before.parser, byte,
+            parser::ParserSource { source: source.source, offset: source.offset }, 1).image,
+        gate: if byte == 0x06 {
+            PathGate { stack_empty: false, ..before.gate }
+        } else {
+            PathGate { completed_segments: 1, ..before.gate }
+        },
+        ..before
+    }
+}
+
+/// Prefixes of one byte-array segment with a minimal, one-byte length. The
+/// source machine is in Tag at the first byte, Varint at the second byte,
+/// then Bytes until the final payload byte bubbles the completed segment.
+/// The completed segment can have length zero. Longer varints and other
+/// parser frames require a separate source-state projection.
+pub open spec fn simple_byte_array_prefix(bytes: Seq<u8>) -> bool {
+    &&& bytes.len() >= 1
+    &&& bytes[0] == 0x06
+    &&& (bytes.len() == 1 || {
+        &&& bytes[1] < 0x80
+        &&& bytes.len() <= 2 + bytes[1] as int
+    })
+}
+
+pub open spec fn simple_byte_array_gate(bytes: Seq<u8>) -> PathGate
+    recommends simple_byte_array_prefix(bytes),
+{
+    let complete = bytes.len() >= 2 && bytes.len() == 2 + bytes[1] as int;
+    PathGate {
+        dead: false,
+        stack_empty: complete,
+        split_complete: false,
+        completed_segments: if complete { 1 } else { 0 },
+        first_is_list: false,
+        stable: true,
+        escape_allowed: true,
+    }
+}
+
+pub open spec fn append_plain_path_with_gate(
+    before: PathTopology, byte: u8, source: SourceAnchor, gate: PathGate,
+) -> PathTopology {
+    PathTopology {
+        restore: before.restore.push(PathCheckpoint {
+            pending: before.pending,
+            gate: before.gate,
+            path_len: before.path_bytes.len() as usize,
+            parser: before.parser,
+        }),
+        path_bytes: before.path_bytes.push(byte),
+        path_positions: before.path_positions.push(source),
+        gate,
+        parser: parser::feed_parser_byte(before.parser, byte,
+            parser::ParserSource { source: source.source, offset: source.offset },
+            (before.path_bytes.len() + 1) as usize).image,
+        ..before
+    }
+}
+
+/// Every ordinary byte is selected by the deterministic source-shaped parser
+/// transition, including nested Region focus, bubbling, malformed/dead paths,
+/// and later successful Continue edges after a persistent fault.
+pub open spec fn modeled_plain_gate_transition(
+    before: PathTopology, after: PathTopology, byte: u8,
+) -> bool {
+    &&& before.path_bytes.len() < usize::MAX as int
+    &&& after.path_positions.len() > 0
+    &&& parser_gate_matches(before.gate, before.parser)
+    &&& before.next_obligation == before.parser.next_obligation
+    &&& {
+        let source = after.path_positions.last();
+        let step = parser::feed_parser_byte(before.parser, byte,
+            parser::ParserSource { source: source.source, offset: source.offset },
+            (before.path_bytes.len() + 1) as usize);
+        &&& step.event == parser::ParserEvent::Continue
+        &&& after.parser == step.image
+        &&& after.next_obligation == after.parser.next_obligation
+        &&& parser_gate_matches(after.gate, after.parser)
+    }
+}
+
+/// Both witnesses satisfy the exact Plain path/restore shape but contradict
+/// its gate-equality clause. Neither proof assumes a fabricated successor.
+pub proof fn initial_plain_tags_refute_unchanged_gate()
+    ensures {
+        let before = initial_epm_path();
+        let source = SourceAnchor { source: 1, offset: 7 };
+        let array_after = initial_plain_tag_after(0x06, source);
+        let bool_after = initial_plain_tag_after(0x02, source);
+        &&& plain_edge_path_shape(before, array_after, 0x06, source)
+        &&& plain_edge_path_shape(before, bool_after, 0x02, source)
+        &&& before.gate.stack_empty
+        &&& !array_after.gate.stack_empty
+        &&& before.gate.completed_segments == 0
+        &&& bool_after.gate.completed_segments == 1
+        &&& array_after.gate != before.gate
+        &&& bool_after.gate != before.gate
+        &&& modeled_plain_gate_transition(before, array_after, 0x06)
+        &&& modeled_plain_gate_transition(before, bool_after, 0x02)
+    },
+{
+    let before = initial_epm_path();
+    let source = SourceAnchor { source: 1, offset: 7 };
+    let array_after = initial_plain_tag_after(0x06, source);
+    let bool_after = initial_plain_tag_after(0x02, source);
+    assert(plain_edge_path_shape(before, array_after, 0x06, source));
+    assert(plain_edge_path_shape(before, bool_after, 0x02, source));
+    assert(before.gate.stack_empty && !array_after.gate.stack_empty);
+    assert(before.gate.completed_segments == 0 && bool_after.gate.completed_segments == 1);
+    assert(array_after.gate != before.gate);
+    assert(bool_after.gate != before.gate);
+    assert(modeled_plain_gate_transition(before, array_after, 0x06));
+    assert(modeled_plain_gate_transition(before, bool_after, 0x02));
+}
+
+/// A complete ordinary byte-array key crosses both parser-state changes:
+/// Tag -> Varint -> Bytes -> no frame, with one completed path segment.
+pub proof fn simple_byte_array_plain_gate_trace()
+    ensures {
+        let start = initial_epm_path();
+        let s = SourceAnchor { source: 1, offset: 7 };
+        let tag = initial_plain_tag_after(0x06, s);
+        let length = append_plain_path_with_gate(tag, 0x02, s,
+            simple_byte_array_gate(tag.path_bytes.push(0x02)));
+        let first = append_plain_path_with_gate(length, 0xab, s,
+            simple_byte_array_gate(length.path_bytes.push(0xab)));
+        let last = append_plain_path_with_gate(first, 0xcd, s,
+            simple_byte_array_gate(first.path_bytes.push(0xcd)));
+        &&& plain_edge_path_shape(start, tag, 0x06, s)
+        &&& plain_edge_path_shape(tag, length, 0x02, s)
+        &&& plain_edge_path_shape(length, first, 0xab, s)
+        &&& plain_edge_path_shape(first, last, 0xcd, s)
+        &&& modeled_plain_gate_transition(start, tag, 0x06)
+        &&& modeled_plain_gate_transition(tag, length, 0x02)
+        &&& modeled_plain_gate_transition(length, first, 0xab)
+        &&& modeled_plain_gate_transition(first, last, 0xcd)
+        &&& !tag.gate.stack_empty
+        &&& !length.gate.stack_empty
+        &&& !first.gate.stack_empty
+        &&& last.gate.stack_empty
+        &&& last.gate.completed_segments == 1
+    },
+{
+    let start = initial_epm_path();
+    let s = SourceAnchor { source: 1, offset: 7 };
+    let tag = initial_plain_tag_after(0x06, s);
+    let length_bytes = tag.path_bytes.push(0x02);
+    assert(simple_byte_array_prefix(length_bytes));
+    parser::initial_single_byte_varint(0x02);
+    let length = append_plain_path_with_gate(tag, 0x02, s,
+        simple_byte_array_gate(length_bytes));
+    let first_bytes = length.path_bytes.push(0xab);
+    assert(simple_byte_array_prefix(first_bytes));
+    let first = append_plain_path_with_gate(length, 0xab, s,
+        simple_byte_array_gate(first_bytes));
+    let last_bytes = first.path_bytes.push(0xcd);
+    assert(simple_byte_array_prefix(last_bytes));
+    let last = append_plain_path_with_gate(first, 0xcd, s,
+        simple_byte_array_gate(last_bytes));
+    assert(plain_edge_path_shape(start, tag, 0x06, s));
+    assert(plain_edge_path_shape(tag, length, 0x02, s));
+    assert(plain_edge_path_shape(length, first, 0xab, s));
+    assert(plain_edge_path_shape(first, last, 0xcd, s));
+    assert(parser_gate_matches(start.gate, start.parser));
+    assert(parser_gate_matches(tag.gate, tag.parser));
+    assert(parser_gate_matches(length.gate, length.parser));
+    assert(parser_gate_matches(first.gate, first.parser));
+    assert(parser_gate_matches(last.gate, last.parser));
+    assert(start.next_obligation == start.parser.next_obligation);
+    assert(tag.next_obligation == tag.parser.next_obligation);
+    assert(length.next_obligation == length.parser.next_obligation);
+    assert(first.next_obligation == first.parser.next_obligation);
+    assert(last.next_obligation == last.parser.next_obligation);
+    assert(modeled_plain_gate_transition(start, tag, 0x06));
+    assert(modeled_plain_gate_transition(tag, length, 0x02));
+    assert(modeled_plain_gate_transition(length, first, 0xab));
+    assert(modeled_plain_gate_transition(first, last, 0xcd));
+    assert(!tag.gate.stack_empty && !length.gate.stack_empty && !first.gate.stack_empty);
+    assert(last.gate.stack_empty && last.gate.completed_segments == 1);
 }
 
 pub open spec fn edge_return(
@@ -2204,19 +2455,35 @@ pub open spec fn edge_return(
     &&& source == trie_position(before, source_offset)
     &&& edge_origin_valid(before, source_offset, origin)
     &&& byte == edge_byte(before, source_offset, origin)
+    &&& before.path.path_bytes.len() < usize::MAX as int
+    &&& before.path.next_obligation == before.path.parser.next_obligation
+    &&& parser_gate_matches(before.path.gate, before.path.parser)
+    &&& {
+        let step = parser::feed_parser_byte(before.path.parser, byte,
+            parser::ParserSource { source: source.source, offset: source.offset },
+            (before.path.path_bytes.len() + 1) as usize);
+        &&& after.path.parser == step.image
+        &&& after.path.next_obligation == step.image.next_obligation
+        &&& parser_gate_matches(after.path.gate, after.path.parser)
+        &&& match (effect, step.event) {
+            (PathEdgeEffect::Plain, parser::ParserEvent::Continue) => true,
+            (
+                PathEdgeEffect::Start { kind, payload_len, .. },
+                parser::ParserEvent::ObligationStarted {
+                    id, kind: parser_kind, payload_len: parser_len,
+                },
+            ) => id == before.path.next_obligation
+                && parser_kind_matches(kind, parser_kind)
+                && payload_len as int == parser_len as int,
+            (PathEdgeEffect::Payload, parser::ParserEvent::ObligationByte { id, .. }) =>
+                match before.path.pending { Some(obligation) => id == obligation.id, None => false },
+            _ => false,
+        }
+    }
     &&& match effect {
         PathEdgeEffect::Plain => {
-            &&& after.path.next_obligation == before.path.next_obligation
-            &&& after.path.pending == before.path.pending
-            &&& after.path.root_left == before.path.root_left
-            &&& after.path.gate == before.path.gate
-            &&& after.path.path_bytes == before.path.path_bytes.push(byte)
-            &&& after.path.path_positions == before.path.path_positions.push(source)
-            &&& after.path.restore == before.path.restore.push(PathCheckpoint {
-                pending: before.path.pending,
-                gate: before.path.gate,
-                path_len: before.path.path_bytes.len() as usize,
-            })
+            &&& plain_edge_path_shape(before.path, after.path, byte, source)
+            &&& modeled_plain_gate_transition(before.path, after.path, byte)
         },
         PathEdgeEffect::Start { kind, payload_len, tag } => {
             &&& exists|i: int| 0 <= i < before.path.path_bytes.len()
@@ -2283,6 +2550,20 @@ pub open spec fn child_reducer_dead(kind: PathObligationKind, summary: ChildSumm
     }
 }
 
+pub open spec fn parser_resolution(summary: ChildSummary) -> parser::ParserResolution {
+    match summary {
+        ChildSummary::Par { canonical_path_stable } =>
+            parser::ParserResolution::RawPar { canonical_path_stable },
+        ChildSummary::Epm1 { mode, entries_stable } =>
+            parser::ParserResolution::NestedEpm1 {
+                is_map: mode == EpmMode::Map, entries_stable,
+            },
+        ChildSummary::Other => parser::ParserResolution::RawPar {
+            canonical_path_stable: true,
+        },
+    }
+}
+
 pub open spec fn accept_child(
     before: EpmFrame,
     after: EpmFrame,
@@ -2316,6 +2597,10 @@ pub open spec fn accept_child(
             &&& after.path.restore == before.path.restore
             &&& after.path.path_bytes == before.path.path_bytes
             &&& after.path.path_positions == before.path.path_positions
+            &&& parser_gate_matches(before.path.gate, before.path.parser)
+            &&& after.path.parser == parser::resolve_parser_obligation(
+                before.path.parser, id, parser_resolution(summary))
+            &&& parser_gate_matches(after.path.gate, after.path.parser)
             &&& (before.path.gate.dead || child_reducer_dead(kind, summary))
                 ==> after.path.gate.dead
             &&& match (kind, summary) {
@@ -2334,16 +2619,21 @@ pub open spec fn accept_child(
 pub open spec fn leave_return(before: EpmFrame, after: EpmFrame, source: SourceAnchor) -> bool {
     &&& can_step(before)
     &&& !before.path.root_left
+    &&& parser_gate_matches(before.path.gate, before.path.parser)
     &&& after.wait.is_none()
     &&& after.mode == before.mode
     &&& after.entries_stable == before.entries_stable
     &&& after.last_source == source
     &&& same_frame_source(before, after)
     &&& after.path.next_obligation == before.path.next_obligation
+    &&& after.path.next_obligation == after.path.parser.next_obligation
+    &&& parser_gate_matches(after.path.gate, after.path.parser)
     &&& if before.path.restore.len() > 0 {
         &&& after.path.restore == before.path.restore.drop_last()
         &&& after.path.pending == before.path.restore.last().pending
         &&& after.path.gate == before.path.restore.last().gate
+        &&& after.path.parser == parser::restore_parser_checkpoint(
+            before.path.restore.last().parser, before.path.parser)
         &&& after.path.path_bytes == before.path.path_bytes.subrange(
             0, before.path.restore.last().path_len as int,
         )
@@ -2355,6 +2645,7 @@ pub open spec fn leave_return(before: EpmFrame, after: EpmFrame, source: SourceA
         &&& after.path.restore == before.path.restore
         &&& after.path.pending == before.path.pending
         &&& after.path.gate == before.path.gate
+        &&& after.path.parser == before.path.parser
         &&& after.path.path_bytes == before.path.path_bytes
         &&& after.path.path_positions == before.path.path_positions
         &&& after.path.root_left
@@ -2509,6 +2800,7 @@ pub open spec fn initial_epm_path() -> PathTopology {
         restore: Seq::empty(),
         path_bytes: Seq::empty(),
         path_positions: Seq::empty(),
+        parser: parser::initial_parser(),
         gate: PathGate {
             dead: false,
             stack_empty: true,

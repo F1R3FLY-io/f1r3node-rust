@@ -4,6 +4,8 @@ mod rpb3_admission_cursor;
 mod rpb3_score_transcript;
 mod rpb3_map_frame_refinement;
 mod rpb3_epathmap_event_refinement;
+pub mod rpb3_path_parser_refinement;
+mod rpb3_canonical_path_common_product;
 mod rpb3_epm_source_accept_refinement;
 mod rpb3_epm_nested_source_refinement;
 mod rpb3_score_admission_bridge;
@@ -11,6 +13,75 @@ mod rpb3_finish_macro_refinement;
 mod rpb3_runtime_frame_source_refinement;
 mod rpb3_score_arena_source_refinement;
 mod rpb3_wire_cursor_source_refinement;
+#[cfg(rpb3_live_push)]
+mod rpb3_source_observation;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_eof_indexed_view_identity;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_push_receipt_source_extraction;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_push_backing_identity;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_push_scoped_identity_classes;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_push_finite_observation;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_push_selected_subview_extraction;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_push_live_parent_bounds;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_push_fresh_child_extraction;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_push_live_child_projection;
+mod rpb3_generic_message_eof_source_refinement;
+mod rpb3_message_driver_source_integration;
+mod rpb3_canonical_path_driver_source_refinement;
+mod rpb3_canonical_path_driver_product_integration;
+mod rpb3_canonical_path_persistent_state_source;
+mod rpb3_canonical_path_historical_checkpoint_source;
+mod rpb3_canonical_path_forward_capacity_source;
+mod rpb3_canonical_path_owner_health_source;
+mod rpb3_live_canonical_path_source_refinement;
+mod rpb3_live_canonical_path_trace_refinement;
+#[cfg(rpb3_live_push)]
+mod rpb3_live_canonical_path_descendant_action_lift;
+#[cfg(rpb3_live_push)]
+mod rpb3_live_canonical_path_score_action_lift;
+#[cfg(rpb3_live_push)]
+mod rpb3_live_canonical_path_pop_action_lift;
+#[cfg(rpb3_live_push)]
+mod rpb3_live_canonical_path_map_finish_action_lift;
+#[cfg(rpb3_live_push)]
+mod rpb3_live_canonical_path_push_action_lift;
+mod rpb3_canonical_path_root_source_refinement;
+mod rpb3_live_canonical_path_terminal_refinement;
+mod rpb3_live_canonical_path_root_terminal_trace;
+mod rpb3_canonical_path_terminal_driver_observation;
+mod rpb3_canonical_path_root_complete_source_correspondence;
+mod rpb3_epm_nested_accept_checked_stats_refinement;
+mod rpb3_map_key_source_correspondence;
+mod rpb3_map_key_full_source_composition;
+mod rpb3_epathmap_terminal_source_observation;
+#[cfg(rpb3_live_push)]
+mod rpb3_epathmap_end_source_selector;
+mod rpb3_epm_push_source_action_refinement;
+mod rpb3_epm_push_transport_source_refinement;
+mod rpb3_epm_restore_run_expansion;
+mod rpb3_epm_batch_cursor_composition;
+mod rpb3_epm_batch_cursor_source_extraction;
+mod rpb3_epm_active_line_work_source;
+mod rpb3_act_source_product_integration;
+mod rpb3_epm_unwind_event_lift;
+mod rpb3_epm_unwind_product_lift;
+#[cfg(rpb3_live_push)]
+mod rpb3_epm_push_live_action_refinement;
+#[cfg(rpb3_live_push)]
+mod rpb3_epm_loop_continuation_source;
+#[cfg(rpb3_live_push)]
+mod rpb3_epm_loop_observation_bridge;
+#[cfg(all(rpb3_live_push, rpb3_terminal))]
+mod rpb3_integrated_source_trace_composition;
+mod rpb3_epathmap_terminal_nested_return_composition;
 
 use {
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
@@ -600,7 +671,30 @@ pub proof fn product_score_wf_intro(state: ProductScoreState)
             }
         },
     ensures product_score_wf(state),
-{}
+{
+    assert(score_bridge::bridge_well_formed(state.bridge));
+    assert(map::integrated_admission_wf(state.map));
+    assert(state.map.admission == state.bridge.admission);
+    assert(state.map.transcript == state.bridge.transcript);
+    assert(state.epm_frames.len() == state.bridge.admission.frames.len());
+    assert(state.indexed_regions.len() == state.bridge.admission.frames.len());
+    assert(product_epm_source_receipts_wf(state));
+    assert(product_frame_source_anchors_match(state));
+    assert forall|i: int| 0 <= i < state.epm_frames.len() implies {
+        &&& epm::indexed_image_wf(state.indexed_regions[i])
+        &&& state.indexed_regions[i].bytes
+            == state.bridge.admission.frames[i].source_bytes
+        &&& match state.epm_frames[i] {
+            None => true,
+            Some(frame) => {
+                &&& state.bridge.admission.frames[i].frame_kind == 3
+                &&& frame.snapshot == state.indexed_regions[i]
+                &&& epm::frame_layout_wf(frame)
+            },
+        }
+    } by {};
+    assert(product_score_wf(state));
+}
 
 pub open spec fn product_root_initial(
     root: admission::AdmissionFrameState,
@@ -725,6 +819,42 @@ pub open spec fn product_wire_indexed_source_agrees(
             }
         },
     }
+}
+
+pub proof fn product_wire_indexed_field_anchor_exact(
+    cursor: wire_source::WireRuntimeCursorImage,
+    image: epm::IndexedRegionImage,
+    concrete_after: wire_source::WireConcreteCursorImage,
+    field: admission::IndexedCanonicalFieldModel,
+    start: wire_source::WirePhysicalPosition,
+)
+    requires
+        epm::indexed_image_wf(image),
+        product_wire_indexed_source_agrees(cursor, image),
+        wire_source::wire_runtime_next_field(cursor)
+            == Some(wire_source::WireConcreteTransition::Field {
+                state: concrete_after, field, start,
+            }),
+    ensures {
+        let position = admission::admission_indexed_source_position(
+            product_admission_source_image(image), field.encoded_start,
+        ).unwrap();
+        &&& start.logical_offset == field.encoded_start
+        &&& position.source == start.physical.source as usize
+        &&& position.offset == start.physical.offset
+    },
+{
+    let region = wire_source::wire_runtime_project_region(cursor.message).unwrap();
+    let derived = wire_source::wire_runtime_derive_cursor(cursor).unwrap();
+    assert(wire_source::wire_backing_project(derived.message) == Some(region));
+    assert(wire_source::wire_concrete_next_field_or(derived)
+        == Some(wire_source::WireConcreteTransition::Field {
+            state: concrete_after, field, start,
+        }));
+    assert(start == wire_source::wire_region_position(
+        region, field.encoded_start,
+    ).unwrap());
+    assert((field.encoded_start as int) < region.bytes.len());
 }
 
 proof fn product_wire_indexed_source_agrees_same_backing(
@@ -1073,6 +1203,14 @@ pub open spec fn product_map_step(
                         && parent_source == product_admission_source_image(
                             before.indexed_regions.last(),
                         ),
+                    map::IntegratedAdmissionAction::Message {
+                        action: admission::ConcreteFrameActionModel::ContinueIndexed {
+                            parent_source, ..
+                        },
+                    } => before.indexed_regions.len() > 0
+                        && parent_source == product_admission_source_image(
+                            before.indexed_regions.last(),
+                        ),
                     map::IntegratedAdmissionAction::MapValueIndexed {
                         parent_source, ..
                     } => before.indexed_regions.len() > 0
@@ -1135,6 +1273,54 @@ pub proof fn product_map_indexed_push_anchor_exact(
     assert(parent_source == product_admission_source_image(
         before.indexed_regions.last(),
     ));
+}
+
+pub proof fn product_map_indexed_continue_anchor_exact(
+    before: ProductScoreState, after: ProductScoreState,
+    field: admission::IndexedCanonicalFieldModel,
+    parent_source: admission::AdmissionIndexedSourceImage,
+)
+    requires product_map_step(
+        before, after,
+        map::IntegratedAdmissionAction::Message {
+            action: admission::ConcreteFrameActionModel::ContinueIndexed {
+                field, parent_source,
+            },
+        },
+    ),
+    ensures {
+        let occurrence = after.bridge.admission.frames.last().scalar_occurrences.last();
+        let position = admission::admission_indexed_source_position(
+            parent_source, field.encoded_start,
+        ).unwrap();
+        &&& parent_source == product_admission_source_image(
+            before.indexed_regions.last(),
+        )
+        &&& after.indexed_regions == before.indexed_regions
+        &&& occurrence.physical_source == position.source
+        &&& occurrence.physical_start == position.offset as int
+        &&& occurrence.tag == field.number
+        &&& occurrence.bytes == field.payload_bytes
+        &&& after.bridge.admission.frames.last().cursor == field.encoded_end
+    },
+{
+    assert(map::integrated_admission_driver_step(
+        before.map,
+        map::IntegratedAdmissionAction::Message {
+            action: admission::ConcreteFrameActionModel::ContinueIndexed {
+                field, parent_source,
+            },
+        },
+    ).is_some());
+    assert(admission::concrete_message_driver_step(
+        before.map.admission,
+        admission::ConcreteFrameActionModel::ContinueIndexed {
+            field, parent_source,
+        },
+    ).is_some());
+    admission::concrete_message_driver_indexed_continue_anchor_exact(
+        before.map.admission, field, parent_source,
+    );
 }
 
 pub proof fn product_map_value_indexed_push_anchor_exact(
@@ -1317,6 +1503,25 @@ pub open spec fn product_root_score_step(
     &&& before.bridge.admission.frames.len() == 1
     &&& before.bridge.admission.frames[0].frame_kind == 1
     &&& before.epm_frames[0].is_none()
+    &&& score_bridge::bridge_score_source_step(before.bridge, after.bridge)
+    &&& after.map.admission == after.bridge.admission
+    &&& after.map.transcript == after.bridge.transcript
+    &&& after.map.map_frames == before.map.map_frames
+    &&& after.epm_frames == before.epm_frames
+    &&& after.indexed_regions == before.indexed_regions
+    &&& after.accepted_epm_sources == product_epm_receipts_carried(before, after)
+}
+
+// A message child is scored while it is still on the stack.  Its parent
+// acceptance is a subsequent transition, so the indexed backing and frame
+// topology stay unchanged during this source-selected score append.
+pub open spec fn product_message_child_score_step(
+    before: ProductScoreState, after: ProductScoreState,
+) -> bool {
+    &&& product_score_wf(before)
+    &&& before.bridge.admission.frames.len() > 1
+    &&& before.bridge.admission.frames.last().frame_kind == 1
+    &&& before.map.map_frames.last().is_none()
     &&& score_bridge::bridge_score_source_step(before.bridge, after.bridge)
     &&& after.map.admission == after.bridge.admission
     &&& after.map.transcript == after.bridge.transcript
@@ -2147,108 +2352,30 @@ pub proof fn product_epm_modeled_empty_source_scores()
     product_epm_source_witness_lifts_accept(source);
     let after = product_epm_source_witness_after(source);
     product_epm_source_receipt_binds_root_eof(after);
+    assert(after.bridge.admission.frames.len() == 1);
+    assert(after.bridge.admission.frames[0].frame_kind == 1);
+    assert(after.epm_frames.last().is_none());
+    assert(after.accepted_epm_sources.last() == Some(source));
+    assert(after.bridge.admission.frames[0].cursor
+        == after.bridge.admission.frames[0].region_end);
+    assert(after.accepted_epm_sources.last().unwrap().epm.snapshot.bytes
+        == product_epm_modeled_empty_snapshot_bytes());
+    assert(after.bridge.transcript == rpb3_score_transcript::empty_arena());
+    assert(after.bridge.admission.arena.len() == 0);
     assert(score_bridge::bridge_bool_slot(
         after.bridge.admission.frames[0], 1, 4,
     ) == Some(false));
-    let bytes = source.epm.snapshot.bytes;
-    assert(bytes == product_epm_modeled_empty_snapshot_bytes());
-    assert(after.bridge.transcript == rpb3_score_transcript::empty_arena());
-    assert(after.bridge.admission.arena.len() == 0);
-    let bytes_kind = rpb3_score_transcript::ScoreNode::BytesAtom(bytes);
-    product_epm_modeled_empty_snapshot_score_length();
-    assert(rpb3_score_transcript::zero_count(bytes) == 3);
-    assert(rpb3_score_transcript::bytes_transcript(bytes).len() == 15);
-    assert(rpb3_score_transcript::arena_well_formed(after.bridge.transcript));
-    assert(rpb3_score_transcript::kind_valid(
-        after.bridge.transcript.entries, bytes_kind,
-    ));
-    assert(rpb3_score_transcript::checked_append(
-        after.bridge.transcript, bytes_kind,
-    ).is_some());
-    assert(score_bridge::bridge_append_unattached(
-        after.bridge, bytes_kind,
-    ).is_some());
-    let (after_bytes, bytes_handle) = score_bridge::bridge_append_unattached(
-        after.bridge, bytes_kind,
-    ).unwrap();
-    score_bridge::bridge_append_unattached_exact(after.bridge, bytes_kind);
-    score_bridge::bridge_append_unattached_preserves_admission_wf(
-        after.bridge, bytes_kind,
-    );
-    let flag_kind = rpb3_score_transcript::ScoreNode::Integer(0i64);
-    rpb3_score_transcript::integer_transcript_exact(0i64);
-    assert(score_bridge::bridge_append_unattached(
-        after_bytes, flag_kind,
-    ).is_some());
-    let (after_flag, flag_handle) = score_bridge::bridge_append_unattached(
-        after_bytes, flag_kind,
-    ).unwrap();
-    score_bridge::bridge_append_unattached_exact(after_bytes, flag_kind);
-    score_bridge::bridge_append_unattached_preserves_admission_wf(
-        after_bytes, flag_kind,
-    );
-    assert(bytes_handle == 0);
-    assert(flag_handle == 1);
-    assert(admission::admission_slots_complete(after_flag.admission.frames[0]));
-    assert(admission::admission_family_admissible(after_flag.admission.frames[0]));
-    assert(after_flag.admission.frames.last() == after.bridge.admission.frames[0]);
-    let constructor_kind = rpb3_score_transcript::ScoreNode::Integer(13i64);
-    assert(score_bridge::bridge_append_unattached(
-        after_flag, constructor_kind,
-    ).is_some());
-    let (after_constructor, constructor_handle) =
-        score_bridge::bridge_append_unattached(
-            after_flag, constructor_kind,
-        ).unwrap();
-    score_bridge::bridge_append_unattached_exact(after_flag, constructor_kind);
-    assert(constructor_handle == 2);
-    assert(after_constructor.transcript.entries[0].encoded_len == 15);
-    assert(after_constructor.transcript.entries[1].encoded_len == 10);
-    assert(after_constructor.transcript.entries[2].encoded_len == 10);
-    assert(after_constructor.transcript.entries.len() == 3);
-    let children = seq![constructor_handle, bytes_handle, flag_handle];
-    assert(rpb3_score_transcript::child_handles_valid(
-        after_constructor.transcript.entries, children,
-    ));
-    rpb3_score_transcript::node_transcript_exact(
-        after_constructor.transcript.entries, children,
-    );
-    assert(children.drop_first() == seq![bytes_handle, flag_handle]);
-    assert(seq![bytes_handle, flag_handle].drop_first() == seq![flag_handle]);
-    assert(seq![flag_handle].drop_first() == Seq::<usize>::empty());
-    assert(rpb3_score_transcript::children_encoded_len(
-        after_constructor.transcript.entries, Seq::<usize>::empty(),
-    ) == 0);
-    assert(rpb3_score_transcript::children_encoded_len(
-        after_constructor.transcript.entries, seq![flag_handle],
-    ) == 10);
-    assert(rpb3_score_transcript::children_encoded_len(
-        after_constructor.transcript.entries, seq![bytes_handle, flag_handle],
-    ) == 25);
-    assert(rpb3_score_transcript::children_encoded_len(
-        after_constructor.transcript.entries, children,
-    ) == 35);
-    assert(rpb3_score_transcript::kind_transcript(
-        after_constructor.transcript.entries,
-        rpb3_score_transcript::ScoreNode::Node(children),
-    ).len() == 37);
-    assert(score_bridge::bridge_append_unattached(
-        after_constructor, rpb3_score_transcript::ScoreNode::Node(children),
-    ).is_some());
-    let (after_node, score_handle) = score_bridge::bridge_append_unattached(
-        after_constructor, rpb3_score_transcript::ScoreNode::Node(children),
-    ).unwrap();
-    assert(admission::admission_attach_score_step(
-        after_node.admission, score_handle,
-        after.bridge.admission.frames[0].body_id,
-    ).is_some());
-    assert(seq![constructor_handle] + seq![bytes_handle, flag_handle]
-        == children);
-    assert(score_bridge::bridge_constructor_step(
-        after_flag, 13i32, seq![bytes_handle, flag_handle],
-    ).is_some());
-    assert(product_epm_source_bridge_finish_selected(after).is_some());
+    assert(admission::admission_family_complete(after.bridge.admission.frames[0]));
+    assert(admission::admission_slots_complete(after.bridge.admission.frames[0]));
+    assert(after.bridge.admission.frames[0].waiting_id.is_none());
+    assert(after.bridge.admission.frames[0].score_handle.is_none());
+    product_epm_empty_snapshot_selected_nonempty(after);
     assert(product_epm_source_root_score_selected(after).is_some());
+    assert(product_source_step(
+        after,
+        product_epm_source_root_score_selected(after).unwrap(),
+        ProductSourceAction::RootEPathMapScore,
+    ));
 }
 
 pub proof fn product_epm_source_receipt_binds_root_eof(state: ProductScoreState)
@@ -2961,7 +3088,22 @@ pub proof fn product_map_pop_preserves_exact(
     }
     product_frame_source_anchors_pop(before, after);
     product_epm_receipts_carried_preserves(before, after);
-    assert(product_score_wf(after));
+    assert(after.map.admission == after.bridge.admission);
+    assert(after.map.transcript == after.bridge.transcript);
+    assert(after.epm_frames.len() == after.bridge.admission.frames.len());
+    assert(after.indexed_regions.len() == after.bridge.admission.frames.len());
+    assert(forall|i: int| 0 <= i < after.epm_frames.len() ==> {
+        &&& epm::indexed_image_wf(after.indexed_regions[i])
+        &&& after.indexed_regions[i].bytes
+            == after.bridge.admission.frames[i].source_bytes
+        &&& match after.epm_frames[i] {
+            None => true,
+            Some(frame) => after.bridge.admission.frames[i].frame_kind == 3
+                && frame.snapshot == after.indexed_regions[i]
+                && epm::frame_layout_wf(frame),
+        }
+    });
+    product_score_wf_intro(after);
 }
 
 pub proof fn product_map_steady_preserves_exact(
@@ -3224,7 +3366,11 @@ pub proof fn product_epm_push_preserves_indexed(
         let child_index = parent_index + 1;
         assert(after.epm_frames.len() == after.bridge.admission.frames.len());
         assert(after.indexed_regions.len() == after.bridge.admission.frames.len());
-        assert forall|i: int| 0 <= i < after.epm_frames.len() implies {
+        assert forall|i: int|
+            #![trigger after.indexed_regions[i]]
+            #![trigger after.epm_frames[i]]
+            #![trigger after.bridge.admission.frames[i]]
+            0 <= i < after.epm_frames.len() implies {
             &&& epm::indexed_image_wf(after.indexed_regions[i])
             &&& after.indexed_regions[i].bytes
                 == after.bridge.admission.frames[i].source_bytes
@@ -3396,21 +3542,29 @@ pub proof fn product_epm_score_preserves_map_wf(
     }
 }
 
-pub proof fn product_epm_score_preserves_exact(
+proof fn product_epm_score_indexed_frames_preserved(
     before: ProductScoreState, after: ProductScoreState,
 )
-    requires product_score_wf(before), product_epm_score_step(before, after),
-    ensures product_score_wf(after),
+    requires
+        product_score_wf(before),
+        score_bridge::bridge_score_step_shape(before.bridge, after.bridge),
+        after.epm_frames == before.epm_frames,
+        after.indexed_regions == before.indexed_regions,
+    ensures
+        after.epm_frames.len() == after.bridge.admission.frames.len(),
+        after.indexed_regions.len() == after.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < after.epm_frames.len() ==> {
+            &&& epm::indexed_image_wf(after.indexed_regions[i])
+            &&& after.indexed_regions[i].bytes
+                == after.bridge.admission.frames[i].source_bytes
+            &&& match after.epm_frames[i] {
+                None => true,
+                Some(frame) => after.bridge.admission.frames[i].frame_kind == 3
+                    && frame.snapshot == after.indexed_regions[i]
+                    && epm::frame_layout_wf(frame),
+            }
+        },
 {
-    score_bridge::bridge_score_source_step_preserves_exact(
-        before.bridge, after.bridge,
-    );
-    score_bridge::bridge_score_source_step_preserves_shape(
-        before.bridge, after.bridge,
-    );
-    product_epm_score_preserves_map_wf(before, after);
-    assert(after.epm_frames == before.epm_frames);
-    assert(after.indexed_regions == before.indexed_regions);
     assert(after.epm_frames.len() == after.bridge.admission.frames.len());
     assert(after.indexed_regions.len() == after.bridge.admission.frames.len());
     assert forall|i: int| 0 <= i < after.epm_frames.len() implies {
@@ -3433,17 +3587,134 @@ pub proof fn product_epm_score_preserves_exact(
             assert(i == after.epm_frames.len() - 1);
             assert(after.bridge.admission.frames[i].source_bytes
                 == before.bridge.admission.frames[i].source_bytes);
-            assert(after.bridge.admission.frames[i].physical_source
-                == before.bridge.admission.frames[i].physical_source);
-            assert(after.bridge.admission.frames[i].physical_start
-                == before.bridge.admission.frames[i].physical_start);
             assert(after.bridge.admission.frames[i].frame_kind
                 == before.bridge.admission.frames[i].frame_kind);
         }
     }
-    assert(product_frame_source_anchors_match(after));
+}
+
+proof fn product_epm_score_source_anchors_preserved(
+    before: ProductScoreState, after: ProductScoreState,
+)
+    requires
+        product_frame_source_anchors_match(before),
+        score_bridge::bridge_score_step_shape(before.bridge, after.bridge),
+        after.indexed_regions == before.indexed_regions,
+    ensures product_frame_source_anchors_match(after),
+{
+    assert(after.indexed_regions.len() == after.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < after.indexed_regions.len() implies {
+        &&& epm::indexed_image_wf(after.indexed_regions[i])
+        &&& after.bridge.admission.frames[i].source_bytes
+            == after.indexed_regions[i].bytes
+        &&& after.bridge.admission.frames[i].physical_start
+            == product_indexed_start_anchor(after.indexed_regions[i]).offset
+        &&& after.bridge.admission.frames[i].physical_source
+            == product_indexed_start_anchor(after.indexed_regions[i]).source
+    } by {
+        assert(after.indexed_regions[i] == before.indexed_regions[i]);
+        if i < after.indexed_regions.len() - 1 {
+            assert(after.bridge.admission.frames[i]
+                == before.bridge.admission.frames[i]);
+        } else {
+            assert(i == after.indexed_regions.len() - 1);
+            assert(after.bridge.admission.frames[i].source_bytes
+                == before.bridge.admission.frames[i].source_bytes);
+            assert(after.bridge.admission.frames[i].physical_source
+                == before.bridge.admission.frames[i].physical_source);
+            assert(after.bridge.admission.frames[i].physical_start
+                == before.bridge.admission.frames[i].physical_start);
+        }
+    }
+}
+
+pub proof fn product_epm_score_preserves_exact(
+    before: ProductScoreState, after: ProductScoreState,
+)
+    requires product_score_wf(before), product_epm_score_step(before, after),
+    ensures product_score_wf(after),
+{
+    score_bridge::bridge_score_source_step_preserves_exact(
+        before.bridge, after.bridge,
+    );
+    score_bridge::bridge_score_source_step_preserves_shape(
+        before.bridge, after.bridge,
+    );
+    product_epm_score_preserves_map_wf(before, after);
+    product_epm_score_indexed_frames_preserved(before, after);
+    product_epm_score_source_anchors_preserved(before, after);
     product_epm_receipts_carried_preserves(before, after);
-    assert(product_score_wf(after));
+    product_score_wf_intro(after);
+}
+
+proof fn product_message_child_score_frame_image_preserved(
+    before: ProductScoreState, after: ProductScoreState,
+)
+    requires
+        product_score_wf(before),
+        score_bridge::bridge_score_step_shape(before.bridge, after.bridge),
+        after.epm_frames == before.epm_frames,
+        after.indexed_regions == before.indexed_regions,
+    ensures
+        after.epm_frames.len() == after.bridge.admission.frames.len(),
+        after.indexed_regions.len() == after.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < after.epm_frames.len() ==> {
+            &&& epm::indexed_image_wf(after.indexed_regions[i])
+            &&& after.indexed_regions[i].bytes
+                == after.bridge.admission.frames[i].source_bytes
+            &&& match after.epm_frames[i] {
+                None => true,
+                Some(frame) => after.bridge.admission.frames[i].frame_kind == 3
+                    && frame.snapshot == after.indexed_regions[i]
+                    && epm::frame_layout_wf(frame),
+            }
+        },
+        product_frame_source_anchors_match(after),
+        after.bridge.admission.frames.len() == before.bridge.admission.frames.len(),
+        after.bridge.admission.frames.last().frame_kind
+            == before.bridge.admission.frames.last().frame_kind,
+{
+    product_epm_score_indexed_frames_preserved(before, after);
+    product_epm_score_source_anchors_preserved(before, after);
+}
+
+proof fn product_message_child_score_product_wf(
+    before: ProductScoreState, after: ProductScoreState,
+)
+    requires
+        product_message_child_score_step(before, after),
+        score_bridge::bridge_well_formed(after.bridge),
+        map::integrated_admission_wf(after.map),
+        score_bridge::bridge_score_step_shape(before.bridge, after.bridge),
+    ensures
+        product_score_wf(after),
+        after.bridge.admission.frames.len()
+            == before.bridge.admission.frames.len(),
+        after.bridge.admission.frames.last().frame_kind == 1,
+{
+    product_message_child_score_frame_image_preserved(before, after);
+    product_epm_receipts_carried_preserves(before, after);
+    product_score_wf_intro(after);
+}
+
+pub proof fn product_message_child_score_preserves_exact(
+    before: ProductScoreState, after: ProductScoreState,
+)
+    requires product_message_child_score_step(before, after),
+    ensures
+        product_score_wf(after),
+        after.bridge.admission.frames.len()
+            == before.bridge.admission.frames.len(),
+        after.bridge.admission.frames.last().frame_kind == 1,
+{
+    score_bridge::bridge_score_source_step_preserves_exact(
+        before.bridge, after.bridge,
+    );
+    score_bridge::bridge_score_source_step_preserves_shape(
+        before.bridge, after.bridge,
+    );
+    product_epm_score_preserves_map_wf(before, after);
+    product_message_child_score_product_wf(before, after);
 }
 
 pub proof fn product_epm_child_return_preserves_map_wf(
@@ -3506,9 +3777,11 @@ pub proof fn product_epm_child_return_preserves_indexed(
                 == after.bridge.admission.frames[i].source_bytes
             &&& match after.epm_frames[i] {
                 None => true,
-                Some(frame) => after.bridge.admission.frames[i].frame_kind == 3
-                    && frame.snapshot == after.indexed_regions[i]
-                    && epm::frame_layout_wf(frame),
+                Some(frame) => {
+                    &&& after.bridge.admission.frames[i].frame_kind == 3
+                    &&& frame.snapshot == after.indexed_regions[i]
+                    &&& epm::frame_layout_wf(frame)
+                },
             }
         },
 {
@@ -3565,14 +3838,24 @@ pub proof fn product_epm_child_return_preserves_indexed(
             == after.bridge.admission.frames[i].source_bytes
         &&& match after.epm_frames[i] {
             None => true,
-            Some(frame) => after.bridge.admission.frames[i].frame_kind == 3
-                && frame.snapshot == after.indexed_regions[i]
-                && epm::frame_layout_wf(frame),
+            Some(frame) => {
+                &&& after.bridge.admission.frames[i].frame_kind == 3
+                &&& frame.snapshot == after.indexed_regions[i]
+                &&& epm::frame_layout_wf(frame)
+            },
         }
     } by {
         assert(epm::indexed_image_wf(after.indexed_regions[i]));
         assert(after.indexed_regions[i].bytes
             == after.bridge.admission.frames[i].source_bytes);
+        match after.epm_frames[i] {
+            None => {},
+            Some(frame) => {
+                assert(after.bridge.admission.frames[i].frame_kind == 3);
+                assert(frame.snapshot == after.indexed_regions[i]);
+                assert(epm::frame_layout_wf(frame));
+            },
+        }
     }
 }
 
@@ -3599,19 +3882,21 @@ pub proof fn product_epm_child_return_preserves_exact(
     assert(after.map.transcript == after.bridge.transcript);
     assert(after.epm_frames.len() == after.bridge.admission.frames.len());
     assert(after.indexed_regions.len() == after.bridge.admission.frames.len());
+    product_frame_source_anchors_pop(before, after);
+    product_epm_receipts_carried_preserves(before, after);
     assert(forall|i: int| 0 <= i < after.epm_frames.len() ==> {
         &&& epm::indexed_image_wf(after.indexed_regions[i])
         &&& after.indexed_regions[i].bytes
             == after.bridge.admission.frames[i].source_bytes
         &&& match after.epm_frames[i] {
             None => true,
-            Some(frame) => after.bridge.admission.frames[i].frame_kind == 3
-                && frame.snapshot == after.indexed_regions[i]
-                && epm::frame_layout_wf(frame),
+            Some(frame) => {
+                &&& after.bridge.admission.frames[i].frame_kind == 3
+                &&& frame.snapshot == after.indexed_regions[i]
+                &&& epm::frame_layout_wf(frame)
+            },
         }
     });
-    product_frame_source_anchors_pop(before, after);
-    product_epm_receipts_carried_preserves(before, after);
     product_score_wf_intro(after);
 }
 
@@ -3627,6 +3912,10 @@ pub proof fn product_epm_complete_preserves_exact(
     ) {
         assert(epm::linked_epm_complete(prior, next, action));
         assert(score_bridge::bridge_same(before.bridge, after.bridge));
+        assert(after.bridge.admission == before.bridge.admission);
+        assert(next.admission == before.bridge.admission);
+        assert(next.indexed_regions == before.indexed_regions);
+        assert(epm::linked_indexed_sources(next));
         assert(epm::frame_layout_wf(next.epm));
         assert(after.map == before.map);
         assert(after.indexed_regions == before.indexed_regions);
@@ -3647,10 +3936,22 @@ pub proof fn product_epm_complete_preserves_exact(
         } by {
             if i < last {
                 assert(after.epm_frames[i] == before.epm_frames[i]);
+                assert(after.indexed_regions[i] == before.indexed_regions[i]);
+                assert(after.bridge.admission.frames[i]
+                    == before.bridge.admission.frames[i]);
+                assert(epm::indexed_image_wf(after.indexed_regions[i]));
+                assert(after.indexed_regions[i].bytes
+                    == after.bridge.admission.frames[i].source_bytes);
             } else {
                 assert(i == last);
                 assert(after.epm_frames[i] == Some(next.epm));
+                assert(after.indexed_regions[i] == next.indexed_regions[i]);
+                assert(after.bridge.admission.frames[i] == next.admission.frames[i]);
                 assert(next.epm.snapshot == after.indexed_regions[i]);
+                assert(epm::indexed_image_wf(next.indexed_regions[i]));
+                assert(next.indexed_regions[i].bytes
+                    == next.admission.frames[i].source_bytes);
+                assert(next.admission.frames[i].frame_kind == 3);
             }
         }
     } else {
@@ -3708,32 +4009,22 @@ pub proof fn product_epm_finish_accept_preserves_exact(
                 },
             }
         } by {
+            assert(after.indexed_regions[i] == before.indexed_regions[i]);
+            assert(epm::indexed_image_wf(before.indexed_regions[i]));
+            assert(after.epm_frames[i] == before.epm_frames[i]);
             if i < after.epm_frames.len() - 1 {
                 assert(after.bridge.admission.frames[i]
                     == before.bridge.admission.frames[i]);
             } else {
                 assert(i == parent_index);
-                assert(after.epm_frames[i] == before.epm_frames[i]);
                 assert(after.epm_frames[i].is_none());
                 assert(after.bridge.admission.frames[i].source_bytes
                     == before.bridge.admission.frames[i].source_bytes);
             }
         }
-        assert(forall|i: int| 0 <= i < after.epm_frames.len() ==> {
-            &&& epm::indexed_image_wf(after.indexed_regions[i])
-            &&& after.indexed_regions[i].bytes
-                == after.bridge.admission.frames[i].source_bytes
-            &&& match after.epm_frames[i] {
-                None => true,
-                Some(frame) => {
-                    &&& after.bridge.admission.frames[i].frame_kind == 3
-                    &&& frame.snapshot == after.indexed_regions[i]
-                    &&& epm::frame_layout_wf(frame)
-                },
-            }
-        });
         product_epm_finish_receipt_preserves(before, after);
-        assert(product_score_wf(after));
+        product_frame_source_anchors_pop(before, after);
+        product_score_wf_intro(after);
     } else {
         assert(false);
     }
@@ -3906,6 +4197,72 @@ pub open spec fn live_source_product_continue_step(
     }
 }
 
+pub open spec fn live_source_product_continue_indexed_step(
+    before: LiveSourceProductState, after: LiveSourceProductState,
+) -> bool {
+    if !live_source_product_wf(before) || before.wire.len() == 0 {
+        false
+    } else {
+        let parent_source = product_admission_source_image(
+            before.product.indexed_regions.last(),
+        );
+        match before.wire.last() {
+            None => false,
+            Some(reader) => match wire_source::wire_source_next_field(reader) {
+                wire_source::WireSourceTransition::Field {
+                    state: next_reader, field,
+                } => {
+                    &&& product_map_step(
+                        before.product, after.product,
+                        map::IntegratedAdmissionAction::Message {
+                            action: admission::ConcreteFrameActionModel::ContinueIndexed {
+                                field, parent_source,
+                            },
+                        },
+                    )
+                    &&& runtime_source::runtime_continue_indexed(
+                        before.runtime, field, parent_source,
+                    ) == Some(after.runtime)
+                    &&& after.arena == before.arena
+                    &&& after.wire == before.wire.update(
+                        before.wire.len() - 1, Some(next_reader),
+                    )
+                },
+                _ => false,
+            },
+        }
+    }
+}
+
+pub proof fn live_source_product_continue_indexed_preserves_wf(
+    before: LiveSourceProductState, after: LiveSourceProductState,
+)
+    requires live_source_product_continue_indexed_step(before, after),
+    ensures live_source_product_wf(after),
+{
+    let parent_source = product_admission_source_image(
+        before.product.indexed_regions.last(),
+    );
+    if let Some(reader) = before.wire.last() {
+        if let wire_source::WireSourceTransition::Field {
+            state: next_reader, field,
+        } = wire_source::wire_source_next_field(reader) {
+            wire_source::wire_source_next_field_refines(reader);
+            product_map_step_preserves_exact(
+                before.product, after.product,
+                map::IntegratedAdmissionAction::Message {
+                    action: admission::ConcreteFrameActionModel::ContinueIndexed {
+                        field, parent_source,
+                    },
+                },
+            );
+            runtime_source::runtime_continue_indexed_retains_stack_and_score(
+                before.runtime, field, parent_source,
+            );
+        }
+    }
+}
+
 pub proof fn live_source_product_continue_field_is_read(
     before: LiveSourceProductState, after: LiveSourceProductState,
 )
@@ -4035,6 +4392,260 @@ pub proof fn live_source_product_map_key_preserves_wf(
 pub struct LiveRuntimeProductState {
     pub ghost source: LiveSourceProductState,
     pub ghost cursors: Seq<Option<wire_source::WireRuntimeCursorImage>>,
+}
+
+#[cfg(rpb3_live_push)]
+pub struct CheckedMessagePushPrestateSnapshot {
+    pub cursor: usize,
+    pub last_slot: Option<usize>,
+    pub slot: usize,
+    pub seen_before: bool,
+}
+
+#[cfg(rpb3_live_push)]
+pub struct CheckedMessageFieldBeforeImage {
+    pub cursor: usize,
+    pub last_slot: Option<usize>,
+    pub slot: usize,
+    pub seen: bool,
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn checked_message_push_snapshot_from_field_before(
+    before: CheckedMessageFieldBeforeImage,
+) -> CheckedMessagePushPrestateSnapshot {
+    CheckedMessagePushPrestateSnapshot {
+        cursor: before.cursor,
+        last_slot: before.last_slot,
+        slot: before.slot,
+        seen_before: before.seen,
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn checked_message_push_receipt_from_field_before(
+    template: rpb3_message_driver_source_integration::GeneratedMessagePushReceipt,
+    before: CheckedMessageFieldBeforeImage,
+) -> rpb3_message_driver_source_integration::GeneratedMessagePushReceipt {
+    rpb3_message_driver_source_integration::GeneratedMessagePushReceipt {
+        cursor_before: before.cursor,
+        last_slot_before: before.last_slot,
+        seen_before: before.seen,
+        ..template
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn checked_message_push_snapshot_matches_live(
+    snapshot: CheckedMessagePushPrestateSnapshot,
+    live: LiveRuntimeProductState,
+) -> bool {
+    if live.source.product.bridge.admission.frames.len() == 0 {
+        false
+    } else {
+        let frame = live.source.product.bridge.admission.frames.last();
+        &&& snapshot.cursor == frame.cursor
+        &&& snapshot.last_slot == frame.last_slot
+        &&& snapshot.slot < frame.slot_count
+        &&& snapshot.seen_before == frame.seen.contains(snapshot.slot as int)
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn checked_message_push_source_from_live(
+    live: LiveRuntimeProductState,
+) -> Option<rpb3_message_driver_source_integration::GeneratedMessageFieldSource> {
+    if live.source.product.bridge.admission.frames.len() == 0
+        || live.source.product.indexed_regions.len() == 0
+    {
+        None
+    } else {
+        let frame = live.source.product.bridge.admission.frames.last();
+        Some(rpb3_message_driver_source_integration::GeneratedMessageFieldSource {
+            program_type_id: frame.program_type_id,
+            family: frame.family,
+            slot_count: frame.slot_count,
+            body_id: frame.body_id,
+            body_len: frame.region_end,
+            indexed: product_admission_source_image(
+                live.source.product.indexed_regions.last(),
+            ),
+        })
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn checked_message_push_fold_from_live(
+    live: LiveRuntimeProductState,
+) -> Option<rpb3_generic_message_eof_source_refinement::GenericMessageSourceFold> {
+    if live.source.product.bridge.admission.frames.len() == 0 {
+        None
+    } else {
+        let frame = live.source.product.bridge.admission.frames.last();
+        Some(rpb3_generic_message_eof_source_refinement::GenericMessageSourceFold {
+            cursor: frame.cursor,
+            last_slot: frame.last_slot,
+            seen: frame.seen,
+            scalar_slots: frame.scalar_slots,
+            scalar_occurrences: frame.scalar_occurrences,
+            returns: frame.returns,
+            pending: None,
+        })
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn checked_message_push_fold_core_matches_live(
+    source: rpb3_message_driver_source_integration::GeneratedMessageFieldSource,
+    folded: rpb3_generic_message_eof_source_refinement::GenericMessageSourceFold,
+    live: LiveRuntimeProductState,
+) -> bool {
+    if !live_runtime_product_wf(live)
+        || live.source.product.bridge.admission.frames.len() == 0
+        || live.source.product.indexed_regions.len() == 0
+    {
+        false
+    } else {
+        let frame = live.source.product.bridge.admission.frames.last();
+        &&& frame.frame_kind == 1
+        &&& frame.region_start == 0
+        &&& frame.region_end as int == frame.source_bytes.len()
+        &&& checked_message_push_source_from_live(live) == Some(source)
+        &&& checked_message_push_fold_from_live(live) == Some(folded)
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn checked_message_push_trace_core_matches_live(
+    source: rpb3_message_driver_source_integration::GeneratedMessageFieldSource,
+    operations: Seq<rpb3_message_driver_source_integration::GeneratedMessageSourceOperation>,
+    live: LiveRuntimeProductState,
+) -> bool {
+    match rpb3_message_driver_source_integration::generated_message_replay_from_source_operations(
+        source, operations,
+    ) {
+        Some(replay) => checked_message_push_fold_core_matches_live(
+            source, replay.fields, live,
+        ),
+        None => false,
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn checked_message_replay_step_preserves_full_core(
+    source: rpb3_message_driver_source_integration::GeneratedMessageFieldSource,
+    replay: rpb3_message_driver_source_integration::GeneratedMessageEventReplay,
+    operation: rpb3_message_driver_source_integration::GeneratedMessageSourceOperation,
+)
+    requires rpb3_message_driver_source_integration::generated_message_replay_source_step(
+        source, replay, operation,
+    ).is_some(),
+    ensures {
+        let next = rpb3_message_driver_source_integration::generated_message_replay_source_step(
+            source, replay, operation,
+        ).unwrap();
+        &&& rpb3_message_driver_source_integration::generated_message_event_replay_wf(
+            source, next,
+        )
+        &&& next.events.len() == replay.events.len() + 1
+        &&& match operation {
+            rpb3_message_driver_source_integration::GeneratedMessageSourceOperation::Field {
+                action: rpb3_message_driver_source_integration::GeneratedMessageFieldAction::Scalar {
+                    receipt,
+                },
+            } => {
+                &&& next.fields.cursor == receipt.field.encoded_end
+                &&& next.fields.last_slot == Some(receipt.slot)
+                &&& next.fields.seen == replay.fields.seen.insert(receipt.slot as int)
+                &&& next.fields.scalar_slots
+                    == replay.fields.scalar_slots.insert(receipt.slot as int)
+                &&& next.fields.scalar_occurrences.len()
+                    == replay.fields.scalar_occurrences.len() + 1
+                &&& next.fields.returns == replay.fields.returns
+                &&& next.fields.pending.is_none()
+            },
+            rpb3_message_driver_source_integration::GeneratedMessageSourceOperation::Field {
+                action: rpb3_message_driver_source_integration::GeneratedMessageFieldAction::Push {
+                    receipt,
+                },
+            } => {
+                &&& next.fields.cursor == receipt.field.encoded_end
+                &&& next.fields.last_slot == Some(receipt.slot)
+                &&& next.fields.seen == replay.fields.seen.insert(receipt.slot as int)
+                &&& next.fields.scalar_slots == replay.fields.scalar_slots
+                &&& next.fields.scalar_occurrences == replay.fields.scalar_occurrences
+                &&& next.fields.returns == replay.fields.returns
+                &&& next.fields.pending
+                    == Some((receipt.slot, receipt.field.number, receipt.body_id,
+                        receipt.field.payload_bytes))
+            },
+            rpb3_message_driver_source_integration::GeneratedMessageSourceOperation::Accepted {
+                returned,
+            } => {
+                &&& next.fields.cursor == replay.fields.cursor
+                &&& next.fields.last_slot == replay.fields.last_slot
+                &&& next.fields.seen == replay.fields.seen
+                &&& next.fields.scalar_slots == replay.fields.scalar_slots
+                &&& next.fields.scalar_occurrences == replay.fields.scalar_occurrences
+                &&& next.fields.returns == replay.fields.returns.push(returned)
+                &&& next.fields.pending.is_none()
+            },
+        }
+    },
+{}
+
+#[cfg(rpb3_live_push)]
+pub proof fn checked_message_push_snapshot_and_core_establish_live_fold(
+    source: rpb3_message_driver_source_integration::GeneratedMessageFieldSource,
+    operations: Seq<rpb3_message_driver_source_integration::GeneratedMessageSourceOperation>,
+    live: LiveRuntimeProductState,
+    before: CheckedMessageFieldBeforeImage,
+    template: rpb3_message_driver_source_integration::GeneratedMessagePushReceipt,
+)
+    requires
+        rpb3_message_driver_source_integration::generated_message_replay_from_source_operations(
+            source, operations,
+        ).is_some(),
+        checked_message_push_snapshot_matches_live(
+            checked_message_push_snapshot_from_field_before(before), live,
+        ),
+        checked_message_push_trace_core_matches_live(source, operations, live),
+    ensures {
+        let replay = rpb3_message_driver_source_integration::generated_message_replay_from_source_operations(
+            source, operations,
+        ).unwrap();
+        let folded = replay.fields;
+        let receipt = checked_message_push_receipt_from_field_before(template, before);
+        &&& rpb3_message_driver_source_integration::generated_message_live_frame_matches_fold(
+            source, folded, live,
+        )
+        &&& receipt.cursor_before == before.cursor
+        &&& receipt.last_slot_before == before.last_slot
+        &&& receipt.seen_before == before.seen
+        &&& receipt.cursor_before == folded.cursor
+        &&& receipt.last_slot_before == folded.last_slot
+        &&& receipt.seen_before == folded.seen.contains(before.slot as int)
+    },
+{
+    let replay = rpb3_message_driver_source_integration::generated_message_replay_from_source_operations(
+        source, operations,
+    ).unwrap();
+    let folded = replay.fields;
+    rpb3_message_driver_source_integration::generated_message_replay_from_source_operations_exact(
+        source, operations,
+    );
+    let frame = live.source.product.bridge.admission.frames.last();
+    assert(checked_message_push_source_from_live(live) == Some(source));
+    assert(checked_message_push_fold_from_live(live) == Some(folded));
+    assert(product_score_wf(live.source.product));
+    assert(live.source.product.indexed_regions.last().bytes == frame.source_bytes);
+    assert(source.indexed.bytes == frame.source_bytes);
+    assert(folded.cursor == frame.cursor);
+    assert(folded.last_slot == frame.last_slot);
+    assert(folded.seen == frame.seen);
+    assert(before.cursor == frame.cursor);
+    assert(before.last_slot == frame.last_slot);
+    assert(before.seen == frame.seen.contains(before.slot as int));
 }
 
 pub open spec fn product_runtime_kind_from_score(
@@ -4338,6 +4949,71 @@ pub proof fn live_runtime_epm_source_eof_dispatch_exact(
     live_runtime_epm_source_score_selected_matches_product(before);
 }
 
+pub open spec fn live_runtime_product_epm_end_source_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    observed: rpb3_epathmap_terminal_source_observation::EpmTerminalSourceObservation,
+) -> bool {
+    if !live_runtime_product_wf(before)
+        || product_linked_top(before.source.product).is_none()
+        || rpb3_epathmap_terminal_source_observation::epm_terminal_complete_from_source(
+            product_linked_top(before.source.product).unwrap().epm, observed,
+        ).is_none()
+    {
+        false
+    } else {
+        let complete =
+            rpb3_epathmap_terminal_source_observation::epm_terminal_complete_from_source(
+                product_linked_top(before.source.product).unwrap().epm, observed,
+            ).unwrap();
+        &&& product_epm_complete_step(
+            before.source.product, after.source.product, complete.action,
+        )
+        &&& after.source.product.epm_frames.last() == Some(complete.after)
+        &&& after.source.runtime == before.source.runtime
+        &&& after.source.arena == before.source.arena
+        &&& after.source.wire == before.source.wire
+        &&& after.cursors == before.cursors
+    }
+}
+
+pub proof fn live_runtime_product_epm_end_source_preserves_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    observed: rpb3_epathmap_terminal_source_observation::EpmTerminalSourceObservation,
+)
+    requires live_runtime_product_epm_end_source_step(before, after, observed),
+    ensures
+        live_runtime_product_wf(after),
+        after.source.product.bridge.admission == before.source.product.bridge.admission,
+        after.source.product.bridge.transcript == before.source.product.bridge.transcript,
+        after.source.product.indexed_regions == before.source.product.indexed_regions,
+        after.source.product.epm_frames.last().is_some(),
+        after.source.product.epm_frames.last().unwrap().cursor.done,
+{
+    let prior = product_linked_top(before.source.product).unwrap();
+    let complete =
+        rpb3_epathmap_terminal_source_observation::epm_terminal_complete_from_source(
+            prior.epm, observed,
+        ).unwrap();
+    rpb3_epathmap_terminal_source_observation::epm_terminal_source_success_is_exact(
+        prior.epm, observed,
+    );
+    product_epm_complete_preserves_exact(
+        before.source.product, after.source.product, complete.action,
+    );
+    assert(after.source.product.bridge.admission
+        == before.source.product.bridge.admission);
+    assert(after.source.product.bridge.transcript
+        == before.source.product.bridge.transcript);
+    assert(after.source.product.indexed_regions
+        == before.source.product.indexed_regions);
+    assert(after.source.product.epm_frames.last() == Some(complete.after));
+    assert(complete.after.cursor.done);
+    assert(live_source_product_wf(after.source));
+    assert(live_runtime_product_wf(after));
+}
+
 pub open spec fn live_source_product_epm_finish_accept_step(
     before: LiveSourceProductState, after: LiveSourceProductState,
 ) -> bool {
@@ -4525,6 +5201,128 @@ pub open spec fn live_epm_modeled_empty_nested_after_accept()
     }
 }
 
+pub proof fn live_epm_modeled_empty_nested_cursor_ready()
+    ensures {
+        let cursor = live_epm_modeled_empty_runtime_cursor();
+        &&& wire_source::wire_runtime_derive_cursor(cursor).is_some()
+        &&& wire_source::wire_runtime_cursor_project(cursor).is_some()
+        &&& wire_source::wire_concrete_cursor_wf(
+            wire_source::wire_runtime_derive_cursor(cursor).unwrap(),
+        )
+        &&& wire_source::wire_runtime_next_field(cursor)
+            == Some(wire_source::WireConcreteTransition::End {
+                state: wire_source::wire_runtime_derive_cursor(cursor).unwrap(),
+            })
+    },
+{
+    let cursor = live_epm_modeled_empty_runtime_cursor();
+    assert(wire_source::wire_runtime_derive_cursor(cursor).is_some());
+    assert(wire_source::wire_runtime_cursor_project(cursor).is_some());
+    assert(wire_source::wire_concrete_cursor_wf(
+        wire_source::wire_runtime_derive_cursor(cursor).unwrap(),
+    ));
+    wire_source::wire_runtime_end_is_exact(cursor);
+}
+
+pub proof fn live_epm_modeled_empty_nested_source_before_wf()
+    ensures live_source_product_wf(
+        live_epm_modeled_empty_nested_before().source,
+    ),
+{
+    product_epm_modeled_empty_nested_source_lifts_accept();
+    live_epm_modeled_empty_nested_cursor_ready();
+    let before = live_epm_modeled_empty_nested_before();
+    assert(arena_source::runtime_projects_score(
+        before.source.arena, before.source.product.bridge.transcript,
+    ));
+    assert(runtime_source::runtime_frame_image_wf(before.source.runtime));
+    assert(live_source_product_wf(before.source));
+}
+
+pub proof fn live_epm_modeled_empty_nested_before_wf()
+    ensures live_runtime_product_wf(live_epm_modeled_empty_nested_before()),
+{
+    live_epm_modeled_empty_nested_source_before_wf();
+    let before = live_epm_modeled_empty_nested_before();
+    let cursor = live_epm_modeled_empty_runtime_cursor();
+    assert(before.cursors.len() == before.source.wire.len());
+    assert forall|i: int| 0 <= i < before.cursors.len()
+        implies match #[trigger] before.cursors[i] {
+            None => true,
+            Some(cursor) => product_wire_indexed_source_agrees(
+                cursor, before.source.product.indexed_regions[i],
+            ),
+        } by {
+        assert(i == 0 || i == 1 || i == 2);
+        if i < 2 {
+            assert(before.cursors[i] == Some(cursor));
+        }
+    }
+    assert forall|i: int| 0 <= i < before.cursors.len() implies {
+        match (#[trigger] before.cursors[i], before.source.wire[i]) {
+            (None, None) => true,
+            (Some(cursor), Some(reader)) => {
+                &&& wire_source::wire_runtime_derive_cursor(cursor).is_some()
+                &&& wire_source::wire_concrete_cursor_wf(
+                    wire_source::wire_runtime_derive_cursor(cursor).unwrap(),
+                )
+                &&& wire_source::wire_runtime_cursor_project(cursor) == Some(reader)
+            },
+            _ => false,
+        }
+    } by {
+        assert(i == 0 || i == 1 || i == 2);
+        if i < 2 {
+            assert(before.cursors[i] == Some(cursor));
+        }
+    }
+}
+
+pub proof fn live_epm_modeled_empty_nested_accept_step_exact()
+    ensures {
+        let before = live_epm_modeled_empty_nested_before();
+        let after = live_epm_modeled_empty_nested_after_accept();
+        &&& live_runtime_product_epm_finish_accept_step(before, after)
+        &&& after.source.product.accepted_epm_sources.last()
+            == Some(product_epm_modeled_empty_nested_source())
+    },
+{
+    product_epm_modeled_empty_nested_source_lifts_accept();
+    live_epm_modeled_empty_nested_before_wf();
+    let before = live_epm_modeled_empty_nested_before();
+    let after = live_epm_modeled_empty_nested_after_accept();
+    assert(live_runtime_product_epm_finish_accept_step(before, after));
+}
+
+pub proof fn live_epm_modeled_empty_nested_after_wf()
+    ensures live_runtime_product_wf(live_epm_modeled_empty_nested_after_accept()),
+{
+    live_epm_modeled_empty_nested_accept_step_exact();
+    let before = live_epm_modeled_empty_nested_before();
+    let after = live_epm_modeled_empty_nested_after_accept();
+    live_runtime_product_epm_finish_accept_preserves_wf(before, after);
+}
+
+pub proof fn live_epm_modeled_empty_nested_after_cursor_end()
+    ensures {
+        let after = live_epm_modeled_empty_nested_after_accept();
+        &&& after.cursors.last().is_some()
+        &&& wire_source::wire_runtime_next_field(after.cursors.last().unwrap())
+            == Some(wire_source::WireConcreteTransition::End {
+                state: wire_source::wire_runtime_derive_cursor(
+                    after.cursors.last().unwrap(),
+                ).unwrap(),
+            })
+    },
+{
+    live_epm_modeled_empty_nested_cursor_ready();
+    let before = live_epm_modeled_empty_nested_before();
+    let after = live_epm_modeled_empty_nested_after_accept();
+    let cursor = live_epm_modeled_empty_runtime_cursor();
+    assert(after.cursors == before.cursors.drop_last());
+    assert(after.cursors.last() == Some(cursor));
+}
+
 pub proof fn live_epm_modeled_empty_nested_accept_witness()
     ensures {
         let before = live_epm_modeled_empty_nested_before();
@@ -4543,24 +5341,10 @@ pub proof fn live_epm_modeled_empty_nested_accept_witness()
             })
     },
 {
-    product_epm_modeled_empty_nested_source_lifts_accept();
-    let before = live_epm_modeled_empty_nested_before();
-    let after = live_epm_modeled_empty_nested_after_accept();
-    let cursor = live_epm_modeled_empty_runtime_cursor();
-    assert(wire_source::wire_runtime_derive_cursor(cursor).is_some());
-    assert(wire_source::wire_runtime_cursor_project(cursor).is_some());
-    assert(wire_source::wire_concrete_cursor_wf(
-        wire_source::wire_runtime_derive_cursor(cursor).unwrap(),
-    ));
-    assert(arena_source::runtime_projects_score(
-        before.source.arena, before.source.product.bridge.transcript,
-    ));
-    assert(runtime_source::runtime_frame_image_wf(before.source.runtime));
-    assert(live_source_product_wf(before.source));
-    assert(live_runtime_product_wf(before));
-    assert(live_runtime_product_epm_finish_accept_step(before, after));
-    live_runtime_product_epm_finish_accept_preserves_wf(before, after);
-    wire_source::wire_runtime_end_is_exact(cursor);
+    live_epm_modeled_empty_nested_before_wf();
+    live_epm_modeled_empty_nested_accept_step_exact();
+    live_epm_modeled_empty_nested_after_wf();
+    live_epm_modeled_empty_nested_after_cursor_end();
 }
 
 pub proof fn product_epm_modeled_empty_nested_scores()
@@ -4593,17 +5377,78 @@ pub proof fn product_epm_modeled_empty_nested_scores()
     assert(product_epm_source_child_score_selected(state).is_some());
 }
 
-pub proof fn product_epm_modeled_empty_nested_complete_ready()
+// Keep the score append and the source-derived child frame facts in their own
+// solver context.  The public readiness witness below combines these facts
+// only after the score selector has been established.
+proof fn product_epm_modeled_empty_nested_scored_child_shape()
     ensures {
         let product = product_epm_nested_source_witness_after(
             product_epm_modeled_empty_nested_source(),
         );
         let scored = product_epm_source_bridge_finish_selected(product).unwrap().0;
         &&& product_epm_source_bridge_finish_selected(product).is_some()
+        &&& admission::admission_state_wf(scored.admission)
+        &&& score_bridge::bridge_score_step_shape(product.bridge, scored)
         &&& scored.admission.frames[1].return_id.is_some()
         &&& admission::admission_epathmap_path_stability(
             scored.admission.frames[1],
         ) == Some(true)
+    },
+{
+    product_epm_modeled_empty_nested_scores();
+    let product = product_epm_nested_source_witness_after(
+        product_epm_modeled_empty_nested_source(),
+    );
+    let scored = product_epm_source_bridge_finish_selected(product).unwrap().0;
+    product_epm_source_bridge_finish_selected_exact(product);
+    assert(score_bridge::bridge_score_step_shape(product.bridge, scored));
+    assert(scored.admission.frames[1].return_id
+        == product.bridge.admission.frames[1].return_id);
+    assert(scored.admission.frames[1].returns
+        == product.bridge.admission.frames[1].returns);
+    assert(product_epm_modeled_empty_nested_source().epm.entries_stable);
+    assert(admission::admission_epathmap_path_stability(
+        scored.admission.frames[1],
+    ) == Some(true));
+}
+
+proof fn product_epm_modeled_empty_nested_derived_summary()
+    ensures {
+        let product = product_epm_nested_source_witness_after(
+            product_epm_modeled_empty_nested_source(),
+        );
+        let scored = product_epm_source_bridge_finish_selected(product).unwrap().0;
+        &&& product_epm_source_bridge_finish_selected(product).is_some()
+        &&& admission::concrete_derived_summary(
+            scored.admission.frames[0], scored.admission.frames[1],
+        ) == Some(admission::AdmissionReturnedKind::ExprPayload {
+            score_present: true,
+            canonical_fixed_point: true,
+            canonical_path_stable: true,
+        })
+    },
+{
+    product_epm_modeled_empty_nested_scored_child_shape();
+    let product = product_epm_nested_source_witness_after(
+        product_epm_modeled_empty_nested_source(),
+    );
+    let scored = product_epm_source_bridge_finish_selected(product).unwrap().0;
+    assert(admission::concrete_derived_summary(
+        scored.admission.frames[0], scored.admission.frames[1],
+    ) == Some(admission::AdmissionReturnedKind::ExprPayload {
+        score_present: true,
+        canonical_fixed_point: true,
+        canonical_path_stable: true,
+    }));
+}
+
+proof fn product_epm_modeled_empty_nested_complete_enabled()
+    ensures {
+        let product = product_epm_nested_source_witness_after(
+            product_epm_modeled_empty_nested_source(),
+        );
+        let scored = product_epm_source_bridge_finish_selected(product).unwrap().0;
+        &&& product_epm_source_bridge_finish_selected(product).is_some()
         &&& admission::admission_complete_child_step(
             scored.admission,
             scored.admission.frames[1].return_id.unwrap(),
@@ -4616,25 +5461,12 @@ pub proof fn product_epm_modeled_empty_nested_complete_ready()
         ).is_some()
     },
 {
-    product_epm_modeled_empty_nested_scores();
+    product_epm_modeled_empty_nested_scored_child_shape();
+    product_epm_modeled_empty_nested_derived_summary();
     let product = product_epm_nested_source_witness_after(
         product_epm_modeled_empty_nested_source(),
     );
     let scored = product_epm_source_bridge_finish_selected(product).unwrap().0;
-    product_epm_source_bridge_finish_selected_exact(product);
-    assert(product_epm_modeled_empty_nested_source().epm.entries_stable);
-    assert(scored.admission.frames[1].returns
-        == product.bridge.admission.frames[1].returns);
-    assert(admission::admission_epathmap_path_stability(
-        scored.admission.frames[1],
-    ) == Some(true));
-    assert(admission::concrete_derived_summary(
-        scored.admission.frames[0], scored.admission.frames[1],
-    ) == Some(admission::AdmissionReturnedKind::ExprPayload {
-        score_present: true,
-        canonical_fixed_point: true,
-        canonical_path_stable: true,
-    }));
     assert(admission::admission_complete_child_step(
         scored.admission,
         scored.admission.frames[1].return_id.unwrap(),
@@ -4647,6 +5479,192 @@ pub proof fn product_epm_modeled_empty_nested_complete_ready()
     ).is_some());
 }
 
+pub proof fn product_epm_modeled_empty_nested_complete_ready()
+    ensures {
+        let product = product_epm_nested_source_witness_after(
+            product_epm_modeled_empty_nested_source(),
+        );
+        let scored = product_epm_source_bridge_finish_selected(product).unwrap().0;
+        &&& product_epm_source_bridge_finish_selected(product).is_some()
+        &&& scored.admission.frames[1].return_id.is_some()
+        &&& admission::admission_epathmap_path_stability(
+            scored.admission.frames[1],
+        ) == Some(true)
+        &&& admission::concrete_derived_summary(
+            scored.admission.frames[0], scored.admission.frames[1],
+        ) == Some(admission::AdmissionReturnedKind::ExprPayload {
+            score_present: true,
+            canonical_fixed_point: true,
+            canonical_path_stable: true,
+        })
+        &&& admission::admission_complete_child_step(
+            scored.admission,
+            scored.admission.frames[1].return_id.unwrap(),
+            1,
+            admission::AdmissionReturnedKind::ExprPayload {
+                score_present: true,
+                canonical_fixed_point: true,
+                canonical_path_stable: true,
+            },
+        ).is_some()
+    },
+{
+    product_epm_modeled_empty_nested_scored_child_shape();
+    product_epm_modeled_empty_nested_derived_summary();
+    product_epm_modeled_empty_nested_complete_enabled();
+}
+
+proof fn product_epm_modeled_empty_nested_admission_complete_dispatch()
+    ensures {
+        let before = product_epm_nested_source_witness_after(
+            product_epm_modeled_empty_nested_source(),
+        );
+        let scored = product_epm_source_child_score_selected(before).unwrap();
+        &&& product_epm_source_child_score_selected(before).is_some()
+        &&& product_score_wf(scored)
+        &&& match admission::concrete_message_driver_step(
+            scored.bridge.admission, admission::ConcreteFrameActionModel::Complete,
+        ) {
+            Some(admission::ConcreteFrameOutcomeModel::ParentAccepted { .. }) => true,
+            _ => false,
+        }
+    },
+{
+    product_epm_modeled_empty_nested_complete_ready();
+    product_epm_modeled_empty_nested_scores();
+    let before = product_epm_nested_source_witness_after(
+        product_epm_modeled_empty_nested_source(),
+    );
+    let scored = product_epm_source_child_score_selected(before).unwrap();
+    product_epm_source_child_score_selected_exact(before);
+    let finish = product_epm_source_bridge_finish_selected(before).unwrap().0;
+    let summary = admission::AdmissionReturnedKind::ExprPayload {
+        score_present: true,
+        canonical_fixed_point: true,
+        canonical_path_stable: true,
+    };
+    assert(scored.bridge == finish) by {
+        assert(product_epm_source_child_score_selected(before).is_some());
+    }
+    assert(admission::concrete_derived_summary(
+        scored.bridge.admission.frames[0], scored.bridge.admission.frames[1],
+    ) == Some(summary));
+    assert(admission::admission_complete_child_step(
+        scored.bridge.admission,
+        scored.bridge.admission.frames[1].return_id.unwrap(),
+        1, summary,
+    ).is_some());
+    assert(match admission::concrete_message_driver_step(
+        scored.bridge.admission, admission::ConcreteFrameActionModel::Complete,
+    ) {
+        Some(admission::ConcreteFrameOutcomeModel::ParentAccepted { .. }) => true,
+        _ => false,
+    }) by {
+        admission::admission_complete_child_preserves_wf(
+            scored.bridge.admission,
+            scored.bridge.admission.frames[1].return_id.unwrap(),
+            1, summary,
+        );
+    }
+}
+
+proof fn product_epm_modeled_empty_nested_map_complete_dispatch()
+    ensures {
+        let before = product_epm_nested_source_witness_after(
+            product_epm_modeled_empty_nested_source(),
+        );
+        let scored = product_epm_source_child_score_selected(before).unwrap();
+        let action = map::IntegratedAdmissionAction::Message {
+            action: admission::ConcreteFrameActionModel::Complete,
+        };
+        &&& product_epm_source_child_score_selected(before).is_some()
+        &&& product_map_pop_owned(scored)
+        &&& match map::integrated_admission_driver_step(scored.map, action) {
+            Some(map::IntegratedAdmissionOutcome::MessageParentAccepted { .. }) => true,
+            _ => false,
+        }
+    },
+{
+    product_epm_modeled_empty_nested_admission_complete_dispatch();
+    let before = product_epm_nested_source_witness_after(
+        product_epm_modeled_empty_nested_source(),
+    );
+    let scored = product_epm_source_child_score_selected(before).unwrap();
+    let action = map::IntegratedAdmissionAction::Message {
+        action: admission::ConcreteFrameActionModel::Complete,
+    };
+    assert(match map::integrated_admission_driver_step(
+        scored.map, action,
+    ) {
+        Some(map::IntegratedAdmissionOutcome::MessageParentAccepted { .. }) => true,
+        _ => false,
+    }) by {
+        assert(product_score_wf(scored));
+        assert(scored.map.admission == scored.bridge.admission);
+        assert(scored.map.transcript == scored.bridge.transcript);
+        assert(scored.map.map_frames == before.map.map_frames);
+        assert(scored.map.map_frames == seq![None, None]);
+    }
+    assert(scored.epm_frames == before.epm_frames);
+    assert(before.epm_frames == seq![None, None]);
+    assert(product_map_pop_owned(scored));
+}
+
+proof fn product_epm_modeled_empty_nested_product_complete_dispatch()
+    ensures product_epm_source_child_complete_selected(
+        product_epm_nested_source_witness_after(
+            product_epm_modeled_empty_nested_source(),
+        ),
+    ).is_some(),
+{
+    product_epm_modeled_empty_nested_map_complete_dispatch();
+    let before = product_epm_nested_source_witness_after(
+        product_epm_modeled_empty_nested_source(),
+    );
+    let scored = product_epm_source_child_score_selected(before).unwrap();
+    let action = map::IntegratedAdmissionAction::Message {
+        action: admission::ConcreteFrameActionModel::Complete,
+    };
+    if let Some(map::IntegratedAdmissionOutcome::MessageParentAccepted {
+        state: next_map,
+    }) = map::integrated_admission_driver_step(scored.map, action) {
+        let candidate = ProductScoreState {
+            bridge: score_bridge::ScoreAdmissionBridge {
+                admission: next_map.admission,
+                transcript: next_map.transcript,
+            },
+            map: next_map,
+            epm_frames: scored.epm_frames.drop_last(),
+            indexed_regions: scored.indexed_regions.drop_last(),
+            accepted_epm_sources: Seq::empty(),
+        };
+        let next = ProductScoreState {
+            accepted_epm_sources: product_epm_receipts_carried(scored, candidate),
+            ..candidate
+        };
+        assert(product_map_step(scored, next, action)) by {
+            let outcome = map::IntegratedAdmissionOutcome::MessageParentAccepted {
+                state: next_map,
+            };
+            assert(map::integrated_nonterminal_state(outcome) == Some(next_map));
+            assert(product_map_regions(scored, action, outcome)
+                == Some(scored.indexed_regions.drop_last()));
+            assert(product_map_epm_frames(scored, outcome)
+                == Some(scored.epm_frames.drop_last()));
+            assert(product_epm_receipts_carried(scored, candidate)
+                == product_epm_receipts_carried(scored, next));
+        }
+        assert(product_epm_source_child_complete_selected(before) == Some(next)) by {
+            assert(product_epm_source_child_score_selected(before) == Some(scored));
+            assert(map::integrated_admission_driver_step(scored.map, action)
+                == Some(map::IntegratedAdmissionOutcome::MessageParentAccepted {
+                    state: next_map,
+                }));
+        }
+    }
+    assert(product_epm_source_child_complete_selected(before).is_some());
+}
+
 pub proof fn product_epm_modeled_empty_nested_complete_poststate()
     ensures product_epm_source_child_complete_selected(
         product_epm_nested_source_witness_after(
@@ -4654,41 +5672,7 @@ pub proof fn product_epm_modeled_empty_nested_complete_poststate()
         ),
     ).is_some(),
 {
-    product_epm_modeled_empty_nested_complete_ready();
-    let before = product_epm_nested_source_witness_after(
-        product_epm_modeled_empty_nested_source(),
-    );
-    let scored = product_epm_source_child_score_selected(before).unwrap();
-    product_epm_source_child_score_selected_exact(before);
-    let summary = admission::AdmissionReturnedKind::ExprPayload {
-        score_present: true,
-        canonical_fixed_point: true,
-        canonical_path_stable: true,
-    };
-    assert(admission::concrete_derived_summary(
-        scored.bridge.admission.frames[0], scored.bridge.admission.frames[1],
-    ) == Some(summary));
-    admission::admission_complete_child_preserves_wf(
-        scored.bridge.admission,
-        scored.bridge.admission.frames[1].return_id.unwrap(),
-        1, summary,
-    );
-    assert(match admission::concrete_message_driver_step(
-        scored.bridge.admission, admission::ConcreteFrameActionModel::Complete,
-    ) {
-        Some(admission::ConcreteFrameOutcomeModel::ParentAccepted { .. }) => true,
-        _ => false,
-    });
-    assert(match map::integrated_admission_driver_step(
-        scored.map,
-        map::IntegratedAdmissionAction::Message {
-            action: admission::ConcreteFrameActionModel::Complete,
-        },
-    ) {
-        Some(map::IntegratedAdmissionOutcome::MessageParentAccepted { .. }) => true,
-        _ => false,
-    });
-    assert(product_epm_source_child_complete_selected(before).is_some());
+    product_epm_modeled_empty_nested_product_complete_dispatch();
 }
 
 pub proof fn runtime_epm_source_child_selected_complete(
@@ -5267,6 +6251,64 @@ pub open spec fn live_runtime_product_continue_step(
     }
 }
 
+pub open spec fn live_runtime_product_continue_indexed_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+) -> bool {
+    if !live_runtime_product_wf(before) || before.cursors.len() == 0 {
+        false
+    } else {
+        match before.cursors.last() {
+            None => false,
+            Some(cursor) => match wire_source::wire_runtime_next_field(cursor) {
+                Some(wire_source::WireConcreteTransition::Field {
+                    state: concrete_after, field, start: _,
+                }) => {
+                    let next = runtime_wire_after_field(cursor, concrete_after);
+                    &&& live_source_product_continue_indexed_step(
+                        before.source, after.source,
+                    )
+                    &&& after.cursors == before.cursors.update(
+                        before.cursors.len() - 1, Some(next),
+                    )
+                    &&& after.source.wire.last()
+                        == wire_source::wire_runtime_cursor_project(next)
+                },
+                _ => false,
+            },
+        }
+    }
+}
+
+pub proof fn live_runtime_product_continue_indexed_preserves_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires live_runtime_product_continue_indexed_step(before, after),
+    ensures live_runtime_product_wf(after),
+{
+    live_source_product_continue_indexed_preserves_wf(before.source, after.source);
+    live_runtime_wire_sources_steady(before, after);
+    assert forall|i: int| 0 <= i < after.cursors.len() implies {
+        match (#[trigger] after.cursors[i], after.source.wire[i]) {
+            (None, None) => true,
+            (Some(cursor), Some(reader)) => {
+                &&& wire_source::wire_runtime_derive_cursor(cursor).is_some()
+                &&& wire_source::wire_concrete_cursor_wf(
+                    wire_source::wire_runtime_derive_cursor(cursor).unwrap(),
+                )
+                &&& wire_source::wire_runtime_cursor_project(cursor) == Some(reader)
+            },
+            _ => false,
+        }
+    } by {
+        if i < after.cursors.len() - 1 {
+            assert(after.cursors[i] == before.cursors[i]);
+            assert(after.source.wire[i] == before.source.wire[i]);
+        }
+    }
+}
+
 pub proof fn live_runtime_product_continue_preserves_wf(
     before: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
@@ -5437,6 +6479,117 @@ pub proof fn live_runtime_product_continue_uses_read_field(
                 == Some(after.source.runtime));
         }
     }
+}
+
+pub proof fn live_runtime_product_continue_indexed_uses_read_field(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires live_runtime_product_continue_indexed_step(before, after),
+    ensures exists|cursor: wire_source::WireRuntimeCursorImage,
+        concrete_after: wire_source::WireConcreteCursorImage,
+        field: admission::IndexedCanonicalFieldModel,
+        start: wire_source::WirePhysicalPosition| {
+        &&& before.cursors.last() == Some(cursor)
+        &&& wire_source::wire_runtime_next_field(cursor)
+            == Some(wire_source::WireConcreteTransition::Field {
+                state: concrete_after, field, start,
+            })
+        &&& product_map_step(
+            before.source.product, after.source.product,
+            map::IntegratedAdmissionAction::Message {
+                action: admission::ConcreteFrameActionModel::ContinueIndexed {
+                    field,
+                    parent_source: product_admission_source_image(
+                        before.source.product.indexed_regions.last(),
+                    ),
+                },
+            },
+        )
+    },
+{
+    let cursor = before.cursors.last().unwrap();
+    wire_source::wire_runtime_next_field_from_source(cursor);
+    if let Some(wire_source::WireConcreteTransition::Field {
+        state: concrete_after, field, start,
+    }) = wire_source::wire_runtime_next_field(cursor) {
+        let reader = before.source.wire.last().unwrap();
+        if let wire_source::WireSourceTransition::Field {
+            state: _, field: source_field,
+        } = wire_source::wire_source_next_field(reader) {
+            assert(source_field == field);
+            assert(product_map_step(
+                before.source.product, after.source.product,
+                map::IntegratedAdmissionAction::Message {
+                    action: admission::ConcreteFrameActionModel::ContinueIndexed {
+                        field,
+                        parent_source: product_admission_source_image(
+                            before.source.product.indexed_regions.last(),
+                        ),
+                    },
+                },
+            ));
+        }
+    }
+}
+
+pub proof fn live_runtime_product_continue_indexed_anchor_exact(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    cursor: wire_source::WireRuntimeCursorImage,
+    concrete_after: wire_source::WireConcreteCursorImage,
+    field: admission::IndexedCanonicalFieldModel,
+    start: wire_source::WirePhysicalPosition,
+)
+    requires
+        live_runtime_product_continue_indexed_step(before, after),
+        before.cursors.last() == Some(cursor),
+        wire_source::wire_runtime_next_field(cursor)
+            == Some(wire_source::WireConcreteTransition::Field {
+                state: concrete_after, field, start,
+            }),
+        product_map_step(
+            before.source.product, after.source.product,
+            map::IntegratedAdmissionAction::Message {
+                action: admission::ConcreteFrameActionModel::ContinueIndexed {
+                    field,
+                    parent_source: product_admission_source_image(
+                        before.source.product.indexed_regions.last(),
+                    ),
+                },
+            },
+        ),
+    ensures {
+        let parent_source = product_admission_source_image(
+            before.source.product.indexed_regions.last(),
+        );
+        let occurrence = after.source.product.bridge.admission.frames.last()
+            .scalar_occurrences.last();
+        &&& parent_source.bytes
+            == before.source.product.bridge.admission.frames.last().source_bytes
+        &&& admission::admission_indexed_source_position(
+            parent_source, field.encoded_start,
+        ) == Some(admission::AdmissionSourceAnchor {
+            source: start.physical.source as usize,
+            offset: start.physical.offset,
+        })
+        &&& occurrence.physical_source == start.physical.source as usize
+        &&& occurrence.physical_start == start.physical.offset as int
+        &&& occurrence.tag == field.number
+        &&& occurrence.bytes == field.payload_bytes
+        &&& after.source.product.bridge.admission.frames.last().cursor
+            == field.encoded_end
+    },
+{
+    let image = before.source.product.indexed_regions.last();
+    let parent_source = product_admission_source_image(image);
+    assert(product_wire_indexed_source_agrees(cursor, image));
+    product_wire_indexed_field_anchor_exact(
+        cursor, image, concrete_after, field, start,
+    );
+    product_map_indexed_continue_anchor_exact(
+        before.source.product, after.source.product, field, parent_source,
+    );
 }
 
 pub proof fn live_runtime_product_root_end_is_ready(
@@ -7151,6 +8304,345 @@ pub proof fn live_runtime_product_message_push_indexed_preserves_wf(
     assert(live_runtime_product_wf(after));
 }
 
+// A PathMap field pushes an EPathMap frame, not a protobuf field reader. The
+// indexed child still owns the exact payload view and its physical positions;
+// the EPathMap topology cursor is initialized by the subsequent handoff.
+#[cfg(rpb3_live_push)]
+pub open spec fn live_runtime_product_message_epm_push_indexed_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    request: runtime_source::SourceFrameRequestImage,
+    storage: runtime_source::SourceFramePushStorageImage,
+) -> bool {
+    if !live_runtime_product_wf(before) || before.cursors.len() == 0
+        || before.source.product.indexed_regions.len() == 0
+    {
+        false
+    } else {
+        match before.cursors.last() {
+            None => false,
+            Some(parent) => match wire_source::wire_runtime_next_field(parent) {
+                Some(wire_source::WireConcreteTransition::Field {
+                    state: concrete_after, field, start: _,
+                }) => {
+                    let parent_source = product_admission_source_image(
+                        before.source.product.indexed_regions.last(),
+                    );
+                    let next_parent = runtime_wire_after_field(parent, concrete_after);
+                    match wire_source::wire_runtime_cursor_project(next_parent) {
+                        None => false,
+                        Some(next_parent_reader) => {
+                            let action = admission::ConcreteFrameActionModel::PushIndexed {
+                                field,
+                                child: request.child,
+                                parent_source,
+                                frame_bytes: before.source.runtime.frame_bytes,
+                            };
+                            &&& request.request_kind
+                                == runtime_source::SourceFrameRequestKind::EPathMap
+                            &&& request.child.frame_kind == 3
+                            &&& request.field == field
+                            &&& request.child.source_bytes == field.payload_bytes
+                            &&& product_wire_indexed_source_agrees(
+                                parent, before.source.product.indexed_regions.last(),
+                            )
+                            &&& map::integrated_source_message_action(
+                                before.source.product.map.admission, action,
+                            ) == Some(action)
+                            &&& product_map_step(
+                                before.source.product, after.source.product,
+                                map::IntegratedAdmissionAction::Message { action },
+                            )
+                            &&& runtime_source::source_checked_frame_request_push_indexed(
+                                before.source.runtime, request, parent_source, storage,
+                            ) == Some(after.source.runtime)
+                            &&& after.source.arena == before.source.arena
+                            &&& after.source.wire == before.source.wire.update(
+                                before.source.wire.len() - 1, Some(next_parent_reader),
+                            ).push(None)
+                            &&& after.cursors == before.cursors.update(
+                                before.cursors.len() - 1, Some(next_parent),
+                            ).push(None)
+                        },
+                    }
+                },
+                _ => false,
+            },
+        }
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_epm_push_indexed_preserves_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    request: runtime_source::SourceFrameRequestImage,
+    storage: runtime_source::SourceFramePushStorageImage,
+)
+    requires live_runtime_product_message_epm_push_indexed_step(
+        before, after, request, storage,
+    ),
+    ensures
+        live_runtime_product_wf(after),
+        runtime_source::source_frame_request_matches_child(request),
+        runtime_source::source_successful_push_storage(before.source.runtime, storage),
+        after.source.runtime.score.admission.frames.len() == storage.after_len as int,
+        after.source.product.bridge.admission.frames.last().frame_kind == 3,
+        after.source.product.bridge.admission.frames[
+            before.source.product.bridge.admission.frames.len() - 1
+        ].waiting_kind == 3,
+        after.source.product.bridge.admission.frames[
+            before.source.product.bridge.admission.frames.len() - 1
+        ].waiting_tag == Some(request.field.number),
+        after.source.product.bridge.admission.frames.last().physical_source
+            == product_indexed_start_anchor(
+                after.source.product.indexed_regions.last(),
+            ).source,
+        after.source.product.bridge.admission.frames.last().physical_start
+            == product_indexed_start_anchor(
+                after.source.product.indexed_regions.last(),
+            ).offset,
+        live_runtime_child_cursor(
+            before.cursors.last().unwrap(), request.field,
+        ).is_some(),
+        product_wire_indexed_source_agrees(
+            live_runtime_child_cursor(
+                before.cursors.last().unwrap(), request.field,
+            ).unwrap(),
+            after.source.product.indexed_regions.last(),
+        ),
+{
+    let parent = before.cursors.last().unwrap();
+    let image = before.source.product.indexed_regions.last();
+    let parent_source = product_admission_source_image(image);
+    if let Some(wire_source::WireConcreteTransition::Field {
+        state: concrete_after, field, start,
+    }) = wire_source::wire_runtime_next_field(parent) {
+        let action = admission::ConcreteFrameActionModel::PushIndexed {
+            field,
+            child: request.child,
+            parent_source,
+            frame_bytes: before.source.runtime.frame_bytes,
+        };
+        runtime_source::source_checked_frame_request_push_indexed_refines(
+            before.source.runtime, request, parent_source, storage,
+        );
+        product_map_step_preserves_exact(
+            before.source.product, after.source.product,
+            map::IntegratedAdmissionAction::Message { action },
+        );
+        product_map_indexed_push_anchor_exact(
+            before.source.product, after.source.product, field,
+            request.child, parent_source, before.source.runtime.frame_bytes,
+        );
+        live_runtime_child_cursor_is_payload(
+            parent, concrete_after, field, start,
+        );
+        product_wire_indexed_child_source_ids_exact(parent, image, field);
+        live_runtime_parent_cursor_after_field_projects(
+            parent, concrete_after, field, start,
+        );
+        let parent_index = before.cursors.len() - 1;
+        assert(after.source.product.bridge.admission.frames[parent_index].waiting_kind == 3);
+        assert(after.source.product.bridge.admission.frames[parent_index].waiting_tag
+            == Some(field.number));
+        assert(after.source.product.bridge.admission.frames.last().frame_kind == 3);
+        assert(after.source.runtime.score == after.source.product.bridge);
+        assert(after.source.product.bridge.transcript
+            == before.source.product.bridge.transcript);
+        assert(arena_source::runtime_projects_score(
+            after.source.arena, after.source.product.bridge.transcript,
+        ));
+        assert forall|i: int| 0 <= i < after.source.wire.len() implies {
+            let frame = after.source.product.bridge.admission.frames[i];
+            match #[trigger] after.source.wire[i] {
+                None => frame.frame_kind == 3 || frame.frame_kind == 4,
+                Some(reader) => {
+                    &&& (frame.frame_kind == 1 || frame.frame_kind == 2)
+                    &&& wire_source::wire_cursor_shape(reader.cursor)
+                    &&& reader.cursor.region_start == frame.region_start
+                    &&& reader.cursor.region_end == frame.region_end
+                    &&& reader.cursor.next == frame.cursor
+                    &&& reader.cursor.source_bytes == frame.source_bytes
+                    &&& reader.terminal_error.is_none()
+                },
+            }
+        } by {
+            if i < parent_index {
+                assert(after.source.wire[i] == before.source.wire[i]);
+                assert(after.source.product.bridge.admission.frames[i]
+                    == before.source.product.bridge.admission.frames[i]);
+            } else if i == parent_index {
+                assert(after.source.wire[i] == Some(
+                    wire_source::wire_runtime_cursor_project(
+                        runtime_wire_after_field(parent, concrete_after),
+                    ).unwrap(),
+                ));
+                assert(after.source.product.bridge.admission.frames[i].cursor
+                    == field.encoded_end);
+            } else {
+                assert(i == parent_index + 1);
+                assert(after.source.wire[i].is_none());
+            }
+        }
+        assert(live_source_product_wf(after.source));
+        assert forall|i: int| 0 <= i < after.cursors.len() implies
+            match #[trigger] after.cursors[i] {
+                None => true,
+                Some(cursor) => product_wire_indexed_source_agrees(
+                    cursor, after.source.product.indexed_regions[i],
+                ),
+            } by {
+            if i < parent_index {
+                assert(after.cursors[i] == before.cursors[i]);
+                assert(after.source.product.indexed_regions[i]
+                    == before.source.product.indexed_regions[i]);
+            } else if i == parent_index {
+                product_wire_indexed_source_agrees_same_backing(
+                    parent, runtime_wire_after_field(parent, concrete_after), image,
+                );
+            } else {
+                assert(i == parent_index + 1);
+                assert(after.cursors[i].is_none());
+            }
+        }
+        assert forall|i: int| 0 <= i < after.cursors.len() implies {
+            match (#[trigger] after.cursors[i], after.source.wire[i]) {
+                (None, None) => true,
+                (Some(cursor), Some(reader)) => {
+                    &&& wire_source::wire_runtime_derive_cursor(cursor).is_some()
+                    &&& wire_source::wire_concrete_cursor_wf(
+                        wire_source::wire_runtime_derive_cursor(cursor).unwrap(),
+                    )
+                    &&& wire_source::wire_runtime_cursor_project(cursor)
+                        == Some(reader)
+                },
+                _ => false,
+            }
+        } by {
+            if i < parent_index {
+                assert(after.cursors[i] == before.cursors[i]);
+                assert(after.source.wire[i] == before.source.wire[i]);
+            } else if i == parent_index {
+                assert(after.cursors[i]
+                    == Some(runtime_wire_after_field(parent, concrete_after)));
+                assert(after.source.wire[i]
+                    == wire_source::wire_runtime_cursor_project(
+                        runtime_wire_after_field(parent, concrete_after),
+                    ));
+            } else {
+                assert(i == parent_index + 1);
+                assert(after.cursors[i].is_none());
+                assert(after.source.wire[i].is_none());
+            }
+        }
+    }
+    assert(live_runtime_product_wf(after));
+}
+
+// The scalar storage fields are the ones checked after a real Vec push. The
+// ghost request and both product images must still be extracted from Rust;
+// this relation does not assert that every observed EPathMap push has them.
+#[cfg(rpb3_live_push)]
+pub open spec fn live_runtime_product_message_epm_push_indexed_observed_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    request: runtime_source::SourceFrameRequestImage,
+    actual_top_kind: Option<runtime_source::SourceFrameRequestKind>,
+    after_len: usize,
+    after_capacity: usize,
+    stats_frame_variant_bytes: usize,
+) -> bool {
+    if !live_runtime_product_wf(before)
+        || before.source.product.bridge.admission.frames.len() > usize::MAX as int
+        || stats_frame_variant_bytes != before.source.runtime.frame_bytes
+    {
+        false
+    } else {
+        match runtime_source::source_frame_push_observe_after(
+            request.request_kind, actual_top_kind,
+            before.source.product.bridge.admission.frames.len() as usize,
+            before.source.runtime.capacity, after_len, after_capacity,
+            before.source.runtime.frame_bytes, stats_frame_variant_bytes,
+        ) {
+            runtime_source::SourceFramePushObservationResult::Success { storage } =>
+                live_runtime_product_message_epm_push_indexed_step(
+                    before, after, request, storage,
+                ),
+            _ => false,
+        }
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_epm_push_indexed_observed_is_exact(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    request: runtime_source::SourceFrameRequestImage,
+    actual_top_kind: Option<runtime_source::SourceFrameRequestKind>,
+    after_len: usize,
+    after_capacity: usize,
+    stats_frame_variant_bytes: usize,
+)
+    requires live_runtime_product_message_epm_push_indexed_observed_step(
+        before, after, request, actual_top_kind,
+        after_len, after_capacity, stats_frame_variant_bytes,
+    ),
+    ensures
+        live_runtime_product_wf(after),
+        request.request_kind == runtime_source::SourceFrameRequestKind::EPathMap,
+        actual_top_kind == Some(runtime_source::SourceFrameRequestKind::EPathMap),
+        after.source.runtime.score.admission.frames.len() == after_len as int,
+        after.source.runtime.capacity == after_capacity,
+        stats_frame_variant_bytes == before.source.runtime.frame_bytes,
+        after.source.runtime.frame_bytes == stats_frame_variant_bytes,
+        after.source.product.bridge.admission.frames.last().frame_kind == 3,
+        after.source.product.bridge.admission.frames[
+            before.source.product.bridge.admission.frames.len() - 1
+        ].waiting_kind == 3,
+        after.source.product.bridge.admission.frames[
+            before.source.product.bridge.admission.frames.len() - 1
+        ].waiting_tag == Some(request.field.number),
+        after.source.wire.last().is_none(),
+        after.cursors.last().is_none(),
+        after.source.product.bridge.admission.frames.last().physical_source
+            == product_indexed_start_anchor(
+                after.source.product.indexed_regions.last(),
+            ).source,
+        after.source.product.bridge.admission.frames.last().physical_start
+            == product_indexed_start_anchor(
+                after.source.product.indexed_regions.last(),
+            ).offset,
+{
+    runtime_source::source_frame_push_observe_after_exact(
+        request.request_kind, actual_top_kind,
+        before.source.product.bridge.admission.frames.len() as usize,
+        before.source.runtime.capacity, after_len, after_capacity,
+        before.source.runtime.frame_bytes, stats_frame_variant_bytes,
+    );
+    match runtime_source::source_frame_push_observe_after(
+        request.request_kind, actual_top_kind,
+        before.source.product.bridge.admission.frames.len() as usize,
+        before.source.runtime.capacity, after_len, after_capacity,
+        before.source.runtime.frame_bytes, stats_frame_variant_bytes,
+    ) {
+        runtime_source::SourceFramePushObservationResult::Success { storage } => {
+            live_runtime_product_message_epm_push_indexed_preserves_wf(
+                before, after, request, storage,
+            );
+            assert(request.request_kind
+                == runtime_source::SourceFrameRequestKind::EPathMap);
+            match actual_top_kind {
+                Some(runtime_source::SourceFrameRequestKind::EPathMap) => {},
+                _ => assert(false),
+            }
+            assert(storage.after_len == after_len);
+            assert(storage.after_capacity == after_capacity);
+        },
+        _ => assert(false),
+    }
+}
+
 #[cfg(rpb3_live_push)]
 pub open spec fn live_runtime_product_message_push_indexed_observed_step(
     before: LiveRuntimeProductState,
@@ -7427,6 +8919,1861 @@ pub proof fn live_runtime_product_message_push_observed_is_exact(
     }
 }
 
+// A source-selected root score changes the score arena and the top frame but
+// leaves the wire reader, indexed backing, and checked frame storage in place.
+#[cfg(rpb3_live_push)]
+pub open spec fn live_runtime_product_root_score_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+) -> bool {
+    &&& live_runtime_product_wf(before)
+    &&& before.cursors.len() == 1
+    &&& before.cursors[0].is_some()
+    &&& wire_source::wire_runtime_next_field(before.cursors[0].unwrap())
+        == Some(wire_source::WireConcreteTransition::End {
+            state: wire_source::wire_runtime_derive_cursor(
+                before.cursors[0].unwrap(),
+            ).unwrap(),
+        })
+    &&& score_bridge::bridge_score_finish_selected(
+        before.source.product.bridge,
+    ) == Some(after.source.product.bridge)
+    &&& product_root_score_step(before.source.product, after.source.product)
+    &&& after.source.runtime == runtime_source::RuntimeFrameImage {
+        score: after.source.product.bridge,
+        ..before.source.runtime
+    }
+    &&& after.source.arena == product_runtime_arena_from_score(
+        after.source.product.bridge.transcript,
+    )
+    &&& after.source.wire == before.source.wire
+    &&& after.cursors == before.cursors
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_root_score_preserves_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires live_runtime_product_root_score_step(before, after),
+    ensures live_runtime_product_wf(after),
+{
+    product_root_score_step_preserves_exact(
+        before.source.product, after.source.product,
+    );
+    score_bridge::bridge_score_finish_selected_preserves_checked(
+        before.source.product.bridge,
+    );
+    score_bridge::bridge_score_source_step_preserves_shape(
+        before.source.product.bridge, after.source.product.bridge,
+    );
+    product_runtime_arena_from_score_projects(
+        after.source.product.bridge.transcript,
+    );
+    assert(runtime_source::runtime_frame_image_wf(after.source.runtime));
+    assert(live_source_product_wf(after.source));
+    assert(live_runtime_product_wf(after));
+}
+
+// Production message EOF performs this score step before the child pop and
+// parent acceptance.  This transition keeps the live child cursor available
+// for the following Complete action.
+#[cfg(rpb3_live_push)]
+pub open spec fn live_runtime_product_message_child_score_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+) -> bool {
+    &&& live_runtime_product_wf(before)
+    &&& before.cursors.len() > 1
+    &&& before.cursors.last().is_some()
+    &&& before.source.product.bridge.admission.frames.last().waiting_id.is_none()
+    &&& before.source.product.bridge.admission.frames.last().score_handle.is_none()
+    &&& before.source.product.bridge.admission.frames.last().cursor
+        == before.source.product.bridge.admission.frames.last().region_end
+    &&& runtime_source::runtime_noscore_child_kind(
+        before.source.runtime,
+    ).is_none()
+    &&& wire_source::wire_runtime_next_field(before.cursors.last().unwrap())
+        == Some(wire_source::WireConcreteTransition::End {
+            state: wire_source::wire_runtime_derive_cursor(
+                before.cursors.last().unwrap(),
+            ).unwrap(),
+        })
+    &&& score_bridge::bridge_score_finish_selected(
+        before.source.product.bridge,
+    ) == Some(after.source.product.bridge)
+    &&& product_message_child_score_step(
+        before.source.product, after.source.product,
+    )
+    &&& after.source.runtime == runtime_source::RuntimeFrameImage {
+        score: after.source.product.bridge,
+        ..before.source.runtime
+    }
+    &&& after.source.arena == product_runtime_arena_from_score(
+        after.source.product.bridge.transcript,
+    )
+    &&& after.source.wire == before.source.wire
+    &&& after.cursors == before.cursors
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_child_score_enables_runtime_gate(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires live_runtime_product_message_child_score_step(before, after),
+    ensures runtime_source::runtime_child_eof_gate(
+        before.source.runtime, after.source.product.bridge,
+    ),
+{
+    product_message_child_score_preserves_exact(
+        before.source.product, after.source.product,
+    );
+    score_bridge::bridge_score_source_step_preserves_driver_counts(
+        before.source.product.bridge, after.source.product.bridge,
+    );
+    runtime_source::runtime_score_source_edge_exact(
+        before.source.product.bridge, after.source.product.bridge,
+    );
+    assert(before.source.runtime.score == before.source.product.bridge);
+    assert(runtime_source::runtime_score_source_edge(
+        before.source.runtime.score, after.source.product.bridge,
+    ));
+    assert(after.source.product.bridge.admission.frames.len()
+        == before.source.runtime.score.admission.frames.len());
+    runtime_source::runtime_child_eof_gate_intro(
+        before.source.runtime, after.source.product.bridge,
+    );
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_child_score_preserves_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires live_runtime_product_message_child_score_step(before, after),
+    ensures live_runtime_product_wf(after),
+{
+    live_runtime_product_message_child_score_enables_runtime_gate(before, after);
+    product_message_child_score_preserves_exact(
+        before.source.product, after.source.product,
+    );
+    score_bridge::bridge_score_finish_selected_preserves_checked(
+        before.source.product.bridge,
+    );
+    score_bridge::bridge_score_source_step_preserves_shape(
+        before.source.product.bridge, after.source.product.bridge,
+    );
+    product_runtime_arena_from_score_projects(
+        after.source.product.bridge.transcript,
+    );
+    assert(runtime_source::runtime_frame_image_wf(after.source.runtime));
+    assert(live_source_product_wf(after.source));
+    assert(live_runtime_product_wf(after));
+}
+
+// The production EOF driver scores and returns the root in one operation.
+// `after` is its pre-pop ghost image; `returned` is the observable terminal
+// outcome with no live frame remaining.
+#[cfg(rpb3_live_push)]
+pub open spec fn live_runtime_product_root_complete_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    returned: runtime_source::RuntimeRootReturnImage,
+) -> bool {
+    &&& live_runtime_product_root_score_step(before, after)
+    &&& before.source.product.bridge.admission.frames[0].frame_kind == 1
+    &&& before.source.product.bridge.admission.frames[0].waiting_id.is_none()
+    &&& before.source.product.bridge.admission.frames[0].score_handle.is_none()
+    &&& runtime_source::runtime_message_driver_step(
+        before.source.runtime, runtime_source::RuntimeMessageEvent::Eof,
+    ) == Some(runtime_source::RuntimeMessageOutcome::RootReturned { returned })
+}
+
+#[cfg(all(rpb3_live_push, rpb3_terminal))]
+pub proof fn live_runtime_product_root_complete_is_exact(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    returned: runtime_source::RuntimeRootReturnImage,
+    claimed: Seq<u8>,
+)
+    requires live_runtime_product_root_complete_step(before, after, returned),
+    ensures
+        live_runtime_product_wf(after),
+        returned.remaining_frames == 0,
+        returned.pre_pop == after.source.runtime,
+        match map::integrated_admission_driver_step(
+            after.source.product.map,
+            map::IntegratedAdmissionAction::Message {
+                action: admission::ConcreteFrameActionModel::Complete,
+            },
+        ) {
+            Some(map::IntegratedAdmissionOutcome::RootFinished { root_summary }) => {
+                let handle = root_summary.score_handle;
+                &&& root_summary == returned.summary
+                &&& returned.score_bytes == after.source.product.bridge.admission.arena[
+                    handle as int
+                ].transcript_bytes
+                &&& score_bridge::bridge_root_first_difference(
+                    after.source.product.bridge, claimed,
+                ).is_none() == rpb3_score_transcript::claimed_score_matches(
+                    after.source.product.bridge.transcript, handle, claimed,
+                )
+            },
+            _ => false,
+        },
+{
+    live_runtime_product_root_score_preserves_wf(before, after);
+    assert(before.source.runtime.score == before.source.product.bridge);
+    assert(score_bridge::bridge_score_finish_selected(before.source.runtime.score)
+        == Some(after.source.product.bridge));
+    live_runtime_root_complete_matches_source(
+        before, after.source.product, returned, claimed,
+    );
+    assert(runtime_source::runtime_message_eof_root_return(
+        before.source.runtime, after.source.product.bridge,
+    ) == Some(returned));
+    runtime_source::runtime_root_return_is_pre_pop_exact(
+        before.source.runtime, after.source.product.bridge,
+    );
+}
+
+// One transition vocabulary for the live wire, admission, storage, score, and
+// nested-map product.  The component steps below remain the precise guards;
+// this dispatcher makes their common inductive invariant explicit.
+pub enum LiveRuntimeProductAction {
+    Continue,
+    ContinueIndexed,
+    MapKey,
+    RootScore,
+    RootComplete { returned: runtime_source::RuntimeRootReturnImage },
+    MessageChildScore,
+    MessagePush {
+        request: runtime_source::SourceFrameRequestImage,
+        actual_top_kind: Option<runtime_source::SourceFrameRequestKind>,
+        after_len: usize,
+        after_capacity: usize,
+        stats_frame_variant_bytes: usize,
+    },
+    // Message PathMap field Push (child kind 3). The observed relation still
+    // requires a separate extraction of the real Rust request and frame views.
+    MessageEpmPush {
+        request: runtime_source::SourceFrameRequestImage,
+        actual_top_kind: Option<runtime_source::SourceFrameRequestKind>,
+        after_len: usize,
+        after_capacity: usize,
+        stats_frame_variant_bytes: usize,
+    },
+    MapValuePush {
+        request: runtime_source::SourceFrameRequestImage,
+        actual_top_kind: Option<runtime_source::SourceFrameRequestKind>,
+        after_len: usize,
+        after_capacity: usize,
+        stats_frame_variant_bytes: usize,
+    },
+    MessageChildComplete,
+    MapValueAccept,
+    MapEntryFinish,
+    EpmMapValueAccept {
+        summary: epm::ChildSummary,
+        admission_summary: admission::AdmissionReturnedKind,
+    },
+    EpmContinue { event: epm::EpmEvent },
+    EpmPush {
+        observed: rpb3_epm_push_source_action_refinement::EpmPushLiveObservation,
+    },
+    EpmEnd {
+        observed: rpb3_epathmap_terminal_source_observation::EpmTerminalSourceObservation,
+    },
+    EpmFinishAccept,
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn live_runtime_product_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+) -> bool {
+    match action {
+        LiveRuntimeProductAction::Continue =>
+            live_runtime_product_continue_step(before, after),
+        LiveRuntimeProductAction::ContinueIndexed =>
+            live_runtime_product_continue_indexed_step(before, after),
+        LiveRuntimeProductAction::MapKey =>
+            live_runtime_product_map_key_step(before, after),
+        LiveRuntimeProductAction::RootScore =>
+            live_runtime_product_root_score_step(before, after),
+        LiveRuntimeProductAction::RootComplete { returned } =>
+            live_runtime_product_root_complete_step(before, after, returned),
+        LiveRuntimeProductAction::MessageChildScore =>
+            live_runtime_product_message_child_score_step(before, after),
+        LiveRuntimeProductAction::MessagePush {
+            request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        } => live_runtime_product_message_push_observed_step(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        ),
+        LiveRuntimeProductAction::MessageEpmPush {
+            request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        } => live_runtime_product_message_epm_push_indexed_observed_step(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        ),
+        LiveRuntimeProductAction::MapValuePush {
+            request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        } => live_runtime_product_map_value_push_observed_step(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        ),
+        LiveRuntimeProductAction::MessageChildComplete =>
+            live_runtime_product_message_child_complete_step(before, after),
+        LiveRuntimeProductAction::MapValueAccept =>
+            live_runtime_product_map_value_accept_step(before, after),
+        LiveRuntimeProductAction::MapEntryFinish =>
+            live_runtime_product_map_entry_finish_step(before, after),
+        LiveRuntimeProductAction::EpmMapValueAccept {
+            summary, admission_summary,
+        } => live_runtime_product_epm_map_value_accept_step(
+            before, after, summary, admission_summary,
+        ),
+        LiveRuntimeProductAction::EpmContinue { event } =>
+            live_runtime_product_wf(before)
+                && rpb3_epm_unwind_product_lift::live_runtime_internal_epm_unwind_step(
+                    before, after, event,
+                ),
+        LiveRuntimeProductAction::EpmPush { observed } =>
+            rpb3_epm_push_live_action_refinement::epm_push_live_after(
+                before, observed,
+            ) == Some(after),
+        LiveRuntimeProductAction::EpmEnd { observed } =>
+            live_runtime_product_epm_end_source_step(before, after, observed),
+        LiveRuntimeProductAction::EpmFinishAccept =>
+            live_runtime_product_epm_finish_accept_step(before, after),
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_step_preserves_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires live_runtime_product_step(before, after, action),
+    ensures live_runtime_product_wf(after),
+{
+    match action {
+        LiveRuntimeProductAction::Continue =>
+            live_runtime_product_continue_preserves_wf(before, after),
+        LiveRuntimeProductAction::ContinueIndexed =>
+            live_runtime_product_continue_indexed_preserves_wf(before, after),
+        LiveRuntimeProductAction::MapKey =>
+            live_runtime_product_map_key_preserves_wf(before, after),
+        LiveRuntimeProductAction::RootScore =>
+            live_runtime_product_root_score_preserves_wf(before, after),
+        LiveRuntimeProductAction::RootComplete { returned } =>
+            live_runtime_product_root_score_preserves_wf(before, after),
+        LiveRuntimeProductAction::MessageChildScore =>
+            live_runtime_product_message_child_score_preserves_wf(before, after),
+        LiveRuntimeProductAction::MessagePush {
+            request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        } => live_runtime_product_message_push_observed_is_exact(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        ),
+        LiveRuntimeProductAction::MessageEpmPush {
+            request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        } => live_runtime_product_message_epm_push_indexed_observed_is_exact(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        ),
+        LiveRuntimeProductAction::MapValuePush {
+            request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        } => live_runtime_product_map_value_push_observed_is_exact(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        ),
+        LiveRuntimeProductAction::MessageChildComplete =>
+            live_runtime_product_message_child_complete_preserves_wf(before, after),
+        LiveRuntimeProductAction::MapValueAccept =>
+            live_runtime_product_map_value_accept_preserves_wf(before, after),
+        LiveRuntimeProductAction::MapEntryFinish =>
+            live_runtime_product_map_entry_finish_preserves_wf(before, after),
+        LiveRuntimeProductAction::EpmMapValueAccept {
+            summary, admission_summary,
+        } => live_runtime_product_epm_map_value_accept_preserves_wf(
+            before, after, summary, admission_summary,
+        ),
+        LiveRuntimeProductAction::EpmContinue { event } =>
+            rpb3_epm_unwind_product_lift::live_runtime_internal_epm_continue_preserves_wf(
+                before, after, event,
+            ),
+        LiveRuntimeProductAction::EpmPush { observed } => {
+            assert(rpb3_epm_push_live_action_refinement::epm_push_live_ready(
+                before, observed,
+            ));
+            rpb3_epm_push_live_action_refinement::epm_push_live_action_is_checked(
+                before, observed,
+            );
+        },
+        LiveRuntimeProductAction::EpmEnd { observed } =>
+            live_runtime_product_epm_end_source_preserves_wf(before, after, observed),
+        LiveRuntimeProductAction::EpmFinishAccept =>
+            live_runtime_product_epm_finish_accept_preserves_wf(before, after),
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn live_runtime_product_ancestor_limit(
+    before: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+) -> int {
+    let count = before.source.product.bridge.admission.frames.len();
+    match action {
+        LiveRuntimeProductAction::MessageChildComplete
+        | LiveRuntimeProductAction::MapValueAccept
+        | LiveRuntimeProductAction::MapEntryFinish
+        | LiveRuntimeProductAction::EpmMapValueAccept { .. }
+        | LiveRuntimeProductAction::EpmFinishAccept => count - 2,
+        _ => count - 1,
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn product_ancestor_view_same(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    index: int,
+) -> bool {
+    &&& after.bridge.admission.frames[index] == before.bridge.admission.frames[index]
+    &&& after.map.map_frames[index] == before.map.map_frames[index]
+    &&& after.indexed_regions[index] == before.indexed_regions[index]
+    &&& after.epm_frames[index] == before.epm_frames[index]
+    &&& after.accepted_epm_sources[index] == before.accepted_epm_sources[index]
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn live_runtime_product_ancestor_view_same(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    index: int,
+) -> bool {
+    &&& product_ancestor_view_same(
+        before.source.product, after.source.product, index,
+    )
+    &&& after.source.product.map.admission.frames[index]
+        == before.source.product.map.admission.frames[index]
+    &&& after.source.runtime.score.admission.frames[index]
+        == before.source.runtime.score.admission.frames[index]
+    &&& after.source.wire[index] == before.source.wire[index]
+    &&& after.cursors[index] == before.cursors[index]
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn strict_ancestor_sequence_shape<T>(
+    before: Seq<T>,
+    after: Seq<T>,
+) -> bool {
+    &&& before.len() > 0
+    &&& (
+        after == before
+        || after == before.drop_last()
+        || (after.len() == before.len() + 1
+            && after == before.push(after.last()))
+        || (after.len() == before.len()
+            && after == before.update(before.len() - 1, after.last()))
+        || (after.len() == before.len() + 1
+            && after == before.update(before.len() - 1, after[before.len() - 1])
+                .push(after.last()))
+    )
+}
+
+#[cfg(rpb3_live_push)]
+proof fn strict_ancestor_sequence_shape_preserves_prefix<T>(
+    before: Seq<T>,
+    after: Seq<T>,
+)
+    requires strict_ancestor_sequence_shape(before, after),
+    ensures forall|i: int| 0 <= i < before.len() - 1 ==> after[i] == before[i],
+{
+    if after == before {
+    } else if after == before.drop_last() {
+    } else if after.len() == before.len() + 1
+        && after == before.push(after.last()) {
+    } else if after.len() == before.len()
+        && after == before.update(before.len() - 1, after.last()) {
+    } else {
+        assert(after == before.update(before.len() - 1, after[before.len() - 1])
+            .push(after.last()));
+    }
+    assert forall|i: int| 0 <= i < before.len() - 1 implies
+        after[i] == before[i] by {}
+}
+
+#[cfg(rpb3_live_push)]
+proof fn live_wire_cursor_shape_preserves_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    limit: int,
+)
+    requires
+        before.source.wire.len() == before.cursors.len(),
+        0 <= limit <= before.cursors.len() - 1,
+        strict_ancestor_sequence_shape(before.source.wire, after.source.wire),
+        strict_ancestor_sequence_shape(before.cursors, after.cursors),
+    ensures forall|i: int| 0 <= i < limit ==> {
+        &&& after.source.wire[i] == before.source.wire[i]
+        &&& after.cursors[i] == before.cursors[i]
+    },
+{
+    strict_ancestor_sequence_shape_preserves_prefix(
+        before.source.wire, after.source.wire,
+    );
+    strict_ancestor_sequence_shape_preserves_prefix(
+        before.cursors, after.cursors,
+    );
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_carried_receipts_preserve_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    limit: int,
+)
+    requires
+        0 <= limit <= before.bridge.admission.frames.len(),
+        limit <= after.bridge.admission.frames.len(),
+        limit <= before.indexed_regions.len(),
+        limit <= after.indexed_regions.len(),
+        before.accepted_epm_sources.len() == before.bridge.admission.frames.len(),
+        after.accepted_epm_sources == product_epm_receipts_carried(before, after),
+        forall|i: int| 0 <= i < limit ==> {
+            &&& #[trigger] before.bridge.admission.frames[i]
+                == after.bridge.admission.frames[i]
+            &&& before.indexed_regions[i] == after.indexed_regions[i]
+        },
+    ensures forall|i: int| 0 <= i < limit ==>
+        after.accepted_epm_sources[i] == before.accepted_epm_sources[i],
+{
+    assert forall|i: int| 0 <= i < limit implies
+        after.accepted_epm_sources[i] == before.accepted_epm_sources[i] by {
+        assert(before.bridge.admission.frames[i] == after.bridge.admission.frames[i]);
+        assert(before.indexed_regions[i] == after.indexed_regions[i]);
+        assert(after.accepted_epm_sources[i]
+            == product_epm_receipts_carried(before, after)[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_message_child_score_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+)
+    requires
+        product_score_wf(before),
+        product_message_child_score_step(before, after),
+    ensures
+        after.bridge.admission.frames.len() == before.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    score_bridge::bridge_score_source_step_preserves_shape(before.bridge, after.bridge);
+    let limit = before.bridge.admission.frames.len() - 1;
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {}
+    product_carried_receipts_preserve_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {}
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_epm_continue_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    event: epm::EpmEvent,
+)
+    requires
+        product_score_wf(before),
+        product_epm_continue_step(before, after, event),
+    ensures
+        after.bridge.admission.frames.len() == before.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    let prior = product_linked_top(before).unwrap();
+    let next = product_linked_top(after).unwrap();
+    let limit = before.bridge.admission.frames.len() - 1;
+    assert(epm::linked_epm_continue(prior, next, event));
+    assert(prior.admission == before.bridge.admission);
+    assert(after.bridge.admission == next.admission);
+    assert(next.admission.frames == prior.admission.frames.update(
+        prior.admission.frames.len() - 1,
+        epm::epm_advanced_admission_cursor(
+            prior.admission.frames.last(), next.epm.cursor.value_table_offset,
+        ),
+    ));
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {
+        assert(after.bridge.admission.frames[i] == before.bridge.admission.frames[i]);
+    }
+    product_carried_receipts_preserve_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {
+        assert(after.epm_frames[i] == before.epm_frames[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_epm_complete_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    action: epm::EpmAction,
+)
+    requires
+        product_score_wf(before),
+        product_epm_complete_step(before, after, action),
+    ensures
+        after.bridge.admission.frames.len() == before.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    let limit = before.bridge.admission.frames.len() - 1;
+    assert(score_bridge::bridge_same(before.bridge, after.bridge));
+    assert(after.map == before.map);
+    assert(after.indexed_regions == before.indexed_regions);
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {}
+    product_carried_receipts_preserve_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {
+        assert(after.epm_frames[i] == before.epm_frames[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_epm_child_return_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    summary: epm::ChildSummary,
+    admission_summary: admission::AdmissionReturnedKind,
+)
+    requires
+        product_score_wf(before),
+        product_epm_child_return_step(
+            before, after, summary, admission_summary, None,
+        ),
+    ensures
+        after.bridge.admission.frames.len() + 1
+            == before.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 2 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    let prior = product_linked_parent(before).unwrap();
+    let next = product_linked_top(after).unwrap();
+    let limit = before.bridge.admission.frames.len() - 2;
+    assert(epm::linked_epm_child_return(
+        prior, next, summary, admission_summary,
+        before.epm_frames.last(), None,
+    ));
+    assert(prior.admission == before.bridge.admission);
+    assert(after.bridge.admission == next.admission);
+    assert(next.admission.frames == prior.admission.frames.subrange(
+        0, prior.admission.frames.len() - 1,
+    ).update(
+        prior.admission.frames.len() - 2,
+        epm::epm_parent_resolved(
+            prior.admission.frames[prior.admission.frames.len() - 2],
+        ),
+    ));
+    assert(after.indexed_regions == before.indexed_regions.drop_last());
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {
+        assert(after.bridge.admission.frames[i] == before.bridge.admission.frames[i]);
+    }
+    product_carried_receipts_preserve_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {
+        assert(after.map.map_frames[i] == before.map.map_frames[i]);
+        assert(after.epm_frames[i] == before.epm_frames[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_map_key_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    field: admission::IndexedCanonicalFieldModel,
+)
+    requires
+        product_score_wf(before),
+        product_map_step(
+            before, after, map::IntegratedAdmissionAction::MapKey { field },
+        ),
+    ensures
+        after.bridge.admission.frames.len() == before.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    let count = before.bridge.admission.frames.len();
+    let current = before.map.map_frames[count - 1].unwrap();
+    let (next_frame, next_admission) = map::map_admission_key_continue(
+        current, before.map.admission, field,
+    ).unwrap();
+    assert(after.bridge.admission == next_admission);
+    assert(after.map.map_frames == before.map.map_frames.update(
+        count - 1, Some(next_frame),
+    ));
+    assert(admission::admission_continue_step(
+        before.map.admission, field.encoded_end, 0, false, 1,
+    ) == Some(next_admission));
+    assert(after.indexed_regions == before.indexed_regions);
+    assert(after.epm_frames == before.epm_frames);
+    let limit = count - 1;
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {
+        assert(next_admission.frames[i] == before.map.admission.frames[i]);
+    }
+    product_carried_receipts_preserve_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {}
+}
+
+#[cfg(rpb3_live_push)]
+proof fn live_epm_push_preserves_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    observed: rpb3_epm_push_source_action_refinement::EpmPushLiveObservation,
+)
+    requires rpb3_epm_push_live_action_refinement::epm_push_live_after(
+        before, observed,
+    ) == Some(after),
+    ensures
+        live_runtime_product_wf(after),
+        after.source.product.bridge.admission.frames.len()
+            == before.source.product.bridge.admission.frames.len() + 1,
+        forall|i: int| 0 <= i < before.source.product.bridge.admission.frames.len() - 1 ==>
+            live_runtime_product_ancestor_view_same(before, after, i),
+{
+    assert(rpb3_epm_push_live_action_refinement::epm_push_live_ready(
+        before, observed,
+    ));
+    rpb3_epm_push_live_action_refinement::epm_push_live_action_is_checked(
+        before, observed,
+    );
+    let old = before.source.product;
+    let new = after.source.product;
+    let prior = product_linked_top(old).unwrap();
+    let request = rpb3_epm_push_source_action_refinement::epm_push_source_request(
+        prior, observed.push,
+    ).unwrap();
+    let next = rpb3_epm_push_source_action_refinement::epm_push_source_linked_after(
+        prior, observed.push, request,
+    );
+    let limit = old.bridge.admission.frames.len() - 1;
+    assert(new == rpb3_epm_push_source_action_refinement::epm_push_source_product_after(
+        old, observed.push, request,
+    ));
+    assert(new.bridge.admission == next.admission);
+    assert(prior.admission == old.bridge.admission);
+    assert(after.source.wire == before.source.wire.push(
+        rpb3_epm_push_live_action_refinement::epm_push_live_child_reader(observed),
+    ));
+    assert(after.cursors == before.cursors.push(observed.child_cursor));
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& old.bridge.admission.frames[i] == new.bridge.admission.frames[i]
+        &&& old.indexed_regions[i] == new.indexed_regions[i]
+    } by {
+        assert(new.bridge.admission.frames[i] == old.bridge.admission.frames[i]);
+    }
+    product_carried_receipts_preserve_prefix(old, new, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(new.map.map_frames[i] == old.map.map_frames[i]);
+        assert(new.epm_frames[i] == old.epm_frames[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_epm_finish_accept_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+)
+    requires
+        product_score_wf(before),
+        product_epm_finish_accept_step(before, after),
+    ensures
+        after.bridge.admission.frames.len() + 1
+            == before.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 2 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    let prior = product_linked_top(before).unwrap();
+    let accepted = epm_source_accept::epm_source_finish_accept(prior).unwrap();
+    let child = prior.admission.frames.last();
+    let base = admission::admission_complete_child_step(
+        prior.admission, child.return_id.unwrap(), 3,
+        admission::AdmissionReturnedKind::Other,
+    ).unwrap();
+    let limit = before.bridge.admission.frames.len() - 2;
+    assert(after.bridge.admission == accepted);
+    assert(prior.admission == before.bridge.admission);
+    assert(after.indexed_regions == before.indexed_regions.drop_last());
+    assert(after.map.map_frames == before.map.map_frames.drop_last());
+    assert(after.epm_frames == before.epm_frames.drop_last());
+    assert(base.frames == prior.admission.frames.subrange(
+        0, prior.admission.frames.len() - 1,
+    ).update(prior.admission.frames.len() - 2, base.frames.last()));
+    assert(accepted.frames == base.frames.update(
+        base.frames.len() - 1, accepted.frames.last(),
+    ));
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {
+        assert(after.bridge.admission.frames[i] == before.bridge.admission.frames[i]);
+    }
+    let carried = product_epm_receipts_carried(before, after);
+    let carried_state = ProductScoreState {
+        accepted_epm_sources: carried,
+        ..after
+    };
+    product_carried_receipts_preserve_prefix(before, carried_state, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {
+        assert(after.accepted_epm_sources[i] == carried[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+proof fn concrete_message_continue_preserves_ancestor_prefix(
+    before: admission::AdmissionState,
+    after: admission::AdmissionState,
+    action: admission::ConcreteFrameActionModel,
+)
+    requires
+        before.frames.len() > 0,
+        match action {
+            admission::ConcreteFrameActionModel::Continue { .. }
+            | admission::ConcreteFrameActionModel::ContinueIndexed { .. } => true,
+            _ => false,
+        },
+        admission::concrete_message_driver_step(before, action)
+            == Some(admission::ConcreteFrameOutcomeModel::Continued { state: after }),
+    ensures
+        after.frames.len() == before.frames.len(),
+        forall|i: int| 0 <= i < before.frames.len() - 1 ==>
+            after.frames[i] == before.frames[i],
+{
+    match action {
+        admission::ConcreteFrameActionModel::Continue { field } => {
+            let view = admission::concrete_message_view(before).unwrap();
+            let next = admission::concrete_message_continue(view, field).unwrap();
+            assert(after == next.projection);
+            assert forall|i: int| 0 <= i < before.frames.len() - 1 implies
+                after.frames[i] == before.frames[i] by {}
+        },
+        admission::ConcreteFrameActionModel::ContinueIndexed { field, parent_source } => {
+            let view = admission::concrete_message_view(before).unwrap();
+            let next = admission::concrete_message_continue_indexed(
+                view, field, parent_source,
+            ).unwrap();
+            assert(after == next.projection);
+            assert forall|i: int| 0 <= i < before.frames.len() - 1 implies
+                after.frames[i] == before.frames[i] by {}
+        },
+        _ => assert(false),
+    }
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_message_continue_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    action: admission::ConcreteFrameActionModel,
+)
+    requires
+        product_score_wf(before),
+        match action {
+            admission::ConcreteFrameActionModel::Continue { .. }
+            | admission::ConcreteFrameActionModel::ContinueIndexed { .. } => true,
+            _ => false,
+        },
+        product_map_step(
+            before, after, map::IntegratedAdmissionAction::Message { action },
+        ),
+    ensures
+        after.bridge.admission.frames.len() == before.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    let next = after.map.admission;
+    assert(admission::concrete_message_driver_step(before.map.admission, action)
+        == Some(admission::ConcreteFrameOutcomeModel::Continued { state: next }));
+    concrete_message_continue_preserves_ancestor_prefix(
+        before.map.admission, next, action,
+    );
+    assert(after.bridge.admission == next);
+    assert(after.map.map_frames == before.map.map_frames);
+    assert(after.indexed_regions == before.indexed_regions);
+    assert(after.epm_frames == before.epm_frames);
+    let limit = before.bridge.admission.frames.len() - 1;
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {}
+    product_carried_receipts_preserve_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {}
+}
+
+#[cfg(rpb3_live_push)]
+proof fn admission_push_preserves_ancestor_prefix(
+    before: admission::AdmissionState,
+    after: admission::AdmissionState,
+    parent_next: usize,
+    child: admission::AdmissionFrameState,
+    slot: usize,
+    repeated: bool,
+    field_tag: u32,
+    frame_bytes: usize,
+)
+    requires
+        before.frames.len() > 0,
+        admission::admission_push_step(
+            before, parent_next, child, slot, repeated, field_tag, frame_bytes,
+        ) == Some(after),
+    ensures
+        after.frames.len() == before.frames.len() + 1,
+        forall|i: int| 0 <= i < before.frames.len() - 1 ==>
+            after.frames[i] == before.frames[i],
+{
+    assert(after.frames == before.frames.update(
+        before.frames.len() - 1, after.frames[before.frames.len() - 1],
+    ).push(after.frames.last()));
+    assert forall|i: int| 0 <= i < before.frames.len() - 1 implies
+        after.frames[i] == before.frames[i] by {}
+}
+
+#[cfg(rpb3_live_push)]
+proof fn concrete_message_push_preserves_ancestor_prefix(
+    before: admission::AdmissionState,
+    after: admission::AdmissionState,
+    action: admission::ConcreteFrameActionModel,
+)
+    requires
+        before.frames.len() > 0,
+        match action {
+            admission::ConcreteFrameActionModel::Push { .. }
+            | admission::ConcreteFrameActionModel::PushIndexed { .. } => true,
+            _ => false,
+        },
+        admission::concrete_message_driver_step(before, action)
+            == Some(admission::ConcreteFrameOutcomeModel::Pushed { state: after }),
+    ensures
+        after.frames.len() == before.frames.len() + 1,
+        forall|i: int| 0 <= i < before.frames.len() - 1 ==>
+            after.frames[i] == before.frames[i],
+{
+    match action {
+        admission::ConcreteFrameActionModel::Push {
+            field, child, frame_bytes,
+        } => {
+            let view = admission::concrete_message_view(before).unwrap();
+            assert(admission::concrete_message_push(
+                view, field, child, frame_bytes,
+            ) == Some(after));
+        },
+        admission::ConcreteFrameActionModel::PushIndexed {
+            field, child, parent_source, frame_bytes,
+        } => {
+            let view = admission::concrete_message_view(before).unwrap();
+            assert(admission::concrete_message_push_indexed(
+                view, field, child, parent_source, frame_bytes,
+            ) == Some(after));
+        },
+        _ => assert(false),
+    }
+    assert forall|i: int| 0 <= i < before.frames.len() - 1 implies
+        after.frames[i] == before.frames[i] by {}
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_message_push_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    action: admission::ConcreteFrameActionModel,
+)
+    requires
+        product_score_wf(before),
+        match action {
+            admission::ConcreteFrameActionModel::Push { .. }
+            | admission::ConcreteFrameActionModel::PushIndexed { .. } => true,
+            _ => false,
+        },
+        product_map_step(
+            before, after, map::IntegratedAdmissionAction::Message { action },
+        ),
+    ensures
+        after.bridge.admission.frames.len() == before.bridge.admission.frames.len() + 1,
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    let next = after.map.admission;
+    let source_action = map::integrated_source_message_action(
+        before.map.admission, action,
+    ).unwrap();
+    assert(map::integrated_admission_driver_step(
+        before.map, map::IntegratedAdmissionAction::Message { action },
+    ) == Some(map::IntegratedAdmissionOutcome::MessagePushed { state: after.map }));
+    assert(admission::concrete_message_driver_step(before.map.admission, source_action)
+        == Some(admission::ConcreteFrameOutcomeModel::Pushed { state: next }));
+    match source_action {
+        admission::ConcreteFrameActionModel::Push { .. }
+        | admission::ConcreteFrameActionModel::PushIndexed { .. } =>
+            concrete_message_push_preserves_ancestor_prefix(
+                before.map.admission, next, source_action,
+            ),
+        _ => assert(false),
+    }
+    assert(after.bridge.admission == next);
+    assert(after.map.map_frames.len() == before.map.map_frames.len() + 1);
+    match action {
+        admission::ConcreteFrameActionModel::Push { field, .. }
+        | admission::ConcreteFrameActionModel::PushIndexed { field, .. } => {
+            assert(after.indexed_regions == before.indexed_regions.push(
+                product_indexed_child(before.indexed_regions.last(), field).unwrap(),
+            ));
+        },
+        _ => assert(false),
+    }
+    assert(after.epm_frames == before.epm_frames.push(None));
+    let limit = before.bridge.admission.frames.len() - 1;
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {}
+    product_carried_receipts_preserve_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {}
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_map_value_push_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    action: map::IntegratedAdmissionAction,
+)
+    requires
+        product_score_wf(before),
+        match action {
+            map::IntegratedAdmissionAction::MapValue { .. }
+            | map::IntegratedAdmissionAction::MapValueIndexed { .. } => true,
+            _ => false,
+        },
+        product_map_step(before, after, action),
+    ensures
+        after.bridge.admission.frames.len() == before.bridge.admission.frames.len() + 1,
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    let count = before.bridge.admission.frames.len();
+    let current = before.map.map_frames[count - 1].unwrap();
+    match action {
+        map::IntegratedAdmissionAction::MapValue {
+            field, child, frame_bytes,
+        } => {
+            assert(map::integrated_admission_driver_step(before.map, action)
+                == Some(map::IntegratedAdmissionOutcome::MapValuePushed {
+                    state: after.map,
+                }));
+            let (next_frame, next_admission) = map::map_admission_value_push(
+                current, before.map.admission, field, child, frame_bytes,
+            ).unwrap();
+            assert(after.bridge.admission == next_admission);
+            assert(after.map.map_frames == before.map.map_frames.update(
+                count - 1, Some(next_frame),
+            ).push(None));
+            assert(admission::admission_push_step(
+                before.map.admission, field.encoded_end, child,
+                1, false, 2, frame_bytes,
+            ) == Some(next_admission));
+            admission_push_preserves_ancestor_prefix(
+                before.map.admission, next_admission,
+                field.encoded_end, child, 1, false, 2, frame_bytes,
+            );
+            assert(after.indexed_regions == before.indexed_regions.push(
+                product_indexed_child(before.indexed_regions.last(), field).unwrap(),
+            ));
+        },
+        map::IntegratedAdmissionAction::MapValueIndexed {
+            field, child, parent_source, frame_bytes,
+        } => {
+            assert(map::integrated_admission_driver_step(before.map, action)
+                == Some(map::IntegratedAdmissionOutcome::MapValuePushed {
+                    state: after.map,
+                }));
+            let (next_frame, next_admission) = map::map_admission_value_push_indexed(
+                current, before.map.admission, field, child, parent_source, frame_bytes,
+            ).unwrap();
+            assert(after.bridge.admission == next_admission);
+            assert(after.map.map_frames == before.map.map_frames.update(
+                count - 1, Some(next_frame),
+            ).push(None));
+            assert(admission::admission_push_step(
+                before.map.admission, field.encoded_end, child,
+                1, false, 2, frame_bytes,
+            ) == Some(next_admission));
+            admission_push_preserves_ancestor_prefix(
+                before.map.admission, next_admission,
+                field.encoded_end, child, 1, false, 2, frame_bytes,
+            );
+            assert(after.indexed_regions == before.indexed_regions.push(
+                product_indexed_child(before.indexed_regions.last(), field).unwrap(),
+            ));
+        },
+        _ => assert(false),
+    }
+    assert(after.indexed_regions.len() == before.indexed_regions.len() + 1);
+    assert(after.epm_frames == before.epm_frames.push(None));
+    let limit = count - 1;
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {}
+    product_carried_receipts_preserve_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {}
+}
+
+#[cfg(rpb3_live_push)]
+proof fn admission_child_pop_preserves_ancestor_prefix(
+    before: admission::AdmissionState,
+    after: admission::AdmissionState,
+    returned_id: u64,
+    returned_kind: u8,
+    summary: admission::AdmissionReturnedKind,
+)
+    requires admission::admission_complete_child_step(
+        before, returned_id, returned_kind, summary,
+    ) == Some(after),
+    ensures
+        after.frames.len() + 1 == before.frames.len(),
+        forall|i: int| 0 <= i < before.frames.len() - 2 ==>
+            after.frames[i] == before.frames[i],
+{
+    assert(after.frames == before.frames.subrange(0, before.frames.len() - 1)
+        .update(before.frames.len() - 2, after.frames.last()));
+    assert forall|i: int| 0 <= i < before.frames.len() - 2 implies
+        after.frames[i] == before.frames[i] by {}
+}
+
+#[cfg(rpb3_live_push)]
+proof fn product_map_pop_preserves_ancestor_prefix(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    action: map::IntegratedAdmissionAction,
+)
+    requires
+        product_score_wf(before),
+        match action {
+            map::IntegratedAdmissionAction::Message {
+                action: admission::ConcreteFrameActionModel::Complete,
+            }
+            | map::IntegratedAdmissionAction::MapAccept
+            | map::IntegratedAdmissionAction::MapFinish => true,
+            _ => false,
+        },
+        product_map_step(before, after, action),
+        before.bridge.admission.frames.len() > 1,
+    ensures
+        after.bridge.admission.frames.len() + 1 == before.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 2 ==>
+            product_ancestor_view_same(before, after, i),
+{
+    let count = before.bridge.admission.frames.len();
+    let next = after.map.admission;
+    match action {
+        map::IntegratedAdmissionAction::Message {
+            action: admission::ConcreteFrameActionModel::Complete,
+        } => {
+            assert(map::integrated_source_message_action(
+                before.map.admission,
+                admission::ConcreteFrameActionModel::Complete,
+            ) == Some(admission::ConcreteFrameActionModel::Complete));
+            assert(map::integrated_admission_driver_step(before.map, action)
+                == Some(map::IntegratedAdmissionOutcome::MessageParentAccepted {
+                    state: after.map,
+                }));
+            admission::concrete_message_complete_child_simulates(before.map.admission);
+            let child = before.map.admission.frames.last();
+            let parent = before.map.admission.frames[count - 2];
+            let summary = admission::concrete_derived_summary_with_arena(
+                parent, child, before.map.admission.arena,
+            ).unwrap();
+            assert(admission::admission_complete_child_step(
+                before.map.admission, child.return_id.unwrap(), child.frame_kind, summary,
+            ) == Some(next));
+            admission_child_pop_preserves_ancestor_prefix(
+                before.map.admission, next,
+                child.return_id.unwrap(), child.frame_kind, summary,
+            );
+            assert(after.map.map_frames == before.map.map_frames.drop_last());
+        },
+        map::IntegratedAdmissionAction::MapAccept => {
+            assert(map::integrated_admission_driver_step(before.map, action)
+                == Some(map::IntegratedAdmissionOutcome::MapValueAccepted {
+                    state: after.map,
+                }));
+            let parent_frame = before.map.map_frames[count - 2].unwrap();
+            let (next_frame, next_admission) = map::map_admission_value_complete(
+                parent_frame, before.map.admission,
+            ).unwrap();
+            let wait = parent_frame.pending.unwrap();
+            let summary = admission::AdmissionReturnedKind::Par {
+                semantic_default: false,
+                canonical_path_stable: next_frame.value.unwrap().canonical_path_stable,
+            };
+            assert(next == next_admission);
+            assert(admission::admission_complete_child_step(
+                before.map.admission, wait.id, 1, summary,
+            ) == Some(next));
+            admission_child_pop_preserves_ancestor_prefix(
+                before.map.admission, next, wait.id, 1, summary,
+            );
+            assert(after.map.map_frames == before.map.map_frames.update(
+                count - 2, Some(next_frame),
+            ).subrange(0, count - 1));
+        },
+        map::IntegratedAdmissionAction::MapFinish => {
+            let (summary, next_admission) = map::map_admission_entry_complete(
+                before.map.map_frames[count - 1].unwrap(), before.map.admission,
+            ).unwrap();
+            assert(map::integrated_admission_driver_step(before.map, action)
+                == Some(map::IntegratedAdmissionOutcome::MapEntryCompleted {
+                    summary,
+                    state: after.map,
+                }));
+            let map_frame = before.map.map_frames[count - 1].unwrap();
+            assert(map::map_admission_entry_complete(map_frame, before.map.admission)
+                == Some((summary, next_admission)));
+            let child = before.map.admission.frames.last();
+            let returned = admission::AdmissionReturnedKind::Map {
+                key_bytes: summary.key_bytes,
+                value_score_handle: admission::admission_map_value_score_handle(child),
+            };
+            assert(next == next_admission);
+            assert(admission::admission_complete_child_step(
+                before.map.admission, child.return_id.unwrap(), 2, returned,
+            ) == Some(next));
+            admission_child_pop_preserves_ancestor_prefix(
+                before.map.admission, next, child.return_id.unwrap(), 2, returned,
+            );
+            assert(after.map.map_frames == before.map.map_frames.drop_last());
+        },
+        _ => assert(false),
+    }
+    assert(after.bridge.admission == next);
+    assert(after.indexed_regions == before.indexed_regions.drop_last());
+    assert(after.epm_frames == before.epm_frames.drop_last());
+    let limit = count - 2;
+    assert forall|i: int| 0 <= i < limit implies {
+        &&& before.bridge.admission.frames[i] == after.bridge.admission.frames[i]
+        &&& before.indexed_regions[i] == after.indexed_regions[i]
+    } by {}
+    product_carried_receipts_preserve_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(before, after, i) by {}
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires live_runtime_product_step(before, after, action),
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
+        LiveRuntimeProductAction::Continue => {
+            assert(live_runtime_product_continue_step(before, after));
+            match before.source.wire.last() {
+                Some(reader) => match wire_source::wire_source_next_field(reader) {
+                    wire_source::WireSourceTransition::Field { field, .. } =>
+                        product_message_continue_preserves_ancestor_prefix(
+                            old, new, admission::ConcreteFrameActionModel::Continue { field },
+                        ),
+                    _ => assert(false),
+                },
+                _ => assert(false),
+            }
+        },
+        LiveRuntimeProductAction::ContinueIndexed => {
+            assert(live_runtime_product_continue_indexed_step(before, after));
+            let parent_source = product_admission_source_image(old.indexed_regions.last());
+            match before.source.wire.last() {
+                Some(reader) => match wire_source::wire_source_next_field(reader) {
+                    wire_source::WireSourceTransition::Field { field, .. } =>
+                        product_message_continue_preserves_ancestor_prefix(
+                            old, new,
+                            admission::ConcreteFrameActionModel::ContinueIndexed {
+                                field, parent_source,
+                            },
+                        ),
+                    _ => assert(false),
+                },
+                _ => assert(false),
+            }
+        },
+        LiveRuntimeProductAction::MapKey => {
+            assert(live_runtime_product_map_key_step(before, after));
+            match before.source.wire.last() {
+                Some(reader) => match wire_source::wire_source_next_field(reader) {
+                    wire_source::WireSourceTransition::Field { field, .. } =>
+                        product_map_key_preserves_ancestor_prefix(old, new, field),
+                    _ => assert(false),
+                },
+                _ => assert(false),
+            }
+        },
+        LiveRuntimeProductAction::RootScore => {
+            assert(live_runtime_product_root_score_step(before, after));
+            score_bridge::bridge_score_source_step_preserves_shape(
+                before.source.product.bridge, after.source.product.bridge,
+            );
+        },
+        LiveRuntimeProductAction::RootComplete { returned } => {
+            assert(live_runtime_product_root_complete_step(before, after, returned));
+            score_bridge::bridge_score_source_step_preserves_shape(
+                before.source.product.bridge, after.source.product.bridge,
+            );
+        },
+        LiveRuntimeProductAction::MessageChildScore => {
+            assert(live_runtime_product_message_child_score_step(before, after));
+            product_message_child_score_preserves_ancestor_prefix(old, new);
+        },
+        LiveRuntimeProductAction::MessagePush {
+            request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        } => {
+            assert(live_runtime_product_message_push_observed_step(
+                before, after, request, actual_top_kind, after_len, after_capacity,
+                stats_frame_variant_bytes,
+            ));
+            if let runtime_source::SourceFramePushObservationResult::Success { storage } =
+                runtime_source::source_frame_push_observe_after(
+                    request.request_kind, actual_top_kind,
+                    old.bridge.admission.frames.len() as usize,
+                    before.source.runtime.capacity, after_len, after_capacity,
+                    before.source.runtime.frame_bytes, stats_frame_variant_bytes,
+                ) {
+                if let Some(wire_source::WireConcreteTransition::Field { field, .. }) =
+                    wire_source::wire_runtime_next_field(before.cursors.last().unwrap()) {
+                    if live_runtime_product_message_push_step(before, after, request, storage) {
+                        product_message_push_preserves_ancestor_prefix(
+                            old, new, admission::ConcreteFrameActionModel::Push {
+                                field, child: request.child,
+                                frame_bytes: before.source.runtime.frame_bytes,
+                            },
+                        );
+                    } else {
+                        assert(live_runtime_product_message_push_indexed_step(
+                            before, after, request, storage,
+                        ));
+                        product_message_push_preserves_ancestor_prefix(
+                            old, new, admission::ConcreteFrameActionModel::PushIndexed {
+                                field, child: request.child,
+                                parent_source: product_admission_source_image(
+                                    old.indexed_regions.last(),
+                                ),
+                                frame_bytes: before.source.runtime.frame_bytes,
+                            },
+                        );
+                    }
+                }
+            }
+        },
+        LiveRuntimeProductAction::MessageEpmPush {
+            request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        } => {
+            assert(live_runtime_product_message_epm_push_indexed_observed_step(
+                before, after, request, actual_top_kind, after_len, after_capacity,
+                stats_frame_variant_bytes,
+            ));
+            if let runtime_source::SourceFramePushObservationResult::Success { storage } =
+                runtime_source::source_frame_push_observe_after(
+                    request.request_kind, actual_top_kind,
+                    old.bridge.admission.frames.len() as usize,
+                    before.source.runtime.capacity, after_len, after_capacity,
+                    before.source.runtime.frame_bytes, stats_frame_variant_bytes,
+                ) {
+                assert(live_runtime_product_message_epm_push_indexed_step(
+                    before, after, request, storage,
+                ));
+                if let Some(wire_source::WireConcreteTransition::Field { field, .. }) =
+                    wire_source::wire_runtime_next_field(before.cursors.last().unwrap()) {
+                    product_message_push_preserves_ancestor_prefix(
+                        old, new, admission::ConcreteFrameActionModel::PushIndexed {
+                            field, child: request.child,
+                            parent_source: product_admission_source_image(
+                                old.indexed_regions.last(),
+                            ),
+                            frame_bytes: before.source.runtime.frame_bytes,
+                        },
+                    );
+                }
+            }
+        },
+        LiveRuntimeProductAction::MapValuePush {
+            request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        } => {
+            assert(live_runtime_product_map_value_push_observed_step(
+                before, after, request, actual_top_kind, after_len, after_capacity,
+                stats_frame_variant_bytes,
+            ));
+            if let runtime_source::SourceFramePushObservationResult::Success { storage } =
+                runtime_source::source_frame_push_observe_after(
+                    request.request_kind, actual_top_kind,
+                    old.bridge.admission.frames.len() as usize,
+                    before.source.runtime.capacity, after_len, after_capacity,
+                    before.source.runtime.frame_bytes, stats_frame_variant_bytes,
+                ) {
+                if let Some(wire_source::WireConcreteTransition::Field { field, .. }) =
+                    wire_source::wire_runtime_next_field(before.cursors.last().unwrap()) {
+                    if live_runtime_product_map_value_push_step(before, after, request, storage) {
+                        product_map_value_push_preserves_ancestor_prefix(
+                            old, new, map::IntegratedAdmissionAction::MapValue {
+                                field, child: request.child,
+                                frame_bytes: before.source.runtime.frame_bytes,
+                            },
+                        );
+                    } else {
+                        assert(live_runtime_product_map_value_push_indexed_step(
+                            before, after, request, storage,
+                        ));
+                        product_map_value_push_preserves_ancestor_prefix(
+                            old, new, map::IntegratedAdmissionAction::MapValueIndexed {
+                                field, child: request.child,
+                                parent_source: product_admission_source_image(
+                                    old.indexed_regions.last(),
+                                ),
+                                frame_bytes: before.source.runtime.frame_bytes,
+                            },
+                        );
+                    }
+                }
+            }
+        },
+        LiveRuntimeProductAction::MessageChildComplete => {
+            assert(live_runtime_product_message_child_complete_step(before, after));
+            product_map_pop_preserves_ancestor_prefix(
+                old, new, map::IntegratedAdmissionAction::Message {
+                    action: admission::ConcreteFrameActionModel::Complete,
+                },
+            );
+        },
+        LiveRuntimeProductAction::MapValueAccept => {
+            assert(live_runtime_product_map_value_accept_step(before, after));
+            product_map_pop_preserves_ancestor_prefix(
+                old, new, map::IntegratedAdmissionAction::MapAccept,
+            );
+        },
+        LiveRuntimeProductAction::MapEntryFinish => {
+            reveal(live_runtime_product_map_entry_finish_step);
+            assert(live_runtime_product_map_entry_finish_step(before, after));
+            product_map_pop_preserves_ancestor_prefix(
+                old, new, map::IntegratedAdmissionAction::MapFinish,
+            );
+        },
+        LiveRuntimeProductAction::EpmMapValueAccept {
+            summary, admission_summary,
+        } => {
+            assert(live_runtime_product_epm_map_value_accept_step(
+                before, after, summary, admission_summary,
+            ));
+            product_epm_child_return_preserves_ancestor_prefix(
+                old, new, summary, admission_summary,
+            );
+        },
+        LiveRuntimeProductAction::EpmContinue { event } => {
+            assert(rpb3_epm_unwind_product_lift::live_runtime_internal_epm_unwind_step(
+                before, after, event,
+            ));
+            product_epm_continue_preserves_ancestor_prefix(old, new, event);
+        },
+        LiveRuntimeProductAction::EpmPush { observed } => {
+            assert(rpb3_epm_push_live_action_refinement::epm_push_live_after(
+                before, observed,
+            ) == Some(after));
+            live_epm_push_preserves_ancestor_prefix(before, after, observed);
+        },
+        LiveRuntimeProductAction::EpmEnd { observed } => {
+            assert(live_runtime_product_epm_end_source_step(before, after, observed));
+            let prior = product_linked_top(old).unwrap();
+            let complete =
+                rpb3_epathmap_terminal_source_observation::epm_terminal_complete_from_source(
+                    prior.epm, observed,
+                ).unwrap();
+            product_epm_complete_preserves_ancestor_prefix(
+                old, new, complete.action,
+            );
+        },
+        LiveRuntimeProductAction::EpmFinishAccept => {
+            assert(live_runtime_product_epm_finish_accept_step(before, after));
+            product_epm_finish_accept_preserves_ancestor_prefix(old, new);
+        },
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {
+        match action {
+            LiveRuntimeProductAction::RootScore
+            | LiveRuntimeProductAction::RootComplete { .. } => assert(false),
+            _ => {},
+        }
+    }
+    if let LiveRuntimeProductAction::EpmPush { .. } = action {
+    } else {
+        assert(strict_ancestor_sequence_shape(
+            before.source.wire, after.source.wire,
+        ));
+        assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+        live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    }
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        match action {
+            LiveRuntimeProductAction::EpmPush { .. } => {},
+            _ => {
+                assert(product_ancestor_view_same(old, new, i));
+                assert(after.source.product.map.admission.frames[i]
+                    == before.source.product.map.admission.frames[i]);
+                assert(after.source.runtime.score.admission.frames[i]
+                    == before.source.runtime.score.admission.frames[i]);
+                assert(after.source.wire[i] == before.source.wire[i]);
+                assert(after.cursors[i] == before.cursors[i]);
+            },
+        }
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub open spec fn live_runtime_product_trace(
+    states: Seq<LiveRuntimeProductState>,
+    actions: Seq<LiveRuntimeProductAction>,
+) -> bool {
+    &&& states.len() == actions.len() + 1
+    &&& live_runtime_product_wf(states[0])
+    &&& forall|i: int| 0 <= i < actions.len()
+        ==> live_runtime_product_step(states[i], states[i + 1], actions[i])
+}
+
+/// A CanonicalPath driver action retains its parser beside the same live
+/// admission product used by Message, Map, and EPathMap actions. The path
+/// selector computes the next product from the indexed scan and checked
+/// storage observation; the caller cannot choose an unrelated post-product.
+pub struct LiveRuntimeRetainedPathState {
+    pub ghost path: rpb3_canonical_path_driver_product_integration::CanonicalPathDriverProductState,
+    pub ghost product: LiveRuntimeProductState,
+}
+
+pub open spec fn live_runtime_retained_path_wf(
+    state: LiveRuntimeRetainedPathState,
+) -> bool {
+    &&& rpb3_canonical_path_driver_product_integration::canonical_path_driver_product_wf(
+        state.path,
+    )
+    &&& state.product == state.path.product
+}
+
+/// Root Complete has no live post-frame. Push and ChildReturn retain the
+/// parser/product pair; RootComplete returns the exact no-parent image.
+pub enum LiveRuntimeRetainedPathOutcome {
+    Active { state: LiveRuntimeRetainedPathState },
+    RootComplete {
+        returned: rpb3_live_canonical_path_terminal_refinement::LiveCanonicalPathTerminalOutcome,
+    },
+}
+
+pub open spec fn live_runtime_retained_path_step(
+    before: LiveRuntimeRetainedPathState,
+    action: rpb3_canonical_path_driver_product_integration::CanonicalPathDriverSourceAction,
+) -> Option<LiveRuntimeRetainedPathOutcome> {
+    if !live_runtime_retained_path_wf(before) {
+        None
+    } else {
+        match rpb3_canonical_path_driver_product_integration::canonical_path_driver_product_step(
+            before.path, action,
+        ) {
+            None => None,
+            Some(
+                rpb3_canonical_path_driver_product_integration::CanonicalPathDriverProductOutcome::Active {
+                    state,
+                },
+            ) => Some(LiveRuntimeRetainedPathOutcome::Active {
+                state: LiveRuntimeRetainedPathState {
+                    path: state,
+                    product: state.product,
+                },
+            }),
+            Some(
+                rpb3_canonical_path_driver_product_integration::CanonicalPathDriverProductOutcome::Terminal {
+                    returned,
+                },
+            ) => Some(LiveRuntimeRetainedPathOutcome::RootComplete { returned }),
+        }
+    }
+}
+
+proof fn live_runtime_retained_path_step_preserves_sync(
+    before: LiveRuntimeRetainedPathState,
+    action: rpb3_canonical_path_driver_product_integration::CanonicalPathDriverSourceAction,
+)
+    requires live_runtime_retained_path_wf(before),
+    ensures match live_runtime_retained_path_step(before, action) {
+        Some(LiveRuntimeRetainedPathOutcome::Active { state }) => {
+            &&& live_runtime_retained_path_wf(state)
+            &&& state.path.canonical_events == before.path.canonical_events + 1
+            &&& state.path.last_driver_step == Some(
+                rpb3_canonical_path_driver_product_integration::canonical_path_driver_action_storage(
+                    action,
+                ).step_index,
+            )
+        },
+        Some(LiveRuntimeRetainedPathOutcome::RootComplete { .. }) => {
+            &&& before.product.source.product.bridge.admission.frames.len() == 1
+            &&& rpb3_canonical_path_driver_product_integration::canonical_path_driver_action_storage(
+                action,
+            ).after_len == 0
+        },
+        None => true,
+    },
+{
+    rpb3_canonical_path_driver_product_integration::canonical_path_driver_product_active_preserves_wf(
+        before.path, action,
+    );
+    rpb3_canonical_path_driver_product_integration::canonical_path_driver_product_active_sync(
+        before.path, action,
+    );
+    match rpb3_canonical_path_driver_product_integration::canonical_path_driver_product_step(
+        before.path, action,
+    ) {
+        Some(
+            rpb3_canonical_path_driver_product_integration::CanonicalPathDriverProductOutcome::Active {
+                state,
+            },
+        ) => {
+            assert(rpb3_canonical_path_driver_product_integration::canonical_path_driver_product_wf(
+                state,
+            ));
+            assert(live_runtime_retained_path_wf(LiveRuntimeRetainedPathState {
+                path: state,
+                product: state.product,
+            }));
+        },
+        Some(
+            rpb3_canonical_path_driver_product_integration::CanonicalPathDriverProductOutcome::Terminal {
+                ..
+            },
+        ) => {
+            let observed =
+                rpb3_canonical_path_driver_product_integration::canonical_path_driver_action_storage(
+                    action,
+                );
+            assert(rpb3_canonical_path_driver_product_integration::driver_storage_before_matches(
+                before.path, observed,
+            ));
+            assert(observed.before_len == 1);
+            assert(before.product == before.path.product);
+            assert(before.product.source.product.bridge.admission.frames.len() == 1);
+        },
+        None => {},
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_singleton_trace(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires live_runtime_product_wf(before),
+        live_runtime_product_step(before, after, action),
+    ensures live_runtime_product_trace(seq![before, after], seq![action]),
+{
+    let states = seq![before, after];
+    let actions = seq![action];
+    assert forall|i: int| 0 <= i < actions.len() implies
+        live_runtime_product_step(states[i], states[i + 1], actions[i]) by {
+        assert(i == 0);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_trace_prefix_wf(
+    states: Seq<LiveRuntimeProductState>,
+    actions: Seq<LiveRuntimeProductAction>,
+    index: int,
+)
+    requires live_runtime_product_trace(states, actions),
+        0 <= index < states.len(),
+    ensures live_runtime_product_wf(states[index]),
+    decreases index,
+{
+    if index > 0 {
+        live_runtime_product_trace_prefix_wf(states, actions, index - 1);
+        live_runtime_product_step_preserves_wf(
+            states[index - 1], states[index], actions[index - 1],
+        );
+    }
+}
+
+// A production message EOF scores the child and then accepts it in one driver
+// call.  The two live-product actions refine that one observable transition.
+#[cfg(rpb3_live_push)]
+proof fn live_runtime_message_child_complete_map_dispatch(
+    scored: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires live_runtime_product_message_child_complete_step(scored, after),
+    ensures
+        admission::concrete_message_driver_step(
+            scored.source.product.bridge.admission,
+            admission::ConcreteFrameActionModel::Complete,
+        ) == Some(admission::ConcreteFrameOutcomeModel::ParentAccepted {
+            state: after.source.product.bridge.admission,
+        }),
+        after.source.product.bridge.transcript
+            == scored.source.product.bridge.transcript,
+{
+    let complete = map::IntegratedAdmissionAction::Message {
+        action: admission::ConcreteFrameActionModel::Complete,
+    };
+    assert(product_map_step(
+        scored.source.product, after.source.product, complete,
+    ));
+    assert(map::integrated_admission_driver_step(
+        scored.source.product.map, complete,
+    ) == Some(map::IntegratedAdmissionOutcome::MessageParentAccepted {
+        state: after.source.product.map,
+    }));
+    map::integrated_message_parent_accept_pop_shape(
+        scored.source.product.map, after.source.product.map,
+    );
+}
+
+#[cfg(rpb3_live_push)]
+proof fn live_runtime_message_child_complete_pre_pop_exact(
+    before: LiveRuntimeProductState,
+    scored: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        live_runtime_product_message_child_score_step(before, scored),
+        live_runtime_product_message_child_complete_step(scored, after),
+        runtime_source::runtime_child_eof_gate(
+            before.source.runtime, scored.source.product.bridge,
+        ),
+        admission::concrete_message_driver_step(
+            scored.source.product.bridge.admission,
+            admission::ConcreteFrameActionModel::Complete,
+        ) == Some(admission::ConcreteFrameOutcomeModel::ParentAccepted {
+            state: after.source.product.bridge.admission,
+        }),
+        after.source.product.bridge.transcript
+            == scored.source.product.bridge.transcript,
+    ensures runtime_source::runtime_message_eof_child_accept(
+        before.source.runtime, scored.source.product.bridge,
+    ) == Some(after.source.runtime),
+{
+    let pre_pop = runtime_source::RuntimeFrameImage {
+        score: scored.source.product.bridge,
+        ..before.source.runtime
+    };
+    assert(pre_pop == scored.source.runtime);
+    assert(after.source.runtime == runtime_source::runtime_after_admission_step(
+        pre_pop, after.source.product.bridge.admission,
+    ));
+    reveal(runtime_source::runtime_child_eof_gate);
+    assert(runtime_source::runtime_frame_image_wf(pre_pop));
+    reveal(runtime_source::runtime_pre_pop_child_accept);
+    reveal(runtime_source::runtime_message_eof_child_accept);
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_child_complete_runtime_exact(
+    before: LiveRuntimeProductState,
+    scored: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        live_runtime_product_message_child_score_step(before, scored),
+        live_runtime_product_message_child_complete_step(scored, after),
+    ensures runtime_source::runtime_message_eof_child_accept(
+        before.source.runtime, scored.source.product.bridge,
+    ) == Some(after.source.runtime),
+{
+    live_runtime_product_message_child_score_enables_runtime_gate(before, scored);
+    live_runtime_message_child_complete_map_dispatch(scored, after);
+    live_runtime_message_child_complete_pre_pop_exact(before, scored, after);
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_child_eof_driver_exact(
+    before: LiveRuntimeProductState,
+    scored: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        live_runtime_product_message_child_score_step(before, scored),
+        live_runtime_product_message_child_complete_step(scored, after),
+    ensures
+        runtime_source::runtime_message_driver_step(
+            before.source.runtime, runtime_source::RuntimeMessageEvent::Eof,
+        ) == Some(runtime_source::RuntimeMessageOutcome::ParentAccepted {
+            image: after.source.runtime,
+        }),
+{
+    live_runtime_product_message_child_score_enables_runtime_gate(before, scored);
+    live_runtime_product_message_child_complete_runtime_exact(
+        before, scored, after,
+    );
+    assert(before.source.runtime.score == before.source.product.bridge);
+    assert(score_bridge::bridge_score_finish_selected(before.source.runtime.score)
+        == Some(scored.source.product.bridge));
+    assert(runtime_source::runtime_message_eof_child_accept(
+        before.source.runtime, scored.source.product.bridge,
+    ) == Some(after.source.runtime));
+}
+
 #[cfg(rpb3_live_witness)]
 pub open spec fn live_runtime_empty_send_initial() -> Option<LiveRuntimeProductState> {
     let root = finish::empty_send_finish_root();
@@ -7625,6 +10972,79 @@ pub proof fn live_runtime_empty_send_product_root_step_is_exact()
 }
 
 #[cfg(rpb3_live_witness)]
+pub open spec fn live_runtime_empty_send_scored_state()
+    -> Option<LiveRuntimeProductState> {
+    match (
+        live_runtime_empty_send_initial(),
+        live_runtime_empty_send_scored_product(),
+    ) {
+        (Some(before), Some(product)) => Some(LiveRuntimeProductState {
+            source: LiveSourceProductState {
+                product,
+                runtime: runtime_source::RuntimeFrameImage {
+                    score: product.bridge,
+                    ..before.source.runtime
+                },
+                arena: product_runtime_arena_from_score(product.bridge.transcript),
+                wire: before.source.wire,
+            },
+            cursors: before.cursors,
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(rpb3_live_witness)]
+pub proof fn live_runtime_empty_send_root_score_live_step_is_exact()
+    ensures
+        live_runtime_empty_send_scored_state().is_some(),
+        live_runtime_product_root_score_step(
+            live_runtime_empty_send_initial().unwrap(),
+            live_runtime_empty_send_scored_state().unwrap(),
+        ),
+{
+    live_runtime_empty_send_initial_is_wf();
+    live_runtime_empty_send_root_end_is_ready();
+    live_runtime_empty_send_source_finish_is_reachable();
+    live_runtime_empty_send_product_root_step_is_exact();
+    let before = live_runtime_empty_send_initial().unwrap();
+    let after = live_runtime_empty_send_scored_state().unwrap();
+    assert(live_runtime_product_root_score_step(before, after));
+}
+
+#[cfg(rpb3_live_witness)]
+pub proof fn live_runtime_empty_send_root_score_live_after_is_wf()
+    ensures
+        live_runtime_empty_send_scored_state().is_some(),
+        live_runtime_product_wf(live_runtime_empty_send_scored_state().unwrap()),
+{
+    live_runtime_empty_send_root_score_live_step_is_exact();
+    let before = live_runtime_empty_send_initial().unwrap();
+    let after = live_runtime_empty_send_scored_state().unwrap();
+    live_runtime_product_root_score_preserves_wf(before, after);
+}
+
+#[cfg(rpb3_live_witness)]
+pub proof fn live_runtime_empty_send_root_score_live_trace_is_exact()
+    ensures
+        live_runtime_product_trace(
+            seq![
+                live_runtime_empty_send_initial().unwrap(),
+                live_runtime_empty_send_scored_state().unwrap(),
+            ],
+            seq![LiveRuntimeProductAction::RootScore],
+        ),
+{
+    live_runtime_empty_send_root_score_live_after_is_wf();
+    live_runtime_empty_send_root_score_live_step_is_exact();
+    let before = live_runtime_empty_send_initial().unwrap();
+    let after = live_runtime_empty_send_scored_state().unwrap();
+    assert(live_runtime_product_root_score_step(before, after));
+    assert(live_runtime_product_step(before, after, LiveRuntimeProductAction::RootScore));
+    live_runtime_product_singleton_trace(before, after, LiveRuntimeProductAction::RootScore);
+}
+
+#[cfg(rpb3_live_witness)]
 pub proof fn live_runtime_empty_send_root_score_is_reachable()
     ensures
         live_runtime_empty_send_scored_product().is_some(),
@@ -7736,6 +11156,67 @@ pub proof fn live_runtime_empty_send_complete_is_exact(claimed: Seq<u8>)
         live_runtime_root_complete_matches_source(
             before, scored, returned, claimed,
         );
+    }
+}
+
+#[cfg(all(rpb3_terminal, rpb3_live_witness))]
+pub proof fn live_runtime_empty_send_root_complete_live_trace_is_exact(
+    claimed: Seq<u8>,
+)
+    ensures match runtime_source::runtime_message_driver_step(
+        live_runtime_empty_send_initial().unwrap().source.runtime,
+        runtime_source::RuntimeMessageEvent::Eof,
+    ) {
+        Some(runtime_source::RuntimeMessageOutcome::RootReturned { returned }) => {
+            &&& live_runtime_product_trace(
+                seq![
+                    live_runtime_empty_send_initial().unwrap(),
+                    live_runtime_empty_send_scored_state().unwrap(),
+                ],
+                seq![LiveRuntimeProductAction::RootComplete { returned }],
+            )
+            &&& returned.remaining_frames == 0
+            &&& returned.pre_pop
+                == live_runtime_empty_send_scored_state().unwrap().source.runtime
+            &&& match map::integrated_admission_driver_step(
+                live_runtime_empty_send_scored_state().unwrap().source.product.map,
+                map::IntegratedAdmissionAction::Message {
+                    action: admission::ConcreteFrameActionModel::Complete,
+                },
+            ) {
+                Some(map::IntegratedAdmissionOutcome::RootFinished { root_summary }) => {
+                    let scored = live_runtime_empty_send_scored_state().unwrap()
+                        .source.product.bridge;
+                    let handle = root_summary.score_handle;
+                    &&& root_summary == returned.summary
+                    &&& score_bridge::bridge_root_first_difference(scored, claimed).is_none()
+                        == rpb3_score_transcript::claimed_score_matches(
+                            scored.transcript, handle, claimed,
+                        )
+                },
+                _ => false,
+            }
+        },
+        _ => false,
+    },
+{
+    live_runtime_empty_send_root_score_live_step_is_exact();
+    live_runtime_empty_send_complete_is_exact(claimed);
+    let before = live_runtime_empty_send_initial().unwrap();
+    let after = live_runtime_empty_send_scored_state().unwrap();
+    assert(before.source.product.bridge.admission.frames[0].frame_kind == 1);
+    assert(before.source.product.bridge.admission.frames[0].waiting_id.is_none());
+    assert(before.source.product.bridge.admission.frames[0].score_handle.is_none());
+    if let Some(runtime_source::RuntimeMessageOutcome::RootReturned { returned }) =
+        runtime_source::runtime_message_driver_step(
+            before.source.runtime, runtime_source::RuntimeMessageEvent::Eof,
+        )
+    {
+        assert(live_runtime_product_root_complete_step(before, after, returned));
+        live_runtime_product_singleton_trace(
+            before, after, LiveRuntimeProductAction::RootComplete { returned },
+        );
+        live_runtime_product_root_complete_is_exact(before, after, returned, claimed);
     }
 }
 

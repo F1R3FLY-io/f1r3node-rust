@@ -60,6 +60,216 @@ pub struct SourceFrameRequestImage {
     pub ghost child: admission::AdmissionFrameState,
 }
 
+/// `same_view` in the Rust admission layer compares the selected region with
+/// the region retained by the pushed frame. The identity is an observed view
+/// identity; the indexed image also retains every byte anchor and the end.
+pub struct SourceSelectedFrameView {
+    pub identity: usize,
+    pub ghost indexed: admission::AdmissionIndexedSourceImage,
+}
+
+pub open spec fn source_selected_frame_view_matches(
+    selected: SourceSelectedFrameView, retained: SourceSelectedFrameView,
+) -> bool {
+    selected.identity == retained.identity
+        && admission::admission_indexed_source_wf(selected.indexed)
+        && selected.indexed.bytes == retained.indexed.bytes
+        && selected.indexed.positions == retained.indexed.positions
+        && selected.indexed.end == retained.indexed.end
+}
+
+/// The scalar state tested by `IndexedCanonicalFieldCursor::matches_initial_view`.
+/// Its two retained views are deliberately separate: a fresh offset alone does
+/// not prove that either the cursor message or its reader selects this region.
+pub struct SourceInitialIndexedCursor {
+    pub ghost message_view: SourceSelectedFrameView,
+    pub ghost reader_view: SourceSelectedFrameView,
+    pub enforce_numeric_order: bool,
+    pub last_field: u32,
+    pub fields_read: usize,
+    pub terminal_error_present: bool,
+    pub reader_offset: usize,
+    pub reader_bytes_read: usize,
+    pub reader_bytes_traversed: usize,
+    pub reader_empty: bool,
+}
+
+pub open spec fn source_initial_indexed_cursor_matches(
+    cursor: SourceInitialIndexedCursor,
+    selected: SourceSelectedFrameView,
+    enforce_numeric_order: bool,
+) -> bool {
+    source_selected_frame_view_matches(selected, cursor.message_view)
+        && source_selected_frame_view_matches(selected, cursor.reader_view)
+        && cursor.enforce_numeric_order == enforce_numeric_order
+        && cursor.last_field == 0
+        && cursor.fields_read == 0
+        && !cursor.terminal_error_present
+        && cursor.reader_offset == 0
+        && cursor.reader_bytes_read == 0
+        && cursor.reader_bytes_traversed == 0
+        && cursor.reader_empty == (selected.indexed.bytes.len() == 0)
+}
+
+/// Fields absent from `AdmissionFrameState` remain explicit source observations.
+/// They must be extracted from the actual pushed Rust frame before this model
+/// can be used as a production simulation theorem.
+pub enum SourceFreshFrameDetail {
+    Message {
+        request_program_identity: usize,
+        pushed_program_identity: usize,
+        program_type_id: u16,
+        field_count: usize,
+        ghost cursor: SourceInitialIndexedCursor,
+        seen_len: usize,
+        seen_nonempty: bool,
+        semantic_slots_len: usize,
+        semantic_slots_nonempty: bool,
+        waiting_present: bool,
+        par_components: usize,
+        par_locally_free_range_present: bool,
+    },
+    Map {
+        request_owner_identity: usize,
+        pushed_owner_identity: usize,
+        request_field: u32,
+        pushed_field: u32,
+        request_value_type_id: u16,
+        pushed_value_type_id: u16,
+        ghost cursor: SourceInitialIndexedCursor,
+        key_present: bool,
+        key_position_present: bool,
+        saw_value: bool,
+        value_position_present: bool,
+        value_present: bool,
+        waiting_value: bool,
+    },
+    EPathMap {
+        request_owner_identity: usize,
+        pushed_owner_identity: usize,
+        request_field: u32,
+        pushed_field: u32,
+        cursor_mode: u8,
+        frame_mode: u8,
+        value_table_bytes_read: usize,
+        value_table_bytes_traversed: usize,
+        topology_events: usize,
+        value_records: usize,
+        terminal_checks: usize,
+        cursor_terminal_source_present: bool,
+        waiting_present: bool,
+        waiting_child_present: bool,
+        path_obligation_present: bool,
+        entries_canonical_path_stable: bool,
+        last_source: admission::AdmissionSourceAnchor,
+        terminal_source_present: bool,
+    },
+    CanonicalPath {
+        bytes_yielded: usize,
+        bytes_traversed: usize,
+        reducer_obligation_present: bool,
+        waiting_present: bool,
+        waiting_child_present: bool,
+        terminal_source_present: bool,
+    },
+}
+
+pub struct SourceFreshFrameObservation {
+    pub ghost selected: SourceSelectedFrameView,
+    pub ghost pushed: SourceSelectedFrameView,
+    pub ghost observed_frame: admission::AdmissionFrameState,
+    pub ghost detail: SourceFreshFrameDetail,
+}
+
+/// Source-shaped post-push check. `observed_frame` is the frame actually at
+/// the worklist top, whereas `request.child` is the pre-push model argument;
+/// the driver may add a return obligation between those two observations.
+pub open spec fn source_fresh_frame_matches(
+    request: SourceFrameRequestImage,
+    pushed: admission::AdmissionFrameState,
+    observed: SourceFreshFrameObservation,
+) -> bool {
+    &&& observed.observed_frame == pushed
+    &&& source_frame_request_kind_code(request.request_kind) == pushed.frame_kind
+    &&& source_selected_frame_view_matches(observed.selected, observed.pushed)
+    &&& pushed.source_bytes == observed.pushed.indexed.bytes
+    &&& pushed.region_start == 0
+    &&& pushed.region_end as int == observed.pushed.indexed.bytes.len()
+    &&& pushed.cursor == 0
+    &&& admission::admission_indexed_source_position(observed.pushed.indexed, 0)
+        == Some(admission::AdmissionSourceAnchor {
+            source: pushed.physical_source,
+            offset: pushed.physical_start,
+        })
+    &&& match (request.request_kind, observed.detail) {
+        (SourceFrameRequestKind::Message, SourceFreshFrameDetail::Message {
+            request_program_identity, pushed_program_identity, program_type_id,
+            field_count, cursor, seen_len, seen_nonempty, semantic_slots_len,
+            semantic_slots_nonempty, waiting_present, par_components,
+            par_locally_free_range_present,
+        }) => {
+            &&& request_program_identity == pushed_program_identity
+            &&& pushed.program_type_id == program_type_id
+            &&& pushed.slot_count == field_count
+            &&& source_initial_indexed_cursor_matches(cursor, observed.pushed, false)
+            &&& pushed.last_slot.is_none()
+            &&& pushed.seen == Set::empty()
+            &&& pushed.scalar_slots == Set::empty()
+            &&& pushed.scalar_occurrences.len() == 0
+            &&& pushed.returns.len() == 0
+            &&& seen_len == field_count && !seen_nonempty
+            &&& semantic_slots_len == field_count && !semantic_slots_nonempty
+            &&& pushed.waiting_id.is_none() && !waiting_present
+            &&& par_components == 0 && !par_locally_free_range_present
+        },
+        (SourceFrameRequestKind::Map, SourceFreshFrameDetail::Map {
+            request_owner_identity, pushed_owner_identity, request_field,
+            pushed_field, request_value_type_id, pushed_value_type_id,
+            cursor, key_present, key_position_present, saw_value,
+            value_position_present, value_present, waiting_value,
+        }) => {
+            &&& request_owner_identity == pushed_owner_identity
+            &&& request_field == pushed_field
+            &&& request_value_type_id == pushed_value_type_id
+            &&& source_initial_indexed_cursor_matches(cursor, observed.pushed, true)
+            &&& !key_present && !key_position_present && !saw_value
+            &&& !value_position_present && !value_present && !waiting_value
+        },
+        (SourceFrameRequestKind::EPathMap, SourceFreshFrameDetail::EPathMap {
+            request_owner_identity, pushed_owner_identity, request_field,
+            pushed_field, cursor_mode, frame_mode, value_table_bytes_read,
+            value_table_bytes_traversed, topology_events, value_records,
+            terminal_checks, cursor_terminal_source_present, waiting_present,
+            waiting_child_present, path_obligation_present,
+            entries_canonical_path_stable, last_source, terminal_source_present,
+        }) => {
+            &&& request_owner_identity == pushed_owner_identity
+            &&& request_field == pushed_field && cursor_mode == frame_mode
+            &&& value_table_bytes_read == 0 && value_table_bytes_traversed == 0
+            &&& topology_events == 0 && value_records == 0
+            &&& terminal_checks == 0 && !cursor_terminal_source_present
+            &&& pushed.waiting_id.is_none() && !waiting_present
+            &&& !waiting_child_present && !path_obligation_present
+            &&& entries_canonical_path_stable
+            &&& last_source == admission::AdmissionSourceAnchor {
+                source: pushed.physical_source,
+                offset: pushed.physical_start,
+            }
+            &&& !terminal_source_present
+        },
+        (SourceFrameRequestKind::CanonicalPath, SourceFreshFrameDetail::CanonicalPath {
+            bytes_yielded, bytes_traversed, reducer_obligation_present,
+            waiting_present, waiting_child_present, terminal_source_present,
+        }) => {
+            &&& bytes_yielded == 0 && bytes_traversed == 0
+            &&& !reducer_obligation_present && pushed.waiting_id.is_none()
+            &&& !waiting_present && !waiting_child_present
+            &&& !terminal_source_present
+        },
+        _ => false,
+    }
+}
+
 pub struct SourceFramePushStorageImage {
     pub request_kind: SourceFrameRequestKind,
     pub before_len: usize,
@@ -263,6 +473,118 @@ pub open spec fn source_checked_frame_request_push_indexed(
             before, request.field, request.child, parent_source,
             storage.after_capacity,
         )
+    }
+}
+
+/// This checked route corresponds to `matches_pushed_frame` only when the
+/// supplied observation has been taken from the actual post-push top frame.
+/// The older route above models the Vec/storage check and frame-kind check.
+pub open spec fn source_checked_frame_request_push_fresh(
+    before: RuntimeFrameImage,
+    request: SourceFrameRequestImage,
+    storage: SourceFramePushStorageImage,
+    observed: SourceFreshFrameObservation,
+) -> Option<RuntimeFrameImage> {
+    match source_checked_frame_request_push(before, request, storage) {
+        Some(after) if source_fresh_frame_matches(
+            request, after.score.admission.frames.last(), observed,
+        ) => Some(after),
+        _ => None,
+    }
+}
+
+/// For a Message/Map field push, the selected child is precisely the indexed
+/// payload view. CanonicalPath and EPathMap Push sources have separate path
+/// reducers, so this indexed-field relation does not purport to cover them.
+pub open spec fn source_indexed_child_selected_view_matches(
+    before: RuntimeFrameImage,
+    request: SourceFrameRequestImage,
+    parent_source: admission::AdmissionIndexedSourceImage,
+    selected: SourceSelectedFrameView,
+) -> bool {
+    if before.score.admission.frames.len() == 0 {
+        false
+    } else {
+        let parent = before.score.admission.frames.last();
+        let child_source = admission::admission_indexed_field_child_source(
+            parent, parent_source, request.field,
+        );
+        &&& (source_frame_request_kind_code(request.request_kind) == 1
+            || source_frame_request_kind_code(request.request_kind) == 2)
+        &&& child_source.is_some()
+        &&& admission::admission_indexed_source_wf(selected.indexed)
+        &&& selected.indexed.bytes == child_source.unwrap().bytes
+        &&& selected.indexed.positions == child_source.unwrap().positions
+        &&& selected.indexed.end == child_source.unwrap().end
+    }
+}
+
+pub open spec fn source_checked_frame_request_push_indexed_fresh(
+    before: RuntimeFrameImage,
+    request: SourceFrameRequestImage,
+    parent_source: admission::AdmissionIndexedSourceImage,
+    storage: SourceFramePushStorageImage,
+    observed: SourceFreshFrameObservation,
+) -> Option<RuntimeFrameImage> {
+    if !source_indexed_child_selected_view_matches(
+        before, request, parent_source, observed.selected,
+    ) {
+        None
+    } else {
+        match source_checked_frame_request_push_indexed(
+            before, request, parent_source, storage,
+        ) {
+            Some(after) if source_fresh_frame_matches(
+                request, after.score.admission.frames.last(), observed,
+            ) => Some(after),
+            _ => None,
+        }
+    }
+}
+
+pub struct SourceFreshRootObservation {
+    pub ghost frame: SourceFreshFrameObservation,
+    pub before_len: usize,
+    pub after_len: usize,
+    pub score_entries_before: usize,
+    pub score_entries_after: usize,
+}
+
+/// `RootInitializationSource::matches_root` accepts only Message and
+/// CanonicalPath roots. The root starts with an empty score arena and one
+/// fresh frame; the view/cursor checks are shared with child publication.
+pub open spec fn source_fresh_root_matches(
+    request: SourceFrameRequestImage,
+    observed: SourceFreshRootObservation,
+) -> bool {
+    &&& observed.before_len == 0
+    &&& observed.after_len == 1
+    &&& observed.score_entries_before == 0
+    &&& observed.score_entries_after == 0
+    &&& request.child.body_id == 0
+    &&& request.child.return_id.is_none()
+    &&& request.child.score_handle.is_none()
+    &&& source_fresh_frame_matches(request, request.child, observed.frame)
+    &&& match request.request_kind {
+        SourceFrameRequestKind::Message => admission::admission_root_initial(request.child),
+        SourceFrameRequestKind::CanonicalPath =>
+            admission::admission_frame_wf(request.child)
+                && admission::admission_canonical_path_slotless(request.child)
+                && request.child.program_type_id == 0
+                && request.child.nested_started == 0
+                && request.child.nested_resolved == 0,
+        _ => false,
+    }
+}
+
+pub open spec fn source_checked_fresh_root(
+    request: SourceFrameRequestImage,
+    observed: SourceFreshRootObservation,
+) -> Option<admission::AdmissionState> {
+    if source_fresh_root_matches(request, observed) {
+        Some(admission::admission_initial_state(request.child))
+    } else {
+        None
     }
 }
 
@@ -764,6 +1086,25 @@ pub open spec fn runtime_continue(
     } }
 }
 
+pub open spec fn runtime_continue_indexed(
+    before: RuntimeFrameImage, field: admission::IndexedCanonicalFieldModel,
+    parent_source: admission::AdmissionIndexedSourceImage,
+) -> Option<RuntimeFrameImage> {
+    if !runtime_frame_image_wf(before) {
+        None
+    } else { match admission::concrete_message_driver_step(
+        before.score.admission,
+        admission::ConcreteFrameActionModel::ContinueIndexed {
+            field, parent_source,
+        },
+    ) {
+        Some(admission::ConcreteFrameOutcomeModel::Continued { state }) => {
+            Some(runtime_after_admission_step(before, state))
+        },
+        _ => None,
+    } }
+}
+
 pub open spec fn runtime_push(
     before: RuntimeFrameImage, field: admission::IndexedCanonicalFieldModel,
     child: admission::AdmissionFrameState, observed_capacity: usize,
@@ -918,6 +1259,28 @@ pub open spec fn runtime_child_eof_gate(
             == before.score.admission.frames.len()
         && after_finish.admission.pushed == before.score.admission.pushed
         && after_finish.admission.completed == before.score.admission.completed
+}
+
+pub proof fn runtime_child_eof_gate_intro(
+    before: RuntimeFrameImage, after_finish: bridge::ScoreAdmissionBridge,
+)
+    requires
+        runtime_frame_image_wf(before),
+        before.score.admission.frames.len() > 1,
+        before.score.admission.frames.last().frame_kind == 1,
+        before.score.admission.frames.last().waiting_id.is_none(),
+        before.score.admission.frames.last().cursor
+            == before.score.admission.frames.last().region_end,
+        before.score.admission.frames.last().score_handle.is_none(),
+        runtime_score_source_edge(before.score, after_finish),
+        bridge::bridge_well_formed(after_finish),
+        admission::admission_state_wf(after_finish.admission),
+        after_finish.admission.frames.len() == before.score.admission.frames.len(),
+        after_finish.admission.pushed == before.score.admission.pushed,
+        after_finish.admission.completed == before.score.admission.completed,
+    ensures runtime_child_eof_gate(before, after_finish),
+{
+    reveal(runtime_child_eof_gate);
 }
 
 pub proof fn runtime_child_eof_gate_depth(
@@ -2779,6 +3142,86 @@ pub proof fn source_checked_frame_request_push_refines(
     }
 }
 
+pub proof fn source_checked_frame_request_push_fresh_refines(
+    before: RuntimeFrameImage,
+    request: SourceFrameRequestImage,
+    storage: SourceFramePushStorageImage,
+    observed: SourceFreshFrameObservation,
+)
+    ensures match source_checked_frame_request_push_fresh(
+        before, request, storage, observed,
+    ) {
+        None => true,
+        Some(after) => {
+            &&& source_fresh_frame_matches(
+                request, after.score.admission.frames.last(), observed,
+            )
+            &&& after.score.admission.frames.last() == observed.observed_frame
+            &&& runtime_frame_image_wf(after)
+            &&& after.score.admission.frames.len() == storage.after_len as int
+        },
+    },
+{
+    source_checked_frame_request_push_refines(before, request, storage);
+}
+
+pub proof fn source_checked_frame_request_push_indexed_fresh_refines(
+    before: RuntimeFrameImage,
+    request: SourceFrameRequestImage,
+    parent_source: admission::AdmissionIndexedSourceImage,
+    storage: SourceFramePushStorageImage,
+    observed: SourceFreshFrameObservation,
+)
+    ensures match source_checked_frame_request_push_indexed_fresh(
+        before, request, parent_source, storage, observed,
+    ) {
+        None => true,
+        Some(after) => {
+            &&& source_indexed_child_selected_view_matches(
+                before, request, parent_source, observed.selected,
+            )
+            &&& source_fresh_frame_matches(
+                request, after.score.admission.frames.last(), observed,
+            )
+            &&& after.score.admission.frames.last() == observed.observed_frame
+            &&& runtime_frame_image_wf(after)
+            &&& after.score.admission.frames.len() == storage.after_len as int
+        },
+    },
+{
+    source_checked_frame_request_push_indexed_refines(
+        before, request, parent_source, storage,
+    );
+}
+
+pub proof fn source_checked_fresh_root_refines(
+    request: SourceFrameRequestImage,
+    observed: SourceFreshRootObservation,
+)
+    ensures match source_checked_fresh_root(request, observed) {
+        None => true,
+        Some(state) => {
+            &&& source_fresh_root_matches(request, observed)
+            &&& state.frames.len() == 1
+            &&& state.frames[0] == observed.frame.observed_frame
+            &&& state.arena.len() == 0
+            &&& state.pushed == 1
+            &&& state.completed == 0
+        },
+    },
+{}
+
+pub proof fn source_initial_indexed_cursor_rejects_consumed(
+    cursor: SourceInitialIndexedCursor,
+    selected: SourceSelectedFrameView,
+    enforce_numeric_order: bool,
+)
+    requires cursor.fields_read > 0 || cursor.reader_bytes_traversed > 0,
+    ensures !source_initial_indexed_cursor_matches(
+        cursor, selected, enforce_numeric_order,
+    ),
+{}
+
 pub proof fn runtime_continue_retains_stack_and_score(
     before: RuntimeFrameImage, field: admission::IndexedCanonicalFieldModel,
 )
@@ -2803,6 +3246,39 @@ pub proof fn runtime_continue_retains_stack_and_score(
         admission::concrete_message_driver_preserves_wf_and_arena(
             before.score.admission,
             admission::ConcreteFrameActionModel::Continue { field },
+        );
+    }
+}
+
+pub proof fn runtime_continue_indexed_retains_stack_and_score(
+    before: RuntimeFrameImage, field: admission::IndexedCanonicalFieldModel,
+    parent_source: admission::AdmissionIndexedSourceImage,
+)
+    ensures match runtime_continue_indexed(before, field, parent_source) {
+        None => true,
+        Some(after) => {
+            &&& after.score.admission.frames.len()
+                == before.score.admission.frames.len()
+            &&& after.score.admission.completed
+                == before.score.admission.completed
+            &&& after.score.admission.arena == before.score.admission.arena
+            &&& after.score.transcript == before.score.transcript
+            &&& after.capacity == before.capacity
+        },
+    },
+{
+    admission::concrete_message_driver_step_simulates(
+        before.score.admission,
+        admission::ConcreteFrameActionModel::ContinueIndexed {
+            field, parent_source,
+        },
+    );
+    if admission::admission_state_wf(before.score.admission) {
+        admission::concrete_message_driver_preserves_wf_and_arena(
+            before.score.admission,
+            admission::ConcreteFrameActionModel::ContinueIndexed {
+                field, parent_source,
+            },
         );
     }
 }

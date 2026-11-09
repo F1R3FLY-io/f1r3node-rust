@@ -1902,6 +1902,2292 @@ pub open spec fn wire_runtime_next_field(
     }
 }
 
+/// Source shape of the production Message cursor before `next_field`.
+/// `IndexedCanonicalFieldCursor::in_prost_slot_order` disables numeric wire
+/// ordering, and its reader and retained message have one indexed view.
+/// The premise that a Rust indexed backing projects to `backing` and its
+/// exact bytes/anchors/end is separate from this scalar cursor-state lemma.
+pub open spec fn wire_runtime_message_pre_read(
+    backing: WireRuntimeBackingImage,
+    reader_at: usize,
+    last_field: u32,
+    fields_read: usize,
+) -> WireRuntimeCursorImage {
+    WireRuntimeCursorImage {
+        message: backing,
+        reader_view: backing,
+        reader_at,
+        cursor_yielded: reader_at,
+        last_field,
+        enforce_numeric_order: false,
+        fields_read,
+        terminal_error: None,
+    }
+}
+
+/// The arguments are the fields of the verified
+/// `BorrowedIndexedWindow::image()`. Its `byte_at` and `position_at`
+/// postconditions supply the byte and physical-anchor interpretation for
+/// every offset, including an optional distinct terminal boundary.
+pub open spec fn wire_runtime_borrowed_window(
+    bytes: Seq<u8>, source: u32, absolute_start: usize, start: usize, len: usize,
+    end_source: Option<u32>, end_offset: usize,
+) -> WireRuntimeBackingImage {
+    WireRuntimeBackingImage::Borrowed {
+        bytes, source, absolute_start, start, len,
+        end_override: match end_source {
+            Some(source) => Some(WireSourceAnchor { source, offset: end_offset }),
+            None => None,
+        },
+    }
+}
+
+pub open spec fn wire_borrowed_window_region(
+    bytes: Seq<u8>, source: u32, absolute_start: usize, start: usize, len: usize,
+    end_source: Option<u32>, end_offset: usize,
+) -> WireRegionImage {
+    WireRegionImage {
+        bytes: bytes.subrange(start as int, start as int + len as int),
+        anchors: Seq::new(len as nat, |i: int| WireSourceAnchor {
+            source,
+            offset: (absolute_start as int + start as int + i) as usize,
+        }),
+        end: match end_source {
+            Some(source) => WireSourceAnchor { source, offset: end_offset },
+            None => WireSourceAnchor {
+                source,
+                offset: (absolute_start as int + start as int + len as int) as usize,
+            },
+        },
+    }
+}
+
+/// A borrowed window's constructor fields determine the entire region image.
+/// No pointwise byte/anchor agreement with a separately supplied receipt is
+/// assumed. The arithmetic bound is the formal projection's domain.
+pub proof fn wire_runtime_borrowed_window_projects(
+    bytes: Seq<u8>, source: u32, absolute_start: usize, start: usize, len: usize,
+    end_source: Option<u32>, end_offset: usize,
+)
+    requires
+        start as int + len as int <= bytes.len(),
+        absolute_start as int + start as int + len as int <= usize::MAX as int,
+    ensures
+        wire_runtime_project_region(wire_runtime_borrowed_window(
+            bytes, source, absolute_start, start, len, end_source, end_offset,
+        )) == Some(wire_borrowed_window_region(
+            bytes, source, absolute_start, start, len, end_source, end_offset,
+        )),
+{
+}
+
+pub proof fn wire_runtime_message_pre_read_projects(
+    backing: WireRuntimeBackingImage,
+    observed: WireRegionImage,
+    reader_at: usize,
+    last_field: u32,
+    fields_read: usize,
+)
+    requires
+        // Rust's indexed body must independently project to these exact
+        // bytes, physical anchors, and terminal anchor.
+        wire_runtime_project_region(backing) == Some(observed),
+        observed.bytes.len() <= usize::MAX as int,
+        reader_at as int <= observed.bytes.len(),
+    ensures {
+        let state = wire_runtime_message_pre_read(
+            backing, reader_at, last_field, fields_read,
+        );
+        &&& wire_runtime_project_region(state.message) == Some(observed)
+        &&& wire_runtime_project_region(state.reader_view) == Some(observed)
+        &&& wire_runtime_derive_cursor(state).is_some()
+        &&& wire_concrete_cursor_wf(wire_runtime_derive_cursor(state).unwrap())
+        &&& wire_runtime_cursor_project(state)
+            == Some(WireSourceState {
+                cursor: admission::IndexedCanonicalFieldCursorModel {
+                    region_start: 0,
+                    region_end: observed.bytes.len() as usize,
+                    next: reader_at,
+                    source_bytes: observed.bytes,
+                },
+                last_field,
+                enforce_numeric_order: false,
+                terminal_error: None,
+            })
+    },
+{
+    let state = wire_runtime_message_pre_read(
+        backing, reader_at, last_field, fields_read,
+    );
+    let derived = wire_runtime_derive_cursor(state).unwrap();
+    assert(wire_backing_project(derived.message) == Some(observed));
+    assert(wire_backing_project(derived.reader_view) == Some(observed));
+    assert(wire_concrete_cursor_project(derived)
+        == Some(WireSourceState {
+            cursor: admission::IndexedCanonicalFieldCursorModel {
+                region_start: 0,
+                region_end: observed.bytes.len() as usize,
+                next: reader_at,
+                source_bytes: observed.bytes,
+            },
+            last_field,
+            enforce_numeric_order: false,
+            terminal_error: None,
+        }));
+    assert(wire_concrete_cursor_wf(derived));
+}
+
+/// For the verified borrowed backing, the pre-read cursor obtains its source
+/// bytes, byte anchors, and end anchor from the constructor image itself.
+/// Frozen and Composed still require production index/DAG extraction to bind
+/// their ordinary Rust accessors to `wire_frozen_at`/`wire_source_tree_at`.
+pub proof fn wire_runtime_borrowed_message_pre_read_projects(
+    bytes: Seq<u8>, source: u32, absolute_start: usize, start: usize, len: usize,
+    end_source: Option<u32>, end_offset: usize,
+    reader_at: usize, last_field: u32, fields_read: usize,
+)
+    requires
+        start as int + len as int <= bytes.len(),
+        absolute_start as int + start as int + len as int <= usize::MAX as int,
+        reader_at <= len,
+    ensures {
+        let backing = wire_runtime_borrowed_window(
+            bytes, source, absolute_start, start, len, end_source, end_offset,
+        );
+        let observed = wire_borrowed_window_region(
+            bytes, source, absolute_start, start, len, end_source, end_offset,
+        );
+        let state = wire_runtime_message_pre_read(
+            backing, reader_at, last_field, fields_read,
+        );
+        &&& wire_runtime_project_region(state.message) == Some(observed)
+        &&& wire_runtime_project_region(state.reader_view) == Some(observed)
+        &&& wire_runtime_derive_cursor(state).is_some()
+        &&& wire_concrete_cursor_wf(wire_runtime_derive_cursor(state).unwrap())
+        &&& wire_runtime_cursor_project(state)
+            == Some(WireSourceState {
+                cursor: admission::IndexedCanonicalFieldCursorModel {
+                    region_start: 0,
+                    region_end: len,
+                    next: reader_at,
+                    source_bytes: observed.bytes,
+                },
+                last_field,
+                enforce_numeric_order: false,
+                terminal_error: None,
+            })
+    },
+{
+    let backing = wire_runtime_borrowed_window(
+        bytes, source, absolute_start, start, len, end_source, end_offset,
+    );
+    let observed = wire_borrowed_window_region(
+        bytes, source, absolute_start, start, len, end_source, end_offset,
+    );
+    wire_runtime_borrowed_window_projects(
+        bytes, source, absolute_start, start, len, end_source, end_offset,
+    );
+    wire_runtime_message_pre_read_projects(
+        backing, observed, reader_at, last_field, fields_read,
+    );
+}
+
+/// The formal frozen image mirrors `PageFrozenBytes`: `wire_frozen_at`
+/// selects `logical_pages[absolute / 32]`, scans its leaf records, then reads
+/// a byte and provenance from the same page slot. The ordinary Rust
+/// `freeze`/`leaf_at` constructor-to-image relation remains the extraction
+/// obligation; no receipt-supplied byte or anchor equality is assumed here.
+pub open spec fn wire_runtime_frozen_from_index(
+    frozen: WireFrozenImage, start: usize, len: usize, root_end: WireSourceAnchor,
+) -> WireRuntimeBackingImage {
+    WireRuntimeBackingImage::Frozen { frozen, start, len, root_end }
+}
+
+pub open spec fn wire_frozen_index_region(
+    frozen: WireFrozenImage, start: usize, len: usize, root_end: WireSourceAnchor,
+) -> WireRegionImage {
+    WireRegionImage {
+        bytes: Seq::new(len as nat, |i: int|
+            wire_frozen_at(frozen, (start as int + i) as usize).unwrap().value),
+        anchors: Seq::new(len as nat, |i: int|
+            wire_frozen_at(frozen, (start as int + i) as usize).unwrap().anchor),
+        end: if start as int + len as int == frozen.len as int {
+            root_end
+        } else {
+            wire_frozen_at(frozen, (start as int + len as int) as usize).unwrap().anchor
+        },
+    }
+}
+
+/// The quantified premise is precisely in-range accessor totality for the
+/// ordinary-Rust frozen index. `freeze` builds its page/leaf table, but its
+/// constructor invariant is not yet a co-verified Verus postcondition.
+pub proof fn wire_runtime_frozen_index_projects(
+    frozen: WireFrozenImage, start: usize, len: usize, root_end: WireSourceAnchor,
+)
+    requires
+        start as int + len as int <= frozen.len as int,
+        forall|i: int| 0 <= i < frozen.len as int
+            ==> (#[trigger] wire_frozen_at(frozen, i as usize)).is_some(),
+    ensures
+        wire_runtime_project_region(wire_runtime_frozen_from_index(
+            frozen, start, len, root_end,
+        )) == Some(wire_frozen_index_region(frozen, start, len, root_end)),
+{
+    let backing = wire_runtime_frozen_from_index(frozen, start, len, root_end);
+    let located_root = Seq::new(frozen.len as nat, |i: int|
+        wire_frozen_at(frozen, i as usize).unwrap());
+    let derived = WireBackingImage::Frozen { located_root, start, len, root_end };
+    assert(wire_runtime_derive_backing(backing) == Some(derived));
+    assert(wire_backing_project(derived).is_some());
+    let projected = wire_backing_project(derived).unwrap();
+    let expected = wire_frozen_index_region(frozen, start, len, root_end);
+    assert(projected.bytes =~= expected.bytes) by {
+        assert forall|i: int| #![trigger projected.bytes[i]]
+            0 <= i < len as int implies projected.bytes[i] == expected.bytes[i] by {
+            let absolute = start as int + i;
+            assert(0 <= absolute < frozen.len as int);
+            assert(wire_frozen_at(frozen, absolute as usize).is_some());
+            assert(located_root[absolute] == wire_frozen_at(frozen, absolute as usize).unwrap());
+        }
+    }
+    assert(projected.anchors =~= expected.anchors) by {
+        assert forall|i: int| #![trigger projected.anchors[i]]
+            0 <= i < len as int implies projected.anchors[i] == expected.anchors[i] by {
+            let absolute = start as int + i;
+            assert(0 <= absolute < frozen.len as int);
+            assert(wire_frozen_at(frozen, absolute as usize).is_some());
+            assert(located_root[absolute] == wire_frozen_at(frozen, absolute as usize).unwrap());
+        }
+    }
+    if (start as int + len as int) < frozen.len as int {
+        let end_index = start as int + len as int;
+        assert(wire_frozen_at(frozen, end_index as usize).is_some());
+        assert(located_root[end_index] == wire_frozen_at(frozen, end_index as usize).unwrap());
+    }
+    assert(projected.end == expected.end);
+    assert(projected == expected);
+}
+
+/// The corresponding source-tree accessor follows each Branch2/Branch3
+/// child length to a Borrowed or Frozen leaf. The Arc DAG-to-`tree` image,
+/// including node lengths, child topology, and borrowed/frozen leaf images,
+/// is the remaining ordinary-Rust extraction obligation.
+pub open spec fn wire_runtime_composed_from_tree(
+    tree: WireSourceTreeImage, start: usize, len: usize, root_end: WireSourceAnchor,
+) -> WireRuntimeBackingImage {
+    WireRuntimeBackingImage::Composed { tree, start, len, root_end }
+}
+
+pub open spec fn wire_composed_tree_region(
+    tree: WireSourceTreeImage, start: usize, len: usize, root_end: WireSourceAnchor,
+) -> WireRegionImage {
+    WireRegionImage {
+        bytes: Seq::new(len as nat, |i: int|
+            wire_source_tree_at(tree, (start as int + i) as usize).unwrap().value),
+        anchors: Seq::new(len as nat, |i: int|
+            wire_source_tree_at(tree, (start as int + i) as usize).unwrap().anchor),
+        end: if start as int + len as int == tree.len as int {
+            root_end
+        } else {
+            wire_source_tree_at(tree, (start as int + len as int) as usize).unwrap().anchor
+        },
+    }
+}
+
+/// The quantified premise is in-range accessor totality for the ordinary-Rust
+/// Arc DAG. Its Branch2/Branch3 length and leaf bounds are not yet a
+/// co-verified Verus postcondition of `SourceTreeWindow::concat`/`subview`.
+pub proof fn wire_runtime_composed_tree_projects(
+    tree: WireSourceTreeImage, start: usize, len: usize, root_end: WireSourceAnchor,
+)
+    requires
+        start as int + len as int <= tree.len as int,
+        forall|i: int| 0 <= i < tree.len as int
+            ==> (#[trigger] wire_source_tree_at(tree, i as usize)).is_some(),
+    ensures
+        wire_runtime_project_region(wire_runtime_composed_from_tree(
+            tree, start, len, root_end,
+        )) == Some(wire_composed_tree_region(tree, start, len, root_end)),
+{
+    let backing = wire_runtime_composed_from_tree(tree, start, len, root_end);
+    let located_root = Seq::new(tree.len as nat, |i: int|
+        wire_source_tree_at(tree, i as usize).unwrap());
+    let derived = WireBackingImage::Composed { located_root, start, len, root_end };
+    assert(wire_runtime_derive_backing(backing) == Some(derived));
+    assert(wire_backing_project(derived).is_some());
+    let projected = wire_backing_project(derived).unwrap();
+    let expected = wire_composed_tree_region(tree, start, len, root_end);
+    assert(projected.bytes =~= expected.bytes) by {
+        assert forall|i: int| #![trigger projected.bytes[i]]
+            0 <= i < len as int implies projected.bytes[i] == expected.bytes[i] by {
+            let absolute = start as int + i;
+            assert(0 <= absolute < tree.len as int);
+            assert(wire_source_tree_at(tree, absolute as usize).is_some());
+            assert(located_root[absolute] == wire_source_tree_at(tree, absolute as usize).unwrap());
+        }
+    }
+    assert(projected.anchors =~= expected.anchors) by {
+        assert forall|i: int| #![trigger projected.anchors[i]]
+            0 <= i < len as int implies projected.anchors[i] == expected.anchors[i] by {
+            let absolute = start as int + i;
+            assert(0 <= absolute < tree.len as int);
+            assert(wire_source_tree_at(tree, absolute as usize).is_some());
+            assert(located_root[absolute] == wire_source_tree_at(tree, absolute as usize).unwrap());
+        }
+    }
+    if (start as int + len as int) < tree.len as int {
+        let end_index = start as int + len as int;
+        assert(wire_source_tree_at(tree, end_index as usize).is_some());
+        assert(located_root[end_index] == wire_source_tree_at(tree, end_index as usize).unwrap());
+    }
+    assert(projected.end == expected.end);
+    assert(projected == expected);
+}
+
+pub proof fn wire_runtime_frozen_message_pre_read_projects(
+    frozen: WireFrozenImage, start: usize, len: usize, root_end: WireSourceAnchor,
+    reader_at: usize, last_field: u32, fields_read: usize,
+)
+    requires
+        start as int + len as int <= frozen.len as int,
+        forall|i: int| 0 <= i < frozen.len as int
+            ==> (#[trigger] wire_frozen_at(frozen, i as usize)).is_some(),
+        reader_at <= len,
+    ensures {
+        let backing = wire_runtime_frozen_from_index(frozen, start, len, root_end);
+        let observed = wire_frozen_index_region(frozen, start, len, root_end);
+        let state = wire_runtime_message_pre_read(
+            backing, reader_at, last_field, fields_read,
+        );
+        &&& wire_runtime_project_region(state.message) == Some(observed)
+        &&& wire_runtime_project_region(state.reader_view) == Some(observed)
+        &&& wire_runtime_derive_cursor(state).is_some()
+        &&& wire_concrete_cursor_wf(wire_runtime_derive_cursor(state).unwrap())
+        &&& wire_runtime_cursor_project(state)
+            == Some(WireSourceState {
+                cursor: admission::IndexedCanonicalFieldCursorModel {
+                    region_start: 0,
+                    region_end: len,
+                    next: reader_at,
+                    source_bytes: observed.bytes,
+                },
+                last_field,
+                enforce_numeric_order: false,
+                terminal_error: None,
+            })
+    },
+{
+    let backing = wire_runtime_frozen_from_index(frozen, start, len, root_end);
+    let observed = wire_frozen_index_region(frozen, start, len, root_end);
+    wire_runtime_frozen_index_projects(frozen, start, len, root_end);
+    wire_runtime_message_pre_read_projects(
+        backing, observed, reader_at, last_field, fields_read,
+    );
+}
+
+pub proof fn wire_runtime_composed_message_pre_read_projects(
+    tree: WireSourceTreeImage, start: usize, len: usize, root_end: WireSourceAnchor,
+    reader_at: usize, last_field: u32, fields_read: usize,
+)
+    requires
+        start as int + len as int <= tree.len as int,
+        forall|i: int| 0 <= i < tree.len as int
+            ==> (#[trigger] wire_source_tree_at(tree, i as usize)).is_some(),
+        reader_at <= len,
+    ensures {
+        let backing = wire_runtime_composed_from_tree(tree, start, len, root_end);
+        let observed = wire_composed_tree_region(tree, start, len, root_end);
+        let state = wire_runtime_message_pre_read(
+            backing, reader_at, last_field, fields_read,
+        );
+        &&& wire_runtime_project_region(state.message) == Some(observed)
+        &&& wire_runtime_project_region(state.reader_view) == Some(observed)
+        &&& wire_runtime_derive_cursor(state).is_some()
+        &&& wire_concrete_cursor_wf(wire_runtime_derive_cursor(state).unwrap())
+        &&& wire_runtime_cursor_project(state)
+            == Some(WireSourceState {
+                cursor: admission::IndexedCanonicalFieldCursorModel {
+                    region_start: 0,
+                    region_end: len,
+                    next: reader_at,
+                    source_bytes: observed.bytes,
+                },
+                last_field,
+                enforce_numeric_order: false,
+                terminal_error: None,
+            })
+    },
+{
+    let backing = wire_runtime_composed_from_tree(tree, start, len, root_end);
+    let observed = wire_composed_tree_region(tree, start, len, root_end);
+    wire_runtime_composed_tree_projects(tree, start, len, root_end);
+    wire_runtime_message_pre_read_projects(
+        backing, observed, reader_at, last_field, fields_read,
+    );
+}
+
+/// `freeze_owned_segment` exports one retained page pair and one leaf; each
+/// logical block starts its leaf search at index zero. This predicate states
+/// the index bounds, while the separate Rust-to-ghost representation relation
+/// must still identify the actual page vectors and provenance values.
+pub open spec fn wire_frozen_one_leaf_wf(image: WireFrozenImage) -> bool {
+    if image.pages.len() != 1 || image.leaves.len() != 1 {
+        false
+    } else {
+        let leaf = image.leaves[0];
+        &&& image.data_len > 0
+        &&& image.start as int + image.len as int <= image.data_len as int
+        &&& leaf.page == 0
+        &&& leaf.logical_start == 0
+        &&& leaf.len == image.data_len
+        &&& leaf.page_start as int + image.data_len as int
+            <= image.pages[0].bytes.len()
+        &&& leaf.page_start as int + image.data_len as int
+            <= image.pages[0].anchors.len()
+        &&& image.logical_pages.len() * 32 >= image.data_len as int
+        &&& forall|block: int| 0 <= block < image.logical_pages.len()
+            ==> image.logical_pages[block] == 0
+    }
+}
+
+/// Exact metadata exported by production `freeze_owned_segment`: one retained
+/// page pair, one leaf starting at logical zero, and one zero entry per
+/// 32-byte logical block. `page_bytes` and `page_anchors` denote the actual
+/// borrowed Arc page slices passed to the verified shared-slot accessor.
+pub open spec fn wire_frozen_owned_block_count(used: usize) -> int {
+    (used as int) / 32 + (if (used as int) % 32 == 0 { 0int } else { 1int })
+}
+
+pub open spec fn wire_frozen_owned_segment_view(
+    page_bytes: Seq<u8>, page_anchors: Seq<WireSourceAnchor>,
+    page_start: usize, used: usize, view_start: usize, view_len: usize,
+) -> WireFrozenImage {
+    WireFrozenImage {
+        pages: seq![WireFrozenPageImage {
+            bytes: page_bytes, anchors: page_anchors,
+        }],
+        leaves: seq![WireFrozenLeafImage {
+            page: 0, page_start, len: used, logical_start: 0,
+        }],
+        logical_pages: Seq::new(wire_frozen_owned_block_count(used) as nat,
+            |block: int| 0usize),
+        data_len: used,
+        start: view_start,
+        len: view_len,
+    }
+}
+
+pub proof fn wire_frozen_owned_segment_view_wf(
+    page_bytes: Seq<u8>, page_anchors: Seq<WireSourceAnchor>,
+    page_start: usize, used: usize, view_start: usize, view_len: usize,
+)
+    requires
+        used > 0,
+        page_start as int + used as int <= page_bytes.len(),
+        page_start as int + used as int <= page_anchors.len(),
+        view_start as int + view_len as int <= used as int,
+    ensures wire_frozen_one_leaf_wf(wire_frozen_owned_segment_view(
+        page_bytes, page_anchors, page_start, used, view_start, view_len,
+    )),
+{
+    let blocks = wire_frozen_owned_block_count(used);
+    let value = used as int;
+    let quotient = value / 32;
+    let remainder = value % 32;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(value, 32);
+    vstd::arithmetic::div_mod::lemma_mod_pos_bound(value, 32);
+    assert(value == 32 * quotient + remainder);
+    assert(0 <= remainder < 32);
+    assert(quotient >= 0);
+    assert(blocks == quotient + (if remainder == 0 { 0int } else { 1int }));
+    if remainder == 0 {
+        assert(blocks == quotient);
+        assert(blocks * 32 == value);
+    } else {
+        assert(blocks == quotient + 1);
+        assert(blocks * 32 == value + 32 - remainder);
+    }
+    assert(blocks >= 0);
+    assert(blocks * 32 >= value);
+    let image = wire_frozen_owned_segment_view(
+        page_bytes, page_anchors, page_start, used, view_start, view_len,
+    );
+    assert(image.logical_pages.len() == blocks);
+    assert forall|block: int| 0 <= block < image.logical_pages.len()
+        implies image.logical_pages[block] == 0 by {}
+    assert(wire_frozen_one_leaf_wf(image));
+}
+
+pub proof fn wire_frozen_owned_segment_subview_preserves_wf(
+    page_bytes: Seq<u8>, page_anchors: Seq<WireSourceAnchor>,
+    page_start: usize, used: usize, view_start: usize, view_len: usize,
+    sub_start: usize, sub_end: usize,
+)
+    requires
+        used > 0,
+        page_start as int + used as int <= page_bytes.len(),
+        page_start as int + used as int <= page_anchors.len(),
+        view_start as int + view_len as int <= used as int,
+        sub_start <= sub_end <= view_len,
+    ensures {
+        let before = wire_frozen_owned_segment_view(
+            page_bytes, page_anchors, page_start, used, view_start, view_len,
+        );
+        let after = wire_frozen_owned_segment_view(
+            page_bytes, page_anchors, page_start, used,
+            (view_start as int + sub_start as int) as usize,
+            (sub_end as int - sub_start as int) as usize,
+        );
+        &&& wire_frozen_one_leaf_wf(after)
+        &&& after.pages == before.pages
+        &&& after.leaves == before.leaves
+        &&& after.logical_pages == before.logical_pages
+    },
+{
+    let next_start = (view_start as int + sub_start as int) as usize;
+    let next_len = (sub_end as int - sub_start as int) as usize;
+    assert(next_start as int + next_len as int <= used as int);
+    wire_frozen_owned_segment_view_wf(
+        page_bytes, page_anchors, page_start, used, next_start, next_len,
+    );
+}
+
+/// `leaf_window` and `FrozenCanonicalBytes::subview` retain the same page Arc
+/// and change only the checked view range. Every selected byte keeps its
+/// original paired page entry and physical provenance.
+pub proof fn wire_frozen_owned_segment_subview_preserves_lookup(
+    page_bytes: Seq<u8>, page_anchors: Seq<WireSourceAnchor>,
+    page_start: usize, used: usize, view_start: usize, view_len: usize,
+    sub_start: usize, sub_end: usize,
+)
+    requires
+        used > 0,
+        page_start as int + used as int <= page_bytes.len(),
+        page_start as int + used as int <= page_anchors.len(),
+        view_start as int + view_len as int <= used as int,
+        sub_start <= sub_end <= view_len,
+    ensures {
+        let before = wire_frozen_owned_segment_view(
+            page_bytes, page_anchors, page_start, used, view_start, view_len,
+        );
+        let after = wire_frozen_owned_segment_view(
+            page_bytes, page_anchors, page_start, used,
+            (view_start as int + sub_start as int) as usize,
+            (sub_end as int - sub_start as int) as usize,
+        );
+        &&& wire_frozen_one_leaf_wf(after)
+        &&& forall|i: int| 0 <= i < after.len as int
+            ==> (#[trigger] wire_frozen_at(after, i as usize))
+                == wire_frozen_at(before, (sub_start as int + i) as usize)
+    },
+{
+    let before = wire_frozen_owned_segment_view(
+        page_bytes, page_anchors, page_start, used, view_start, view_len,
+    );
+    let after = wire_frozen_owned_segment_view(
+        page_bytes, page_anchors, page_start, used,
+        (view_start as int + sub_start as int) as usize,
+        (sub_end as int - sub_start as int) as usize,
+    );
+    wire_frozen_owned_segment_view_wf(
+        page_bytes, page_anchors, page_start, used, view_start, view_len,
+    );
+    wire_frozen_owned_segment_subview_preserves_wf(
+        page_bytes, page_anchors, page_start, used, view_start, view_len,
+        sub_start, sub_end,
+    );
+    assert forall|i: int| 0 <= i < after.len as int
+        implies (#[trigger] wire_frozen_at(after, i as usize))
+            == wire_frozen_at(before, (sub_start as int + i) as usize) by {
+        let offset = i as usize;
+        let before_offset = (sub_start as int + i) as usize;
+        assert(before_offset < before.len);
+        wire_frozen_one_leaf_at_matches_paired_slot(after, offset);
+        wire_frozen_one_leaf_at_matches_paired_slot(before, before_offset);
+        assert(after.leaves[0].page_start as int + after.start as int + i
+            == before.leaves[0].page_start as int + before.start as int + sub_start as int + i);
+    }
+}
+
+/// Production Frozen coalescing requires `Arc::ptr_eq` on the retained data
+/// and adjacent view ranges. Given that same-backing interpretation, joining
+/// the ranges preserves each side's byte and physical provenance exactly.
+/// Mapping `Arc::ptr_eq` to equal ghost page/leaf/index sequences remains a
+/// separate Rust-to-Verus representation obligation.
+pub proof fn wire_frozen_owned_segment_coalesce_preserves_lookup(
+    page_bytes: Seq<u8>, page_anchors: Seq<WireSourceAnchor>,
+    page_start: usize, used: usize,
+    left_start: usize, left_len: usize, right_len: usize,
+)
+    requires
+        used > 0,
+        page_start as int + used as int <= page_bytes.len(),
+        page_start as int + used as int <= page_anchors.len(),
+        left_start as int + left_len as int + right_len as int <= used as int,
+    ensures {
+        let right_start = (left_start as int + left_len as int) as usize;
+        let combined_len = (left_len as int + right_len as int) as usize;
+        let left = wire_frozen_owned_segment_view(
+            page_bytes, page_anchors, page_start, used, left_start, left_len,
+        );
+        let right = wire_frozen_owned_segment_view(
+            page_bytes, page_anchors, page_start, used, right_start, right_len,
+        );
+        let joined = wire_frozen_owned_segment_view(
+            page_bytes, page_anchors, page_start, used, left_start, combined_len,
+        );
+        &&& wire_frozen_one_leaf_wf(left)
+        &&& wire_frozen_one_leaf_wf(right)
+        &&& wire_frozen_one_leaf_wf(joined)
+        &&& forall|i: int| 0 <= i < combined_len as int ==> {
+            let selected = if i < left_len as int {
+                wire_frozen_at(left, i as usize)
+            } else {
+                wire_frozen_at(right, (i - left_len as int) as usize)
+            };
+            (#[trigger] wire_frozen_at(joined, i as usize)) == selected
+        }
+    },
+{
+    let right_start = (left_start as int + left_len as int) as usize;
+    let combined_len = (left_len as int + right_len as int) as usize;
+    let left = wire_frozen_owned_segment_view(
+        page_bytes, page_anchors, page_start, used, left_start, left_len,
+    );
+    let right = wire_frozen_owned_segment_view(
+        page_bytes, page_anchors, page_start, used, right_start, right_len,
+    );
+    let joined = wire_frozen_owned_segment_view(
+        page_bytes, page_anchors, page_start, used, left_start, combined_len,
+    );
+    assert(left_start as int + combined_len as int <= used as int);
+    assert(right_start as int + right_len as int <= used as int);
+    wire_frozen_owned_segment_view_wf(
+        page_bytes, page_anchors, page_start, used, left_start, left_len,
+    );
+    wire_frozen_owned_segment_view_wf(
+        page_bytes, page_anchors, page_start, used, right_start, right_len,
+    );
+    wire_frozen_owned_segment_view_wf(
+        page_bytes, page_anchors, page_start, used, left_start, combined_len,
+    );
+    assert forall|i: int| 0 <= i < combined_len as int implies {
+        let selected = if i < left_len as int {
+            wire_frozen_at(left, i as usize)
+        } else {
+            wire_frozen_at(right, (i - left_len as int) as usize)
+        };
+        (#[trigger] wire_frozen_at(joined, i as usize)) == selected
+    } by {
+        let offset = i as usize;
+        wire_frozen_one_leaf_at_matches_paired_slot(joined, offset);
+        if i < left_len as int {
+            wire_frozen_one_leaf_at_matches_paired_slot(left, offset);
+            assert(joined.leaves[0].page_start as int + joined.start as int + i
+                == left.leaves[0].page_start as int + left.start as int + i);
+        } else {
+            let right_offset = (i - left_len as int) as usize;
+            assert(right_offset < right.len);
+            wire_frozen_one_leaf_at_matches_paired_slot(right, right_offset);
+            assert(joined.leaves[0].page_start as int + joined.start as int + i
+                == right.leaves[0].page_start as int + right.start as int
+                    + right_offset as int);
+        }
+    }
+}
+
+/// Under the constructor shape, the formal accessor reads the byte and origin
+/// from the exact shared page slot used by `frozen_single_leaf_at`.
+pub proof fn wire_frozen_one_leaf_at_matches_paired_slot(
+    image: WireFrozenImage, offset: usize,
+)
+    requires wire_frozen_one_leaf_wf(image), offset < image.len,
+    ensures {
+        let slot = image.leaves[0].page_start as int
+            + image.start as int + offset as int;
+        wire_frozen_at(image, offset) == Some(WireLocatedByte {
+            value: image.pages[0].bytes[slot],
+            anchor: image.pages[0].anchors[slot],
+        })
+    },
+{
+    let absolute = (image.start as int + offset as int) as usize;
+    assert((absolute as int) < image.data_len as int);
+    assert((absolute as int) / 32 < image.logical_pages.len());
+    assert(image.logical_pages[(absolute as int) / 32] == 0);
+    assert(wire_frozen_leaf_at(image, absolute, 0) == Some(0));
+}
+
+pub proof fn wire_frozen_owned_segment_view_at_matches_pair(
+    page_bytes: Seq<u8>, page_anchors: Seq<WireSourceAnchor>,
+    page_start: usize, used: usize, view_start: usize, view_len: usize,
+    offset: usize,
+)
+    requires
+        used > 0,
+        page_start as int + used as int <= page_bytes.len(),
+        page_start as int + used as int <= page_anchors.len(),
+        view_start as int + view_len as int <= used as int,
+        offset < view_len,
+    ensures {
+        let image = wire_frozen_owned_segment_view(
+            page_bytes, page_anchors, page_start, used, view_start, view_len,
+        );
+        let slot = page_start as int + view_start as int + offset as int;
+        wire_frozen_at(image, offset) == Some(WireLocatedByte {
+            value: page_bytes[slot], anchor: page_anchors[slot],
+        })
+    },
+{
+    let image = wire_frozen_owned_segment_view(
+        page_bytes, page_anchors, page_start, used, view_start, view_len,
+    );
+    wire_frozen_owned_segment_view_wf(
+        page_bytes, page_anchors, page_start, used, view_start, view_len,
+    );
+    wire_frozen_one_leaf_at_matches_paired_slot(image, offset);
+}
+
+pub proof fn wire_frozen_one_leaf_total(image: WireFrozenImage)
+    requires wire_frozen_one_leaf_wf(image),
+    ensures forall|i: int| 0 <= i < image.len as int
+        ==> (#[trigger] wire_frozen_at(image, i as usize)).is_some(),
+{
+    assert forall|i: int| 0 <= i < image.len as int
+        implies (#[trigger] wire_frozen_at(image, i as usize)).is_some() by {
+        let absolute = image.start as int + i;
+        assert(0 <= absolute < image.data_len as int);
+        assert(absolute / 32 < image.logical_pages.len());
+        assert(image.logical_pages[absolute / 32] == 0);
+        assert(wire_frozen_leaf_at(image, absolute as usize, 0) == Some(0));
+        assert(wire_frozen_at(image, i as usize).is_some());
+    }
+}
+
+/// Each source node is created from an already valid leaf or from checked
+/// child-length sums (`node2`/`node3`). A postorder ghost numbering gives
+/// every child a smaller index than its parent, so the modeled lookup fuel
+/// is sufficient even when the production Arc tree shares subtrees.
+pub open spec fn wire_source_node_postorder_shape(
+    nodes: Seq<WireSourceNodeImage>, id: usize,
+) -> bool {
+    if id as int >= nodes.len() || nodes[id as int].len == 0 {
+        false
+    } else {
+        let node = nodes[id as int];
+        match node.payload {
+            WireSourcePayloadImage::Borrowed {
+                bytes, start, len, source: _, absolute_start,
+            } => {
+                &&& node.len == len
+                &&& start as int + len as int <= bytes.len()
+                &&& absolute_start as int + start as int + len as int - 1
+                    <= usize::MAX as int
+            },
+            WireSourcePayloadImage::Frozen { value } => {
+                &&& node.len == value.len
+                &&& wire_frozen_one_leaf_wf(value)
+            },
+            WireSourcePayloadImage::Branch2 { left, right } => {
+                &&& left < id && right < id
+                &&& node.len as int == nodes[left as int].len as int
+                    + nodes[right as int].len as int
+            },
+            WireSourcePayloadImage::Branch3 { first, second, third } => {
+                &&& first < id && second < id && third < id
+                &&& node.len as int == nodes[first as int].len as int
+                    + nodes[second as int].len as int
+                    + nodes[third as int].len as int
+            },
+        }
+    }
+}
+
+pub open spec fn wire_source_nodes_postorder_wf(nodes: Seq<WireSourceNodeImage>) -> bool {
+    &&& nodes.len() <= usize::MAX as int
+    &&& forall|id: int| 0 <= id < nodes.len()
+        ==> (#[trigger] wire_source_node_postorder_shape(nodes, id as usize))
+}
+
+pub open spec fn wire_source_tree_postorder_wf(tree: WireSourceTreeImage) -> bool {
+    &&& wire_source_nodes_postorder_wf(tree.nodes)
+    &&& match tree.root {
+        Some(root) => {
+            &&& (root as int) < tree.nodes.len()
+            &&& tree.start as int + tree.len as int
+                <= tree.nodes[root as int].len as int
+        },
+        None => tree.len == 0,
+    }
+}
+
+pub proof fn wire_source_node_postorder_total(
+    nodes: Seq<WireSourceNodeImage>, id: usize, offset: usize, fuel: usize,
+)
+    requires
+        wire_source_nodes_postorder_wf(nodes),
+        (id as int) < nodes.len(),
+        offset < nodes[id as int].len,
+        id < fuel,
+    ensures wire_source_node_at(nodes, id, offset, fuel).is_some(),
+    decreases id,
+{
+    assert(0 <= (id as int) < nodes.len());
+    assert(((id as int) as usize) == id);
+    assert(wire_source_node_postorder_shape(nodes, (id as int) as usize));
+    assert(wire_source_node_postorder_shape(nodes, id));
+    assert(fuel > 0);
+    let child_fuel = (fuel as int - 1) as usize;
+    match nodes[id as int].payload {
+        WireSourcePayloadImage::Borrowed {
+            bytes: _, start: _, len: _, source: _, absolute_start: _,
+        } => {
+            assert(wire_source_node_at(nodes, id, offset, fuel).is_some());
+        },
+        WireSourcePayloadImage::Frozen { value } => {
+            wire_frozen_one_leaf_total(value);
+            assert(wire_frozen_at(value, offset).is_some());
+        },
+        WireSourcePayloadImage::Branch2 { left, right } => {
+            if offset < nodes[left as int].len {
+                wire_source_node_postorder_total(nodes, left, offset, child_fuel);
+            } else {
+                assert(offset >= nodes[left as int].len);
+                let child_offset = (offset as int - nodes[left as int].len as int) as usize;
+                assert(child_offset < nodes[right as int].len);
+                wire_source_node_postorder_total(nodes, right, child_offset, child_fuel);
+            }
+        },
+        WireSourcePayloadImage::Branch3 { first, second, third } => {
+            let first_len = nodes[first as int].len;
+            let second_len = nodes[second as int].len;
+            if offset < first_len {
+                wire_source_node_postorder_total(nodes, first, offset, child_fuel);
+            } else if (offset as int) < first_len as int + second_len as int {
+                assert(offset >= first_len);
+                let child_offset = (offset as int - first_len as int) as usize;
+                assert(child_offset < second_len);
+                wire_source_node_postorder_total(nodes, second, child_offset, child_fuel);
+            } else {
+                assert(offset as int >= first_len as int + second_len as int);
+                let child_offset = (offset as int - first_len as int - second_len as int) as usize;
+                assert(child_offset < nodes[third as int].len);
+                wire_source_node_postorder_total(nodes, third, child_offset, child_fuel);
+            }
+        },
+    }
+    assert(wire_source_node_at(nodes, id, offset, fuel).is_some());
+}
+
+pub proof fn wire_source_tree_postorder_total(tree: WireSourceTreeImage)
+    requires wire_source_tree_postorder_wf(tree),
+    ensures forall|i: int| 0 <= i < tree.len as int
+        ==> (#[trigger] wire_source_tree_at(tree, i as usize)).is_some(),
+{
+    assert forall|i: int| 0 <= i < tree.len as int
+        implies (#[trigger] wire_source_tree_at(tree, i as usize)).is_some() by {
+        let root = tree.root.unwrap();
+        let absolute = (tree.start as int + i) as usize;
+        assert(absolute < tree.nodes[root as int].len);
+        wire_source_node_postorder_total(
+            tree.nodes, root, absolute, tree.nodes.len() as usize,
+        );
+    }
+}
+
+pub proof fn wire_source_tree_postorder_at_total(
+    tree: WireSourceTreeImage, offset: usize,
+)
+    requires wire_source_tree_postorder_wf(tree), offset < tree.len,
+    ensures wire_source_tree_at(tree, offset).is_some(),
+{
+    assert(tree.root.is_some());
+    let root = tree.root.unwrap();
+    let absolute = (tree.start as int + offset as int) as usize;
+    assert(absolute < tree.nodes[root as int].len);
+    wire_source_node_postorder_total(
+        tree.nodes, root, absolute, tree.nodes.len() as usize,
+    );
+}
+
+pub struct WireSourceLiveViewImage {
+    pub ghost tree: WireSourceTreeImage,
+    pub ghost lineage: nat,
+    pub ghost leaf_backing: Option<nat>,
+    pub end: WireSourceAnchor,
+}
+
+pub open spec fn wire_source_live_view_wf(view: WireSourceLiveViewImage) -> bool {
+    &&& wire_source_tree_postorder_wf(view.tree)
+    &&& match view.tree.root {
+        None => view.lineage == 0 && view.leaf_backing.is_none(),
+        Some(_) => view.lineage > 0,
+    }
+}
+
+pub open spec fn wire_source_live_view_at(
+    view: WireSourceLiveViewImage, offset: usize,
+) -> Option<WireLocatedByte> {
+    wire_source_tree_at(view.tree, offset)
+}
+
+pub open spec fn wire_source_live_view_position(
+    view: WireSourceLiveViewImage, offset: usize,
+) -> Option<WireSourceAnchor> {
+    if offset > view.tree.len {
+        None
+    } else if offset == view.tree.len {
+        Some(view.end)
+    } else {
+        match wire_source_live_view_at(view, offset) {
+            Some(located) => Some(located.anchor),
+            None => None,
+        }
+    }
+}
+
+pub open spec fn wire_source_live_view_same(
+    left: WireSourceLiveViewImage, right: WireSourceLiveViewImage,
+) -> bool {
+    &&& left.lineage == right.lineage
+    &&& left.tree.start == right.tree.start
+    &&& left.tree.len == right.tree.len
+}
+
+pub open spec fn wire_source_live_indexed_same(
+    left: WireSourceLiveViewImage, right: WireSourceLiveViewImage,
+) -> bool {
+    wire_source_live_view_same(left, right) && left.end == right.end
+}
+
+pub open spec fn wire_source_live_view_clone(
+    view: WireSourceLiveViewImage,
+) -> WireSourceLiveViewImage {
+    WireSourceLiveViewImage {
+        tree: view.tree,
+        lineage: view.lineage,
+        leaf_backing: view.leaf_backing,
+        end: view.end,
+    }
+}
+
+pub proof fn wire_source_live_view_clone_preserves(view: WireSourceLiveViewImage)
+    requires wire_source_live_view_wf(view),
+    ensures
+        wire_source_live_view_wf(wire_source_live_view_clone(view)),
+        wire_source_live_view_same(view, wire_source_live_view_clone(view)),
+        wire_source_live_indexed_same(view, wire_source_live_view_clone(view)),
+        forall|i: int| 0 <= i <= view.tree.len as int
+            ==> (#[trigger] wire_source_live_view_at(wire_source_live_view_clone(view), i as usize))
+                == wire_source_live_view_at(view, i as usize),
+        forall|i: int| 0 <= i <= view.tree.len as int
+            ==> (#[trigger] wire_source_live_view_position(wire_source_live_view_clone(view), i as usize))
+                == wire_source_live_view_position(view, i as usize),
+{
+}
+
+pub open spec fn wire_source_live_view_subview(
+    view: WireSourceLiveViewImage, from: usize, to: usize,
+) -> Option<WireSourceLiveViewImage> {
+    if from > to || to > view.tree.len
+        || view.tree.start as int + from as int > usize::MAX as int
+    {
+        None
+    } else {
+        Some(WireSourceLiveViewImage {
+            tree: WireSourceTreeImage {
+                nodes: view.tree.nodes,
+                root: view.tree.root,
+                start: (view.tree.start as int + from as int) as usize,
+                len: (to as int - from as int) as usize,
+            },
+            lineage: view.lineage,
+            leaf_backing: view.leaf_backing,
+            end: if to == view.tree.len {
+                view.end
+            } else {
+                wire_source_live_view_at(view, to).unwrap().anchor
+            },
+        })
+    }
+}
+
+pub proof fn wire_source_live_view_subview_preserves(
+    view: WireSourceLiveViewImage, from: usize, to: usize,
+)
+    requires wire_source_live_view_wf(view), from <= to, to <= view.tree.len,
+    ensures {
+        let selected = wire_source_live_view_subview(view, from, to).unwrap();
+        &&& wire_source_live_view_subview(view, from, to).is_some()
+        &&& wire_source_live_view_wf(selected)
+        &&& selected.lineage == view.lineage
+        &&& selected.leaf_backing == view.leaf_backing
+        &&& selected.tree.nodes == view.tree.nodes
+        &&& selected.tree.root == view.tree.root
+        &&& selected.tree.len as int == to as int - from as int
+        &&& wire_source_live_view_position(selected, selected.tree.len)
+            == wire_source_live_view_position(view, to)
+        &&& forall|i: int| 0 <= i < selected.tree.len as int
+            ==> (#[trigger] wire_source_live_view_at(selected, i as usize))
+                == wire_source_live_view_at(view, (from as int + i) as usize)
+    },
+{
+    if to < view.tree.len {
+        wire_source_tree_postorder_at_total(view.tree, to);
+        assert(wire_source_tree_at(view.tree, to).is_some());
+        assert(wire_source_live_view_at(view, to).is_some());
+    }
+    let selected = wire_source_live_view_subview(view, from, to).unwrap();
+    assert(wire_source_tree_postorder_wf(selected.tree));
+    assert forall|i: int| 0 <= i < selected.tree.len as int
+        implies (#[trigger] wire_source_live_view_at(selected, i as usize))
+            == wire_source_live_view_at(view, (from as int + i) as usize) by {
+        assert(selected.tree.start as int + i == view.tree.start as int + from as int + i);
+    }
+}
+
+pub struct WireSourceIndexedRegionImage {
+    pub ghost root: WireSourceLiveViewImage,
+    pub start: usize,
+    pub len: usize,
+    pub root_end: WireSourceAnchor,
+}
+
+pub open spec fn wire_source_indexed_region_wf(view: WireSourceIndexedRegionImage) -> bool {
+    &&& wire_source_live_view_wf(view.root)
+    &&& view.start as int + view.len as int <= view.root.tree.len as int
+}
+
+pub open spec fn wire_source_indexed_at(
+    view: WireSourceIndexedRegionImage, offset: usize,
+) -> Option<WireLocatedByte> {
+    if offset >= view.len {
+        None
+    } else {
+        wire_source_live_view_at(
+            view.root, (view.start as int + offset as int) as usize,
+        )
+    }
+}
+
+pub open spec fn wire_source_indexed_position(
+    view: WireSourceIndexedRegionImage, offset: usize,
+) -> Option<WireSourceAnchor> {
+    if offset > view.len {
+        None
+    } else if view.start as int + offset as int == view.root.tree.len as int {
+        Some(view.root_end)
+    } else {
+        match wire_source_live_view_at(
+            view.root, (view.start as int + offset as int) as usize,
+        ) {
+            Some(located) => Some(located.anchor),
+            None => None,
+        }
+    }
+}
+
+pub open spec fn wire_source_indexed_same(
+    left: WireSourceIndexedRegionImage, right: WireSourceIndexedRegionImage,
+) -> bool {
+    &&& wire_source_live_view_same(left.root, right.root)
+    &&& left.start == right.start
+    &&& left.len == right.len
+    &&& left.root_end == right.root_end
+}
+
+pub open spec fn wire_source_indexed_clone(
+    view: WireSourceIndexedRegionImage,
+) -> WireSourceIndexedRegionImage {
+    WireSourceIndexedRegionImage {
+        root: wire_source_live_view_clone(view.root),
+        start: view.start,
+        len: view.len,
+        root_end: view.root_end,
+    }
+}
+
+pub proof fn wire_source_indexed_clone_preserves(view: WireSourceIndexedRegionImage)
+    requires wire_source_indexed_region_wf(view),
+    ensures
+        wire_source_indexed_region_wf(wire_source_indexed_clone(view)),
+        wire_source_indexed_same(view, wire_source_indexed_clone(view)),
+        forall|i: int| 0 <= i <= view.len as int
+            ==> (#[trigger] wire_source_indexed_at(wire_source_indexed_clone(view), i as usize))
+                == wire_source_indexed_at(view, i as usize),
+        forall|i: int| 0 <= i <= view.len as int
+            ==> (#[trigger] wire_source_indexed_position(wire_source_indexed_clone(view), i as usize))
+                == wire_source_indexed_position(view, i as usize),
+{
+}
+
+pub open spec fn wire_source_indexed_subview(
+    view: WireSourceIndexedRegionImage, from: usize, to: usize,
+) -> Option<WireSourceIndexedRegionImage> {
+    if from > to || to > view.len
+        || view.start as int + from as int > usize::MAX as int
+    {
+        None
+    } else {
+        Some(WireSourceIndexedRegionImage {
+            root: view.root,
+            start: (view.start as int + from as int) as usize,
+            len: (to as int - from as int) as usize,
+            root_end: view.root_end,
+        })
+    }
+}
+
+pub proof fn wire_source_indexed_subview_preserves(
+    view: WireSourceIndexedRegionImage, from: usize, to: usize,
+)
+    requires wire_source_indexed_region_wf(view), from <= to <= view.len,
+    ensures {
+        let selected = wire_source_indexed_subview(view, from, to).unwrap();
+        &&& wire_source_indexed_subview(view, from, to).is_some()
+        &&& wire_source_indexed_region_wf(selected)
+        &&& wire_source_live_view_same(selected.root, view.root)
+        &&& selected.start as int == view.start as int + from as int
+        &&& selected.len as int == to as int - from as int
+        &&& selected.root_end == view.root_end
+        &&& wire_source_indexed_same(view, selected)
+            == (from == 0 && to == view.len)
+        &&& wire_source_indexed_position(selected, selected.len)
+            == wire_source_indexed_position(view, to)
+        &&& forall|i: int| 0 <= i < selected.len as int
+            ==> (#[trigger] wire_source_indexed_at(selected, i as usize))
+                == wire_source_indexed_at(view, (from as int + i) as usize)
+        &&& forall|i: int| 0 <= i < selected.len as int
+            ==> (#[trigger] wire_source_indexed_position(selected, i as usize))
+                == wire_source_indexed_position(view, (from as int + i) as usize)
+    },
+{
+    let selected = wire_source_indexed_subview(view, from, to).unwrap();
+    if (view.start as int + to as int) < view.root.tree.len as int {
+        wire_source_tree_postorder_at_total(
+            view.root.tree, (view.start as int + to as int) as usize,
+        );
+    }
+    assert forall|i: int| 0 <= i < selected.len as int
+        implies (#[trigger] wire_source_indexed_at(selected, i as usize))
+            == wire_source_indexed_at(view, (from as int + i) as usize) by {
+        assert(selected.start as int + i == view.start as int + from as int + i);
+    }
+    assert forall|i: int| 0 <= i < selected.len as int
+        implies (#[trigger] wire_source_indexed_position(selected, i as usize))
+            == wire_source_indexed_position(view, (from as int + i) as usize) by {
+        assert(selected.start as int + i == view.start as int + from as int + i);
+    }
+}
+
+pub open spec fn wire_source_indexed_subview_with_end(
+    view: WireSourceIndexedRegionImage, from: usize, to: usize,
+    end: WireSourceAnchor,
+) -> Option<WireSourceIndexedRegionImage> {
+    if from > to || to > view.len {
+        None
+    } else {
+        let root_from = (view.start as int + from as int) as usize;
+        let root_to = (view.start as int + to as int) as usize;
+        match wire_source_live_view_subview(view.root, root_from, root_to) {
+            Some(root) => Some(WireSourceIndexedRegionImage {
+                root,
+                start: 0,
+                len: (to as int - from as int) as usize,
+                root_end: end,
+            }),
+            None => None,
+        }
+    }
+}
+
+pub proof fn wire_source_indexed_subview_with_end_preserves(
+    view: WireSourceIndexedRegionImage, from: usize, to: usize,
+    end: WireSourceAnchor,
+)
+    requires wire_source_indexed_region_wf(view), from <= to <= view.len,
+    ensures {
+        let selected = wire_source_indexed_subview_with_end(view, from, to, end).unwrap();
+        &&& wire_source_indexed_subview_with_end(view, from, to, end).is_some()
+        &&& wire_source_indexed_region_wf(selected)
+        &&& selected.root.lineage == view.root.lineage
+        &&& selected.root.leaf_backing == view.root.leaf_backing
+        &&& selected.root.tree.nodes == view.root.tree.nodes
+        &&& selected.root.tree.start as int
+            == view.root.tree.start as int + view.start as int + from as int
+        &&& selected.root.tree.len as int == to as int - from as int
+        &&& selected.start == 0
+        &&& selected.len as int == to as int - from as int
+        &&& wire_source_indexed_position(selected, selected.len) == Some(end)
+        &&& wire_source_indexed_same(view, selected)
+            == (view.start == 0 && view.len == view.root.tree.len
+                && from == 0 && to == view.len && end == view.root_end)
+        &&& forall|i: int| 0 <= i < selected.len as int
+            ==> (#[trigger] wire_source_indexed_at(selected, i as usize))
+                == wire_source_indexed_at(view, (from as int + i) as usize)
+        &&& forall|i: int| 0 <= i < selected.len as int
+            ==> (#[trigger] wire_source_indexed_position(selected, i as usize))
+                == wire_source_indexed_position(view, (from as int + i) as usize)
+    },
+{
+    let root_from = (view.start as int + from as int) as usize;
+    let root_to = (view.start as int + to as int) as usize;
+    wire_source_live_view_subview_preserves(view.root, root_from, root_to);
+    let selected = wire_source_indexed_subview_with_end(view, from, to, end).unwrap();
+    assert forall|i: int| 0 <= i < selected.len as int
+        implies (#[trigger] wire_source_indexed_at(selected, i as usize))
+            == wire_source_indexed_at(view, (from as int + i) as usize) by {
+        assert(selected.root.tree.start as int + i
+            == view.root.tree.start as int + view.start as int + from as int + i);
+    }
+    assert forall|i: int| 0 <= i < selected.len as int
+        implies (#[trigger] wire_source_indexed_position(selected, i as usize))
+            == wire_source_indexed_position(view, (from as int + i) as usize) by {
+        assert(selected.root.tree.start as int + i
+            == view.root.tree.start as int + view.start as int + from as int + i);
+    }
+}
+
+pub open spec fn wire_source_indexed_runtime(
+    view: WireSourceIndexedRegionImage,
+) -> WireRuntimeBackingImage {
+    wire_runtime_composed_from_tree(view.root.tree, view.start, view.len, view.root_end)
+}
+
+pub proof fn wire_source_indexed_projects(view: WireSourceIndexedRegionImage)
+    requires wire_source_indexed_region_wf(view),
+    ensures wire_runtime_project_region(wire_source_indexed_runtime(view))
+        == Some(wire_composed_tree_region(
+            view.root.tree, view.start, view.len, view.root_end,
+        )),
+{
+    wire_source_tree_postorder_total(view.root.tree);
+    wire_runtime_composed_tree_projects(
+        view.root.tree, view.start, view.len, view.root_end,
+    );
+}
+
+pub open spec fn wire_source_live_view_same_root_coalesce(
+    left: WireSourceLiveViewImage, right: WireSourceLiveViewImage,
+) -> Option<WireSourceLiveViewImage> {
+    if left.lineage != right.lineage
+        || left.leaf_backing != right.leaf_backing
+        || left.tree.nodes != right.tree.nodes
+        || left.tree.root != right.tree.root
+        || left.tree.start as int + left.tree.len as int != right.tree.start as int
+        || left.tree.len as int + right.tree.len as int > usize::MAX as int
+    {
+        None
+    } else {
+        Some(WireSourceLiveViewImage {
+            tree: WireSourceTreeImage {
+                nodes: left.tree.nodes,
+                root: left.tree.root,
+                start: left.tree.start,
+                len: (left.tree.len as int + right.tree.len as int) as usize,
+            },
+            lineage: left.lineage,
+            leaf_backing: left.leaf_backing,
+            end: right.end,
+        })
+    }
+}
+
+pub proof fn wire_source_live_view_same_root_coalesce_preserves(
+    left: WireSourceLiveViewImage, right: WireSourceLiveViewImage,
+)
+    requires
+        wire_source_live_view_wf(left),
+        wire_source_live_view_wf(right),
+        left.lineage == right.lineage,
+        left.leaf_backing == right.leaf_backing,
+        left.tree.nodes == right.tree.nodes,
+        left.tree.root == right.tree.root,
+        left.tree.start as int + left.tree.len as int == right.tree.start as int,
+    ensures {
+        let joined = wire_source_live_view_same_root_coalesce(left, right).unwrap();
+        &&& wire_source_live_view_same_root_coalesce(left, right).is_some()
+        &&& wire_source_live_view_wf(joined)
+        &&& joined.lineage == left.lineage
+        &&& joined.leaf_backing == left.leaf_backing
+        &&& joined.tree.len as int == left.tree.len as int + right.tree.len as int
+        &&& wire_source_live_view_position(joined, joined.tree.len) == Some(right.end)
+        &&& forall|i: int| 0 <= i < joined.tree.len as int
+            ==> (#[trigger] wire_source_live_view_at(joined, i as usize))
+                == if i < left.tree.len as int {
+                    wire_source_live_view_at(left, i as usize)
+                } else {
+                    wire_source_live_view_at(
+                        right, (i - left.tree.len as int) as usize,
+                    )
+                }
+    },
+{
+    let joined = wire_source_live_view_same_root_coalesce(left, right).unwrap();
+    assert(wire_source_tree_postorder_wf(joined.tree));
+    assert forall|i: int| 0 <= i < joined.tree.len as int
+        implies (#[trigger] wire_source_live_view_at(joined, i as usize))
+            == if i < left.tree.len as int {
+                wire_source_live_view_at(left, i as usize)
+            } else {
+                wire_source_live_view_at(
+                    right, (i - left.tree.len as int) as usize,
+                )
+            } by {
+        if i < left.tree.len as int {
+            assert(joined.tree.start as int + i == left.tree.start as int + i);
+        } else {
+            assert(joined.tree.start as int + i
+                == right.tree.start as int + i - left.tree.len as int);
+        }
+    }
+}
+
+pub proof fn wire_source_live_view_lookup_total(view: WireSourceLiveViewImage)
+    requires wire_source_live_view_wf(view),
+    ensures
+        forall|i: int| 0 <= i < view.tree.len as int
+            ==> (#[trigger] wire_source_live_view_at(view, i as usize)).is_some(),
+        wire_source_live_view_position(view, view.tree.len) == Some(view.end),
+{
+    wire_source_tree_postorder_total(view.tree);
+}
+
+pub open spec fn wire_source_live_view_runtime(
+    view: WireSourceLiveViewImage,
+) -> WireRuntimeBackingImage {
+    wire_runtime_composed_from_tree(view.tree, 0, view.tree.len, view.end)
+}
+
+pub proof fn wire_source_live_view_projects(view: WireSourceLiveViewImage)
+    requires wire_source_live_view_wf(view),
+    ensures wire_runtime_project_region(wire_source_live_view_runtime(view))
+        == Some(wire_composed_tree_region(view.tree, 0, view.tree.len, view.end)),
+{
+    wire_source_tree_postorder_total(view.tree);
+    wire_runtime_composed_tree_projects(view.tree, 0, view.tree.len, view.end);
+}
+
+pub open spec fn wire_source_live_borrowed_leaf(
+    bytes: Seq<u8>, leaf_start: usize, leaf_len: usize,
+    source: u32, absolute_start: usize, backing: nat, lineage: nat,
+    view_start: usize, view_len: usize, end: WireSourceAnchor,
+) -> WireSourceLiveViewImage {
+    WireSourceLiveViewImage {
+        tree: WireSourceTreeImage {
+            nodes: Seq::empty().push(WireSourceNodeImage {
+                len: leaf_len,
+                payload: WireSourcePayloadImage::Borrowed {
+                    bytes, start: leaf_start, len: leaf_len, source, absolute_start,
+                },
+            }),
+            root: Some(0),
+            start: view_start,
+            len: view_len,
+        },
+        lineage,
+        leaf_backing: Some(backing),
+        end,
+    }
+}
+
+pub open spec fn wire_source_live_borrowed_original_coalesce(
+    left: WireSourceLiveViewImage, right: WireSourceLiveViewImage,
+    fresh_lineage: nat,
+) -> Option<WireSourceLiveViewImage> {
+    if left.tree.root != Some(0) || right.tree.root != Some(0)
+        || left.tree.nodes.len() != 1 || right.tree.nodes.len() != 1
+        || left.leaf_backing.is_none()
+        || left.leaf_backing != right.leaf_backing
+    {
+        None
+    } else {
+        match (left.tree.nodes[0].payload, right.tree.nodes[0].payload) {
+            (
+                WireSourcePayloadImage::Borrowed {
+                    bytes: left_bytes, start: left_start, len: _,
+                    source: left_source, absolute_start: left_absolute,
+                },
+                WireSourcePayloadImage::Borrowed {
+                    bytes: right_bytes, start: right_start, len: _,
+                    source: right_source, absolute_start: right_absolute,
+                },
+            ) => {
+                let selected_start = left_start as int + left.tree.start as int;
+                let selected_right = right_start as int + right.tree.start as int;
+                let total = left.tree.len as int + right.tree.len as int;
+                if left_bytes != right_bytes || left_source != right_source
+                    || left_absolute != right_absolute
+                    || selected_start + left.tree.len as int != selected_right
+                    || total > usize::MAX as int
+                {
+                    None
+                } else if total == 0 {
+                    Some(WireSourceLiveViewImage {
+                        tree: left.tree,
+                        lineage: left.lineage,
+                        leaf_backing: left.leaf_backing,
+                        end: right.end,
+                    })
+                } else if fresh_lineage == 0
+                    || fresh_lineage == left.lineage
+                    || fresh_lineage == right.lineage
+                    || selected_start > usize::MAX as int
+                    || selected_start + total > left_bytes.len()
+                    || left_absolute as int + selected_start > usize::MAX as int
+                    || left_absolute as int + selected_start + total - 1 > usize::MAX as int
+                {
+                    None
+                } else {
+                    Some(wire_source_live_borrowed_leaf(
+                        left_bytes, selected_start as usize, total as usize,
+                        left_source, left_absolute, left.leaf_backing.unwrap(),
+                        fresh_lineage, 0, total as usize, right.end,
+                    ))
+                }
+            },
+            _ => None,
+        }
+    }
+}
+
+pub proof fn wire_source_live_borrowed_original_coalesce_preserves(
+    left: WireSourceLiveViewImage, right: WireSourceLiveViewImage,
+    fresh_lineage: nat,
+)
+    requires
+        wire_source_live_view_wf(left),
+        wire_source_live_view_wf(right),
+        wire_source_live_borrowed_original_coalesce(left, right, fresh_lineage).is_some(),
+    ensures {
+        let joined = wire_source_live_borrowed_original_coalesce(
+            left, right, fresh_lineage,
+        ).unwrap();
+        &&& wire_source_live_view_wf(joined)
+        &&& joined.leaf_backing == left.leaf_backing
+        &&& joined.tree.len as int == left.tree.len as int + right.tree.len as int
+        &&& wire_source_live_view_position(joined, joined.tree.len) == Some(right.end)
+        &&& (if joined.tree.len == 0 {
+            wire_source_live_view_same(left, joined)
+        } else {
+            joined.lineage == fresh_lineage
+                && !wire_source_live_view_same(left, joined)
+                && !wire_source_live_view_same(right, joined)
+        })
+        &&& forall|i: int| 0 <= i < joined.tree.len as int
+            ==> (#[trigger] wire_source_live_view_at(joined, i as usize))
+                == if i < left.tree.len as int {
+                    wire_source_live_view_at(left, i as usize)
+                } else {
+                    wire_source_live_view_at(
+                        right, (i - left.tree.len as int) as usize,
+                    )
+                }
+    },
+{
+    let joined = wire_source_live_borrowed_original_coalesce(
+        left, right, fresh_lineage,
+    ).unwrap();
+    assert(left.tree.root == Some(0) && right.tree.root == Some(0));
+    assert(left.tree.nodes.len() == 1 && right.tree.nodes.len() == 1);
+    if joined.tree.len == 0 {
+        assert(wire_source_live_view_wf(joined));
+    } else {
+        match (left.tree.nodes[0].payload, right.tree.nodes[0].payload) {
+            (
+                WireSourcePayloadImage::Borrowed {
+                    bytes: left_bytes, start: left_start, len: left_leaf_len,
+                    source: left_source, absolute_start: left_absolute,
+                },
+                WireSourcePayloadImage::Borrowed {
+                    bytes: right_bytes, start: right_start, len: right_leaf_len,
+                    source: right_source, absolute_start: right_absolute,
+                },
+            ) => {
+                assert(left_bytes == right_bytes);
+                assert(left_source == right_source);
+                assert(left_absolute == right_absolute);
+                let selected_start = left_start as int + left.tree.start as int;
+                let selected_right = right_start as int + right.tree.start as int;
+                assert(selected_start + left.tree.len as int == selected_right);
+                assert(joined.tree.start == 0);
+                assert(joined.tree.root == Some(0));
+                assert(joined.tree.nodes.len() == 1);
+                assert(joined.tree.nodes[0].payload == WireSourcePayloadImage::Borrowed {
+                    bytes: left_bytes,
+                    start: selected_start as usize,
+                    len: joined.tree.len,
+                    source: left_source,
+                    absolute_start: left_absolute,
+                });
+                assert(wire_source_live_view_wf(joined));
+                assert forall|i: int| 0 <= i < joined.tree.len as int
+                    implies (#[trigger] wire_source_live_view_at(joined, i as usize))
+                        == if i < left.tree.len as int {
+                            wire_source_live_view_at(left, i as usize)
+                        } else {
+                            wire_source_live_view_at(
+                                right, (i - left.tree.len as int) as usize,
+                            )
+                } by {
+                    let physical = selected_start + i;
+                    let located = WireLocatedByte {
+                        value: left_bytes[physical],
+                        anchor: WireSourceAnchor {
+                            source: left_source,
+                            offset: (left_absolute as int + physical) as usize,
+                        },
+                    };
+                    assert(0 <= physical < left_bytes.len());
+                    assert(left_absolute as int + physical <= usize::MAX as int);
+                    assert(wire_source_live_view_at(joined, i as usize) == Some(located));
+                    if i < left.tree.len as int {
+                        let local = (left.tree.start as int + i) as usize;
+                        assert(wire_source_node_postorder_shape(left.tree.nodes, 0));
+                        assert(left.tree.nodes[0].len == left_leaf_len);
+                        assert(local < left.tree.nodes[0].len);
+                        assert(local < left_leaf_len);
+                        assert(left_start as int + local as int == physical);
+                        assert((left_start as int + local as int) < left_bytes.len());
+                        assert(left_absolute as int + left_start as int + local as int
+                            <= usize::MAX as int);
+                        assert(selected_start + i
+                            == left_start as int + left.tree.start as int + i);
+                        assert(wire_source_node_at(
+                            left.tree.nodes, 0, local, 1,
+                        ) == Some(located));
+                        assert(wire_source_live_view_at(left, i as usize) == Some(located));
+                    } else {
+                        let right_i = (i - left.tree.len as int) as usize;
+                        let local = (right.tree.start as int + right_i as int) as usize;
+                        assert(wire_source_node_postorder_shape(right.tree.nodes, 0));
+                        assert(right.tree.nodes[0].len == right_leaf_len);
+                        assert(right_i < right.tree.len);
+                        assert(local < right.tree.nodes[0].len);
+                        assert(local < right_leaf_len);
+                        assert(right_start as int + local as int == physical);
+                        assert((right_start as int + local as int) < right_bytes.len());
+                        assert(right_absolute as int + right_start as int + local as int
+                            <= usize::MAX as int);
+                        assert(selected_start + i
+                            == right_start as int + right.tree.start as int
+                                + i - left.tree.len as int);
+                        assert(wire_source_node_at(
+                            right.tree.nodes, 0, local, 1,
+                        ) == Some(located));
+                        assert(wire_source_live_view_at(
+                            right, (i - left.tree.len as int) as usize,
+                        ) == Some(located));
+                    }
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+}
+
+pub open spec fn wire_source_live_frozen_leaf(
+    value: WireFrozenImage, backing: nat, lineage: nat, end: WireSourceAnchor,
+) -> WireSourceLiveViewImage {
+    WireSourceLiveViewImage {
+        tree: WireSourceTreeImage {
+            nodes: Seq::empty().push(WireSourceNodeImage {
+                len: value.len,
+                payload: WireSourcePayloadImage::Frozen { value },
+            }),
+            root: Some(0),
+            start: 0,
+            len: value.len,
+        },
+        lineage,
+        leaf_backing: Some(backing),
+        end,
+    }
+}
+
+pub open spec fn wire_source_live_frozen_original_coalesce(
+    left: WireSourceLiveViewImage, right: WireSourceLiveViewImage,
+    fresh_lineage: nat,
+) -> Option<WireSourceLiveViewImage> {
+    if left.tree.root != Some(0) || right.tree.root != Some(0)
+        || left.tree.nodes.len() != 1 || right.tree.nodes.len() != 1
+        || left.leaf_backing.is_none()
+        || left.leaf_backing != right.leaf_backing
+    {
+        None
+    } else {
+        match (left.tree.nodes[0].payload, right.tree.nodes[0].payload) {
+            (
+                WireSourcePayloadImage::Frozen { value: left_value },
+                WireSourcePayloadImage::Frozen { value: right_value },
+            ) => {
+                if !wire_frozen_one_leaf_wf(left_value)
+                    || !wire_frozen_one_leaf_wf(right_value)
+                {
+                    None
+                } else {
+                    let page_bytes = left_value.pages[0].bytes;
+                    let page_anchors = left_value.pages[0].anchors;
+                    let page_start = left_value.leaves[0].page_start;
+                    let used = left_value.data_len;
+                    let selected_start = left_value.start as int + left.tree.start as int;
+                    let selected_right = right_value.start as int + right.tree.start as int;
+                    let total = left.tree.len as int + right.tree.len as int;
+                    if left_value != wire_frozen_owned_segment_view(
+                        page_bytes, page_anchors, page_start, used,
+                        left_value.start, left_value.len,
+                    ) || right_value != wire_frozen_owned_segment_view(
+                        page_bytes, page_anchors, page_start, used,
+                        right_value.start, right_value.len,
+                    ) || selected_start + left.tree.len as int != selected_right
+                        || selected_start + total > used as int
+                        || total > usize::MAX as int
+                    {
+                        None
+                    } else if total == 0 {
+                        Some(WireSourceLiveViewImage {
+                            tree: left.tree,
+                            lineage: left.lineage,
+                            leaf_backing: left.leaf_backing,
+                            end: right.end,
+                        })
+                    } else if fresh_lineage == 0
+                        || fresh_lineage == left.lineage
+                        || fresh_lineage == right.lineage
+                    {
+                        None
+                    } else {
+                        let joined_value = wire_frozen_owned_segment_view(
+                            page_bytes, page_anchors, page_start, used,
+                            selected_start as usize, total as usize,
+                        );
+                        Some(wire_source_live_frozen_leaf(
+                            joined_value, left.leaf_backing.unwrap(), fresh_lineage,
+                            right.end,
+                        ))
+                    }
+                }
+            },
+            _ => None,
+        }
+    }
+}
+
+pub proof fn wire_source_live_frozen_original_coalesce_preserves(
+    left: WireSourceLiveViewImage, right: WireSourceLiveViewImage,
+    fresh_lineage: nat,
+)
+    requires
+        wire_source_live_view_wf(left),
+        wire_source_live_view_wf(right),
+        wire_source_live_frozen_original_coalesce(left, right, fresh_lineage).is_some(),
+    ensures {
+        let joined = wire_source_live_frozen_original_coalesce(
+            left, right, fresh_lineage,
+        ).unwrap();
+        &&& wire_source_live_view_wf(joined)
+        &&& joined.leaf_backing == left.leaf_backing
+        &&& joined.tree.len as int == left.tree.len as int + right.tree.len as int
+        &&& wire_source_live_view_position(joined, joined.tree.len) == Some(right.end)
+        &&& (if joined.tree.len == 0 {
+            wire_source_live_view_same(left, joined)
+        } else {
+            joined.lineage == fresh_lineage
+                && !wire_source_live_view_same(left, joined)
+                && !wire_source_live_view_same(right, joined)
+        })
+        &&& forall|i: int| 0 <= i < joined.tree.len as int
+            ==> (#[trigger] wire_source_live_view_at(joined, i as usize))
+                == if i < left.tree.len as int {
+                    wire_source_live_view_at(left, i as usize)
+                } else {
+                    wire_source_live_view_at(
+                        right, (i - left.tree.len as int) as usize,
+                    )
+                }
+    },
+{
+    let joined = wire_source_live_frozen_original_coalesce(
+        left, right, fresh_lineage,
+    ).unwrap();
+    assert(left.tree.root == Some(0) && right.tree.root == Some(0));
+    assert(left.tree.nodes.len() == 1 && right.tree.nodes.len() == 1);
+    if joined.tree.len == 0 {
+        assert(wire_source_live_view_wf(joined));
+    } else {
+        match (left.tree.nodes[0].payload, right.tree.nodes[0].payload) {
+            (
+                WireSourcePayloadImage::Frozen { value: left_value },
+                WireSourcePayloadImage::Frozen { value: right_value },
+            ) => {
+                assert(wire_frozen_one_leaf_wf(left_value));
+                assert(wire_frozen_one_leaf_wf(right_value));
+                assert(wire_source_node_postorder_shape(left.tree.nodes, 0));
+                assert(wire_source_node_postorder_shape(right.tree.nodes, 0));
+                assert(left.tree.nodes[0].len == left_value.len);
+                assert(right.tree.nodes[0].len == right_value.len);
+                let page_bytes = left_value.pages[0].bytes;
+                let page_anchors = left_value.pages[0].anchors;
+                let page_start = left_value.leaves[0].page_start;
+                let used = left_value.data_len;
+                let selected_start = left_value.start as int + left.tree.start as int;
+                let selected_right = right_value.start as int + right.tree.start as int;
+                let total = left.tree.len as int + right.tree.len as int;
+                assert(left_value == wire_frozen_owned_segment_view(
+                    page_bytes, page_anchors, page_start, used,
+                    left_value.start, left_value.len,
+                ));
+                assert(right_value == wire_frozen_owned_segment_view(
+                    page_bytes, page_anchors, page_start, used,
+                    right_value.start, right_value.len,
+                ));
+                assert(selected_start + left.tree.len as int == selected_right);
+                assert(selected_start + total <= used as int);
+                let left_end = (left.tree.start as int + left.tree.len as int) as usize;
+                let right_end = (right.tree.start as int + right.tree.len as int) as usize;
+                assert(left_end <= left_value.len && right_end <= right_value.len);
+                wire_frozen_owned_segment_subview_preserves_lookup(
+                    page_bytes, page_anchors, page_start, used,
+                    left_value.start, left_value.len,
+                    left.tree.start, left_end,
+                );
+                wire_frozen_owned_segment_subview_preserves_lookup(
+                    page_bytes, page_anchors, page_start, used,
+                    right_value.start, right_value.len,
+                    right.tree.start, right_end,
+                );
+                wire_frozen_owned_segment_coalesce_preserves_lookup(
+                    page_bytes, page_anchors, page_start, used,
+                    selected_start as usize, left.tree.len, right.tree.len,
+                );
+                let left_selected = wire_frozen_owned_segment_view(
+                    page_bytes, page_anchors, page_start, used,
+                    selected_start as usize, left.tree.len,
+                );
+                let right_selected = wire_frozen_owned_segment_view(
+                    page_bytes, page_anchors, page_start, used,
+                    selected_right as usize, right.tree.len,
+                );
+                let joined_value = wire_frozen_owned_segment_view(
+                    page_bytes, page_anchors, page_start, used,
+                    selected_start as usize, total as usize,
+                );
+                assert(wire_frozen_one_leaf_wf(joined_value));
+                assert(joined.tree.nodes[0].payload
+                    == WireSourcePayloadImage::Frozen { value: joined_value });
+                assert(wire_source_live_view_wf(joined));
+                assert forall|i: int| 0 <= i < joined.tree.len as int
+                    implies (#[trigger] wire_source_live_view_at(joined, i as usize))
+                        == if i < left.tree.len as int {
+                            wire_source_live_view_at(left, i as usize)
+                        } else {
+                            wire_source_live_view_at(
+                                right, (i - left.tree.len as int) as usize,
+                            )
+                        } by {
+                    assert(wire_source_live_view_at(joined, i as usize)
+                        == wire_frozen_at(joined_value, i as usize));
+                    if i < left.tree.len as int {
+                        assert(wire_source_live_view_at(left, i as usize)
+                            == wire_frozen_at(
+                                left_value,
+                                (left.tree.start as int + i) as usize,
+                            ));
+                        assert(wire_frozen_at(left_selected, i as usize)
+                            == wire_frozen_at(
+                                left_value,
+                                (left.tree.start as int + i) as usize,
+                            ));
+                    } else {
+                        let right_i = (i - left.tree.len as int) as usize;
+                        assert(right_i < right.tree.len);
+                        assert(wire_source_live_view_at(right, right_i)
+                            == wire_frozen_at(
+                                right_value,
+                                (right.tree.start as int + right_i as int) as usize,
+                            ));
+                        assert(wire_frozen_at(right_selected, right_i)
+                            == wire_frozen_at(
+                                right_value,
+                                (right.tree.start as int + right_i as int) as usize,
+                            ));
+                    }
+                }
+            },
+            _ => {
+                assert(false);
+            },
+        }
+    }
+}
+
+/// Appending a fresh node cannot change lookup through an existing postorder
+/// ID: every branch reference of an old node points to an earlier old ID.
+pub proof fn wire_source_old_lookup_after_append(
+    nodes: Seq<WireSourceNodeImage>, appended: WireSourceNodeImage,
+    id: usize, offset: usize, fuel: usize,
+)
+    requires
+        wire_source_nodes_postorder_wf(nodes),
+        (id as int) < nodes.len(),
+    ensures wire_source_node_at(nodes.push(appended), id, offset, fuel)
+        == wire_source_node_at(nodes, id, offset, fuel),
+    decreases fuel,
+{
+    let extended = nodes.push(appended);
+    assert(extended[id as int] == nodes[id as int]);
+    if fuel == 0 || offset >= nodes[id as int].len {
+        return;
+    }
+    assert(0 <= (id as int) < nodes.len());
+    assert(((id as int) as usize) == id);
+    assert(wire_source_node_postorder_shape(nodes, (id as int) as usize));
+    assert(wire_source_node_postorder_shape(nodes, id));
+    let child_fuel = (fuel as int - 1) as usize;
+    match nodes[id as int].payload {
+        WireSourcePayloadImage::Borrowed {
+            bytes: _, start: _, len: _, source: _, absolute_start: _,
+        } => {},
+        WireSourcePayloadImage::Frozen { value: _ } => {},
+        WireSourcePayloadImage::Branch2 { left, right } => {
+            if offset < nodes[left as int].len {
+                wire_source_old_lookup_after_append(nodes, appended, left, offset, child_fuel);
+            } else {
+                let local = (offset as int - nodes[left as int].len as int) as usize;
+                wire_source_old_lookup_after_append(nodes, appended, right, local, child_fuel);
+            }
+        },
+        WireSourcePayloadImage::Branch3 { first, second, third } => {
+            let first_len = nodes[first as int].len;
+            let second_len = nodes[second as int].len;
+            if offset < first_len {
+                wire_source_old_lookup_after_append(nodes, appended, first, offset, child_fuel);
+            } else if (offset as int) < first_len as int + second_len as int {
+                let local = (offset as int - first_len as int) as usize;
+                wire_source_old_lookup_after_append(nodes, appended, second, local, child_fuel);
+            } else {
+                let local = (offset as int - first_len as int - second_len as int) as usize;
+                wire_source_old_lookup_after_append(nodes, appended, third, local, child_fuel);
+            }
+        },
+    }
+}
+
+/// Ghost counterparts of the production `node2` and `node3` constructors.
+/// Their arguments are the postorder IDs assigned to the *actual* Arc children.
+/// Establishing that assignment, including Arc::clone alias preservation and
+/// Arc::new freshness, is the remaining cross-crate representation obligation.
+pub open spec fn wire_source_append_branch2(
+    nodes: Seq<WireSourceNodeImage>, left: usize, right: usize,
+) -> Seq<WireSourceNodeImage> {
+    nodes.push(WireSourceNodeImage {
+        len: (nodes[left as int].len as int + nodes[right as int].len as int) as usize,
+        payload: WireSourcePayloadImage::Branch2 { left, right },
+    })
+}
+
+pub open spec fn wire_source_append_branch3(
+    nodes: Seq<WireSourceNodeImage>, first: usize, second: usize, third: usize,
+) -> Seq<WireSourceNodeImage> {
+    nodes.push(WireSourceNodeImage {
+        len: (nodes[first as int].len as int + nodes[second as int].len as int
+            + nodes[third as int].len as int) as usize,
+        payload: WireSourcePayloadImage::Branch3 { first, second, third },
+    })
+}
+
+/// A fresh Branch2 leaves every existing postorder ID intact and selects the
+/// exact child located byte (both value and physical origin) at every offset.
+pub proof fn wire_source_append_branch2_projects(
+    nodes: Seq<WireSourceNodeImage>, left: usize, right: usize,
+)
+    requires
+        wire_source_nodes_postorder_wf(nodes),
+        nodes.len() < usize::MAX as int,
+        (left as int) < nodes.len(),
+        (right as int) < nodes.len(),
+        nodes[left as int].len as int + nodes[right as int].len as int <= usize::MAX as int,
+    ensures {
+        let extended = wire_source_append_branch2(nodes, left, right);
+        let root = nodes.len() as usize;
+        let left_len = nodes[left as int].len;
+        let total = (nodes[left as int].len as int + nodes[right as int].len as int) as usize;
+        &&& extended.len() == nodes.len() + 1
+        &&& extended.subrange(0, nodes.len() as int) == nodes
+        &&& wire_source_nodes_postorder_wf(extended)
+        &&& forall|i: int| 0 <= i < total as int ==> {
+            let offset = i as usize;
+            let selected = if offset < left_len {
+                wire_source_node_at(nodes, left, offset, root)
+            } else {
+                wire_source_node_at(
+                    nodes, right, (i - left_len as int) as usize, root,
+                )
+            };
+            &&& (#[trigger] wire_source_node_at(extended, root, i as usize, (root as int + 1) as usize))
+                == selected
+            &&& selected.is_some()
+        }
+    },
+{
+    let extended = wire_source_append_branch2(nodes, left, right);
+    let root = nodes.len() as usize;
+    let total = (nodes[left as int].len as int + nodes[right as int].len as int) as usize;
+    assert(extended.subrange(0, nodes.len() as int) == nodes);
+    assert forall|id: int| 0 <= id < extended.len()
+        implies (#[trigger] wire_source_node_postorder_shape(extended, id as usize)) by {
+        if id < nodes.len() {
+            assert(wire_source_node_postorder_shape(nodes, id as usize));
+            assert(extended[id] == nodes[id]);
+        } else {
+            assert(id == nodes.len());
+            assert(wire_source_node_postorder_shape(nodes, (left as int) as usize));
+            assert(wire_source_node_postorder_shape(nodes, (right as int) as usize));
+            assert(nodes[left as int].len > 0 && nodes[right as int].len > 0);
+            assert(left < root && right < root);
+            assert(extended[left as int].len == nodes[left as int].len);
+            assert(extended[right as int].len == nodes[right as int].len);
+            assert(extended[id].len == total);
+            assert(total > 0);
+            assert(extended[id].payload == WireSourcePayloadImage::Branch2 { left, right });
+            assert(wire_source_node_postorder_shape(extended, root));
+        }
+    }
+    assert(wire_source_nodes_postorder_wf(extended));
+    assert forall|i: int| 0 <= i < total as int implies {
+        let offset = i as usize;
+        let selected = if offset < nodes[left as int].len {
+            wire_source_node_at(nodes, left, offset, root)
+        } else {
+            wire_source_node_at(
+                nodes, right, (i - nodes[left as int].len as int) as usize, root,
+            )
+        };
+        &&& (#[trigger] wire_source_node_at(extended, root, i as usize, (root as int + 1) as usize))
+            == selected
+        &&& selected.is_some()
+    } by {
+        let offset = i as usize;
+        assert(offset < extended[root as int].len);
+        assert(extended == nodes.push(extended[root as int]));
+        if offset < nodes[left as int].len {
+            wire_source_old_lookup_after_append(
+                nodes, extended[root as int], left, offset, root,
+            );
+        } else {
+            let local = (i - nodes[left as int].len as int) as usize;
+            wire_source_old_lookup_after_append(
+                nodes, extended[root as int], right, local, root,
+            );
+        }
+        wire_source_node_postorder_total(extended, root, offset, (root as int + 1) as usize);
+        assert(wire_source_node_at(extended, root, offset, (root as int + 1) as usize).is_some());
+    }
+}
+
+/// The three-child constructor has the same prefix and located-byte property.
+pub proof fn wire_source_append_branch3_projects(
+    nodes: Seq<WireSourceNodeImage>, first: usize, second: usize, third: usize,
+)
+    requires
+        wire_source_nodes_postorder_wf(nodes),
+        nodes.len() < usize::MAX as int,
+        (first as int) < nodes.len(),
+        (second as int) < nodes.len(),
+        (third as int) < nodes.len(),
+        nodes[first as int].len as int + nodes[second as int].len as int
+            + nodes[third as int].len as int <= usize::MAX as int,
+    ensures {
+        let extended = wire_source_append_branch3(nodes, first, second, third);
+        let root = nodes.len() as usize;
+        let first_len = nodes[first as int].len;
+        let second_len = nodes[second as int].len;
+        let total = (first_len as int + second_len as int + nodes[third as int].len as int) as usize;
+        &&& extended.len() == nodes.len() + 1
+        &&& extended.subrange(0, nodes.len() as int) == nodes
+        &&& wire_source_nodes_postorder_wf(extended)
+        &&& forall|i: int| 0 <= i < total as int ==> {
+            let offset = i as usize;
+            let selected = if offset < first_len {
+                wire_source_node_at(nodes, first, offset, root)
+            } else if i < first_len as int + second_len as int {
+                wire_source_node_at(
+                    nodes, second, (i - first_len as int) as usize, root,
+                )
+            } else {
+                wire_source_node_at(
+                    nodes, third,
+                    (i - first_len as int - second_len as int) as usize, root,
+                )
+            };
+            &&& (#[trigger] wire_source_node_at(extended, root, i as usize, (root as int + 1) as usize))
+                == selected
+            &&& selected.is_some()
+        }
+    },
+{
+    let extended = wire_source_append_branch3(nodes, first, second, third);
+    let root = nodes.len() as usize;
+    let total = (nodes[first as int].len as int + nodes[second as int].len as int
+        + nodes[third as int].len as int) as usize;
+    assert(extended.subrange(0, nodes.len() as int) == nodes);
+    assert forall|id: int| 0 <= id < extended.len()
+        implies (#[trigger] wire_source_node_postorder_shape(extended, id as usize)) by {
+        if id < nodes.len() {
+            assert(wire_source_node_postorder_shape(nodes, id as usize));
+            assert(extended[id] == nodes[id]);
+        } else {
+            assert(id == nodes.len());
+            assert(wire_source_node_postorder_shape(nodes, (first as int) as usize));
+            assert(wire_source_node_postorder_shape(nodes, (second as int) as usize));
+            assert(wire_source_node_postorder_shape(nodes, (third as int) as usize));
+            assert(nodes[first as int].len > 0 && nodes[second as int].len > 0
+                && nodes[third as int].len > 0);
+            assert(first < root && second < root && third < root);
+            assert(extended[first as int].len == nodes[first as int].len);
+            assert(extended[second as int].len == nodes[second as int].len);
+            assert(extended[third as int].len == nodes[third as int].len);
+            assert(extended[id].len == total);
+            assert(total > 0);
+            assert(extended[id].payload == WireSourcePayloadImage::Branch3 {
+                first, second, third,
+            });
+            assert(wire_source_node_postorder_shape(extended, root));
+        }
+    }
+    assert(wire_source_nodes_postorder_wf(extended));
+    assert forall|i: int| 0 <= i < total as int implies {
+        let offset = i as usize;
+        let first_len = nodes[first as int].len;
+        let second_len = nodes[second as int].len;
+        let selected = if offset < first_len {
+            wire_source_node_at(nodes, first, offset, root)
+        } else if i < first_len as int + second_len as int {
+            wire_source_node_at(nodes, second, (i - first_len as int) as usize, root)
+        } else {
+            wire_source_node_at(
+                nodes, third,
+                (i - first_len as int - second_len as int) as usize, root,
+            )
+        };
+        &&& (#[trigger] wire_source_node_at(extended, root, i as usize, (root as int + 1) as usize))
+            == selected
+        &&& selected.is_some()
+    } by {
+        let offset = i as usize;
+        assert(offset < extended[root as int].len);
+        assert(extended == nodes.push(extended[root as int]));
+        let first_len = nodes[first as int].len;
+        let second_len = nodes[second as int].len;
+        if offset < first_len {
+            wire_source_old_lookup_after_append(
+                nodes, extended[root as int], first, offset, root,
+            );
+        } else if i < first_len as int + second_len as int {
+            let local = (i - first_len as int) as usize;
+            wire_source_old_lookup_after_append(
+                nodes, extended[root as int], second, local, root,
+            );
+        } else {
+            let local = (i - first_len as int - second_len as int) as usize;
+            wire_source_old_lookup_after_append(
+                nodes, extended[root as int], third, local, root,
+            );
+        }
+        wire_source_node_postorder_total(extended, root, offset, (root as int + 1) as usize);
+        assert(wire_source_node_at(extended, root, offset, (root as int + 1) as usize).is_some());
+    }
+}
+
+/// These implications are universal for constructor-shaped ghost images.
+/// Identifying a live `PageFrozenBytes`/`SourceTreeWindow` with the exact ghost
+/// page arrays and Arc DAG is still a cross-crate extraction obligation.
+pub proof fn wire_runtime_frozen_one_leaf_pre_read_projects(
+    frozen: WireFrozenImage, start: usize, len: usize, root_end: WireSourceAnchor,
+    reader_at: usize, last_field: u32, fields_read: usize,
+)
+    requires
+        wire_frozen_one_leaf_wf(frozen),
+        start as int + len as int <= frozen.len as int,
+        reader_at <= len,
+    ensures {
+        let backing = wire_runtime_frozen_from_index(frozen, start, len, root_end);
+        let observed = wire_frozen_index_region(frozen, start, len, root_end);
+        let state = wire_runtime_message_pre_read(
+            backing, reader_at, last_field, fields_read,
+        );
+        &&& wire_runtime_project_region(backing) == Some(observed)
+        &&& wire_runtime_cursor_project(state)
+            == Some(WireSourceState {
+                cursor: admission::IndexedCanonicalFieldCursorModel {
+                    region_start: 0,
+                    region_end: len,
+                    next: reader_at,
+                    source_bytes: observed.bytes,
+                },
+                last_field,
+                enforce_numeric_order: false,
+                terminal_error: None,
+            })
+    },
+{
+    wire_frozen_one_leaf_total(frozen);
+    wire_runtime_frozen_message_pre_read_projects(
+        frozen, start, len, root_end, reader_at, last_field, fields_read,
+    );
+}
+
+pub proof fn wire_runtime_composed_postorder_pre_read_projects(
+    tree: WireSourceTreeImage, start: usize, len: usize, root_end: WireSourceAnchor,
+    reader_at: usize, last_field: u32, fields_read: usize,
+)
+    requires
+        wire_source_tree_postorder_wf(tree),
+        start as int + len as int <= tree.len as int,
+        reader_at <= len,
+    ensures {
+        let backing = wire_runtime_composed_from_tree(tree, start, len, root_end);
+        let observed = wire_composed_tree_region(tree, start, len, root_end);
+        let state = wire_runtime_message_pre_read(
+            backing, reader_at, last_field, fields_read,
+        );
+        &&& wire_runtime_project_region(backing) == Some(observed)
+        &&& wire_runtime_cursor_project(state)
+            == Some(WireSourceState {
+                cursor: admission::IndexedCanonicalFieldCursorModel {
+                    region_start: 0,
+                    region_end: len,
+                    next: reader_at,
+                    source_bytes: observed.bytes,
+                },
+                last_field,
+                enforce_numeric_order: false,
+                terminal_error: None,
+            })
+    },
+{
+    wire_source_tree_postorder_total(tree);
+    wire_runtime_composed_message_pre_read_projects(
+        tree, start, len, root_end, reader_at, last_field, fields_read,
+    );
+}
+
+/// A byte-derived varint field at the live runtime cursor. Unlike a field
+/// receipt, this value is constructed from the two canonical reads of the
+/// projected indexed body. The projection of the Rust backing and reader is
+/// still an explicit premise of the refinement lemma below.
+pub open spec fn wire_runtime_varint_continue_read(
+    state: WireRuntimeCursorImage,
+) -> Option<admission::IndexedCanonicalFieldModel> {
+    match wire_runtime_cursor_project(state) {
+        Some(source) if source.terminal_error.is_none()
+            && wire_cursor_shape(source.cursor)
+            && source.cursor.next < source.cursor.region_end => {
+            let cursor = source.cursor;
+            let bytes = cursor.source_bytes;
+            let start = cursor.next;
+            let limit = cursor.region_end;
+            match wire_varint_read(bytes, start, limit) {
+                WireVarintResult::Value { value: key, next: key_end }
+                    if 0 < key / 8 <= 0x1fff_ffffu64
+                        && key % 8 == 0
+                        && (!source.enforce_numeric_order
+                            || source.last_field as u64 <= key / 8) => {
+                    match wire_varint_read(bytes, key_end, limit) {
+                        WireVarintResult::Value { value, next: payload_end } => {
+                            Some(admission::IndexedCanonicalFieldModel {
+                                number: (key / 8) as u32,
+                                encoded_start: start,
+                                encoded_end: payload_end,
+                                payload_start: key_end,
+                                payload_end,
+                                key_width: (key_end as int - start as int) as usize,
+                                payload_width: (payload_end as int - key_end as int) as usize,
+                                payload_length: 0,
+                                wire: 0,
+                                decoded_varint: value,
+                                payload_bytes: bytes.subrange(
+                                    key_end as int, payload_end as int,
+                                ),
+                            })
+                        },
+                        _ => None,
+                    }
+                },
+                _ => None,
+            }
+        },
+        _ => None,
+    }
+}
+
+pub proof fn wire_runtime_varint_continue_read_refines(
+    state: WireRuntimeCursorImage,
+    field: admission::IndexedCanonicalFieldModel,
+)
+    requires
+        wire_runtime_derive_cursor(state).is_some(),
+        wire_concrete_cursor_wf(wire_runtime_derive_cursor(state).unwrap()),
+        wire_runtime_varint_continue_read(state) == Some(field),
+    ensures
+        admission::indexed_field_at_cursor(
+            wire_runtime_cursor_project(state).unwrap().cursor, field,
+        ),
+        exists|after: WireConcreteCursorImage, start: WirePhysicalPosition|
+            wire_runtime_next_field(state)
+                == Some(WireConcreteTransition::Field { state: after, field, start }),
+{
+    let derived = wire_runtime_derive_cursor(state).unwrap();
+    let source = wire_runtime_cursor_project(state).unwrap();
+    let bytes = source.cursor.source_bytes;
+    let start = source.cursor.next;
+    let limit = source.cursor.region_end;
+    assert(source.terminal_error.is_none());
+    assert(wire_cursor_shape(source.cursor));
+    assert(start < limit);
+    if let WireVarintResult::Value { value: key, next: key_end } =
+        wire_varint_read(bytes, start, limit)
+    {
+        if let WireVarintResult::Value { value: _, next: payload_end } =
+            wire_varint_read(bytes, key_end, limit)
+        {
+            assert(wire_field_step(
+                source.cursor, source.last_field, source.enforce_numeric_order, false,
+            ) == WireFieldResult::Field {
+                field, next: payload_end, last_field: field.number,
+            });
+            wire_source_next_field_refines(source);
+            assert(admission::indexed_field_at_cursor(source.cursor, field));
+            wire_concrete_next_field_or_matches_model(derived);
+            assert(wire_concrete_cursor_project(derived) == Some(source));
+            assert(wire_source_next_field(source)
+                == WireSourceTransition::Field {
+                    state: wire_source_with_cursor(source, payload_end, field.number, None),
+                    field,
+                });
+            let region = wire_backing_project(derived.message).unwrap();
+            assert(region.bytes == bytes);
+            assert(region.anchors.len() == region.bytes.len());
+            assert(wire_region_position(region, start).is_some());
+            assert(wire_runtime_next_field(state) == wire_concrete_next_field(derived));
+            if let Some(WireConcreteTransition::Field { state: after, field: read, start }) =
+                wire_runtime_next_field(state)
+            {
+                assert(read == field);
+            } else {
+                assert(false);
+            }
+        } else {
+            assert(false);
+        }
+    } else {
+        assert(false);
+    }
+}
+
 pub proof fn wire_runtime_next_field_from_source(state: WireRuntimeCursorImage)
     requires
         wire_runtime_derive_cursor(state).is_some(),

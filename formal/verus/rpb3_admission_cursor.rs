@@ -617,6 +617,7 @@ pub struct AdmissionScalarOccurrence {
     pub tag: u32,
     pub scalar_kind: u8,
     pub varint_value: u64,
+    pub physical_source: usize,
     pub physical_start: int,
     pub ghost bytes: Seq<u8>,
 }
@@ -1674,6 +1675,77 @@ pub open spec fn admission_emap_source_summary(
     }
 }
 
+pub open spec fn admission_eset_return_bound(
+    returned: AdmissionReturnedSummary, arena: Seq<AdmissionScoreBinding>,
+) -> bool {
+    returned.score_handle.is_some()
+        && returned.score_origin_body_id == Some(returned.body_id)
+        && (returned.score_handle.unwrap() as int) < arena.len()
+        && arena[returned.score_handle.unwrap() as int].body_id == returned.body_id
+        && arena[returned.score_handle.unwrap() as int].semantic
+        && (if returned.slot == 0 {
+            returned.tag == 1 && admission_is_par(returned.kind)
+        } else if returned.slot == 3 {
+            returned.tag == 5
+                && match returned.kind {
+                    AdmissionReturnedKind::VarScore => true,
+                    _ => false,
+                }
+        } else { false })
+}
+
+pub open spec fn admission_eset_source_fixed_point(
+    returns: Seq<AdmissionReturnedSummary>, arena: Seq<AdmissionScoreBinding>,
+) -> bool {
+    (forall|i: int| 0 <= i < returns.len()
+        ==> admission_eset_return_bound(returns[i], arena))
+        && (forall|i: int, j: int| 0 <= i < j < returns.len()
+        && returns[i].slot == 0 && returns[j].slot == 0
+        ==> {
+            let left_score = arena[returns[i].score_handle.unwrap() as int].transcript_bytes;
+            let right_score = arena[returns[j].score_handle.unwrap() as int].transcript_bytes;
+            admission_bytes_lex_lt(left_score, right_score)
+                || (left_score == right_score
+                    && admission_bytes_lex_lt(
+                        returns[i].body_bytes, returns[j].body_bytes,
+                    ))
+        })
+        && (forall|i: int, j: int| 0 <= i < j < returns.len()
+            && returns[i].slot == 0 && returns[j].slot == 0
+            ==> match (
+                admission_par_identity_from_source(returns[i].body_bytes),
+                admission_par_identity_from_source(returns[j].body_bytes),
+            ) {
+                (Some(left), Some(right)) => left != right,
+                _ => false,
+            })
+}
+
+pub open spec fn admission_eset_source_summary(
+    frame: AdmissionFrameState, arena: Seq<AdmissionScoreBinding>,
+) -> Option<bool> {
+    if frame.family != AdmissionFamily::Other || frame.frame_kind != 1
+        || frame.program_type_id != 29 || frame.slot_count != 4
+        || frame.cursor != frame.region_end || frame.waiting_id.is_some()
+        || frame.score_handle.is_none()
+        || (frame.score_handle.unwrap() as int) >= arena.len()
+        || arena[frame.score_handle.unwrap() as int].body_id != frame.body_id
+        || !arena[frame.score_handle.unwrap() as int].semantic
+        || !(forall|i: int| 0 <= i < frame.returns.len()
+            ==> admission_eset_return_bound(frame.returns[i], arena))
+        || frame.seen.contains(0) != (exists|i: int| 0 <= i < frame.returns.len()
+            && frame.returns[i].slot == 0)
+        || frame.seen.contains(3) != (exists|i: int| 0 <= i < frame.returns.len()
+            && frame.returns[i].slot == 3)
+        || !(forall|i: int| 0 <= i < frame.returns.len()
+            && frame.returns[i].slot == 3 ==> i == frame.returns.len() - 1)
+    {
+        None
+    } else {
+        Some(admission_eset_source_fixed_point(frame.returns, arena))
+    }
+}
+
 pub open spec fn admission_ezipper_pathmap_payload(
     parent: AdmissionFrameState, child: AdmissionFrameState,
 ) -> Option<AdmissionReturnedKind> {
@@ -1744,6 +1816,18 @@ pub open spec fn admission_expr_structural_payload_with_arena(
 ) -> Option<AdmissionReturnedKind> {
     if parent.family == AdmissionFamily::Expr && parent.waiting_slot == Some(0)
         && parent.waiting_tag == Some(22) && parent.program_type_id == 24
+        && child.family == AdmissionFamily::Other && child.frame_kind == 1
+        && child.program_type_id == 29
+    {
+        match admission_eset_source_summary(child, arena) {
+            Some(fixed) => Some(AdmissionReturnedKind::ExprPayload {
+                score_present: true, canonical_fixed_point: fixed,
+                canonical_path_stable: false,
+            }),
+            None => None,
+        }
+    } else if parent.family == AdmissionFamily::Expr && parent.waiting_slot == Some(0)
+        && parent.waiting_tag == Some(23) && parent.program_type_id == 24
         && child.family == AdmissionFamily::Other && child.frame_kind == 1
         && child.program_type_id == 30
     {
@@ -2525,7 +2609,7 @@ pub open spec fn admission_arm_child_summary_agrees(
                             _ => false,
                         }
                     } else if tag == 5 || tag == 6 || tag == 20 || tag == 21
-                        || tag == 22 || tag == 24
+                        || tag == 22 || tag == 23 || tag == 24
                         || tag == 32 || tag == 33
                         || (7 <= tag && tag <= 18) || (27 <= tag && tag <= 31)
                     {
@@ -4967,6 +5051,898 @@ pub open spec fn admission_indexed_source_subview(
     }
 }
 
+/// Source-shaped facts at a CanonicalPath `step()` that has consumed one or
+/// more input bytes and returned `Push`. The reducer obligation ID belongs to
+/// the path reducer; `stack_return_id` belongs to the admission worklist.
+/// Neither is inferred from the other. The payload end is explicit because an
+/// empty opaque payload can end at its length-byte anchor.
+pub enum AdmissionCanonicalPathObligationKind { RawParEscape, NestedEpm1 }
+
+pub struct AdmissionCanonicalPathPushSource {
+    pub ghost parent: AdmissionIndexedSourceImage,
+    pub ghost child: AdmissionIndexedSourceImage,
+    pub payload_start: usize,
+    pub payload_end: usize,
+    pub terminal_anchor: AdmissionSourceAnchor,
+    pub cursor_after_step: usize,
+    pub reducer_obligation_id: u64,
+    pub stack_return_id: u64,
+    pub kind: AdmissionCanonicalPathObligationKind,
+}
+
+/// The scalar checks made by `FramePushObservation::after_push`. This is a
+/// supplied observation, not an extraction theorem for the production Vec.
+pub struct AdmissionCanonicalPathPushStorage {
+    pub before_len: usize,
+    pub before_capacity: usize,
+    pub after_len: usize,
+    pub after_capacity: usize,
+    pub frame_variant_bytes: usize,
+    pub stats_frame_variant_bytes: usize,
+    pub used_bytes: usize,
+    pub reserved_bytes: usize,
+    pub observed_top_kind: u8,
+}
+
+pub open spec fn admission_canonical_path_slotless(frame: AdmissionFrameState) -> bool {
+    frame.family == AdmissionFamily::Other
+        && frame.slot_count == 0
+        && frame.last_slot.is_none()
+        && frame.seen == Set::empty()
+        && frame.required == Set::empty()
+        && frame.scalar_slots == Set::empty()
+        && frame.scalar_occurrences.len() == 0
+        && frame.returns.len() == 0
+        && frame.waiting_slot.is_none()
+        && frame.waiting_tag.is_none()
+        && frame.score_handle.is_none()
+}
+
+pub open spec fn admission_canonical_path_push_source_wf(
+    state: AdmissionState, source: AdmissionCanonicalPathPushSource,
+    child: AdmissionFrameState,
+) -> bool {
+    if state.frames.len() == 0 { false } else {
+        let parent = state.frames[state.frames.len() - 1];
+        let first_parent = admission_indexed_source_position(source.parent, 0);
+        let first_child = admission_indexed_source_position(source.child, 0);
+        &&& parent.frame_kind == 4
+        &&& admission_canonical_path_slotless(parent)
+        &&& parent.program_type_id == 0
+        &&& parent.waiting_id.is_none()
+        &&& parent.waiting_kind == 0
+        &&& parent.source_bytes == source.parent.bytes
+        &&& admission_indexed_source_wf(source.parent)
+        &&& first_parent.is_some()
+        &&& first_parent.unwrap().source == parent.physical_source
+        &&& first_parent.unwrap().offset == parent.physical_start
+        &&& parent.cursor < source.cursor_after_step
+        &&& source.cursor_after_step <= parent.region_end
+        &&& source.payload_start <= source.payload_end
+        &&& source.payload_end <= source.cursor_after_step
+        &&& source.child.bytes == source.parent.bytes.subrange(
+            source.payload_start as int, source.payload_end as int,
+        )
+        &&& source.child.positions == source.parent.positions.subrange(
+            source.payload_start as int, source.payload_end as int,
+        )
+        &&& source.child.end == source.terminal_anchor
+        &&& admission_indexed_source_wf(source.child)
+        &&& first_child.is_some()
+        &&& child.physical_source == first_child.unwrap().source
+        &&& child.physical_start == first_child.unwrap().offset
+        &&& child.region_start == 0
+        &&& child.region_end as int == source.child.bytes.len()
+        &&& child.source_bytes == source.child.bytes
+        &&& child.cursor == 0
+        &&& child.family == AdmissionFamily::Other
+        &&& match source.kind {
+            AdmissionCanonicalPathObligationKind::RawParEscape =>
+                child.frame_kind == 1 && child.program_type_id == 1
+                    && generated::generated_slot_count(1) == Some(child.slot_count),
+            AdmissionCanonicalPathObligationKind::NestedEpm1 =>
+                child.frame_kind == 3 && child.program_type_id == 1
+                    && admission_canonical_path_slotless(child),
+        }
+        &&& child.waiting_id.is_none()
+        &&& child.waiting_kind == 0
+        &&& child.return_id.is_none()
+        &&& child.last_slot.is_none()
+        &&& child.seen == Set::empty()
+        &&& child.scalar_slots == Set::empty()
+        &&& child.scalar_occurrences.len() == 0
+        &&& child.returns.len() == 0
+        &&& child.score_handle.is_none()
+        &&& child.nested_started == 0
+        &&& child.nested_resolved == 0
+        &&& admission_frame_wf(child)
+        &&& source.stack_return_id == state.next_obligation_id
+    }
+}
+
+pub open spec fn admission_canonical_path_push_storage_wf(
+    state: AdmissionState, child: AdmissionFrameState,
+    storage: AdmissionCanonicalPathPushStorage,
+) -> bool {
+    &&& storage.before_len as int == state.frames.len()
+    &&& storage.before_len <= storage.before_capacity
+    &&& storage.after_len as int == storage.before_len as int + 1
+    &&& storage.after_capacity >= storage.before_capacity
+    &&& storage.after_capacity >= storage.after_len
+    &&& storage.frame_variant_bytes > 0
+    &&& storage.stats_frame_variant_bytes == storage.frame_variant_bytes
+    &&& storage.after_len as int * storage.frame_variant_bytes as int <= usize::MAX as int
+    &&& storage.after_capacity as int * storage.frame_variant_bytes as int
+        <= usize::MAX as int
+    &&& storage.used_bytes as int
+        == storage.after_len as int * storage.frame_variant_bytes as int
+    &&& storage.reserved_bytes as int
+        == storage.after_capacity as int * storage.frame_variant_bytes as int
+    &&& storage.observed_top_kind == child.frame_kind
+}
+
+/// One driver macro-action after `CanonicalPathFrame::step` advances its
+/// cursor. It has no protobuf slot or tag: only the path-reducer obligation
+/// sidecar and the independent stack return ID are published. The full child
+/// position image stays in `source`, since AdmissionFrameState stores only
+/// bytes and the first physical anchor.
+pub open spec fn admission_canonical_path_push_indexed_step(
+    state: AdmissionState, source: AdmissionCanonicalPathPushSource,
+    child: AdmissionFrameState, storage: AdmissionCanonicalPathPushStorage,
+) -> Option<AdmissionState> {
+    if !admission_canonical_path_push_source_wf(state, source, child)
+        || !admission_canonical_path_push_storage_wf(state, child, storage)
+        || state.next_obligation_id == u64::MAX
+        || state.pushed == usize::MAX
+        || (child.frame_kind == 3
+            && state.frames[state.frames.len() - 1].nested_started == u64::MAX)
+    { None } else {
+        let index = state.frames.len() - 1;
+        let parent = state.frames[index];
+        let next_parent = AdmissionFrameState {
+            cursor: source.cursor_after_step,
+            waiting_id: Some(source.stack_return_id),
+            waiting_kind: child.frame_kind,
+            nested_started: if child.frame_kind == 3 {
+                (parent.nested_started as int + 1) as u64
+            } else { parent.nested_started },
+            ..parent
+        };
+        let next_child = AdmissionFrameState {
+            return_id: Some(source.stack_return_id),
+            body_id: (source.stack_return_id as int + 1) as u64,
+            ..child
+        };
+        Some(AdmissionState {
+            frames: state.frames.update(index, next_parent).push(next_child),
+            arena: state.arena,
+            root_end: state.root_end,
+            pushed: (state.pushed as int + 1) as usize,
+            completed: state.completed,
+            next_obligation_id: (state.next_obligation_id as int + 1) as u64,
+        })
+    }
+}
+
+pub proof fn admission_canonical_path_push_indexed_preserves_wf(
+    state: AdmissionState, source: AdmissionCanonicalPathPushSource,
+    child: AdmissionFrameState, storage: AdmissionCanonicalPathPushStorage,
+)
+    requires admission_state_wf(state),
+    ensures match admission_canonical_path_push_indexed_step(
+        state, source, child, storage,
+    ) {
+        Some(next) => {
+            let parent_index = state.frames.len() - 1;
+            let next_parent = next.frames[parent_index];
+            let next_child = next.frames[parent_index + 1];
+            &&& admission_state_wf(next)
+            &&& next.frames.len() == state.frames.len() + 1
+            &&& next.arena == state.arena
+            &&& next_parent.frame_kind == 4
+            &&& next_parent.cursor == source.cursor_after_step
+            &&& next_parent.waiting_id == Some(source.stack_return_id)
+            &&& next_parent.waiting_kind == child.frame_kind
+            &&& next_parent.waiting_slot.is_none()
+            &&& next_parent.waiting_tag.is_none()
+            &&& next_parent.last_slot == state.frames[parent_index].last_slot
+            &&& next_parent.seen == state.frames[parent_index].seen
+            &&& next_parent.returns == state.frames[parent_index].returns
+            &&& next_child.return_id == Some(source.stack_return_id)
+            &&& next_child.source_bytes == source.child.bytes
+            &&& next_child.physical_source
+                == admission_indexed_source_position(source.child, 0).unwrap().source
+            &&& next_child.physical_start
+                == admission_indexed_source_position(source.child, 0).unwrap().offset
+            &&& source.child.positions == source.parent.positions.subrange(
+                source.payload_start as int, source.payload_end as int,
+            )
+            &&& source.child.end == source.terminal_anchor
+            &&& (source.payload_start == source.payload_end
+                ==> next_child.physical_source == source.terminal_anchor.source
+                    && next_child.physical_start == source.terminal_anchor.offset)
+            &&& storage.after_len as int == next.frames.len()
+        },
+        None => true,
+    },
+{
+    if let Some(next) = admission_canonical_path_push_indexed_step(
+        state, source, child, storage,
+    ) {
+        let index = state.frames.len() - 1;
+        let parent = state.frames[index];
+        let next_parent = next.frames[index];
+        let next_child = next.frames[index + 1];
+        assert(admission_canonical_path_push_source_wf(state, source, child));
+        assert(admission_canonical_path_push_storage_wf(state, child, storage));
+        assert(admission_frame_wf(parent));
+        assert(admission_frame_wf(child));
+        assert(parent.waiting_kind == 0);
+        assert(parent.nested_started == parent.nested_resolved);
+        assert(next_parent.waiting_slot.is_none());
+        assert(next_parent.waiting_tag.is_none());
+        if child.frame_kind == 3 {
+            assert(next_parent.nested_started as int
+                == parent.nested_started as int + 1);
+            assert(next_parent.waiting_kind == 3);
+        } else {
+            assert(child.frame_kind == 1);
+            assert(next_parent.nested_started == parent.nested_started);
+            assert(next_parent.waiting_kind == 1);
+        }
+        assert(next_parent.nested_started as int
+            == next_parent.nested_resolved as int
+                + (if next_parent.waiting_kind == 3 { 1int } else { 0int }));
+        assert(next_parent.source_bytes == parent.source_bytes);
+        assert(next_parent.required == parent.required);
+        assert(next_parent.scalar_occurrences == parent.scalar_occurrences);
+        assert(next_parent.returns == parent.returns);
+        assert(admission_frame_wf(next_parent));
+        assert(next_child.source_bytes == child.source_bytes);
+        assert(next_child.required == child.required);
+        assert(next_child.scalar_occurrences == child.scalar_occurrences);
+        assert(next_child.returns == child.returns);
+        assert(admission_frame_wf(next_child));
+        if source.payload_start == source.payload_end {
+            assert(source.child.bytes.len() == 0);
+            assert(admission_indexed_source_position(source.child, 0)
+                == Some(source.terminal_anchor));
+            assert(next_child.physical_source == source.terminal_anchor.source);
+            assert(next_child.physical_start == source.terminal_anchor.offset);
+        }
+        assert forall|i: int| 0 <= i < next.frames.len()
+            implies admission_frame_wf(next.frames[i]) by {
+            if i < index {
+                assert(next.frames[i] == state.frames[i]);
+            } else if i == index {
+                assert(next.frames[i] == next_parent);
+            } else {
+                assert(i == index + 1);
+                assert(next.frames[i] == next_child);
+            }
+        }
+        assert forall|frame_index: int, return_index: int|
+            0 <= frame_index < next.frames.len()
+                && 0 <= return_index < next.frames[frame_index].returns.len()
+            implies next.frames[frame_index].returns[return_index].score_handle.is_some()
+                == next.frames[frame_index].returns[return_index]
+                    .score_origin_body_id.is_some()
+                && match next.frames[frame_index].returns[return_index].score_handle {
+                    Some(handle) => (handle as int) < next.arena.len()
+                        && next.arena[handle as int].body_id
+                            == next.frames[frame_index].returns[return_index]
+                                .score_origin_body_id.unwrap(),
+                    None => true,
+                } by {
+            if frame_index < index {
+                assert(next.frames[frame_index] == state.frames[frame_index]);
+            } else if frame_index == index {
+                assert(next.frames[frame_index].returns == parent.returns);
+            } else {
+                assert(frame_index == index + 1);
+                assert(next_child.returns.len() == 0);
+            }
+        }
+        assert forall|frame_index: int| 1 <= frame_index < next.frames.len()
+            implies ((next.frames[frame_index - 1].frame_kind != 1
+                && next.frames[frame_index - 1].frame_kind != 2)
+                || #[trigger] admission_child_physical_contained(
+                    next.frames[frame_index - 1], next.frames[frame_index],
+                )) by {
+            if frame_index < index {
+                assert(next.frames[frame_index - 1] == state.frames[frame_index - 1]);
+                assert(next.frames[frame_index] == state.frames[frame_index]);
+                if state.frames[frame_index - 1].frame_kind == 1
+                    || state.frames[frame_index - 1].frame_kind == 2
+                {
+                    assert(admission_child_physical_contained(
+                        state.frames[frame_index - 1], state.frames[frame_index],
+                    ));
+                }
+            } else if frame_index == index {
+                assert(next.frames[frame_index - 1] == state.frames[frame_index - 1]);
+                if state.frames[frame_index - 1].frame_kind == 1
+                    || state.frames[frame_index - 1].frame_kind == 2
+                {
+                    assert(admission_child_physical_contained(
+                        state.frames[frame_index - 1], state.frames[frame_index],
+                    ));
+                }
+                assert(next.frames[frame_index].physical_source
+                    == state.frames[frame_index].physical_source);
+                assert(next.frames[frame_index].physical_start
+                    == state.frames[frame_index].physical_start);
+                assert(next.frames[frame_index].region_end
+                    == state.frames[frame_index].region_end);
+                assert(next.frames[frame_index].source_bytes
+                    == state.frames[frame_index].source_bytes);
+                if state.frames[frame_index - 1].frame_kind == 1
+                    || state.frames[frame_index - 1].frame_kind == 2
+                {
+                    assert(admission_child_physical_contained(
+                        next.frames[frame_index - 1], next.frames[frame_index],
+                    ));
+                }
+            } else {
+                assert(frame_index == index + 1);
+                assert(next_parent.frame_kind == 4);
+            }
+        }
+        assert(admission_state_wf(next));
+    }
+}
+
+/// The source-visible continuation after a CanonicalPath child completes.
+/// `push` is the indexed image retained across the child lifetime. The
+/// reducer's waiting ID and kind are checked separately from the worklist's
+/// return ID. The EPM entry flags are a ghost source witness whose extraction
+/// from the EPM reducer remains a separate composition obligation.
+pub struct AdmissionCanonicalPathReturnSource {
+    pub ghost push: AdmissionCanonicalPathPushSource,
+    pub reducer_waiting_id: u64,
+    pub reducer_waiting_kind: AdmissionCanonicalPathObligationKind,
+    pub stack_return_id: u64,
+    pub ghost epm_entry_stability: Seq<bool>,
+}
+
+pub enum AdmissionCanonicalPathResolution {
+    RawPar { canonical_path_stable: bool },
+    NestedEpm1 { mode: u8, entries_canonical_path_stable: bool },
+}
+
+pub struct AdmissionCanonicalPathReturnAfter {
+    pub ghost parent: AdmissionIndexedSourceImage,
+    pub cursor: usize,
+    pub waiting_reducer_id: Option<u64>,
+    pub waiting_stack_id: Option<u64>,
+    pub resolved_reducer_id: u64,
+    pub resolution: AdmissionCanonicalPathResolution,
+}
+
+pub open spec fn admission_canonical_path_resolution_from_summary(
+    kind: AdmissionCanonicalPathObligationKind,
+    summary: AdmissionReturnedKind,
+) -> Option<AdmissionCanonicalPathResolution> {
+    match (kind, summary) {
+        (AdmissionCanonicalPathObligationKind::RawParEscape,
+            AdmissionReturnedKind::Par { canonical_path_stable: false, .. }) =>
+            Some(AdmissionCanonicalPathResolution::RawPar {
+                canonical_path_stable: false,
+            }),
+        (AdmissionCanonicalPathObligationKind::NestedEpm1,
+            AdmissionReturnedKind::EPathMapSnapshot {
+                mode: 2, entries_canonical_path_stable: true,
+            }) => Some(AdmissionCanonicalPathResolution::NestedEpm1 {
+                mode: 2, entries_canonical_path_stable: true,
+            }),
+        _ => None,
+    }
+}
+
+pub open spec fn admission_canonical_path_return_sidecar_after(
+    source: AdmissionCanonicalPathReturnSource,
+    summary: AdmissionReturnedKind,
+) -> Option<AdmissionCanonicalPathReturnAfter> {
+    if source.reducer_waiting_id != source.push.reducer_obligation_id
+        || source.reducer_waiting_kind != source.push.kind
+        || source.stack_return_id != source.push.stack_return_id
+        || admission_canonical_path_resolution_from_summary(
+            source.push.kind, summary,
+        ).is_none()
+    { None } else {
+        Some(AdmissionCanonicalPathReturnAfter {
+            parent: source.push.parent,
+            cursor: source.push.cursor_after_step,
+            waiting_reducer_id: None,
+            waiting_stack_id: None,
+            resolved_reducer_id: source.reducer_waiting_id,
+            resolution: admission_canonical_path_resolution_from_summary(
+                source.push.kind, summary,
+            ).unwrap(),
+        })
+    }
+}
+
+pub open spec fn admission_canonical_path_epm_mode_from_bytes(
+    bytes: Seq<u8>,
+) -> Option<u8> {
+    if bytes.len() < 6 || bytes[0] != 0x45 || bytes[1] != 0x50
+        || bytes[2] != 0x4d || bytes[3] != 0x31 || bytes[4] != 1
+        || bytes[5] > 2
+    { None } else { Some(bytes[5]) }
+}
+
+pub open spec fn admission_canonical_path_return_summary_from_source(
+    state: AdmissionState, source: AdmissionCanonicalPathReturnSource,
+    summary: AdmissionReturnedKind,
+) -> bool {
+    if state.frames.len() < 2 { false } else {
+        let child = state.frames[state.frames.len() - 1];
+        match (source.push.kind, summary) {
+            (AdmissionCanonicalPathObligationKind::RawParEscape,
+                AdmissionReturnedKind::Par {
+                    canonical_path_stable: false, ..
+                }) => {
+                admission_child_summary_agrees(child, summary, state.arena)
+            },
+            (AdmissionCanonicalPathObligationKind::NestedEpm1,
+                AdmissionReturnedKind::EPathMapSnapshot {
+                    mode, entries_canonical_path_stable,
+                }) => {
+                &&& mode == 2
+                &&& entries_canonical_path_stable
+                &&& admission_canonical_path_epm_mode_from_bytes(
+                    source.push.child.bytes,
+                ) == Some(mode)
+                &&& entries_canonical_path_stable == (forall|i: int|
+                    0 <= i < source.epm_entry_stability.len()
+                        ==> source.epm_entry_stability[i])
+                &&& child.score_handle.is_none()
+            },
+            _ => false,
+        }
+    }
+}
+
+pub open spec fn admission_canonical_path_return_source_wf(
+    state: AdmissionState, source: AdmissionCanonicalPathReturnSource,
+    summary: AdmissionReturnedKind,
+) -> bool {
+    if state.frames.len() < 2 { false } else {
+        let parent = state.frames[state.frames.len() - 2];
+        let child = state.frames[state.frames.len() - 1];
+        let push = source.push;
+        let parent_start = admission_indexed_source_position(push.parent, 0);
+        let child_start = admission_indexed_source_position(push.child, 0);
+        &&& parent.frame_kind == 4
+        &&& parent.program_type_id == 0
+        &&& admission_canonical_path_slotless(parent)
+        &&& parent.waiting_id == Some(push.stack_return_id)
+        &&& parent.waiting_kind == child.frame_kind
+        &&& parent.waiting_slot.is_none()
+        &&& parent.waiting_tag.is_none()
+        &&& source.stack_return_id == push.stack_return_id
+        &&& source.reducer_waiting_id == push.reducer_obligation_id
+        &&& source.reducer_waiting_kind == push.kind
+        &&& child.return_id == Some(source.stack_return_id)
+        &&& source.stack_return_id != u64::MAX
+        &&& child.body_id as int == source.stack_return_id as int + 1
+        &&& admission_indexed_source_wf(push.parent)
+        &&& admission_indexed_source_wf(push.child)
+        &&& parent.source_bytes == push.parent.bytes
+        &&& parent_start.is_some()
+        &&& parent.physical_source == parent_start.unwrap().source
+        &&& parent.physical_start == parent_start.unwrap().offset
+        &&& parent.cursor == push.cursor_after_step
+        &&& push.payload_start <= push.payload_end
+        &&& push.payload_end <= parent.cursor
+        &&& push.child.bytes == push.parent.bytes.subrange(
+            push.payload_start as int, push.payload_end as int,
+        )
+        &&& push.child.positions == push.parent.positions.subrange(
+            push.payload_start as int, push.payload_end as int,
+        )
+        &&& push.child.end == push.terminal_anchor
+        &&& child.source_bytes == push.child.bytes
+        &&& child.region_start == 0
+        &&& child.region_end as int == push.child.bytes.len()
+        &&& child_start.is_some()
+        &&& child.physical_source == child_start.unwrap().source
+        &&& child.physical_start == child_start.unwrap().offset
+        &&& child.cursor == child.region_end
+        &&& child.waiting_id.is_none()
+        &&& child.waiting_kind == 0
+        &&& child.nested_started == child.nested_resolved
+        &&& admission_slots_complete(child)
+        &&& admission_family_admissible(child)
+        &&& admission_frame_wf(child)
+        &&& match push.kind {
+            AdmissionCanonicalPathObligationKind::RawParEscape =>
+                child.frame_kind == 1 && child.program_type_id == 1
+                    && child.family == AdmissionFamily::Other
+                    && generated::generated_slot_count(1) == Some(child.slot_count),
+            AdmissionCanonicalPathObligationKind::NestedEpm1 =>
+                child.frame_kind == 3 && child.program_type_id == 1
+                    && admission_canonical_path_slotless(child),
+        }
+        &&& admission_canonical_path_return_summary_from_source(
+            state, source, summary,
+        )
+    }
+}
+
+/// One `FrameAction::Complete` and parent `accept` macro-action. CanonicalPath
+/// stores neither a protobuf return slot nor an arena score for the child;
+/// the path reducer consumes its own obligation sidecar instead.
+pub open spec fn admission_canonical_path_return_indexed_step(
+    state: AdmissionState, source: AdmissionCanonicalPathReturnSource,
+    summary: AdmissionReturnedKind,
+) -> Option<AdmissionState> {
+    if !admission_canonical_path_return_source_wf(state, source, summary)
+        || state.completed == usize::MAX
+        || (state.frames[state.frames.len() - 1].frame_kind == 3
+            && state.frames[state.frames.len() - 2].nested_resolved == u64::MAX)
+    { None } else {
+        let parent_index = state.frames.len() - 2;
+        let parent = state.frames[parent_index];
+        let child = state.frames[parent_index + 1];
+        let next_parent = AdmissionFrameState {
+            waiting_id: None,
+            waiting_kind: 0,
+            nested_resolved: if child.frame_kind == 3 {
+                (parent.nested_resolved as int + 1) as u64
+            } else { parent.nested_resolved },
+            ..parent
+        };
+        Some(AdmissionState {
+            frames: state.frames.subrange(0, state.frames.len() - 1)
+                .update(parent_index, next_parent),
+            arena: state.arena,
+            root_end: state.root_end,
+            pushed: state.pushed,
+            completed: (state.completed as int + 1) as usize,
+            next_obligation_id: state.next_obligation_id,
+        })
+    }
+}
+
+pub proof fn admission_canonical_path_return_indexed_preserves_wf(
+    state: AdmissionState, source: AdmissionCanonicalPathReturnSource,
+    summary: AdmissionReturnedKind,
+)
+    requires admission_state_wf(state),
+    ensures match admission_canonical_path_return_indexed_step(
+        state, source, summary,
+    ) {
+        Some(next) => {
+            let parent_index = state.frames.len() - 2;
+            let old_parent = state.frames[parent_index];
+            let new_parent = next.frames[parent_index];
+            &&& admission_state_wf(next)
+            &&& next.frames.len() + 1 == state.frames.len()
+            &&& next.completed as int == state.completed as int + 1
+            &&& next.pushed == state.pushed
+            &&& next.arena == state.arena
+            &&& next.next_obligation_id == state.next_obligation_id
+            &&& new_parent.frame_kind == 4
+            &&& new_parent.waiting_id.is_none()
+            &&& new_parent.waiting_kind == 0
+            &&& new_parent.waiting_slot.is_none()
+            &&& new_parent.waiting_tag.is_none()
+            &&& new_parent.source_bytes == old_parent.source_bytes
+            &&& new_parent.physical_source == old_parent.physical_source
+            &&& new_parent.physical_start == old_parent.physical_start
+            &&& new_parent.cursor == old_parent.cursor
+            &&& new_parent.last_slot == old_parent.last_slot
+            &&& new_parent.seen == old_parent.seen
+            &&& new_parent.returns == old_parent.returns
+            &&& new_parent.score_handle == old_parent.score_handle
+            &&& new_parent.nested_started == new_parent.nested_resolved
+            &&& source.reducer_waiting_id == source.push.reducer_obligation_id
+            &&& source.stack_return_id == source.push.stack_return_id
+            &&& admission_canonical_path_return_sidecar_after(source, summary).is_some()
+            &&& admission_canonical_path_return_sidecar_after(
+                source, summary,
+            ).unwrap().waiting_reducer_id.is_none()
+            &&& admission_canonical_path_return_sidecar_after(
+                source, summary,
+            ).unwrap().waiting_stack_id.is_none()
+            &&& admission_canonical_path_return_sidecar_after(
+                source, summary,
+            ).unwrap().resolved_reducer_id == source.reducer_waiting_id
+            &&& (source.push.kind == AdmissionCanonicalPathObligationKind::NestedEpm1
+                ==> new_parent.nested_resolved as int
+                    == old_parent.nested_resolved as int + 1)
+            &&& (source.push.kind == AdmissionCanonicalPathObligationKind::RawParEscape
+                ==> new_parent.nested_resolved == old_parent.nested_resolved)
+        },
+        None => true,
+    },
+{
+    if let Some(next) = admission_canonical_path_return_indexed_step(
+        state, source, summary,
+    ) {
+        let parent_index = state.frames.len() - 2;
+        let parent = state.frames[parent_index];
+        let child = state.frames[parent_index + 1];
+        let next_parent = next.frames[parent_index];
+        assert(admission_canonical_path_return_source_wf(state, source, summary));
+        assert(admission_frame_wf(parent));
+        assert(admission_frame_wf(child));
+        assert(parent.waiting_kind == child.frame_kind);
+        assert(parent.waiting_slot.is_none());
+        assert(parent.waiting_tag.is_none());
+        if child.frame_kind == 3 {
+            assert(parent.nested_started as int == parent.nested_resolved as int + 1);
+            assert(next_parent.nested_resolved as int
+                == parent.nested_resolved as int + 1);
+        } else {
+            assert(child.frame_kind == 1);
+            assert(parent.nested_started == parent.nested_resolved);
+            assert(next_parent.nested_resolved == parent.nested_resolved);
+        }
+        assert(next_parent.nested_started == next_parent.nested_resolved);
+        assert(next_parent.source_bytes == parent.source_bytes);
+        assert(next_parent.required == parent.required);
+        assert(next_parent.scalar_occurrences == parent.scalar_occurrences);
+        assert(next_parent.returns == parent.returns);
+        assert(admission_frame_wf(next_parent));
+        assert forall|i: int| 0 <= i < next.frames.len()
+            implies admission_frame_wf(next.frames[i]) by {
+            if i < parent_index {
+                assert(next.frames[i] == state.frames[i]);
+            } else {
+                assert(i == parent_index);
+                assert(next.frames[i] == next_parent);
+            }
+        }
+        assert forall|frame_index: int, return_index: int|
+            0 <= frame_index < next.frames.len()
+                && 0 <= return_index < next.frames[frame_index].returns.len()
+            implies next.frames[frame_index].returns[return_index].score_handle.is_some()
+                == next.frames[frame_index].returns[return_index]
+                    .score_origin_body_id.is_some()
+                && match next.frames[frame_index].returns[return_index].score_handle {
+                    Some(handle) => (handle as int) < next.arena.len()
+                        && next.arena[handle as int].body_id
+                            == next.frames[frame_index].returns[return_index]
+                                .score_origin_body_id.unwrap(),
+                    None => true,
+                } by {
+            if frame_index < parent_index {
+                assert(next.frames[frame_index] == state.frames[frame_index]);
+            } else {
+                assert(frame_index == parent_index);
+                assert(next_parent.returns == parent.returns);
+            }
+        }
+        assert forall|frame_index: int| 1 <= frame_index < next.frames.len()
+            implies ((next.frames[frame_index - 1].frame_kind != 1
+                && next.frames[frame_index - 1].frame_kind != 2)
+                || #[trigger] admission_child_physical_contained(
+                    next.frames[frame_index - 1], next.frames[frame_index],
+                )) by {
+            if frame_index < parent_index {
+                assert(next.frames[frame_index - 1] == state.frames[frame_index - 1]);
+                assert(next.frames[frame_index] == state.frames[frame_index]);
+                if state.frames[frame_index - 1].frame_kind == 1
+                    || state.frames[frame_index - 1].frame_kind == 2
+                {
+                    assert(admission_child_physical_contained(
+                        state.frames[frame_index - 1], state.frames[frame_index],
+                    ));
+                }
+            } else {
+                assert(frame_index == parent_index);
+                assert(next.frames[frame_index - 1] == state.frames[frame_index - 1]);
+                if state.frames[frame_index - 1].frame_kind == 1
+                    || state.frames[frame_index - 1].frame_kind == 2
+                {
+                    assert(admission_child_physical_contained(
+                        state.frames[frame_index - 1], state.frames[frame_index],
+                    ));
+                }
+                assert(next.frames[frame_index].physical_source
+                    == state.frames[frame_index].physical_source);
+                assert(next.frames[frame_index].physical_start
+                    == state.frames[frame_index].physical_start);
+                assert(next.frames[frame_index].region_end
+                    == state.frames[frame_index].region_end);
+                assert(next.frames[frame_index].source_bytes
+                    == state.frames[frame_index].source_bytes);
+            }
+        }
+        assert(admission_state_wf(next));
+    }
+}
+
+/// Independent facts at the first `FrameRequest::CanonicalPath` push. The
+/// indexed image retains every physical byte position and the terminal end;
+/// an empty root starts at that end anchor. No protobuf program pointer or
+/// generated slots belong to this root.
+pub struct AdmissionCanonicalPathRootSource {
+    pub ghost indexed_input: AdmissionIndexedSourceImage,
+    pub ghost body_bytes: Seq<u8>,
+    pub ghost body_positions: Seq<AdmissionSourceAnchor>,
+    pub body_start: AdmissionSourceAnchor,
+    pub body_end: AdmissionSourceAnchor,
+    pub observed_program_identity: Option<usize>,
+    pub request_kind: u8,
+    pub observed_root_kind: u8,
+    pub cursor_initial: usize,
+    pub waiting_initial: Option<u64>,
+    pub ghost score_arena_initial: Seq<AdmissionScoreBinding>,
+    pub stack_len_before: usize,
+    pub stack_capacity_before: usize,
+    pub stack_len_after: usize,
+    pub stack_capacity_after: usize,
+    pub frame_variant_bytes: usize,
+    pub stats_frame_variant_bytes: usize,
+    pub used_bytes: usize,
+    pub reserved_bytes: usize,
+}
+
+pub open spec fn admission_canonical_path_root_source_wf(
+    source: AdmissionCanonicalPathRootSource,
+) -> bool {
+    &&& admission_indexed_source_wf(source.indexed_input)
+    &&& source.indexed_input.bytes == source.body_bytes
+    &&& source.indexed_input.positions == source.body_positions
+    &&& source.indexed_input.end == source.body_end
+    &&& source.body_bytes.len() <= usize::MAX as int
+    &&& admission_indexed_source_position(source.indexed_input, 0)
+        == Some(source.body_start)
+    &&& source.observed_program_identity.is_none()
+    &&& source.request_kind == 4
+    &&& source.observed_root_kind == 4
+    &&& source.cursor_initial == 0
+    &&& source.waiting_initial.is_none()
+    &&& source.score_arena_initial == Seq::empty()
+    &&& source.stack_len_before == 0
+    &&& source.stack_capacity_before >= 1
+    &&& source.stack_len_after == 1
+    &&& source.stack_capacity_after >= source.stack_capacity_before
+    &&& source.stack_capacity_after >= source.stack_len_after
+    &&& source.frame_variant_bytes > 0
+    &&& source.stats_frame_variant_bytes == source.frame_variant_bytes
+    &&& source.stack_len_after as int * source.frame_variant_bytes as int
+        <= usize::MAX as int
+    &&& source.stack_capacity_after as int * source.frame_variant_bytes as int
+        <= usize::MAX as int
+    &&& source.used_bytes as int
+        == source.stack_len_after as int * source.frame_variant_bytes as int
+    &&& source.reserved_bytes as int
+        == source.stack_capacity_after as int * source.frame_variant_bytes as int
+}
+
+pub open spec fn admission_canonical_path_root_projected_frame(
+    source: AdmissionCanonicalPathRootSource,
+) -> AdmissionFrameState {
+    AdmissionFrameState {
+        physical_source: source.body_start.source,
+        physical_start: source.body_start.offset,
+        program_type_id: 0,
+        region_start: 0,
+        region_end: source.body_bytes.len() as usize,
+        source_bytes: source.body_bytes,
+        cursor: source.cursor_initial,
+        slot_count: 0,
+        last_slot: None,
+        seen: Set::empty(),
+        required: Set::empty(),
+        scalar_slots: Set::empty(),
+        scalar_occurrences: Seq::empty(),
+        returns: Seq::empty(),
+        family: AdmissionFamily::Other,
+        waiting_id: source.waiting_initial,
+        waiting_kind: 0,
+        waiting_slot: None,
+        waiting_tag: None,
+        return_id: None,
+        frame_kind: 4,
+        body_id: 0,
+        score_handle: None,
+        nested_started: 0,
+        nested_resolved: 0,
+    }
+}
+
+pub open spec fn admission_canonical_path_root_indexed_binding(
+    state: AdmissionState, source: AdmissionCanonicalPathRootSource,
+) -> bool {
+    &&& admission_canonical_path_root_source_wf(source)
+    &&& state.frames.len() == 1
+    &&& state.frames[0] == admission_canonical_path_root_projected_frame(source)
+    &&& state.frames[0].source_bytes == source.indexed_input.bytes
+    &&& source.indexed_input.positions == source.body_positions
+    &&& source.indexed_input.end == source.body_end
+    &&& state.arena == source.score_arena_initial
+}
+
+/// This derives a kind-4 root from source-shaped facts without using the
+/// existing kind-1 Message root predicate as a premise. Binding the source
+/// observation to every production root push remains a separate obligation.
+pub proof fn admission_canonical_path_root_source_derives_initial_wf(
+    source: AdmissionCanonicalPathRootSource,
+)
+    requires admission_canonical_path_root_source_wf(source),
+    ensures
+        admission_frame_wf(admission_canonical_path_root_projected_frame(source)),
+        admission_state_wf(admission_initial_state(
+            admission_canonical_path_root_projected_frame(source),
+        )),
+        admission_canonical_path_root_indexed_binding(
+            admission_initial_state(admission_canonical_path_root_projected_frame(source)),
+            source,
+        ),
+        admission_initial_state(admission_canonical_path_root_projected_frame(source))
+            .frames.len() == source.stack_len_after as int,
+        admission_initial_state(admission_canonical_path_root_projected_frame(source))
+            .pushed == 1,
+        admission_initial_state(admission_canonical_path_root_projected_frame(source))
+            .completed == 0,
+{
+    let root = admission_canonical_path_root_projected_frame(source);
+    assert(root.region_start == 0);
+    assert(root.source_bytes.len() == root.region_end as int);
+    assert(root.cursor == 0);
+    assert(root.frame_kind == 4);
+    assert(root.waiting_id.is_none());
+    assert(admission_canonical_path_slotless(root));
+    assert(admission_frame_wf(root));
+    let state = admission_initial_state(root);
+    assert(admission_state_wf(state));
+    assert(admission_canonical_path_root_indexed_binding(state, source));
+}
+
+/// A nonvacuous empty input starts at its supplied physical end anchor.
+pub open spec fn admission_canonical_path_empty_root_witness()
+    -> AdmissionCanonicalPathRootSource {
+    let end = AdmissionSourceAnchor { source: 7, offset: 43 };
+    AdmissionCanonicalPathRootSource {
+        indexed_input: AdmissionIndexedSourceImage {
+            bytes: Seq::empty(), positions: Seq::empty(), end,
+        },
+        body_bytes: Seq::empty(),
+        body_positions: Seq::empty(),
+        body_start: end,
+        body_end: end,
+        observed_program_identity: None,
+        request_kind: 4,
+        observed_root_kind: 4,
+        cursor_initial: 0,
+        waiting_initial: None,
+        score_arena_initial: Seq::empty(),
+        stack_len_before: 0,
+        stack_capacity_before: 1,
+        stack_len_after: 1,
+        stack_capacity_after: 1,
+        frame_variant_bytes: 1,
+        stats_frame_variant_bytes: 1,
+        used_bytes: 1,
+        reserved_bytes: 1,
+    }
+}
+
+pub proof fn admission_canonical_path_empty_root_witness_is_initial()
+    ensures
+        admission_canonical_path_root_source_wf(
+            admission_canonical_path_empty_root_witness(),
+        ),
+        admission_state_wf(admission_initial_state(
+            admission_canonical_path_root_projected_frame(
+                admission_canonical_path_empty_root_witness(),
+            ),
+        )),
+        admission_canonical_path_root_projected_frame(
+            admission_canonical_path_empty_root_witness(),
+        ).physical_start == 43,
+{
+    let source = admission_canonical_path_empty_root_witness();
+    assert(admission_canonical_path_root_source_wf(source));
+    admission_canonical_path_root_source_derives_initial_wf(source);
+}
+
 pub open spec fn admission_indexed_field_child_source(
     frame: AdmissionFrameState,
     image: AdmissionIndexedSourceImage,
@@ -5432,9 +6408,27 @@ pub open spec fn admission_bytes_lex_lt(left: Seq<u8>, right: Seq<u8>) -> bool
     ) }
 }
 
-pub open spec fn admission_record_scalar_occurrence_step(
+pub open spec fn admission_scalar_descriptor_valid(
+    program_type_id: u16, field: IndexedCanonicalFieldModel,
+    slot: usize, repeated: bool, scalar_kind: u8,
+) -> bool {
+    match generated::generated_descriptor(program_type_id, field.number) {
+        Some(descriptor) => descriptor.frame_kind == 0
+            && descriptor.slot == slot
+            && descriptor.repeated == repeated
+            && descriptor.scalar_kind == scalar_kind
+            && descriptor.wire == field.wire
+            && scalar_payload_valid(
+                field, descriptor.scalar_kind, descriptor.default_forbidden,
+            ),
+        None => false,
+    }
+}
+
+pub open spec fn admission_record_scalar_occurrence_at_position_step(
     state: AdmissionState, field: IndexedCanonicalFieldModel,
     slot: usize, repeated: bool, scalar_kind: u8,
+    physical_source: usize, physical_start: int,
 ) -> Option<AdmissionState> {
     match admission_continue_step(
         state, field.encoded_end, slot, repeated, field.number,
@@ -5450,19 +6444,9 @@ pub open spec fn admission_record_scalar_occurrence_step(
                 next: prior.cursor,
                 source_bytes: prior.source_bytes,
             };
-            let descriptor_valid = match generated::generated_descriptor(
-                prior.program_type_id, field.number,
-            ) {
-                Some(descriptor) => descriptor.frame_kind == 0
-                    && descriptor.slot == slot
-                    && descriptor.repeated == repeated
-                    && descriptor.scalar_kind == scalar_kind
-                    && descriptor.wire == field.wire
-                    && scalar_payload_valid(
-                        field, descriptor.scalar_kind, descriptor.default_forbidden,
-                    ),
-                None => false,
-            };
+            let descriptor_valid = admission_scalar_descriptor_valid(
+                prior.program_type_id, field, slot, repeated, scalar_kind,
+            );
             if !indexed_field_at_cursor(source_cursor, field) || !descriptor_valid {
                 None
             } else {
@@ -5471,7 +6455,8 @@ pub open spec fn admission_record_scalar_occurrence_step(
                 tag: field.number,
                 scalar_kind,
                 varint_value: field.decoded_varint,
-                physical_start: top.physical_start as int + field.payload_start as int,
+                physical_source,
+                physical_start,
                 bytes: field.payload_bytes,
             };
             let updated = AdmissionFrameState {
@@ -5514,13 +6499,49 @@ pub open spec fn admission_record_scalar_occurrence_step(
     }
 }
 
-pub proof fn admission_record_scalar_occurrence_preserves_wf(
+pub open spec fn admission_record_scalar_occurrence_step(
     state: AdmissionState, field: IndexedCanonicalFieldModel,
     slot: usize, repeated: bool, scalar_kind: u8,
+) -> Option<AdmissionState> {
+    if state.frames.len() == 0 {
+        None
+    } else {
+        let top = state.frames.last();
+        admission_record_scalar_occurrence_at_position_step(
+            state, field, slot, repeated, scalar_kind,
+            top.physical_source, top.physical_start as int + field.encoded_start as int,
+        )
+    }
+}
+
+pub open spec fn admission_record_scalar_occurrence_indexed_step(
+    state: AdmissionState, source: AdmissionIndexedSourceImage,
+    field: IndexedCanonicalFieldModel,
+    slot: usize, repeated: bool, scalar_kind: u8,
+) -> Option<AdmissionState> {
+    if state.frames.len() == 0 || !admission_indexed_source_wf(source)
+        || source.bytes != state.frames.last().source_bytes
+    {
+        None
+    } else {
+        match admission_indexed_source_position(source, field.encoded_start) {
+            None => None,
+            Some(position) => admission_record_scalar_occurrence_at_position_step(
+                state, field, slot, repeated, scalar_kind,
+                position.source, position.offset as int,
+            ),
+        }
+    }
+}
+
+pub proof fn admission_record_scalar_occurrence_at_position_preserves_wf(
+    state: AdmissionState, field: IndexedCanonicalFieldModel,
+    slot: usize, repeated: bool, scalar_kind: u8,
+    physical_source: usize, physical_start: int,
 )
     requires admission_state_wf(state),
-    ensures match admission_record_scalar_occurrence_step(
-        state, field, slot, repeated, scalar_kind,
+    ensures match admission_record_scalar_occurrence_at_position_step(
+        state, field, slot, repeated, scalar_kind, physical_source, physical_start,
     ) {
         Some(next) => admission_state_wf(next),
         None => true,
@@ -5529,8 +6550,8 @@ pub proof fn admission_record_scalar_occurrence_preserves_wf(
     admission_continue_preserves_wf(
         state, field.encoded_end, slot, repeated, field.number,
     );
-    if let Some(next) = admission_record_scalar_occurrence_step(
-        state, field, slot, repeated, scalar_kind,
+    if let Some(next) = admission_record_scalar_occurrence_at_position_step(
+        state, field, slot, repeated, scalar_kind, physical_source, physical_start,
     ) {
         let index = state.frames.len() - 1;
         let middle = admission_continue_step(
@@ -5575,6 +6596,78 @@ pub proof fn admission_record_scalar_occurrence_preserves_wf(
         }
         admission_last_frame_replacement_preserves_wf(middle, next);
     }
+}
+
+pub proof fn admission_record_scalar_occurrence_preserves_wf(
+    state: AdmissionState, field: IndexedCanonicalFieldModel,
+    slot: usize, repeated: bool, scalar_kind: u8,
+)
+    requires admission_state_wf(state),
+    ensures match admission_record_scalar_occurrence_step(
+        state, field, slot, repeated, scalar_kind,
+    ) {
+        Some(next) => admission_state_wf(next),
+        None => true,
+    },
+{
+    if state.frames.len() > 0 {
+        let top = state.frames.last();
+        admission_record_scalar_occurrence_at_position_preserves_wf(
+            state, field, slot, repeated, scalar_kind,
+            top.physical_source, top.physical_start as int + field.encoded_start as int,
+        );
+    }
+}
+
+pub proof fn admission_record_scalar_occurrence_indexed_preserves_wf(
+    state: AdmissionState, source: AdmissionIndexedSourceImage,
+    field: IndexedCanonicalFieldModel,
+    slot: usize, repeated: bool, scalar_kind: u8,
+)
+    requires admission_state_wf(state),
+    ensures match admission_record_scalar_occurrence_indexed_step(
+        state, source, field, slot, repeated, scalar_kind,
+    ) {
+        Some(next) => admission_state_wf(next),
+        None => true,
+    },
+{
+    if state.frames.len() > 0 && admission_indexed_source_wf(source)
+        && source.bytes == state.frames.last().source_bytes
+    {
+        if let Some(position) = admission_indexed_source_position(source, field.encoded_start) {
+            admission_record_scalar_occurrence_at_position_preserves_wf(
+                state, field, slot, repeated, scalar_kind,
+                position.source, position.offset as int,
+            );
+        }
+    }
+}
+
+pub proof fn admission_record_scalar_occurrence_indexed_anchor_exact(
+    state: AdmissionState, source: AdmissionIndexedSourceImage,
+    field: IndexedCanonicalFieldModel,
+    slot: usize, repeated: bool, scalar_kind: u8,
+)
+    requires admission_record_scalar_occurrence_indexed_step(
+        state, source, field, slot, repeated, scalar_kind,
+    ).is_some(),
+    ensures {
+        let next = admission_record_scalar_occurrence_indexed_step(
+            state, source, field, slot, repeated, scalar_kind,
+        ).unwrap();
+        let occurrence = next.frames.last().scalar_occurrences.last();
+        let position = admission_indexed_source_position(
+            source, field.encoded_start,
+        ).unwrap();
+        &&& occurrence.physical_source == position.source
+        &&& occurrence.physical_start == position.offset as int
+        &&& occurrence.tag == field.number
+        &&& occurrence.bytes == field.payload_bytes
+    },
+{
+    assert(state.frames.len() > 0);
+    assert(admission_indexed_source_position(source, field.encoded_start).is_some());
 }
 
 /// The concrete message view retains the cursor and generated-slot state
@@ -5673,6 +6766,137 @@ pub open spec fn concrete_message_continue(
                     }
                 }
             },
+        }
+    }
+}
+
+pub open spec fn concrete_message_continue_indexed(
+    frame: ConcreteMessageFrameModel, field: IndexedCanonicalFieldModel,
+    parent_source: AdmissionIndexedSourceImage,
+) -> Option<ConcreteMessageFrameModel> {
+    if !concrete_message_frame_rel(frame)
+        || !indexed_field_at_cursor(frame.cursor, field)
+    {
+        None
+    } else {
+        let top = frame.projection.frames[frame.projection.frames.len() - 1];
+        match generated::generated_descriptor(top.program_type_id, field.number) {
+            None => None,
+            Some(resolved) => {
+                if resolved.frame_kind != 0 || resolved.wire != field.wire
+                    || !scalar_payload_valid(
+                        field, resolved.scalar_kind, resolved.default_forbidden,
+                    )
+                {
+                    None
+                } else {
+                    match admission_record_scalar_occurrence_indexed_step(
+                        frame.projection, parent_source, field, resolved.slot,
+                        resolved.repeated, resolved.scalar_kind,
+                    ) {
+                        None => None,
+                        Some(next) => concrete_message_view(next),
+                    }
+                }
+            },
+        }
+    }
+}
+
+pub proof fn concrete_message_continue_indexed_simulates(
+    frame: ConcreteMessageFrameModel, field: IndexedCanonicalFieldModel,
+    parent_source: AdmissionIndexedSourceImage,
+)
+    ensures match concrete_message_continue_indexed(frame, field, parent_source) {
+        Some(next) => {
+            &&& concrete_message_frame_rel(next)
+            &&& next.cursor.next == field.encoded_end
+            &&& match generated::generated_descriptor(
+                frame.projection.frames[frame.projection.frames.len() - 1].program_type_id,
+                field.number,
+            ) {
+                Some(resolved) => admission_record_scalar_occurrence_indexed_step(
+                    frame.projection, parent_source, field, resolved.slot,
+                    resolved.repeated, resolved.scalar_kind,
+                ) == Some(next.projection),
+                None => false,
+            }
+        },
+        None => true,
+    },
+{
+    if let Some(next) = concrete_message_continue_indexed(frame, field, parent_source) {
+        concrete_message_view_rel(next.projection);
+    }
+}
+
+pub proof fn concrete_message_continue_indexed_anchor_exact(
+    frame: ConcreteMessageFrameModel, field: IndexedCanonicalFieldModel,
+    parent_source: AdmissionIndexedSourceImage,
+)
+    requires concrete_message_continue_indexed(frame, field, parent_source).is_some(),
+    ensures {
+        let next = concrete_message_continue_indexed(
+            frame, field, parent_source,
+        ).unwrap();
+        let occurrence = next.projection.frames.last().scalar_occurrences.last();
+        let position = admission_indexed_source_position(
+            parent_source, field.encoded_start,
+        ).unwrap();
+        &&& occurrence.physical_source == position.source
+        &&& occurrence.physical_start == position.offset as int
+        &&& occurrence.tag == field.number
+        &&& occurrence.bytes == field.payload_bytes
+        &&& next.cursor.next == field.encoded_end
+    },
+{
+    concrete_message_continue_indexed_simulates(frame, field, parent_source);
+    let top = frame.projection.frames.last();
+    let resolved = generated::generated_descriptor(
+        top.program_type_id, field.number,
+    ).unwrap();
+    admission_record_scalar_occurrence_indexed_anchor_exact(
+        frame.projection, parent_source, field, resolved.slot,
+        resolved.repeated, resolved.scalar_kind,
+    );
+}
+
+pub proof fn concrete_message_continue_indexed_preserves_par_source_trace(
+    frame: ConcreteMessageFrameModel, field: IndexedCanonicalFieldModel,
+    parent_source: AdmissionIndexedSourceImage,
+)
+    requires admission_par_source_trace_invariant(frame.projection),
+    ensures match concrete_message_continue_indexed(frame, field, parent_source) {
+        None => true,
+        Some(next) => admission_par_source_trace_invariant(next.projection),
+    },
+{
+    if let Some(next) = concrete_message_continue_indexed(frame, field, parent_source) {
+        let before = frame.projection.frames.last();
+        let after = next.projection.frames.last();
+        if before.program_type_id == 1 && before.frame_kind == 1
+            && before.family == AdmissionFamily::Other
+        {
+            let fields = choose|fields: Seq<IndexedCanonicalFieldModel>|
+                admission_par_source_prefix_fields(before, fields);
+            let descriptor = generated::generated_descriptor(1, field.number).unwrap();
+            admission_par_source_prefix_after_field(
+                before, after, fields, field, descriptor,
+            );
+        }
+        assert forall|i: int| 0 <= i < next.projection.frames.len()
+            implies admission_par_source_prefix(next.projection.frames[i]) by {
+            if i < next.projection.frames.len() - 1 {
+                assert(next.projection.frames[i] == frame.projection.frames[i]);
+            }
+        }
+        assert forall|i: int| 0 <= i < next.projection.frames.len()
+            implies admission_source_identity_in_returns(next.projection.frames[i]) by {
+            if i < next.projection.frames.len() - 1 {
+                assert(next.projection.frames[i] == frame.projection.frames[i]);
+            } else {
+                assert(next.projection.frames[i].returns == before.returns);
+            }
         }
     }
 }
@@ -6130,13 +7354,196 @@ pub open spec fn concrete_derived_summary_with_arena(
     arena: Seq<AdmissionScoreBinding>,
 ) -> Option<AdmissionReturnedKind> {
     if parent.family == AdmissionFamily::Expr
-        && parent.waiting_slot == Some(0) && parent.waiting_tag == Some(22)
+        && parent.waiting_slot == Some(0)
+        && (parent.waiting_tag == Some(22) || parent.waiting_tag == Some(23))
         && parent.program_type_id == 24
     {
         admission_expr_structural_payload_with_arena(parent, child, arena)
     } else {
         concrete_derived_summary(parent, child)
     }
+}
+
+pub open spec fn concrete_empty_set_map_score_transcript(constructor: u8) -> Seq<u8> {
+    seq![2u8, 1u8, 1u8, 0x80u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, constructor]
+        + seq![1u8, 1u8, 0x7fu8, 0xffu8, 0xffu8, 0xffu8, 0xffu8,
+            0xffu8, 0xffu8, 0xffu8]
+        + seq![1u8, 1u8, 0x80u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]
+        + seq![0u8]
+}
+
+pub open spec fn concrete_empty_set_map_parent_pop_state(is_set: bool) -> AdmissionState {
+    let tag = if is_set { 22u32 } else { 23u32 };
+    let program = if is_set { 29u16 } else { 30u16 };
+    let constructor = if is_set { 8u8 } else { 9u8 };
+    let parent = AdmissionFrameState {
+        region_end: 3,
+        source_bytes: if is_set { seq![0xb2u8, 0x01u8, 0u8] }
+            else { seq![0xbau8, 0x01u8, 0u8] },
+        cursor: 3,
+        last_slot: Some(0),
+        seen: Set::empty().insert(0),
+        waiting_id: Some(0),
+        waiting_kind: 1,
+        waiting_slot: Some(0),
+        waiting_tag: Some(tag),
+        score_handle: None,
+        ..admission_family_witness_frame(
+            AdmissionFamily::Expr, Set::empty(), Seq::empty(),
+        )
+    };
+    let child = AdmissionFrameState {
+        physical_start: 3,
+        program_type_id: program,
+        slot_count: 4,
+        return_id: Some(0),
+        body_id: 8,
+        ..admission_family_witness_frame(
+            AdmissionFamily::Other, Set::empty(), Seq::empty(),
+        )
+    };
+    AdmissionState {
+        frames: seq![parent, child],
+        arena: seq![AdmissionScoreBinding {
+            body_id: 8,
+            semantic: true,
+            encoded_len: 32,
+            transcript_bytes: concrete_empty_set_map_score_transcript(constructor),
+        }],
+        root_end: 3,
+        pushed: 2,
+        completed: 0,
+        next_obligation_id: 1,
+    }
+}
+
+pub proof fn concrete_empty_set_map_parent_pop_is_reachable(is_set: bool)
+    ensures
+        admission_state_wf(concrete_empty_set_map_parent_pop_state(is_set)),
+        concrete_message_complete_child(
+            concrete_empty_set_map_parent_pop_state(is_set),
+        ).is_some(),
+{
+    let state = concrete_empty_set_map_parent_pop_state(is_set);
+    assert(admission_frame_wf(state.frames[0]));
+    assert(admission_frame_wf(state.frames[1]));
+    assert(state.frames[1].source_bytes == state.frames[0].source_bytes.subrange(3, 3));
+    assert(admission_child_physical_contained(state.frames[0], state.frames[1]));
+    assert(admission_state_wf(state));
+    assert(concrete_message_complete_child(state).is_some());
+}
+
+pub open spec fn concrete_empty_eset_expr_witness(
+) -> (AdmissionFrameState, AdmissionFrameState, Seq<AdmissionScoreBinding>) {
+    let parent = AdmissionFrameState {
+        waiting_slot: Some(0),
+        waiting_tag: Some(22),
+        ..admission_family_witness_frame(
+            AdmissionFamily::Expr, Set::empty(), Seq::empty(),
+        )
+    };
+    let child = AdmissionFrameState {
+        program_type_id: 29,
+        slot_count: 4,
+        ..admission_family_witness_frame(
+            AdmissionFamily::Other, Set::empty(), Seq::empty(),
+        )
+    };
+    let arena = seq![AdmissionScoreBinding {
+        body_id: child.body_id,
+        semantic: true,
+        encoded_len: 32,
+        transcript_bytes: concrete_empty_set_map_score_transcript(8u8),
+    }];
+    (parent, child, arena)
+}
+
+pub proof fn concrete_empty_eset_expr_tag22_is_source_derived()
+    ensures
+        match generated::generated_descriptor(24, 22) {
+            Some(descriptor) => descriptor.slot == 0
+                && descriptor.child_type_id == Some(29)
+                && descriptor.frame_kind == 1,
+            None => false,
+        },
+        {
+            let (parent, child, arena) = concrete_empty_eset_expr_witness();
+            admission_eset_source_summary(child, arena) == Some(true)
+                && concrete_derived_summary_with_arena(parent, child, arena)
+                    == Some(AdmissionReturnedKind::ExprPayload {
+                        score_present: true,
+                        canonical_fixed_point: true,
+                        canonical_path_stable: false,
+                    })
+        },
+{
+    let (parent, child, arena) = concrete_empty_eset_expr_witness();
+    assert(admission_eset_source_summary(child, arena) == Some(true));
+    assert(concrete_derived_summary_with_arena(parent, child, arena)
+        == Some(AdmissionReturnedKind::ExprPayload {
+            score_present: true,
+            canonical_fixed_point: true,
+            canonical_path_stable: false,
+        }));
+}
+
+pub open spec fn concrete_empty_emap_expr_witness(
+) -> (AdmissionFrameState, AdmissionFrameState, Seq<AdmissionScoreBinding>) {
+    let parent = AdmissionFrameState {
+        waiting_slot: Some(0),
+        waiting_tag: Some(23),
+        ..admission_family_witness_frame(
+            AdmissionFamily::Expr, Set::empty(), Seq::empty(),
+        )
+    };
+    let child = AdmissionFrameState {
+        program_type_id: 30,
+        slot_count: 4,
+        ..admission_family_witness_frame(
+            AdmissionFamily::Other, Set::empty(), Seq::empty(),
+        )
+    };
+    let arena = seq![AdmissionScoreBinding {
+        body_id: child.body_id,
+        semantic: true,
+        encoded_len: 32,
+        transcript_bytes: concrete_empty_set_map_score_transcript(9u8),
+    }];
+    (parent, child, arena)
+}
+
+pub proof fn concrete_empty_emap_expr_tag23_is_source_derived()
+    ensures
+        match generated::generated_descriptor(24, 22) {
+            Some(descriptor) => descriptor.slot == 0
+                && descriptor.child_type_id == Some(29),
+            None => false,
+        },
+        match generated::generated_descriptor(24, 23) {
+            Some(descriptor) => descriptor.slot == 0
+                && descriptor.child_type_id == Some(30)
+                && descriptor.frame_kind == 1,
+            None => false,
+        },
+        {
+            let (parent, child, arena) = concrete_empty_emap_expr_witness();
+            admission_emap_source_summary(child, arena) == Some((true, true))
+                && concrete_derived_summary_with_arena(parent, child, arena)
+                    == Some(AdmissionReturnedKind::ExprPayload {
+                        score_present: true,
+                        canonical_fixed_point: true,
+                        canonical_path_stable: false,
+                    })
+        },
+{
+    let (parent, child, arena) = concrete_empty_emap_expr_witness();
+    assert(admission_emap_source_summary(child, arena) == Some((true, true)));
+    assert(concrete_derived_summary_with_arena(parent, child, arena)
+        == Some(AdmissionReturnedKind::ExprPayload {
+            score_present: true,
+            canonical_fixed_point: true,
+            canonical_path_stable: false,
+        }));
 }
 
 pub proof fn concrete_derived_emap_is_source_derived(
@@ -6147,7 +7554,7 @@ pub proof fn concrete_derived_emap_is_source_derived(
         parent.family == AdmissionFamily::Expr,
         parent.program_type_id == 24,
         parent.waiting_slot == Some(0),
-        parent.waiting_tag == Some(22),
+        parent.waiting_tag == Some(23),
     ensures match concrete_derived_summary_with_arena(parent, child, arena) {
         Some(AdmissionReturnedKind::ExprPayload {
             score_present, canonical_fixed_point, canonical_path_stable,
@@ -6235,7 +7642,7 @@ pub proof fn concrete_message_emap_expr_parent_pop_is_source_derived(
         state.frames[state.frames.len() - 2].family == AdmissionFamily::Expr,
         state.frames[state.frames.len() - 2].program_type_id == 24,
         state.frames[state.frames.len() - 2].waiting_slot == Some(0),
-        state.frames[state.frames.len() - 2].waiting_tag == Some(22),
+        state.frames[state.frames.len() - 2].waiting_tag == Some(23),
         state.frames.last().program_type_id == 30,
     ensures match concrete_message_complete_child(state) {
         None => true,
@@ -6282,6 +7689,10 @@ pub proof fn concrete_message_root_simulates(frame: ConcreteMessageFrameModel)
 /// caller-made summary: the child state determines it above.
 pub enum ConcreteFrameActionModel {
     Continue { field: IndexedCanonicalFieldModel },
+    ContinueIndexed {
+        field: IndexedCanonicalFieldModel,
+        parent_source: AdmissionIndexedSourceImage,
+    },
     Push {
         field: IndexedCanonicalFieldModel,
         child: AdmissionFrameState,
@@ -6345,6 +7756,19 @@ pub open spec fn concrete_message_driver_step(
                 },
             }
         },
+        ConcreteFrameActionModel::ContinueIndexed { field, parent_source } => {
+            match concrete_message_view(state) {
+                None => None,
+                Some(frame) => match concrete_message_continue_indexed(
+                    frame, field, parent_source,
+                ) {
+                    None => None,
+                    Some(next) => Some(ConcreteFrameOutcomeModel::Continued {
+                        state: next.projection,
+                    }),
+                },
+            }
+        },
         ConcreteFrameActionModel::Push { field, child, frame_bytes } => {
             match concrete_message_view(state) {
                 None => None,
@@ -6390,6 +7814,36 @@ pub open spec fn concrete_message_driver_step(
     }
 }
 
+pub proof fn concrete_message_driver_indexed_continue_anchor_exact(
+    state: AdmissionState, field: IndexedCanonicalFieldModel,
+    parent_source: AdmissionIndexedSourceImage,
+)
+    requires concrete_message_driver_step(
+        state, ConcreteFrameActionModel::ContinueIndexed { field, parent_source },
+    ).is_some(),
+    ensures match concrete_message_driver_step(
+        state, ConcreteFrameActionModel::ContinueIndexed { field, parent_source },
+    ) {
+        Some(ConcreteFrameOutcomeModel::Continued { state: next }) => {
+            let occurrence = next.frames.last().scalar_occurrences.last();
+            let position = admission_indexed_source_position(
+                parent_source, field.encoded_start,
+            ).unwrap();
+            &&& occurrence.physical_source == position.source
+            &&& occurrence.physical_start == position.offset as int
+            &&& occurrence.tag == field.number
+            &&& occurrence.bytes == field.payload_bytes
+            &&& next.frames.last().cursor == field.encoded_end
+        },
+        _ => false,
+    },
+{
+    let frame = concrete_message_view(state).unwrap();
+    concrete_message_continue_indexed_anchor_exact(
+        frame, field, parent_source,
+    );
+}
+
 pub proof fn concrete_message_driver_preserves_par_source_trace(
     state: AdmissionState, action: ConcreteFrameActionModel,
 )
@@ -6406,6 +7860,13 @@ pub proof fn concrete_message_driver_preserves_par_source_trace(
         ConcreteFrameActionModel::Continue { field } => {
             if let Some(frame) = concrete_message_view(state) {
                 concrete_message_continue_preserves_par_source_trace(frame, field);
+            }
+        },
+        ConcreteFrameActionModel::ContinueIndexed { field, parent_source } => {
+            if let Some(frame) = concrete_message_view(state) {
+                concrete_message_continue_indexed_preserves_par_source_trace(
+                    frame, field, parent_source,
+                );
             }
         },
         ConcreteFrameActionModel::Push { field, child, frame_bytes } => {
@@ -6516,6 +7977,19 @@ pub proof fn concrete_message_driver_preserves_wf_and_arena(
                     admission_record_scalar_occurrence_preserves_wf(
                         state, field, resolved.slot, resolved.repeated,
                         resolved.scalar_kind,
+                    );
+                }
+            }
+        },
+        ConcreteFrameActionModel::ContinueIndexed { field, parent_source } => {
+            if let Some(frame) = concrete_message_view(state) {
+                let top = frame.projection.frames[frame.projection.frames.len() - 1];
+                if let Some(resolved) = generated::generated_descriptor(
+                    top.program_type_id, field.number,
+                ) {
+                    admission_record_scalar_occurrence_indexed_preserves_wf(
+                        state, parent_source, field, resolved.slot,
+                        resolved.repeated, resolved.scalar_kind,
                     );
                 }
             }

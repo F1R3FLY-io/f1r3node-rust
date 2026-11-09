@@ -122,6 +122,39 @@ pub open spec fn kind_transcript(arena: Seq<ScoreEntry>, kind: ScoreNode) -> Seq
     }
 }
 
+/// The production prepare phase retains the atom or child handles and seals
+/// the length computed from that source. Transcript bytes are used only to
+/// state and prove the refinement of this length, not to construct the entry.
+pub struct PreparedScoreEntry {
+    pub kind: ScoreNode,
+    pub encoded_len: usize,
+}
+
+pub open spec fn kind_encoded_len(arena: Seq<ScoreEntry>, kind: ScoreNode) -> int {
+    match kind {
+        ScoreNode::Integer(_) => 10,
+        ScoreNode::StringAtom(bytes) | ScoreNode::BytesAtom(bytes) => {
+            4 + bytes.len() + zero_count(bytes)
+        },
+        ScoreNode::Node(children) => 2 + children_encoded_len(arena, children),
+    }
+}
+
+pub open spec fn prepare_score_entry(
+    arena: ScoreArena, kind: ScoreNode,
+) -> Option<PreparedScoreEntry> {
+    let encoded_len = kind_encoded_len(arena.entries, kind);
+    if !kind_valid(arena.entries, kind)
+        || arena.entries.len() >= usize::MAX as int
+        || encoded_len < 0
+        || encoded_len > usize::MAX as int
+    {
+        None
+    } else {
+        Some(PreparedScoreEntry { kind, encoded_len: encoded_len as usize })
+    }
+}
+
 pub open spec fn entry_well_formed(arena: Seq<ScoreEntry>, index: int) -> bool {
     &&& 0 <= index < arena.len()
     &&& kind_valid(arena.take(index), arena[index].kind)
@@ -136,6 +169,74 @@ pub open spec fn arena_well_formed(arena: ScoreArena) -> bool {
 
 pub open spec fn empty_arena() -> ScoreArena {
     ScoreArena { entries: Seq::empty() }
+}
+
+/// A certificate covers exactly the entries whose handles have been allocated.
+/// Its proof is maintained at insertion, so a consumer can check a suffix
+/// without recomputing the transcript of any earlier entry.
+pub open spec fn append_certificate(arena: ScoreArena, next_handle: usize) -> bool {
+    &&& arena.entries.len() == next_handle as int
+    &&& forall|i: int| 0 <= i < next_handle as int
+        ==> entry_well_formed(arena.entries, i)
+}
+
+pub open spec fn certified_interval(
+    arena: ScoreArena, checkpoint: usize, next_handle: usize,
+) -> bool {
+    &&& append_certificate(arena, next_handle)
+    &&& checkpoint <= next_handle
+}
+
+/// A failed reservation or a failed checked append has no committed state.
+pub open spec fn checked_append_attempt(
+    arena: ScoreArena, kind: ScoreNode, reservation_granted: bool,
+) -> (ScoreArena, Option<usize>) {
+    match prepare_score_entry(arena, kind) {
+        None => (arena, None),
+        Some(_) => {
+            if !reservation_granted {
+                (arena, None)
+            } else {
+                match checked_append(arena, kind) {
+                    None => (arena, None),
+                    Some((next, handle)) => (next, Some(handle)),
+                }
+            }
+        },
+    }
+}
+
+/// This state mirrors the production arena's stored certified prefix length.
+/// The append transition publishes the new entry and advances the prefix in
+/// the same successful branch; every failure returns the original state.
+pub struct CertifiedScoreArena {
+    pub arena: ScoreArena,
+    pub certified_prefix_len: usize,
+}
+
+pub open spec fn certified_score_arena_wf(state: CertifiedScoreArena) -> bool {
+    append_certificate(state.arena, state.certified_prefix_len)
+}
+
+pub open spec fn certified_empty_arena() -> CertifiedScoreArena {
+    CertifiedScoreArena {
+        arena: empty_arena(),
+        certified_prefix_len: 0usize,
+    }
+}
+
+pub open spec fn certified_append_attempt(
+    before: CertifiedScoreArena, kind: ScoreNode, reservation_granted: bool,
+) -> (CertifiedScoreArena, Option<usize>) {
+    match checked_append_attempt(before.arena, kind, reservation_granted) {
+        (after, Some(handle)) => {
+            (CertifiedScoreArena {
+                arena: after,
+                certified_prefix_len: after.entries.len() as usize,
+            }, Some(handle))
+        },
+        (_, None) => (before, None),
+    }
 }
 
 pub open spec fn checked_append(
@@ -220,6 +321,18 @@ pub proof fn empty_arena_well_formed()
     ensures arena_well_formed(empty_arena()),
 {}
 
+pub proof fn empty_append_certificate()
+    ensures append_certificate(empty_arena(), 0usize),
+{}
+
+pub proof fn certified_interval_entries_valid(
+    arena: ScoreArena, checkpoint: usize, next_handle: usize,
+)
+    requires certified_interval(arena, checkpoint, next_handle),
+    ensures forall|i: int| checkpoint as int <= i < next_handle as int
+        ==> entry_well_formed(arena.entries, i),
+{}
+
 pub proof fn integer_transcript_exact(value: i64)
     ensures
         integer_transcript(value).len() == 10,
@@ -293,11 +406,64 @@ pub proof fn node_transcript_exact(
     children_transcript_length(arena, children);
 }
 
+pub proof fn kind_encoded_len_matches_transcript(
+    arena: ScoreArena, kind: ScoreNode, next_handle: usize,
+)
+    requires
+        append_certificate(arena, next_handle),
+        kind_valid(arena.entries, kind),
+    ensures
+        kind_encoded_len(arena.entries, kind)
+            == kind_transcript(arena.entries, kind).len(),
+        0 <= kind_encoded_len(arena.entries, kind),
+{
+    match kind {
+        ScoreNode::Integer(value) => {
+            integer_transcript_exact(value);
+        },
+        ScoreNode::StringAtom(bytes) | ScoreNode::BytesAtom(bytes) => {
+            string_and_bytes_transcripts_exact(bytes);
+        },
+        ScoreNode::Node(children) => {
+            assert forall|i: int| 0 <= i < arena.entries.len()
+                implies arena.entries[i].encoded_len as int
+                    == arena.entries[i].transcript.len() by {
+                assert(entry_well_formed(arena.entries, i));
+            }
+            node_transcript_exact(arena.entries, children);
+        },
+    }
+}
+
+pub proof fn prepare_score_entry_matches_checked_append(
+    arena: ScoreArena, kind: ScoreNode, next_handle: usize,
+)
+    requires append_certificate(arena, next_handle),
+    ensures
+        prepare_score_entry(arena, kind).is_some()
+            == checked_append(arena, kind).is_some(),
+        match prepare_score_entry(arena, kind) {
+            Some(prepared) => {
+                &&& prepared.kind == kind
+                &&& prepared.encoded_len as int
+                    == kind_transcript(arena.entries, kind).len()
+            },
+            None => true,
+        },
+{
+    assert(arena_well_formed(arena));
+    if kind_valid(arena.entries, kind) {
+        kind_encoded_len_matches_transcript(arena, kind, next_handle);
+    }
+}
+
 pub proof fn checked_append_exact(arena: ScoreArena, kind: ScoreNode)
     ensures match checked_append(arena, kind) {
         Some((next, handle)) => {
             &&& handle as int == arena.entries.len()
             &&& next.entries.len() == arena.entries.len() + 1
+            &&& next.entries.take(handle as int) == arena.entries
+            &&& entry_well_formed(next.entries, handle as int)
             &&& next.entries[handle as int].transcript
                 == kind_transcript(arena.entries, kind)
             &&& next.entries[handle as int].encoded_len as int
@@ -327,6 +493,105 @@ pub proof fn checked_append_exact(arena: ScoreArena, kind: ScoreNode)
             }
         }
     }
+}
+
+pub proof fn checked_append_preserves_certificate(
+    arena: ScoreArena, kind: ScoreNode, next_handle: usize,
+)
+    requires append_certificate(arena, next_handle),
+    ensures match checked_append(arena, kind) {
+        Some((next, handle)) => {
+            &&& handle == next_handle
+            &&& append_certificate(next, next.entries.len() as usize)
+            &&& next.entries.take(next_handle as int) == arena.entries
+            &&& entry_well_formed(next.entries, next_handle as int)
+        },
+        None => true,
+    },
+{
+    checked_append_exact(arena, kind);
+    if let Some((next, handle)) = checked_append(arena, kind) {
+        assert(next.entries.len() <= usize::MAX as int);
+        assert(arena_well_formed(next));
+    }
+}
+
+pub proof fn checked_append_attempt_preserves_certificate(
+    arena: ScoreArena, kind: ScoreNode, next_handle: usize,
+    reservation_granted: bool,
+)
+    requires append_certificate(arena, next_handle),
+    ensures match checked_append_attempt(arena, kind, reservation_granted) {
+        (next, Some(handle)) => {
+            &&& reservation_granted
+            &&& handle == next_handle
+            &&& append_certificate(next, next.entries.len() as usize)
+            &&& next.entries.take(next_handle as int) == arena.entries
+            &&& entry_well_formed(next.entries, next_handle as int)
+        },
+        (unchanged, None) => {
+            &&& unchanged.entries == arena.entries
+            &&& unchanged.entries.len() == next_handle as int
+            &&& append_certificate(unchanged, next_handle)
+        },
+    },
+{
+    if reservation_granted {
+        checked_append_preserves_certificate(arena, kind, next_handle);
+    }
+}
+
+pub proof fn checked_append_attempt_preserves_certified_interval(
+    arena: ScoreArena, kind: ScoreNode, checkpoint: usize,
+    next_handle: usize, reservation_granted: bool,
+)
+    requires certified_interval(arena, checkpoint, next_handle),
+    ensures match checked_append_attempt(arena, kind, reservation_granted) {
+        (next, Some(_)) => certified_interval(
+            next, checkpoint, next.entries.len() as usize,
+        ),
+        (unchanged, None) => certified_interval(
+            unchanged, checkpoint, next_handle,
+        ),
+    },
+{
+    checked_append_attempt_preserves_certificate(
+        arena, kind, next_handle, reservation_granted,
+    );
+}
+
+pub proof fn certified_empty_arena_wf()
+    ensures certified_score_arena_wf(certified_empty_arena()),
+{
+    empty_append_certificate();
+}
+
+pub proof fn certified_append_attempt_preserves_wf(
+    before: CertifiedScoreArena, kind: ScoreNode, reservation_granted: bool,
+)
+    requires certified_score_arena_wf(before),
+    ensures match certified_append_attempt(before, kind, reservation_granted) {
+        (after, Some(handle)) => {
+            &&& reservation_granted
+            &&& handle == before.certified_prefix_len
+            &&& certified_score_arena_wf(after)
+            &&& after.certified_prefix_len as int == after.arena.entries.len()
+            &&& after.arena.entries.take(handle as int) == before.arena.entries
+            &&& entry_well_formed(after.arena.entries, handle as int)
+        },
+        (unchanged, None) => {
+            &&& unchanged.arena.entries == before.arena.entries
+            &&& unchanged.certified_prefix_len == before.certified_prefix_len
+            &&& certified_score_arena_wf(unchanged)
+        },
+    },
+{
+    prepare_score_entry_matches_checked_append(
+        before.arena, kind, before.certified_prefix_len,
+    );
+    checked_append_attempt_preserves_certificate(
+        before.arena, kind, before.certified_prefix_len, reservation_granted,
+    );
 }
 
 pub proof fn append_integer_exact(arena: ScoreArena, value: i64)

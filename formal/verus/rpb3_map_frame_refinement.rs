@@ -648,6 +648,104 @@ pub open spec fn map_finish(frame: MapFrameModel) -> Option<MapSummaryModel> {
     }
 }
 
+pub struct MapEofReceiptModel {
+    pub owner_type_id: u16,
+    pub outer_field: u32,
+    pub value_type_id: u16,
+    pub physical_start: usize,
+    pub ghost physical_source: usize,
+    pub region_end: usize,
+    pub ghost source_bytes: Seq<u8>,
+    pub ghost source_image: Option<admission::AdmissionIndexedSourceImage>,
+    pub cursor: usize,
+    pub key_present: bool,
+    pub key_position: Option<int>,
+    pub ghost key_source: Option<usize>,
+    pub saw_value: bool,
+    pub value_position: Option<int>,
+    pub ghost value_source: Option<usize>,
+    pub summary: MapSummaryModel,
+}
+
+pub open spec fn map_eof_snapshot(
+    frame: MapFrameModel, terminal_error_free: bool,
+) -> Option<MapEofReceiptModel> {
+    if !terminal_error_free {
+        None
+    } else {
+        match map_finish(frame) {
+            None => None,
+            Some(summary) => Some(MapEofReceiptModel {
+                owner_type_id: frame.owner_type_id,
+                outer_field: frame.outer_field,
+                value_type_id: frame.value_type_id,
+                physical_start: frame.physical_start,
+                physical_source: frame.physical_source,
+                region_end: frame.region_end,
+                source_bytes: frame.source_bytes,
+                source_image: frame.source_image,
+                cursor: frame.cursor,
+                key_present: frame.key.is_some(),
+                key_position: frame.key_position,
+                key_source: frame.key_source,
+                saw_value: frame.saw_value,
+                value_position: frame.value_position,
+                value_source: frame.value_source,
+                summary,
+            }),
+        }
+    }
+}
+
+pub open spec fn map_eof_receipts_match(
+    before: MapEofReceiptModel, produced: MapEofReceiptModel,
+) -> bool {
+    &&& before.owner_type_id == produced.owner_type_id
+    &&& before.outer_field == produced.outer_field
+    &&& before.value_type_id == produced.value_type_id
+    &&& before.physical_start == produced.physical_start
+    &&& before.physical_source == produced.physical_source
+    &&& before.region_end == produced.region_end
+    &&& before.source_bytes == produced.source_bytes
+    &&& before.source_image == produced.source_image
+    &&& before.cursor == produced.cursor
+    &&& before.key_present == produced.key_present
+    &&& before.key_position == produced.key_position
+    &&& before.key_source == produced.key_source
+    &&& before.saw_value == produced.saw_value
+    &&& before.value_position == produced.value_position
+    &&& before.value_source == produced.value_source
+    &&& before.summary == produced.summary
+}
+
+pub enum MapEofReturnedModel {
+    Root { summary: MapSummaryModel },
+    AcceptedMessage { summary: MapSummaryModel },
+    AcceptedOther,
+}
+
+pub open spec fn map_eof_return_matches(
+    produced: MapEofReceiptModel, returned: MapEofReturnedModel,
+) -> bool {
+    match returned {
+        MapEofReturnedModel::Root { summary }
+        | MapEofReturnedModel::AcceptedMessage { summary } =>
+            produced.summary == summary,
+        MapEofReturnedModel::AcceptedOther => false,
+    }
+}
+
+pub open spec fn map_eof_checked_complete(
+    frame: MapFrameModel, terminal_error_free: bool,
+    produced: MapEofReceiptModel, returned: MapEofReturnedModel,
+) -> bool {
+    match map_eof_snapshot(frame, terminal_error_free) {
+        None => false,
+        Some(before) => map_eof_receipts_match(before, produced)
+            && map_eof_return_matches(produced, returned),
+    }
+}
+
 pub open spec fn map_summary_source_projection(
     frame: MapFrameModel, summary: MapSummaryModel,
 ) -> bool {
@@ -1269,6 +1367,10 @@ pub open spec fn integrated_source_message_action(
         },
         admission::ConcreteFrameActionModel::Continue { field } =>
             Some(admission::ConcreteFrameActionModel::Continue { field }),
+        admission::ConcreteFrameActionModel::ContinueIndexed { field, parent_source } =>
+            Some(admission::ConcreteFrameActionModel::ContinueIndexed {
+                field, parent_source,
+            }),
         admission::ConcreteFrameActionModel::Complete =>
             Some(admission::ConcreteFrameActionModel::Complete),
     }
@@ -2621,6 +2723,115 @@ pub proof fn map_pending_rejects_finish(frame: MapFrameModel)
 pub proof fn map_unaccepted_value_rejects_finish(frame: MapFrameModel)
     requires frame.saw_value, frame.value.is_none(),
     ensures map_finish(frame).is_none(),
+{}
+
+pub proof fn map_eof_snapshot_rejects_ineligible(
+    frame: MapFrameModel, terminal_error_free: bool,
+)
+    ensures
+        !terminal_error_free || frame.cursor != frame.region_end
+            || frame.pending.is_some() || (frame.saw_value && frame.value.is_none())
+            ==> map_eof_snapshot(frame, terminal_error_free).is_none(),
+{}
+
+pub proof fn map_eof_checked_complete_source_bound(
+    frame: MapFrameModel, terminal_error_free: bool,
+    produced: MapEofReceiptModel, returned: MapEofReturnedModel,
+)
+    requires map_eof_checked_complete(frame, terminal_error_free, produced, returned),
+    ensures
+        terminal_error_free,
+        map_frame_wf(frame),
+        frame.cursor == frame.region_end,
+        frame.pending.is_none(),
+        produced.owner_type_id == frame.owner_type_id,
+        produced.outer_field == frame.outer_field,
+        produced.value_type_id == frame.value_type_id,
+        produced.physical_start == frame.physical_start,
+        produced.physical_source == frame.physical_source,
+        produced.region_end == frame.region_end,
+        produced.source_bytes == frame.source_bytes,
+        produced.source_image == frame.source_image,
+        produced.cursor == frame.cursor,
+        produced.key_present == frame.key.is_some(),
+        produced.key_position == frame.key_position,
+        produced.key_source == frame.key_source,
+        produced.saw_value == frame.saw_value,
+        produced.value_position == frame.value_position,
+        produced.value_source == frame.value_source,
+        map_finish(frame) == Some(produced.summary),
+        map_summary_source_projection(frame, produced.summary),
+        match returned {
+            MapEofReturnedModel::Root { summary }
+            | MapEofReturnedModel::AcceptedMessage { summary } =>
+                summary == produced.summary,
+            MapEofReturnedModel::AcceptedOther => false,
+        },
+{
+    let before = map_eof_snapshot(frame, terminal_error_free).unwrap();
+    assert(map_finish(frame) == Some(before.summary));
+    assert(map_eof_receipts_match(before, produced));
+    assert(before.summary == produced.summary);
+    map_finish_source_bound(frame);
+}
+
+pub proof fn map_eof_checked_complete_rejects_other(
+    frame: MapFrameModel, terminal_error_free: bool,
+    produced: MapEofReceiptModel,
+)
+    ensures !map_eof_checked_complete(
+        frame, terminal_error_free, produced, MapEofReturnedModel::AcceptedOther,
+    ),
+{}
+
+pub proof fn map_eof_checked_complete_rejects_forged_owner(
+    frame: MapFrameModel, terminal_error_free: bool,
+    produced: MapEofReceiptModel, returned: MapEofReturnedModel,
+)
+    requires produced.owner_type_id != frame.owner_type_id,
+    ensures !map_eof_checked_complete(frame, terminal_error_free, produced, returned),
+{}
+
+pub proof fn map_eof_checked_complete_rejects_forged_region_or_cursor(
+    frame: MapFrameModel, terminal_error_free: bool,
+    produced: MapEofReceiptModel, returned: MapEofReturnedModel,
+)
+    requires
+        produced.source_bytes != frame.source_bytes
+            || produced.source_image != frame.source_image
+            || produced.physical_start != frame.physical_start
+            || produced.cursor != frame.cursor,
+    ensures !map_eof_checked_complete(frame, terminal_error_free, produced, returned),
+{}
+
+pub proof fn map_eof_checked_complete_rejects_forged_summary(
+    frame: MapFrameModel, terminal_error_free: bool,
+    produced: MapEofReceiptModel, returned: MapEofReturnedModel,
+)
+    requires map_finish(frame).is_some(), produced.summary != map_finish(frame).unwrap(),
+    ensures !map_eof_checked_complete(frame, terminal_error_free, produced, returned),
+{}
+
+pub proof fn map_cursor_eof_has_checked_source_receipt(frame: MapFrameModel)
+    ensures match map_cursor_step(frame, None, 0) {
+        Some(MapOutcomeModel::Completed { summary }) => {
+            &&& map_eof_snapshot(frame, true).is_some()
+            &&& map_eof_snapshot(frame, true).unwrap().summary == summary
+            &&& map_eof_checked_complete(
+                frame, true, map_eof_snapshot(frame, true).unwrap(),
+                MapEofReturnedModel::Root { summary },
+            )
+            &&& map_eof_checked_complete(
+                frame, true, map_eof_snapshot(frame, true).unwrap(),
+                MapEofReturnedModel::AcceptedMessage { summary },
+            )
+            &&& !map_eof_checked_complete(
+                frame, false, map_eof_snapshot(frame, true).unwrap(),
+                MapEofReturnedModel::Root { summary },
+            )
+        },
+        _ => true,
+    },
 {}
 
 pub proof fn map_decreasing_key_rejected(

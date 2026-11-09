@@ -4,6 +4,7 @@ mod rpb3_admission_cursor;
 mod rpb3_generated_descriptor_projection;
 mod rpb3_score_transcript;
 mod rpb3_score_admission_bridge;
+pub mod rpb3_path_parser_refinement;
 mod rpb3_epathmap_event_refinement;
 mod rpb3_epm_source_accept_refinement;
 mod rpb3_epm_nested_source_refinement;
