@@ -5,7 +5,6 @@
 //! can cause data races.
 
 use std::collections::HashSet;
-use std::ops::Bound;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -252,29 +251,29 @@ fn enumerate_newly_in_range(
     let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
         + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
 
-    extend_pending_to_ceiling(
-        sweep,
-        floor.block_number - max_allowed_depth,
-        &dag.height_map,
-    );
+    extend_pending_to_ceiling(sweep, floor.block_number - max_allowed_depth, dag);
 }
 
 fn extend_pending_to_ceiling(
     sweep: &mut GcSweep,
     ceiling: i64,
-    height_map: &imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
+    dag: &KeyValueDagRepresentation,
 ) {
     if sweep.swept_height.is_some_and(|swept| ceiling <= swept) {
         return;
     }
 
-    let lower = match sweep.swept_height {
-        Some(swept) => Bound::Excluded(swept),
-        None => Bound::Unbounded,
-    };
-
-    for (_, hashes) in height_map.range((lower, Bound::Included(ceiling))) {
-        sweep.pending.extend(hashes.iter().cloned());
+    match dag.blocks_in_height_range(sweep.swept_height, ceiling) {
+        Ok(hashes) => sweep.pending.extend(hashes),
+        Err(error) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.mergeable_gc",
+                %error,
+                ceiling,
+                "mergeable-channel GC could not enumerate heights; retrying next pass"
+            );
+            return;
+        }
     }
 
     sweep.swept_height = Some(ceiling);
@@ -470,14 +469,39 @@ mod tests {
 
     fn at_height(n: i64) -> BlockHash { BlockHash::from(format!("h{}", n).into_bytes()) }
 
-    fn height_map(top: i64) -> imbl::OrdMap<i64, imbl::HashSet<BlockHash>> {
-        (0..=top)
+    fn height_map(top: i64) -> KeyValueDagRepresentation {
+        let height_map: imbl::OrdMap<i64, imbl::HashSet<BlockHash>> = (0..=top)
             .map(|n| {
                 let mut set = imbl::HashSet::new();
                 set.insert(at_height(n));
                 (n, set)
             })
-            .collect()
+            .collect();
+        let bms = BlockMetadataStore::new(KeyValueTypedStoreImpl::new(Arc::new(
+            InMemoryKeyValueStore::new(),
+        )));
+        KeyValueDagRepresentation {
+            dag_set: imbl::HashSet::new(),
+            latest_messages_map: imbl::HashMap::new(),
+            child_map: imbl::HashMap::new(),
+            height_map,
+            block_number_map: imbl::HashMap::new(),
+            main_parent_map: imbl::HashMap::new(),
+            self_justification_map: imbl::HashMap::new(),
+            invalid_blocks_set: imbl::HashSet::new(),
+            last_finalized_block_hash: at_height(top),
+            finalized_blocks_set: imbl::HashSet::new(),
+            block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+            )),
+        }
     }
 
     #[test]

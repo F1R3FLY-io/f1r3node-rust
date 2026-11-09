@@ -1111,6 +1111,8 @@ mod tests {
             "carrier-index",
             "carrier-index-meta",
             "genesis-hash",
+            "height-index",
+            "height-index-meta",
             "blocks",
             "blocks-approved",
         ];

@@ -67,6 +67,7 @@ use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
 use super::equivocation_tracker_store::EquivocationTrackerStore;
+use super::height_index::HeightIndex;
 
 pub type DeployId = shared::rust::ByteString;
 
@@ -144,16 +145,27 @@ pub struct KeyValueDagRepresentation {
 
 impl KeyValueDagRepresentation {
     pub fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
+        let block_metadata_index_guard = self.block_metadata_index.read();
         if self.dag_set.contains(block_hash) {
-            let block_metadata_index_guard = self.block_metadata_index.read();
             block_metadata_index_guard.get(block_hash)
         } else {
-            Ok(None)
+            block_metadata_index_guard.get_below_window(block_hash)
         }
     }
 
+    fn below_window(&self, block_hash: &BlockHash) -> Option<BlockMetadata> {
+        self.block_metadata_index
+            .read()
+            .get_below_window(block_hash)
+            .ok()
+            .flatten()
+    }
+
+    pub fn window_floor(&self) -> i64 { self.block_metadata_index.read().window_floor() }
+
     pub fn contains(&self, block_hash: &BlockHash) -> bool {
-        block_hash.len() == block_hash::LENGTH && self.dag_set.contains(block_hash)
+        block_hash.len() == block_hash::LENGTH
+            && (self.dag_set.contains(block_hash) || self.below_window(block_hash).is_some())
     }
 
     pub fn children(&self, block_hash: &BlockHash) -> Option<imbl::HashSet<BlockHash>> {
@@ -313,17 +325,25 @@ impl KeyValueDagRepresentation {
     // Do they need to be part of the DAG current state or they can be moved to DAG storage directly?
 
     pub fn get_max_height(&self) -> i64 {
-        if self.height_map.is_empty() {
-            0
-        } else {
-            self.height_map.get_max().expect("height_map is empty").0 + 1
+        match self.height_map.get_max() {
+            Some((height, _)) => height + 1,
+            None => self
+                .block_metadata_index
+                .read()
+                .height_index()
+                .and_then(|index| index.max_height().ok().flatten())
+                .map(|height| height + 1)
+                .unwrap_or(0),
         }
     }
 
     pub fn latest_block_number(&self) -> i64 { self.get_max_height() }
 
     pub fn block_number(&self, block_hash: &BlockHash) -> Option<i64> {
-        self.block_number_map.get(block_hash).copied()
+        self.block_number_map
+            .get(block_hash)
+            .copied()
+            .or_else(|| self.below_window(block_hash).map(|metadata| metadata.block_number))
     }
 
     pub fn block_number_unsafe(&self, block_hash: &BlockHash) -> Result<i64, KvStoreError> {
@@ -332,7 +352,39 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn main_parent(&self, block_hash: &BlockHash) -> Option<BlockHash> {
-        self.main_parent_map.get(block_hash).cloned()
+        self.main_parent_map.get(block_hash).cloned().or_else(|| {
+            self.below_window(block_hash)
+                .and_then(|metadata| metadata.parents.first().cloned())
+        })
+    }
+
+    pub fn blocks_in_height_range(
+        &self,
+        lower_exclusive: Option<i64>,
+        ceiling_inclusive: i64,
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        let floor = self.window_floor();
+        let mut result = Vec::new();
+        let start = lower_exclusive.map(|l| l + 1).unwrap_or(0);
+        if start > ceiling_inclusive {
+            return Ok(result);
+        }
+        if start < floor {
+            let persisted_end = ceiling_inclusive.min(floor - 1);
+            let guard = self.block_metadata_index.read();
+            if let Some(index) = guard.height_index() {
+                for height in start..=persisted_end {
+                    result.extend(index.valid_hashes_at(height)?);
+                }
+            }
+        }
+        let in_memory_start = start.max(floor);
+        if in_memory_start <= ceiling_inclusive {
+            for (_, hashes) in self.height_map.range(in_memory_start..=ceiling_inclusive) {
+                result.extend(hashes.iter().cloned());
+            }
+        }
+        Ok(result)
     }
 
     pub fn is_finalized(&self, block_hash: &BlockHash) -> bool {
@@ -365,20 +417,21 @@ impl KeyValueDagRepresentation {
                 truncated_hash, e
             ))
         })?;
-        if do_full_string_filter {
-            Ok(self
-                .dag_set
-                .iter()
-                .filter(|hash| hash.starts_with(&truncated_bytes))
-                .find(|hash| hex::encode(&**hash).starts_with(truncated_hash))
-                .cloned())
-        } else {
-            Ok(self
-                .dag_set
-                .iter()
-                .find(|hash| hash.starts_with(&truncated_bytes))
-                .cloned())
+        let matches = |hash: &BlockHash| {
+            hash.starts_with(&truncated_bytes)
+                && (!do_full_string_filter || hex::encode(&**hash).starts_with(truncated_hash))
+        };
+        if let Some(found) = self.dag_set.iter().find(|hash| matches(hash)).cloned() {
+            return Ok(Some(found));
         }
+        if self.window_floor() == super::block_metadata_store::UNBOUNDED_WINDOW_FLOOR {
+            return Ok(None);
+        }
+        let guard = self.block_metadata_index.read();
+        let found = guard
+            .capture_typed_store()
+            .collect(|(hash, _)| matches(&hash.0).then(|| hash.0.clone()))?;
+        Ok(found.into_iter().next())
     }
 
     pub fn topo_sort(
@@ -393,11 +446,22 @@ impl KeyValueDagRepresentation {
             .unwrap_or(max_number);
 
         if start_number >= 0 && start_number <= end_number {
-            Ok(self
-                .height_map
-                .range(start_number..=end_number)
-                .map(|(_, hashes)| hashes.iter().cloned().collect())
-                .collect())
+            let floor = self.window_floor();
+            let mut layers: Vec<Vec<BlockHash>> = Vec::new();
+            if start_number < floor {
+                let guard = self.block_metadata_index.read();
+                if let Some(index) = guard.height_index() {
+                    for height in start_number..=end_number.min(floor - 1) {
+                        layers.push(index.valid_hashes_at(height)?);
+                    }
+                }
+            }
+            layers.extend(
+                self.height_map
+                    .range(start_number.max(floor)..=end_number)
+                    .map(|(_, hashes)| hashes.iter().cloned().collect::<Vec<_>>()),
+            );
+            Ok(layers)
         } else {
             Err(KvStoreError::InvalidArgument(format!(
                 "Invalid start block number: {}, end block number: {}",
@@ -534,12 +598,17 @@ impl KeyValueDagRepresentation {
         if let Some(hash) = self.self_justification_map.get(block_hash).cloned() {
             return Ok(Some(hash));
         }
-
-        // Keep behavior for blocks that intentionally have no self-justification.
-        if !self.contains(block_hash) {
-            return Err(missing_block(block_hash, "self_justification"));
+        if self.dag_set.contains(block_hash) {
+            return Ok(None);
         }
-        Ok(None)
+        if let Some(metadata) = self.below_window(block_hash) {
+            return Ok(metadata
+                .justifications
+                .iter()
+                .find(|justification| justification.validator == metadata.sender)
+                .map(|justification| justification.latest_block_hash.clone()));
+        }
+        Err(missing_block(block_hash, "self_justification"))
     }
 
     pub fn lookup_metered<W: WorkMeter>(
@@ -985,11 +1054,22 @@ impl BlockDagKeyValueStorage {
     }
 
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
+        Self::new_with_memory_window(kvm, None).await
+    }
+
+    pub async fn new_with_memory_window(
+        kvm: &mut impl KeyValueStoreManager,
+        retention_depth: Option<i64>,
+    ) -> Result<Self, KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
         let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
+        let height_index_kv_store = kvm.store("height-index".to_string()).await?;
+        let height_index_meta_kv_store = kvm.store("height-index-meta".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(block_metadata_kv_store);
-        let block_metadata_store = BlockMetadataStore::try_new(block_metadata_db)?;
+        let height_index = HeightIndex::new(height_index_kv_store, height_index_meta_kv_store);
+        let block_metadata_store =
+            BlockMetadataStore::try_new_windowed(block_metadata_db, height_index, retention_depth)?;
 
         let equivocation_tracker_kv_store = kvm.store("equivocation-tracker".to_string()).await?;
         let equivocation_tracker_db: KeyValueTypedStoreImpl<
@@ -1075,10 +1155,18 @@ impl BlockDagKeyValueStorage {
         }
         let guard = self.block_metadata_index.read();
         let dag_state = guard.dag_state().read();
-        Ok(dag_state
+        if let Some(found) = dag_state
             .height_map
             .get(&0)
-            .and_then(|blocks| blocks.iter().min().cloned()))
+            .and_then(|blocks| blocks.iter().min().cloned())
+        {
+            return Ok(Some(found));
+        }
+        drop(dag_state);
+        match guard.height_index() {
+            Some(index) => Ok(index.valid_hashes_at(0)?.into_iter().min()),
+            None => Ok(None),
+        }
     }
 
     // P2-16: the following two methods bypass `global_lock` — production
@@ -1169,6 +1257,19 @@ impl BlockDagKeyValueStorage {
     ) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> {
         &self.frontier_index
     }
+
+    pub fn set_memory_window_depth(&self, retention_depth: Option<i64>) {
+        let _lock_guard = self.global_lock.write();
+        self.block_metadata_index
+            .write()
+            .set_retention_depth(retention_depth);
+    }
+
+    pub fn memory_window_depth(&self) -> Option<i64> {
+        self.block_metadata_index.read().retention_depth()
+    }
+
+    pub fn memory_window_floor(&self) -> i64 { self.block_metadata_index.read().window_floor() }
 
     /// Current DAG generation — incremented on every block insert.
     /// Can be used by caches to detect whether the DAG has changed since the last snapshot.
@@ -1642,6 +1743,20 @@ impl BlockDagKeyValueStorage {
                     indirectly_finalized,
                     ft_value,
                 )?;
+                if let Some(report) = block_metadata_index_guard.evict_below_window() {
+                    metrics::gauge!("dag.window_floor", "source" => "f1r3fly.casper.block-dag")
+                        .set(report.window_floor as f64);
+                    metrics::counter!("dag.evicted_total", "source" => "f1r3fly.casper.block-dag")
+                        .increment(report.evicted_blocks as u64);
+                    if report.evicted_blocks > 0 {
+                        tracing::debug!(
+                            target: "f1r3fly.block_storage",
+                            window_floor = report.window_floor,
+                            evicted = report.evicted_blocks,
+                            "evicted blocks below the in-memory DAG window"
+                        );
+                    }
+                }
                 drop(block_metadata_index_guard);
                 Ok(())
             };
@@ -1837,8 +1952,10 @@ mod tests {
 
     use super::*;
 
-    const DAG_STORES: [&str; 11] = [
+    const DAG_STORES: [&str; 13] = [
         "block-metadata",
+        "height-index",
+        "height-index-meta",
         "equivocation-tracker",
         "latest-messages",
         "invalid-blocks",

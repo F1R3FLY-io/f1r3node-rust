@@ -318,6 +318,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     casper_shard_conf.max_parent_depth = onchain_mpd;
     casper_shard_conf.deploy_lifespan = onchain_lifespan;
     casper_shard_conf.min_phlo_price = onchain_min_phlo;
+    block_dag_storage.set_memory_window_depth(casper_shard_conf.dag_memory_retention_depth());
 
     // Startup validation ran on the LOCAL values; everything derived from or
     // judged against max-parent-depth is finished HERE, on the adopted one.
@@ -548,6 +549,8 @@ pub struct CasperShardConf {
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
+    pub dag_memory_window_enabled: bool,
+    pub dag_memory_window_min: i64,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
@@ -568,6 +571,16 @@ pub struct CasperShardConf {
 }
 
 impl CasperShardConf {
+    pub fn dag_memory_retention_depth(&self) -> Option<i64> {
+        crate::rust::casper_conf::dag_memory_retention_depth(
+            self.dag_memory_window_enabled,
+            self.dag_memory_window_min,
+            self.max_parent_depth,
+            self.deploy_lifespan,
+            self.mergeable_channels_gc_depth_buffer,
+        )
+    }
+
     pub fn new() -> Self {
         Self {
             fault_tolerance_threshold: 0.0,
@@ -593,6 +606,8 @@ impl CasperShardConf {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
+            dag_memory_window_enabled: false,
+            dag_memory_window_min: crate::rust::casper_conf::default_dag_memory_window_min(),
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,

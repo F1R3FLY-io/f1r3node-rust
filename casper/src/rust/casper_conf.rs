@@ -136,7 +136,49 @@ pub struct CasperConf {
         default = "default_mergeable_channels_gc_depth_buffer"
     )]
     pub mergeable_channels_gc_depth_buffer: i32,
+
+    #[serde(
+        rename = "dag-memory-window-enabled",
+        default = "default_dag_memory_window_enabled"
+    )]
+    pub dag_memory_window_enabled: bool,
+
+    #[serde(
+        rename = "dag-memory-window-min",
+        default = "default_dag_memory_window_min"
+    )]
+    pub dag_memory_window_min: i64,
 }
+
+impl CasperConf {
+    pub fn dag_memory_retention_depth(&self) -> Option<i64> {
+        dag_memory_retention_depth(
+            self.dag_memory_window_enabled,
+            self.dag_memory_window_min,
+            self.max_parent_depth,
+            self.deploy_lifespan,
+            self.mergeable_channels_gc_depth_buffer,
+        )
+    }
+}
+
+pub fn dag_memory_retention_depth(
+    enabled: bool,
+    window_min: i64,
+    max_parent_depth: i32,
+    deploy_lifespan: i64,
+    gc_depth_buffer: i32,
+) -> Option<i64> {
+    if !enabled || max_parent_depth == i32::MAX {
+        return None;
+    }
+    let gc_reach = i64::from(max_parent_depth) + i64::from(gc_depth_buffer);
+    Some(gc_reach.max(deploy_lifespan).max(window_min).max(1))
+}
+
+pub fn default_dag_memory_window_enabled() -> bool { false }
+
+pub fn default_dag_memory_window_min() -> i64 { 1000 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
 

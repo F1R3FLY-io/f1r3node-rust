@@ -247,7 +247,7 @@ impl CliqueOracle {
         let mut participating = WeightMap::with_capacity(weight_map.len());
         for (validator, weight) in weight_map {
             let counts = match latest_messages.get(&validator) {
-                Some(latest) if dag.block_number_map.get(latest) == Some(&0) => {
+                Some(latest) if dag.block_number(latest) == Some(0) => {
                     dag.lookup(latest)?.is_none_or(|block| {
                         block.sender == validator || block.weight_map.contains_key(&validator)
                     })

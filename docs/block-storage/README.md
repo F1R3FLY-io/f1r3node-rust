@@ -37,6 +37,16 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
   - `main_parent_map`: BlockHash → parent BlockHash
   - `self_justification_map`: BlockHash → justification BlockHash
   - `finalized_block_set`: Bounded HashSet (cap 50k, prunes to 25k) of finalized blocks
+- **Memory window** (issue #933): with `casper.dag-memory-window-enabled = true`, the in-memory
+  indices hold only heights at or above a window floor `W = LFB.block_number - D`, where
+  `D = max(max-parent-depth + mergeable-channels-gc-depth-buffer, deploy-lifespan, dag-memory-window-min)`.
+  Eviction runs inside `record_directly_finalized`. Every accessor on `KeyValueDagRepresentation`
+  (`lookup`, `contains`, `block_number`, `main_parent`, `self_justification`, `topo_sort`,
+  `blocks_in_height_range`, `find`) falls through to LMDB for a block below `W`, so a held block is
+  never reported as missing. `children` is in-memory only and returns `None` below `W`.
+  Startup loads only the window from the persisted `height-index` (`i64 -> {hash, invalid}`) and
+  `height-index-meta` (`max-height`, `lfb-height`, `backfilled`) stores; the first start after the
+  upgrade backfills them from a full metadata scan. LMDB keeps every block.
 
 ## Casper Buffer
 

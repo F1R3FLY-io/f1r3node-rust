@@ -17,6 +17,8 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
 
+use super::height_index::HeightIndex;
+
 pub(crate) struct DagStateCopy {
     pub(crate) dag_set: imbl::HashSet<BlockHash>,
     pub(crate) child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
@@ -31,6 +33,8 @@ pub(crate) struct DagStateCopy {
 pub struct BlockMetadataStore {
     store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     dag_state: Arc<RwLock<DagState>>,
+    height_index: Option<HeightIndex>,
+    retention_depth: Option<i64>,
 }
 
 /// In-memory DAG state using persistent immutable collections (imbl).
@@ -39,6 +43,7 @@ pub(crate) struct DagState {
     pub(crate) dag_set: imbl::HashSet<BlockHash>,
     pub(crate) child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
     pub(crate) height_map: imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
+    pub(crate) invalid_by_height: imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
     // Lightweight per-block indices used by propose/finality hot paths to avoid
     // repeated metadata deserialization from LMDB.
     pub(crate) block_number_map: imbl::HashMap<BlockHash, i64>,
@@ -50,11 +55,14 @@ pub(crate) struct DagState {
     // So this is Option.
     pub(crate) last_finalized_block: Option<(BlockHash, i64)>,
     pub(crate) finalized_block_set: imbl::HashSet<BlockHash>,
+    pub(crate) window_floor: i64,
 }
 
 // Keep the in-memory finalized set bounded; finalized truth is persisted in block metadata.
 const FINALIZED_BLOCK_CACHE_MAX: usize = 50_000;
 const FINALIZED_BLOCK_CACHE_RETAIN: usize = 25_000;
+
+pub const UNBOUNDED_WINDOW_FLOOR: i64 = i64::MIN;
 
 impl DagState {
     fn new() -> Self {
@@ -62,11 +70,13 @@ impl DagState {
             dag_set: imbl::HashSet::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
+            invalid_by_height: imbl::OrdMap::new(),
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
             last_finalized_block: Some((BlockHash::new(), 0)),
             finalized_block_set: imbl::HashSet::new(),
+            window_floor: UNBOUNDED_WINDOW_FLOOR,
         }
     }
 }
@@ -80,6 +90,11 @@ struct BlockInfo {
     is_invalid: bool,
     is_directly_finalized: bool,
     is_finalized: bool,
+}
+
+pub struct EvictionReport {
+    pub window_floor: i64,
+    pub evicted_blocks: usize,
 }
 
 impl BlockMetadataStore {
@@ -104,18 +119,106 @@ impl BlockMetadataStore {
     pub fn try_new(
         block_metadata_store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     ) -> Result<Self, KvStoreError> {
-        let blocks_info = block_metadata_store.collect(|(hash, metadata)| {
+        Self::build(block_metadata_store, None, None)
+    }
+
+    pub fn try_new_windowed(
+        block_metadata_store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+        height_index: HeightIndex,
+        retention_depth: Option<i64>,
+    ) -> Result<Self, KvStoreError> {
+        Self::build(block_metadata_store, Some(height_index), retention_depth)
+    }
+
+    fn build(
+        block_metadata_store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+        height_index: Option<HeightIndex>,
+        retention_depth: Option<i64>,
+    ) -> Result<Self, KvStoreError> {
+        let retention_depth = retention_depth.map(|depth| depth.max(1));
+        let windowed_floor = match (&height_index, retention_depth) {
+            (Some(index), Some(depth)) if index.is_backfilled()? => index
+                .lfb_height()?
+                .map(|lfb| (lfb - depth).max(0)),
+            _ => None,
+        };
+
+        let dag_state = match windowed_floor {
+            Some(floor) => {
+                let index = height_index.as_ref().expect("windowed floor requires an index");
+                Self::load_window(&block_metadata_store, index, floor)?
+            }
+            None => {
+                let blocks_info = Self::collect_all(&block_metadata_store)?;
+                if let Some(index) = &height_index {
+                    if !index.is_backfilled()? {
+                        let lfb_height = blocks_info
+                            .values()
+                            .filter(|info| info.is_directly_finalized)
+                            .map(|info| info.block_num)
+                            .max();
+                        index.backfill(
+                            blocks_info
+                                .values()
+                                .map(|info| (info.block_num, info.hash.clone(), info.is_invalid)),
+                        )?;
+                        if let Some(lfb) = lfb_height {
+                            index.set_lfb_height(lfb)?;
+                        }
+                    }
+                }
+                Self::recreate_in_memory_state(blocks_info)
+            }
+        };
+
+        Ok(Self {
+            store: block_metadata_store,
+            dag_state,
+            height_index,
+            retention_depth,
+        })
+    }
+
+    fn collect_all(
+        store: &KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+    ) -> Result<HashMap<BlockHash, BlockInfo>, KvStoreError> {
+        let blocks_info = store.collect(|(hash, metadata)| {
             Some((
                 hash.0.clone(),
                 Self::block_metadata_to_info(&hash.0, metadata),
             ))
         })?;
-        let blocks_info_map = blocks_info.into_iter().collect::<HashMap<_, _>>();
-        let dag_state = Self::recreate_in_memory_state(blocks_info_map);
-        Ok(Self {
-            store: block_metadata_store,
-            dag_state,
-        })
+        Ok(blocks_info.into_iter().collect())
+    }
+
+    fn load_window(
+        store: &KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+        index: &HeightIndex,
+        floor: i64,
+    ) -> Result<Arc<RwLock<DagState>>, KvStoreError> {
+        let max_height = index.max_height()?.unwrap_or(-1);
+        let mut blocks_info: HashMap<BlockHash, BlockInfo> = HashMap::new();
+        for height in floor..=max_height {
+            let keys: Vec<BlockHashSerde> = index
+                .entries_at(height)?
+                .into_iter()
+                .map(|entry| entry.hash)
+                .collect();
+            if keys.is_empty() {
+                continue;
+            }
+            for (key, metadata) in keys.iter().zip(store.get(&keys)?) {
+                if let Some(metadata) = metadata {
+                    blocks_info.insert(
+                        key.0.clone(),
+                        Self::block_metadata_to_info(&key.0, &metadata),
+                    );
+                }
+            }
+        }
+        let state = Self::recreate_in_memory_state(blocks_info);
+        state.write().window_floor = floor;
+        Ok(state)
     }
 
     pub(crate) fn capture_typed_store(
@@ -148,27 +251,20 @@ impl BlockMetadataStore {
     pub fn new(
         block_metadata_store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     ) -> Self {
-        let blocks_info_result = block_metadata_store
-            .collect(|(hash, metadata)| {
-                Some((
-                    hash.0.clone(),
-                    Self::block_metadata_to_info(&hash.0, metadata),
-                ))
-            })
-            .unwrap_or_else(|e| {
+        match Self::try_new(block_metadata_store.clone()) {
+            Ok(store) => store,
+            Err(e) => {
                 tracing::warn!(
                     "Warning: Failed to collect block metadata: {}. Continuing with empty store.",
                     e
                 );
-                Vec::new()
-            });
-
-        let blocks_info_map = blocks_info_result.into_iter().collect::<HashMap<_, _>>();
-        let dag_state = Self::recreate_in_memory_state(blocks_info_map);
-
-        Self {
-            store: block_metadata_store,
-            dag_state,
+                Self {
+                    store: block_metadata_store,
+                    dag_state: Self::recreate_in_memory_state(HashMap::new()),
+                    height_index: None,
+                    retention_depth: None,
+                }
+            }
         }
     }
 
@@ -195,6 +291,10 @@ impl BlockMetadataStore {
     pub fn add(&mut self, block_metadata: BlockMetadata) -> Result<(), KvStoreError> {
         let block_hash = block_metadata.block_hash.clone();
         let block_info = Self::block_metadata_to_info(&block_hash, &block_metadata);
+
+        if let Some(index) = &self.height_index {
+            index.record(block_info.block_num, block_hash.clone(), block_info.is_invalid)?;
+        }
 
         self.dag_state = Self::validate_dag_state(Self::add_block_to_dag_state(
             self.dag_state.clone(),
@@ -258,7 +358,15 @@ impl BlockMetadataStore {
                 Some((directly.clone(), new_meta_for_df.block_number));
         }
         Self::prune_finalized_cache_if_needed(&mut dag_state_guard);
+        let lfb_height = dag_state_guard
+            .last_finalized_block
+            .as_ref()
+            .map(|(_, height)| *height);
         drop(dag_state_guard);
+
+        if let (Some(index), Some(height)) = (&self.height_index, lfb_height) {
+            index.set_lfb_height(height)?;
+        }
 
         // persist new values all at once
         let mut new_values = Vec::with_capacity(1 + new_metas_for_if.len());
@@ -267,6 +375,66 @@ impl BlockMetadataStore {
         self.store.put(new_values)?;
 
         Ok(())
+    }
+
+    pub fn retention_depth(&self) -> Option<i64> { self.retention_depth }
+
+    pub fn set_retention_depth(&mut self, depth: Option<i64>) {
+        self.retention_depth = depth.map(|d| d.max(1));
+    }
+
+    pub fn height_index(&self) -> Option<&HeightIndex> { self.height_index.as_ref() }
+
+    pub fn window_floor(&self) -> i64 { self.dag_state.read().window_floor }
+
+    pub fn evict_below_window(&mut self) -> Option<EvictionReport> {
+        let depth = self.retention_depth?;
+        let lfb_height = self.dag_state.read().last_finalized_block.as_ref()?.1;
+        let floor = (lfb_height - depth).max(0);
+        Some(self.evict_below(floor))
+    }
+
+    pub fn evict_below(&mut self, floor: i64) -> EvictionReport {
+        let mut state = self.dag_state.write();
+        if floor <= state.window_floor {
+            return EvictionReport {
+                window_floor: state.window_floor,
+                evicted_blocks: 0,
+            };
+        }
+
+        let mut evicted: Vec<BlockHash> = Vec::new();
+        let mut heights: Vec<i64> = Vec::new();
+        for (height, hashes) in state.height_map.range(..floor) {
+            heights.push(*height);
+            evicted.extend(hashes.iter().cloned());
+        }
+        let mut invalid_heights: Vec<i64> = Vec::new();
+        for (height, hashes) in state.invalid_by_height.range(..floor) {
+            invalid_heights.push(*height);
+            evicted.extend(hashes.iter().cloned());
+        }
+
+        for hash in &evicted {
+            state.dag_set.remove(hash);
+            state.child_map.remove(hash);
+            state.block_number_map.remove(hash);
+            state.main_parent_map.remove(hash);
+            state.self_justification_map.remove(hash);
+            state.finalized_block_set.remove(hash);
+        }
+        for height in heights {
+            state.height_map.remove(&height);
+        }
+        for height in invalid_heights {
+            state.invalid_by_height.remove(&height);
+        }
+        state.window_floor = floor;
+
+        EvictionReport {
+            window_floor: floor,
+            evicted_blocks: evicted.len(),
+        }
     }
 
     pub fn update_ft_if_higher(
@@ -308,6 +476,16 @@ impl BlockMetadataStore {
         self.store.get_one(&BlockHashSerde(hash.clone()))
     }
 
+    pub fn get_below_window(&self, hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
+        let floor = self.dag_state.read().window_floor;
+        if floor == UNBOUNDED_WINDOW_FLOOR {
+            return Ok(None);
+        }
+        Ok(self
+            .get(hash)?
+            .filter(|metadata| metadata.block_number < floor))
+    }
+
     /// Test-only corruption helper: deletes the persisted row while the
     /// in-memory `dag_state` still lists the hash (simulates a DAG set /
     /// metadata inconsistency for fail-closed tests).
@@ -332,7 +510,10 @@ impl BlockMetadataStore {
     pub fn dag_set(&self) -> imbl::HashSet<BlockHash> { self.dag_state.read().dag_set.clone() }
 
     pub fn contains(&self, hash: &BlockHash) -> bool {
-        self.dag_state.read().dag_set.contains(hash)
+        if self.dag_state.read().dag_set.contains(hash) {
+            return true;
+        }
+        self.get_below_window(hash).ok().flatten().is_some()
     }
 
     pub fn child_map(&self) -> imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>> {
@@ -407,6 +588,16 @@ impl BlockMetadataStore {
                 .unwrap_or_else(imbl::HashSet::new);
             hashes.insert(hash.clone());
             state_guard.height_map.insert(block_info.block_num, hashes);
+        } else {
+            let mut hashes = state_guard
+                .invalid_by_height
+                .get(&block_info.block_num)
+                .cloned()
+                .unwrap_or_else(imbl::HashSet::new);
+            hashes.insert(hash.clone());
+            state_guard
+                .invalid_by_height
+                .insert(block_info.block_num, hashes);
         }
 
         state_guard
@@ -443,26 +634,27 @@ impl BlockMetadataStore {
 
     fn validate_dag_state(dag_state: Arc<RwLock<DagState>>) -> Arc<RwLock<DagState>> {
         let dag_state_guard = dag_state.read();
-        let height_map = &dag_state_guard.height_map;
+        let floor = dag_state_guard.window_floor;
+        let in_window: Vec<i64> = dag_state_guard
+            .height_map
+            .range(floor..)
+            .map(|(height, _)| *height)
+            .collect();
         // Validate height map index (block numbers) are in sequence without holes
-        let (min, max) = if !height_map.is_empty() {
-            (
-                height_map.get_min().unwrap().0,
-                height_map.get_max().unwrap().0 + 1,
-            )
-        } else {
-            (0, 0)
+        let (min, max) = match (in_window.first(), in_window.last()) {
+            (Some(min), Some(max)) => (*min, *max + 1),
+            _ => (0, 0),
         };
         // A non-contiguous height map is a sanity-check failure, not a reason to
         // crash the node mid-validation. Log it for investigation and continue;
         // this is a diagnostic invariant, not a correctness gate.
-        if max - min != height_map.len() as i64 {
+        if max - min != in_window.len() as i64 {
             tracing::warn!(
                 target: "f1r3fly.block_storage",
                 min,
                 max,
-                len = height_map.len(),
-                keys = ?height_map.keys().cloned().collect::<Vec<i64>>(),
+                len = in_window.len(),
+                keys = ?in_window,
                 "DAG store height map has block numbers not in sequence",
             );
         }
@@ -500,6 +692,7 @@ mod tests {
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 
     use super::*;
+    use super::super::height_index::HeightIndex;
 
     fn block(number: i64, parents: Vec<BlockHash>) -> BlockMessage {
         get_random_block(
@@ -708,5 +901,103 @@ mod tests {
             .get(&1)
             .unwrap()
             .contains(&b1.block_hash));
+    }
+
+    fn windowed_store_over(kv: Arc<InMemoryKeyValueStore>, index: HeightIndex, depth: i64) -> BlockMetadataStore {
+        BlockMetadataStore::try_new_windowed(KeyValueTypedStoreImpl::new(kv), index, Some(depth)).unwrap()
+    }
+
+    fn chain(len: usize) -> Vec<BlockMessage> {
+        let mut blocks = vec![block(0, vec![])];
+        for i in 1..len {
+            let parent = blocks[i - 1].block_hash.clone();
+            blocks.push(block(i as i64, vec![parent]));
+        }
+        blocks
+    }
+
+    #[test]
+    fn eviction_drops_every_index_below_the_floor_and_keeps_the_rest() {
+        let mut store = windowed_store_over(Arc::new(InMemoryKeyValueStore::new()), HeightIndex::in_memory(), 2);
+        let blocks = chain(10);
+        for b in &blocks {
+            store.add(meta(b)).unwrap();
+        }
+        let invalid = BlockMetadata::from_block(&block(3, vec![blocks[2].block_hash.clone()]), true, None, None);
+        let invalid_hash = invalid.block_hash.clone();
+        store.add(invalid).unwrap();
+        store
+            .record_finalized(blocks[8].block_hash.clone(), blocks[..8].iter().map(|b| b.block_hash.clone()).collect(), 0.9)
+            .unwrap();
+
+        let report = store.evict_below_window().unwrap();
+        assert_eq!(report.window_floor, 6);
+        assert_eq!(report.evicted_blocks, 7);
+        assert_eq!(store.window_floor(), 6);
+
+        for b in &blocks[..6] {
+            assert!(!store.dag_set().contains(&b.block_hash));
+            assert!(store.child_map().get(&b.block_hash).is_none());
+            assert!(store.block_number_map().get(&b.block_hash).is_none());
+            assert!(store.main_parent_map().get(&b.block_hash).is_none());
+            assert!(!store.finalized_block_set().contains(&b.block_hash));
+            assert!(store.contains(&b.block_hash), "evicted blocks stay held through the metadata store");
+            assert!(store.get_below_window(&b.block_hash).unwrap().is_some());
+        }
+        assert!(!store.dag_set().contains(&invalid_hash));
+        assert!(store.contains(&invalid_hash));
+        for b in &blocks[6..] {
+            assert!(store.dag_set().contains(&b.block_hash));
+            assert!(store.get_below_window(&b.block_hash).unwrap().is_none());
+        }
+        assert_eq!(store.height_map().keys().copied().collect::<Vec<_>>(), vec![6, 7, 8, 9]);
+        assert_eq!(store.last_finalized_block(), blocks[8].block_hash);
+
+        let again = store.evict_below_window().unwrap();
+        assert_eq!(again.evicted_blocks, 0);
+    }
+
+    #[test]
+    fn eviction_is_disabled_without_a_retention_depth() {
+        let mut store = store_over(Arc::new(InMemoryKeyValueStore::new()));
+        for b in &chain(5) {
+            store.add(meta(b)).unwrap();
+        }
+        assert!(store.evict_below_window().is_none());
+        assert_eq!(store.window_floor(), UNBOUNDED_WINDOW_FLOOR);
+        assert!(store.get_below_window(&block(0, vec![]).block_hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn windowed_restart_loads_only_the_window_and_backfills_the_height_index() {
+        let kv = Arc::new(InMemoryKeyValueStore::new());
+        let blocks = chain(12);
+        {
+            let mut store = store_over(kv.clone());
+            for b in &blocks {
+                store.add(meta(b)).unwrap();
+            }
+            store
+                .record_finalized(blocks[10].block_hash.clone(), blocks[..10].iter().map(|b| b.block_hash.clone()).collect(), 0.9)
+                .unwrap();
+        }
+
+        let index = HeightIndex::in_memory();
+        {
+            let store = windowed_store_over(kv.clone(), index.clone(), 3);
+            assert_eq!(store.window_floor(), UNBOUNDED_WINDOW_FLOOR, "first windowed start backfills and loads everything");
+            assert_eq!(store.dag_set().len(), 12);
+            assert!(index.is_backfilled().unwrap());
+            assert_eq!(index.max_height().unwrap(), Some(11));
+            assert_eq!(index.lfb_height().unwrap(), Some(10));
+        }
+
+        let restored = windowed_store_over(kv, index, 3);
+        assert_eq!(restored.window_floor(), 7);
+        assert_eq!(restored.dag_set().len(), 5);
+        assert_eq!(restored.last_finalized_block(), blocks[10].block_hash);
+        assert!(!restored.dag_set().contains(&blocks[0].block_hash));
+        assert!(restored.contains(&blocks[0].block_hash));
+        assert_eq!(restored.height_map().keys().copied().collect::<Vec<_>>(), vec![7, 8, 9, 10, 11]);
     }
 }

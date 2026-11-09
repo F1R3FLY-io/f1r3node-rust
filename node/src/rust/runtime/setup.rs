@@ -394,7 +394,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let block_dag_storage = {
         use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 
-        BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
+        BlockDagKeyValueStorage::new_with_memory_window(
+            &mut rnode_store_manager,
+            conf.casper.dag_memory_retention_depth(),
+        )
+        .await?
     };
 
     // This node's chain identity, as far as storage knows it. A node that
