@@ -182,6 +182,7 @@ theories/RPB3IndependentOracleExprPayloadAgreement.v
 theories/RPB3ParFamilyScoreOrderControls.v
 theories/RPB3IndependentOracleUnaryExprScoreBridge.v
 theories/RPB3IndependentOracleVarScoreBridge.v
+theories/RPB3TotalExprPayloadFamilies.v
 theories/RPB3ScoreClassBehaviour.v
 theories/RPB3TypedValid.v
 theories/RPB3ScoreClass.v
