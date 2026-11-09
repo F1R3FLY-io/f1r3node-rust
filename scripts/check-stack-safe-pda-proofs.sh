@@ -440,6 +440,7 @@ rpb3_source_indexed_admission_prerequisites() {
     theories/RPB3IndependentOracleAdmission.v \
     theories/RPB3IndependentOracleCost.v \
     theories/RPB3IndependentOracleProcess.v \
+    theories/RPB3IndependentOracleExprPayload.v \
     theories/RPB3IndependentOracleName.v \
     theories/RPB3IndependentOracleRecursive.v \
     theories/RPB3IndependentOracleFuel.v \
@@ -514,6 +515,9 @@ rpb3_source_indexed_admission_prerequisites() {
   rocq_compile_with_closed_count \
     theories/RPB3IndependentOracleProcess.v 10 \
     "independent RPB3 process-family scoring and refusal"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleExprPayload.v 0 \
+    "independent RPB3 expression payload scoring"
   rocq_compile_with_closed_count \
     theories/RPB3IndependentOracleName.v 9 \
     "independent RPB3 name, PathMap, and StringMap scoring"
@@ -1204,6 +1208,7 @@ rocq_reject_placeholders \
   theories/RPB3IndependentOracleAdmission.v \
   theories/RPB3IndependentOracleCost.v \
   theories/RPB3IndependentOracleProcess.v \
+  theories/RPB3IndependentOracleExprPayload.v \
   theories/RPB3IndependentOracleName.v \
   theories/RPB3IndependentOracleRecursive.v \
   theories/RPB3IndependentOracleFuel.v \
@@ -1291,6 +1296,7 @@ rocq_compile_with_closed_count \
   theories/RPB3SourceIndexedTerminationWitnesses.v 5 \
   "the source-indexed terminal acceptance and refusal witnesses"
 rocq_check_modules "RPB3 admission" \
+  StackSafePDA.RPB3IndependentOracleExprPayload \
   StackSafePDA.RPB3Admission \
   StackSafePDA.RPB3DescriptorProjectionData \
   StackSafePDA.RPB3DescriptorLaws \
@@ -1429,6 +1435,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleRecursiveMatch.v
 TLC_MEMORY_HIGH=16G TLC_RSS=18G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleRecursiveMatch.v 44 \
   "recursive mixed reference matches the independent oracle"
+rocq_reject_placeholders theories/RPB3ExprPayloadHelperControls.v
+TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
+  rocq_compile_with_closed_count theories/RPB3ExprPayloadHelperControls.v 24 \
+  "computed controls for the expression payload score helpers"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1450,7 +1460,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3IndependentOracleUnscoredFamilyBridge \
   StackSafePDA.RPB3IndependentOracleMessageAssembly \
   StackSafePDA.RPB3RecursiveParUnfold \
-  StackSafePDA.RPB3IndependentOracleRecursiveMatch
+  StackSafePDA.RPB3IndependentOracleRecursiveMatch \
+  StackSafePDA.RPB3ExprPayloadHelperControls
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1

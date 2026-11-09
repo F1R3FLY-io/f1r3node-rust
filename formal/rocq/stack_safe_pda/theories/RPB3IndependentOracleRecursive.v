@@ -3,7 +3,8 @@ From StackSafePDA Require Import EPM1 EPM1ACTree03
   RPB3DescriptorProjectionData RPB3GeneratedFieldRefinement
   RPB3RawRegionTree RPB3IndependentOracleCore
   RPB3IndependentOracleAdmission RPB3IndependentOracleCost
-  RPB3IndependentOracleProcess RPB3IndependentOracleName.
+  RPB3IndependentOracleProcess RPB3IndependentOracleName
+  RPB3IndependentOracleExprPayload.
 
 Import ListNotations.
 
@@ -122,6 +123,92 @@ Fixpoint source_par_component_order
 
 Definition source_order_definitely_bad (order : option bool) : bool :=
   match order with Some false => true | _ => false end.
+
+(** Citations in these helpers: P is protobuf_admission.rs, C is canonical_semantics.rs and SC is
+    sorter/sort_combine.rs, all under models/src/rust/rholang/. *)
+
+(** ** Strict byte order and equality derived from the total order
+    [Process.source_bytes_leq]. *)
+Definition source_bytes_lt (left right : list nat) : bool :=
+  negb (Process.source_bytes_leq right left).
+
+Definition source_bytes_eqb (left right : list nat) : bool :=
+  Process.source_bytes_leq left right && Process.source_bytes_leq right left.
+
+(** ** Lexicographic strict order on (score bytes, raw body)
+    (P:3104-3107 and P:3175-3179). *)
+Definition source_key_strict_before
+    (left right : Core.source_score * list nat) : bool :=
+  let left_bytes := source_score_bytes (fst left) in
+  let right_bytes := source_score_bytes (fst right) in
+  if source_bytes_lt left_bytes right_bytes then true
+  else if source_bytes_lt right_bytes left_bytes then false
+  else source_bytes_lt (snd left) (snd right).
+
+Fixpoint source_keys_strictly_ascending
+    (keys : list (Core.source_score * list nat)) : bool :=
+  match keys with
+  | [] | [_] => true
+  | first :: ((second :: _) as rest) =>
+      source_key_strict_before first second &&
+      source_keys_strictly_ascending rest
+  end.
+
+(** Uniqueness is global (P:3109-3114, P:3181), not adjacent-only. *)
+Fixpoint source_identities_unique (identities : list (list nat)) : bool :=
+  match identities with
+  | [] => true
+  | identity_bytes :: rest =>
+      negb (existsb (source_bytes_eqb identity_bytes) rest) &&
+      source_identities_unique rest
+  end.
+
+(** An ESet element is keyed by (Par score, raw Par body), and its identity is
+    derived from the Par's typed children. *)
+Definition source_element_order_key (child : Core.source_exact_summary)
+    : option ((Core.source_score * list nat) * list nat) :=
+  option_map (fun score =>
+    ((score, Core.source_summary_body child),
+     RPB3IndependentOracleExprPayload.source_par_identity_bytes
+       (Core.source_summary_value child)))
+    (RPB3IndependentOracleExprPayload.source_payload_typed_message_score
+      1 child).
+
+(** An EMap pair is keyed by (key score, whole pair body); its identity is the
+    key's, read from the pair's carrier. *)
+Definition source_pair_order_key (child : Core.source_exact_summary)
+    : option ((Core.source_score * list nat) * list nat) :=
+  option_map (fun parts =>
+    ((fst parts, Core.source_summary_body child), snd parts))
+    (RPB3IndependentOracleExprPayload.source_kvp_carrier_parts child).
+
+(** [None] when some key is not derived, so there is no evidence of a
+    violation; [Some false] is a definite violation. *)
+Definition source_collection_canonical
+    (order_key : Core.source_exact_summary ->
+      option ((Core.source_score * list nat) * list nat))
+    (children : list Core.source_exact_summary) : option bool :=
+  let selected :=
+    filter (fun child => Core.source_summary_tag child =? 1) children in
+  option_map (fun keyed =>
+    source_keys_strictly_ascending (map fst keyed) &&
+    source_identities_unique (map snd keyed))
+    (Source.sequence_source_results (map order_key selected)).
+
+(** The refusal disjunct: a complete ESet or EMap outside the fixed point
+    (P:2926-2931); an incomplete body is not refused (P:2914, P:3188). *)
+Definition source_collection_outside_fixed_point (type_id : nat)
+    (complete : option bool)
+    (children : list Core.source_exact_summary) : bool :=
+  match type_id, complete with
+  | 29, Some true =>
+      source_order_definitely_bad
+        (source_collection_canonical source_element_order_key children)
+  | 30, Some true =>
+      source_order_definitely_bad
+        (source_collection_canonical source_pair_order_key children)
+  | _, _ => false
+  end.
 
 Fixpoint source_string_map_keys_ordered_after
     (previous : option (nat * list nat))

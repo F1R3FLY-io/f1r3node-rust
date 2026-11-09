@@ -119,6 +119,7 @@ theories/RPB3IndependentOracleCore.v
 theories/RPB3IndependentOracleAdmission.v
 theories/RPB3IndependentOracleCost.v
 theories/RPB3IndependentOracleProcess.v
+theories/RPB3IndependentOracleExprPayload.v
 theories/RPB3IndependentOracleName.v
 theories/RPB3IndependentOracleRecursive.v
 theories/RPB3IndependentOracleFuel.v
@@ -170,6 +171,7 @@ theories/RPB3IndependentOracleStringMapVerdictBridge.v
 theories/RPB3IndependentOracleUnscoredFamilyBridge.v
 theories/RPB3IndependentOracleMessageAssembly.v
 theories/RPB3IndependentOracleRecursiveMatch.v
+theories/RPB3ExprPayloadHelperControls.v
 theories/RPB3RecursiveParUnfold.v
 theories/RPB3IndependentTypedSemanticReference.v
 theories/RPB3SourceIndexedFrames.v

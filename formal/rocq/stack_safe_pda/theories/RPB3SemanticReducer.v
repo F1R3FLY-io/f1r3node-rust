@@ -1170,6 +1170,320 @@ Definition exact_expr_score (children : list semantic_summary)
 Definition exact_or_unknown (score : option canonical_score) : score_evidence :=
   match score with Some value => ExactScore value | None => ScoreNotDerived end.
 
+(** Citations in these helpers: P is protobuf_admission.rs, C is canonical_semantics.rs and SC is
+    sorter/sort_combine.rs, all under models/src/rust/rholang/. *)
+
+(** ** Var, type 6 (P:1202-1226, C:203-226)
+
+    An absent oneof is the integer 0, not a constructor (C:215).  BoundVar and
+    FreeVar carry a sint32 level; the oneof admits the explicit zero level, so
+    the level is decoded with a rule that does not forbid the default.  The
+    forbidden-default helper [exact_i32_or_absent] would wrongly reject the
+    canonical [BoundVar 0]. *)
+Definition exact_var_level_score (constructor : N)
+    (child : semantic_summary) : option canonical_score :=
+  match RPB3SourceScalarReduction.scalar_semantic_from_source
+      (RPB3SourceScalarReduction.ScalarRule (sem_tag child)
+        RPB3DescriptorProjectionData.GeneratedData.PBSint32 false)
+      (sem_body child) with
+  | Some (RPB3SourceScalarReduction.ScalarI32 level) =>
+      Some (score_constructor constructor
+        [ScoreInteger (signed_score_word level)])
+  | _ => None
+  end.
+
+Definition exact_var_score (children : list semantic_summary)
+    : option canonical_score :=
+  match children with
+  | [] => Some (ScoreInteger 0)
+  | [child] =>
+      match sem_wire child, sem_payload child,
+          sem_definitely_refused child with
+      | Varint, Scalar, false =>
+          if sem_tag child =? 1
+          then exact_var_level_score 50 child
+          else if sem_tag child =? 2
+          then exact_var_level_score 51 child
+          else None
+      | LengthDelimited, Message, false =>
+          if (sem_tag child =? 3) && (sem_type_id child =? 7)
+          then Some (score_constructor 52 [])
+          else None
+      | _, _, _ => None
+      end
+  | _ => None
+  end.
+
+(** ** EVar, type 35 (P:1442-1464, C:770-776, C:997-999, SC:986-994)
+
+    The Var's own score is the only operand.  A present empty Var scores 0, so
+    it yields constructor 100 applied to the integer 0. *)
+Definition exact_evar_score (children : list semantic_summary)
+    : option canonical_score :=
+  option_map (fun var_score => score_constructor 100 [var_score])
+    (exact_typed_child_score 1 6 children).
+
+(** ** ENot 36 and ENeg 37 (P:1466-1489, C:1000-1001) *)
+Definition exact_unary_payload_score (constructor : N)
+    (children : list semantic_summary) : option canonical_score :=
+  option_map (fun operand => score_constructor constructor [operand])
+    (exact_typed_child_score 1 1 children).
+
+(** ** Binary operators 38..54 (P:1491-1532, C:778-785, C:1041-1046,
+    SC:921-957, SC:998-1017).  The two operands are tags 1 and 2 of type 1 for
+    every family, including EMatches whose fields are target and pattern. *)
+Definition exact_binary_payload_score (constructor : N)
+    (children : list semantic_summary) : option canonical_score :=
+  match exact_typed_child_score 1 1 children,
+      exact_typed_child_score 2 1 children with
+  | Some first, Some second =>
+      Some (score_constructor constructor [first; second])
+  | _, _ => None
+  end.
+
+(** ** Ordered collections EList 27, ETuple 28, ESet 29 (P:1095, P:3085-3143,
+    C:787-802, C:993-996, SC:1021-1063, SC:1502-1539).  The remainder default is
+    the integer -1 (P:3120); ETuple has no remainder slot and does not read
+    one. *)
+Definition exact_absent_remainder_score : canonical_score :=
+  ScoreInteger (signed_score_word (-1)).
+
+Definition exact_collection_remainder (has_remainder : bool)
+    (children : list semantic_summary) : option (list canonical_score) :=
+  if has_remainder
+  then option_map (fun remainder => [remainder])
+    (exact_typed_optional_score_or 5 6 exact_absent_remainder_score children)
+  else Some [].
+
+Definition exact_ordered_collection_score (constructor : N)
+    (has_remainder : bool) (children : list semantic_summary)
+    : option canonical_score :=
+  match exact_collection_remainder has_remainder children,
+      exact_typed_selected_scores 1 1 children,
+      scalar_true_or_absent 4 children with
+  | Some remainder, Some elements, Some connective =>
+      Some (score_constructor constructor
+        (remainder ++ elements ++
+          [ScoreInteger (if connective then 1 else 0)]))
+  | _, _, _ => None
+  end.
+
+(** ** Identity of a raw Par body (P:1060-1069, P:1586-1615, P:7538,
+    canonical_par_identity.rs:1-7, 39-54).
+
+    Rust records the encoded range of the root locally_free field (key through
+    payload, P:7538 and protobuf_cursor.rs:606-609) and identifies a Par by
+    the body with exactly that range removed.  Removing the field whose
+    [span_start] and [span_end] delimit it reproduces this; nested locally_free
+    fields stay inside the bytes.  A body that does not decode is returned
+    unchanged: such a child is refused before any parent consults its
+    identity, and the function stays total. *)
+Definition par_identity_bytes (body : list nat) : list nat :=
+  match lookup_projected_program 1 [] [] with
+  | None => body
+  | Some program =>
+      match RPB3RawRegionTree.decode_region (S (length body)) body
+          program 0 (length body) with
+      | None => body
+      | Some nodes =>
+          match find (fun node =>
+              descriptor_tag (RPB3RawRegionTree.source_field node) =? 9)
+              nodes with
+          | None => body
+          | Some node =>
+              let span := RPB3RawRegionTree.source_span node in
+              firstn (RPB3RawRegionTree.Wire.span_start span) body ++
+                skipn (RPB3RawRegionTree.Wire.span_end span) body
+          end
+      end
+  end.
+
+(** ** KeyValuePair carrier, type 34 (P:1534-1541).
+
+    A KeyValuePair has no standalone score in Rust; its parent reads the
+    selected key's score, the key's semantic identity and its own body.  The
+    target exposes these to the EMap parent through the child's score
+    evidence, as constructor 0 applied to [key_score; ScoreBytes identity].
+    [exact_kvp_carrier] is applied only when the pair is complete. *)
+Definition exact_kvp_carrier (children : list semantic_summary)
+    : option canonical_score :=
+  match find (fun child => sem_tag child =? 1) children with
+  | None => None
+  | Some key =>
+      option_map (fun key_score =>
+        score_constructor 0
+          [key_score; ScoreBytes (par_identity_bytes (sem_body key))])
+        (exact_typed_message_score 1 key)
+  end.
+
+Definition kvp_carrier_parts (child : semantic_summary)
+    : option (canonical_score * list nat) :=
+  match exact_typed_message_score 34 child with
+  | Some (ScoreNode (ScoreCons (ScoreInteger constructor)
+      (ScoreCons key_score (ScoreCons (ScoreBytes identity_bytes) ScoreNil)))) =>
+      if N.eqb constructor 0 then Some (key_score, identity_bytes) else None
+  | _ => None
+  end.
+
+(** ** EMap, type 30 (P:3145-3216, C:1047-1052, SC:1428-1493).
+
+    Only key scores enter the score; values never do.  The helper is reached
+    only for a complete EMap, whose every pair carries a key score. *)
+Fixpoint exact_emap_key_scores (children : list semantic_summary)
+    : option (list canonical_score) :=
+  match children with
+  | [] => Some []
+  | child :: rest =>
+      match exact_emap_key_scores rest with
+      | None => None
+      | Some keys =>
+          if sem_tag child =? 1 then
+            option_map (fun parts => fst parts :: keys)
+              (kvp_carrier_parts child)
+          else Some keys
+      end
+  end.
+
+Definition exact_emap_score (children : list semantic_summary)
+    : option canonical_score :=
+  match exact_typed_optional_score_or 5 6 exact_absent_remainder_score children,
+      exact_emap_key_scores children,
+      scalar_true_or_absent 4 children with
+  | Some remainder, Some keys, Some connective =>
+      Some (score_constructor 9
+        (remainder :: keys ++ [ScoreInteger (if connective then 1 else 0)]))
+  | _, _, _ => None
+  end.
+
+(** ** EMethod, type 33 (P:3303-3341, C:815-828, C:1062-1066, SC:1214-1237) *)
+Definition exact_method_name_or_empty (children : list semantic_summary)
+    : option (list nat) :=
+  match find (fun child => sem_tag child =? 1) children with
+  | None => Some []
+  | Some child =>
+      match sem_wire child, sem_payload child,
+          sem_definitely_refused child with
+      | LengthDelimited, Scalar, false => Some (sem_body child)
+      | _, _, _ => None
+      end
+  end.
+
+Definition exact_emethod_score (children : list semantic_summary)
+    : option canonical_score :=
+  match exact_method_name_or_empty children,
+      exact_typed_child_score 2 1 children,
+      exact_typed_selected_scores 3 1 children,
+      scalar_true_or_absent 6 children with
+  | Some method, Some target, Some arguments, Some connective =>
+      Some (score_constructor 115
+        (ScoreString method :: target ::
+          (arguments ++ [ScoreInteger (if connective then 1 else 0)])))
+  | _, _, _, _ => None
+  end.
+
+(** ** ConnectiveBody carrier, type 57, and VarRef carrier, type 56
+    (P:1150-1168, P:2956-2989, C:738-745).
+
+    These have no standalone score in Rust; a Connective parent reads their
+    typed fields.  The carriers expose the list of Par scores and the VarRef
+    score to that parent through the child's score evidence.  VarRef's fields
+    are ordinary (default-forbidden) sint32 scalars, so [exact_i32_or_absent]
+    is the right decoder here, unlike for the Var oneof. *)
+Definition exact_connective_body_carrier (children : list semantic_summary)
+    : option canonical_score :=
+  option_map (score_constructor 0) (exact_typed_selected_scores 1 1 children).
+
+Definition exact_var_ref_carrier (children : list semantic_summary)
+    : option canonical_score :=
+  match exact_i32_or_absent 1 children, exact_i32_or_absent 2 children with
+  | Some index, Some depth =>
+      Some (score_constructor 403
+        [ScoreInteger (signed_score_word index);
+         ScoreInteger (signed_score_word depth)])
+  | _, _ => None
+  end.
+
+(** ** Connective message arms And, Or, VarRef (P:2956-2989, C:738-745).
+
+    And and Or replace the carrier's constructor 0 with 401 or 402, keeping the
+    Par-score forest; VarRef's carrier is already the score.  The existing Not
+    arm (tag 3) is untouched. *)
+Definition exact_connective_body_arm (constructor : N)
+    (child : semantic_summary) : option canonical_score :=
+  match exact_typed_message_score 57 child with
+  | Some (ScoreNode (ScoreCons (ScoreInteger carrier) forest)) =>
+      if N.eqb carrier 0
+      then Some (ScoreNode (ScoreCons (ScoreInteger constructor) forest))
+      else None
+  | _ => None
+  end.
+
+Definition exact_connective_message_arm (child : semantic_summary)
+    : option canonical_score :=
+  match sem_tag child with
+  | 1 => exact_connective_body_arm 401 child
+  | 2 => exact_connective_body_arm 402 child
+  | 4 => exact_typed_message_score 56 child
+  | _ => None
+  end.
+
+(** ** Completeness of the payload families (C:993-1066; EMap P:3163-3170).
+
+    Var and the ordered collections are always complete.  EMap is the
+    conjunction over its pairs, and the remaining families are decided by the
+    seen slots of the generated program.  Types 56 and 57 have no completeness
+    notion, so they remain [None], as does every other type id outside the
+    payload families. *)
+Definition expr_payload_completeness (type_id : nat) (state : scan_state)
+    (children : list semantic_summary) : option bool :=
+  match type_id with
+  | 6 | 27 | 28 | 29 => Some true
+  | 30 =>
+      Some (forallb (fun child =>
+        if sem_tag child =? 1
+        then match sem_complete child with Some true => true | _ => false end
+        else true) children)
+  | 33 => Some (seen_slot state 1)
+  | 34 => Some (seen_slot state 0 && seen_slot state 1)
+  | 35 | 36 | 37 => Some (seen_slot state 0)
+  | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52
+  | 53 | 54 => Some (seen_slot state 0 && seen_slot state 1)
+  | _ => None
+  end.
+
+(** ** Payload score dispatch, one match on the type id with default [None]. *)
+Definition exact_expr_payload_score (type_id : nat)
+    (children : list semantic_summary) : option canonical_score :=
+  match type_id with
+  | 6 => exact_var_score children
+  | 27 => exact_ordered_collection_score 6 true children
+  | 28 => exact_ordered_collection_score 7 false children
+  | 29 => exact_ordered_collection_score 8 true children
+  | 30 => exact_emap_score children
+  | 33 => exact_emethod_score children
+  | 35 => exact_evar_score children
+  | 36 => exact_unary_payload_score 112 children
+  | 37 => exact_unary_payload_score 101 children
+  | 38 => exact_binary_payload_score 102 children
+  | 39 => exact_binary_payload_score 103 children
+  | 40 => exact_binary_payload_score 122 children
+  | 41 => exact_binary_payload_score 104 children
+  | 42 => exact_binary_payload_score 105 children
+  | 43 => exact_binary_payload_score 106 children
+  | 44 => exact_binary_payload_score 107 children
+  | 45 => exact_binary_payload_score 108 children
+  | 46 => exact_binary_payload_score 109 children
+  | 47 => exact_binary_payload_score 110 children
+  | 48 => exact_binary_payload_score 111 children
+  | 49 => exact_binary_payload_score 113 children
+  | 50 => exact_binary_payload_score 114 children
+  | 51 => exact_binary_payload_score 118 children
+  | 52 => exact_binary_payload_score 119 children
+  | 53 => exact_binary_payload_score 120 children
+  | 54 => exact_binary_payload_score 121 children
+  | _ => None
+  end.
+
 Definition score_evidence_for (type_id : nat) (complete : option bool)
     (children : list semantic_summary) : score_evidence :=
   match type_id, complete with
@@ -2282,6 +2596,88 @@ Fixpoint raw_par_component_order (children : list semantic_summary)
 
 Definition order_definitely_bad (order : option bool) : bool :=
   match order with Some false => true | _ => false end.
+
+(** ** Fixed-point ordering of ESet and EMap (P:3098-3116, P:3158-3184).
+
+    Both reducers accept a collection only when its elements strictly ascend by
+    (score bytes, raw body) and every identity is globally unique.  The key is
+    a pair so the same comparator serves ESet (element score, raw Par body) and
+    EMap (key score, whole pair body).  [score_body_order] is non-strict and is
+    therefore not reused.  Score comparison is byte-wise on the canonical score
+    encoding (canonical_score_bytes.rs:484-490) and raw bodies are compared
+    byte-wise (indexed_protobuf.rs:803-805); [body_leq] orders a strict prefix
+    first. *)
+Definition score_body_strict_before
+    (left right : canonical_score * list nat) : bool :=
+  let left_score_bytes := canonical_score_bytes (fst left) in
+  let right_score_bytes := canonical_score_bytes (fst right) in
+  if body_leq left_score_bytes right_score_bytes &&
+      body_leq right_score_bytes left_score_bytes
+  then negb (body_leq (snd right) (snd left))
+  else body_leq left_score_bytes right_score_bytes.
+
+Fixpoint payload_keys_strictly_ascending
+    (keys : list (canonical_score * list nat)) : bool :=
+  match keys with
+  | [] | [_] => true
+  | first :: ((second :: _) as rest) =>
+      score_body_strict_before first second &&
+      payload_keys_strictly_ascending rest
+  end.
+
+(** Global, not adjacent-only: Rust inserts every identity into one trie
+    (P:1060-1069, canonical_par_identity.rs:39-54), so repeats that are not
+    adjacent are refused as well. *)
+Fixpoint payload_identities_unique (identities : list (list nat)) : bool :=
+  match identities with
+  | [] => true
+  | identity_bytes :: rest =>
+      negb (existsb (RPB3SourceScalarReduction.nat_list_eqb identity_bytes)
+        rest) &&
+      payload_identities_unique rest
+  end.
+
+Definition eset_element_key (child : semantic_summary)
+    : option (canonical_score * list nat) :=
+  option_map (fun score => (score, sem_body child))
+    (exact_typed_message_score 1 child).
+
+Definition emap_pair_key (child : semantic_summary)
+    : option ((canonical_score * list nat) * list nat) :=
+  option_map (fun parts => ((fst parts, sem_body child), snd parts))
+    (kvp_carrier_parts child).
+
+(** [None] when some element's score is not derived: there is then no
+    evidence of a violation, matching how [order_definitely_bad] treats an
+    unknown comparison.  [Some false] is a definite violation. *)
+Definition canonical_eset_children (children : list semantic_summary)
+    : option bool :=
+  let elements := filter (fun child => sem_tag child =? 1) children in
+  option_map (fun keys =>
+    payload_keys_strictly_ascending keys &&
+    payload_identities_unique
+      (map (fun child => par_identity_bytes (sem_body child)) elements))
+    (RPB3RawRegionTree.sequence_source_results
+      (map eset_element_key elements)).
+
+Definition canonical_emap_children (children : list semantic_summary)
+    : option bool :=
+  let pairs := filter (fun child => sem_tag child =? 1) children in
+  option_map (fun keyed =>
+    payload_keys_strictly_ascending (map fst keyed) &&
+    payload_identities_unique (map snd keyed))
+    (RPB3RawRegionTree.sequence_source_results (map emap_pair_key pairs)).
+
+(** The refusal disjunct for the two canonical collections.  Rust refuses only
+    a complete body outside the fixed point (P:2926-2931); an incomplete EMap
+    has no score and is not refused here (P:2914, P:3188). *)
+Definition payload_fixed_point_violated (type_id : nat)
+    (complete : option bool) (children : list semantic_summary) : bool :=
+  match type_id, complete with
+  | 29, Some true => order_definitely_bad (canonical_eset_children children)
+  | 30, Some true => order_definitely_bad (canonical_emap_children children)
+  | _, _ => false
+  end.
 
 Definition reduce_semantic_field (field : raw_field)
     (children : list semantic_summary) : semantic_summary :=
