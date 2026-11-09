@@ -74,10 +74,14 @@ impl TestContext {
         // built by `build_genesis_parameters_with_defaults(_, None)`.
         fn bonds_function(
             validators: Vec<crypto::rust::public_key::PublicKey>,
-        ) -> std::collections::HashMap<crypto::rust::public_key::PublicKey, i64> {
+        ) -> std::collections::HashMap<
+            crypto::rust::public_key::PublicKey,
+            shared::rust::token_amount::TokenAmount,
+        > {
             validators
                 .into_iter()
-                .zip(vec![100i64, 100, 100, 100])
+                .zip(vec![100u64, 100, 100, 100])
+                .map(|(key, stake)| (key, stake.into()))
                 .collect()
         }
         let parameters =
@@ -240,10 +244,10 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let equivocator_stake = post_merge_bonds
         .iter()
         .find(|b| b.validator == equivocator_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("equivocator must still appear in bonds map");
     assert!(
-        equivocator_stake <= 1,
+        equivocator_stake <= 1.into(),
         "post-merge equivocator stake must be at the bond floor (<=1); got {}",
         equivocator_stake
     );
@@ -253,7 +257,7 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let proposer_stake = post_merge_bonds
         .iter()
         .find(|b| b.validator == merge_proposer_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("merge proposer must still appear in bonds map");
     let proposer_genesis_stake = ctx
         .genesis
@@ -263,7 +267,7 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
         .bonds
         .iter()
         .find(|b| b.validator == merge_proposer_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("merge proposer must be bonded at genesis");
     assert_eq!(
         proposer_stake, proposer_genesis_stake,
@@ -423,10 +427,10 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     let equivocator_stake = post_merge_bonds
         .iter()
         .find(|b| b.validator == equivocator_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("equivocator must still appear in bonds map");
     assert!(
-        equivocator_stake <= 1,
+        equivocator_stake <= 1.into(),
         "post-merge equivocator stake must be at the bond floor (<=1) even when a \
          pre-slash sibling is merged; got {}",
         equivocator_stake

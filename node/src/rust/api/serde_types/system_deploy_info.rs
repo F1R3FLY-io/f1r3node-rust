@@ -16,7 +16,7 @@ use super::base64_bytes;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BondInfoSerde {
     pub validator: String,
-    pub stake: i64,
+    pub stake: String,
 }
 
 impl From<BondInfo> for BondInfoSerde {
@@ -474,11 +474,11 @@ mod tests {
     #[test]
     fn bond_info_roundtrips() {
         let proto = BondInfo {
+            stake: "500".to_string(),
             validator: "validator-key".to_string(),
-            stake: 500,
         };
         let serde: BondInfoSerde = proto.clone().into();
-        assert_eq!(serde.stake, 500);
+        assert_eq!(serde.stake, "500");
         let back: BondInfo = serde.into();
         assert_eq!(back, proto);
     }

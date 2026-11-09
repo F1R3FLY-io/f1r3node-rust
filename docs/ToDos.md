@@ -26,6 +26,22 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+### TASK-031-1: Complete unsigned 256-bit token amount support
+
+```yaml
+id: TASK-031-1
+epic_id: EPIC-031
+status: in_progress
+branch: feature/asi-u256-amounts
+pull_request: 881
+user_story: US-015
+acceptance:
+  - "Migrate all remaining monetary paths and raise the maximum bond."
+  - "Verify boundaries, exact arithmetic, API reporting, persistence, and peer replay."
+  - "Pass the amd64 and arm64 Integration gates with clients that send the new encoding."
+```
+
+
 - **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status

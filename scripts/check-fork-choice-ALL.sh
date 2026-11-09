@@ -291,7 +291,7 @@ if command -v cargo >/dev/null 2>&1; then
   # The `fork_choice::` filter picks up EVERY module in casper/tests/fork_choice/:
   #   prop_filter_deep_parents (C12), prop_estimator_determinism (determinism +
   #   score-monoid + T-10 filter), prop_lca (LUCA converges/common-ancestor/lowest),
-  #   prop_bound (B2/B3/B4 sentinel/overflow/empty seams).
+  #   prop_bound (B2/B3/B4 sentinel/exact-score/empty seams).
   if cargo test -p casper --test mod -- fork_choice:: >/tmp/fc_rust_prop.log 2>&1 \
        && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/fc_rust_prop.log; then
     n_rust=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/fc_rust_prop.log | grep -oE '[0-9]+' | head -1)

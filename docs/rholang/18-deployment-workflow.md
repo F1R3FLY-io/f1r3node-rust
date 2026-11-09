@@ -86,7 +86,7 @@ curl -X POST http://localhost:40413/api/deploy \
     "data": {
       "term": "new stdout(`rho:io:stdout`) in { stdout!(\"hello\") }",
       "timestamp": 1700000000000,
-      "phloPrice": 1,
+      "phloPrice": "1",
       "phloLimit": 100000,
       "validAfterBlockNumber": 0,
       "shardId": "root"

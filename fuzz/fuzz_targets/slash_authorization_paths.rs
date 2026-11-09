@@ -143,9 +143,9 @@ fn expected_validation_ok(
             .on_chain_state
             .bonds_map
             .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
+            .cloned()
+            .unwrap_or_default();
+        if bond <= 0.into() {
             return false;
         }
         if !seen.insert((metadata.sender, target_activation_epoch)) {
@@ -190,8 +190,7 @@ fuzz_target!(|input: Input| {
         bonds,
     );
 
-    let candidate_result =
-        authorized_slash_candidates(&snapshot);
+    let candidate_result = authorized_slash_candidates(&snapshot);
     let current_candidate_epoch =
         epoch_for_block_number(bounded_height(input.max_block_num) + 1, epoch_length);
     match current_candidate_epoch {
@@ -211,9 +210,9 @@ fuzz_target!(|input: Input| {
                     .on_chain_state
                     .bonds_map
                     .get(&metadata.sender)
-                    .copied()
-                    .unwrap_or(0);
-                if bond <= 0 {
+                    .cloned()
+                    .unwrap_or_default();
+                if bond <= 0.into() {
                     continue;
                 }
                 // Lex-smallest-hash tie-breaker mirrors the production rule
@@ -267,7 +266,6 @@ fuzz_target!(|input: Input| {
         deploys,
     );
     let expected_ok = expected_validation_ok(&block, &snapshot);
-    let actual_ok = validate_received_slash_deploys(&block, &snapshot)
-    .is_ok();
+    let actual_ok = validate_received_slash_deploys(&block, &snapshot).is_ok();
     assert_eq!(actual_ok, expected_ok);
 });
