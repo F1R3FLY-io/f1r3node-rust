@@ -12,7 +12,7 @@
 //! Outbound block requests (`BlockRequest`, `HasBlockRequest`) can be held
 //! shut, which stands for a peer that is slow to take a request.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -150,7 +150,8 @@ impl Validators {
 
     fn genesis(&self) -> BlockMessage { block(0, 0, None, vec![], vec![], &self.bonds) }
 
-    /// A block by validator `v` whose first parent is its main parent.
+    /// A block by validator `v` whose first parent is its main parent. It
+    /// justifies each parent sender's latest parent, in validator order.
     fn sign(&mut self, v: usize, parents: &[&BlockMessage]) -> BlockMessage {
         let number = parents
             .iter()
@@ -160,16 +161,27 @@ impl Validators {
             + 1;
         let seq = self.next_seq[v];
         self.next_seq[v] += 1;
+        let mut latest: BTreeMap<Validator, &BlockMessage> = BTreeMap::new();
+        for p in parents {
+            latest
+                .entry(p.sender.clone())
+                .and_modify(|held| {
+                    if p.body.state.block_number > held.body.state.block_number {
+                        *held = p;
+                    }
+                })
+                .or_insert(p);
+        }
         let identity = &self.identities[v];
         identity.sign_block(&block(
             number,
             seq,
             Some(identity.public_key.bytes.clone()),
             parents.iter().map(|p| p.block_hash.clone()).collect(),
-            parents
-                .iter()
-                .map(|p| Justification {
-                    validator: p.sender.clone(),
+            latest
+                .into_iter()
+                .map(|(validator, p)| Justification {
+                    validator,
                     latest_block_hash: p.block_hash.clone(),
                 })
                 .collect(),
