@@ -1288,8 +1288,8 @@ printf '%s\n' "$rpb3_admission_mutants_rocq_output"
 rpb3_admission_mutants_closed_capstones="$({
   printf '%s\n' "$rpb3_admission_mutants_rocq_output" | grep -c '^Closed under the global context$'
 } || true)"
-if [[ "$rpb3_admission_mutants_closed_capstones" != "35" ]]; then
-  echo "stack-safe-pda: expected thirty-five RPB3 admission mutant capstones to be closed; got $rpb3_admission_mutants_closed_capstones" >&2
+if [[ "$rpb3_admission_mutants_closed_capstones" != "40" ]]; then
+  echo "stack-safe-pda: expected forty RPB3 admission mutant capstones to be closed; got $rpb3_admission_mutants_closed_capstones" >&2
   exit 1
 fi
 rocq_compile_with_closed_count \

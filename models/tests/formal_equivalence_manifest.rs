@@ -4323,7 +4323,7 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
 
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(runner.lines().any(|line| {
-        line.trim() == "if [[ \"$rpb3_admission_mutants_closed_capstones\" != \"35\" ]]; then"
+        line.trim() == "if [[ \"$rpb3_admission_mutants_closed_capstones\" != \"40\" ]]; then"
     }));
     for marker in [
         "theories/RPB3Admission.v",

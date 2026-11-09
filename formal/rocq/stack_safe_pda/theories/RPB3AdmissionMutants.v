@@ -1480,4 +1480,130 @@ Print Assumptions mutant_auxiliary_visit_uses_raw_leaf_is_refuted.
 Print Assumptions mutant_forest_swaps_first_two_is_refuted.
 Print Assumptions mutant_close_omits_child_reverse_is_refuted.
 
+(** * Concrete-instantiation mutants
+
+    Each theorem below runs a mutated rule on the concrete generated tables and
+    a concrete wire input, through the same entry points the proofs use, and
+    shows the mutant and the real rule disagree. *)
+
+Definition mutant_root_accepts_over_close
+    (close : Schema.raw_field -> nat -> list Recursive.recursive_mixed_result ->
+      option Recursive.recursive_mixed_result)
+    (hash_fn : list nat -> nat) (type_id : nat) (bytes : list nat) : bool :=
+  match Recursive.recursive_mixed_root_reference hash_fn type_id bytes with
+  | Some results =>
+      match close (Frames.source_generated_root_field type_id bytes) type_id
+          results with
+      | Some _ => true
+      | None => false
+      end
+  | None => false
+  end.
+
+(** Algebra: a close that keeps the map-key check but ignores the reducer's
+    refusal admits a Par whose Send children are out of score order. *)
+Definition mutant_close_ignores_reducer_refusal (raw : Schema.raw_field)
+    (type_id : nat) (children : list Recursive.recursive_mixed_result)
+    : option Recursive.recursive_mixed_result :=
+  let map_ordered :=
+    if type_id =? 20 then
+      Recursive.ordered_recursive_new_map_returnsb None
+        (Recursive.recursive_new_map_returns children)
+    else true in
+  if map_ordered then
+    Some (Recursive.RecursiveMessageResult raw
+      (Semantic.reduce_semantic_field raw
+        (map Recursive.recursive_result_semantic children)) children)
+  else None.
+
+Definition descending_send_par_body : list nat := [10; 2; 24; 1; 10; 0].
+Definition ascending_send_par_body : list nat := [10; 0; 10; 2; 24; 1].
+
+Theorem concrete_algebra_close_ignores_reducer_refusal_is_refuted :
+  Frames.source_indexed_root_accepts witness_hash 1 ascending_send_par_body = true /\
+  Frames.source_indexed_root_accepts witness_hash 1 descending_send_par_body = false /\
+  mutant_root_accepts_over_close mutant_close_ignores_reducer_refusal witness_hash
+    1 descending_send_par_body = true.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** Cursor and field: a varint cursor without the minimality check reads the
+    non-minimal key of a real root as the key of the ordered New, which the real
+    cursor and the machine refuse. *)
+Definition nonminimal_key_new_body : list nat :=
+  [146; 0; 0; 34; 3; 10; 1; 97; 34; 3; 10; 1; 98].
+
+Theorem concrete_cursor_nonminimal_root_key_is_refuted :
+  Frames.source_indexed_root_accepts witness_hash 20 ordered_new_body = true /\
+  Frames.source_indexed_root_accepts witness_hash 20 nonminimal_key_new_body = false /\
+  RPB3WireCursor.canonical_varint nonminimal_key_new_body
+    (length nonminimal_key_new_body) 0 = None /\
+  mutant_varint_groups_without_minimality 10 nonminimal_key_new_body
+    (length nonminimal_key_new_body) 0 0 0 = Some (18, 2).
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** Child order: a close that drops the New map-key order check admits a New
+    whose map keys are reversed. *)
+Definition mutant_close_skips_new_map_order (raw : Schema.raw_field)
+    (type_id : nat) (children : list Recursive.recursive_mixed_result)
+    : option Recursive.recursive_mixed_result :=
+  let semantic := Semantic.reduce_semantic_field raw
+    (map Recursive.recursive_result_semantic children) in
+  if Semantic.sem_definitely_refused semantic then None
+  else Some (Recursive.RecursiveMessageResult raw semantic children).
+
+Theorem concrete_child_order_new_map_keys_is_refuted :
+  Frames.source_indexed_root_accepts witness_hash 20 reversed_new_body = false /\
+  mutant_root_accepts_over_close mutant_close_skips_new_map_order witness_hash
+    20 reversed_new_body = true.
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** Score and body: a claimed-score check that compares only a prefix of the
+    claim accepts a forged claim with trailing bytes. *)
+Definition mutant_compare_claimed_score_prefix
+    (semantic : Semantic.semantic_summary) (claimed_score : list nat)
+    : Frames.claimed_score_result :=
+  if Semantic.sem_definitely_refused semantic then Frames.ClaimedScoreRejected
+  else match Semantic.sem_score_evidence semantic with
+  | Semantic.ExactScore score =>
+      let expected := Semantic.canonical_score_bytes score in
+      if Frames.score_bytes_equal expected (firstn (length expected) claimed_score)
+      then Frames.ClaimedScoreAccepted else Frames.ClaimedScoreRejected
+  | Semantic.ScoreNotDerived => Frames.ClaimedScoreUnknown
+  end.
+
+Definition mutant_root_claimed_score_by_prefix (hash_fn : list nat -> nat)
+    (type_id : nat) (bytes claimed_score : list nat) : Frames.claimed_score_result :=
+  match Frames.source_indexed_root_summary hash_fn type_id bytes with
+  | Some [root] => mutant_compare_claimed_score_prefix root claimed_score
+  | _ => Frames.ClaimedScoreRejected
+  end.
+
+Theorem concrete_score_claim_compared_by_prefix_is_refuted :
+  Frames.source_indexed_root_claimed_score witness_hash 20 ordered_new_body
+    (Semantic.canonical_score_bytes
+      Recursive.ordered_two_absent_value_maps_new_score ++ [0]) =
+    Frames.ClaimedScoreRejected /\
+  mutant_root_claimed_score_by_prefix witness_hash 20 ordered_new_body
+    (Semantic.canonical_score_bytes
+      Recursive.ordered_two_absent_value_maps_new_score ++ [0]) =
+    Frames.ClaimedScoreAccepted.
+Proof. vm_compute. split; reflexivity. Qed.
+
+(** Root completion: a root check that stops one byte short admits a body with
+    a trailing byte. *)
+Definition mutant_root_accepts_dropping_last_byte (hash_fn : list nat -> nat)
+    (type_id : nat) (bytes : list nat) : bool :=
+  Frames.source_indexed_root_accepts hash_fn type_id (removelast bytes).
+
+Theorem concrete_root_completion_off_by_one_is_refuted :
+  Frames.source_indexed_root_accepts witness_hash 20 trailing_new_body = false /\
+  mutant_root_accepts_dropping_last_byte witness_hash 20 trailing_new_body = true.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Print Assumptions concrete_algebra_close_ignores_reducer_refusal_is_refuted.
+Print Assumptions concrete_cursor_nonminimal_root_key_is_refuted.
+Print Assumptions concrete_child_order_new_map_keys_is_refuted.
+Print Assumptions concrete_score_claim_compared_by_prefix_is_refuted.
+Print Assumptions concrete_root_completion_off_by_one_is_refuted.
+
 End SourceIndexedMutants.
