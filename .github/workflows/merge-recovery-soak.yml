@@ -358,7 +358,18 @@ env:
   #   read-only for Docker 29's containerd store, and adds runtime logs to
   #   system-integration's own smoke test. No other changes since e1e00ee.
   #   Verified: descends from e1e00ee (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: 61ae9d14c4b8b8881fc0a82a2b6eac3fcbe5a797
+  # 2026-11-06: 61ae9d1 -> f617787 (system-integration PR #173 head, which
+  #   lands with this change). It pins pyf1r3fly to the uint256 client
+  #   (32-byte phloPrice and stake on the wire), reads every API amount as a
+  #   canonical decimal string, bonds with a BigInt literal, and merges #169
+  #   and #171. Verified: descends from 61ae9d1; shared, custom, standalone
+  #   and UCC pass locally against this branch's node (121 passed, 1 opt-in
+  #   skip).
+  # 2026-11-07: f617787 -> 012bfda (system-integration main, the merge of PR
+  #   #173). Its only change since f617787 repins pyf1r3fly to 014d105, the
+  #   merge of pyf1r3fly #11, whose tree equals the 9fd70f0 tested above.
+  #   Verified: descends from f617787; diff is pyproject.toml and poetry.lock.
+  SYSTEM_INTEGRATION_REF: 012bfdac07539b86d58e1a5b2a8e4bab00389e75
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

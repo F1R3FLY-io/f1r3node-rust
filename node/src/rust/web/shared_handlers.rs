@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
     BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
     ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
-    NoNewDeploysError, ProposeReadOnlyError,
+    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
@@ -330,6 +330,22 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if cause.downcast_ref::<NoNewDeploysError>().is_some() {
             return (StatusCode::CONFLICT, "no_new_deploys", cause.to_string());
+        }
+        if let Some(e) = cause.downcast_ref::<ProposeRefusedError>() {
+            let (status, kind) = match e.refusal {
+                ProposeRefusal::NotBonded => (StatusCode::CONFLICT, "validator_not_bonded"),
+                ProposeRefusal::NotEnoughNewBlocks => {
+                    (StatusCode::CONFLICT, "not_enough_new_blocks")
+                }
+                ProposeRefusal::TooFarAheadOfLastFinalized => {
+                    (StatusCode::CONFLICT, "too_far_ahead_of_finalized")
+                }
+                ProposeRefusal::HistoryIncomplete => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "history_incomplete")
+                }
+                ProposeRefusal::MissingBlock => (StatusCode::SERVICE_UNAVAILABLE, "missing_block"),
+            };
+            return (status, kind, cause.to_string());
         }
     }
 
@@ -725,7 +741,8 @@ mod tests {
         use casper::rust::api::block_api::{
             BlockNotFoundError, DeployNotFoundError, DeployValidationError,
             ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
-            LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+            LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal,
+            ProposeRefusedError,
         };
         use casper::rust::casper::DeployError;
         use casper::rust::errors::CasperError;
@@ -849,6 +866,55 @@ mod tests {
             let message = body["message"].as_str().unwrap();
             assert!(message.contains("Deploy was not accepted"));
             assert!(message.contains("Retry later"));
+        }
+
+        #[tokio::test]
+        async fn propose_refusals_map_to_stable_kinds() {
+            let cases = [
+                (
+                    ProposeRefusal::NotBonded,
+                    StatusCode::CONFLICT,
+                    "validator_not_bonded",
+                ),
+                (
+                    ProposeRefusal::NotEnoughNewBlocks,
+                    StatusCode::CONFLICT,
+                    "not_enough_new_blocks",
+                ),
+                (
+                    ProposeRefusal::TooFarAheadOfLastFinalized,
+                    StatusCode::CONFLICT,
+                    "too_far_ahead_of_finalized",
+                ),
+                (
+                    ProposeRefusal::HistoryIncomplete,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "history_incomplete",
+                ),
+                (
+                    ProposeRefusal::MissingBlock,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "missing_block",
+                ),
+            ];
+            for (refusal, status, kind) in cases {
+                let message = format!("Failure: refused {:?} (seqNum 3)", refusal);
+                let error = eyre::Report::new(ProposeRefusedError {
+                    refusal,
+                    message: message.clone(),
+                });
+                let (got_status, got_kind, got_message) = classify_error(&error);
+                assert_eq!((got_status, got_kind), (status, kind));
+                assert_eq!(got_message, message);
+                let response = AppError(error).into_response();
+                assert_eq!(response.status(), status);
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["error"], kind);
+                assert_eq!(body["message"], message);
+            }
         }
 
         #[test]

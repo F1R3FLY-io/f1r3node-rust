@@ -304,3 +304,18 @@ Use this template when adding new user stories:
 ```
 
 ---
+
+#### US-015: Exact token amounts
+
+> As a node operator, I want all token amount paths to support unsigned 256-bit values so that large balances, bonds, and fees remain exact.
+
+**Implemented in:** EPIC-031
+
+**Value Stream:** Node reliability
+
+**Acceptance Criteria:**
+
+- [ ] Genesis, transfers, bonds, fees, APIs, and persistence retain exact amounts.
+- [ ] Consensus and replay agree for amounts above the 64-bit range.
+- [ ] The default maximum bond is 2^256-1 and invalid amounts are rejected.
+- [ ] The Integration gates pass with clients that send the new encoding.

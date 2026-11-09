@@ -521,7 +521,7 @@ mod tests {
             DeployData {
                 term: "Nil".to_string(),
                 time_stamp,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 100_000,
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
@@ -883,7 +883,7 @@ mod tests {
             DeployData {
                 term: "Nil".to_string(),
                 time_stamp: 1,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 100_000,
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
@@ -1090,10 +1090,9 @@ mod tests {
             let first = deploy(1);
             pool.add(vec![first.clone()]).unwrap();
             assert_eq!(pool.metadata_snapshot().unwrap().entries.len(), 1);
-            let mut tampered = first.clone();
-            tampered.data.time_stamp += 1;
             let key = pool.store.encode_key(&first.sig.to_vec()).unwrap();
-            let bytes = crate::rust::deploy::deploy_codec::encode_v1_unchecked(&tampered);
+            let mut bytes = crate::rust::deploy::deploy_codec::encode(&first).unwrap();
+            bytes[b"F1R3DEP\x02".len()] ^= 1;
             persistent
                 .store
                 .raw_store()

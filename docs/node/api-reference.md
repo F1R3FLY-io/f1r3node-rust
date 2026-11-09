@@ -35,9 +35,10 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 | `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
 | `405` | HTTP method not allowed for this path | `method_not_allowed` |
 | `422` | Input is valid but execution failed | `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
-| `409` | Expected state conflict (empty mempool) | `no_new_deploys` |
+| `409` | Expected state conflict (empty mempool, propose refused) | `no_new_deploys`, `validator_not_bonded`, `not_enough_new_blocks`, `too_far_ahead_of_finalized` |
 | `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
 | `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
+| `503` | Node cannot serve the request yet, retry later | `observer_busy`, `block_not_held`, `history_incomplete`, `missing_block` |
 
 ### Read-only-only endpoints on validators
 
@@ -63,6 +64,37 @@ Route these requests to a read-only node (typically port 40453). `GET /api/statu
 
 ---
 
+## 64-bit integers and token amounts
+
+A JavaScript `Number` guarantees exact integer representation only within `-(2^53-1)..2^53-1`.
+The JSON API therefore gives these values as decimal strings:
+
+| Value | Fields |
+|-------|--------|
+| Rholang integer | `ExprInt.data` and `ExprUint64.data` in every `RhoExpr`, also when nested |
+| Vault balance | `balance` in `GET /api/balance/{address}` |
+| Validator stake | `stake` and `totalStake` in `GET /api/validators`, `stake` in `GET /api/validator/{pubkey}`, `bonds[].stake` in block info |
+| Transfer amount | `transfers[].amount` in block and deploy responses, `amount` in the `transfers-available` WebSocket event |
+| Phlo price | `phloPrice` in block, deploy, and `GET /api/pending-deploys` responses, `minPhloPrice` in `GET /api/status`, `data.phloPrice` in `POST /api/deploy` |
+
+- Integer strings use base 10, without an exponent, a decimal point, a plus sign, or leading zeros. A negative value starts with `-`. Negative zero is not valid.
+- Token amounts use base units (dust) in the range `0..2^256−1`. Other Rholang integers keep their original meaning.
+- The type is always a string. The type does not change with the size of the value.
+- Requests accept only the string form. `POST /api/deploy` rejects a JSON number in `data.phloPrice`.
+- Parse these fields with an exact integer type, such as JavaScript `BigInt` or Python `int`.
+- Phlo quantities (`cost`, `phloLimit`) stay JSON numbers.
+- Deploy `parameters` give `int` and `bigInt` values as decimal strings. See [Deploy parameters](#deploy-parameters).
+- The trace report (`GET /reporting/trace`) gives raw Rholang terms in protobuf JSON form. Integers in these terms stay JSON numbers.
+
+**Transfer amounts.** The node reads a transfer amount from a Rholang `Int` or `BigInt` without loss. The vault accepts a transfer only when the amount is in `1..2^256−1`. A failed transfer keeps its requested amount and failure details. Its amount can be zero, negative, or above `2^256−1`. The report extractor does not apply a separate bit limit and does not omit a failed attempt because of its amount.
+
+**gRPC.** Protobuf has no 256-bit integer type. The gRPC API gives token amounts as decimal strings in the same canonical form: `TransferInfo.amountRaw` (field 6), `BondInfo.stake`, `DeployInfo.phloPrice`, and `Status.minPhloPrice`. Field 3 of `TransferInfo` is reserved. An unavailable report keeps `transfersAvailable=false`.
+
+A map key that is a tuple, list, or map contains the JSON text of the key value.
+Integers in that text are strings, for example `{"ExprInt":{"data":"1"}}`.
+
+---
+
 ## HTTP REST API (port 40403)
 
 ### `GET /api/status`
@@ -83,7 +115,7 @@ curl http://localhost:40403/api/status
   "shardId": "root",
   "peers": 4,
   "nodes": 4,
-  "minPhloPrice": 1,
+  "minPhloPrice": "1",
   "peerList": [
     {"address": "rnode://...", "nodeId": "a5aec03d...", "host": "rnode.validator3", "protocolPort": 40400, "discoveryPort": 40404, "isConnected": true}
   ],
@@ -107,7 +139,7 @@ curl http://localhost:40403/api/status
 | `shardId` | string | Shard identifier |
 | `peers` | int | Connected peer count |
 | `nodes` | int | Discovered node count |
-| `minPhloPrice` | int | Minimum phlogiston price for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
+| `minPhloPrice` | decimal string | Minimum phlogiston price in dust for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
 | `peerList` | array | Detailed peer info with connection status |
 | `nativeTokenName` | string | Full token name from genesis |
 | `nativeTokenSymbol` | string | Token ticker symbol |
@@ -243,7 +275,7 @@ Submit a signed deploy to the network. Validator nodes only.
 |-------|------|----------|-------------|
 | `data.term` | string | yes | Rholang source code |
 | `data.timestamp` | int | yes | Deploy timestamp (ms since epoch) |
-| `data.phloPrice` | int | yes | Phlogiston price per unit |
+| `data.phloPrice` | decimal string | yes | Phlogiston price per unit in dust, in [0, 2^256-1]. JSON numbers are rejected. |
 | `data.phloLimit` | int | yes | Maximum phlogiston to consume |
 | `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
@@ -259,7 +291,7 @@ curl -X POST http://localhost:40413/api/deploy \
     "data": {
       "term": "new stdout(`rho:io:stdout`) in { stdout!(42) }",
       "timestamp": 1700000000000,
-      "phloPrice": 10,
+      "phloPrice": "10",
       "phloLimit": 100000,
       "validAfterBlockNumber": 0,
       "shardId": "root"
@@ -290,7 +322,8 @@ The node rejects changes to these fields after signing.
 {
   "parameters": [
     {"name": "items", "value": {"type": "list", "value": [
-      {"type": "int", "value": -42},
+      {"type": "int", "value": "-42"},
+      {"type": "bigInt", "value": "10000000000000000000"},
       {"type": "nil"}
     ]}}
   ]
@@ -306,7 +339,8 @@ new items(`rho:deploy:param:items`), stdout(`rho:io:stdout`) in {
 | JSON `type` | JSON `value` |
 |-------------|--------------|
 | `bool` | A Boolean. |
-| `int` | A signed 64-bit integer. |
+| `int` | A signed 64-bit integer as a canonical decimal string. The Rholang value is an `Int`. |
+| `bigInt` | A canonical decimal string with an absolute value below `2^512`. The Rholang value is a `BigInt`, for example a token amount. |
 | `string` | A string. |
 | `bytes` | An array of integers from 0 through 255. |
 | `tuple`, `list`, `set` | An array of typed values. |
@@ -328,16 +362,9 @@ Transport limits also apply.
 Deploys without parameters retain their protobuf bytes and signatures.
 JSON output omits an empty parameter array.
 
-The deploy storage and rejected buffer can read existing records without parameters.
-Both stores write every new record as protobuf with the `F1R3DEP` prefix and version byte `0x01`.
-This storage format also applies to deploys without parameters.
-Nodes that support only the old storage format cannot read these new records.
-Reading a legacy record does not rewrite that record.
-
-The `deploy.storage.legacy_decode` counter records each attempt to decode legacy bincode data in either store.
-The counter includes repeated reads and failed attempts.
-Retain legacy support until active nodes show no legacy decode attempts over an agreed observation period.
-A zero increase without store reads does not prove that legacy records are absent.
+The deploy storage and rejected buffer store every record as protobuf with the `F1R3DEP` prefix, version byte `0x02` and a payload fingerprint.
+A record in any other format, including records from node versions that stored the phlo price as a 64-bit integer, moves to quarantine on its first read.
+See [Invalid records in the local deploy stores](../block-storage/README.md#invalid-records-in-the-local-deploy-stores).
 
 The earlier Scala implementation used protobuf field 13 for parameters.
 This Rust schema uses field 13 for `expirationTimestamp` and field 14 for parameters.
@@ -383,11 +410,11 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `deployer` | string | Deployer public key (full only) |
 | `term` | string | Rholang source (full only) |
 | `systemDeployError` | string | System deploy error message (full only) |
-| `phloPrice` | int | Phlo price (full only) |
+| `phloPrice` | decimal string | Phlo price in dust (full only) |
 | `phloLimit` | int | Phlo limit (full only) |
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
-| `transfers` | array/null | Transfer list or null on validators (full only) |
+| `transfers` | array/null | Transfer list or null on validators (full only). Each `amount` is a decimal string, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts) |
 | `parameters` | array | Named Rholang values from the signed deploy. The node omits this field in summary responses and when no parameters exist. |
 
 **Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
@@ -459,7 +486,7 @@ curl http://localhost:40403/api/pending-deploys?deployer=04abc...
     {
       "term": "@1!(1)",
       "timestamp": 1700000000000,
-      "phloPrice": 1,
+      "phloPrice": "1",
       "phloLimit": 90000,
       "validAfterBlockNumber": 0,
       "shardId": "",
@@ -683,7 +710,7 @@ curl http://localhost:40453/api/balance/11112BpS5mG8...
 ```
 
 ```json
-{"address": "11112BpS5mG8...", "balance": 1000000, "blockNumber": 42, "blockHash": "3bfdf56f..."}
+{"address": "11112BpS5mG8...", "balance": "1000000", "blockNumber": 42, "blockHash": "3bfdf56f..."}
 ```
 
 | Status | Condition |
@@ -734,11 +761,11 @@ curl http://localhost:40453/api/validators
 ```json
 {
   "validators": [
-    {"publicKey": "04837a4cff...", "stake": 1000},
-    {"publicKey": "04fa70d7be...", "stake": 1000},
-    {"publicKey": "0457febafc...", "stake": 1000}
+    {"publicKey": "04837a4cff...", "stake": "1000"},
+    {"publicKey": "04fa70d7be...", "stake": "1000"},
+    {"publicKey": "0457febafc...", "stake": "1000"}
   ],
-  "totalStake": 3000,
+  "totalStake": "3000",
   "blockNumber": 30,
   "blockHash": "6bb5892d..."
 }
@@ -767,7 +794,7 @@ curl http://localhost:40453/api/validator/04837a4cff...
 
 Bonded validator:
 ```json
-{"publicKey": "04837a4cff...", "isBonded": true, "stake": 1000, "blockNumber": 4, "blockHash": "7701282c..."}
+{"publicKey": "04837a4cff...", "isBonded": true, "stake": "1000", "blockNumber": 4, "blockHash": "7701282c..."}
 ```
 
 Unknown key:
@@ -854,8 +881,8 @@ curl http://localhost:40453/api/epoch/rewards
   "rewards": {
     "ExprMap": {
       "data": {
-        "04837a4cff...": {"ExprInt": {"data": 0}},
-        "04fa70d7be...": {"ExprInt": {"data": 0}}
+        "04837a4cff...": {"ExprInt": {"data": "0"}},
+        "04fa70d7be...": {"ExprInt": {"data": "0"}}
       }
     }
   },
@@ -933,7 +960,9 @@ curl -X POST http://localhost:40405/api/propose
 | `200` | Propose result message (success block hash) |
 | `400` | Read-only node (`readonly_node_required`) |
 | `409` | No new deploys to propose (`no_new_deploys`) |
+| `409` | Propose refused in the current state (`validator_not_bonded`, `not_enough_new_blocks`, `too_far_ahead_of_finalized`) |
 | `500` | Node-side propose failure (`unknown_error`, `replay_failure`) |
+| `503` | Propose refused until the node catches up (`history_incomplete`, `missing_block`) |
 
 ---
 
@@ -980,7 +1009,7 @@ Proto definitions: `models/src/main/protobuf/DeployServiceV1.proto`, `ProposeSer
 | **Readonly** | Populated array | Emitted after block report cache warming |
 | **Validator** | `null` (omitted) | Not emitted |
 
-`null` means transfers cannot be extracted on this node type (block replay requires readonly mode). An empty array `[]` means the deploy had no transfers.
+`null` means transfers cannot be extracted on this node type (block replay requires readonly mode). An empty array `[]` means the deploy had no transfers. Transfer amounts are exact decimal strings, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts).
 
 ---
 
