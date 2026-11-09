@@ -1491,6 +1491,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleUnaryExprScoreBridge.v
 TLC_MEMORY_HIGH=1536M TLC_RSS=2G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleUnaryExprScoreBridge.v 22 \
   "unary expression helpers project from the oracle"
+rocq_reject_placeholders theories/RPB3IndependentOracleVarScoreBridge.v
+TLC_MEMORY_HIGH=1536M TLC_RSS=2G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleVarScoreBridge.v 24 \
+  "Var score helper projects from the oracle"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1526,7 +1530,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3PageArenaPrefix \
   StackSafePDA.RPB3IndependentTypedSemanticReference \
   StackSafePDA.RPB3TypedValid \
-  StackSafePDA.RPB3IndependentOracleUnaryExprScoreBridge
+  StackSafePDA.RPB3IndependentOracleUnaryExprScoreBridge \
+  StackSafePDA.RPB3IndependentOracleVarScoreBridge
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
