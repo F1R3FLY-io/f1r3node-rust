@@ -1413,6 +1413,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleStringMapVerdictBridge.v
 TLC_MEMORY_HIGH=3G TLC_RSS=4G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleStringMapVerdictBridge.v 12 \
   "StringMap node verdict under the Par induction hypothesis"
+rocq_reject_placeholders theories/RPB3IndependentOracleUnscoredFamilyBridge.v
+TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleUnscoredFamilyBridge.v 2 \
+  "unscored RPB3 family agreement"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1430,7 +1434,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3IndependentOracleProcessChildAssembly \
   StackSafePDA.RPB3IndependentOracleScanBridge \
   StackSafePDA.RPB3IndependentOracleParOrderBridge \
-  StackSafePDA.RPB3IndependentOracleStringMapVerdictBridge
+  StackSafePDA.RPB3IndependentOracleStringMapVerdictBridge \
+  StackSafePDA.RPB3IndependentOracleUnscoredFamilyBridge
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
