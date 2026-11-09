@@ -643,6 +643,21 @@ Proof.
   - rewrite IH. reflexivity.
 Qed.
 
+Lemma exact_par_tagged_component_scores_skip_scalar :
+  forall lf,
+    sem_payload lf = Scalar ->
+    forall prefix suffix,
+      exact_par_tagged_component_scores (prefix ++ lf :: suffix) =
+      exact_par_tagged_component_scores (prefix ++ suffix).
+Proof.
+  intros lf payload prefix suffix.
+  induction prefix as [|child rest IH]; simpl.
+  - rewrite payload.
+    destruct (exact_par_tagged_component_scores suffix) as [tagged|];
+      reflexivity.
+  - rewrite IH. reflexivity.
+Qed.
+
 Lemma exact_par_component_scores_skip_scalar :
   forall lf,
     sem_payload lf = Scalar ->
@@ -651,10 +666,9 @@ Lemma exact_par_component_scores_skip_scalar :
       exact_par_component_scores (prefix ++ suffix).
 Proof.
   intros lf payload prefix suffix.
-  induction prefix as [|child rest IH]; simpl.
-  - rewrite payload.
-    destruct (exact_par_component_scores suffix) as [scores|]; reflexivity.
-  - rewrite IH. reflexivity.
+  unfold exact_par_component_scores.
+  now rewrite (exact_par_tagged_component_scores_skip_scalar lf payload
+    prefix suffix).
 Qed.
 
 Lemma scalar_true_or_absent_skip :

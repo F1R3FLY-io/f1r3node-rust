@@ -20,25 +20,55 @@ Definition source_par_raw (body : list nat) : Schema.raw_field :=
   Schema.RawField 0 Schema.LengthDelimited Schema.Message
     body (length body) (Some 1) [] [].
 
-Fixpoint source_par_component_scores
+(** Production's order of a Par's family scores ([PAR_SCORE_TAGS],
+    canonical_semantics.rs:140-151, iterated by [reduce_raw_par],
+    protobuf_admission.rs:1549): by Par field tag Send, Receive, Expr, New,
+    Match, Bundle, Connective, GUnforgeable, If, CostTokenStack.  The oracle
+    states it independently of the target reducer; the two orders are related
+    in RPB3IndependentOracleParScalarScoreBridge. *)
+Definition source_par_score_family_order : list nat :=
+  [1; 2; 5; 4; 6; 11; 8; 7; 12; 13].
+
+(** The component scores in child (wire) order, each labelled with its Par
+    field tag.  A scalar child adds no score; an unscored message child or a
+    non-plain child makes the whole collection fail. *)
+Fixpoint source_par_tagged_component_scores
     (children : list Core.source_exact_summary)
-    : option (list Core.source_score) :=
+    : option (list (nat * Core.source_score)) :=
   match children with
   | [] => Some []
   | child :: rest =>
-      match source_par_component_scores rest with
+      match source_par_tagged_component_scores rest with
       | None => None
-      | Some scores =>
+      | Some tagged =>
           match Core.source_summary_value child with
           | Core.TypedSourceMessage _ _ =>
-              option_map (fun score => score :: scores)
+              option_map
+                (fun score => (Core.source_summary_tag child, score) :: tagged)
                 (Core.source_summary_exact_score child)
-          | Core.TypedSourceScalar _ _ => Some scores
+          | Core.TypedSourceScalar _ _ => Some tagged
           | Core.TypedSourceStringMap _ _ _
           | Core.TypedSourcePathMap _ _ _ => None
           end
       end
   end.
+
+(** Concatenate the labelled scores family by family in
+    [source_par_score_family_order], keeping the wire order of the occurrences
+    inside one family.  A tag outside the ten families contributes nothing:
+    production never reads one, and the generated Par program has no such
+    message field. *)
+Definition source_par_family_ordered_scores
+    (tagged : list (nat * Core.source_score)) : list Core.source_score :=
+  flat_map (fun family =>
+    map snd (filter (fun entry => fst entry =? family) tagged))
+    source_par_score_family_order.
+
+Definition source_par_component_scores
+    (children : list Core.source_exact_summary)
+    : option (list Core.source_score) :=
+  option_map source_par_family_ordered_scores
+    (source_par_tagged_component_scores children).
 
 Definition source_par_score (children : list Core.source_exact_summary)
     : option Core.source_score :=

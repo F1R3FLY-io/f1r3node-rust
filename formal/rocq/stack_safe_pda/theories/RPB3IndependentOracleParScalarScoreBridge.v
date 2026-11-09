@@ -228,22 +228,74 @@ Proof.
       * exact IH.
 Qed.
 
-Lemma plain_par_component_scores_project :
+(** The oracle restates production's family order independently of the
+    target; the two literals are one list. *)
+Lemma source_par_score_family_order_is_target_order :
+  Oracle.source_par_score_family_order = Target.par_score_family_order.
+Proof. reflexivity. Qed.
+
+(** The projection of one labelled score: the tag is kept, and the source
+    score is carried to the target score. *)
+Definition project_tagged_score (entry : nat * Core.source_score)
+    : nat * Target.canonical_score :=
+  (fst entry, Core.project_score (snd entry)).
+
+Lemma filter_family_commutes_with_tagged_score_projection :
+  forall family tagged,
+    filter (fun entry => fst entry =? family)
+      (map project_tagged_score tagged) =
+    map project_tagged_score
+      (filter (fun entry => fst entry =? family) tagged).
+Proof.
+  intros family tagged.
+  induction tagged as [|[tag score] rest IH]; [reflexivity|].
+  cbn [map filter fst project_tagged_score].
+  destruct (tag =? family); cbn [map]; rewrite IH; reflexivity.
+Qed.
+
+(** Family-by-family concatenation commutes with score projection for any
+    family list: the projection keeps each entry's tag, so each family filter
+    selects the same positions on the source and on the target. *)
+Lemma family_ordered_scores_project_for_any_order :
+  forall (order : list nat) tagged,
+    flat_map (fun family =>
+      map snd (filter (fun entry => fst entry =? family)
+        (map project_tagged_score tagged))) order =
+    map Core.project_score
+      (flat_map (fun family =>
+        map snd (filter (fun entry => fst entry =? family) tagged)) order).
+Proof.
+  induction order as [|family rest IH]; intro tagged; [reflexivity|].
+  cbn [flat_map].
+  rewrite map_app.
+  rewrite (IH tagged).
+  rewrite filter_family_commutes_with_tagged_score_projection.
+  f_equal.
+  rewrite !map_map.
+  apply map_ext.
+  intros [tag score]; reflexivity.
+Qed.
+
+(** The labelled, wire-ordered collection projects entry by entry.  This is the
+    former element-wise argument: a plain child is a scalar, which contributes
+    nothing on both sides, or a message, whose projected evidence is exactly
+    the source score. *)
+Lemma plain_par_tagged_component_scores_project :
   forall children,
     Forall plain_par_child children ->
-    Target.exact_par_component_scores
+    Target.exact_par_tagged_component_scores
       (map Projection.project_source_summary children) =
-    option_map (map Core.project_score)
-      (Oracle.source_par_component_scores children).
+    option_map (map project_tagged_score)
+      (Oracle.source_par_tagged_component_scores children).
 Proof.
   induction children as [|child rest IH]; intro plain;
     [reflexivity|].
   inversion plain as [|? ? child_plain rest_plain]; subst.
-  cbn [map Target.exact_par_component_scores
-    Oracle.source_par_component_scores].
+  cbn [map Target.exact_par_tagged_component_scores
+    Oracle.source_par_tagged_component_scores].
   rewrite (IH rest_plain).
-  destruct (Oracle.source_par_component_scores rest)
-    as [scores|] eqn:collected; [|reflexivity].
+  destruct (Oracle.source_par_tagged_component_scores rest)
+    as [tagged|] eqn:collected; [|reflexivity].
   unfold plain_par_child in child_plain.
   destruct (Core.source_summary_value child)
     as [raw scalar|raw nested|raw key value|raw snapshot values]
@@ -261,11 +313,35 @@ Proof.
       (Projection.project_source_summary child)) with
       (Projection.project_source_evidence
         (Core.source_summary_exact_score child)).
+    change (Target.sem_tag (Projection.project_source_summary child))
+      with (Core.source_summary_tag child).
     unfold Core.source_summary_raw, Core.source_value_raw.
     rewrite typed.
     rewrite child_plain.
     destruct (Core.source_summary_exact_score child);
       reflexivity.
+Qed.
+
+Lemma plain_par_component_scores_project :
+  forall children,
+    Forall plain_par_child children ->
+    Target.exact_par_component_scores
+      (map Projection.project_source_summary children) =
+    option_map (map Core.project_score)
+      (Oracle.source_par_component_scores children).
+Proof.
+  intros children plain.
+  unfold Target.exact_par_component_scores,
+    Oracle.source_par_component_scores.
+  rewrite (plain_par_tagged_component_scores_project children plain).
+  destruct (Oracle.source_par_tagged_component_scores children)
+    as [tagged|]; [|reflexivity].
+  cbn [option_map].
+  unfold Target.par_family_ordered_scores,
+    Oracle.source_par_family_ordered_scores.
+  rewrite source_par_score_family_order_is_target_order.
+  f_equal.
+  apply family_ordered_scores_project_for_any_order.
 Qed.
 
 Lemma projected_par_connective_find :

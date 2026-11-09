@@ -305,25 +305,55 @@ Definition scalar_true_or_absent (tag : nat)
       end
   end.
 
-Fixpoint exact_par_component_scores (children : list semantic_summary)
-    : option (list canonical_score) :=
+(** Production pushes a Par's component scores family by family in
+    [PAR_SCORE_TAGS] order (canonical_semantics.rs:140-151, iterated by
+    [reduce_raw_par] at protobuf_admission.rs:1549): Send, Receive, Expr, New,
+    Match, Bundle, Connective, GUnforgeable, If, CostTokenStack.  By Par field
+    tag that is 1, 2, 5, 4, 6, 11, 8, 7, 12, 13, which is not the ascending
+    field order in which the children arrive. *)
+Definition par_score_family_order : list nat :=
+  [1; 2; 5; 4; 6; 11; 8; 7; 12; 13].
+
+(** The component scores in child (wire) order, each labelled with its Par
+    field tag.  A scalar child ([locally_free], [connective_used]) adds no
+    score; an unscored message child, or a child that is neither a message nor
+    a scalar, makes the whole collection fail. *)
+Fixpoint exact_par_tagged_component_scores
+    (children : list semantic_summary)
+    : option (list (nat * canonical_score)) :=
   match children with
   | [] => Some []
   | child :: rest =>
-      match exact_par_component_scores rest with
+      match exact_par_tagged_component_scores rest with
       | None => None
-      | Some scores =>
+      | Some tagged =>
           match sem_payload child with
           | Message =>
               match sem_score_evidence child with
-              | ExactScore score => Some (score :: scores)
+              | ExactScore score => Some ((sem_tag child, score) :: tagged)
               | ScoreNotDerived => None
               end
-          | Scalar => Some scores
+          | Scalar => Some tagged
           | _ => None
           end
       end
   end.
+
+(** Concatenate the labelled scores family by family in
+    [par_score_family_order], keeping the wire order of the occurrences inside
+    one family (production walks each family's occurrence list in that order).
+    A tag outside the ten families contributes nothing: production never reads
+    one, and the generated Par program has no such message field. *)
+Definition par_family_ordered_scores
+    (tagged : list (nat * canonical_score)) : list canonical_score :=
+  flat_map (fun family =>
+    map snd (filter (fun entry => fst entry =? family) tagged))
+    par_score_family_order.
+
+Definition exact_par_component_scores (children : list semantic_summary)
+    : option (list canonical_score) :=
+  option_map par_family_ordered_scores
+    (exact_par_tagged_component_scores children).
 
 Definition exact_par_score (children : list semantic_summary)
     : option canonical_score :=
