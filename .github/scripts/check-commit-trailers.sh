@@ -29,7 +29,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO=.
-RATIFIED_FROM=""
+RATIFIED_FROM=()
 EXEMPT_FILE=""
 DENIED_FILE=""
 DENIED_SET=0
@@ -49,7 +49,7 @@ lower() {
 }
 
 load_ratified() {
-	git -C "$REPO" log "$1" --format=%ae | lower | sort -u >"$RATIFIED"
+	git -C "$REPO" log --format=%ae "$@" -- | lower | sort -u >"$RATIFIED"
 	CHECK_IDENTITIES=1
 }
 
@@ -117,11 +117,13 @@ check_message() {
 }
 
 check_range() {
-	local range="$1" commits sha author check_author found status=0
-	[ -n "$RATIFIED_FROM" ] || usage
-	git -C "$REPO" rev-parse --verify --quiet "${RATIFIED_FROM}^{commit}" >/dev/null ||
-		fail "cannot resolve the ratification base $RATIFIED_FROM"
-	load_ratified "$RATIFIED_FROM"
+	local range="$1" commits sha author check_author found revision status=0
+	[ "${#RATIFIED_FROM[@]}" -gt 0 ] || usage
+	for revision in "${RATIFIED_FROM[@]}"; do
+		git -C "$REPO" rev-parse --verify --quiet "${revision}^{commit}" >/dev/null ||
+			fail "cannot resolve the ratification base $revision"
+	done
+	load_ratified "${RATIFIED_FROM[@]}"
 	commits="$(git -C "$REPO" rev-list "$range")" || fail "cannot list commits in $range"
 	for sha in $commits; do
 		author="$(git -C "$REPO" log -1 --format='%an <%ae>' "$sha")"
@@ -142,7 +144,7 @@ check_range() {
 
 usage() {
 	printf '%s\n' "usage: $0 message FILE [--denied FILE]" \
-		"       $0 range RANGE --ratified-from REV [--repo DIR] [--exempt-authors FILE] [--denied FILE]" >&2
+		"       $0 range RANGE --ratified-from REV [--ratified-from REV] [--repo DIR] [--exempt-authors FILE] [--denied FILE]" >&2
 	exit 2
 }
 
@@ -152,7 +154,7 @@ target="$2"
 shift 2
 while [ "$#" -gt 0 ]; do
 	case "$1" in
-	--ratified-from) [ "$#" -ge 2 ] || usage; RATIFIED_FROM="$2"; shift 2 ;;
+	--ratified-from) [ "$#" -ge 2 ] || usage; RATIFIED_FROM+=("$2"); shift 2 ;;
 	--repo) [ "$#" -ge 2 ] || usage; REPO="$2"; shift 2 ;;
 	--exempt-authors)
 		[ "$#" -ge 2 ] || usage
