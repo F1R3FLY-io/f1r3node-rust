@@ -1443,6 +1443,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleBinaryExprScoreBridge.v
 TLC_MEMORY_HIGH=1536M TLC_RSS=2G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleBinaryExprScoreBridge.v 19 \
   "binary expression helpers project from the oracle"
+rocq_reject_placeholders theories/RPB3IndependentOracleConnectiveArmScoreBridge.v
+TLC_MEMORY_HIGH=1536M TLC_RSS=2G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleConnectiveArmScoreBridge.v 23 \
+  "Connective And Or VarRef arms project from the oracle"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1466,7 +1470,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3RecursiveParUnfold \
   StackSafePDA.RPB3IndependentOracleRecursiveMatch \
   StackSafePDA.RPB3ExprPayloadHelperControls \
-  StackSafePDA.RPB3IndependentOracleBinaryExprScoreBridge
+  StackSafePDA.RPB3IndependentOracleBinaryExprScoreBridge \
+  StackSafePDA.RPB3IndependentOracleConnectiveArmScoreBridge
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
