@@ -1573,6 +1573,60 @@ mod tests {
             .all(|producer| !producer.drained));
     }
 
+    /// The liveness test profile: a silent member of a four-member committee
+    /// drains below the threshold within about twenty blocks and becomes
+    /// ejectable ten blocks later, while members producing in turn never
+    /// drain.
+    #[test]
+    fn the_test_profile_ejects_a_silent_member_within_thirty_blocks_and_spares_the_producers() {
+        let view = BucketView::new(LeakyBucketParams {
+            lambda_ppm: 5_000,
+            eject_observation_blocks: 10,
+            reward: RewardParams {
+                reward_rate_ppm: 50_000,
+                ..LeakyBucketParams::shipped().reward
+            },
+            ..LeakyBucketParams::shipped()
+        });
+        let committee = [(1u8, 1_000i64), (2, 1_000), (3, 1_000), (4, 1_000)];
+        let producers = [1u8, 2, 3];
+        view.observe(&observation(0, 1, &[], &committee));
+        let (mut drained_at, mut ejectable_at) = (None, None);
+        for number in 1..=60i64 {
+            let sender = producers[number as usize % producers.len()];
+            let others: Vec<u8> = producers
+                .iter()
+                .copied()
+                .filter(|producer| *producer != sender)
+                .collect();
+            view.observe(&observation(number, sender, &others, &committee));
+            if drained_at.is_none() && drained(&view, &validator(4)) {
+                drained_at = Some(number);
+            }
+            if ejectable_at.is_none() && ejectable(&view, &validator(4)) {
+                ejectable_at = Some(number);
+            }
+            for producer in producers {
+                assert!(
+                    !drained(&view, &validator(producer)),
+                    "producer {producer} drained at block {number}"
+                );
+            }
+        }
+        let (drained_at, ejectable_at) = (
+            drained_at.expect("the silent member drains"),
+            ejectable_at.expect("the silent member becomes ejectable"),
+        );
+        assert!(
+            (19..=21).contains(&drained_at),
+            "drained at block {drained_at}"
+        );
+        assert!(
+            ejectable_at <= drained_at + 10,
+            "ejectable at block {ejectable_at}, drained at {drained_at}"
+        );
+    }
+
     /// An observer outside every committee in these tests.
     const OBSERVER: u8 = 0xEE;
 

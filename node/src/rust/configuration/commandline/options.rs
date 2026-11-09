@@ -455,6 +455,23 @@ pub struct RunOptions {
     #[arg(long = "quarantine-length")]
     pub quarantine_length: Option<i32>,
 
+    /// Leaky-bucket reward rate per block, in ppm of the proposer's stake
+    #[arg(long = "leaky-bucket-reward-rate-ppm")]
+    pub leaky_bucket_reward_rate_ppm: Option<i64>,
+
+    /// Fraction of its capacity a validator's bucket loses per block, in ppm
+    #[arg(long = "leaky-bucket-lambda-base-ppm")]
+    pub leaky_bucket_lambda_base_ppm: Option<i64>,
+
+    /// Level below which a validator is a candidate for ejection, in ppm of
+    /// its capacity
+    #[arg(long = "leaky-bucket-theta-eject-ppm")]
+    pub leaky_bucket_theta_eject_ppm: Option<i64>,
+
+    /// Blocks a level must stay below the threshold before ejection is open
+    #[arg(long = "leaky-bucket-eject-observation-blocks")]
+    pub leaky_bucket_eject_observation_blocks: Option<i64>,
+
     /// The number of the active validators
     #[arg(long = "number-of-active-validators")]
     pub number_of_active_validators: Option<u32>,

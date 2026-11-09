@@ -282,6 +282,25 @@ impl ConfigMapper<Options> for NodeConf {
                 run.quarantine_length,
             );
             Self::try_override_value(
+                &mut self.casper.genesis_block_data.leaky_bucket_reward_rate_ppm,
+                run.leaky_bucket_reward_rate_ppm,
+            );
+            Self::try_override_value(
+                &mut self.casper.genesis_block_data.leaky_bucket_lambda_base_ppm,
+                run.leaky_bucket_lambda_base_ppm,
+            );
+            Self::try_override_value(
+                &mut self.casper.genesis_block_data.leaky_bucket_theta_eject_ppm,
+                run.leaky_bucket_theta_eject_ppm,
+            );
+            Self::try_override_value(
+                &mut self
+                    .casper
+                    .genesis_block_data
+                    .leaky_bucket_eject_observation_blocks,
+                run.leaky_bucket_eject_observation_blocks,
+            );
+            Self::try_override_value(
                 &mut self.casper.genesis_block_data.number_of_active_validators,
                 run.number_of_active_validators,
             );
@@ -694,6 +713,10 @@ mod tests {
                 bond_maximum: Some(111111),
                 epoch_length: Some(111111),
                 quarantine_length: Some(111111),
+                leaky_bucket_reward_rate_ppm: Some(50_000),
+                leaky_bucket_lambda_base_ppm: Some(5_000),
+                leaky_bucket_theta_eject_ppm: Some(800_000),
+                leaky_bucket_eject_observation_blocks: Some(10),
                 number_of_active_validators: Some(111111),
                 native_token_name: Some("F1R3CAP".to_string()),
                 native_token_symbol: Some("F1R3".to_string()),
@@ -1200,6 +1223,16 @@ mod tests {
         assert_eq!(
             default_config.casper.genesis_block_data.quarantine_length,
             111111
+        );
+        let genesis = &default_config.casper.genesis_block_data;
+        assert_eq!(
+            (
+                genesis.leaky_bucket_reward_rate_ppm,
+                genesis.leaky_bucket_lambda_base_ppm,
+                genesis.leaky_bucket_theta_eject_ppm,
+                genesis.leaky_bucket_eject_observation_blocks,
+            ),
+            (50_000, 5_000, 800_000, 10)
         );
         assert_eq!(
             default_config
