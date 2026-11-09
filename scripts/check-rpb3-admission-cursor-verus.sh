@@ -2030,6 +2030,31 @@ map_push_checked_receipt_proofs=(
   concrete_new_map_runtime_field_exact
   concrete_new_map_live_before_wf
   concrete_new_map_root_and_wire_exact
+  concrete_new_map_push_field_at_cursor
+  concrete_new_map_fresh_child_exact
+  concrete_new_map_receipt_exact
+  concrete_new_map_live_before_exact
+  concrete_new_map_fold_matches
+  concrete_new_map_push_receipt_matches_fold
+  concrete_new_map_push_source_step_exact
+  concrete_new_map_receipt_and_fold_exact
+  concrete_new_map_admission_push_step_exact
+  concrete_new_map_source_image_facts
+  concrete_new_map_source_action_exact
+  concrete_new_map_message_driver_exact
+  concrete_new_map_child_source_exact
+  concrete_new_map_admission_next_frames
+  concrete_new_map_integrated_next_wf
+  concrete_new_map_integrated_push_exact
+  concrete_new_map_storage_observation_exact
+  concrete_new_map_runtime_push_exact
+  concrete_new_map_parent_transition_exact
+  concrete_new_map_push_guards
+  concrete_new_map_product_map_outcome_exact
+  concrete_new_map_checked_push_exists
+  concrete_new_map_push_live_selected_exact
+  concrete_new_map_forged_body_rejected
+  concrete_new_map_push_selector_is_nonvacuous
 )
 map_eof_indexed_view_proof_count="$(rg -c '^pub proof fn ' "$map_eof_indexed_view_source")"
 if [[ "$map_eof_indexed_view_proof_count" -ne "${#map_eof_indexed_view_proofs[@]}" ]]; then

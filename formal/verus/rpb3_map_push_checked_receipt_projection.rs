@@ -707,4 +707,1005 @@ pub proof fn concrete_new_map_root_and_wire_exact()
     });
 }
 
+pub proof fn concrete_new_map_push_field_at_cursor()
+    ensures
+        admission::indexed_field_at_cursor(
+            admission::IndexedCanonicalFieldCursorModel {
+                region_start: 0,
+                region_end: 5,
+                next: 0,
+                source_bytes: concrete_new_map_push_bytes(),
+            },
+            concrete_new_map_push_field(),
+        ),
+{
+    concrete_new_map_push_bytes_facts();
+    concrete_new_map_push_field_step();
+    let cursor = admission::IndexedCanonicalFieldCursorModel {
+        region_start: 0,
+        region_end: 5,
+        next: 0,
+        source_bytes: concrete_new_map_push_bytes(),
+    };
+    assert(wire_source::wire_cursor_shape(cursor));
+    wire_source::wire_field_step_refines(cursor, 0, false, false);
+}
+
+pub proof fn concrete_new_map_fresh_child_exact()
+    ensures
+        map::map_fresh_child_from_field(
+            concrete_new_map_push_root(), concrete_new_map_push_field(),
+        ) == Some(admission::AdmissionFrameState {
+            physical_source: 0,
+            physical_start: 2,
+            program_type_id: 1,
+            region_start: 0,
+            region_end: 3,
+            source_bytes: concrete_new_map_push_field().payload_bytes,
+            cursor: 0,
+            slot_count: 2,
+            last_slot: None,
+            seen: Set::empty(),
+            required: Set::empty(),
+            scalar_slots: Set::empty(),
+            scalar_occurrences: Seq::empty(),
+            returns: Seq::empty(),
+            family: admission::AdmissionFamily::Other,
+            waiting_id: None,
+            waiting_kind: 0,
+            waiting_slot: None,
+            waiting_tag: None,
+            return_id: None,
+            frame_kind: 2,
+            body_id: 0,
+            score_handle: None,
+            nested_started: 0,
+            nested_resolved: 0,
+        }),
+{
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_push_field_at_cursor();
+    let root = concrete_new_map_push_root();
+    let field = concrete_new_map_push_field();
+    assert(root.region_start == 0);
+    assert(root.region_end == 5);
+    assert(root.cursor == 0);
+    assert(root.source_bytes == concrete_new_map_push_bytes());
+    assert(admission::indexed_field_at_cursor(
+        admission::IndexedCanonicalFieldCursorModel {
+            region_start: root.region_start,
+            region_end: root.region_end,
+            next: root.cursor,
+            source_bytes: root.source_bytes,
+        }, field,
+    ));
+    assert(map::map_fresh_child_from_field(root, field).is_some());
+}
+
+pub proof fn concrete_new_map_receipt_exact()
+    ensures
+        concrete_new_map_push_receipt() == Some(message_source::GeneratedMessagePushReceipt {
+            field: concrete_new_map_push_field(),
+            slot_count: 5,
+            slot: 3,
+            repeated: true,
+            oneof_arm: None,
+            child_type_id: Some(1),
+            child_start: admission::AdmissionSourceAnchor { source: 0, offset: 2 },
+            child_end: admission::AdmissionSourceAnchor { source: 0, offset: 5 },
+            body_id: 1,
+            cursor_before: 0,
+            cursor_after: 5,
+            last_slot_before: None,
+            last_slot_after: Some(3),
+            seen_before: false,
+            seen_after: true,
+            request: runtime_source::SourceFrameRequestImage {
+                request_kind: runtime_source::SourceFrameRequestKind::Map,
+                field: concrete_new_map_push_field(),
+                child: map::map_fresh_child_from_field(
+                    concrete_new_map_push_root(), concrete_new_map_push_field(),
+                ).unwrap(),
+            },
+            actual_top_kind: Some(runtime_source::SourceFrameRequestKind::Map),
+            after_len: 2,
+            after_capacity: 2,
+            stats_frame_variant_bytes: 1,
+        }),
+{
+    reveal(concrete_new_map_push_receipt);
+    concrete_new_map_fresh_child_exact();
+}
+
+pub proof fn concrete_new_map_live_before_exact()
+    ensures
+        concrete_new_map_push_live_before() == Some(LiveRuntimeProductState {
+            source: LiveSourceProductState {
+                product: product_root_initial(
+                    concrete_new_map_push_root(), concrete_new_map_push_indexed_backing(),
+                ).unwrap(),
+                runtime: runtime_source::RuntimeFrameImage {
+                    score: product_root_initial(
+                        concrete_new_map_push_root(),
+                        concrete_new_map_push_indexed_backing(),
+                    ).unwrap().bridge,
+                    capacity: 1,
+                    frame_bytes: 1,
+                    max_frames: 2,
+                    max_storage_bytes: 2,
+                    max_capacity_bytes: 2,
+                },
+                arena: product_runtime_arena_from_score(
+                    product_root_initial(
+                        concrete_new_map_push_root(),
+                        concrete_new_map_push_indexed_backing(),
+                    ).unwrap().bridge.transcript,
+                ),
+                wire: seq![Some(wire_source::wire_runtime_cursor_project(
+                    wire_source::wire_runtime_initial(
+                        concrete_new_map_push_wire_backing(), false,
+                    ).unwrap(),
+                ).unwrap())],
+            },
+            cursors: seq![Some(wire_source::wire_runtime_initial(
+                concrete_new_map_push_wire_backing(), false,
+            ).unwrap())],
+        }),
+{
+    reveal(concrete_new_map_push_live_before);
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_wire_cursor_projects();
+}
+
+pub proof fn concrete_new_map_fold_matches()
+    ensures
+        message_source::generated_message_live_frame_matches_fold(
+            concrete_new_map_push_source(concrete_new_map_push_live_before().unwrap()),
+            generic_message::generic_message_source_initial(),
+            concrete_new_map_push_live_before().unwrap(),
+        ),
+{
+    concrete_new_map_live_before_wf();
+    concrete_new_map_live_before_exact();
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_push_bytes_facts();
+    let root = concrete_new_map_push_root();
+    let indexed_backing = concrete_new_map_push_indexed_backing();
+    let live = concrete_new_map_push_live_before().unwrap();
+    let product = product_root_initial(root, indexed_backing).unwrap();
+    assert(product.bridge.admission == admission::admission_initial_state(root));
+    assert(product.bridge.admission.frames.len() == 1);
+    assert(product.bridge.admission.frames.last() == root);
+    let indexed = epm::indexed_backing_project(indexed_backing).unwrap();
+    assert(product.indexed_regions == seq![indexed]);
+    assert(product.indexed_regions.len() == 1);
+    assert(product.indexed_regions.last() == indexed);
+    assert(indexed.bytes =~= root.source_bytes);
+    let source = concrete_new_map_push_source(live);
+    assert(source.indexed.bytes == root.source_bytes);
+    let folded = generic_message::generic_message_source_initial();
+    assert(root.frame_kind == 1);
+    assert(root.program_type_id == 20);
+    assert(root.family == admission::AdmissionFamily::New);
+    assert(root.body_id == 0);
+    assert(root.slot_count == 5);
+    assert(root.cursor == 0);
+    assert(root.last_slot == folded.last_slot);
+    assert(root.seen == folded.seen);
+    assert(root.scalar_slots == folded.scalar_slots);
+    assert(root.scalar_occurrences == folded.scalar_occurrences);
+    assert(root.returns == folded.returns);
+}
+
+pub proof fn concrete_new_map_push_receipt_matches_fold()
+    ensures
+        message_source::generated_message_push_receipt_matches(
+            concrete_new_map_push_source(concrete_new_map_push_live_before().unwrap()),
+            generic_message::generic_message_source_initial(),
+            concrete_new_map_push_receipt().unwrap(),
+        ),
+{
+    concrete_new_map_live_before_exact();
+    concrete_new_map_receipt_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_push_bytes_facts();
+    let root = concrete_new_map_push_root();
+    let indexed_backing = concrete_new_map_push_indexed_backing();
+    let live = concrete_new_map_push_live_before().unwrap();
+    let receipt = concrete_new_map_push_receipt().unwrap();
+    let product = product_root_initial(root, indexed_backing).unwrap();
+    let indexed = epm::indexed_backing_project(indexed_backing).unwrap();
+    assert(product.indexed_regions == seq![indexed]);
+    assert(product.indexed_regions.last() == indexed);
+    let source = concrete_new_map_push_source(live);
+    assert(source.indexed == product_admission_source_image(indexed));
+    assert(source.indexed.bytes.len() == 5);
+    assert(source.indexed.positions.len() == 5);
+    assert(source.indexed.positions[2]
+        == admission::AdmissionSourceAnchor { source: 0, offset: 2 });
+    assert(source.indexed.end
+        == admission::AdmissionSourceAnchor { source: 0, offset: 5 });
+    assert(admission::admission_indexed_source_position(source.indexed, 2)
+        == Some(admission::AdmissionSourceAnchor { source: 0, offset: 2 }));
+    assert(admission::admission_indexed_source_position(source.indexed, 5)
+        == Some(admission::AdmissionSourceAnchor { source: 0, offset: 5 }));
+}
+
+pub proof fn concrete_new_map_push_source_step_exact()
+    ensures
+        message_source::generated_message_push_source_step(
+            concrete_new_map_push_source(concrete_new_map_push_live_before().unwrap()),
+            generic_message::generic_message_source_initial(),
+            concrete_new_map_push_receipt().unwrap(),
+        ).is_some(),
+{
+    concrete_new_map_push_receipt_matches_fold();
+    concrete_new_map_live_before_exact();
+    concrete_new_map_receipt_exact();
+    concrete_new_map_push_field_at_cursor();
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_push_bytes_facts();
+    let root = concrete_new_map_push_root();
+    let indexed_backing = concrete_new_map_push_indexed_backing();
+    let live = concrete_new_map_push_live_before().unwrap();
+    let receipt = concrete_new_map_push_receipt().unwrap();
+    let product = product_root_initial(root, indexed_backing).unwrap();
+    let indexed = epm::indexed_backing_project(indexed_backing).unwrap();
+    assert(product.indexed_regions == seq![indexed]);
+    assert(product.indexed_regions.last() == indexed);
+    assert(indexed.bytes =~= concrete_new_map_push_bytes());
+    let source = concrete_new_map_push_source(live);
+    assert(source.indexed.bytes == concrete_new_map_push_bytes());
+    let folded = generic_message::generic_message_source_initial();
+    assert(admission::indexed_field_at_cursor(
+        admission::IndexedCanonicalFieldCursorModel {
+            region_start: 0,
+            region_end: source.body_len,
+            next: folded.cursor,
+            source_bytes: source.indexed.bytes,
+        },
+        receipt.field,
+    ));
+    assert(message_source::generated_message_push_source_step(source, folded, receipt).is_some());
+}
+
+/// Checkpoint 2: the source fold records the child identity assigned at
+/// publication, while the requested Map frame remains fresh.
+pub proof fn concrete_new_map_receipt_and_fold_exact()
+    ensures {
+        &&& concrete_new_map_push_receipt().is_some()
+        &&& {
+            let live = concrete_new_map_push_live_before().unwrap();
+            let receipt = concrete_new_map_push_receipt().unwrap();
+            let source = concrete_new_map_push_source(live);
+            &&& receipt.request.child.body_id == 0
+            &&& receipt.request.child.return_id.is_none()
+            &&& receipt.body_id == 1
+            &&& message_source::generated_message_live_frame_matches_fold(
+                source, generic_message::generic_message_source_initial(), live,
+            )
+            &&& message_source::generated_message_push_source_step(
+                source, generic_message::generic_message_source_initial(), receipt,
+            ).is_some()
+        }
+    },
+{
+    concrete_new_map_root_and_wire_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_receipt_exact();
+    concrete_new_map_fold_matches();
+    concrete_new_map_push_source_step_exact();
+    let receipt = concrete_new_map_push_receipt().unwrap();
+    assert(receipt.request.child.body_id == 0);
+    assert(receipt.request.child.return_id.is_none());
+    assert(receipt.body_id == 1);
+}
+
+pub proof fn concrete_new_map_admission_push_step_exact()
+    ensures {
+        let root = concrete_new_map_push_root();
+        let child = map::map_fresh_child_from_field(
+            root, concrete_new_map_push_field(),
+        ).unwrap();
+        let state = admission::admission_initial_state(root);
+        let next = admission::admission_push_step(state, 5, child, 3, true, 4, 1);
+        &&& next.is_some()
+        &&& admission::admission_state_wf(next.unwrap())
+    },
+{
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_fresh_child_exact();
+    let root = concrete_new_map_push_root();
+    let field = concrete_new_map_push_field();
+    map::map_fresh_child_is_source_initial(root, field);
+    let child = map::map_fresh_child_from_field(root, field).unwrap();
+    admission::admission_initial_wf(root);
+    let state = admission::admission_initial_state(root);
+    assert(state.frames.len() == 1);
+    assert(state.frames[0] == root);
+    assert(admission::admission_push_step(state, 5, child, 3, true, 4, 1).is_some());
+    admission::admission_push_preserves_wf(state, 5, child, 3, true, 4, 1);
+}
+
+pub proof fn concrete_new_map_source_image_facts()
+    ensures {
+        let indexed = epm::indexed_backing_project(
+            concrete_new_map_push_indexed_backing(),
+        ).unwrap();
+        let source_image = product_admission_source_image(indexed);
+        &&& epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).is_some()
+        &&& indexed.bytes == concrete_new_map_push_bytes()
+        &&& source_image.bytes == concrete_new_map_push_bytes()
+        &&& admission::admission_indexed_source_wf(source_image)
+        &&& source_image.positions.len() == 5
+        &&& source_image.positions[0] == admission::AdmissionSourceAnchor { source: 0, offset: 0 }
+        &&& source_image.positions[2] == admission::AdmissionSourceAnchor { source: 0, offset: 2 }
+        &&& source_image.end == admission::AdmissionSourceAnchor { source: 0, offset: 5 }
+        &&& admission::admission_indexed_source_position(source_image, 0)
+            == Some(admission::AdmissionSourceAnchor { source: 0, offset: 0 })
+        &&& admission::admission_indexed_source_position(source_image, 2)
+            == Some(admission::AdmissionSourceAnchor { source: 0, offset: 2 })
+        &&& admission::admission_indexed_source_position(source_image, 5)
+            == Some(admission::AdmissionSourceAnchor { source: 0, offset: 5 })
+    },
+{
+    concrete_new_map_push_bytes_facts();
+    let indexed_backing = concrete_new_map_push_indexed_backing();
+    assert(epm::indexed_backing_project(indexed_backing).is_some());
+    let indexed = epm::indexed_backing_project(indexed_backing).unwrap();
+    assert(indexed.bytes =~= concrete_new_map_push_bytes());
+    let source_image = product_admission_source_image(indexed);
+    assert(source_image.bytes == concrete_new_map_push_bytes());
+    assert(source_image.positions.len() == 5);
+    assert(indexed.positions[0] == epm::SourceAnchor { source: 0, offset: 0 });
+    assert(indexed.positions[2] == epm::SourceAnchor { source: 0, offset: 2 });
+    assert(source_image.positions[0] == admission::AdmissionSourceAnchor { source: 0, offset: 0 });
+    assert(source_image.positions[2] == admission::AdmissionSourceAnchor { source: 0, offset: 2 });
+    assert(source_image.end == admission::AdmissionSourceAnchor { source: 0, offset: 5 });
+}
+
+pub proof fn concrete_new_map_source_action_exact()
+    ensures {
+        let root = concrete_new_map_push_root();
+        let field = concrete_new_map_push_field();
+        let child = map::map_fresh_child_from_field(root, field).unwrap();
+        let source_image = product_admission_source_image(
+            epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).unwrap(),
+        );
+        let frame_action = admission::ConcreteFrameActionModel::PushIndexed {
+            field, child, parent_source: source_image, frame_bytes: 1,
+        };
+        map::integrated_source_message_action(
+            admission::admission_initial_state(root), frame_action,
+        ) == Some(frame_action)
+    },
+{
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_source_image_facts();
+    let root = concrete_new_map_push_root();
+    let field = concrete_new_map_push_field();
+    let child = map::map_fresh_child_from_field(root, field).unwrap();
+    let source_image = product_admission_source_image(
+        epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).unwrap(),
+    );
+    let state = admission::admission_initial_state(root);
+    assert(state.frames.len() == 1);
+    assert(state.frames[0] == root);
+    let anchor = admission::admission_indexed_source_position(source_image, 2).unwrap();
+    assert((admission::AdmissionFrameState {
+        physical_source: anchor.source, physical_start: anchor.offset, ..child
+    }) == child);
+}
+
+pub proof fn concrete_new_map_message_driver_exact()
+    ensures {
+        let root = concrete_new_map_push_root();
+        let field = concrete_new_map_push_field();
+        let child = map::map_fresh_child_from_field(root, field).unwrap();
+        let source_image = product_admission_source_image(
+            epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).unwrap(),
+        );
+        let state = admission::admission_initial_state(root);
+        let next = admission::admission_push_step(state, 5, child, 3, true, 4, 1);
+        admission::concrete_message_driver_step(
+            state,
+            admission::ConcreteFrameActionModel::PushIndexed {
+                field, child, parent_source: source_image, frame_bytes: 1,
+            },
+        ) == Some(admission::ConcreteFrameOutcomeModel::Pushed { state: next.unwrap() })
+    },
+{
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_source_image_facts();
+    concrete_new_map_admission_push_step_exact();
+    concrete_new_map_push_field_at_cursor();
+    let root = concrete_new_map_push_root();
+    let field = concrete_new_map_push_field();
+    let child = map::map_fresh_child_from_field(root, field).unwrap();
+    let source_image = product_admission_source_image(
+        epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).unwrap(),
+    );
+    let state = admission::admission_initial_state(root);
+    assert(state.frames.len() == 1);
+    assert(state.frames[0] == root);
+    assert(root.region_start == 0 && root.region_end == 5 && root.cursor == 0);
+    assert(root.source_bytes == concrete_new_map_push_bytes());
+    assert(admission::concrete_message_view(state).is_some());
+    let frame = admission::concrete_message_view(state).unwrap();
+    assert(admission::concrete_message_frame_rel(frame));
+    assert(frame.cursor == admission::IndexedCanonicalFieldCursorModel {
+        region_start: 0,
+        region_end: 5,
+        next: 0,
+        source_bytes: concrete_new_map_push_bytes(),
+    });
+    assert(admission::indexed_field_at_cursor(frame.cursor, field));
+    assert(frame.projection == state);
+    assert(admission::concrete_message_push_indexed(
+        frame, field, child, source_image, 1,
+    ) == admission::admission_push_step(state, 5, child, 3, true, 4, 1));
+}
+
+pub proof fn concrete_new_map_child_source_exact()
+    ensures {
+        let root = concrete_new_map_push_root();
+        let field = concrete_new_map_push_field();
+        let source_image = product_admission_source_image(
+            epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).unwrap(),
+        );
+        let child_source = admission::admission_indexed_field_child_source(
+            root, source_image, field,
+        ).unwrap();
+        let map_frame = map::map_initial_indexed(child_source).unwrap();
+        &&& admission::admission_indexed_field_child_source(
+            root, source_image, field,
+        ).is_some()
+        &&& child_source.bytes == field.payload_bytes
+        &&& admission::admission_indexed_source_wf(child_source)
+        &&& admission::admission_indexed_source_position(child_source, 0)
+            == Some(admission::AdmissionSourceAnchor { source: 0, offset: 2 })
+        &&& map::map_initial_indexed(child_source).is_some()
+        &&& map::map_frame_wf(map_frame)
+        &&& map_frame.owner_type_id == 20
+        &&& map_frame.outer_field == 4
+        &&& map_frame.value_type_id == 1
+        &&& map_frame.physical_source == 0
+        &&& map_frame.physical_start == 2
+        &&& map_frame.region_end == 3
+        &&& map_frame.source_bytes == field.payload_bytes
+        &&& map_frame.cursor == 0
+        &&& map_frame.last_tag == 0
+        &&& map_frame.key.is_none()
+        &&& !map_frame.saw_value
+        &&& map_frame.value.is_none()
+        &&& map_frame.pending.is_none()
+        &&& map_frame.accepted_arena.len() == 0
+    },
+{
+    concrete_new_map_source_image_facts();
+    concrete_new_map_push_field_at_cursor();
+    concrete_new_map_push_bytes_facts();
+    let root = concrete_new_map_push_root();
+    let field = concrete_new_map_push_field();
+    let source_image = product_admission_source_image(
+        epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).unwrap(),
+    );
+    assert(root.region_start == 0 && root.region_end == 5 && root.cursor == 0);
+    assert(root.source_bytes == concrete_new_map_push_bytes());
+    assert(admission::indexed_field_at_cursor(
+        admission::IndexedCanonicalFieldCursorModel {
+            region_start: root.region_start,
+            region_end: root.region_end,
+            next: root.cursor,
+            source_bytes: root.source_bytes,
+        }, field,
+    ));
+    admission::admission_indexed_field_child_source_exact(root, source_image, field);
+    let child_source = admission::admission_indexed_field_child_source(
+        root, source_image, field,
+    ).unwrap();
+    assert(child_source.bytes.len() == 3);
+    map::map_initial_indexed_wf(child_source);
+}
+
+pub proof fn concrete_new_map_admission_next_frames()
+    ensures {
+        let root = concrete_new_map_push_root();
+        let child = map::map_fresh_child_from_field(
+            root, concrete_new_map_push_field(),
+        ).unwrap();
+        let state = admission::admission_initial_state(root);
+        let next = admission::admission_push_step(state, 5, child, 3, true, 4, 1).unwrap();
+        &&& next.frames.len() == 2
+        &&& next.arena.len() == 0
+        &&& next.frames[0].frame_kind == 1
+        &&& next.frames[0].family == admission::AdmissionFamily::New
+        &&& next.frames[0].program_type_id == 20
+        &&& next.frames[0].waiting_id == Some(0u64)
+        &&& next.frames[0].waiting_kind == 2
+        &&& next.frames[0].waiting_slot == Some(3usize)
+        &&& next.frames[0].waiting_tag == Some(4u32)
+        &&& next.frames[1] == (admission::AdmissionFrameState {
+            return_id: Some(0u64),
+            body_id: 1u64,
+            ..child
+        })
+    },
+{
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_admission_push_step_exact();
+    let root = concrete_new_map_push_root();
+    let child = map::map_fresh_child_from_field(
+        root, concrete_new_map_push_field(),
+    ).unwrap();
+    let state = admission::admission_initial_state(root);
+    assert(state.frames.len() == 1);
+    assert(state.frames[0] == root);
+    assert(state.arena.len() == 0);
+    let next = admission::admission_push_step(state, 5, child, 3, true, 4, 1).unwrap();
+    assert(next.frames.len() == 2);
+    assert(next.arena.len() == 0);
+    assert(next.frames[1] == (admission::AdmissionFrameState {
+        return_id: Some(0u64),
+        body_id: 1u64,
+        ..child
+    }));
+}
+
+pub proof fn concrete_new_map_integrated_next_wf()
+    ensures {
+        let root = concrete_new_map_push_root();
+        let field = concrete_new_map_push_field();
+        let child = map::map_fresh_child_from_field(root, field).unwrap();
+        let source_image = product_admission_source_image(
+            epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).unwrap(),
+        );
+        let state0 = map::integrated_admission_initial(root).unwrap();
+        let next_admission = admission::admission_push_step(
+            admission::admission_initial_state(root), 5, child, 3, true, 4, 1,
+        ).unwrap();
+        let child_source = admission::admission_indexed_field_child_source(
+            root, source_image, field,
+        ).unwrap();
+        let map_frame = map::map_initial_indexed(child_source).unwrap();
+        map::integrated_admission_wf(map::IntegratedAdmissionState {
+            admission: next_admission,
+            map_frames: state0.map_frames.push(Some(map_frame)),
+            transcript: state0.transcript,
+        })
+    },
+{
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_admission_push_step_exact();
+    concrete_new_map_admission_next_frames();
+    concrete_new_map_child_source_exact();
+    let root = concrete_new_map_push_root();
+    let field = concrete_new_map_push_field();
+    let child = map::map_fresh_child_from_field(root, field).unwrap();
+    let source_image = product_admission_source_image(
+        epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).unwrap(),
+    );
+    let state0 = map::integrated_admission_initial(root).unwrap();
+    let next_admission = admission::admission_push_step(
+        admission::admission_initial_state(root), 5, child, 3, true, 4, 1,
+    ).unwrap();
+    let child_source = admission::admission_indexed_field_child_source(
+        root, source_image, field,
+    ).unwrap();
+    let map_frame = map::map_initial_indexed(child_source).unwrap();
+    assert(state0.admission == admission::admission_initial_state(root));
+    assert(state0.map_frames.len() == 1);
+    assert(state0.map_frames[0].is_none());
+    assert(next_admission.arena =~= state0.admission.arena);
+    let next = map::IntegratedAdmissionState {
+        admission: next_admission,
+        map_frames: state0.map_frames.push(Some(map_frame)),
+        transcript: state0.transcript,
+    };
+    assert(next.map_frames.len() == 2);
+    assert(next.map_frames[0].is_none());
+    assert(next.map_frames[1] == Some(map_frame));
+    assert(next.admission.frames[1].frame_kind == 2);
+    assert(next.admission.frames[1].family == admission::AdmissionFamily::Other);
+    assert(next.admission.frames[1].return_id == Some(0u64));
+    assert(next.admission.frames[1].body_id == 1u64);
+    assert(map_frame.accepted_arena =~= next.admission.arena.subrange(
+        0, map_frame.accepted_arena.len() as int,
+    ));
+    assert(map::map_aux_projection(map_frame, next.admission.frames[1]));
+    assert(map::integrated_admission_wf(next));
+}
+
+pub proof fn concrete_new_map_integrated_push_exact()
+    ensures {
+        let root = concrete_new_map_push_root();
+        let field = concrete_new_map_push_field();
+        let child = map::map_fresh_child_from_field(root, field).unwrap();
+        let source_image = product_admission_source_image(
+            epm::indexed_backing_project(concrete_new_map_push_indexed_backing()).unwrap(),
+        );
+        let state0 = map::integrated_admission_initial(root).unwrap();
+        let frame_action = admission::ConcreteFrameActionModel::PushIndexed {
+            field, child, parent_source: source_image, frame_bytes: 1,
+        };
+        let action = map::IntegratedAdmissionAction::Message { action: frame_action };
+        let next_admission = admission::admission_push_step(
+            admission::admission_initial_state(root), 5, child, 3, true, 4, 1,
+        ).unwrap();
+        let child_source = admission::admission_indexed_field_child_source(
+            root, source_image, field,
+        ).unwrap();
+        let map_frame = map::map_initial_indexed(child_source).unwrap();
+        let next = map::IntegratedAdmissionState {
+            admission: next_admission,
+            map_frames: state0.map_frames.push(Some(map_frame)),
+            transcript: state0.transcript,
+        };
+        map::integrated_admission_driver_step(state0, action)
+            == Some(map::IntegratedAdmissionOutcome::MessagePushed { state: next })
+    },
+{
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_admission_push_step_exact();
+    concrete_new_map_admission_next_frames();
+    concrete_new_map_source_action_exact();
+    concrete_new_map_message_driver_exact();
+    concrete_new_map_child_source_exact();
+    concrete_new_map_integrated_next_wf();
+    let root = concrete_new_map_push_root();
+    let state0 = map::integrated_admission_initial(root).unwrap();
+    assert(state0.admission == admission::admission_initial_state(root));
+    assert(state0.admission.frames.len() == 1);
+    assert(state0.admission.frames[0] == root);
+    assert(map::integrated_admission_wf(state0));
+}
+
+pub proof fn concrete_new_map_storage_observation_exact()
+    ensures
+        runtime_source::source_frame_push_observe_after(
+            runtime_source::SourceFrameRequestKind::Map,
+            Some(runtime_source::SourceFrameRequestKind::Map),
+            1, 1, 2, 2, 1, 1,
+        ) == (runtime_source::SourceFramePushObservationResult::Success {
+            storage: runtime_source::SourceFramePushStorageImage {
+                request_kind: runtime_source::SourceFrameRequestKind::Map,
+                before_len: 1,
+                after_len: 2,
+                before_capacity: 1,
+                after_capacity: 2,
+                frame_variant_bytes: 1,
+                stats_frame_variant_bytes: 1,
+                used_bytes: 2,
+                reserved_bytes: 2,
+            },
+        }),
+{
+}
+
+pub proof fn concrete_new_map_runtime_push_exact()
+    ensures {
+        let live = concrete_new_map_push_live_before().unwrap();
+        let receipt = concrete_new_map_push_receipt().unwrap();
+        let source = concrete_new_map_push_source(live);
+        runtime_source::source_checked_frame_request_push_indexed(
+            live.source.runtime, receipt.request, source.indexed,
+            runtime_source::SourceFramePushStorageImage {
+                request_kind: runtime_source::SourceFrameRequestKind::Map,
+                before_len: 1,
+                after_len: 2,
+                before_capacity: 1,
+                after_capacity: 2,
+                frame_variant_bytes: 1,
+                stats_frame_variant_bytes: 1,
+                used_bytes: 2,
+                reserved_bytes: 2,
+            },
+        ).is_some()
+    },
+{
+    concrete_new_map_live_before_wf();
+    concrete_new_map_live_before_exact();
+    concrete_new_map_receipt_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_message_driver_exact();
+    concrete_new_map_admission_push_step_exact();
+    concrete_new_map_admission_next_frames();
+    concrete_new_map_source_image_facts();
+    let root = concrete_new_map_push_root();
+    let indexed_backing = concrete_new_map_push_indexed_backing();
+    let live = concrete_new_map_push_live_before().unwrap();
+    let receipt = concrete_new_map_push_receipt().unwrap();
+    let product = product_root_initial(root, indexed_backing).unwrap();
+    let indexed = epm::indexed_backing_project(indexed_backing).unwrap();
+    assert(product.bridge.admission == admission::admission_initial_state(root));
+    assert(product.indexed_regions == seq![indexed]);
+    assert(product.indexed_regions.last() == indexed);
+    assert(live.source.runtime.frame_bytes == 1);
+    assert(live.source.runtime.capacity == 1);
+    assert(live.source.runtime.score.admission == admission::admission_initial_state(root));
+    assert(runtime_source::runtime_frame_image_wf(live.source.runtime));
+    assert(live.source.runtime.score.admission.frames.len() == 1);
+    assert(concrete_new_map_push_source(live).indexed == product_admission_source_image(indexed));
+}
+
+pub proof fn concrete_new_map_parent_transition_exact()
+    ensures {
+        let parent = wire_source::wire_runtime_initial(
+            concrete_new_map_push_wire_backing(), false,
+        ).unwrap();
+        match wire_source::wire_runtime_next_field(parent) {
+            Some(wire_source::WireConcreteTransition::Field {
+                state: concrete_after, field, start: _,
+            }) => {
+                &&& field == concrete_new_map_push_field()
+                &&& live_runtime_child_cursor(parent, field).is_some()
+                &&& wire_source::wire_runtime_cursor_project(
+                    runtime_wire_after_field(parent, concrete_after),
+                ).is_some()
+                &&& wire_source::wire_runtime_cursor_project(
+                    live_runtime_child_cursor(parent, field).unwrap(),
+                ).is_some()
+            },
+            _ => false,
+        }
+    },
+{
+    concrete_new_map_wire_cursor_projects();
+    concrete_new_map_runtime_field_exact();
+    let parent = wire_source::wire_runtime_initial(
+        concrete_new_map_push_wire_backing(), false,
+    ).unwrap();
+    match wire_source::wire_runtime_next_field(parent) {
+        Some(wire_source::WireConcreteTransition::Field {
+            state: concrete_after, field, start,
+        }) => {
+            live_runtime_child_cursor_is_payload(parent, concrete_after, field, start);
+            live_runtime_parent_cursor_after_field_projects(
+                parent, concrete_after, field, start,
+            );
+        },
+        _ => assert(false),
+    }
+}
+
+pub proof fn concrete_new_map_push_guards()
+    ensures {
+        let live = concrete_new_map_push_live_before().unwrap();
+        let receipt = concrete_new_map_push_receipt().unwrap();
+        let source = concrete_new_map_push_source(live);
+        &&& live_runtime_product_wf(live)
+        &&& product_frame_source_anchors_match(live.source.product)
+        &&& live.cursors.len() == 1
+        &&& live.source.product.indexed_regions.len() == 1
+        &&& live.source.product.bridge.admission.frames.len() == 1
+        &&& live.source.product.bridge.admission.next_obligation_id == 0
+        &&& source.indexed == product_admission_source_image(
+            live.source.product.indexed_regions.last(),
+        )
+        &&& runtime_source::source_frame_request_kind_code(receipt.request.request_kind)
+            == receipt.request.child.frame_kind
+        &&& receipt.request.field == receipt.field
+        &&& receipt.request.child.frame_kind == 2
+        &&& receipt.body_id == 1
+        &&& receipt.request.child.source_bytes == receipt.field.payload_bytes
+        &&& receipt.request.child.physical_source == receipt.child_start.source
+        &&& receipt.request.child.physical_start == receipt.child_start.offset
+        &&& receipt.stats_frame_variant_bytes == live.source.runtime.frame_bytes
+    },
+{
+    concrete_new_map_live_before_wf();
+    concrete_new_map_live_before_exact();
+    concrete_new_map_receipt_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_root_initial_exact();
+    let root = concrete_new_map_push_root();
+    let indexed_backing = concrete_new_map_push_indexed_backing();
+    let live = concrete_new_map_push_live_before().unwrap();
+    let product = product_root_initial(root, indexed_backing).unwrap();
+    assert(product.bridge.admission == admission::admission_initial_state(root));
+    assert(product.bridge.admission.frames.len() == 1);
+    assert(product.bridge.admission.next_obligation_id == 0);
+    let indexed = epm::indexed_backing_project(indexed_backing).unwrap();
+    assert(product.indexed_regions == seq![indexed]);
+    assert(product.indexed_regions.len() == 1);
+    assert(live.cursors.len() == 1);
+}
+
+pub proof fn concrete_new_map_product_map_outcome_exact()
+    ensures {
+        let root = concrete_new_map_push_root();
+        let field = concrete_new_map_push_field();
+        let child = map::map_fresh_child_from_field(root, field).unwrap();
+        let indexed_backing = concrete_new_map_push_indexed_backing();
+        let source_image = product_admission_source_image(
+            epm::indexed_backing_project(indexed_backing).unwrap(),
+        );
+        let product = product_root_initial(root, indexed_backing).unwrap();
+        let frame_action = admission::ConcreteFrameActionModel::PushIndexed {
+            field, child, parent_source: source_image, frame_bytes: 1,
+        };
+        let action = map::IntegratedAdmissionAction::Message { action: frame_action };
+        let outcome = map::integrated_admission_driver_step(product.map, action).unwrap();
+        &&& map::integrated_admission_driver_step(product.map, action).is_some()
+        &&& map::integrated_nonterminal_state(outcome).is_some()
+        &&& product_map_regions(product, action, outcome).is_some()
+        &&& product_map_epm_frames(product, outcome).is_some()
+    },
+{
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_integrated_push_exact();
+    concrete_new_map_push_bytes_facts();
+    concrete_new_map_source_image_facts();
+    let root = concrete_new_map_push_root();
+    let field = concrete_new_map_push_field();
+    let indexed_backing = concrete_new_map_push_indexed_backing();
+    let product = product_root_initial(root, indexed_backing).unwrap();
+    assert(product.map == map::integrated_admission_initial(root).unwrap());
+    let indexed = epm::indexed_backing_project(indexed_backing).unwrap();
+    assert(product.indexed_regions == seq![indexed]);
+    assert(product.indexed_regions.last() == indexed);
+    assert(epm::indexed_image_wf(indexed));
+    assert(indexed.bytes.subrange(field.payload_start as int, field.payload_end as int)
+        =~= field.payload_bytes);
+    let child_view = epm::indexed_subview(indexed, epm::ByteSpan {
+        start: field.payload_start, end: field.payload_end,
+    });
+    assert(child_view.bytes == field.payload_bytes);
+    assert(product_indexed_child(indexed, field) == Some(child_view));
+}
+
+/// Checkpoint 3: discharge each checked cursor, storage, and integrated Map
+/// branch before assembling the concrete live Push selector.
+pub proof fn concrete_new_map_checked_push_exists()
+    ensures {
+        let live = concrete_new_map_push_live_before().unwrap();
+        let receipt = concrete_new_map_push_receipt().unwrap();
+        let source = concrete_new_map_push_source(live);
+        message_source::send_live_push_selected(
+            live, receipt.field, source.indexed, receipt.child_start,
+            receipt.body_id, receipt.request, receipt.actual_top_kind,
+            receipt.after_len, receipt.after_capacity,
+            receipt.stats_frame_variant_bytes,
+        ).is_some()
+    },
+{
+    concrete_new_map_receipt_and_fold_exact();
+    concrete_new_map_live_before_wf();
+    concrete_new_map_live_before_exact();
+    concrete_new_map_root_initial_exact();
+    concrete_new_map_receipt_exact();
+    concrete_new_map_fresh_child_exact();
+    concrete_new_map_push_guards();
+    concrete_new_map_parent_transition_exact();
+    concrete_new_map_source_action_exact();
+    concrete_new_map_integrated_push_exact();
+    concrete_new_map_product_map_outcome_exact();
+    concrete_new_map_storage_observation_exact();
+    concrete_new_map_runtime_push_exact();
+    concrete_new_map_source_image_facts();
+    let live = concrete_new_map_push_live_before().unwrap();
+    let receipt = concrete_new_map_push_receipt().unwrap();
+    let source = concrete_new_map_push_source(live);
+    let root = concrete_new_map_push_root();
+    let indexed_backing = concrete_new_map_push_indexed_backing();
+    let product = product_root_initial(root, indexed_backing).unwrap();
+    let indexed = epm::indexed_backing_project(indexed_backing).unwrap();
+    assert(live.source.product == product);
+    assert(product.bridge.admission == admission::admission_initial_state(root));
+    assert(product.map == map::integrated_admission_initial(root).unwrap());
+    assert(product.indexed_regions == seq![indexed]);
+    assert(product.indexed_regions.last() == indexed);
+    assert(source.indexed == product_admission_source_image(indexed));
+    assert(live.source.runtime.frame_bytes == 1);
+    assert(live.source.runtime.capacity == 1);
+    let parent = live.cursors.last().unwrap();
+    assert(parent == wire_source::wire_runtime_initial(
+        concrete_new_map_push_wire_backing(), false,
+    ).unwrap());
+    assert(product_wire_indexed_source_agrees(
+        parent, live.source.product.indexed_regions.last(),
+    ));
+    assert(message_source::send_live_push_selected(
+        live, receipt.field, source.indexed, receipt.child_start,
+        receipt.body_id, receipt.request, receipt.actual_top_kind,
+        receipt.after_len, receipt.after_capacity,
+        receipt.stats_frame_variant_bytes,
+    ).is_some());
+}
+
+pub proof fn concrete_new_map_push_live_selected_exact()
+    ensures {
+        let live = concrete_new_map_push_live_before().unwrap();
+        let receipt = concrete_new_map_push_receipt().unwrap();
+        let source = concrete_new_map_push_source(live);
+        message_source::generated_message_field_live_selected(
+            source, generic_message::generic_message_source_initial(), live,
+            message_source::GeneratedMessageFieldAction::Push { receipt },
+        ).is_some()
+    },
+{
+    concrete_new_map_receipt_and_fold_exact();
+    concrete_new_map_checked_push_exists();
+    concrete_new_map_push_guards();
+    let live = concrete_new_map_push_live_before().unwrap();
+    let receipt = concrete_new_map_push_receipt().unwrap();
+    let source = concrete_new_map_push_source(live);
+    let folded = generic_message::generic_message_source_initial();
+    message_source::generated_message_push_checked_step_binds_fold(
+        source, folded, live, receipt,
+    );
+    assert(receipt.request.child.frame_kind == 2);
+    assert(message_source::generated_message_field_live_selected(
+        source, folded, live,
+        message_source::GeneratedMessageFieldAction::Push { receipt },
+    ).is_some());
+}
+
+pub proof fn concrete_new_map_forged_body_rejected()
+    ensures {
+        let live = concrete_new_map_push_live_before().unwrap();
+        let receipt = concrete_new_map_push_receipt().unwrap();
+        let source = concrete_new_map_push_source(live);
+        message_source::generated_message_field_live_selected(
+            source, generic_message::generic_message_source_initial(), live,
+            message_source::GeneratedMessageFieldAction::Push {
+                receipt: message_source::GeneratedMessagePushReceipt {
+                    body_id: 0, ..receipt
+                },
+            },
+        ).is_none()
+    },
+{
+    concrete_new_map_receipt_and_fold_exact();
+    concrete_new_map_push_guards();
+    concrete_new_map_push_live_selected_exact();
+    let live = concrete_new_map_push_live_before().unwrap();
+    let receipt = concrete_new_map_push_receipt().unwrap();
+    let source = concrete_new_map_push_source(live);
+    let folded = generic_message::generic_message_source_initial();
+    message_source::generated_message_first_push_rejects_forged_published_body_id(
+        source, folded, live, receipt,
+    );
+}
+
+pub proof fn concrete_new_map_push_selector_is_nonvacuous()
+    ensures {
+        &&& concrete_new_map_push_live_before().is_some()
+        &&& concrete_new_map_push_receipt().is_some()
+        &&& {
+            let live = concrete_new_map_push_live_before().unwrap();
+            let receipt = concrete_new_map_push_receipt().unwrap();
+            let source = concrete_new_map_push_source(live);
+            let folded = generic_message::generic_message_source_initial();
+            &&& receipt.request.child.body_id == 0
+            &&& receipt.request.child.return_id.is_none()
+            &&& receipt.body_id == 1
+            &&& message_source::generated_message_field_live_selected(
+                source, folded, live,
+                message_source::GeneratedMessageFieldAction::Push { receipt },
+            ).is_some()
+            &&& message_source::generated_message_field_live_selected(
+                source, folded, live,
+                message_source::GeneratedMessageFieldAction::Push {
+                    receipt: message_source::GeneratedMessagePushReceipt {
+                        body_id: 0, ..receipt
+                    },
+                },
+            ).is_none()
+        }
+    },
+{
+    concrete_new_map_root_and_wire_exact();
+    concrete_new_map_receipt_and_fold_exact();
+    concrete_new_map_push_live_selected_exact();
+    concrete_new_map_forged_body_rejected();
+}
+
 }
