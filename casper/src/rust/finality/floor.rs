@@ -726,12 +726,7 @@ pub async fn floor_committee(
     floor_state: &StateHash,
 ) -> Result<Vec<Bond>, CasperError> {
     let floor = runtime_manager.floor_state(floor_state).await?;
-    Ok(floor
-        .bonds
-        .iter()
-        .filter(|bond| floor.active_validators.contains(&bond.validator))
-        .cloned()
-        .collect())
+    Ok(floor.committee().cloned().collect())
 }
 
 /// Walk depth past which a floor walk is reported as unusually deep (cold

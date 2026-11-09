@@ -1715,6 +1715,134 @@ async fn a_proposer_outside_its_own_committee_holds_back_its_ejection_request() 
     panic!("the validator's own committee never dropped it");
 }
 
+/// A member of the ejection's electorate that leaves without voting does not
+/// block a rejoin every remaining member backs, though its stake alone would
+/// otherwise hold the yeas below two thirds.
+#[tokio::test]
+async fn a_backed_rejoin_passes_after_a_voter_leaves() {
+    let (mut nodes, target, shard_id) = funded_network(Some(10)).await;
+    let target_key = identity(&nodes[target]);
+    let bonds = nodes[0]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("snapshot")
+        .on_chain_state
+        .bonds_map
+        .clone();
+    let leaver = (0..nodes.len())
+        .filter(|i| *i != target)
+        .max_by_key(|i| bonds[&identity(&nodes[*i])])
+        .expect("a leaver");
+    let leaver_key = identity(&nodes[leaver]);
+    let voters: Vec<usize> = (0..nodes.len())
+        .filter(|i| *i != target && *i != leaver)
+        .collect();
+    let total: i64 = bonds.values().sum();
+    let remaining: i64 = voters.iter().map(|i| bonds[&identity(&nodes[*i])]).sum();
+    assert!(
+        3 * remaining <= 2 * total,
+        "the remaining voters hold no more than two thirds of the electorate"
+    );
+
+    eject(&mut nodes, target).await;
+    let withdrawing = call_pos(&mut nodes[leaver], r#""withdraw", *deployerId"#, &shard_id).await;
+    admit_everywhere(&mut nodes, &withdrawing).await;
+
+    let mut left = false;
+    for round in 0..60 {
+        let proposers: Vec<usize> = (0..nodes.len()).filter(|i| *i != target).collect();
+        let index = proposers[round % proposers.len()];
+        let block = propose(&mut nodes[index], &[], &[]).await;
+        admit_everywhere(&mut nodes, &block).await;
+        if !block
+            .body
+            .state
+            .bonds
+            .iter()
+            .any(|bond| bond.validator == leaver_key && bond.stake > 0)
+        {
+            left = true;
+            break;
+        }
+    }
+    assert!(left, "the leaver's withdrawal took effect");
+
+    let requesting = call_pos(
+        &mut nodes[target],
+        r#""rejoinFromEjection", *deployerId, 100"#,
+        &shard_id,
+    )
+    .await;
+    admit_everywhere(&mut nodes, &requesting).await;
+    let opened = state_of(&nodes[0], &requesting).await;
+    let electorate = opened
+        .claims
+        .iter()
+        .find(|record| {
+            record.claim.family == ClaimFamily::Rejoin && record.claim.target == target_key
+        })
+        .map(|record| record.electorate.clone())
+        .expect("the request opens a rejoin claim");
+    assert!(
+        electorate
+            .iter()
+            .any(|bond| bond.validator == leaver_key && bond.stake > 0),
+        "the leaver is in the rejoin's electorate"
+    );
+
+    let mut yeas: Vec<Validator> = Vec::new();
+    let mut resolved = None;
+    for round in 0..200 {
+        let index = voters[round % voters.len()];
+        let block = propose(&mut nodes[index], &[], &[]).await;
+        admit_everywhere(&mut nodes, &block).await;
+        yeas.extend(
+            block
+                .body
+                .leaky_bucket_votes
+                .iter()
+                .filter(|vote| {
+                    vote.yea
+                        && vote.claim.family == ClaimFamily::Rejoin
+                        && vote.claim.target == target_key
+                })
+                .map(|_| identity(&nodes[index])),
+        );
+        if let Some(SystemDeployData::ResolveClaims {
+            resolutions,
+            grace_expiries,
+            ..
+        }) = resolutions_of(&block)
+        {
+            assert!(
+                !grace_expiries.contains(&target_key),
+                "the grace ended before the backed rejoin resolved"
+            );
+            if let Some(resolution) = resolutions
+                .iter()
+                .find(|r| r.claim.family == ClaimFamily::Rejoin && r.claim.target == target_key)
+            {
+                resolved = Some((resolution.outcome.clone(), block));
+                break;
+            }
+        }
+    }
+    let (outcome, resolving) = resolved.expect("the rejoin resolved");
+    for &index in &voters {
+        assert!(
+            yeas.contains(&identity(&nodes[index])),
+            "voter {index} backed the rejoin"
+        );
+    }
+    assert_eq!(outcome, ClaimOutcome::Pass, "the backed rejoin passes");
+    let state = state_of(&nodes[0], &resolving).await;
+    assert!(
+        !state.ejected.contains(&target_key),
+        "the validator is reinstated"
+    );
+}
+
 /// The overflow a claimant's ancestry proves does not depend on which of its
 /// twins a node received first: a node holding both answers as a node that
 /// holds only the twin cited.

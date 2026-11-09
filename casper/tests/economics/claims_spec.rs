@@ -180,7 +180,7 @@ async fn tally(
         &dag.lookup_unsafe(&floor.block_hash).unwrap(),
         &FloorState {
             bonds: bonds(bonds_at_floor),
-            active_validators: Vec::new(),
+            active_validators: bonds_at_floor.iter().map(|(byte, _)| validator(*byte)).collect(),
             withdrawers: bonds(withdrawers_at_floor),
             claims: Vec::new(),
             ejected: Vec::new(),
@@ -238,6 +238,27 @@ async fn a_slashed_voter_is_dropped_and_an_unbonded_one_is_not() {
     assert_eq!(
         tally(THREE, &votes, 9, None, &[(1, 1), (2, 1)], &[(3, 0)]).await,
         Some(ClaimOutcome::Pass)
+    );
+}
+
+/// A member that left the committee without voting counts for nothing; one
+/// that voted before leaving still counts.
+#[tokio::test]
+async fn a_member_that_left_without_voting_is_dropped() {
+    let yeas = [(1, true), (2, true)];
+    assert_eq!(tally(THREE, &yeas, 9, None, THREE, &[]).await, None);
+    assert_eq!(
+        tally(THREE, &yeas, 9, None, &[(1, 1), (2, 1)], &[(3, 1)]).await,
+        Some(ClaimOutcome::Pass)
+    );
+    assert_eq!(
+        tally(THREE, &yeas, 9, None, &[(1, 1), (2, 1)], &[]).await,
+        Some(ClaimOutcome::Pass)
+    );
+    let split = [(1, true), (2, true), (3, false)];
+    assert_eq!(
+        tally(THREE, &split, 9, None, &[(1, 1), (2, 1)], &[]).await,
+        None
     );
 }
 

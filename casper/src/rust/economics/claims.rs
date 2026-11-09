@@ -304,10 +304,7 @@ impl<'a> VoteHistory<'a> {
     }
 
     /// The outcome the votes visible at `floor` give each claim that floor
-    /// may decide, oldest claim first. A claim passes when its yea stake
-    /// exceeds two thirds of its electorate's, and fails when its nay stake
-    /// does. A voter slashed by the floor counts in neither the votes nor the
-    /// electorate.
+    /// may decide, oldest claim first, per [`tally`].
     pub fn resolutions(
         &self,
         records: &[ClaimRecord],
@@ -341,7 +338,7 @@ impl<'a> VoteHistory<'a> {
         Ok(open
             .into_iter()
             .filter_map(|record| {
-                let outcome = tally(&record.electorate, &floor.slashed, |voter| {
+                let outcome = tally(&record.electorate, &floor.slashed, &floor.seated, |voter| {
                     votes.get(&(&record.claim, voter.clone())).copied()
                 })?;
                 Some(ClaimResolution {
@@ -365,21 +362,24 @@ fn counted<'e>(
 /// The outcome `vote_of` gives a claim with `electorate`: it passes when its
 /// yea stake exceeds two thirds of the electorate's, and fails when its nay
 /// stake does. A voter in `slashed` counts in neither the votes nor the
-/// electorate.
+/// electorate. A member outside `seated` that has not voted counts for
+/// nothing either: it holds no seat, so it can never vote.
 pub fn tally(
     electorate: &[Bond],
     slashed: &HashSet<Validator>,
+    seated: &HashSet<Validator>,
     vote_of: impl Fn(&Validator) -> Option<bool>,
 ) -> Option<ClaimOutcome> {
     let (mut total, mut yea, mut nay) = (0i128, 0i128, 0i128);
     for bond in counted(electorate, slashed) {
         let stake = bond.stake as i128;
-        total += stake;
         match vote_of(&bond.validator) {
             Some(true) => yea += stake,
             Some(false) => nay += stake,
-            None => {}
+            None if seated.contains(&bond.validator) => {}
+            None => continue,
         }
+        total += stake;
     }
     if 3 * yea > 2 * total {
         Some(ClaimOutcome::Pass)
@@ -420,13 +420,15 @@ pub fn testimony(record: &ClaimRecord, yea: bool, floor: &FloorView) -> Option<O
 }
 
 /// What a finalized floor shows: each validator's latest block in its view,
-/// who has been slashed by it, and what its state records of the buckets.
+/// who has been slashed by it, who holds a seat on its committee, and what its
+/// state records of the buckets.
 pub struct FloorView {
     pub hash: BlockHash,
     pub number: i64,
     pub knowledge: Knowledge,
     latest: HashMap<Validator, BlockHash>,
     slashed: HashSet<Validator>,
+    seated: HashSet<Validator>,
 }
 
 impl FloorView {
@@ -462,12 +464,18 @@ impl FloorView {
             .filter(|bond| bond.stake == 0)
             .map(|bond| bond.validator.clone())
             .collect();
+        let seated = state
+            .committee()
+            .filter(|bond| bond.stake > 0)
+            .map(|bond| bond.validator.clone())
+            .collect();
         Self {
             hash: floor.block_hash.clone(),
             number: floor.block_number,
             knowledge: Knowledge::of(state, floor.block_number),
             latest,
             slashed,
+            seated,
         }
     }
 }

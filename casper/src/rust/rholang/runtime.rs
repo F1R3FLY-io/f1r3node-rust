@@ -108,6 +108,15 @@ pub struct FloorState {
     pub claimed: Vec<Claimed>,
 }
 
+impl FloorState {
+    /// The floor's committee: the bonds of the active validators.
+    pub fn committee(&self) -> impl Iterator<Item = &Bond> {
+        self.bonds
+            .iter()
+            .filter(|bond| self.active_validators.contains(&bond.validator))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claimed {
     pub validator: Validator,
