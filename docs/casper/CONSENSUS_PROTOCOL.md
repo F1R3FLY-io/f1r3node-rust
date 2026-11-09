@@ -506,16 +506,16 @@ disagree on them.
 ### Slashing Flow
 
 1. The stored invalid block's metadata records its sibling (`BlockMetadata::equivocates`).
-2. A bonded proposer issues one `SlashDeploy` per bonded offender whose pair it holds (`slashing_authorization::authorized_slash_candidates`, called from `prepare_slashing_deploys`).
+2. A bonded proposer issues one `SlashDeploy` per offender whose pair it holds and that still holds stake at the block's floor (`slashing_authorization::authorized_slash_candidates`, called from `prepare_slashing_deploys`). Stake in withdrawal quarantine counts.
 3. The slash carries both blocks' commitments, ordered by block hash. The evidence is self-contained: any node can check it without its own DAG.
 4. A receiver accepts the block's slashes only if each slash meets all of these conditions (`validate_received_slash_deploys`):
    - The block's sender issued it.
    - Both commitments hash to blocks that one sender signed at one sequence number, on this shard and chain.
-   - Its offender has positive stake in the bonds of the block's parents.
+   - Its offender holds stake at the block's floor, bonded or in withdrawal quarantine.
    - No other slash in the block targets the same offender.
 
    A rejected slash makes the block `UnauthorizedSlashDeploy`.
-5. `SlashDeploy` executes the PoS contract, which zeroes the equivocator's bond. A slash of an already-slashed validator changes nothing.
+5. `SlashDeploy` executes the PoS contract, which zeroes the equivocator's bond and any stake it has in quarantine. A slash of an already-slashed validator changes nothing. A withdrawal emptied by a slash is closed at the end of its quarantine without a payout.
 
 An equivocation is slashable while its sender is bonded. There is no
 evidence epoch. Nodes that saw the two blocks in different orders issue

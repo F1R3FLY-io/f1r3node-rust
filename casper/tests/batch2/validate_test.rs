@@ -2550,6 +2550,8 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
 
         // Use unlimited parents (-1) like in Scala tests: Estimator.UnlimitedParents
         let max_number_of_parents = -1;
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("block-summary", None).await;
 
         let result = Validate::block_summary(
             &signed_block,
@@ -2575,6 +2577,7 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             max_number_of_parents,
             i32::MAX, // max_parent_depth: disable depth check for this test
             &block_store,
+            &runtime_manager,
             false,
             &mut None,
         )
@@ -2932,8 +2935,11 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
     .await
 }
 
+/// A block held as an equivocation is held so only because its twin arrived
+/// first, so citing it below the sender's previous citation is a regression
+/// like any other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn justification_regression_validation_should_return_valid_for_regressive_invalid_blocks() {
+async fn a_justification_regressing_to_an_equivocation_is_still_a_regression() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator 1"));
         let v1 = generate_validator(Some("Validator 2"));
@@ -3064,7 +3070,10 @@ async fn justification_regression_validation_should_return_valid_for_regressive_
             &block_with_invalid_justification,
             &mut casper_snapshot,
         );
-        assert_eq!(result, Either::Right(ValidBlock::Valid));
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::JustificationRegression))
+        );
     })
     .await
 }

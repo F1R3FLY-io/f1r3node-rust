@@ -1699,11 +1699,14 @@ fn storage_has_unresolved_in_scope_deploys(
         .any(|deploy| casper_snapshot.deploys_in_scope.contains(&deploy.sig))
 }
 
-/// The slashes a bonded proposer's block issues: one for each bonded
-/// offender whose equivocation this node holds.
+/// The slashes a bonded proposer's block issues: one for each offender whose
+/// equivocation this node holds and that still has stake at the block's
+/// floor, bonded or in quarantine.
 async fn prepare_slashing_deploys(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
+    runtime_manager: &RuntimeManager,
+    floor_ctx: Option<&FloorContext>,
     validator_identity: &ValidatorIdentity,
     seq_num: i32,
 ) -> Result<Vec<SlashDeploy>, CasperError> {
@@ -1720,8 +1723,14 @@ async fn prepare_slashing_deploys(
     if proposer_bond <= 0 {
         return Ok(Vec::new());
     }
+    let Some(floor_ctx) = floor_ctx else {
+        return Ok(Vec::new());
+    };
+    let slashable = runtime_manager
+        .slashable_stakes(&floor_ctx.floor_state)
+        .await?;
 
-    let slash_candidates = authorized_slash_candidates(casper_snapshot, block_store)?;
+    let slash_candidates = authorized_slash_candidates(casper_snapshot, block_store, &slashable)?;
 
     // `authorized_slash_candidates` documents an at-most-one-per-offender
     // invariant via its `BTreeMap<Validator, …>` accumulator. Enforce the
@@ -3006,6 +3015,8 @@ pub async fn create_with_progress(
         let v = prepare_slashing_deploys(
             casper_snapshot,
             block_store,
+            runtime_manager,
+            floor_ctx.as_ref(),
             validator_identity,
             next_seq_num,
         )
@@ -3048,22 +3059,17 @@ pub async fn create_with_progress(
     )
     .record(__merge_pre_t.elapsed().as_secs_f64());
 
-    // Targets were picked from the snapshot's bonds, before the merge; an
-    // offender the merged pre-state shows unbonded was already slashed by a
+    // Targets were picked at the floor, before the merge; an offender with
+    // nothing left to take in the merged pre-state was already slashed by a
     // parent.
     let slashing_deploys = {
-        let pre_state_bonds = runtime_manager.compute_bonds(&merge_pre_info.state).await?;
-        let mut still_bonded = Vec::with_capacity(slashing_deploys.len());
-        for slash_deploy in slashing_deploys {
-            let offender = &slash_deploy.evidence.first.sender;
-            if pre_state_bonds
-                .iter()
-                .any(|bond| bond.validator == *offender && bond.stake > 0)
-            {
-                still_bonded.push(slash_deploy);
-            }
-        }
-        still_bonded
+        let slashable = runtime_manager
+            .slashable_stakes(&merge_pre_info.state)
+            .await?;
+        slashing_deploys
+            .into_iter()
+            .filter(|slash_deploy| slashable.contains_key(&slash_deploy.evidence.first.sender))
+            .collect::<Vec<_>>()
     };
 
     // NEVER EXECUTE A DEPLOY WHOSE EFFECT IS ALREADY IN THE PRE-STATE.
