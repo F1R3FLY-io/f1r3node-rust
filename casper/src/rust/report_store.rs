@@ -50,20 +50,28 @@ impl CompressedBlockEventInfoStore {
     }
 
     /// Delete the reports stored under `keys`; returns how many existed and
-    /// their stored (compressed) size in bytes.
+    /// their stored (compressed) size in bytes. Writes nothing when none of
+    /// `keys` is stored.
     pub fn delete_measured(&self, keys: Vec<ByteString>) -> Result<(usize, u64), KvStoreError> {
         let keys_encoded = keys
             .iter()
             .map(|key| self.encode_key(key))
             .collect::<Result<Vec<_>, _>>()?;
-        let stored_bytes = self
-            .store
-            .get(&keys_encoded)?
-            .iter()
-            .flatten()
-            .map(|value| value.len() as u64)
-            .sum();
-        let deleted = self.store.delete(keys_encoded)?;
+        let values = self.store.get(&keys_encoded)?;
+        let (stored, stored_bytes) = keys_encoded.into_iter().zip(values).fold(
+            (Vec::new(), 0u64),
+            |(mut stored, bytes), (key, value)| match value {
+                Some(value) => {
+                    stored.push(key);
+                    (stored, bytes + value.len() as u64)
+                }
+                None => (stored, bytes),
+            },
+        );
+        if stored.is_empty() {
+            return Ok((0, 0));
+        }
+        let deleted = self.store.delete(stored)?;
         Ok((deleted, stored_bytes))
     }
 }
