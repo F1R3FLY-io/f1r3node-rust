@@ -169,6 +169,7 @@ source_files=(
   "$repo_root/models/tests/support/cost_token_stack_rpb3_admission_differential.rs"
   "$repo_root/formal/verified_score_store/Cargo.toml"
   "$repo_root/formal/verified_score_store/src/lib.rs"
+  "$repo_root/formal/verified_score_store/src/admission_observable_spec.rs"
   "$repo_root/scripts/check-rpb3-score-branch-inventory.py"
   "$repo_root/scripts/generate-rpb3-admission-mutant.py"
   "$repo_root/scripts/check-rpb3-admission-cursor-verus.sh"
@@ -1846,7 +1847,7 @@ tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" cargo verus verify \
   -p verified-score-store --offline --fwd-verus-args-to roots \
   -- --no-cheating --num-threads 1 --rlimit 30 >"$score_store_log" 2>&1
 if rg -q '^verification results:: ' "$score_store_log"; then
-  if ! rg -Fxq 'verification results:: 90 verified, 0 errors' "$score_store_log"; then
+  if ! rg -Fxq 'verification results:: 139 verified, 0 errors' "$score_store_log"; then
     cat "$score_store_log"
     echo "rpb3-admission-cursor: verified score store proof count changed" >&2
     exit 1

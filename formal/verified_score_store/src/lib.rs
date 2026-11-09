@@ -1,4 +1,5 @@
 use vstd::prelude::*;
+pub mod admission_observable_spec;
 
 verus! {
 

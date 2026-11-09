@@ -4577,3 +4577,66 @@ fn generated_rpb3_registry_is_contiguous_and_descriptor_aligned() {
         "the separate raw protobuf Par program must retain the Par descriptor identity"
     );
 }
+
+#[test]
+fn rpb3_admission_observable_spec_is_gated_and_defined_once() {
+    let cursor_runner = read_repository_file("scripts/check-rpb3-admission-cursor-verus.sh");
+    for marker in [
+        "formal/verified_score_store/src/admission_observable_spec.rs",
+        "verification results:: 139 verified, 0 errors",
+    ] {
+        assert!(
+            cursor_runner.contains(marker),
+            "RPB3 admission cursor gate is missing `{marker}`"
+        );
+    }
+    let verified_store = read_repository_file("formal/verified_score_store/src/lib.rs");
+    assert!(verified_store.contains("pub mod admission_observable_spec;"));
+    let observable_spec =
+        read_repository_file("formal/verified_score_store/src/admission_observable_spec.rs");
+    for marker in [
+        "pub open spec fn observable_next(",
+        "pub open spec fn observable_step(",
+        "pub open spec fn observable_trace(",
+        "pub open spec fn observable_wf(",
+        "pub proof fn lemma_observable_next_preserves_wf(",
+        "pub proof fn lemma_observable_trace_preserves_wf(",
+        "pub proof fn lemma_observable_event_determined(",
+        "pub proof fn lemma_observable_next_repeated_irrelevant(",
+        "pub proof fn lemma_observable_accept_appends_child_summary(",
+        "pub proof fn lemma_observable_slot_record_counts_children(",
+        "pub proof fn lemma_observable_children_never_dropped(",
+        "pub proof fn lemma_observable_witness_message_accepts(",
+        "pub proof fn lemma_observable_witness_map_accepts(",
+        "pub proof fn lemma_observable_witness_canonical_path_accepts(",
+        "pub proof fn lemma_observable_refusal_witnesses(",
+    ] {
+        assert!(
+            observable_spec.contains(marker),
+            "observable admission spec is missing `{marker}`"
+        );
+    }
+    for forbidden in ["external_body", "assume(", "admit()", "#[cfg"] {
+        assert!(
+            !observable_spec.contains(forbidden),
+            "observable admission spec contains `{forbidden}`"
+        );
+    }
+    let mut pending = vec![repository_root().join("formal/verus")];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("formal/verus must be listable") {
+            let path = entry.expect("formal/verus entry must be readable").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let source = std::fs::read_to_string(&path)
+                    .expect("formal/verus source must be readable as UTF-8");
+                assert!(
+                    !source.contains("fn observable_step("),
+                    "{} defines observable_step outside the shared spec",
+                    path.display()
+                );
+            }
+        }
+    }
+}

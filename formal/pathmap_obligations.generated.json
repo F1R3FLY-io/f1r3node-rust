@@ -847,7 +847,7 @@
       "checker": "scripts/check-epathmap-core-obligations.py",
       "family": "epathmap_core",
       "manifest": "formal/epathmap_core_obligations.generated.json",
-      "manifest_sha256": "2719860d1d8befdc0faa817889e91079dd7d38479acecf0cf96d2326511cc59e",
+      "manifest_sha256": "9ce87515ec5b3f304943871c886e0480fafc6cf77ff539d02f79c3e4539bce99",
       "obligations": {
         "boundary": "Concrete witnesses exercise selected EPathMap operations and EPM1 map snapshot round trips. The generic PDA and Verus worklist equivalence obligations are proof-only; no direct executable refinement of arbitrary finite trees is claimed.",
         "delegated_epm1_positional_tla": {
@@ -1731,7 +1731,7 @@
         ],
         "scope": "EPathMap algebra, EPM1 core framing, and generic stack-safe PDA",
         "source_sha256": {
-          "formal/epm1_positional_obligations.generated.json": "fb8e69fec397a163642cb23b90beb7f39ca6dc154dd53e6d95a829dc2fbe0bae",
+          "formal/epm1_positional_obligations.generated.json": "c883ac81fd70ca28d5f6208e09f247e9e4fbda254f48cc76dcb55773091ce0f8",
           "formal/rocq/stack_safe_pda/theories/EPM1.v": "7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41",
           "formal/rocq/stack_safe_pda/theories/EPathMap.v": "d9bdce288155a9b5c6d57fec35bd9145c6896c6812654d38a447d5f976cc3794",
           "formal/rocq/stack_safe_pda/theories/StackSafePDA.v": "f4f1f04ce2fa4b100e3d7f2657a89658a9bce11fd6023888e694268db7509b58",
@@ -1822,7 +1822,7 @@
       "checker": "scripts/check-epm1-positional-obligations.py",
       "family": "epm1_positional",
       "manifest": "formal/epm1_positional_obligations.generated.json",
-      "manifest_sha256": "fb8e69fec397a163642cb23b90beb7f39ca6dc154dd53e6d95a829dc2fbe0bae",
+      "manifest_sha256": "c883ac81fd70ca28d5f6208e09f247e9e4fbda254f48cc76dcb55773091ce0f8",
       "obligations": {
         "causal_mutants": [
           {
@@ -1978,7 +1978,7 @@
           "formal/verus/epm1_positional_association.rs": "72130ff0aae6160e68594fe804a15d219d4bf18b9aa7e38d6c24cadb7ecb374c",
           "models/src/rust/epathmap_trie_codec.rs": "e263b201c4568727a2d7bcef9a6432d524e8a597dddcd96e01bee94d66479974",
           "models/src/rust/mod.rs": "9da24730ef273c25720e873e2b0287379d3d94c802aba26bf437cbecc1eb07d2",
-          "models/tests/formal_equivalence_manifest.rs": "fd675ed492157d2b5a0dc100fac999c4b76c3c7adf8cadc52b3eb62788240608"
+          "models/tests/formal_equivalence_manifest.rs": "5a52bdf762eb261dc168b34443c614308d00e32937bfa34603b85e83e6974021"
         },
         "tla_invariants": [
           {
