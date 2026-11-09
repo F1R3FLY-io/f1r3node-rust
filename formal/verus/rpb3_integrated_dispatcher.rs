@@ -2346,4 +2346,1954 @@ pub proof fn integrated_live_step_establishes_kind_guard(
     }
 }
 
+// ---------------------------------------------------------------------------
+// A10: traces
+// ---------------------------------------------------------------------------
+
+pub open spec fn integrated_trace(
+    states: Seq<IntegratedState>, actions: Seq<IntegratedAction>,
+) -> bool {
+    &&& states.len() == actions.len() + 1
+    &&& integrated_wf(states[0])
+    &&& forall|i: int| 0 <= i < actions.len()
+        ==> #[trigger] integrated_step(states[i], states[i + 1], actions[i])
+}
+
+pub proof fn integrated_trace_wf(
+    states: Seq<IntegratedState>,
+    actions: Seq<IntegratedAction>,
+    index: int,
+)
+    requires
+        integrated_trace(states, actions),
+        0 <= index < states.len(),
+    ensures integrated_wf(states[index]),
+    decreases index,
+{
+    if index > 0 {
+        let previous = index - 1;
+        integrated_trace_wf(states, actions, previous);
+        assert(0 <= previous < actions.len());
+        assert(integrated_step(states[previous], states[previous + 1], actions[previous]));
+        assert(previous + 1 == index);
+        integrated_step_preserves_wf(states[previous], states[previous + 1], actions[previous]);
+    }
+}
+
+pub proof fn integrated_trace_wf_append(
+    states: Seq<IntegratedState>,
+    actions: Seq<IntegratedAction>,
+    after: IntegratedState,
+    action: IntegratedAction,
+)
+    requires
+        integrated_trace(states, actions),
+        integrated_step(states.last(), after, action),
+    ensures
+        integrated_trace(states.push(after), actions.push(action)),
+        integrated_wf(after),
+{
+    let extended_states = states.push(after);
+    let extended_actions = actions.push(action);
+    assert(states.len() > 0);
+    integrated_trace_wf(states, actions, states.len() - 1);
+    integrated_step_preserves_wf(states.last(), after, action);
+    assert(extended_states.len() == extended_actions.len() + 1);
+    assert(extended_states[0] == states[0]);
+    assert forall|i: int| 0 <= i < extended_actions.len() implies
+        #[trigger] integrated_step(extended_states[i], extended_states[i + 1], extended_actions[i]) by {
+        if i < actions.len() {
+            assert(extended_states[i] == states[i]);
+            assert(extended_states[i + 1] == states[i + 1]);
+            assert(extended_actions[i] == actions[i]);
+            assert(integrated_step(states[i], states[i + 1], actions[i]));
+        } else {
+            assert(i == actions.len());
+            assert(extended_states[i] == states.last());
+            assert(extended_states[i + 1] == after);
+            assert(extended_actions[i] == action);
+        }
+    }
+}
+
+/// An accepting trace ends in an `Accepted` state after at least one step.
+pub open spec fn integrated_trace_accepts(
+    states: Seq<IntegratedState>, actions: Seq<IntegratedAction>,
+) -> bool {
+    &&& integrated_trace(states, actions)
+    &&& actions.len() > 0
+    &&& states.last() is Accepted
+}
+
+/// The refinement target of an accepting trace: the last step really is the
+/// root completion of the frame stack, with the exact root facts of each case.
+pub open spec fn integrated_root_completion(
+    pre: LiveRuntimeProductState,
+    action: IntegratedAction,
+    accepted: IntegratedAccepted,
+) -> bool {
+    let frames = pre.source.product.bridge.admission.frames;
+    match accepted {
+        IntegratedAccepted::LiveRoot { post_root_score, live_returned: returned } => match action {
+            IntegratedAction::Live {
+                live_action: LiveRuntimeProductAction::RootComplete { returned: action_returned }, ..
+            } => {
+                &&& action_returned == returned
+                &&& integrated::live_runtime_product_root_complete_step(
+                    pre, post_root_score, returned,
+                )
+                &&& frames.len() == 1
+                &&& frames[0].frame_kind == 1
+                &&& returned.remaining_frames == 0
+                &&& returned.pre_pop.score == post_root_score.source.product.bridge
+                &&& returned.pre_pop.score.admission.frames.len() == 1
+                &&& returned.score_bytes == returned.pre_pop.score.admission.arena[
+                    returned.summary.score_handle as int
+                ].transcript_bytes
+            },
+            _ => false,
+        },
+        IntegratedAccepted::CanonicalPathRoot { pre_complete, path_returned: returned } => match action {
+            IntegratedAction::CanonicalPath { driver_before, driver_action: path } => {
+                &&& pre_complete == pre
+                &&& driver_before.product == pre
+                &&& path_driver::canonical_path_driver_product_wf(driver_before)
+                &&& path_driver::canonical_path_driver_product_step(driver_before, path)
+                    == Some(path_driver::CanonicalPathDriverProductOutcome::Terminal { returned })
+                &&& frames.len() == 1
+                &&& frames[0].frame_kind == 4
+            },
+            _ => false,
+        },
+    }
+}
+
+pub proof fn live_root_completion_is_exact(
+    pre: LiveRuntimeProductState,
+    post: LiveRuntimeProductState,
+    returned: runtime::RuntimeRootReturnImage,
+)
+    requires integrated::live_runtime_product_root_complete_step(pre, post, returned),
+    ensures
+        pre.source.product.bridge.admission.frames.len() == 1,
+        pre.source.product.bridge.admission.frames[0].frame_kind == 1,
+        returned.remaining_frames == 0,
+        returned.pre_pop.score == post.source.product.bridge,
+        returned.pre_pop.score.admission.frames.len() == 1,
+        returned.score_bytes == returned.pre_pop.score.admission.arena[
+            returned.summary.score_handle as int
+        ].transcript_bytes,
+{
+    assert(pre.source.runtime.score == pre.source.product.bridge);
+    assert(runtime::runtime_message_driver_step(pre.source.runtime, runtime::RuntimeMessageEvent::Eof)
+        == Some(runtime::RuntimeMessageOutcome::RootReturned { returned }));
+    assert(score_bridge::bridge_score_finish_selected(pre.source.runtime.score)
+        == Some(post.source.product.bridge));
+    assert(runtime::runtime_message_eof_root_return(pre.source.runtime, post.source.product.bridge)
+        == Some(returned));
+    runtime::runtime_root_return_is_pre_pop_exact(pre.source.runtime, post.source.product.bridge);
+}
+
+pub proof fn integrated_accept_refines_root(
+    states: Seq<IntegratedState>, actions: Seq<IntegratedAction>,
+)
+    requires integrated_trace_accepts(states, actions),
+    ensures ({
+        let last_step = actions.len() - 1;
+        &&& integrated_wf(states[last_step])
+        &&& match (states[last_step], states[last_step + 1]) {
+            (IntegratedState::Active { product }, IntegratedState::Accepted { accepted }) =>
+                integrated_root_completion(product, actions[last_step], accepted),
+            _ => false,
+        }
+    }),
+{
+    let last_step = actions.len() - 1;
+    integrated_trace_wf(states, actions, last_step);
+    assert(0 <= last_step < actions.len());
+    assert(integrated_step(states[last_step], states[last_step + 1], actions[last_step]));
+    assert(states[last_step + 1] == states.last());
+    match states[last_step] {
+        IntegratedState::Accepted { .. } => {
+            assert(false);
+        },
+        IntegratedState::Active { product } => {
+            let after = states[last_step + 1];
+            let action = actions[last_step];
+            match action {
+                IntegratedAction::Live { live_action: live, route } => {
+                    match (live, after) {
+                        (
+                            LiveRuntimeProductAction::RootComplete { returned },
+                            IntegratedState::Accepted {
+                                accepted: IntegratedAccepted::LiveRoot { post_root_score, .. },
+                            },
+                        ) => {
+                            live_root_completion_is_exact(product, post_root_score, returned);
+                        },
+                        _ => {},
+                    }
+                },
+                IntegratedAction::CanonicalPath { driver_before, driver_action: path } => {
+                    path_driver::canonical_path_driver_product_active_sync(driver_before, path);
+                },
+                IntegratedAction::ActForward { .. } | IntegratedAction::ActUnwind { .. } => {},
+            }
+        },
+    }
+}
+
+/// One accepted step from a well-formed state is an accepting trace, so the
+/// premise of `integrated_accept_refines_root` is inhabited whenever such a
+/// step exists.
+pub proof fn integrated_accepted_step_is_accepting_trace(
+    before: IntegratedState,
+    after: IntegratedState,
+    action: IntegratedAction,
+)
+    requires
+        integrated_wf(before),
+        integrated_step(before, after, action),
+        after is Accepted,
+    ensures integrated_trace_accepts(seq![before, after], seq![action]),
+{
+    let states = seq![before, after];
+    let actions = seq![action];
+    assert(states.len() == 2);
+    assert(actions.len() == 1);
+    assert(states[0] == before);
+    assert(states[1] == after);
+    assert(actions[0] == action);
+    assert forall|i: int| 0 <= i < actions.len() implies
+        #[trigger] integrated_step(states[i], states[i + 1], actions[i]) by {
+        assert(i == 0);
+        assert(states[i + 1] == after);
+    }
+    assert(states.last() == after);
+}
+
+// ---------------------------------------------------------------------------
+// A10: non-vacuity witnesses
+// ---------------------------------------------------------------------------
+
+/// Live: the modeled empty nested EPathMap accept is one integrated step.
+pub proof fn live_nested_epm_finish_accept_is_integrated_step()
+    ensures ({
+        let before = integrated::live_epm_modeled_empty_nested_before();
+        let after = integrated::live_epm_modeled_empty_nested_after_accept();
+        let action = IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::EpmFinishAccept,
+            route: IntegratedPushRoute::Plain,
+        };
+        &&& integrated_wf(IntegratedState::Active { product: before })
+        &&& integrated_step(
+            IntegratedState::Active { product: before },
+            IntegratedState::Active { product: after },
+            action,
+        )
+    }),
+{
+    integrated::live_epm_modeled_empty_nested_accept_witness();
+    let before = integrated::live_epm_modeled_empty_nested_before();
+    let top = integrated::product_linked_top(before.source.product).unwrap();
+    let last = before.source.product.epm_frames.len() - 1;
+    assert(before.source.product.epm_frames.len() > 0);
+    assert(before.source.product.epm_frames[last] == before.source.product.epm_frames.last());
+    assert(before.source.product.bridge.admission.frames[last].frame_kind == 3);
+}
+
+/// CanonicalPath: the Boolean root-complete driver action is accepted.
+pub proof fn boolean_root_canonical_path_complete_is_integrated_step()
+    ensures ({
+        let common_root = common::live_canonical_path_common_root_from_source(
+            common::boolean_root_source(),
+        ).unwrap();
+        let driver_before = path_driver::CanonicalPathDriverProductState {
+            common: common_root,
+            product: common_root.live.base,
+            canonical_events: 0,
+            last_driver_step: None,
+        };
+        let storage = path_driver::CanonicalPathDriverStorageObservation {
+            step_index: 0,
+            before_len: 1,
+            after_len: 0,
+            before_top_kind: 4,
+            after_top_kind: None,
+            score_entries_before: 0,
+            score_entries_after: 0,
+        };
+        let path = path_driver::CanonicalPathDriverSourceAction::RootComplete {
+            storage_observed: storage,
+            source_before: parser::initial_parser_source_snapshot(),
+            loop_events: seq![common::boolean_root_loop_event()],
+            source_after_scan: common::boolean_root_source_snapshot(),
+            observed: common::boolean_root_driver_observation(),
+        };
+        let step = path_driver::canonical_path_driver_product_step(driver_before, path);
+        let after = integrated_path_outcome_state(driver_before.product, step.unwrap());
+        &&& step.is_some()
+        &&& step.unwrap() is Terminal
+        &&& integrated_wf(IntegratedState::Active { product: driver_before.product })
+        &&& after is Accepted
+        &&& integrated_step(
+            IntegratedState::Active { product: driver_before.product },
+            after,
+            IntegratedAction::CanonicalPath { driver_before, driver_action: path },
+        )
+        &&& integrated_trace_accepts(
+            seq![IntegratedState::Active { product: driver_before.product }, after],
+            seq![IntegratedAction::CanonicalPath { driver_before, driver_action: path }],
+        )
+    }),
+{
+    path_driver::boolean_root_driver_product_witness();
+    let common_root = common::live_canonical_path_common_root_from_source(
+        common::boolean_root_source(),
+    ).unwrap();
+    let driver_before = path_driver::CanonicalPathDriverProductState {
+        common: common_root,
+        product: common_root.live.base,
+        canonical_events: 0,
+        last_driver_step: None,
+    };
+    let storage = path_driver::CanonicalPathDriverStorageObservation {
+        step_index: 0,
+        before_len: 1,
+        after_len: 0,
+        before_top_kind: 4,
+        after_top_kind: None,
+        score_entries_before: 0,
+        score_entries_after: 0,
+    };
+    let path = path_driver::CanonicalPathDriverSourceAction::RootComplete {
+        storage_observed: storage,
+        source_before: parser::initial_parser_source_snapshot(),
+        loop_events: seq![common::boolean_root_loop_event()],
+        source_after_scan: common::boolean_root_source_snapshot(),
+        observed: common::boolean_root_driver_observation(),
+    };
+    path_driver::canonical_path_driver_product_active_sync(driver_before, path);
+    assert(path_driver::canonical_path_driver_product_wf(driver_before));
+    let step = path_driver::canonical_path_driver_product_step(driver_before, path);
+    assert(step.unwrap() is Terminal);
+    assert(common::live_canonical_path_common_wf(driver_before.common));
+    assert(path_live::live_canonical_path_wf(driver_before.common.live));
+    assert(integrated::live_runtime_product_wf(driver_before.product));
+    assert(integrated_kind_guard(
+        driver_before.product,
+        IntegratedAction::CanonicalPath { driver_before, driver_action: path },
+    ));
+    let active = IntegratedState::Active { product: driver_before.product };
+    let accepted = integrated_path_outcome_state(driver_before.product, step.unwrap());
+    let action = IntegratedAction::CanonicalPath { driver_before, driver_action: path };
+    assert(integrated_wf(active));
+    assert(accepted is Accepted);
+    assert(integrated_step(active, accepted, action));
+    integrated_accepted_step_is_accepting_trace(active, accepted, action);
+}
+
+pub open spec fn act_unwind_witness_frame() -> admission::AdmissionFrameState {
+    admission::AdmissionFrameState {
+        physical_source: 1,
+        physical_start: 0,
+        program_type_id: 0,
+        region_start: 0,
+        region_end: 37,
+        source_bytes: batch::unwind_witness_bytes(),
+        cursor: 37,
+        slot_count: 0,
+        last_slot: None,
+        seen: Set::empty(),
+        required: Set::empty(),
+        scalar_slots: Set::empty(),
+        scalar_occurrences: Seq::empty(),
+        returns: Seq::empty(),
+        family: admission::AdmissionFamily::Other,
+        waiting_id: None,
+        waiting_kind: 0,
+        waiting_slot: None,
+        waiting_tag: None,
+        return_id: None,
+        frame_kind: 3,
+        body_id: 0,
+        score_handle: None,
+        nested_started: 0,
+        nested_resolved: 0,
+    }
+}
+
+pub open spec fn act_unwind_witness_admission() -> admission::AdmissionState {
+    admission::AdmissionState {
+        frames: seq![act_unwind_witness_frame()],
+        arena: Seq::empty(),
+        root_end: 37,
+        pushed: 1,
+        completed: 0,
+        next_obligation_id: 0,
+    }
+}
+
+pub open spec fn act_unwind_witness_product() -> ProductScoreState {
+    let admission = act_unwind_witness_admission();
+    let transcript = score::empty_arena();
+    ProductScoreState {
+        bridge: score_bridge::ScoreAdmissionBridge { admission, transcript },
+        map: map::IntegratedAdmissionState {
+            admission, map_frames: seq![None], transcript,
+        },
+        epm_frames: seq![Some(batch::unwind_witness_before(None, true))],
+        indexed_regions: seq![batch::unwind_witness_snapshot()],
+        accepted_epm_sources: seq![None],
+    }
+}
+
+pub open spec fn act_unwind_witness_state() -> LiveRuntimeProductState {
+    let product = act_unwind_witness_product();
+    LiveRuntimeProductState {
+        source: LiveSourceProductState {
+            product,
+            runtime: runtime::RuntimeFrameImage {
+                score: product.bridge,
+                capacity: 1,
+                frame_bytes: 1,
+                max_frames: 1,
+                max_storage_bytes: 1,
+                max_capacity_bytes: 1,
+            },
+            arena: arena::RuntimeScoreArena { entries: Seq::empty() },
+            wire: seq![None],
+        },
+        cursors: seq![None],
+    }
+}
+
+pub proof fn act_unwind_witness_admission_is_wf()
+    ensures
+        admission::admission_state_wf(act_unwind_witness_admission()),
+        act_unwind_witness_admission().frames.len() == 1,
+{
+    batch::unwind_witness_encoded_prefix();
+    let frame = act_unwind_witness_frame();
+    let state = act_unwind_witness_admission();
+    assert(frame.source_bytes.len() == 37);
+    assert(admission::admission_frame_wf(frame));
+    assert forall|index: int| 0 <= index < state.frames.len()
+        implies admission::admission_frame_wf(#[trigger] state.frames[index]) by {
+        assert(index == 0);
+    }
+    assert(admission::admission_state_wf(state));
+}
+
+pub proof fn act_unwind_witness_product_is_wf()
+    ensures integrated::product_score_wf(act_unwind_witness_product()),
+{
+    batch::unwind_witness_encoded_prefix();
+    batch::unwind_witness_act_layout(None, true);
+    score::empty_arena_well_formed();
+    act_unwind_witness_admission_is_wf();
+    let product = act_unwind_witness_product();
+    let frame = act_unwind_witness_frame();
+    let snapshot = batch::unwind_witness_snapshot();
+    let before = batch::unwind_witness_before(None, true);
+    assert(before.snapshot == snapshot);
+    assert(snapshot.bytes == batch::unwind_witness_bytes());
+    assert(epm::indexed_backing_project(batch::unwind_witness_backing()) == Some(snapshot));
+    assert(epm::indexed_image_wf(snapshot));
+    assert(snapshot.positions[0] == batch::unwind_witness_anchor(0));
+    assert(integrated::product_indexed_start_anchor(snapshot) == batch::unwind_witness_anchor(0));
+    assert(map::integrated_admission_wf(product.map)) by {
+        assert forall|index: int| 0 <= index < product.map.map_frames.len() implies {
+            match #[trigger] product.map.map_frames[index] {
+                None => product.map.admission.frames[index].frame_kind != 2,
+                Some(map_frame) => product.map.admission.frames[index].frame_kind == 2
+                    && index > 0
+                    && product.map.admission.frames[index - 1].family
+                        == admission::AdmissionFamily::New
+                    && product.map.admission.frames[index - 1].program_type_id
+                        == map_frame.owner_type_id
+                    && product.map.admission.frames[index - 1].waiting_slot == Some(3)
+                    && product.map.admission.frames[index - 1].waiting_tag
+                        == Some(map_frame.outer_field)
+                    && product.map.admission.frames[index - 1].waiting_kind == 2
+                    && product.map.admission.frames[index - 1].waiting_id
+                        == product.map.admission.frames[index].return_id
+                    && product.map.admission.frames[index].return_id.is_some()
+                    && product.map.admission.frames[index].body_id as int
+                        == product.map.admission.frames[index].return_id.unwrap() as int + 1
+                    && map::map_frame_wf(map_frame)
+                    && map_frame.accepted_arena.len() <= product.map.admission.arena.len()
+                    && map_frame.accepted_arena == product.map.admission.arena.subrange(
+                        0, map_frame.accepted_arena.len() as int,
+                    )
+                    && map::map_aux_projection(map_frame, product.map.admission.frames[index]),
+            }
+        } by {
+            assert(index == 0);
+            assert(product.map.map_frames[0] == None::<map::MapFrameModel>);
+            assert(product.map.admission.frames[0] == frame);
+        }
+    }
+    assert(integrated::product_epm_source_receipts_wf(product)) by {
+        assert forall|i: int| 0 <= i < product.accepted_epm_sources.len()
+            implies match #[trigger] product.accepted_epm_sources[i] {
+                None => true,
+                Some(source) => integrated::product_epm_source_receipt_matches(
+                    product.bridge.admission.frames[i], product.indexed_regions[i], source,
+                ),
+            } by {
+            assert(i == 0);
+            assert(product.accepted_epm_sources[0] == None::<epm::LinkedEpmState>);
+        }
+    }
+    assert(integrated::product_frame_source_anchors_match(product)) by {
+        assert forall|i: int| 0 <= i < product.indexed_regions.len() implies {
+            &&& epm::indexed_image_wf(product.indexed_regions[i])
+            &&& product.bridge.admission.frames[i].source_bytes == product.indexed_regions[i].bytes
+            &&& product.bridge.admission.frames[i].physical_start
+                == integrated::product_indexed_start_anchor(product.indexed_regions[i]).offset
+            &&& product.bridge.admission.frames[i].physical_source
+                == integrated::product_indexed_start_anchor(product.indexed_regions[i]).source
+        } by {
+            assert(i == 0);
+            assert(product.indexed_regions[0] == snapshot);
+            assert(product.bridge.admission.frames[0] == frame);
+        }
+    }
+    assert forall|i: int| 0 <= i < product.epm_frames.len() implies {
+        &&& epm::indexed_image_wf(product.indexed_regions[i])
+        &&& product.indexed_regions[i].bytes == product.bridge.admission.frames[i].source_bytes
+        &&& match product.epm_frames[i] {
+            None => true,
+            Some(epm_frame) => {
+                &&& product.bridge.admission.frames[i].frame_kind == 3
+                &&& epm_frame.snapshot == product.indexed_regions[i]
+                &&& epm::frame_layout_wf(epm_frame)
+            },
+        }
+    } by {
+        assert(i == 0);
+        assert(product.indexed_regions[0] == snapshot);
+        assert(product.bridge.admission.frames[0] == frame);
+        assert(product.epm_frames[0] == Some(before));
+    }
+    integrated::product_score_wf_intro(product);
+}
+
+pub proof fn act_unwind_witness_state_is_wf()
+    ensures integrated::live_runtime_product_wf(act_unwind_witness_state()),
+{
+    act_unwind_witness_product_is_wf();
+    act_unwind_witness_admission_is_wf();
+    score::empty_arena_well_formed();
+    let state = act_unwind_witness_state();
+    let product = state.source.product;
+    assert(product.bridge.admission.frames.len() == 1);
+    assert(product.bridge.admission.frames[0] == act_unwind_witness_frame());
+    assert(runtime::runtime_frame_image_wf(state.source.runtime));
+    assert(arena::runtime_projects_score(state.source.arena, product.bridge.transcript));
+    assert forall|i: int| 0 <= i < state.source.wire.len() implies {
+        let frame = product.bridge.admission.frames[i];
+        match #[trigger] state.source.wire[i] {
+            None => frame.frame_kind == 3 || frame.frame_kind == 4,
+            Some(reader) => {
+                &&& (frame.frame_kind == 1 || frame.frame_kind == 2)
+                &&& wire::wire_cursor_shape(reader.cursor)
+                &&& reader.cursor.region_start == frame.region_start
+                &&& reader.cursor.region_end == frame.region_end
+                &&& reader.cursor.next == frame.cursor
+                &&& reader.cursor.source_bytes == frame.source_bytes
+                &&& reader.terminal_error.is_none()
+            },
+        }
+    } by {
+        assert(i == 0);
+    }
+    assert(integrated::live_source_product_wf(state.source));
+    assert forall|i: int| 0 <= i < state.cursors.len() implies match #[trigger] state.cursors[i] {
+        None => true,
+        Some(cursor) => integrated::product_wire_indexed_source_agrees(
+            cursor, state.source.product.indexed_regions[i],
+        ),
+    } by {
+        assert(i == 0);
+        assert(state.cursors[0] == None::<wire::WireRuntimeCursorImage>);
+    }
+    assert forall|i: int| 0 <= i < state.cursors.len() implies {
+        match (#[trigger] state.cursors[i], state.source.wire[i]) {
+            (None, None) => true,
+            (Some(cursor), Some(reader)) => {
+                &&& wire::wire_runtime_derive_cursor(cursor).is_some()
+                &&& wire::wire_concrete_cursor_wf(wire::wire_runtime_derive_cursor(cursor).unwrap())
+                &&& wire::wire_runtime_cursor_project(cursor) == Some(reader)
+            },
+            _ => false,
+        }
+    } by {
+        assert(i == 0);
+        assert(state.cursors[0] == None::<wire::WireRuntimeCursorImage>);
+        assert(state.source.wire[0] == None::<wire::WireSourceState>);
+    }
+    assert(integrated::live_runtime_product_wf(state));
+}
+
+/// ACT: a one-frame Live state whose top EPathMap frame is the composition
+/// module's Unwind witness; the integrated ActUnwind step is enabled on it.
+pub proof fn act_unwind_witness_is_integrated_step()
+    ensures ({
+        let before = act_unwind_witness_state();
+        let run = batch::unwind_witness_run(None, true);
+        let prefix = Seq::<epm::PathCheckpoint>::empty();
+        let action = IntegratedAction::ActUnwind {
+            run, prefix, start: 17, width: 1, unwind_facts: batch::unwind_witness_facts(),
+        };
+        &&& integrated_wf(IntegratedState::Active { product: before })
+        &&& integrated_step(
+            IntegratedState::Active { product: before },
+            IntegratedState::Active { product: integrated_act_unwind_after(before, run, prefix, 1) },
+            action,
+        )
+    }),
+{
+    act_unwind_witness_state_is_wf();
+    act_unwind_witness_admission_is_wf();
+    batch::accepted_unwind_has_no_current_pending_witness();
+    batch::unwind_witness_encoded_prefix();
+    batch::unwind_witness_act_layout(None, true);
+    let before = act_unwind_witness_state();
+    let product = before.source.product;
+    let snapshot = batch::unwind_witness_snapshot();
+    let source = integrated_act_unwind_source(before);
+    let run = batch::unwind_witness_run(None, true);
+    let prefix = Seq::<epm::PathCheckpoint>::empty();
+    let frame = act_unwind_witness_frame();
+    assert(product.epm_frames.last() == Some(batch::unwind_witness_before(None, true)));
+    assert(integrated::product_linked_top(product).is_some());
+    assert(source == integrated::product_linked_top(product).unwrap());
+    assert(source.epm == batch::unwind_witness_before(None, true));
+    assert(source.admission == act_unwind_witness_admission());
+    assert(source.indexed_regions == seq![snapshot]);
+    assert(source.admission.frames.last() == frame);
+    assert(snapshot.positions[0] == batch::unwind_witness_anchor(0));
+    assert(epm::linked_indexed_sources(source)) by {
+        assert forall|i: int| 0 <= i < source.admission.frames.len()
+            implies epm::indexed_image_wf(source.indexed_regions[i])
+                && source.indexed_regions[i].bytes == source.admission.frames[i].source_bytes
+                && epm::indexed_position_at(source.indexed_regions[i], 0).source
+                    == source.admission.frames[i].physical_source
+                && epm::indexed_position_at(source.indexed_regions[i], 0).offset
+                    == source.admission.frames[i].physical_start by {
+            assert(i == 0);
+            assert(source.indexed_regions[0] == snapshot);
+            assert(source.admission.frames[0] == frame);
+        }
+    }
+    assert(unwind::linked_unwind_source_guard(
+        source, run, prefix, 17, 1, batch::unwind_witness_facts(),
+    ));
+    assert(integrated_act_unwind_guard(before, run, prefix, 17, 1, batch::unwind_witness_facts()));
+}
+
+// ---------------------------------------------------------------------------
+// ACT Forward non-vacuity witness
+// ---------------------------------------------------------------------------
+
+/// The EPM1 snapshot of the ACT Forward witness, 39 bytes in total: a Map whose
+/// ACT trie has one record, the two-byte line `0x2a 0x2b` with a terminal value,
+/// and whose value table holds one empty body. The line has two bytes because a
+/// Forward batch stops before a line's final value-bearing edge. The snapshot is
+/// a Map rather than a Set because `accepted_act_plan_source_image` equates the
+/// ACT value count with the declared EPM1 count, which Set mode fixes at zero.
+pub open spec fn act_forward_witness_bytes() -> Seq<u8> {
+    seq![
+        0x45, 0x50, 0x4d, 0x31, 1, 2, 30,
+        0x41, 0x43, 0x54, 0x72, 0x65, 0x65, 0x30, 0x33,
+        19, 0, 0, 0, 0, 0, 0, 0,
+        2, 0x2a, 0x2b, 0xc0, 0, 3,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        1, 0
+    ]
+}
+
+/// The ACT trie, the indexed view `bytes[7..37]` of the snapshot.
+pub open spec fn act_forward_witness_trie() -> Seq<u8> {
+    seq![
+        0x41, 0x43, 0x54, 0x72, 0x65, 0x65, 0x30, 0x33,
+        19, 0, 0, 0, 0, 0, 0, 0,
+        2, 0x2a, 0x2b, 0xc0, 0, 3,
+        0, 0, 0, 0, 0, 0, 0, 0
+    ]
+}
+
+pub open spec fn act_forward_witness_anchor(offset: usize) -> epm::SourceAnchor {
+    epm::SourceAnchor { source: 1, offset }
+}
+
+pub open spec fn act_forward_witness_backing() -> epm::IndexedBackingImage {
+    epm::IndexedBackingImage::Borrowed {
+        bytes: act_forward_witness_bytes(),
+        source: 1,
+        absolute_start: 0,
+        start: 0,
+        len: 39,
+        end_override: None,
+    }
+}
+
+pub open spec fn act_forward_witness_snapshot() -> epm::IndexedRegionImage {
+    epm::IndexedRegionImage {
+        bytes: act_forward_witness_bytes(),
+        positions: Seq::new(39nat, |i: int| act_forward_witness_anchor(i as usize)),
+        end: act_forward_witness_anchor(39),
+    }
+}
+
+/// One record: the line at trie offsets 17 and 18 (encoded at offset 16), with
+/// the terminal value marker at node 19.
+pub open spec fn act_forward_witness_plan() -> epm::ActPlanImage {
+    epm::ActPlanImage {
+        records: seq![epm::ActRecordImage {
+            node_id: 19,
+            subtree_end: 1,
+            value: Some(0),
+            value_source_offset: 19,
+            line_start: 17,
+            line_len: 2,
+            line_encoded_start: 16,
+            wrapper_id: None,
+            wrapper_len: 0,
+            incoming_source_offset: None,
+            incoming_origin: None,
+            children: Seq::empty(),
+        }],
+        finish_order: seq![0],
+        line_hash: |_bytes: Seq<u8>| 0,
+    }
+}
+
+pub open spec fn act_forward_witness_validated_plan() -> epm::ValidatedActPlanImage {
+    epm::ValidatedActPlanImage {
+        records: seq![epm::ValidatedTopologyRecordImage {
+            node_id: 19,
+            value: 0,
+            value_source_offset: 19,
+            line_start: 17,
+            line_len: 2,
+            incoming_source_offset: 0,
+            child_count: 0,
+            incoming_byte: 0,
+            flags: 1,
+        }],
+        empty: false,
+        value_count: 1,
+        first_nonzero: None,
+    }
+}
+
+/// The path gate of the parser below, read at the root path: a non-empty stack,
+/// not split-complete, no completed segment yet.
+pub open spec fn act_forward_witness_gate() -> epm::PathGate {
+    epm::PathGate {
+        dead: false,
+        stack_empty: false,
+        split_complete: false,
+        completed_segments: 0,
+        first_is_list: false,
+        stable: true,
+        escape_allowed: true,
+    }
+}
+
+/// A parser focused on the payload of an open RawPar obligation of two bytes,
+/// none consumed: the state in which a Forward batch advances interior bytes.
+pub open spec fn act_forward_witness_parser() -> parser::ParserImage {
+    parser::ParserImage {
+        focus: parser::ParserPath {
+            status: parser::ParserStatus::Open,
+            completed_segments: 0,
+            first_tag: None,
+            stable: true,
+            escape_allowed: true,
+            stack: seq![parser::ParserFrame::Obligation {
+                id: 0,
+                kind: parser::ParserObligationKind::RawParEscape,
+                payload_len: 2,
+                tag_source: parser::ParserSource { source: 1, offset: 23 },
+                payload_start: 0,
+                status: parser::ParserObligationStatus::Payload,
+            }],
+        },
+        owners: Seq::empty(),
+        next_obligation: 1,
+        stamp: 0,
+        fault: false,
+    }
+}
+
+pub open spec fn act_forward_witness_pending() -> epm::PathObligation {
+    epm::PathObligation {
+        id: 0,
+        kind: epm::PathObligationKind::RawParEscape,
+        payload_len: 2,
+        tag_source: act_forward_witness_anchor(23),
+        payload_start: 0,
+        payload_end: act_forward_witness_anchor(23),
+        awaiting_resolution: false,
+    }
+}
+
+/// The EPM frame before the batch: the root Value (event 0) has been consumed
+/// and the cursor is at event 1, the first Forward edge of the line.
+pub open spec fn act_forward_witness_before() -> epm::EpmFrame {
+    epm::EpmFrame {
+        path: epm::PathTopology {
+            next_obligation: 1,
+            pending: Some(act_forward_witness_pending()),
+            root_left: false,
+            restore: Seq::empty(),
+            path_bytes: Seq::empty(),
+            path_positions: Seq::empty(),
+            gate: act_forward_witness_gate(),
+            parser: act_forward_witness_parser(),
+        },
+        cursor: epm::EpmCursorImage {
+            act_plan: Some(act_forward_witness_plan()),
+            validated_plan: Some(act_forward_witness_validated_plan()),
+            at: 1,
+            declared_value_count: 1,
+            map_values_seen: 0,
+            value_table_offset: 38,
+            done: false,
+        },
+        wait: None,
+        mode: epm::EpmMode::Map,
+        entries_stable: true,
+        last_source: act_forward_witness_anchor(26),
+        snapshot: act_forward_witness_snapshot(),
+        backing: act_forward_witness_backing(),
+        trie_start: 7,
+        trie_end: 37,
+        value_table_start: 38,
+        mode_offset: 5,
+    }
+}
+
+/// The raw ACT event stream of the witness: the root Value, the line's
+/// Edge/Value pairs, its Leaves, and the node's Leave.
+pub open spec fn act_forward_witness_raw_events() -> Seq<epm::WireTopologyEvent> {
+    seq![
+        epm::WireTopologyEvent::Value { has_value: false, value_body: None, source_offset: 19 },
+        epm::WireTopologyEvent::Edge { source_offset: 17, origin: epm::EdgeOrigin::Direct },
+        epm::WireTopologyEvent::Value { has_value: false, value_body: None, source_offset: 17 },
+        epm::WireTopologyEvent::Edge { source_offset: 18, origin: epm::EdgeOrigin::Direct },
+        epm::WireTopologyEvent::Value { has_value: true, value_body: None, source_offset: 19 },
+        epm::WireTopologyEvent::Leave { source_offset: 18 },
+        epm::WireTopologyEvent::Leave { source_offset: 17 },
+        epm::WireTopologyEvent::Leave { source_offset: 19 },
+    ]
+}
+
+/// The Map value span selected by the value table: the empty body after the
+/// length prefix at offset 38.
+pub open spec fn act_forward_witness_value_span() -> epm::ByteSpan {
+    epm::ByteSpan { start: 39, end: 39 }
+}
+
+/// The attached events: the raw stream with the Map value body at the line's
+/// final (value-bearing) Value.
+pub open spec fn act_forward_witness_attached_events() -> Seq<epm::WireTopologyEvent> {
+    seq![
+        epm::WireTopologyEvent::Value { has_value: false, value_body: None, source_offset: 19 },
+        epm::WireTopologyEvent::Edge { source_offset: 17, origin: epm::EdgeOrigin::Direct },
+        epm::WireTopologyEvent::Value { has_value: false, value_body: None, source_offset: 17 },
+        epm::WireTopologyEvent::Edge { source_offset: 18, origin: epm::EdgeOrigin::Direct },
+        epm::WireTopologyEvent::Value {
+            has_value: true, value_body: Some(act_forward_witness_value_span()), source_offset: 19,
+        },
+        epm::WireTopologyEvent::Leave { source_offset: 18 },
+        epm::WireTopologyEvent::Leave { source_offset: 17 },
+        epm::WireTopologyEvent::Leave { source_offset: 19 },
+    ]
+}
+
+pub open spec fn act_forward_witness_attached() -> epm::AttachedActEvents {
+    epm::AttachedActEvents {
+        events: act_forward_witness_attached_events(),
+        next_value_offset: 39,
+        map_values_seen: 1,
+    }
+}
+
+/// A canonical single-group varint decodes to its own byte value.
+pub proof fn act_forward_witness_single_byte_varint(bytes: Seq<u8>, at: usize, byte: u8)
+    requires
+        (at as int) < bytes.len(),
+        (at as int) < usize::MAX,
+        bytes[at as int] == byte,
+        byte < 128,
+    ensures
+        epm::canonical_varint_at(bytes, at)
+            == Some(epm::CanonicalVarintImage { value: byte as u64, end: (at as int + 1) as usize }),
+{
+    reveal_with_fuel(epm::canonical_varint_tail, 2);
+    assert(bytes[at as int] as int == byte as int);
+    assert(byte as int % 128 == byte as int);
+    assert(epm::power_of_two((7 * 0int) as nat) == 1);
+}
+
+pub proof fn act_forward_witness_encoded_prefix()
+    ensures ({
+        let before = act_forward_witness_before();
+        &&& act_forward_witness_bytes().len() == 39
+        &&& epm::indexed_image_wf(before.snapshot)
+        &&& epm::indexed_backing_project(before.backing) == Some(before.snapshot)
+        &&& before.snapshot.bytes == act_forward_witness_bytes()
+        &&& epm::epm_prefix_from_bytes(before.snapshot.bytes)
+            == Some(epm::EpmPrefixImage {
+                mode: epm::EpmMode::Map,
+                trie_start: 7,
+                trie_end: 37,
+                value_count: 1,
+                value_table_start: 38,
+            })
+    }),
+{
+    let before = act_forward_witness_before();
+    let bytes = act_forward_witness_bytes();
+    let snapshot = act_forward_witness_snapshot();
+    let projected = epm::indexed_backing_project(act_forward_witness_backing());
+    assert(bytes.len() == 39);
+    assert(projected.is_some());
+    assert(projected.unwrap().bytes =~= snapshot.bytes);
+    assert(projected.unwrap().positions =~= snapshot.positions);
+    assert(projected.unwrap() == snapshot);
+    assert(epm::indexed_backing_project(before.backing) == Some(before.snapshot));
+    assert(epm::indexed_image_wf(before.snapshot));
+    assert(bytes[6] == 30);
+    assert(bytes[37] == 1);
+    act_forward_witness_single_byte_varint(bytes, 6, 30);
+    act_forward_witness_single_byte_varint(bytes, 37, 1);
+    assert(epm::canonical_varint_at(bytes, 6)
+        == Some(epm::CanonicalVarintImage { value: 30, end: 7 }));
+    assert(epm::canonical_varint_at(bytes, 37)
+        == Some(epm::CanonicalVarintImage { value: 1, end: 38 }));
+    assert(bytes[5] == 2);
+    assert(epm::epm_mode_byte(bytes[5]) == Some(epm::EpmMode::Map));
+    assert(epm::epm_prefix_from_bytes(bytes) == Some(epm::EpmPrefixImage {
+        mode: epm::EpmMode::Map,
+        trie_start: 7,
+        trie_end: 37,
+        value_count: 1,
+        value_table_start: 38,
+    }));
+}
+
+/// The snapshot's `[7..37]` view is the literal trie.
+pub proof fn act_forward_witness_trie_view()
+    ensures
+        act_forward_witness_bytes().subrange(7, 37) == act_forward_witness_trie(),
+        act_forward_witness_trie().len() == 30,
+{
+    let bytes = act_forward_witness_bytes();
+    let trie = act_forward_witness_trie();
+    assert(bytes.len() == 39);
+    assert(trie.len() == 30);
+    assert(bytes.subrange(7, 37) =~= trie);
+}
+
+pub proof fn act_forward_witness_act_magic()
+    ensures epm::act_magic_and_trailer(act_forward_witness_trie()),
+{
+    let trie = act_forward_witness_trie();
+    assert(trie.len() == 30);
+    assert(trie[0] == 0x41);
+    assert(trie[1] == 0x43);
+    assert(trie[2] == 0x54);
+    assert(trie[3] == 0x72);
+    assert(trie[4] == 0x65);
+    assert(trie[5] == 0x65);
+    assert(trie[6] == 0x30);
+    assert(trie[7] == 0x33);
+    assert forall|i: int| trie.len() - 8 <= i < trie.len() implies trie[i] == 0 by {
+        assert(22 <= i < 30);
+    }
+}
+
+pub open spec fn act_forward_witness_root_semantic_image() -> epm::ActSemanticImage {
+    epm::ActSemanticImage {
+        value: Some(0),
+        value_source_offset: 19,
+        line_start: 17,
+        line_len: 2,
+        line_encoded_start: 16,
+        wrapper_id: None,
+        wrapper_len: 0,
+        first_child: None,
+        edges: Seq::empty(),
+        encoded_len: 3,
+    }
+}
+
+pub proof fn act_forward_witness_root_semantic()
+    ensures
+        epm::act_semantic_at(act_forward_witness_trie(), 19)
+            == Some(act_forward_witness_root_semantic_image()),
+{
+    let trie = act_forward_witness_trie();
+    assert(trie.len() == 30);
+    assert(trie[19] == 0xc0);
+    assert(trie[20] == 0);
+    assert(trie[21] == 3);
+    assert(trie[16] == 2);
+    assert(epm::act_value_at(trie, 19) == Some((Some(0u64), 21usize)));
+    assert(epm::act_varint_at(trie, 21)
+        == Some(epm::CanonicalVarintImage { value: 3, end: 22 }));
+    assert(epm::act_varint_at(trie, 16)
+        == Some(epm::CanonicalVarintImage { value: 2, end: 17 }));
+}
+
+/// The root id stored in the trie header names the only record's node.
+pub proof fn act_forward_witness_root_id()
+    ensures epm::little_endian_uint(act_forward_witness_trie(), 8, 8) == 19,
+{
+    let trie = act_forward_witness_trie();
+    assert(trie.len() == 30);
+    assert(trie[8] == 19);
+    assert(trie[9] == 0);
+    assert(trie[10] == 0);
+    assert(trie[11] == 0);
+    assert(trie[12] == 0);
+    assert(trie[13] == 0);
+    assert(trie[14] == 0);
+    assert(trie[15] == 0);
+    reveal_with_fuel(epm::little_endian_uint, 9);
+    assert(epm::little_endian_uint(trie, 8, 8) == 19);
+}
+
+/// The plan's only record agrees with the decoded root node of the trie.
+pub proof fn act_forward_witness_record_matches()
+    ensures epm::act_record_matches(
+        act_forward_witness_trie(), act_forward_witness_plan().records, 0,
+    ),
+{
+    act_forward_witness_root_semantic();
+    let trie = act_forward_witness_trie();
+    let plan = act_forward_witness_plan();
+    assert(trie.len() == 30);
+    assert(plan.records.len() == 1);
+    assert(plan.records[0].node_id == 19);
+    assert(plan.records[0].children.len() == 0);
+    assert(act_forward_witness_root_semantic_image().edges.len() == 0);
+    assert(epm::act_record_matches(trie, plan.records, 0));
+}
+
+/// Replaying the producer over the single record appends its line at offset
+/// 16 and leaves the position at the root node, just before the trailer.
+pub proof fn act_forward_witness_producer_matches()
+    ensures epm::act_producer_matches_frame(
+        act_forward_witness_trie(), act_forward_witness_plan(),
+    ),
+{
+    act_forward_witness_root_semantic();
+    let trie = act_forward_witness_trie();
+    let plan = act_forward_witness_plan();
+    let initial = epm::ActProducerState {
+        position: 16, lines: Seq::empty(), line_hash: plan.line_hash,
+    };
+    let suffix = trie.subrange(17, 19);
+    let line = epm::ActProducerLine { encoded_start: 16, suffix };
+    let next = epm::ActProducerState {
+        position: 19, lines: initial.lines.push(line), line_hash: plan.line_hash,
+    };
+    assert(trie.len() == 30);
+    assert(plan.records.len() == 1);
+    assert(plan.finish_order.len() == 1);
+    assert(plan.finish_order[0] == 0usize);
+    assert(epm::act_finish_order_wf(plan));
+    assert(epm::latest_hashed_act_line(initial.lines, suffix, plan.line_hash).is_none());
+    assert(epm::act_producer_record_step(trie, plan.records, 0, initial) == Some(next));
+    assert(epm::act_producer_replay(trie, plan, 0, initial) == Some(next)) by {
+        reveal_with_fuel(epm::act_producer_replay, 2);
+    }
+    assert(epm::act_producer_matches_frame(trie, plan));
+}
+
+pub proof fn act_forward_witness_encoded_act_plan()
+    ensures
+        epm::act_plan_matches_frame(act_forward_witness_before(), act_forward_witness_plan()),
+{
+    act_forward_witness_encoded_prefix();
+    act_forward_witness_trie_view();
+    act_forward_witness_act_magic();
+    act_forward_witness_root_id();
+    act_forward_witness_record_matches();
+    act_forward_witness_producer_matches();
+    let before = act_forward_witness_before();
+    let bytes = act_forward_witness_bytes();
+    let trie = act_forward_witness_trie();
+    let plan = act_forward_witness_plan();
+    assert(before.snapshot.bytes == bytes);
+    assert(before.snapshot.bytes.subrange(before.trie_start as int, before.trie_end as int) == trie);
+    assert(plan.records.len() == 1);
+    assert forall|i: int| 0 <= i < plan.records.len()
+        implies epm::act_record_matches(trie, plan.records, i) by {
+        assert(i == 0);
+    }
+    assert(epm::act_plan_matches_frame(before, plan));
+}
+
+pub proof fn act_forward_witness_validated_plan_matches()
+    ensures epm::act_plan_projects_validated(
+        act_forward_witness_before(),
+        act_forward_witness_plan(),
+        act_forward_witness_validated_plan(),
+    ),
+{
+    act_forward_witness_encoded_prefix();
+    act_forward_witness_trie_view();
+    let before = act_forward_witness_before();
+    let plan = act_forward_witness_plan();
+    let validated = act_forward_witness_validated_plan();
+    let trie = act_forward_witness_trie();
+    reveal_with_fuel(epm::act_value_count, 2);
+    assert(epm::act_value_count(plan.records, 0) == 1);
+    assert(before.snapshot.bytes.subrange(before.trie_start as int, before.trie_end as int) == trie);
+    assert(epm::act_record_projects_validated(trie, plan.records[0], validated.records[0]));
+    assert forall|i: int| 0 <= i < plan.records.len() implies
+        epm::act_record_projects_validated(
+            before.snapshot.bytes.subrange(before.trie_start as int, before.trie_end as int),
+            plan.records[i], validated.records[i],
+        ) by {
+        assert(i == 0);
+    }
+    assert(epm::act_plan_projects_validated(before, plan, validated));
+}
+
+/// Expanding the plan's root work from `Enter(0)` yields the raw event stream.
+pub proof fn act_forward_witness_raw_expansion()
+    ensures ({
+        let plan = act_forward_witness_plan();
+        epm::act_expand_work(
+            plan, seq![epm::ActWorkItem::Enter(0)], epm::act_work_budget(plan, 0) + 1,
+        ) == Some(act_forward_witness_raw_events())
+    }),
+{
+    let plan = act_forward_witness_plan();
+    let raw = act_forward_witness_raw_events();
+    reveal_with_fuel(epm::act_line_forward_work, 3);
+    reveal_with_fuel(epm::act_line_leave_work, 3);
+    reveal_with_fuel(epm::act_work_budget, 2);
+    reveal_with_fuel(epm::act_expand_work, 10);
+    assert(epm::act_record_work(plan, 0).len() == 8);
+    assert(epm::act_expand_work(
+        plan, seq![epm::ActWorkItem::Enter(0)], epm::act_work_budget(plan, 0) + 1,
+    ) == Some(raw));
+}
+
+/// Attaching the Map value table binds the empty body to the final line Value.
+pub proof fn act_forward_witness_attachment()
+    ensures epm::attach_act_value_bodies(
+        act_forward_witness_bytes(), epm::EpmMode::Map, act_forward_witness_raw_events(), 38,
+    ) == Some(act_forward_witness_attached()),
+{
+    let bytes = act_forward_witness_bytes();
+    assert(bytes.len() == 39);
+    assert(bytes[38] == 0);
+    act_forward_witness_single_byte_varint(bytes, 38, 0);
+    assert(epm::map_value_body_at(bytes, 38) == Some(act_forward_witness_value_span()));
+    reveal_with_fuel(epm::attach_act_value_bodies, 9);
+    let attached_option = epm::attach_act_value_bodies(
+        bytes, epm::EpmMode::Map, act_forward_witness_raw_events(), 38,
+    );
+    assert(attached_option.is_some());
+    assert(attached_option.unwrap().next_value_offset == 39);
+    assert(attached_option.unwrap().map_values_seen == 1);
+    assert(attached_option.unwrap().events =~= act_forward_witness_attached_events());
+    assert(attached_option == Some(act_forward_witness_attached()));
+}
+
+pub proof fn act_forward_witness_attached_events_valid()
+    ensures forall|i: int| 0 <= i < act_forward_witness_attached_events().len() ==>
+        epm::act_event_source_valid(
+            act_forward_witness_trie(), #[trigger] act_forward_witness_attached_events()[i],
+        ),
+{
+    let trie = act_forward_witness_trie();
+    let events = act_forward_witness_attached_events();
+    assert(trie.len() == 30);
+    assert(events.len() == 8);
+    assert forall|i: int| 0 <= i < events.len() implies
+        epm::act_event_source_valid(trie, events[i]) by {
+        assert(0 <= i < 8);
+    }
+}
+
+pub proof fn act_forward_witness_expanded_act_events()
+    ensures epm::act_plan_events(act_forward_witness_before(), act_forward_witness_plan())
+        == Some(act_forward_witness_attached_events()),
+{
+    act_forward_witness_encoded_act_plan();
+    act_forward_witness_raw_expansion();
+    act_forward_witness_attachment();
+    act_forward_witness_attached_events_valid();
+    act_forward_witness_encoded_prefix();
+    act_forward_witness_trie_view();
+    let before = act_forward_witness_before();
+    let bytes = act_forward_witness_bytes();
+    let trie = act_forward_witness_trie();
+    let plan = act_forward_witness_plan();
+    let events = act_forward_witness_attached_events();
+    assert(before.snapshot.bytes == bytes);
+    assert(before.snapshot.bytes.subrange(before.trie_start as int, before.trie_end as int) == trie);
+    assert forall|i: int| 0 <= i < events.len() implies epm::act_event_source_valid(
+        before.snapshot.bytes.subrange(before.trie_start as int, before.trie_end as int),
+        events[i],
+    ) by {
+        assert(epm::act_event_source_valid(trie, events[i]));
+    }
+    assert(epm::act_plan_events(before, plan) == Some(events));
+}
+
+/// The witness frame is layout-well-formed with eight cursor events, and the
+/// trie's first line byte sits at snapshot offset 24.
+pub proof fn act_forward_witness_concrete_act_layout()
+    ensures ({
+        let before = act_forward_witness_before();
+        &&& epm::frame_layout_wf(before)
+        &&& epm::act_plan_events(before, act_forward_witness_plan())
+            == Some(act_forward_witness_attached_events())
+        &&& epm::cursor_event_count(before) == 8usize
+        &&& epm::trie_position(before, 17) == act_forward_witness_anchor(24)
+    }),
+{
+    let before = act_forward_witness_before();
+    let plan = act_forward_witness_plan();
+    act_forward_witness_encoded_prefix();
+    act_forward_witness_encoded_act_plan();
+    act_forward_witness_validated_plan_matches();
+    act_forward_witness_expanded_act_events();
+    let events = act_forward_witness_attached_events();
+    assert(events.len() == 8);
+    assert(epm::cursor_event_count(before) == 8usize);
+    assert(before.snapshot.positions.len() == 39);
+    assert(before.snapshot.positions[24] == act_forward_witness_anchor(24));
+    assert(epm::trie_position(before, 17) == act_forward_witness_anchor(24));
+    assert(epm::frame_layout_wf(before));
+}
+
+pub open spec fn act_forward_witness_frame() -> admission::AdmissionFrameState {
+    admission::AdmissionFrameState {
+        physical_source: 1,
+        physical_start: 0,
+        program_type_id: 0,
+        region_start: 0,
+        region_end: 39,
+        source_bytes: act_forward_witness_bytes(),
+        cursor: 38,
+        slot_count: 0,
+        last_slot: None,
+        seen: Set::empty(),
+        required: Set::empty(),
+        scalar_slots: Set::empty(),
+        scalar_occurrences: Seq::empty(),
+        returns: Seq::empty(),
+        family: admission::AdmissionFamily::Other,
+        waiting_id: None,
+        waiting_kind: 0,
+        waiting_slot: None,
+        waiting_tag: None,
+        return_id: None,
+        frame_kind: 3,
+        body_id: 0,
+        score_handle: None,
+        nested_started: 0,
+        nested_resolved: 0,
+    }
+}
+
+pub open spec fn act_forward_witness_admission() -> admission::AdmissionState {
+    admission::AdmissionState {
+        frames: seq![act_forward_witness_frame()],
+        arena: Seq::empty(),
+        root_end: 39,
+        pushed: 1,
+        completed: 0,
+        next_obligation_id: 0,
+    }
+}
+
+pub open spec fn act_forward_witness_product() -> ProductScoreState {
+    let admission = act_forward_witness_admission();
+    let transcript = score::empty_arena();
+    ProductScoreState {
+        bridge: score_bridge::ScoreAdmissionBridge { admission, transcript },
+        map: map::IntegratedAdmissionState {
+            admission, map_frames: seq![None], transcript,
+        },
+        epm_frames: seq![Some(act_forward_witness_before())],
+        indexed_regions: seq![act_forward_witness_snapshot()],
+        accepted_epm_sources: seq![None],
+    }
+}
+
+pub open spec fn act_forward_witness_state() -> LiveRuntimeProductState {
+    let product = act_forward_witness_product();
+    LiveRuntimeProductState {
+        source: LiveSourceProductState {
+            product,
+            runtime: runtime::RuntimeFrameImage {
+                score: product.bridge,
+                capacity: 1,
+                frame_bytes: 1,
+                max_frames: 1,
+                max_storage_bytes: 1,
+                max_capacity_bytes: 1,
+            },
+            arena: arena::RuntimeScoreArena { entries: Seq::empty() },
+            wire: seq![None],
+        },
+        cursors: seq![None],
+    }
+}
+
+pub proof fn act_forward_witness_admission_is_wf()
+    ensures
+        admission::admission_state_wf(act_forward_witness_admission()),
+        act_forward_witness_admission().frames.len() == 1,
+{
+    act_forward_witness_encoded_prefix();
+    let frame = act_forward_witness_frame();
+    let state = act_forward_witness_admission();
+    assert(frame.source_bytes.len() == 39);
+    assert(admission::admission_frame_wf(frame));
+    assert forall|index: int| 0 <= index < state.frames.len()
+        implies admission::admission_frame_wf(#[trigger] state.frames[index]) by {
+        assert(index == 0);
+    }
+    assert(admission::admission_state_wf(state));
+}
+
+pub proof fn act_forward_witness_product_is_wf()
+    ensures integrated::product_score_wf(act_forward_witness_product()),
+{
+    act_forward_witness_encoded_prefix();
+    act_forward_witness_concrete_act_layout();
+    score::empty_arena_well_formed();
+    act_forward_witness_admission_is_wf();
+    let product = act_forward_witness_product();
+    let frame = act_forward_witness_frame();
+    let snapshot = act_forward_witness_snapshot();
+    let before = act_forward_witness_before();
+    assert(before.snapshot == snapshot);
+    assert(snapshot.bytes == act_forward_witness_bytes());
+    assert(epm::indexed_image_wf(snapshot));
+    assert(snapshot.positions[0] == act_forward_witness_anchor(0));
+    assert(integrated::product_indexed_start_anchor(snapshot) == act_forward_witness_anchor(0));
+    assert(map::integrated_admission_wf(product.map)) by {
+        assert forall|index: int| 0 <= index < product.map.map_frames.len() implies {
+            match #[trigger] product.map.map_frames[index] {
+                None => product.map.admission.frames[index].frame_kind != 2,
+                Some(map_frame) => product.map.admission.frames[index].frame_kind == 2
+                    && index > 0
+                    && product.map.admission.frames[index - 1].family
+                        == admission::AdmissionFamily::New
+                    && product.map.admission.frames[index - 1].program_type_id
+                        == map_frame.owner_type_id
+                    && product.map.admission.frames[index - 1].waiting_slot == Some(3)
+                    && product.map.admission.frames[index - 1].waiting_tag
+                        == Some(map_frame.outer_field)
+                    && product.map.admission.frames[index - 1].waiting_kind == 2
+                    && product.map.admission.frames[index - 1].waiting_id
+                        == product.map.admission.frames[index].return_id
+                    && product.map.admission.frames[index].return_id.is_some()
+                    && product.map.admission.frames[index].body_id as int
+                        == product.map.admission.frames[index].return_id.unwrap() as int + 1
+                    && map::map_frame_wf(map_frame)
+                    && map_frame.accepted_arena.len() <= product.map.admission.arena.len()
+                    && map_frame.accepted_arena == product.map.admission.arena.subrange(
+                        0, map_frame.accepted_arena.len() as int,
+                    )
+                    && map::map_aux_projection(map_frame, product.map.admission.frames[index]),
+            }
+        } by {
+            assert(index == 0);
+            assert(product.map.map_frames[0] == None::<map::MapFrameModel>);
+            assert(product.map.admission.frames[0] == frame);
+        }
+    }
+    assert(integrated::product_epm_source_receipts_wf(product)) by {
+        assert forall|i: int| 0 <= i < product.accepted_epm_sources.len()
+            implies match #[trigger] product.accepted_epm_sources[i] {
+                None => true,
+                Some(source) => integrated::product_epm_source_receipt_matches(
+                    product.bridge.admission.frames[i], product.indexed_regions[i], source,
+                ),
+            } by {
+            assert(i == 0);
+            assert(product.accepted_epm_sources[0] == None::<epm::LinkedEpmState>);
+        }
+    }
+    assert(integrated::product_frame_source_anchors_match(product)) by {
+        assert forall|i: int| 0 <= i < product.indexed_regions.len() implies {
+            &&& epm::indexed_image_wf(product.indexed_regions[i])
+            &&& product.bridge.admission.frames[i].source_bytes == product.indexed_regions[i].bytes
+            &&& product.bridge.admission.frames[i].physical_start
+                == integrated::product_indexed_start_anchor(product.indexed_regions[i]).offset
+            &&& product.bridge.admission.frames[i].physical_source
+                == integrated::product_indexed_start_anchor(product.indexed_regions[i]).source
+        } by {
+            assert(i == 0);
+            assert(product.indexed_regions[0] == snapshot);
+            assert(product.bridge.admission.frames[0] == frame);
+        }
+    }
+    assert forall|i: int| 0 <= i < product.epm_frames.len() implies {
+        &&& epm::indexed_image_wf(product.indexed_regions[i])
+        &&& product.indexed_regions[i].bytes == product.bridge.admission.frames[i].source_bytes
+        &&& match product.epm_frames[i] {
+            None => true,
+            Some(epm_frame) => {
+                &&& product.bridge.admission.frames[i].frame_kind == 3
+                &&& epm_frame.snapshot == product.indexed_regions[i]
+                &&& epm::frame_layout_wf(epm_frame)
+            },
+        }
+    } by {
+        assert(i == 0);
+        assert(product.indexed_regions[0] == snapshot);
+        assert(product.bridge.admission.frames[0] == frame);
+        assert(product.epm_frames[0] == Some(before));
+    }
+    integrated::product_score_wf_intro(product);
+}
+
+pub proof fn act_forward_witness_state_is_wf()
+    ensures integrated::live_runtime_product_wf(act_forward_witness_state()),
+{
+    act_forward_witness_product_is_wf();
+    act_forward_witness_admission_is_wf();
+    score::empty_arena_well_formed();
+    let state = act_forward_witness_state();
+    let product = state.source.product;
+    assert(product.bridge.admission.frames.len() == 1);
+    assert(product.bridge.admission.frames[0] == act_forward_witness_frame());
+    assert(runtime::runtime_frame_image_wf(state.source.runtime));
+    assert(arena::runtime_projects_score(state.source.arena, product.bridge.transcript));
+    assert forall|i: int| 0 <= i < state.source.wire.len() implies {
+        let frame = product.bridge.admission.frames[i];
+        match #[trigger] state.source.wire[i] {
+            None => frame.frame_kind == 3 || frame.frame_kind == 4,
+            Some(reader) => {
+                &&& (frame.frame_kind == 1 || frame.frame_kind == 2)
+                &&& wire::wire_cursor_shape(reader.cursor)
+                &&& reader.cursor.region_start == frame.region_start
+                &&& reader.cursor.region_end == frame.region_end
+                &&& reader.cursor.next == frame.cursor
+                &&& reader.cursor.source_bytes == frame.source_bytes
+                &&& reader.terminal_error.is_none()
+            },
+        }
+    } by {
+        assert(i == 0);
+    }
+    assert(integrated::live_source_product_wf(state.source));
+    assert forall|i: int| 0 <= i < state.cursors.len() implies match #[trigger] state.cursors[i] {
+        None => true,
+        Some(cursor) => integrated::product_wire_indexed_source_agrees(
+            cursor, state.source.product.indexed_regions[i],
+        ),
+    } by {
+        assert(i == 0);
+        assert(state.cursors[0] == None::<wire::WireRuntimeCursorImage>);
+    }
+    assert forall|i: int| 0 <= i < state.cursors.len() implies {
+        match (#[trigger] state.cursors[i], state.source.wire[i]) {
+            (None, None) => true,
+            (Some(cursor), Some(reader)) => {
+                &&& wire::wire_runtime_derive_cursor(cursor).is_some()
+                &&& wire::wire_concrete_cursor_wf(wire::wire_runtime_derive_cursor(cursor).unwrap())
+                &&& wire::wire_runtime_cursor_project(cursor) == Some(reader)
+            },
+            _ => false,
+        }
+    } by {
+        assert(i == 0);
+        assert(state.cursors[0] == None::<wire::WireRuntimeCursorImage>);
+        assert(state.source.wire[0] == None::<wire::WireSourceState>);
+    }
+    assert(integrated::live_runtime_product_wf(state));
+}
+
+/// The Rust cursor position at the first Forward edge: the single record's
+/// line is entered and no line byte has been consumed.
+pub open spec fn act_forward_witness_position() -> act_source::LineCursorSourcePosition {
+    act_source::LineCursorSourcePosition {
+        record: 0,
+        node_id: 19,
+        next_record: 1,
+        stack_depth: 1,
+        remaining_children: 0,
+        stage: act_source::LineStage::LineEdge,
+        line_start: Some(17),
+        line_end: Some(19),
+        line_index: 0,
+        leave_index: 0,
+    }
+}
+
+/// The bounded offer: the interior line bytes only, here byte 17, because the
+/// final byte carries the value-bearing Value event.
+pub open spec fn act_forward_witness_work() -> active::ActiveLineWorkSource {
+    active::ActiveLineWorkSource {
+        position: act_forward_witness_position(),
+        event_index: 1,
+        direction: act_source::LineDirection::Forward,
+        start: 17,
+        end: 18,
+        remaining_work_events: Some(2),
+        admissible_source_width: 1,
+        admissible_work_events: 2,
+    }
+}
+
+pub open spec fn act_forward_witness_commit() -> act_source::AcceptedLineCommitSource {
+    act_source::AcceptedLineCommitSource {
+        direction: act_source::LineDirection::Forward,
+        start: 17,
+        end: 18,
+        expanded_events: 2,
+        last_source: act_forward_witness_anchor(24),
+        before: act_forward_witness_position(),
+        after: active::position_after_commit(
+            act_forward_witness_position(), act_source::LineDirection::Forward, 1,
+        ),
+        indexed_positions: act_forward_witness_snapshot().positions.subrange(7, 37),
+    }
+}
+
+/// The accepted plan's borrowed source view, over the frame's trie bytes.
+pub open spec fn act_forward_witness_plan_source() -> act_source::AcceptedActPlanSourceImage {
+    let snapshot = act_forward_witness_snapshot();
+    act_source::AcceptedActPlanSourceImage {
+        indexed: epm::IndexedRegionImage {
+            bytes: snapshot.bytes.subrange(7, 37),
+            positions: snapshot.positions.subrange(7, 37),
+            end: snapshot.positions[37],
+        },
+        records: act_forward_witness_validated_plan().records,
+        empty: false,
+        topology_event_count: 8,
+        value_count: 1,
+        first_nonzero: None,
+        first_nonsequential: None,
+    }
+}
+
+/// The live DFS work after the line's Forward events: its leaves and the
+/// record's final Leave.
+pub open spec fn act_forward_witness_continuation() -> Seq<epm::ActWorkItem> {
+    seq![
+        epm::ActWorkItem::Emit(epm::WireTopologyEvent::Leave { source_offset: 18 }),
+        epm::ActWorkItem::Emit(epm::WireTopologyEvent::Leave { source_offset: 17 }),
+        epm::ActWorkItem::Emit(epm::WireTopologyEvent::Leave { source_offset: 19 }),
+    ]
+}
+
+pub open spec fn act_forward_witness_facts() -> restore::ForwardCapacityFacts {
+    restore::ForwardCapacityFacts {
+        source_present: true,
+        root_left: false,
+        state_open: true,
+        fault_free: true,
+        stamp: 0,
+        owner_boundary_remaining: 1,
+        edges_before: 0,
+    }
+}
+
+pub open spec fn act_forward_witness_placement() -> act_source::ActLineWorkPlacement {
+    let plan = act_forward_witness_plan();
+    let record = plan.records[0];
+    let raw = act_forward_witness_raw_events();
+    let continuation = act_forward_witness_continuation();
+    act_source::ActLineWorkPlacement {
+        plan,
+        record,
+        prefix: raw.subrange(0, 1),
+        continuation,
+        active_work: epm::act_line_forward_work(record, 0) + continuation,
+        suffix_events: raw.subrange(1, 8),
+        raw_events: raw,
+        attached: act_forward_witness_attached(),
+        fuel: 7,
+    }
+}
+
+/// The active work (the line's Forward events, then the continuation) expands
+/// to exactly the raw events after the cursor.
+pub proof fn act_forward_witness_suffix_expansion()
+    ensures ({
+        let plan = act_forward_witness_plan();
+        epm::act_expand_work(
+            plan,
+            epm::act_line_forward_work(plan.records[0], 0) + act_forward_witness_continuation(),
+            7,
+        ) == Some(act_forward_witness_raw_events().subrange(1, 8))
+    }),
+{
+    let plan = act_forward_witness_plan();
+    let raw = act_forward_witness_raw_events();
+    reveal_with_fuel(epm::act_line_forward_work, 3);
+    reveal_with_fuel(epm::act_expand_work, 8);
+    let work = epm::act_line_forward_work(plan.records[0], 0) + act_forward_witness_continuation();
+    assert(work.len() == 7);
+    assert(epm::act_expand_work(plan, work, 7) == Some(raw.subrange(1, 8)));
+}
+
+/// The plan source's record, counts and first-violation folds agree with the
+/// bytes of the frame's trie.
+pub proof fn act_forward_witness_source_records_match_snapshot()
+    ensures act_source::accepted_source_records_match_snapshot(
+        act_forward_witness_before(), act_forward_witness_plan_source(),
+    ),
+{
+    act_forward_witness_encoded_prefix();
+    act_forward_witness_trie_view();
+    act_forward_witness_act_magic();
+    act_forward_witness_root_semantic();
+    let before = act_forward_witness_before();
+    let source = act_forward_witness_plan_source();
+    let trie = act_forward_witness_trie();
+    let bytes = before.snapshot.bytes.subrange(before.trie_start as int, before.trie_end as int);
+    assert(bytes == trie);
+    reveal_with_fuel(act_source::source_topology_event_count, 2);
+    reveal_with_fuel(act_source::source_value_count, 2);
+    reveal_with_fuel(act_source::source_first_nonzero, 2);
+    reveal_with_fuel(act_source::source_first_nonsequential, 2);
+    reveal_with_fuel(epm::little_endian_uint, 9);
+    assert(source.records.len() == 1);
+    assert(epm::little_endian_uint(trie, 8, 8) == 19);
+    assert(act_source::source_topology_event_count(source.records, 0) == 8);
+    assert(act_source::source_value_count(source.records, 0) == 1);
+    assert(act_source::source_first_nonzero(source.records, 0) == None::<(usize, u64)>);
+    assert(act_source::source_first_nonsequential(source.records, 0, 0)
+        == None::<(usize, u64, u64)>);
+    assert(act_source::source_record_matches_decoded_act(trie, source.records[0]));
+    assert forall|i: int| 0 <= i < source.records.len()
+        implies act_source::source_record_matches_decoded_act(bytes, source.records[i]) by {
+        assert(i == 0);
+    }
+    assert(act_source::accepted_source_records_match_snapshot(before, source));
+}
+
+/// Replaying the single leaf record closes its frame at ordinal 1, so the
+/// formal plan's structure is exactly the source's validation result.
+pub proof fn act_forward_witness_source_structure()
+    ensures act_source::source_structure_projects_formal_plan(
+        act_forward_witness_plan_source(), act_forward_witness_plan(),
+    ),
+{
+    let source = act_forward_witness_plan_source();
+    let plan = act_forward_witness_plan();
+    reveal_with_fuel(act_source::replay_source_validation_preorder, 2);
+    reveal_with_fuel(act_source::close_completed_source_frames, 2);
+    assert(source.records.len() == 1);
+    assert(source.records[0].child_count == 0);
+    let result = act_source::source_validation_structure(source.records);
+    assert(result.is_some());
+    let structure = result.unwrap();
+    assert(structure.finish_order =~= seq![0usize]);
+    assert(structure.subtree_ends[0] == 1);
+    assert(structure.children[0] =~= Seq::<usize>::empty());
+    assert(plan.records.len() == 1);
+    assert forall|i: int| 0 <= i < plan.records.len() implies {
+        &&& plan.records[i].children == structure.children[i]
+        &&& plan.records[i].subtree_end == structure.subtree_ends[i]
+    } by {
+        assert(i == 0);
+    }
+    assert(plan.finish_order == structure.finish_order);
+    assert(act_source::source_structure_projects_formal_plan(source, plan));
+}
+
+/// The accepted plan source projects the concrete frame: indexed view, record
+/// agreement, declared count and structure.
+pub proof fn act_forward_witness_plan_source_projects_frame()
+    ensures act_source::accepted_act_structure_projects_frame(
+        act_forward_witness_before(), act_forward_witness_plan_source(),
+    ),
+{
+    act_forward_witness_encoded_prefix();
+    act_forward_witness_source_records_match_snapshot();
+    act_forward_witness_source_structure();
+    let before = act_forward_witness_before();
+    let source = act_forward_witness_plan_source();
+    assert(before.snapshot.bytes.len() == 39);
+    assert(before.snapshot.positions.len() == 39);
+    assert(source.indexed.bytes.len() == 30);
+    assert(source.indexed.positions.len() == 30);
+    assert(epm::indexed_image_wf(source.indexed));
+    assert(before.cursor.validated_plan == Some(act_source::validated_image_from_source(source)));
+    assert(act_source::accepted_act_plan_source_image(before, source));
+    assert(act_source::accepted_act_structure_projects_frame(before, source));
+}
+
+/// The Forward offer's shape and its prepared commit, in source fields.
+pub proof fn act_forward_witness_work_is_prepared()
+    ensures
+        active::active_line_work_source_shape(act_forward_witness_work()),
+        active::prepared_commit_source_projection(
+            act_forward_witness_work(), 1, act_forward_witness_commit(),
+        ),
+        act_source::commit_matches_source_positions(act_forward_witness_commit()),
+{
+    let work = act_forward_witness_work();
+    let commit = act_forward_witness_commit();
+    assert(active::offered_width(work) == 1);
+    assert(active::event_factor(work.direction) == 2);
+    assert(active::active_line_work_source_shape(work));
+    assert(commit.after == active::position_after_commit(work.position, work.direction, 1));
+    assert(active::prepared_commit_source_projection(work, 1, commit));
+    assert(act_source::commit_matches_source_positions(commit));
+}
+
+/// The frame derives exactly the witness placement from the commit and the
+/// continuation.
+pub proof fn act_forward_witness_derived_placement()
+    ensures act::derived_line_placement(
+        act_forward_witness_before(),
+        act_forward_witness_commit(),
+        act_forward_witness_continuation(),
+        7,
+    ) == Some(act_forward_witness_placement()),
+{
+    act_forward_witness_encoded_prefix();
+    act_forward_witness_raw_expansion();
+    act_forward_witness_attachment();
+    let before = act_forward_witness_before();
+    let commit = act_forward_witness_commit();
+    let plan = act_forward_witness_plan();
+    let raw = act_forward_witness_raw_events();
+    assert(before.snapshot.bytes == act_forward_witness_bytes());
+    assert(before.cursor.act_plan == Some(plan));
+    assert(raw.len() == 8);
+    assert(plan.records.len() == 1);
+    assert(commit.before.record == 0);
+    assert(commit.before.line_index == 0);
+    assert(act::derived_line_placement(before, commit, act_forward_witness_continuation(), 7)
+        == Some(act_forward_witness_placement()));
+}
+
+/// The witness placement is a source placement of the commit in the frame.
+pub proof fn act_forward_witness_line_work_placement()
+    ensures act_source::act_line_work_placement(
+        act_forward_witness_before(),
+        act_forward_witness_commit(),
+        act_forward_witness_placement(),
+    ),
+{
+    act_forward_witness_encoded_prefix();
+    act_forward_witness_trie_view();
+    act_forward_witness_encoded_act_plan();
+    act_forward_witness_raw_expansion();
+    act_forward_witness_attachment();
+    act_forward_witness_suffix_expansion();
+    act_forward_witness_attached_events_valid();
+    let before = act_forward_witness_before();
+    let commit = act_forward_witness_commit();
+    let placement = act_forward_witness_placement();
+    let trie = act_forward_witness_trie();
+    let plan = placement.plan;
+    let raw = placement.raw_events;
+    assert(raw.len() == 8);
+    assert(raw =~= placement.prefix + placement.suffix_events);
+    assert(placement.prefix.len() == 1);
+    assert(plan.records.len() == 1);
+    assert(placement.record == plan.records[0]);
+    assert(placement.attached == act_forward_witness_attached());
+    assert(before.snapshot.bytes.len() == 39);
+    let frame_trie =
+        before.snapshot.bytes.subrange(before.trie_start as int, before.trie_end as int);
+    assert(frame_trie == trie);
+    assert forall|i: int| 0 <= i < placement.attached.events.len()
+        implies epm::act_event_source_valid(frame_trie, placement.attached.events[i]) by {
+        assert(epm::act_event_source_valid(trie, act_forward_witness_attached_events()[i]));
+    }
+    assert(act_source::act_line_work_placement(before, commit, placement));
+}
+
+/// The commit is an accepted indexed line batch of the frame: its positions
+/// are the frame's trie positions, and the last byte is at snapshot offset 24.
+pub proof fn act_forward_witness_indexed_line_source()
+    ensures act_source::accepted_indexed_line_source(
+        act_forward_witness_before(),
+        act_forward_witness_commit(),
+        act_forward_witness_placement(),
+    ),
+{
+    act_forward_witness_concrete_act_layout();
+    act_forward_witness_work_is_prepared();
+    act_forward_witness_line_work_placement();
+    let before = act_forward_witness_before();
+    let commit = act_forward_witness_commit();
+    assert(before.snapshot == act_forward_witness_snapshot());
+    assert(before.snapshot.positions.len() == 39);
+    assert(before.snapshot.positions[24] == act_forward_witness_anchor(24));
+    assert(commit.indexed_positions
+        == before.snapshot.positions.subrange(before.trie_start as int, before.trie_end as int));
+    assert(act_source::commit_last_offset(commit) == 17);
+    assert(commit.indexed_positions[17] == before.snapshot.positions[24]);
+    assert(commit.last_source == commit.indexed_positions[act_source::commit_last_offset(commit)]);
+    assert(epm::cursor_event_count(before) == 8usize);
+    assert(act_source::accepted_indexed_line_source(
+        before, commit, act_forward_witness_placement(),
+    ));
+}
+
+/// One interior byte fits the open two-byte payload, and the frame's capacity
+/// facts agree with its path and trie sources.
+pub proof fn act_forward_witness_forward_capacity()
+    ensures act::forward_capacity_without_event_premise(
+        act_forward_witness_before(),
+        17,
+        1,
+        act_forward_witness_pending(),
+        7,
+        None,
+        act_forward_witness_facts(),
+    ),
+{
+    act_forward_witness_concrete_act_layout();
+    act_forward_witness_encoded_prefix();
+    let before = act_forward_witness_before();
+    let parser_image = act_forward_witness_parser();
+    let pending = act_forward_witness_pending();
+    let facts = act_forward_witness_facts();
+    assert(parser::parser_root(parser_image) == parser_image.focus);
+    assert(epm::parser_gate_matches(before.path.gate, parser_image));
+    assert(parser::parser_forward_capacity(parser_image, 1));
+    let base = batch::path_source(before);
+    let source = batch::trie_source(before);
+    assert(restore::source_tree_wf(base));
+    assert(before.snapshot.bytes.len() == 39);
+    assert(before.snapshot.positions.len() == 39);
+    assert(source.bytes.len() == 30);
+    assert(source.positions.len() == 30);
+    assert(epm::indexed_image_wf(source));
+    assert(restore::forward_capacity_facts_match(base, pending, source, 17, 1, facts));
+    assert(act::forward_capacity_without_event_premise(before, 17, 1, pending, 7, None, facts));
+}
+
+/// The product's active frame accepts the Forward batch's source facts.
+pub proof fn act_forward_witness_forward_source()
+    ensures act::accepted_product_forward_source(
+        act_forward_witness_product(),
+        act_forward_witness_plan_source(),
+        act_forward_witness_work(),
+        1,
+        act_forward_witness_commit(),
+        act_forward_witness_continuation(),
+        7,
+        act_forward_witness_pending(),
+        7,
+        None,
+        act_forward_witness_facts(),
+    ),
+{
+    act_forward_witness_product_is_wf();
+    act_forward_witness_plan_source_projects_frame();
+    act_forward_witness_work_is_prepared();
+    act_forward_witness_derived_placement();
+    act_forward_witness_indexed_line_source();
+    act_forward_witness_forward_capacity();
+    let product = act_forward_witness_product();
+    let frame = act_forward_witness_before();
+    let work = act_forward_witness_work();
+    let commit = act_forward_witness_commit();
+    let continuation = act_forward_witness_continuation();
+    assert(act::active_product_epm(product) == Some(frame));
+    assert(work.direction == act_source::LineDirection::Forward);
+    assert(work.event_index == frame.cursor.at);
+    assert(commit.start == 17);
+    assert(act::accepted_product_forward_source(
+        product,
+        act_forward_witness_plan_source(),
+        work,
+        1,
+        commit,
+        continuation,
+        7,
+        act_forward_witness_pending(),
+        7,
+        None,
+        act_forward_witness_facts(),
+    ));
+}
+
+/// The ACT Forward arm is inhabited: a concrete well-formed product at an EPM
+/// frame takes one Forward batch of one interior line byte.
+pub proof fn act_forward_witness_is_integrated_step()
+    ensures ({
+        let before = act_forward_witness_state();
+        let commit = act_forward_witness_commit();
+        let pending = act_forward_witness_pending();
+        let action = IntegratedAction::ActForward {
+            plan_source: act_forward_witness_plan_source(),
+            work: act_forward_witness_work(),
+            width: 1,
+            commit,
+            continuation: act_forward_witness_continuation(),
+            fuel: 7,
+            pending,
+            state_id: 7,
+            latest_restore_state_id: None,
+            forward_facts: act_forward_witness_facts(),
+        };
+        &&& integrated_wf(IntegratedState::Active { product: before })
+        &&& integrated_step(
+            IntegratedState::Active { product: before },
+            IntegratedState::Active {
+                product: integrated_act_forward_after(before, 1, commit, pending, 7),
+            },
+            action,
+        )
+    }),
+{
+    act_forward_witness_state_is_wf();
+    act_forward_witness_forward_source();
+    let before = act_forward_witness_state();
+    let plan_source = act_forward_witness_plan_source();
+    let work = act_forward_witness_work();
+    let commit = act_forward_witness_commit();
+    let continuation = act_forward_witness_continuation();
+    let pending = act_forward_witness_pending();
+    let facts = act_forward_witness_facts();
+    let product = before.source.product;
+    let frames = product.bridge.admission.frames;
+    assert(product == act_forward_witness_product());
+    assert(frames.len() == 1);
+    assert(frames.last() == act_forward_witness_frame());
+    assert(frames.last().waiting_id.is_none());
+    assert(act::active_product_epm(product) == Some(act_forward_witness_before()));
+    assert(frames.last().cursor
+        <= act::active_product_epm(product).unwrap().cursor.value_table_offset);
+    assert(integrated_act_forward_guard(
+        before, plan_source, work, 1, commit, continuation, 7, pending, 7, None, facts,
+    ));
+    let action = IntegratedAction::ActForward {
+        plan_source,
+        work,
+        width: 1,
+        commit,
+        continuation,
+        fuel: 7,
+        pending,
+        state_id: 7,
+        latest_restore_state_id: None,
+        forward_facts: facts,
+    };
+    assert(integrated_top_frame_kind(before) == 3);
+    assert(integrated_kind_guard(before, action));
+}
+
 }

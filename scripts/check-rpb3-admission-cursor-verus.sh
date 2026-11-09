@@ -1699,6 +1699,46 @@ proofs_rpb3_integrated_dispatcher=(
   live_runtime_continue_is_message_top
   live_runtime_continue_indexed_is_message_top
   integrated_live_step_establishes_kind_guard
+  integrated_trace_wf
+  integrated_trace_wf_append
+  live_root_completion_is_exact
+  integrated_accept_refines_root
+  integrated_accepted_step_is_accepting_trace
+  live_nested_epm_finish_accept_is_integrated_step
+  boolean_root_canonical_path_complete_is_integrated_step
+  act_unwind_witness_admission_is_wf
+  act_unwind_witness_product_is_wf
+  act_unwind_witness_state_is_wf
+  act_unwind_witness_is_integrated_step
+  act_forward_witness_single_byte_varint
+  act_forward_witness_encoded_prefix
+  act_forward_witness_trie_view
+  act_forward_witness_act_magic
+  act_forward_witness_root_semantic
+  act_forward_witness_root_id
+  act_forward_witness_record_matches
+  act_forward_witness_producer_matches
+  act_forward_witness_encoded_act_plan
+  act_forward_witness_validated_plan_matches
+  act_forward_witness_raw_expansion
+  act_forward_witness_attachment
+  act_forward_witness_attached_events_valid
+  act_forward_witness_expanded_act_events
+  act_forward_witness_concrete_act_layout
+  act_forward_witness_admission_is_wf
+  act_forward_witness_product_is_wf
+  act_forward_witness_state_is_wf
+  act_forward_witness_suffix_expansion
+  act_forward_witness_source_records_match_snapshot
+  act_forward_witness_source_structure
+  act_forward_witness_plan_source_projects_frame
+  act_forward_witness_work_is_prepared
+  act_forward_witness_derived_placement
+  act_forward_witness_line_work_placement
+  act_forward_witness_indexed_line_source
+  act_forward_witness_forward_capacity
+  act_forward_witness_forward_source
+  act_forward_witness_is_integrated_step
 )
 gated_modules=(
   rpb3_act_source_product_integration
