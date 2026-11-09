@@ -2568,15 +2568,9 @@ in {{
 /// registry leaves from sibling branches. They genuinely RACE at the raw level —
 /// both read-modify-write the SAME shared TreeHashMap internal-node produce
 /// channels (`racesForSameIOEvent: produceRaces=2`) — yet because they touch
-/// DIFFERENT leaves the merge keeps BOTH: the keep-one / §3c discriminator
-/// classifies the shared-internal-node produces as mergeable, not a genuine
-/// single-value-cell conflict. The correct outcome is therefore `rejected == 0`
-/// with both contracts' data present in the merged state (verified below).
-///
-/// Historical note: this was `#[ignore]`d under an earlier premise that one insert
-/// "must be rejected"; the current keep-one design correctly merges these distinct
-/// leaves, so that premise no longer holds and the test is re-enabled. The genuine
-/// raw race is asserted (below) so `rejected == 0` is a real keep-one result, not a
+/// DIFFERENT leaves the merge keeps BOTH. The correct outcome is therefore
+/// `rejected == 0` with both contracts' data present in the merged state
+/// (verified below). The raw race is asserted so `rejected == 0` is not a
 /// vacuous merge of disjoint branches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_registry_inserts_should_not_conflict() {
@@ -2870,7 +2864,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         tracing::info!("Racing produces: {}", racing_produces.len());
         // Non-vacuity: the two inserts must GENUINELY race on shared internal-node
         // produce channels, else `rejected == 0` below would be a trivial merge of
-        // disjoint branches rather than a real keep-one/exemption result.
+        // disjoint branches.
         assert!(
             !racing_produces.is_empty(),
             "expected a genuine shared-channel race between the two registry inserts \
@@ -3027,17 +3021,13 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
     }
 
-    // Key assertion: keep-one correctly keeps BOTH inserts (0 rejected). They
-    // raw-race on the shared TreeHashMap internal-node produce channels (asserted
-    // non-empty above), but write DISTINCT leaves, so the §3c discriminator
-    // classifies those shared-node produces as mergeable rather than a genuine
-    // single-value-cell conflict. A rejection here would be a real regression: a
-    // genuinely-mergeable race mis-rejected.
+    // They raw-race on the shared TreeHashMap internal-node produce channels
+    // (asserted non-empty above) but write DISTINCT leaves, so the merge must
+    // keep both inserts.
     assert!(
         merged.rejected_user.is_empty(),
         "concurrent insertArbitrary to DISTINCT registry leaves must merge with 0 \
-         rejected (they share TreeHashMap internal nodes, but the produces there are \
-         mergeable); got {} rejected — keep-one wrongly rejected a mergeable race.",
+         rejected; got {} rejected.",
         merged.rejected_user.len(),
     );
 
