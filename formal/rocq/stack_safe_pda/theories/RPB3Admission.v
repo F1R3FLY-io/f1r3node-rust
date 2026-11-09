@@ -1,5 +1,6 @@
 From Stdlib Require Import List Bool Arith Lia.
-From StackSafePDA Require Import StackSafePDA.
+From StackSafePDA Require Import StackSafePDA RPB3SemanticReducer
+  RPB3RecursiveAuxiliarySourceReference RPB3SourceIndexedFrames.
 
 Import ListNotations.
 Set Implicit Arguments.
@@ -54,7 +55,7 @@ Proof.
   reflexivity.
 Qed.
 
-Theorem rpb3_pda_terminates_without_call_stack_recursion :
+Theorem rpb3_compiled_program_evaluates_to_result :
   forall subject,
     exists result, rpb3_pda_result subject = Some result.
 Proof.
@@ -86,6 +87,50 @@ Qed.
 End RPB3.
 
 Print Assumptions rpb3_pda_equivalent_to_recursive_validation.
+
+Theorem generated_descriptor_raw_wire_source_indexed_summary_equivalence :
+  forall hash_fn type_id bytes,
+    SourceIndexedFrames.source_indexed_root_summary hash_fn type_id bytes =
+    match RPB3RecursiveAuxiliarySourceReference.recursive_mixed_root_reference
+        hash_fn type_id bytes with
+    | Some results =>
+        match SourceIndexedFrames.close_message
+            (SourceIndexedFrames.source_generated_root_field type_id bytes)
+            type_id results with
+        | Some root =>
+            Some [RPB3RecursiveAuxiliarySourceReference.recursive_result_semantic
+              root]
+        | None => None
+        end
+    | None => None
+    end.
+Proof.
+  exact SourceIndexedFrames.source_indexed_root_has_universal_recursive_summary.
+Qed.
+
+Theorem generated_descriptor_raw_wire_source_indexed_verdict_equivalence :
+  forall hash_fn type_id bytes,
+    SourceIndexedFrames.source_indexed_root_accepts hash_fn type_id bytes =
+    match RPB3RecursiveAuxiliarySourceReference.recursive_mixed_root_reference
+        hash_fn type_id bytes with
+    | Some results =>
+        match SourceIndexedFrames.close_message
+            (SourceIndexedFrames.source_generated_root_field type_id bytes)
+            type_id results with
+        | Some root =>
+            negb (RPB3SemanticReducer.sem_definitely_refused
+              (RPB3RecursiveAuxiliarySourceReference.recursive_result_semantic
+                root))
+        | None => false
+        end
+    | None => false
+    end.
+Proof.
+  exact SourceIndexedFrames.source_indexed_root_has_universal_recursive_verdict.
+Qed.
+
+Print Assumptions generated_descriptor_raw_wire_source_indexed_summary_equivalence.
+Print Assumptions generated_descriptor_raw_wire_source_indexed_verdict_equivalence.
 
 Module CanonicalKeyProtocol.
 
@@ -12010,3 +12055,174 @@ Print Assumptions unrelated_slot_is_unchanged.
 Print Assumptions retaining_first_instead_of_last_is_detected.
 
 End RetainedAdmissionHistory.
+
+(** Accepted message fields arrive in nondecreasing generated Prost-slot order.
+    The production message frame retains one occurrence list per slot, so a
+    later semantic reducer may concatenate those lists only if the indexed
+    update preserves the original child order. This finite worklist states
+    that obligation independently of a particular summary type. *)
+Module OrderedSemanticSlots.
+
+Section Buckets.
+Variable Value : Type.
+
+Definition buckets := nat -> list Value.
+Definition state := (option nat * buckets)%type.
+
+Definition append_at (saved : buckets) (slot : nat) (value : Value)
+    : buckets :=
+  fun index => if index =? slot then saved index ++ [value] else saved index.
+
+Definition flatten (slot_count : nat) (saved : buckets) : list Value :=
+  flat_map saved (seq 0 slot_count).
+
+Definition empty_after (last : option nat) (saved : buckets) : Prop :=
+  forall index,
+    (match last with None => True | Some previous => previous < index end) ->
+    saved index = [].
+
+Definition follows (last : option nat) (slot : nat) : bool :=
+  match last with None => true | Some previous => previous <=? slot end.
+
+Fixpoint accept (slot_count : nat) (events : list (nat * Value))
+    (current : state) : option state :=
+  match events with
+  | [] => Some current
+  | (slot, value) :: rest =>
+      if (slot <? slot_count) && follows (fst current) slot then
+        accept slot_count rest
+          (Some slot, append_at (snd current) slot value)
+      else None
+  end.
+
+Lemma flat_map_empty_suffix : forall start width (saved : buckets),
+  (forall index, start <= index -> saved index = []) ->
+  flat_map saved (seq start width) = [].
+Proof.
+  intros start width. revert start.
+  induction width as [|width IH]; intros start saved empty; simpl; [reflexivity|].
+  rewrite (empty start) by lia. simpl.
+  apply IH. intros index later. apply empty. lia.
+Qed.
+
+Lemma flat_map_before_slot_unchanged : forall start width saved slot value,
+  start + width <= slot ->
+  flat_map (append_at saved slot value) (seq start width) =
+    flat_map saved (seq start width).
+Proof.
+  intros start width. revert start.
+  induction width as [|width IH];
+    intros start saved slot value before; simpl; [reflexivity|].
+  unfold append_at at 1.
+  destruct (start =? slot) eqn:same.
+  - apply Nat.eqb_eq in same. lia.
+  - rewrite (IH (S start) saved slot value) by lia. reflexivity.
+Qed.
+
+Lemma append_at_empty_after : forall saved slot value,
+  (forall index, slot < index -> saved index = []) ->
+  forall index, slot < index -> append_at saved slot value index = [].
+Proof.
+  intros saved slot value empty index later.
+  unfold append_at.
+  destruct (index =? slot) eqn:same.
+  - apply Nat.eqb_eq in same. lia.
+  - apply empty. exact later.
+Qed.
+
+Lemma flatten_append_at : forall slot_count saved slot value,
+  slot < slot_count ->
+  (forall index, slot < index -> saved index = []) ->
+  flatten slot_count (append_at saved slot value) =
+    flatten slot_count saved ++ [value].
+Proof.
+  intros slot_count saved slot value within empty.
+  assert (split_seq : seq 0 slot_count =
+      seq 0 slot ++ slot :: seq (S slot) (slot_count - S slot)).
+  { assert (split_len : slot_count = slot + S (slot_count - S slot)) by lia.
+    rewrite split_len at 1. rewrite seq_app. reflexivity. }
+  unfold flatten. rewrite !split_seq, !flat_map_app.
+  simpl [flat_map].
+  rewrite (@flat_map_before_slot_unchanged 0 slot saved slot value) by lia.
+  unfold append_at at 1. rewrite Nat.eqb_refl.
+  rewrite (@flat_map_empty_suffix (S slot) (slot_count - S slot)
+    (append_at saved slot value)).
+  2: { intros index later. apply append_at_empty_after; [exact empty|lia]. }
+  rewrite (@flat_map_empty_suffix (S slot) (slot_count - S slot) saved).
+  2: { intros index later. apply empty. lia. }
+  repeat rewrite app_nil_r. now rewrite app_assoc.
+Qed.
+
+Lemma empty_after_follows : forall last saved slot,
+  empty_after last saved -> follows last slot = true ->
+  forall index, slot < index -> saved index = [].
+Proof.
+  intros [previous|] saved slot empty allowed index later.
+  - unfold follows in allowed. apply Nat.leb_le in allowed.
+    apply empty. simpl. lia.
+  - apply empty. simpl. exact I.
+Qed.
+
+Theorem accepted_occurrences_keep_exact_source_order :
+  forall slot_count events last saved final_last final_saved,
+    empty_after last saved ->
+    accept slot_count events (last, saved) = Some (final_last, final_saved) ->
+    empty_after final_last final_saved /\
+    flatten slot_count final_saved =
+      flatten slot_count saved ++ map snd events.
+Proof.
+  intros slot_count events.
+  induction events as [|[slot value] rest IH];
+    intros last saved final_last final_saved empty returned.
+  - simpl in returned. inversion returned; subst.
+    split; [exact empty|now rewrite app_nil_r].
+  - simpl in returned.
+    destruct ((slot <? slot_count) && follows last slot) eqn:allowed;
+      [|discriminate].
+    apply andb_true_iff in allowed as [within follows_last].
+    apply Nat.ltb_lt in within.
+    pose proof (@empty_after_follows last saved slot empty follows_last)
+      as empty_above_slot.
+    assert (new_empty : empty_after (Some slot) (append_at saved slot value)).
+    { intros index later. simpl in later.
+      apply append_at_empty_after; [exact empty_above_slot|exact later]. }
+    destruct (IH (Some slot) (append_at saved slot value)
+      final_last final_saved new_empty returned) as [final_empty final_order].
+    split; [exact final_empty|].
+    simpl [map]. rewrite final_order.
+    rewrite (@flatten_append_at slot_count saved slot value within empty_above_slot).
+    now rewrite <- app_assoc.
+Qed.
+
+Theorem decreasing_or_out_of_range_occurrence_is_refused :
+  forall slot_count last saved slot value rest,
+    slot_count <= slot \/
+    (exists previous, last = Some previous /\ slot < previous) ->
+    accept slot_count ((slot, value) :: rest) (last, saved) = None.
+Proof.
+  intros slot_count last saved slot value rest bad.
+  simpl. destruct bad as [outside|[previous [same decreasing]]].
+  - assert (bad_slot : (slot <? slot_count) = false).
+    { apply Nat.ltb_ge. exact outside. }
+    rewrite bad_slot. reflexivity.
+  - subst last. unfold follows.
+    assert (bad_order : (previous <=? slot) = false).
+    { apply Nat.leb_gt. exact decreasing. }
+    rewrite bad_order. now rewrite andb_false_r.
+Qed.
+
+End Buckets.
+
+Definition empty_nat_buckets : buckets nat := fun _ => [].
+
+Example three_source_ordered_occurrences_are_preserved :
+  option_map (fun final => flatten 3 (snd final))
+    (accept 3 [(0, 10); (0, 11); (2, 20)]
+      (None, empty_nat_buckets)) = Some [10; 11; 20].
+Proof. vm_compute. reflexivity. Qed.
+
+Print Assumptions accepted_occurrences_keep_exact_source_order.
+Print Assumptions decreasing_or_out_of_range_occurrence_is_refused.
+Print Assumptions three_source_ordered_occurrences_are_preserved.
+
+End OrderedSemanticSlots.

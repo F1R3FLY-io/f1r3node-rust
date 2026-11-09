@@ -4035,12 +4035,58 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
     let rocq = read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3Admission.v");
     for marker in [
         "rpb3_pda_equivalent_to_recursive_validation",
-        "rpb3_pda_terminates_without_call_stack_recursion",
+        "rpb3_compiled_program_evaluates_to_result",
         "Print Assumptions rpb3_pda_equivalent_to_recursive_validation",
+        "generated_descriptor_raw_wire_source_indexed_summary_equivalence",
+        "generated_descriptor_raw_wire_source_indexed_verdict_equivalence",
+        "Print Assumptions generated_descriptor_raw_wire_source_indexed_summary_equivalence",
+        "Print Assumptions generated_descriptor_raw_wire_source_indexed_verdict_equivalence",
     ] {
         assert!(
             rocq.contains(marker),
             "RPB3 Rocq theory is missing `{marker}`"
+        );
+    }
+
+    let source_frames =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3SourceIndexedFrames.v");
+    for marker in [
+        "source_indexed_frames_refine_recursive_reference",
+        "source_indexed_root_has_universal_recursive_summary",
+        "source_indexed_root_has_universal_recursive_verdict",
+        "source_indexed_root_full_result_refines_recursive_reference",
+        "source_indexed_root_claimed_score_refines_recursive_reference",
+        "Print Assumptions source_indexed_root_full_result_refines_recursive_reference",
+        "Print Assumptions source_indexed_root_claimed_score_refines_recursive_reference",
+    ] {
+        assert!(
+            source_frames.contains(marker),
+            "RPB3 source-frame theory is missing `{marker}`"
+        );
+    }
+
+    let recursive_source = read_repository_file(
+        "formal/rocq/stack_safe_pda/theories/RPB3RecursiveAuxiliarySourceReference.v",
+    );
+    for marker in [
+        "ordered_mixed_new_map_returnsb_iff_source_order",
+        "accepted_mixed_new_has_strict_typed_map_key_order",
+        "ordered_two_absent_value_maps_have_mixed_typed_reference",
+        "reversed_two_absent_value_maps_have_no_mixed_typed_reference",
+        "empty_pathmap_source_independent_typed_recursive_bridge",
+        "pathmap_source_independent_typed_recursive_bridge",
+        "present_string_map_source_independent_typed_recursive_bridge",
+        "empty_pathmap_generated_roots_have_related_results",
+        "malformed_pathmap_is_refused_by_both_mixed_roots",
+        "Print Assumptions ordered_mixed_new_map_returnsb_iff_source_order",
+        "Print Assumptions reversed_two_absent_value_maps_have_no_mixed_typed_reference",
+        "Print Assumptions empty_pathmap_source_independent_typed_recursive_bridge",
+        "Print Assumptions pathmap_source_independent_typed_recursive_bridge",
+        "Print Assumptions present_string_map_source_independent_typed_recursive_bridge",
+    ] {
+        assert!(
+            recursive_source.contains(marker),
+            "RPB3 recursive source theory is missing `{marker}`"
         );
     }
 
@@ -4049,11 +4095,158 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
     for marker in [
         "mutant_omit_locality_is_refuted",
         "mutant_trailing_acceptance_is_refuted",
+        "source_indexed_ordered_generated_new_is_nonvacuous",
+        "source_indexed_reversed_generated_new_is_refused",
+        "source_indexed_nested_pathmap_is_nonvacuous",
+        "source_indexed_ordered_new_derives_exact_score",
+        "source_indexed_explicit_scalar_default_is_refused",
+        "source_indexed_trailing_root_byte_is_refused",
+        "source_indexed_ordered_new_accepts_exact_claimed_score",
+        "source_indexed_ordered_new_rejects_forged_claimed_score",
+        "source_indexed_private_unforgeable_derives_exact_score",
+        "source_indexed_private_unforgeable_accepts_exact_claimed_score",
+        "source_indexed_private_unforgeable_rejects_forged_claimed_score",
+        "source_indexed_truncated_private_unforgeable_is_refused",
+        "mutant_scalar_visit_skips_checked_source_is_refuted",
+        "mutant_auxiliary_visit_uses_raw_leaf_is_refuted",
+        "mutant_forest_swaps_first_two_is_refuted",
+        "mutant_close_omits_child_reverse_is_refuted",
         "Print Assumptions mutant_omit_locality_is_refuted",
+        "Print Assumptions source_indexed_ordered_new_derives_exact_score",
+        "Print Assumptions source_indexed_explicit_scalar_default_is_refused",
+        "Print Assumptions source_indexed_trailing_root_byte_is_refused",
+        "Print Assumptions source_indexed_ordered_new_accepts_exact_claimed_score",
+        "Print Assumptions source_indexed_ordered_new_rejects_forged_claimed_score",
+        "Print Assumptions source_indexed_private_unforgeable_derives_exact_score",
+        "Print Assumptions source_indexed_private_unforgeable_accepts_exact_claimed_score",
+        "Print Assumptions source_indexed_private_unforgeable_rejects_forged_claimed_score",
+        "Print Assumptions source_indexed_truncated_private_unforgeable_is_refused",
+        "Print Assumptions mutant_close_omits_child_reverse_is_refuted",
     ] {
         assert!(
             mutants.contains(marker),
             "RPB3 mutant theory is missing `{marker}`"
+        );
+    }
+
+    let projection =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3DescriptorProjectionData.v");
+    assert!(projection.contains("Definition generated_programs"));
+    assert!(projection.contains("Definition raw_par_program"));
+    let descriptor_laws =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3DescriptorLaws.v");
+    for marker in [
+        "descriptor_table_well_formed",
+        "raw_par_substituted",
+        "descriptor_table_nonvacuous",
+        "resolved_tag_is_the_only_binding",
+        "Print Assumptions resolved_tag_is_the_only_binding",
+    ] {
+        assert!(
+            descriptor_laws.contains(marker),
+            "RPB3 descriptor laws are missing `{marker}`"
+        );
+    }
+    let refinement =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3GeneratedFieldRefinement.v");
+    for marker in [
+        "explicit_worklist_equals_independent_typed_reference",
+        "explicit_frames_finish_within_the_structural_budget",
+        "Print Assumptions explicit_worklist_equals_independent_typed_reference",
+    ] {
+        assert!(
+            refinement.contains(marker),
+            "RPB3 field refinement is missing `{marker}`"
+        );
+    }
+    let wire_cursor = read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3WireCursor.v");
+    for marker in [
+        "worklist_and_reference_agree_on_every_finite_region",
+        "finite_region_scan_terminates_without_budget_exhaustion",
+        "Print Assumptions truncated_or_nonminimal_varints_refuse",
+    ] {
+        assert!(
+            wire_cursor.contains(marker),
+            "RPB3 wire cursor is missing `{marker}`"
+        );
+    }
+    let semantic_reducer =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3SemanticReducer.v");
+    for marker in [
+        "generated_par_component_type_ids_are_exact",
+        "required_component_score_contract_is_exact",
+        "generated_cost_token_stack_requires_component_score",
+        "generated_connective_scalar_rules_are_boolean",
+        "connective_scalar_constructor_domain_is_generated",
+        "absent_connective_has_exact_integer_score",
+        "connective_scalar_score_uses_checked_source_boolean",
+        "connective_not_score_uses_checked_par_child_evidence",
+        "connective_not_without_child_score_remains_underived",
+        "connective_not_empty_par_source_derives_exact_score",
+        "connective_not_source_mutants_are_refused_or_underived",
+        "connective_invalid_scalar_source_remains_underived",
+        "connective_wrong_wire_remains_underived",
+        "connective_refused_child_remains_underived",
+        "generated_unforgeable_arms_are_exact",
+        "unforgeable_arm_contract_uses_generated_child_type",
+        "absent_unforgeable_has_exact_constructor_score",
+        "unforgeable_bytes_arm_uses_checked_nested_source",
+        "unforgeable_malformed_nested_source_remains_underived",
+        "unforgeable_wrong_child_type_remains_underived",
+        "generated_match_case_free_count_is_checked_pbint32",
+        "match_case_exact_score_uses_source_checked_free_count",
+        "match_case_without_pattern_score_remains_underived",
+        "receive_bind_wrong_source_wire_remains_underived",
+        "receive_bind_wrong_source_type_remains_underived",
+        "receive_bind_wrong_pattern_type_remains_underived",
+        "receive_bind_wrong_remainder_type_remains_underived",
+        "receive_bind_wrong_cost_type_remains_underived",
+        "match_case_wrong_pattern_wire_remains_underived",
+        "match_case_wrong_pattern_type_remains_underived",
+        "match_case_wrong_source_type_remains_underived",
+        "match_case_wrong_guard_type_remains_underived",
+        "source_default_match_case_guard_is_detected",
+        "generated_receive_parent_scalar_rules_are_exact",
+        "generated_match_parent_scalar_rule_is_exact",
+        "complete_receive_score_retains_checked_source_values",
+        "complete_match_score_retains_checked_source_values",
+        "complete_receive_default_condition_has_no_claimed_score",
+        "complete_match_default_guard_has_no_claimed_score",
+        "complete_receive_without_optional_fields_has_exact_score",
+        "complete_match_without_connective_has_exact_score",
+        "complete_receive_refuses_present_default_condition",
+        "complete_match_default_guard_blocks_claimed_score",
+        "cost_token_stack_retains_all_layer_scores",
+        "cost_region_retains_scalar_coordinates_signer_and_ordinal",
+        "source_cost_region_retains_signer_and_big_endian_coordinate",
+        "omitting_a_cost_layer_changes_the_stack_score",
+        "Print Assumptions required_component_score_contract_is_exact",
+        "Print Assumptions generated_connective_scalar_rules_are_boolean",
+        "Print Assumptions connective_scalar_score_uses_checked_source_boolean",
+        "Print Assumptions connective_not_score_uses_checked_par_child_evidence",
+        "Print Assumptions connective_not_empty_par_source_derives_exact_score",
+        "Print Assumptions unforgeable_bytes_arm_uses_checked_nested_source",
+        "Print Assumptions unforgeable_malformed_nested_source_remains_underived",
+        "Print Assumptions generated_match_case_free_count_is_checked_pbint32",
+        "Print Assumptions receive_bind_wrong_source_wire_remains_underived",
+        "Print Assumptions match_case_wrong_pattern_wire_remains_underived",
+        "Print Assumptions source_default_match_case_guard_is_detected",
+        "Print Assumptions generated_receive_parent_scalar_rules_are_exact",
+        "Print Assumptions complete_receive_score_retains_checked_source_values",
+        "Print Assumptions complete_match_score_retains_checked_source_values",
+        "Print Assumptions complete_receive_without_optional_fields_has_exact_score",
+        "Print Assumptions complete_match_without_connective_has_exact_score",
+        "Print Assumptions complete_receive_refuses_present_default_condition",
+        "Print Assumptions cost_token_stack_retains_all_layer_scores",
+        "Print Assumptions omitting_a_cost_layer_changes_the_stack_score",
+        "reversed_incomplete_sends_are_definitely_refused",
+        "outer_send_completeness_ignores_nested_incomplete_component",
+        "empty_epathmap_is_definitely_refused",
+        "Print Assumptions empty_epathmap_is_definitely_refused",
+    ] {
+        assert!(
+            semantic_reducer.contains(marker),
+            "RPB3 semantic reducer is missing `{marker}`"
         );
     }
 
@@ -4074,15 +4267,124 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
 
     let coq_project = read_repository_file("formal/rocq/stack_safe_pda/_CoqProject");
     assert!(coq_project.contains("theories/RPB3Admission.v"));
+    assert!(coq_project.contains("theories/RPB3DescriptorProjectionData.v"));
+    assert!(coq_project.contains("theories/RPB3DescriptorLaws.v"));
+    assert!(coq_project.contains("theories/RPB3WireCursor.v"));
+    assert!(coq_project.contains("theories/RPB3GeneratedFieldRefinement.v"));
+    assert!(coq_project.contains("theories/RPB3RawRegionTree.v"));
+    assert!(coq_project.contains("theories/RPB3SourceScalarReduction.v"));
+    assert!(coq_project.contains("theories/RPB3SourceReferenceIntegration.v"));
+    assert!(coq_project.contains("theories/RPB3AuxiliaryTypedReference.v"));
+    assert!(coq_project.contains("theories/RPB3SemanticReducer.v"));
+    assert!(coq_project.contains("theories/RPB3SemanticWorklist.v"));
+    assert!(coq_project.contains("theories/RPB3SemanticWorklistMutants.v"));
+    assert!(coq_project.contains("theories/RPB3RecursiveAuxiliarySourceReference.v"));
+    for theory in [
+        "RPB3IndependentOracleCore",
+        "RPB3IndependentOracleAdmission",
+        "RPB3IndependentOracleCost",
+        "RPB3IndependentOracleProcess",
+        "RPB3IndependentOracleName",
+        "RPB3IndependentOracleRecursive",
+        "RPB3IndependentOracleFuel",
+        "RPB3IndependentOracleAdequacy",
+        "RPB3IndependentOracleProjection",
+        "RPB3IndependentOracleProcessProjection",
+        "RPB3IndependentOracleNameProjection",
+        "RPB3IndependentOracleNameDecoderBridge",
+        "RPB3IndependentOracleMutants",
+        "RPB3IndependentOracleRecursiveProjection",
+        "RPB3IndependentOracleProcessScalarDecoderBridge",
+        "RPB3IndependentOracleCostScalarDecoderBridge",
+        "RPB3IndependentOracleCostChildCorrespondence",
+        "RPB3IndependentOracleCostVerdictBridge",
+        "RPB3IndependentOracleGeneratedResolverVerdict",
+        "RPB3IndependentOracleCostScalarTypeIdMutant",
+        "RPB3IndependentOracleProcessChildProvenance",
+        "RPB3IndependentOracleParScalarScoreBridge",
+        "RPB3IndependentOracleParBytesChildBridge",
+        "RPB3IndependentOracleParMessageChildBridge",
+        "RPB3IndependentOracleRegionRebaseBridge",
+        "RPB3IndependentOracleParMessageBodyDecodeBridge",
+        "RPB3IndependentOracleParMessageRawRebaseBridge",
+        "RPB3IndependentOracleStringMapRegionRebaseBridge",
+        "RPB3IndependentOracleStringMapTypedRebaseBridge",
+        "RPB3IndependentOracleParMessageEvaluationRebaseBridge",
+        "RPB3IndependentOracleExprGroundScoreControl",
+        "RPB3IndependentOracleExprFixed64BitwordBridge",
+        "RPB3IndependentOracleExprNestedGroundControl",
+        "RPB3IndependentOracleExprNestedGroundChildBridge",
+    ] {
+        assert!(coq_project.contains(&format!("theories/{theory}.v")));
+    }
+    assert!(coq_project.contains("theories/RPB3SourceIndexedFrames.v"));
+    assert!(coq_project.contains("theories/RPB3ResidentParAdmissionBridge.v"));
     assert!(coq_project.contains("theories/RPB3AdmissionMutants.v"));
 
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(runner.lines().any(|line| {
+        line.trim() == "if [[ \"$rpb3_admission_mutants_closed_capstones\" != \"35\" ]]; then"
+    }));
     for marker in [
         "theories/RPB3Admission.v",
+        "theories/RPB3DescriptorProjectionData.v",
+        "theories/RPB3DescriptorLaws.v",
+        "theories/RPB3WireCursor.v",
+        "theories/RPB3GeneratedFieldRefinement.v",
+        "theories/RPB3RawRegionTree.v",
+        "theories/RPB3SourceScalarReduction.v",
+        "theories/RPB3SourceReferenceIntegration.v",
+        "theories/RPB3AuxiliaryTypedReference.v",
+        "theories/RPB3SemanticReducer.v",
+        "theories/RPB3SemanticWorklist.v",
+        "theories/RPB3SemanticWorklistMutants.v",
+        "theories/RPB3RecursiveAuxiliarySourceReference.v",
+        "theories/RPB3IndependentOracleCore.v",
+        "theories/RPB3IndependentOracleAdmission.v",
+        "theories/RPB3IndependentOracleCost.v",
+        "theories/RPB3IndependentOracleProcess.v",
+        "theories/RPB3IndependentOracleName.v",
+        "theories/RPB3IndependentOracleRecursive.v",
+        "theories/RPB3IndependentOracleFuel.v",
+        "theories/RPB3IndependentOracleAdequacy.v",
+        "theories/RPB3IndependentOracleProjection.v",
+        "theories/RPB3IndependentOracleProcessProjection.v",
+        "theories/RPB3IndependentOracleNameProjection.v",
+        "theories/RPB3IndependentOracleNameDecoderBridge.v",
+        "theories/RPB3IndependentOracleMutants.v",
+        "theories/RPB3IndependentOracleRecursiveProjection.v",
+        "theories/RPB3IndependentOracleProcessScalarDecoderBridge.v",
+        "theories/RPB3IndependentOracleCostScalarDecoderBridge.v",
+        "theories/RPB3IndependentOracleCostChildCorrespondence.v",
+        "theories/RPB3IndependentOracleCostVerdictBridge.v",
+        "theories/RPB3IndependentOracleGeneratedResolverVerdict.v",
+        "theories/RPB3IndependentOracleCostScalarTypeIdMutant.v",
+        "theories/RPB3IndependentOracleProcessChildProvenance.v",
+        "theories/RPB3IndependentOracleParScalarScoreBridge.v",
+        "theories/RPB3IndependentOracleParBytesChildBridge.v",
+        "theories/RPB3IndependentOracleParMessageChildBridge.v",
+        "theories/RPB3IndependentOracleRegionRebaseBridge.v",
+        "theories/RPB3IndependentOracleParMessageBodyDecodeBridge.v",
+        "theories/RPB3IndependentOracleParMessageRawRebaseBridge.v",
+        "theories/RPB3IndependentOracleStringMapRegionRebaseBridge.v",
+        "theories/RPB3IndependentOracleStringMapTypedRebaseBridge.v",
+        "theories/RPB3IndependentOracleParMessageEvaluationRebaseBridge.v",
+        "theories/RPB3IndependentOracleExprGroundScoreControl.v",
+        "theories/RPB3IndependentOracleExprFixed64BitwordBridge.v",
+        "theories/RPB3IndependentOracleExprNestedGroundControl.v",
+        "theories/RPB3IndependentOracleExprNestedGroundChildBridge.v",
+        "theories/RPB3SourceIndexedFrames.v",
+        "theories/RPB3ResidentParAdmissionBridge.v",
         "theories/RPB3AdmissionMutants.v",
         "rpb3_admission_mutants_closed_capstones",
         "formal/verus/rpb3_admission_cursor.rs",
         "StackSafePDA.RPB3AdmissionMutants",
+        "StackSafePDA.RPB3SourceIndexedFrames",
+        "StackSafePDA.RPB3GeneratedFieldRefinement",
+        "StackSafePDA.RPB3DescriptorProjectionData",
+        "StackSafePDA.RPB3DescriptorLaws",
+        "StackSafePDA.RPB3WireCursor",
+        "StackSafePDA.RPB3SemanticReducer",
         "rpb3_run_tests 22 --lib protobuf_admission::tests",
         "production_component_admission_is_differentially_equivalent_for_all_ten_families",
         "rpb3_run_tests 3 --test par_bag admitted_",
@@ -4095,7 +4397,79 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
     assert!(has_runner_command(&runner, &[
         "rocq_compile_with_closed_count",
         "theories/RPB3Admission.v",
-        "365"
+        "370"
+    ],));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/RPB3DescriptorProjectionData.v",
+        "0"
+    ],));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/RPB3DescriptorLaws.v",
+        "5"
+    ],));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/RPB3WireCursor.v",
+        "5"
+    ],));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/RPB3SemanticReducer.v",
+        "125"
+    ],));
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/RPB3RecursiveAuxiliarySourceReference.v",
+        "40"
+    ],));
+    for (theory, count) in [
+        ("RPB3IndependentOracleCore", "3"),
+        ("RPB3IndependentOracleAdmission", "2"),
+        ("RPB3IndependentOracleCost", "9"),
+        ("RPB3IndependentOracleProcess", "10"),
+        ("RPB3IndependentOracleName", "9"),
+        ("RPB3IndependentOracleRecursive", "6"),
+        ("RPB3IndependentOracleFuel", "9"),
+        ("RPB3IndependentOracleAdequacy", "4"),
+        ("RPB3IndependentOracleProjection", "19"),
+        ("RPB3IndependentOracleProcessProjection", "19"),
+        ("RPB3IndependentOracleNameProjection", "15"),
+        ("RPB3IndependentOracleNameDecoderBridge", "6"),
+        ("RPB3IndependentOracleMutants", "3"),
+        ("RPB3IndependentOracleRecursiveProjection", "38"),
+        ("RPB3IndependentOracleProcessScalarDecoderBridge", "16"),
+        ("RPB3IndependentOracleCostScalarDecoderBridge", "13"),
+        ("RPB3IndependentOracleCostChildCorrespondence", "15"),
+        ("RPB3IndependentOracleCostVerdictBridge", "59"),
+        ("RPB3IndependentOracleGeneratedResolverVerdict", "11"),
+        ("RPB3IndependentOracleCostScalarTypeIdMutant", "3"),
+        ("RPB3IndependentOracleProcessChildProvenance", "20"),
+        ("RPB3IndependentOracleParScalarScoreBridge", "15"),
+        ("RPB3IndependentOracleParBytesChildBridge", "7"),
+        ("RPB3IndependentOracleParMessageChildBridge", "4"),
+        ("RPB3IndependentOracleRegionRebaseBridge", "21"),
+        ("RPB3IndependentOracleParMessageBodyDecodeBridge", "4"),
+        ("RPB3IndependentOracleParMessageRawRebaseBridge", "3"),
+        ("RPB3IndependentOracleStringMapRegionRebaseBridge", "4"),
+        ("RPB3IndependentOracleStringMapTypedRebaseBridge", "6"),
+        ("RPB3IndependentOracleParMessageEvaluationRebaseBridge", "1"),
+        ("RPB3IndependentOracleExprGroundScoreControl", "1"),
+        ("RPB3IndependentOracleExprFixed64BitwordBridge", "4"),
+        ("RPB3IndependentOracleExprNestedGroundControl", "16"),
+        ("RPB3IndependentOracleExprNestedGroundChildBridge", "7"),
+    ] {
+        assert!(has_runner_command(&runner, &[
+            "rocq_compile_with_closed_count",
+            &format!("theories/{theory}.v"),
+            count
+        ]));
+    }
+    assert!(has_runner_command(&runner, &[
+        "rocq_compile_with_closed_count",
+        "theories/RPB3GeneratedFieldRefinement.v",
+        "10"
     ],));
     assert!(
         runner
@@ -4105,7 +4479,60 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
     );
     assert!(has_runner_kernel_check(&runner, &[
         "StackSafePDA.RPB3Admission",
+        "StackSafePDA.RPB3DescriptorProjectionData",
+        "StackSafePDA.RPB3DescriptorLaws",
+        "StackSafePDA.RPB3ProjectionResolutionExact",
+        "StackSafePDA.RPB3WireCursor",
+        "StackSafePDA.RPB3GeneratedFieldRefinement",
+        "StackSafePDA.RPB3RawRegionTree",
+        "StackSafePDA.RPB3SourceScalarReduction",
+        "StackSafePDA.RPB3SourceReferenceIntegration",
+        "StackSafePDA.RPB3AuxiliaryTypedReference",
+        "StackSafePDA.RPB3SemanticReducer",
+        "StackSafePDA.RPB3SemanticWorklist",
+        "StackSafePDA.RPB3SemanticWorklistMutants",
+        "StackSafePDA.RPB3RecursiveAuxiliarySourceReference",
+        "StackSafePDA.RPB3IndependentOracleCore",
+        "StackSafePDA.RPB3IndependentOracleAdmission",
+        "StackSafePDA.RPB3IndependentOracleCost",
+        "StackSafePDA.RPB3IndependentOracleProcess",
+        "StackSafePDA.RPB3IndependentOracleName",
+        "StackSafePDA.RPB3IndependentOracleRecursive",
+        "StackSafePDA.RPB3IndependentOracleFuel",
+        "StackSafePDA.RPB3IndependentOracleAdequacy",
+        "StackSafePDA.RPB3IndependentOracleProjection",
+        "StackSafePDA.RPB3IndependentOracleProcessProjection",
+        "StackSafePDA.RPB3IndependentOracleNameProjection",
+        "StackSafePDA.RPB3IndependentOracleNameDecoderBridge",
+        "StackSafePDA.RPB3IndependentOracleMutants",
+        "StackSafePDA.RPB3IndependentOracleRecursiveProjection",
+        "StackSafePDA.RPB3IndependentOracleProcessScalarDecoderBridge",
+        "StackSafePDA.RPB3IndependentOracleCostScalarDecoderBridge",
+        "StackSafePDA.RPB3IndependentOracleCostChildCorrespondence",
+        "StackSafePDA.RPB3IndependentOracleCostVerdictBridge",
+        "StackSafePDA.RPB3IndependentOracleGeneratedResolverVerdict",
+        "StackSafePDA.RPB3IndependentOracleCostScalarTypeIdMutant",
+        "StackSafePDA.RPB3IndependentOracleProcessChildProvenance",
+        "StackSafePDA.RPB3IndependentOracleParScalarScoreBridge",
+        "StackSafePDA.RPB3IndependentOracleParBytesChildBridge",
+        "StackSafePDA.RPB3IndependentOracleParMessageChildBridge",
+        "StackSafePDA.RPB3IndependentOracleRegionRebaseBridge",
+        "StackSafePDA.RPB3IndependentOracleParMessageBodyDecodeBridge",
+        "StackSafePDA.RPB3IndependentOracleParMessageRawRebaseBridge",
+        "StackSafePDA.RPB3IndependentOracleStringMapRegionRebaseBridge",
+        "StackSafePDA.RPB3IndependentOracleStringMapTypedRebaseBridge",
+        "StackSafePDA.RPB3IndependentOracleParMessageEvaluationRebaseBridge",
+        "StackSafePDA.RPB3IndependentOracleExprGroundScoreControl",
+        "StackSafePDA.RPB3IndependentOracleExprFixed64BitwordBridge",
+        "StackSafePDA.RPB3IndependentOracleExprNestedGroundControl",
+        "StackSafePDA.RPB3IndependentOracleExprNestedGroundChildBridge",
+        "StackSafePDA.RPB3IndependentOracleExprNestedGroundScalarBridge",
+        "StackSafePDA.RPB3IndependentOracleExprNestedGroundScoreBridge",
+        "StackSafePDA.RPB3SourceIndexedFrames",
+        "StackSafePDA.RPB3SourceIndexedTermination",
+        "StackSafePDA.RPB3ResidentParAdmissionBridge",
         "StackSafePDA.RPB3AdmissionMutants",
+        "StackSafePDA.RPB3SourceIndexedTerminationWitnesses",
     ],));
 }
 

@@ -43,6 +43,199 @@ model raw protobuf, descriptors or scores. The full-summary and concrete-cursor 
 remain required under tasks 6743 and 6744, respectively, within task 6020. The dated
 [observation correspondence](#rpb3-observation-correspondence-2026-09-07) below distinguishes
 what is proved, what is tested, and what remains unproved.
+
+`RPB3IndependentOracleCostScalarTypeIdMutant.v` records the scalar type-ID
+admission boundary in three closed reports. The independent source now accepts
+a scalar raw field only with `raw_program_type_id = None`, as both generated
+program resolvers require. A finite CostBoundSignature witness shows that
+omitting this guard would accept a scalar carrying `Some 11` and derive the
+same score as its valid counterpart, while the semantic reducer refuses that
+child and its parent. The actual source-to-raw scalar conversion always emits
+`None`, so the new guard preserves converted-source scalar admission. This
+does not establish a general rejected-Cost-tree correspondence.
+
+`RPB3IndependentOracleCostVerdictBridge.v` closes 59 reports for generated
+Cost-program-selected roots. It proves that every accepted independent source
+root has exactly the semantic reducer's whole summary. For these roots, source
+rejection is equivalent to target refusal or `ScoreNotDerived`; accepted roots
+are equivalent to a clear target with an exact score. The reverse proof
+reconstructs the actual source forest by mutual tree/forest induction from the
+target scan and score certificates, including scalar decoder success and
+message-child type selection. Finite controls distinguish an explicit-zero
+numeric field, which leaves the target score underived, from malformed bytes,
+which cause target refusal. The theorem is restricted to selected Cost roots;
+it does not claim arbitrary generated-family or production-parser equivalence.
+
+`RPB3IndependentOracleGeneratedResolverVerdict.v` closes ten reports for the
+general generated Message resolver boundary. An unresolved type makes every
+positive-fuel independent evaluation fail and makes target reduction refuse,
+regardless of its supplied children. Successful independent steps are exactly
+those with a generated program, decoded source nodes, and successful actual
+child evaluation; the public Par acceptance gate additionally requires an
+unrefused summary and a semantic default. An unfinished one-byte key is
+rejected by both public Par references, while target reduction of a fabricated
+empty child list accepts it with an exact score. This finite control shows why
+whole-verdict equivalence still requires actual child provenance and the
+remaining recursive family and score correspondence.
+
+`RPB3IndependentOracleParScalarScoreBridge.v` closes 15 reports for the
+generated Par scalar and score boundary. The independent and target Boolean
+decoders have the same tag-10 refusal set, including the forbidden encoded
+default. A synthetic tag-10 `[0]` summary shows why score projection cannot
+be claimed for arbitrary child lists: the source score exists while the target
+Par score is underived. For every accepted public independent Par root, the
+module obtains the actual decoded child list from generated source evaluation,
+derives child plainness and unrefused status, and proves that the semantic
+reducer's score on those projected children equals the source score evidence.
+It does not yet prove that the recursive target evaluator produces that child
+list or establish full public verdict and whole-summary equivalence.
+
+`RPB3IndependentOracleParBytesChildBridge.v` closes seven reports for the
+generated Par tag-9 PBBytes child. A finite `[256]` body shows that the source
+decoder's byte-range guard is stronger than the target rule's nonempty-body
+test before raw admission. For an actual generated scalar child, raw validity
+rules out that mismatch; the source and recursive target then agree on
+conversion failure, refusal, and accepted projected summary. This establishes
+the tag-9 pointwise child verdict without a supplied child-list alignment.
+
+`RPB3IndependentOracleParMessageChildBridge.v` closes four reports for actual
+generated Par Message child provenance. It projects the descriptor table to
+the exact tag and child-type pairs, then shows that a successfully converted
+Message node from a decoded Par root carries the corresponding raw tag and
+type ID. Recursive child verdict and score projection still require a proof
+that the target's absolute nested source spans agree with the independent
+oracle's fresh decode of each extracted Message body.
+
+`RPB3IndependentOracleRegionRebaseBridge.v` closes 21 reports for the
+structural source decoder rebasing law. For any bounded interval within a
+backing slice, decoding the absolute source region and shifting every span in
+the resulting recursive tree agrees with decoding the corresponding local
+interval on the sliced backing. The proof commutes canonical varints,
+framing, worklist scanning, generated slot admission, and nested child
+decoding; it does not assume an external child-list alignment. Focused `coqc`
+and independent `coqchk` both passed. This establishes the byte-region step
+needed to compare an actual Par Message child's nested decode with the fresh
+body decode used by the independent oracle; semantic child verdict projection
+remains the next obligation.
+
+`RPB3IndependentOracleParMessageBodyDecodeBridge.v` closes four reports for
+that actual Par Message decoder handoff. Its fold invariant proves that every
+stored generated Message child list came from the recursive decoder call that
+constructed the node. For a Message selected from a successfully decoded Par
+root, checked span bounds and byte-depth fuel stability then show that a fresh
+decode of the converted raw body returns exactly the stored child list after
+rebasing each nested span. Focused `coqc` and `coqchk` passed. Comparing the
+source and target semantic verdicts for those children remains open.
+
+`RPB3IndependentOracleParMessageRawRebaseBridge.v` closes three reports:
+checked span rebasing preserves conversion of any source node to its raw
+field, and it preserves Scalar and Message node evaluation under a fixed
+recursive callback. `RPB3IndependentOracleStringMapRegionRebaseBridge.v`
+closes four reports: StringMap role checks, extracted key/value bytes,
+entry-span parsing, and the generated entry decoder all commute with a
+bounded region shift. Both modules passed focused `coqc` and independent
+`coqchk`. The remaining auxiliary step is to transport typed StringMap entry
+semantics across these rebased spans.
+
+`RPB3IndependentOracleStringMapTypedRebaseBridge.v` closes six reports for
+that auxiliary semantic transport. A decoded entry's selected key and value
+spans inherit checked bounds from the actual worklist. The refined typed
+entry therefore retains each key/value byte body after rebasing. Under the
+same recursive callback, source evaluation of every Scalar, Message, and
+Auxiliary node is unchanged by the shift; a `Forall` checked-window proof
+lifts this to a whole child list. Focused `coqc` and `coqchk` passed. This
+establishes source-side evaluation alignment; target family verdict and score
+projection is still required.
+
+`RPB3IndependentOracleParMessageEvaluationRebaseBridge.v` closes one report
+for the actual selected Par Message handoff. From a successfully decoded
+generated root and a converted Message field, it identifies the generated
+child program, freshly decodes the raw body to exactly the stored children
+with rebased spans, and proves that evaluating those children in the raw body
+equals evaluating the actual absolute children in the root bytes. Focused
+`coqc` and independent `coqchk` passed. The target verdict and score
+projection remains the next obligation.
+
+`RPB3IndependentOracleExprGroundScoreControl.v` closes one finite accepted
+Par control for the generated Expr GDouble arm. The independent source and
+target reducers now score checked tag 34 fixed64 bits as DOUBLE constructor
+14 with an integer word, and tag 35 BigInt bytes as constructor 15 with a
+byte string. The control proves the same public exact score for a one-bit
+GDouble under both references. Focused `coqc` and independent `coqchk`
+passed. Other Expr message arms still need score correspondence.
+
+`RPB3IndependentOracleExprFixed64BitwordBridge.v` closes four reports for
+GDouble's signed integer score representation. For every fixed64 word below
+the 64-bit limit, interpreting it as signed and reducing it modulo that limit
+recovers the original word in both references. Projection of the independent
+DOUBLE score therefore agrees with the target's signed-cast score. Byte
+controls cover the sign bit and the all-ones word, including their sign-flipped
+canonical encoding. Focused `coqc` and independent `coqchk` passed.
+
+`RPB3IndependentOracleExprNestedGroundControl.v` closes 16 finite reports for
+the generated BigRational and FixedPoint Expr arms. Both reducers now mark
+their nested semantic children complete without inventing a child score; the
+Expr parent constructs constructor 16 from numerator and denominator bytes,
+or constructor 17 from unscaled bytes and a one-element node holding scale.
+Absent fields use empty bytes and zero scale. Eight public examples cover
+absence, either single field, and both fields in each family; explicit empty
+bytes and zero scale remain refused. Direct target controls show why nested
+structural decoding must also run each present generated scalar rule: empty,
+overflowing, and noncanonical values cannot produce a score. Focused `coqc`
+and independent `coqchk` passed. The production
+`expr_ground_structural_and_nonsemantic_finish_source_property`,
+`no_score_structural_child_pop_accept_property`, and
+`every_descriptor_scalar_field_rejects_explicit_default_presence` cover the
+corresponding generated and explicit-default behavior.
+
+`RPB3IndependentOracleExprNestedGroundChildBridge.v` closes seven reports
+for the actual generated BigRational and FixedPoint nested child selection.
+Successful independent evaluation supplies the decoded nodes and positional
+typed children; generated descriptor checks show both families have only
+scalar fields, and each selected typed child retains its source descriptor
+tag. Thus source field lookup and target node lookup select the same actual
+child for either present field and agree on absence, without a supplied
+child alignment. Focused `coqc` and independent `coqchk` passed.
+
+`RPB3IndependentOracleExprNestedGroundScalarBridge.v` closes 18 reports
+connecting those selected children to the generated PBBytes and PBUint32
+decoder rules. It derives raw validity and typed provenance from successful
+source evaluation, then matches each actual BigRational numerator and
+denominator or FixedPoint unscaled value and scale against the target scalar
+rule. Missing fields and both-present cases use the same positional source
+evaluation; the caller does not supply an aligned child list.
+
+`RPB3IndependentOracleExprNestedGroundScoreBridge.v` closes ten reports for
+the enclosing Expr constructors. Generated descriptor checks identify the
+BigRational and FixedPoint child families; the scalar bridge supplies their
+actual values, and the parent proof equates source and target c16/c17 scores,
+including refusal when a nested child is invalid. Focused `coqc` and
+independent `coqchk` pass for both new modules. These
+theorems cover the two generated Expr arms, not a universal production-driver
+to Rocq state simulation.
+
+`RPB3SourceIndexedTermination.v` gives the source-indexed frame machine a
+fuel-free transition relation. The potential is the sum of pending job costs:
+each visit or forest expansion replaces a job by strictly less pending work,
+and refusal or an empty job list is terminal. Well-founded induction proves
+termination from every configuration; a step simulation relates every
+sufficient finite budget to the terminal observation, and terminal uniqueness
+gives a deterministic root result equal to the existing frame evaluator.
+The module closes five assumption reports under focused `coqc` and passes
+independent `coqchk`. This establishes termination and determinism of this
+source-indexed machine; it does not supply the remaining independent typed
+reference equivalence or production-state mapping.
+
+`RPB3SourceIndexedTerminationWitnesses.v` applies that terminal-result
+theorem to the generated-schema byte fixtures in `RPB3AdmissionMutants.v`.
+For every reached terminal state, the ordered New body has a root result;
+reversed map-key order, a trailing root byte, and a truncated private
+Unforgeable length have none. The same ordered body accepts its canonical
+claimed score and rejects a one-byte extension. The five closed reports and
+independent `coqchk` pass. These executable cases establish nonvacuity and
+causal refusal for the fuel-free machine; they do not establish the remaining
+all-input independent typed-reference equivalence.
+
 - `PathMapReversePruneTeardown.v` is the formal-first contract for stack-safe destruction of campaign-owned `PathMap<()>`, `PathMap<Par>`, and Bag tries. It proves exact reverse-postorder payload detachment, one logical edge per immediate-parent-barrier prune, topology-only line/dense/comb coverage without depth limits, exact Par-PDA work transfer, root handling, rejected partial writer/iterator closure, destructive subtree closure, publication/error preservation, and absence of any nonempty unique raw-PathMap Drop at the integration boundary. Its primary ownership refinement is `Arc<AnchorRoot<PathMap<V>>>`: immutable wrapper clones never clone a raw PathMap header or root value, standard Arc finalization elects exactly one anchor teardown, and `Arc::make_mut` is the only operation that creates a fresh registered anchor/header for semantic mutation. Cross-anchor internal PathMap subtrie sharing is modeled separately and preserves the sibling image while the final anchor drains through public zipper CoW. `PathMapReversePruneTeardownMutants.v` kills twenty-seven causal traversal/ownership/publication controls for the twenty-five-invariant catalog, including snapshot-only `Arc::strong_count`, per-wrapper raw headers, manual family counters, unregistered `make_mut`, topology-blind walking, recursive multi-edge prune, early owned-writer Drop, and live detached-subtree release. `formal/tlaplus/stack_safe_pda/PathMapAnchorRootTeardown.tla` exhaustively explores clone, nonlast/final Drop, `make_mut`, abort, and both final-drop orders; four configurations reject the ownership race mutants. `formal/verus/pathmap_reverse_prune_teardown.rs` checks the executable one-edge/root steps and proves edge/payload conservation for the abstract reverse-terminal state machine with `--no-cheating`. These artifacts specify the runtime work before implementation; they do not verify the upstream PathMap node layout, Rust standard-library Arc internals, allocator behavior, panic code generation, or a future Rust integration that has not yet been written.
 
 The theorem kernel is schema-parametric. The generated Rust equivalence manifest binds each concrete schema surface to a theorem and an independent recursive-oracle differential. The manifest test is the coverage proof: a new generated traversal cannot remain converted without a theorem/differential row. PathMap still owns the internal ACTree03 byte grammar and parser. `EPM1.v` preserves that arena byte-for-byte and proves the surrounding framing and positional association law parametrically over the executable zero-marker extractor; the V6 physical refinement binds that law to the canonical writer/parser. Executable PathMap behavior remains checked by the Rust differential and malformed-input suites.
@@ -2398,7 +2591,725 @@ new observation witnesses. They printed one and two closed capstones, respective
 with `--no-cheating` checked eight helper contracts with zero errors. This verifies the
 named narrow artifacts, not the missing full-summary model. Task 6020 and its cursor child
 6744 were returned to `in_progress` after their completion claims failed this source audit;
-6743 was already open. No duplicate proof task or new parser was introduced.
+6743 was already open. No duplicate proof task or new parser was introduced at
+that point.
+
+### Recursive RPB3 wire-to-descriptor bridge (2026-10-08, task 6743)
+
+[`RPB3RawRegionTree.v`](theories/RPB3RawRegionTree.v) is a source-derived
+framing step between the byte cursor and the typed reference. At this earlier
+source stage, its focused `coqc` and `coqchk` gates passed with seventeen
+closed-context reports; the later Par-summary stage below has the current
+79-report proof inventory. The earlier gate verifies the framing statements
+below, not an admission-equivalence theorem.
+The root entrypoint selects the generated `Par` row. For each checked wire
+span, the decoder resolves the *actual* field tag in that row, checks the wire
+kind and generated slot order, and reads the payload from the same backing
+byte list. A message descriptor selects its generated child program and
+recurses only over that span's bounded payload interval. String-map and
+PathMap descriptors produce explicit auxiliary nodes for later specialized
+frame reducers. They are not treated as ordinary message children.
+
+```text
+decode_region(bytes, generated_program, bounded_region):
+    for span in checked_source_order(bytes, bounded_region):
+        field = generated_program.resolve_actual_tag(span.number)
+        require matching_wire_kind_and_generated_slot_order(field, span)
+        if field is Message:
+            children = decode_region(bytes, generated_child(field), span.payload_region)
+            append SourceMessage(span, field, children)
+        else if field is StringMap or PathMap:
+            append SourceAuxiliary(span, field)  # specialized reducer still pending
+        else:
+            append SourceScalar(span, field)
+```
+
+The example input `0a 02 18 01` frames a `Par` field containing a `Send`
+message: its outer payload is bytes at absolute offsets 2 and 3, and the nested
+scalar payload is byte 1 at offset 3. The finite controls also reject a wrong
+nested wire kind and a truncated outer payload. The general source-body lemma
+states that every byte read from a node's payload window has its original
+absolute offset; the generated-descriptor lemma ties each selected row to the
+wire tag and kind. These examples establish framing behavior only: that `Send`
+still lacks its required channel, so this input is not an admission witness.
+
+A subsequent source-only bridge draft converts each decoded scalar or generated
+message node into the corresponding `raw_field` label and recursively builds
+the typed tree consumed by `RPB3GeneratedFieldRefinement.v`. It copies each
+field body from its exact source payload interval and sets the declared length
+to that interval's length. The proposed generic lemmas preserve tag, wire kind,
+payload kind, child type identifier, body bytes, and absolute byte offsets; the
+same `Par`/`Send` input supplies a finite nested-tree witness. Conversion
+returns `None` for StringMap and PathMap nodes until their auxiliary-frame
+result types are modeled. Its requirement lists are empty framing placeholders:
+they are not an authority for semantic acceptance, and this bridge does not
+assert equality with the reference reducer's accepted outcome. The new
+conversion and witness pass focused `coqc` and targeted `coqchk` on the current
+source, with closed assumptions.
+
+The next auxiliary-frame draft covers the protobuf `map<string, Par>` entry
+shell at `New.injections`. It re-resolves the outer field from the generated
+`New` descriptor, frames the entry's original payload bytes, and recognizes
+only the shapes used by `MapFrame`: no fields, one length-delimited key at tag
+1, one length-delimited value at tag 2, or key followed by value. The selected
+descriptor supplies the Par value type ID. A finite `New` example locates key
+`a` and an empty value at their original byte offsets; that example is a
+framing witness, not an admitted map value. The current typed reference
+explicitly refuses `StringMap` raw fields, so this observation does not yet
+convert Map results into `raw_field` trees or establish UTF-8 validation,
+default omission, returned Par summaries, or cross-entry key order. The focused
+current-source `coqc` gate passes with all twenty named assumptions closed;
+targeted `coqchk` for this addition also passes.
+
+The next Rocq refinement uses a separate `typed_string_map_entry` result,
+instead of asking the generated-message `raw_field` reducer to accept an
+auxiliary payload. A successful refinement retains the actual outer
+`StringMap` descriptor, resolves its generated Par value program, and pairs
+each present key or value span with bytes copied from that span's original
+payload interval. Its source-selection theorem derives the tag-1 key and
+tag-2 value roles from the parsed entry, proves both use length-delimited
+wire framing, and ties the value type to the selected generated descriptor.
+The existing absolute-offset lemma applies to each retained body. A finite
+`New.injections` example carries key bytes `61` (ASCII `a`) and an empty
+value body through this typed framing result. A separate
+`reduce_typed_map_entry` models the key and returned-value checks that follow
+it. The key validator consumes the captured bytes with the same ASCII,
+two-byte, three-byte, and four-byte lead/continuation ranges used by
+`IndexedCanonicalFieldCursor::scan_utf8`; an absent key becomes the empty
+default, whereas a present empty or invalid key is refused. The value reducer
+is explicitly supplied: an absent value stays absent, and a present value is
+returned only when that reducer accepts the captured value body and reports
+`semantic_default = false`. The source-return theorem proves the returned key
+and value are exactly those selected bytes and result, with their original
+spans. Two refusal theorems rule out an explicit empty key and an explicit
+semantic-default Par. Finite witnesses cover ASCII plus a valid four-byte
+scalar and reject a surrogate, an overlong encoding, and an incomplete
+sequence. Focused capped `coqc` passes with all thirty-one named assumptions
+closed (`target/verification/rpb3-rocq/raw-region-tree-map-return-coqc-r3.log`,
+SHA-256 `473f6259a76ac8348eb0d9f813571f68b7b41c5978f961e722ee64e2209dae8c`).
+The source-derived cross-entry reducer now starts from `decode_region` on the
+original root bytes, selects one generated `StringMap` slot, and re-resolves
+each selected node before reducing its typed entry. Its `Forall2` theorem
+retains the source node, typed entry, and returned value at each position;
+the sequence theorem requires strict byte-key order and rejects consecutive
+duplicate keys. The preceding focused capped `coqc` passed with all thirty-seven
+named assumptions closed
+(`target/verification/rpb3-rocq/raw-region-tree-typed-map-coqc-r8.log`,
+SHA-256 `d6a06e977cb2f23dfbfa3bd4bc94a38e5750322f423b0daec1d948f20833d4e5`),
+and targeted kernel `coqchk` passed
+(`target/verification/rpb3-rocq/raw-region-tree-typed-map-coqchk-r2.log`,
+SHA-256 `1d5dade248a3ce151da894b7725b5c2ae132d48d9fdd1383c3d07ab95bab512e`).
+The next source-slot theorem selects each auxiliary node by resolving its
+original span against the generated descriptor, rather than trusting the
+field carried by the node. It proves that filtering a decoded region includes
+exactly those auxiliary nodes whose resolved descriptor is a `StringMap` in
+the requested slot, and that two selected entries retain their source order.
+The focused capped `coqc` for this revision passes with all forty-two named
+assumptions closed
+(`target/verification/rpb3-rocq/raw-region-tree-map-slot-extraction-coqc-r2.log`,
+SHA-256 `7ef6028a0cf41c8269847aa685c0125c3f4b11f70b4df4b68a39f3cfd0b46139`).
+Targeted kernel `coqchk` passes
+(`target/verification/rpb3-rocq/raw-region-tree-map-slot-extraction-coqchk-r1.log`,
+SHA-256 `5895a3f7e7a5cae84925bcbcea1c24671470d81114e4a27c7be8a70465dffbc0`).
+The next proof derives constructor shape from the decoder itself: every node
+returned by `decode_region` resolves to its generated descriptor, and a node
+whose selected descriptor is `StringMap` is an actual `SourceAuxiliary` node
+for that span and field. Thus the Map-slot filter selects every generated Map
+span in a successfully decoded region, without assuming an auxiliary-node
+shape from an external source. Separately, a successfully decoded entry has
+exactly the supported empty, key-only, value-only, or ordered key/value
+constructor shape; its fields have the exact tag and length wire, and its
+cardinality is at most two. When the root Map reduction succeeds, every
+selected entry has that constructor shape. Focused capped `coqc` passes with
+all fifty-one named assumptions closed
+(`target/verification/rpb3-rocq/raw-region-tree-map-constructor-coqc-r8.log`,
+SHA-256 `7c0fc3157baecf27febeaae7287d5679aab73ecf62ece8ab53e53b82d1acde3d`),
+and targeted kernel `coqchk` passes
+(`target/verification/rpb3-rocq/raw-region-tree-map-constructor-coqchk-r1.log`,
+SHA-256 `b1730f44b6aa05f00b3d375c9d5d6d8ea822d0242a50c9028106466c9415b595`).
+The checked source is SHA-256
+`629e9136cf7328dd5d8a39394186911405aa769c0b0dde15968df89f5d180a13`.
+`decode_region` alone still does not accept or reject the specialized Map
+payload; entry shape follows only after the entry decoder succeeds. The
+production Par reducer and UTF-8 implementation remain external premises.
+Rust driver correspondence and complete acceptance equivalence remain open;
+`resolved_raw_program` still refuses `StringMap` raw fields.
+
+The Map-key UTF-8 leaf adds a second, indexed-scanner-style decision table
+with the explicit `e0`/`ed` and `f0`/`f4` second-byte bounds used by
+`IndexedCanonicalFieldCursor::scan_utf8`. Its theorem proves this table and
+the compact Coq validator agree for every byte list. A present Map key is
+accepted by the typed key reducer exactly when that scanner model accepts
+the key bytes and the key is nonempty; an absent key still yields the empty
+key with no source span. For a successfully refined and reduced entry with
+a present key, the selected tag-1 span's original payload window passes the
+scanner model and is exactly the returned key and span. Focused capped
+`coqc` passes with all fifty-seven named assumptions closed
+(`target/verification/rpb3-rocq/raw-region-tree-indexed-utf8-coqc-r3.log`,
+SHA-256 `bf3fb5ccfc350e6bbe456d04a8b10d19d0990b1257299214f901e31a9b3f9c47`),
+and targeted kernel `coqchk` passes
+(`target/verification/rpb3-rocq/raw-region-tree-indexed-utf8-coqchk-r1.log`,
+SHA-256 `63fb43d6f91a2634cdb8eca8bc3b4802f0c8f6399d45ad0d00ca23b5fb8ba029`).
+The checked Coq source is SHA-256
+`4d4151d1eaccdbcaf1e1d81e4d80643605d83aec93f0fd92938746b3208527ea`.
+This is an equivalence between two Coq validators whose branch ranges were
+checked against the Rust source; it does not formally simulate Rust cursor
+reads, the contiguous `std::str::from_utf8` fast path, or the production Par
+value reducer.
+
+The Map payload acceptance proof now gives both directions, from a typed
+entry through the selected root slot. Its entry guard requires a present key
+to pass the indexed UTF-8 model and be nonempty; an absent key returns the
+empty key with no key span. A present value requires the supplied Par child
+reducer to return a value with `semantic_default = false`; an absent value
+returns no Par or value span. The source member guard also requires successful
+entry framing and refinement against the generated descriptor and selected
+slot. The sequence guard requires every selected member to pass and each
+returned key to be strictly greater than its predecessor. The root theorem
+proves these guards are **equivalent** to `reduce_root_map_slot` returning the
+given sequence, rather than only necessary for success. The audited
+production branches are `MapFrame::accept`/`finish`,
+`map_step_with_source`, the ordered cursor, and the parent Map-key comparison
+in `protobuf_admission.rs` and `indexed_protobuf.rs`. Focused capped `coqc`
+passes with all sixty-three named assumptions closed
+(`target/verification/rpb3-rocq/raw-region-tree-map-exact-acceptance-coqc-r4.log`,
+SHA-256 `7f547ede9e63a52339a305321dfce28a3fe3002d39389315a16c79fe603a5254`),
+and targeted kernel `coqchk` passes
+(`target/verification/rpb3-rocq/raw-region-tree-map-exact-acceptance-coqchk-r1.log`,
+SHA-256 `5e8eea24f81d257d3f2520e0212289eb23d2af2287a97642986e9b92f2fbc93d`).
+The checked Coq source is SHA-256
+`e4c2813748d80b1d9044625c49c1572b55f53026a0d42d313ed22bc1345c77a7`.
+The Par child reducer remains an explicit parameter: this theorem does not
+prove the Rust driver implements the Coq model or derive the production Par
+summary. Full admission reference equivalence remains open.
+
+The next Map-value handoff model takes a present value from the refined entry,
+decodes its original bounded region with the generated child program, and
+passes that source tree to a supplied semantic child reducer. Its return
+retains the child tree alongside the semantic value. A successful present
+value therefore has the actual generated outer `StringMap` descriptor and
+child type ID, the looked-up child program, the exact source body and span,
+and a decoded child tree whose nodes resolve against that program. The child
+reducer must return a nondefault value. Failed child framing and an explicit
+semantic-default child return both cause refusal. This corresponds to the
+production `MapFrame` value `Push(Message)` and `accept` branches; it is a
+separate source-checked route and does not change the earlier root Map
+reducer. Focused capped `coqc` passes with all sixty-six named assumptions
+closed (`target/verification/rpb3-rocq/raw-region-tree-par-child-handoff-coqc-r3.log`,
+SHA-256 `9517ec466f53fde4c56cda88c315b4bd4d68f57a8610260126afaeccaed8be52`),
+and targeted kernel `coqchk` passes
+(`target/verification/rpb3-rocq/raw-region-tree-par-child-handoff-coqchk-r1.log`,
+SHA-256 `5aa0815343f52646c46321240d6a07861decbf0e8c4015b62cb42ca1ac4a8442`).
+The checked Coq source is SHA-256
+`13fb7945f77c2fa1b7b7891e6454fac376252fa140f6eb40ddf14aeeb48895b4`.
+The semantic child reducer remains supplied. The handoff proof above does not
+itself derive the Par summary; the next source-tree proof supplies that
+specific flag. Equality between Rust child-program lookup and the Coq
+projection, universal Rust driver correspondence, and complete admission
+equivalence remain open.
+
+The generated Par descriptor row has ten repeated message-sequence tags:
+`1, 2, 4, 5, 6, 7, 8, 11, 12, 13`. A decoded child tree counts nodes bearing
+those generated descriptors as `par_components`. The singular Boolean
+`connective_used` has tag 10 and slot 8; absence yields `false`, while a
+present value must have the exact original varint body byte `[1]`. The
+source-tree summary returns `None` for any other present body. It returns a
+semantic-default flag only after that source check:
+
+```text
+components = count(decoded Par nodes with repeated Message descriptors)
+connective = absent ? false : require original body == [1]
+semantic_default = components == 0 && !connective
+```
+
+This matches the production Par field-step increment, `bool_value` omission,
+and `par_is_semantic_default` formula in
+[`protobuf_admission.rs`](../../../models/src/rust/rholang/protobuf_admission.rs)
+and [`canonical_semantics.rs`](../../../models/src/rust/rholang/canonical_semantics.rs).
+The checked Map child theorem instantiates its previously supplied default
+flag with this source-tree summary: a returned present value has either a
+message component or an original tag-10 body `[1]`. It still supplies the
+remaining semantic child value computation. Focused `coqc` passes with all
+79 named assumptions closed
+(`target/verification/rpb3-rocq/raw-region-tree-par-summary-coqc-r11.log`,
+SHA-256 `cf2f4b52e26459e7a9971ec9f51d0223c7b9ce0b9317e035fd8a92dd54b83a0f`),
+and targeted `coqchk` passes
+(`target/verification/rpb3-rocq/raw-region-tree-par-summary-coqchk-r1.log`,
+SHA-256 `7979d4e6cfb2a9a138d4abc81833687199e4611b4207ebc6c79e11d4fb06d460`).
+The checked source SHA-256 is
+`2ef573edc97da5034bad421f2f9f0bdd86551cb589a8953f1841ba5f012a4cee`.
+The later checked-source-window proof derives the source-span bounds directly
+from a successful indexed `decode_region` call and its guarded region scan.
+Every returned node's body has the exact declared span length; for nodes
+converted to `raw_field`, every body byte retains its original absolute
+offset. The raw-field theorem therefore needs no caller-supplied span bounds.
+This establishes the checked-size and byte-provenance part of the source to
+reference bridge, while auxiliary PathMap conversion and full score,
+required/default, and admission-verdict correspondence remain open. At that
+source revision, focused `coqc` reported 84/84 assumptions closed
+(`target/verification/rpb3-rocq/raw-region-tree-source-windows-coqc-r5.log`,
+SHA-256 `a6859492c8246112cdc5859da9066b2a4baac70549773320d91b117706939dfe`),
+and targeted `coqchk` passes
+(`target/verification/rpb3-rocq/raw-region-tree-source-windows-coqchk-r1.log`,
+SHA-256 `6995ea3d36f450c6c0cefabd9078258e84ee72353733e6148cfe873520d68d99`).
+The checked proof source SHA-256 is
+`b23ab32a17b852bc16374a7f0de0c2fe93554b2331a0b09963fe18e3e7537b42`.
+The generated production property module
+[`rpb3_par_source_summary_properties.rs`](../../../models/src/rust/rholang/rpb3_par_source_summary_properties.rs)
+tests all ten field-step count transitions, independent source-window counts,
+the returned default flag, malformed or duplicate connective refusal, and
+default Map-value refusal. Its focused filter passed 3/3
+(`target/verification/rpb3-admission-cursor/par-source-summary-cargo-r2.log`,
+SHA-256 `97e74ff3e41b313f367dfd1616d9b2727cc52be6a02ec7131baebc23cb8e2aeb`).
+The tested property source SHA-256 is
+`d13f545c94345707d8d573a669537fde3e09093d6d180814ff7e3852d105e0b5`.
+The full normal proof runner remains unrun.
+
+The disjoint projection proof
+[`RPB3ProjectionResolutionExact.v`](theories/RPB3ProjectionResolutionExact.v)
+adds the converse of descriptor resolution soundness: every actual generated
+tag binding resolves, no unbound tag resolves, and Par tag 10 selects slot 8.
+It depends on the finite uniqueness check in `RPB3DescriptorLaws.v`. Focused
+`coqc` passes with all five named assumptions closed
+(`target/verification/rpb3-rocq/projection-resolution-exact-coqc-r1.log`,
+SHA-256 `87696c04fea9fc5d85183a5c6b8c26d7ef7026cd2285f9c336d37ad7c4114cd2`),
+and targeted `coqchk` passes
+(`target/verification/rpb3-rocq/projection-resolution-exact-coqchk-r1.log`,
+SHA-256 `630e2a9bc93975e9c53766e5a0fe3b6ef34103d3220a3d92085f4510ead2ea81`).
+The checked projection proof source SHA-256 is
+`28b832107e85196961f8771a24e0bf3b01c5ab938b99383882255bfdf5ec36d3`.
+[`rpb3_descriptor_projection.rs`](../../../models/tests/rpb3_descriptor_projection.rs)
+is the separate executable bridge that compares the entire checked-in
+descriptor data file against the live generated registry, including the raw
+Par substitute. The projection theorem alone does not prove that the Rust
+registry matches the checked-in data.
+The live registry has one intentional name distinction: EPathMap's semantic
+field is `entries` at tag 9, while its protobuf field is `trie_snapshot`.
+The generated Rocq slot stores both names. `slot_names_well_formed` in
+`RPB3DescriptorLaws.v` permits exactly that distinction and requires equality
+for every other generated slot. The Rust renderer checks the same rule against
+the live registry before rendering either Rocq or Verus data. Both exact-file
+comparisons passed on the current source
+(`target/verification/rpb3-rocq/descriptor-projection-cargo-r2.log`, SHA-256
+`4be195915aff0bca2bf0c0c3ba5bc3fd2c5de86cd86efb027dfa1db548db335f`).
+The regenerated descriptor table and all downstream RPB3 modules compiled in
+dependency order, and `coqchk` checked the combined modules
+(`target/verification/rpb3-rocq/descriptor-downstream-coqc-r2.log`, SHA-256
+`cb0c9600154ba3ce0c4c3c609d26ee9917b9617b73dd00e1fa4cf99f9d7e5530`;
+`target/verification/rpb3-rocq/descriptor-downstream-coqchk-r1.log`, SHA-256
+`de962dbd1ec40b49f3b1f9e8b0431b2d3ad1ad5a65fbd2af972577481a3c2839`).
+This proves the finite descriptor table and its source comparison; the full
+admission PDA/reference equivalence remains task 6743 criterion 6012.
+
+The source-derived scalar bridge
+[`RPB3SourceScalarReduction.v`](theories/RPB3SourceScalarReduction.v)
+projects scalar kind and default-presence rules from every generated slot and
+selected oneof arm. It checks canonical varint width and signed aliases,
+fixed-width and floating-point zero defaults, UTF-8, byte bounds, and omitted
+plain defaults before admitting the existing `raw_field_of_source` conversion
+of the original payload window. Every admitted scalar is exactly the existing
+`raw_tree_of_source` leaf. Its decoded-node theorem requires membership in a
+successfully decoded region and exact generated-program lookup, obtains the
+stored descriptor from that decoder, and relates the accepted scalar to the
+typed reference's leaf body and validity. A source
+projection also produces Boolean, signed and unsigned integer, UTF-8 string,
+or byte values using the production scalar kind's varint, zigzag, and
+little-endian interpretation. The separate
+[`rpb3_scalar_source_properties.rs`](../../../models/src/rust/rholang/rpb3_scalar_source_properties.rs)
+enumerates live generated scalar fields and arms against the production
+`validate_scalar` path, including positive/default presence and invalid-domain
+mutations, and compares accepted fixture values with production
+`semantic_scalar`. Focused `coqc` passes with all eight named assumptions
+closed (`target/verification/rpb3-rocq/source-scalar-reduction-coqc-r8.log`,
+SHA-256 `7c97b18da34e49eb514d1cad5901f51c328894ece2ffd401a7bec2d34c3040ac`),
+and targeted `coqchk` passes
+(`target/verification/rpb3-rocq/source-scalar-reduction-coqchk-r1.log`,
+SHA-256 `bff8cbf8bf4a18162aa37165e2c69d01efb9311d91b8c0a4fccf2479efdcde58`).
+The checked theory source SHA-256 is
+`7317941722155f7dc5e29dad9c6116ebe387f3cf48935b5c23b3dd34979f74c6`.
+The focused generated property filter passes 3/3
+(`target/verification/rpb3-rocq/source-scalar-properties-cargo-r1.log`,
+SHA-256 `636c6b374bd20c96b00f04bd32c3fcb981f5d255b7edcc12d531e70d7f87cdc4`),
+with property source SHA-256
+`9fa7bd2449e2fc55fa987170fe2b29d8cd733b1df72abdbb2954c0425225dbb0`.
+The full normal proof runner remains unrun. The typed reference's scalar leaf
+still carries a symbolic score plan; universal Coq-to-Rust semantic value
+equality and score-byte equality remain open.
+
+The source-reference bridge
+[`RPB3SourceReferenceIntegration.v`](theories/RPB3SourceReferenceIntegration.v)
+uses the decoded source tree to supply the Par reducer previously left as a
+parameter in the Map proof. Its scalar preflight requires each generated
+scalar node to pass the source grammar and semantic projection. It then
+converts the same bounded Par source tree to `raw_field`, runs the independent
+typed reference, and accepts only a valid summary. A present returned
+`New.injections` value therefore retains its original Map entry and Par body,
+the generated child descriptor, an accepted typed-reference summary, and
+the reference worklist's matching verdict. An omitted Map value retains no
+Par source span; the selected entries retain their source key order. This is
+the concrete route modeled by the new leaf:
+
+```text
+New bytes -> generated slot 3 Map entries -> present Par body
+          -> generated Par decode -> checked source scalar tree
+          -> raw region tree -> independent typed reference -> Map return
+```
+
+At that source revision, focused `coqc` passed with nine closed-context reports
+(`target/verification/rpb3-rocq/source-reference-integration-coqc-r5.log`,
+SHA-256 `308b14375eb599e10c9320eefc5e0fef85a89b5ebeee30d98ec395be842e7d86`),
+and targeted `coqchk` passes
+(`target/verification/rpb3-rocq/source-reference-integration-coqchk-r1.log`,
+SHA-256 `04e8fec4ae2b02af11a5eac85a7e58fa815caad962f0e5967dacbacee30efd28`).
+The checked Coq source SHA-256 is
+`804542cfb70fbf0472488ab3649783243dd8dfb3b679d5045f59019359c27689`.
+The preceding source-to-reference byte guard derived a full-source byte check
+from successful root `decode_region`, transfers that check to every selected
+source body, and proves `Schema.valid_raw_body raw = true` for each converted
+root child of an accepted Par body. The proof uses the actual decoded root and
+conversion sequence; it does not assume the byte guard at the call site.
+Focused `coqc` reports 90/90 closed assumptions for
+`RPB3RawRegionTree.v` and 11/11 for
+`RPB3SourceReferenceIntegration.v` (logs
+`target/verification/rpb3-rocq/raw-region-tree-reference-guard-coqc-r4.log`,
+SHA-256 `001a73e8245ec184360b108950b35f934fd00001bd5dc1f2ef80e94e67b3bd51`,
+and `target/verification/rpb3-rocq/source-reference-byte-guard-coqc-r3.log`,
+SHA-256 `c7c16f0e29b8164c7e28f3d13964b2de737491c21cb79200d38ea749b88bbf26`).
+The intervening scalar dependency compiled with 8/8 closed assumptions.
+Targeted `coqchk` reports `Modules were successfully checked`
+(`target/verification/rpb3-rocq/source-reference-byte-guard-coqchk-r1.log`,
+SHA-256 `1fe018407afe6d3207c6dbaa4a020be2fae915922343fd7542c08e5838020e60`).
+The raw-region and source-reference source SHA-256 values at that revision were
+`f5ab6b984428e0801b4aa798ce0e78a4c0664f38b977ea5f7af55d8acac0d9dc`
+and `07f8dd62331076efd7b4927e4d3b7c5d09c28889b371d574b4051b59e11422ff`.
+The current source-window theorem strengthens this from root children to every
+descendant reached through the decoded `SourceMessage` tree. Successful
+`decode_region` constructs recursive region bounds from actual framed child
+decodes; a descendant converted to a raw scalar or message field therefore
+retains its exact bounded original body and passes the typed reference's
+`valid_raw_body` guard. The accepted Par-body bridge carries that result to
+its converted descendants. Auxiliary Map/PathMap fields still return `None`
+from `raw_field_of_source`, so this theorem does not discharge their conversion
+or the full admission verdict.
+
+Focused `coqc` reports 92/92 closed assumptions for `RPB3RawRegionTree.v`
+(`target/verification/rpb3-rocq/recursive-source-windows-coqc-r4.log`,
+SHA-256 `2cf82f9e3842d1adfa6fc9ccb0600e9e5eb302227ebe6411eee3cf5f420a8e4d`),
+8/8 for the scalar dependency, and 12/12 for
+`RPB3SourceReferenceIntegration.v`
+(`target/verification/rpb3-rocq/recursive-source-reference-coqc-r1.log`,
+SHA-256 `628d1df757c2a0e6301d9e545af548079b06f71ac43339a5a6d2765eb4b9f6ec`).
+Targeted `coqchk` reports `Modules were successfully checked`
+(`target/verification/rpb3-rocq/recursive-source-reference-coqchk-r1.log`,
+SHA-256 `7ce31bf00d9cbe7cca3d92ecacb9a58ce1bd3fc518bf263c79590ff4aa909944`).
+The raw-region and source-reference source SHA-256 values for that proof are
+`891e1140a6025a8e8949f0d26dbc5ee6c87e6d87f3c75ea8e543adf55f637ae8`
+and `edd2e2d0cc71245915f289e3cc227143192ca3e0fe1032491bb541da67dfc774`.
+The subsequent scalar-checked source-tree proof also verifies that each
+`SourceMessage` descriptor has message payload. It proves by tree induction
+that every checked ordinary scalar/message source field converts to a raw
+reference field and that a checked Par root forest converts without failure.
+This removes conversion failure for that checked subset, while Map and PathMap
+auxiliary fields remain outside the subset. Focused `coqc` reports 15/15
+closed assumptions (`target/verification/rpb3-rocq/scalar-tree-conversion-coqc-r2.log`,
+SHA-256 `21c84d61e1697e0cb27e12f7595258728c7e9a8f5c816eddb155910f41992ffe`).
+Targeted `coqchk` reports `Modules were successfully checked`
+(`target/verification/rpb3-rocq/scalar-tree-conversion-coqchk-r1.log`,
+SHA-256 `baa098d0aee3caf2983a03b70852b7c555c98230dc96137bee20ea7555ce112d`).
+The source-reference source SHA-256 for this result is
+`cbfe427b1b01152d4039d92fb55386cd25e800f649c405a100509a229dbcc962`.
+The next auxiliary-source extension converts decoded generated StringMap and
+PathMap fields to raw leaves that retain their exact bounded source bodies.
+It proves the generated Map entry and value source-body binding and its raw
+reference body guard for a successful Map reduction. This does not make the
+typed reference accept Map or PathMap: the canonical ACTree03 arena reference
+and recursive auxiliary verdict remain open. Bounded headless `coqc` closed
+95/95 raw-region assumptions, 8/8 unchanged scalar dependency assumptions,
+and 16/16 source-reference assumptions (logs
+`target/verification/rpb3-rocq/aux-raw-region-coqc-r2.log`, SHA-256
+`deb6f48abbb92384d5b9e2d3c1900312764484296289b1d93d2bb64f5a2e81aa`;
+`target/verification/rpb3-rocq/aux-source-scalar-dependency-coqc-r1.log`,
+SHA-256 `1b1edbdc26909ce08125eb2e09e3fd7f5f4f6b84f2d8230d741779d0db7cb9ed`;
+`target/verification/rpb3-rocq/aux-source-reference-coqc-r3.log`,
+SHA-256 `a2655c65e3294fc68490e2c6efebbb261f056d576c0dddc1091a4e827be8fdbd`).
+Targeted `coqchk` checked all three modules
+(`target/verification/rpb3-rocq/aux-source-reference-coqchk-r1.log`,
+SHA-256 `8f64cc4ddfa3b73559498a84884f2ece5f292b611c62598bc2399b243c9ee612`).
+The raw-region and source-reference source SHA-256 values for this result are
+`ef9f1ba5d7f62748df2a71342198fa6572eaa1e07479e4063265bae9859c5a1f`
+and `9ec41b0c44abdae7913ae002b207ba6fb3aa9f8b8b4e7b09c8664c61fbead247`.
+The corresponding Rust properties passed with 48 generated PathMap cases and
+32 generated Map cases, respectively. The focused Cargo logs are
+`target/verification/rpb3-rocq/pathmap-aux-physical-corruption-cargo-r1.log`
+(SHA-256 `40f8c129f2b15de5b4ef0212bdfa362f0cbedfa281450556931a9ef5d9ea8b11`)
+and `target/verification/rpb3-rocq/map-aux-source-property-cargo-r1.log`
+(SHA-256 `b52bc8b12fa61f919bacf7271ef5e9581728cc1b77ce03cfb04d4b8a7fccd1b0`).
+The PathMap property also retains valid EPM1 framing and route metadata while
+corrupting ACTree03 physical bytes, then requires full RPB3 admission to
+reject the body. A separate 32-case Set/Map property mutates each physical
+zero marker and requires EPM1 rejection
+(`target/verification/rpb3-rocq/epm1-all-markers-cargo-r1.log`, SHA-256
+`956927878d3775634ac483780919286401885be8175e9921cce9b4c7ac648041`).
+Their source SHA-256 values are
+`731581d4c080b9e42d0708053d43641dc68c9f5fa4f844535493ec3a78f584a0`
+and `af2480fb7169b2284f48125ff569c9ceebcac5373a041b9a555e114a8343d3bb`.
+The EPM1 marker-property source SHA-256 is
+`4de60d1b8e36083394a2ed87de0556ccbe5e35917178530d0770aaa8fef4fad2`.
+[`EPM1ACTree03.v`](theories/EPM1ACTree03.v) provides an adjacent physical
+ACTree03 reference: it parses the bounded header, trailer, canonical biased
+varints, branch and line layout, and reachable worklist, then reconstructs a
+byte trie and checks the EPM1 zero markers. Its hash-parameterized line replay
+models collision overwrite and reuse. Bounded headless `coqc` closed all three
+named assumptions (`target/verification/rpb3-rocq/actree03-reference-coqc-r2.log`,
+SHA-256 `e70ed2b02bbb05140ba7ad843b0286e87e58d01206b3dd29392066a9b0b9e012`),
+and targeted `coqchk` passed
+(`target/verification/rpb3-rocq/actree03-reference-coqchk-r2.log`, SHA-256
+`0c61749c23d4a1f8c53c5ba11248c1b42566ef217ab05a88ece3f635946e4297`).
+The source SHA-256 is
+`77dbd96c864861aa73eed9fe23c6bfbf9f330fd582aca1be58b92dd4c26050c3`.
+[`EPM1ACTree03Hash.v`](theories/EPM1ACTree03Hash.v) specializes that replay
+to an executable model of Rust's default AMD gxhash and Miri/riscv64 fallback
+hashes. Its six printed assumptions are closed, and `coqchk` passed
+(`target/verification/rpb3-rocq/actree03-hash-coqc-r4.log`, SHA-256
+`99a6704258822ca71cbc86001bd22c279bfa19b98dd2513510b2a59528c8e97f`;
+`target/verification/rpb3-rocq/actree03-hash-coqchk-r3.log`, SHA-256
+`13df3e013075f3fafeeed9c3037ef26dbc00fb65a4f32ebedbfd463665287fda`).
+All forty raw-suffix corpus vectors matched production Rust on both hash paths
+(`target/verification/rpb3-rocq/actree03-hash-differential-r1.log`, SHA-256
+`b9886fdfe61f3bb5b18b340890baef25ad57627d01ccc81f3686483b24d35fbf`).
+The source SHA-256 is
+`c86d2233e3d51ca2844321cde99db68f28dc2ed4fa814d7b40a4d789fcd2b262`.
+The finite differential corpus does not prove a fully general Rust/Rocq hash
+correspondence.
+
+[`RPB3AuxiliaryTypedReference.v`](theories/RPB3AuxiliaryTypedReference.v)
+adds a generated-descriptor-gated typed Map and PathMap verdict. It preserves
+the exact source-owned raw leaf, checks ACTree03 and EPM1 decoding and
+positional Par values, retains the semantic-default flag for empty Map values,
+and refuses malformed physical bodies. Its concrete witnesses cover accepted
+default values and physical refusal. Bounded `coqc` closed all nine printed
+assumptions, and targeted `coqchk` passed
+(`target/verification/rpb3-rocq/auxiliary-typed-reference-coqc-r11.log`,
+SHA-256 `308b14375eb599e10c9320eefc5e0fef85a89b5ebeee30d98ec395be842e7d86`;
+`target/verification/rpb3-rocq/auxiliary-typed-reference-coqchk-r1.log`,
+SHA-256 `4e2ee2feee426e07c782de84977da0786baf66a3019318a3c5a77e7e507b453e`).
+The source SHA-256 is
+`9979e9b9f7de1c39daa8a4a1c6f04cafc6db3f08277590f9e4e56fe224629f38`.
+Equivalence with production `CompactTrie` traversal, including childless
+endpoints, and integration of the auxiliary verdict into the complete recursive
+typed admission authority remain to be proved.
+The existing recursive generated-region property checks descriptor slots,
+absolute payload offsets and original source slices at each nested message
+field; its nonvacuity companion requires generated programs with children.
+The focused debug and release filters each passed 4/4 with no ignores
+(`recursive-source-properties-debug-r1.log`, SHA-256
+`ba3f0f1e4b45c70a3e6de68ad6776575078df67e2968f786de4d93c4dccfcb53`;
+`recursive-source-properties-release-r1.log`, SHA-256
+`02e94a0c0b4a1d6db6caa566bc3582bc2cc7aad7858746d5a657bc87a77a7ce3`).
+Both logs are under `target/verification/rpb3-rocq/`; the property source
+SHA-256 is `4d760dc66fe7675d87868f3511f80a25e9bbe57820f43a3144635323b0377904`.
+The generated production properties in
+[`rpb3_source_reference_integration_properties.rs`](../../../models/src/rust/rholang/rpb3_source_reference_integration_properties.rs)
+passed 2/2 with 32 cases each
+(`target/verification/rpb3-admission-cursor/source-reference-integration-cargo-r2.log`,
+SHA-256 `ec8a9614491138c637be3aab5c5f8d2a800930338e7529b24e28d543feaed902`).
+They compare returned Map entry order, present Par bodies, and child/root score
+bytes against generated typed messages, and test production refusal of reversed
+keys, explicit omitted-default values, and explicit false Par scalars. Their
+source SHA-256 is
+`886169dec17991c8f5c7c049d76bcc5e6726d8ed9abba5e836c7f5eb20391e16`.
+This proof and these properties do not establish universal equality with the
+Rust admission driver: PathMap auxiliary conversion, concrete score derivation
+for every generated family, and the full source-to-driver simulation remain
+open. The normal proof runner remains unrun.
+
+The existing production property tests cover related source facts, with these
+limits:
+
+| Bridge invariant | Existing executable property | Still missing |
+|---|---|---|
+| A framed field partitions and re-encodes its original byte window. | `arbitrary_successful_fields_partition_and_reencode_source` and `generated_fields_partition_source_in_numeric_and_producer_order` in [`protobuf_cursor.rs`](../../../models/tests/protobuf_cursor.rs); [`rpb3_raw_region_tree_properties.rs`](../../../models/src/rust/rholang/rpb3_raw_region_tree_properties.rs) checks bounded recursive source offsets. Its focused release filter passed 4/4. | The new property checks framing, not scalar admission. |
+| Generated message receipts preserve byte and provenance anchors. | The 48-case `generated_message_receipts_preserve_fragmented_source_projection` in [`rpb3_generic_message_field_source_properties.rs`](../../../models/src/rust/rholang/rpb3_generic_message_field_source_properties.rs). The passing recursive-tree property varies descriptor-selected nested payloads. | Arbitrary nested production receipt/source simulation remains open. |
+| A message child resumes with the same bounded body and selected slot. | The 16-case `nested_send_preserves_suspended_frames_through_every_driver_action` in [`rpb3_active_frame_sequence_properties.rs`](../../../models/src/rust/rholang/rpb3_active_frame_sequence_properties.rs); shared-oneof duplicate rejection is generated in [`rpb3_generated_oneof_seen_properties.rs`](../../../models/src/rust/rholang/rpb3_generated_oneof_seen_properties.rs). The new passing module sweeps every program's descriptor slots and tests exact production rejection for independently admitted single-field fixture pairs. | Full all-program semantic sequences and arbitrary-depth driver correspondence remain open. |
+
+The bridge currently uses the finite input length as a structural recursion
+budget. Current-source theorems derive strict child-interval shrinkage
+from successful wire framing, bound every generated-message descent path by
+its enclosing byte interval, and use fold-step extensionality to show that
+`decode_region` stops changing once its fuel exceeds the region's byte length.
+The root specialization compares the configured fuel with every larger
+budget, so a larger budget cannot turn a depth-only rejection into success.
+The focused `coqc` and targeted `coqchk` gates pass, with all eleven named
+capstones closed under the global context. This establishes the decoder's
+byte-fuel sufficiency, not semantic admission correctness.
+It does not validate scalar value grammar or auxiliary map/path payloads, and
+it does not by itself construct the complete `raw_field` tree consumed by
+`RPB3GeneratedFieldRefinement.v`. That tree still requires source-derived
+reducer requirements and specialized frame results. `RPB3SemanticReducer.v`
+derives exact checked Par component and complete Bundle scores, including
+read/write constructor selection and nested score-before-body order. The
+current source also derives the string/byte, signed-integer, `New`, `Send`,
+`If`, EPathMap, and EZipper score cases described below. It retains
+`ScoreNotDerived` and unknown completeness where no exact rule has been
+derived. Universal score/body and completeness coverage and the root
+locally-free quotient remain criterion 6012; independent binding to the
+production admission driver remains criterion 6015.
+
+Historical receipts for the earlier Bundle-only source revision: its focused
+semantic reducer `coqc` gate closed 11/11 assumptions
+(`target/verification/rpb3-rocq/semantic-score-bundle-coqc-r5.log`, SHA-256
+`8f752387f5a7151318453f60cec18540c25c855d60de80170a2dd9b21fc25e38`),
+and targeted `coqchk` checked the module
+(`target/verification/rpb3-rocq/semantic-score-bundle-coqchk-r1.log`, SHA-256
+`b253abea874ecf5d5bea41760d4ebfd3dca89acc373aba31a3083ecedc3ec16a`).
+The dependent admission mutant theory recompiled with 7/7 closed assumptions
+and passed targeted `coqchk` (logs
+`target/verification/rpb3-rocq/semantic-score-dependent-mutants-coqc-r1.log`,
+SHA-256 `2678f241f6cdb06921da948cb37630399ea2658908e64849e9dba87554fc7d1c`,
+and `target/verification/rpb3-rocq/semantic-score-dependent-mutants-coqchk-r1.log`,
+SHA-256 `534b13fa9413c72a06d9a99c2f9e341537ae95c9b300440f6407cafeafe91c85`).
+The semantic reducer source SHA-256 is
+`437122b9896981dea9d9094bccb160ee037d90ed00ab664a46fd28162a9d8006`.
+Two 32-case production properties in
+[`rpb3_score_branch_properties.rs`](../../../models/tests/support/rpb3_score_branch_properties.rs)
+check exact authoritative Bundle and nested Par scores, reject raw Par fields
+whose protobuf body order rises while canonical score order falls, and admit
+the score-ordered fields. Each focused `cargo test` passed 1/1 (logs
+`target/verification/rpb3-rocq/nested-bundle-score-property-cargo-r2.log`,
+SHA-256 `ed014d8966c6d2c094910fd745f52f5300178bd38aed97d9a5bdef5dbf340339`,
+and `target/verification/rpb3-rocq/bundle-flag-score-property-cargo-r1.log`,
+SHA-256 `32acf5ba2a0b65067a15a25915eb6b2f85955def063e40ed956bfc238883f1a3`).
+The property source SHA-256 is
+`9a0a28073e7aba8d7e87683e03243cd52601239db1f60ac347c697fef9db73e9`.
+
+The current source extends that reducer with string and byte score atoms,
+signed 64-bit score serialization, complete `New` injection scores,
+EPathMap/EZipper snapshot scores, and complete `Send` and `If` scores.
+Its focused `coqc` run closed all 23/23 named assumptions; the dependent
+`RPB3AdmissionMutants.v` run closed 10/10. The historical receipt hashes above
+apply only to the earlier source revisions and do not attest to these current
+`coqc` runs or supply current-source `coqchk` evidence. The dependent mutant
+module adds controls for a forced-positive integer sign, an unescaped NUL
+string byte, and reuse of the nested PathMap connective flag in an EZipper
+score. The runner now expects 23 and 10 closed reports for these modules.
+
+### Semantic-summary worklist refinement (2026-10-11, task 6743)
+
+[`RPB3SemanticWorklist.v`](theories/RPB3SemanticWorklist.v) applies the
+generated-field semantic reducer to explicit `Visit`, `VisitForest`, and
+`Close` jobs. Completed `semantic_summary` values stay on a separate stack;
+closing a field restores its children in source order and computes the same
+tag, original body, refusal bit, completeness lane, and score evidence as the
+independent recursive `RPB3SemanticReducer.semantic_reduce`. Each job has a
+positive structural cost and each transition decreases the remaining cost by
+one. The resulting theorem covers every finite raw-field tree without a
+caller-supplied depth limit. A second theorem starts from
+`RPB3RawRegionTree.raw_root_of_bytes`: whenever source conversion succeeds,
+the worklist returns the recursive summary and retains the exact original root
+body. The `Close`-frame theorem states that a completed stack segment
+`rev children ++ tail` reduces exactly the source-ordered `children`, with the
+remaining stack intact. Finite witnesses distinguish an incomplete `Send`
+summary from refusal,
+reject reversed components, preserve distinct read/write `Bundle` scores, and
+carry a nested `Send`'s original source body.
+
+[`RPB3SemanticWorklistMutants.v`](theories/RPB3SemanticWorklistMutants.v)
+checks three causal errors in this algebra: omitting the component score-order
+guard admits reversed complete Bundles; reversing the completed child segment
+changes both Bundle refusal and score evidence; replacing the root body with
+an empty list loses source bytes. The modules are registered for placeholder,
+closed-assumption, and kernel checks in the proof runner. Capped, serial
+current-source `coqc` checks passed with 13/13 and 3/3 closed assumptions
+(`target/verification/rpb3-rocq/semantic-worklist-coqc-r3.log`, SHA-256
+`992d30ebc5e3c31447f15bde10a43a04c070a4d1aa9e6b0c93376c13f8745b9d`;
+`semantic-worklist-mutants-coqc-r2.log`, SHA-256
+`e70ed2b02bbb05140ba7ad843b0286e87e58d01206b3dd29392066a9b0b9e012`).
+Combined `coqchk` passed (`semantic-worklist-coqchk-r2.log`, SHA-256
+`b81e94c5718e096a10fa9003b62ddbce31543d1e369fbbc0c8852b4195e06e2b`).
+The checked theory sources have SHA-256
+`266a668b9198a49ad58322d74ea34ccf43ea6d289b60dec7b45519716f9a3ea6`
+and `fb469b31cba8fac3161a588bb92003845eb9b3483f2cb31647d4ca6147835756`,
+respectively. A production `CheckedAdmissionEvent` does not itself expose the
+ordered semantic child summaries required by the `Close` premise; reconstructing
+that segment from checked driver transitions remains an open universal bridge.
+Source conversion still leaves
+StringMap and PathMap auxiliary nodes as raw leaves, so this refinement does
+not establish the recursive auxiliary reference's full result, a universal
+Rust-driver simulation, or criterion 6012's complete admission equivalence.
+
+The current score rules follow the existing production algebra:
+
+| Value | Exact score construction | Source-sensitive requirement |
+|---|---|---|
+| String or byte atom | Kind prefix, bytes with each NUL escaped as `00 ff`, then `00 00` | String and byte prefixes remain distinct; encoded length is input length plus NUL count plus four bytes. |
+| Signed integer | Integer prefix followed by the big-endian 64-bit word with its sign bit toggled | Negative `New.bind_count` values retain signed ordering after protobuf zigzag decoding. |
+| `New` | Constructor 303, bind count, URI atoms, injection nodes, and body score | Empty URI/injection lists each contribute an absent integer atom; each injection is an unnumbered node containing its key atom and value score. Complete `New` refuses decreasing URI order. |
+| `Send` | Constructor 300, persistent flag, channel score, data scores in source order, connective flag, and optional cost-region score | A present channel makes the component complete; exact scoring additionally requires exact child scores. An incomplete nested component can still have an exact nonsemantic score inside the channel `Par`. |
+| `If` | Constructor 309, condition, true branch, false branch, and connective flag | All three `Par` children must be present for completeness, and their exact scores preserve branch order. |
+| EPathMap | Constructor 13, exact snapshot byte atom, and connective flag | The score uses the admitted EPM1 snapshot bytes. |
+| EZipper | Constructor 14, nested PathMap snapshot byte atom, and the zipper's connective flag | The nested PathMap connective flag does not replace the zipper's flag. |
+
+The include fragment
+[`rpb3_auxiliary_score_properties.rs`](../../../models/tests/support/rpb3_auxiliary_score_properties.rs)
+extracts seven production properties for these rules. It checks complete `New`
+values with nested EPathMap and EZipper injections, signed bind-count
+boundaries and NUL-bearing keys/URIs; isolates the two connective flags; and
+compares score-arena replay with independent string/byte atom encodings and
+the exact escape-length formula. Additional properties distinguish reversed-URI
+refusal for complete `New` from admissible incomplete `New` with no body,
+require ordered map injection keys while defaulting omitted values to empty
+`Par`, and compare complete `Send` scores across flags, ordered data, and
+optional cost regions. The seventh property compares the generated raw `Par`
+admission score with the native `PathMap<Multiplicity>` score over generated
+GInt bags, verifies that the root locally-free cache is quotiented, and
+checks that adding one repeated component changes the score.
+The existing generated `if_finish_source_property` in
+[`protobuf_admission.rs`](../../../models/src/rust/rholang/protobuf_admission.rs)
+varies all three `If` branch values, the connective flag, and each missing
+branch; it checks each complete child score against the native `Par` authority
+and validates the returned score-source trace. This is the executable
+counterpart of the new exact-`If` constructor theorem.
+
+The fragment is included by the production admission test module, and the
+proof runner selects its seven properties. The focused Cargo run passed all
+seven (`target/verification/rpb3-rocq/rpb3-auxiliary-properties-cargo-r2.log`,
+SHA-256 `cf4589cbe906b1327c7736b9acb884061f1221ad3a99e01b12e7623c23128b6e`;
+7 passed, 0 failed, 0 ignored). These are finite executable checks of the
+listed score, ordering, default, and refusal cases, not a universal extraction
+of every recursive source-reference theorem into the Rust driver.
+
+[`RPB3RecursiveAuxiliarySourceReference.v`](theories/RPB3RecursiveAuxiliarySourceReference.v)
+models source-framed recursive StringMap/PathMap children, exact key/value
+pairing, defaulted map values, and strict order across `New` injection entries.
+Its well-founded reference recurses only into child bodies proven shorter than
+their parent, retains original source spans and ordered generated children,
+and derives exact modeled score/body results where the semantic reducer has
+an exact rule. Finite witnesses cover ordered and reversed entries and nested
+PathMap recursion. At source SHA-256
+`bdf9b6475935fb5e193400a88e03b822cf674c40fb3d1ee403ee6761166e7aa7`,
+`coqc` compiled the module and all 28 `Print Assumptions` reports were closed
+(`target/verification/rpb3-rocq/recursive-auxiliary-source-coqc-r10.log`,
+SHA-256 `3aee37eb6368625a3cda0e4a9e31c9a75e82cbcf2dec86e6ce4c49c3e5100e84`);
+the independent `coqchk` completed successfully
+(`target/verification/rpb3-rocq/recursive-auxiliary-source-coqchk-r1.log`,
+SHA-256 `57219085e66ef71e9c9dd09cf5c8dbd939b68fadfee49859a37de472aa4eacfa`).
+These theorems describe the modeled, source-framed and generated-descriptor
+boundary; they do not show that every production RPB3 parse reaches such a
+frame or that the complete production reducer agrees on every family. That
+universal summary obligation remains task 6743 criterion 6012.
+
+`RPB3ResidentParAdmissionBridge.v` separately
+binds the live resident `Par` descriptor to the finite generated raw `Par`
+projection: it proves the shared scalar signatures, all ten component
+tag/name/child-type signatures, and their repeated length-delimited message
+wire shapes. Its focused `coqc` run closed 2/2 named assumptions. This finite
+descriptor relation does not convert native `ParBag` contents or multiplicity
+into raw-wire component sequences or prove universal native/raw semantic
+equivalence.
+
+Neither these additions nor the earlier scalar/message source bridge establish
+arbitrary recursive auxiliary-value admission or full production-driver
+equivalence; criteria 6012 and 6015 remain open.
 
 ### Executable observation map
 

@@ -422,12 +422,216 @@ epathmap_score_proofs() {
   rocq_check_modules "concrete EPathMap score" StackSafePDA.CanonicalEPathMapScore
 }
 
+rpb3_source_indexed_admission_prerequisites() {
+  # Measured 2026-11-08: the Par bytes bridge peaks at 4.0 GiB and the nested-ground
+  # scalar bridge at 4.9 GiB, so the function-wide throttle sits above both.
+  local TLC_MEMORY_HIGH=6G TLC_RSS=7G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
+  rocq_reject_placeholders \
+    theories/RPB3DescriptorProjectionData.v \
+    theories/RPB3GeneratedFieldRefinement.v \
+    theories/RPB3WireCursor.v \
+    theories/RPB3RawRegionTree.v \
+    theories/RPB3SourceScalarReduction.v \
+    theories/RPB3SourceReferenceIntegration.v \
+    theories/RPB3AuxiliaryTypedReference.v \
+    theories/RPB3SemanticReducer.v \
+    theories/RPB3RecursiveAuxiliarySourceReference.v \
+    theories/RPB3IndependentOracleCore.v \
+    theories/RPB3IndependentOracleAdmission.v \
+    theories/RPB3IndependentOracleCost.v \
+    theories/RPB3IndependentOracleProcess.v \
+    theories/RPB3IndependentOracleName.v \
+    theories/RPB3IndependentOracleRecursive.v \
+    theories/RPB3IndependentOracleFuel.v \
+    theories/RPB3IndependentOracleAdequacy.v \
+    theories/RPB3IndependentOracleProjection.v \
+    theories/RPB3IndependentOracleProcessProjection.v \
+    theories/RPB3IndependentOracleNameProjection.v \
+    theories/RPB3IndependentOracleNameDecoderBridge.v \
+    theories/RPB3IndependentOracleMutants.v \
+    theories/RPB3IndependentOracleRecursiveProjection.v \
+    theories/SubstitutionRegionFraming.v \
+    theories/RPB3IndependentOracleProcessScalarDecoderBridge.v \
+    theories/RPB3IndependentOracleCostScalarDecoderBridge.v \
+    theories/RPB3IndependentOracleCostChildCorrespondence.v \
+    theories/RPB3IndependentOracleCostVerdictBridge.v \
+    theories/RPB3IndependentOracleGeneratedResolverVerdict.v \
+    theories/RPB3IndependentOracleCostScalarTypeIdMutant.v \
+    theories/RPB3IndependentOracleProcessChildProvenance.v \
+    theories/RPB3IndependentOracleParScalarScoreBridge.v \
+    theories/RPB3IndependentOracleParBytesChildBridge.v \
+    theories/RPB3IndependentOracleParMessageChildBridge.v \
+    theories/RPB3IndependentOracleRegionRebaseBridge.v \
+    theories/RPB3IndependentOracleParMessageBodyDecodeBridge.v \
+    theories/RPB3IndependentOracleParMessageRawRebaseBridge.v \
+    theories/RPB3IndependentOracleStringMapRegionRebaseBridge.v \
+    theories/RPB3IndependentOracleStringMapTypedRebaseBridge.v \
+    theories/RPB3IndependentOracleParMessageEvaluationRebaseBridge.v \
+    theories/RPB3IndependentOracleExprGroundScoreControl.v \
+    theories/RPB3IndependentOracleExprFixed64BitwordBridge.v \
+    theories/RPB3IndependentOracleExprNestedGroundControl.v \
+    theories/RPB3IndependentOracleExprNestedGroundChildBridge.v \
+    theories/RPB3IndependentOracleExprNestedGroundScalarBridge.v \
+    theories/RPB3IndependentOracleExprNestedGroundScoreBridge.v \
+    theories/RPB3SourceIndexedFrames.v \
+    theories/RPB3SourceIndexedTermination.v
+  rocq_compile_with_closed_count \
+    theories/RPB3DescriptorProjectionData.v 0 \
+    "the complete generated RPB3 descriptor projection"
+  rocq_compile_with_closed_count \
+    theories/RPB3GeneratedFieldRefinement.v 10 \
+    "the RPB3 generated-field worklist and typed-reference refinement"
+  rocq_compile_with_closed_count \
+    theories/RPB3WireCursor.v 5 \
+    "the bounded RPB3 raw protobuf cursor"
+  rocq_compile_with_closed_count \
+    theories/RPB3RawRegionTree.v 95 \
+    "the source-shaped generated RPB3 raw region tree"
+  rocq_compile_with_closed_count \
+    theories/RPB3SourceScalarReduction.v 8 \
+    "the generated RPB3 source scalar grammar and semantic projection"
+  rocq_compile_with_closed_count \
+    theories/RPB3SourceReferenceIntegration.v 16 \
+    "the generated RPB3 source-to-reference Map and Par binding"
+  rocq_compile_with_closed_count \
+    theories/RPB3AuxiliaryTypedReference.v 9 \
+    "the generated Map and PathMap typed auxiliary reference"
+  rocq_compile_with_closed_count \
+    theories/RPB3SemanticReducer.v 125 \
+    "the RPB3 family semantic and canonical score-order reducer"
+  rocq_compile_with_closed_count \
+    theories/RPB3RecursiveAuxiliarySourceReference.v 40 \
+    "the recursive RPB3 PathMap and StringMap source reference"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleCore.v 3 \
+    "independent typed RPB3 source values and canonical scalar decoding"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleAdmission.v 2 \
+    "independent RPB3 descriptor and ordered-slot admission scan"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleCost.v 9 \
+    "independent RPB3 cost-family scoring and refusal"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleProcess.v 10 \
+    "independent RPB3 process-family scoring and refusal"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleName.v 9 \
+    "independent RPB3 name, PathMap, and StringMap scoring"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleRecursive.v 6 \
+    "independent finite typed RPB3 source evaluator"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleFuel.v 9 \
+    "independent RPB3 nested source fuel bounds"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleAdequacy.v 4 \
+    "independent RPB3 finite-body fuel saturation"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleProjection.v 19 \
+    "independent RPB3 cost-family semantic projection"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleProcessProjection.v 19 \
+    "independent RPB3 process-family semantic projection"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleNameProjection.v 15 \
+    "independent RPB3 name and auxiliary score projection"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleNameDecoderBridge.v 6 \
+    "generated RPB3 connective Bool scalar decoder bridge"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleMutants.v 3 \
+    "causal independent-source RPB3 admission mutants"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleRecursiveProjection.v 38 \
+    "independent RPB3 recursive child and Par default projection"
+  rocq_compile_with_closed_count \
+    theories/SubstitutionRegionFraming.v 19 \
+    "canonical substitution field framing and exact source partition"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleProcessScalarDecoderBridge.v 16 \
+    "generated RPB3 Process signed PBInt32 scalar decoder bridge"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleCostScalarDecoderBridge.v 13 \
+    "generated RPB3 Cost numeric scalar decoder bridge"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleCostChildCorrespondence.v 15 \
+    "generated RPB3 Cost accepted-child correspondence"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleCostVerdictBridge.v 59 \
+    "generated RPB3 Cost selected-root verdict equivalence"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleGeneratedResolverVerdict.v 11 \
+    "generated RPB3 Message resolver and Par provenance verdict boundary"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleCostScalarTypeIdMutant.v 3 \
+    "generated RPB3 Cost scalar type-ID guard mutant"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleProcessChildProvenance.v 20 \
+    "independent RPB3 Process child source provenance"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleParScalarScoreBridge.v 15 \
+    "generated RPB3 Par scalar verdict and admitted-root score projection"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleParBytesChildBridge.v 7 \
+    "generated RPB3 Par tag-9 PBBytes scalar child verdict"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleParMessageChildBridge.v 4 \
+    "generated RPB3 Par actual Message child family provenance"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleRegionRebaseBridge.v 21 \
+    "generated RPB3 recursive source region rebasing"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleParMessageBodyDecodeBridge.v 4 \
+    "generated RPB3 Par actual Message body decode provenance"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleParMessageRawRebaseBridge.v 3 \
+    "generated RPB3 Par Message raw field and plain evaluation rebasing"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleStringMapRegionRebaseBridge.v 4 \
+    "generated RPB3 StringMap entry region rebasing"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleStringMapTypedRebaseBridge.v 6 \
+    "generated RPB3 StringMap typed entry and child evaluation rebasing"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleParMessageEvaluationRebaseBridge.v 1 \
+    "generated RPB3 actual Par Message child evaluation rebasing"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleExprGroundScoreControl.v 1 \
+    "generated RPB3 Par GDouble accepted exact-score control"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleExprFixed64BitwordBridge.v 4 \
+    "fixed64 signed-cast score bitword and boundary bytes"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleExprNestedGroundControl.v 16 \
+    "generated BigRational and FixedPoint parent scores and scalar guards"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleExprNestedGroundChildBridge.v 7 \
+    "actual generated BigRational and FixedPoint nested child selection"
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleExprNestedGroundScalarBridge.v 18 \
+    "generated BigRational and FixedPoint scalar decoder equivalence"
+  # This bridge peaks at 7.5 GiB (measured 2026-11-08), above this function's 6G
+  # throttle, so only this compilation unit gets the larger ceiling.
+  TLC_MEMORY_HIGH=10G TLC_RSS=12G
+  rocq_compile_with_closed_count \
+    theories/RPB3IndependentOracleExprNestedGroundScoreBridge.v 10 \
+    "generated BigRational and FixedPoint parent score equivalence"
+  TLC_MEMORY_HIGH=6G TLC_RSS=7G
+  rocq_compile_with_closed_count \
+    theories/RPB3SourceIndexedFrames.v 5 \
+    "the source-indexed RPB3 frame machine and recursive refinement"
+  rocq_compile_with_closed_count \
+    theories/RPB3SourceIndexedTermination.v 5 \
+    "fuel-free source-indexed RPB3 termination and deterministic root result"
+}
+
 canonical_key_protocol_proofs() {
   local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 365 \
-    "RPB3 fold, canonical-key transport and storage contracts"
-  rocq_check_modules "standalone canonical-key transport" StackSafePDA.RPB3Admission
+  rocq_compile_with_closed_count theories/RPB3Admission.v 370 \
+    "RPB3 fold, ordered semantic slots, canonical-key transport and storage contracts"
+  rocq_check_modules "standalone canonical-key transport and source-indexed admission" \
+    StackSafePDA.RPB3SourceIndexedFrames StackSafePDA.RPB3Admission
   canonical_act_batch_publication_proofs
   canonical_source_release_proofs
   rocq_reject_placeholders theories/IncrementalPrepareStreaming.v
@@ -470,11 +674,16 @@ canonical_act_batch_publication_proofs() {
 }
 
 canonical_source_release_proofs() {
-  local TLC_MEMORY_HIGH=512M TLC_RSS=1G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
+  # CanonicalSourceRelease.v peaks at 551 MiB (measured 2026-11-08), above 512M.
+  local TLC_MEMORY_HIGH=768M TLC_RSS=1G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/CanonicalSourceRelease.v
   rocq_compile_with_closed_count theories/CanonicalSourceRelease.v 68 \
     "canonical source ownership, release traces and ranked-frontier prerequisites"
   rocq_check_modules "canonical source release prerequisites" StackSafePDA.CanonicalSourceRelease
+  rocq_reject_placeholders theories/RPB3BoundedSourceCache.v
+  rocq_compile_with_closed_count theories/RPB3BoundedSourceCache.v 9 \
+    "bounded weak source cache and historical fork ownership"
+  rocq_check_modules "bounded weak source cache" StackSafePDA.RPB3BoundedSourceCache
 }
 
 epathmap_import_runtime() {
@@ -586,6 +795,15 @@ fi
 if [[ "${1:-}" == "--canonical-key-proofs" ]]; then
   pushd "$rocq_root" >/dev/null
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
+  rocq_reject_placeholders theories/EPM1.v
+  rocq_compile_with_closed_count theories/EPM1.v 7 "EPM1 mode and positional-marker regressions"
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
+    theories/PathMapCanonicalStreamPublicationBase.v
+  rocq_reject_placeholders theories/EPM1ACTree03.v
+  rocq_compile_with_closed_count theories/EPM1ACTree03.v 3 \
+    "the ACTree03 arena parser, replay, ByteTrie reconstruction, and EPM1 zero markers"
+  rpb3_source_indexed_admission_prerequisites
   canonical_key_protocol_proofs
   canonical_sexpr_projection_proofs
   popd >/dev/null
@@ -618,6 +836,12 @@ if [[ "${1:-}" == "--epathmap-import" ]]; then
   rocq_compile_with_closed_count theories/ChannelImage.v 11 "RCI2 byte framing"
   rocq_compile_with_closed_count theories/RhoPathV1Datum.v 21 "RhoPath zero framing"
   epathmap_score_proofs
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
+    theories/PathMapCanonicalStreamPublicationBase.v
+  rocq_reject_placeholders theories/EPM1ACTree03.v
+  rocq_compile_with_closed_count theories/EPM1ACTree03.v 3 \
+    "the ACTree03 arena parser, replay, ByteTrie reconstruction, and EPM1 zero markers"
+  rpb3_source_indexed_admission_prerequisites
   canonical_key_protocol_proofs
   canonical_sexpr_projection_proofs
   pathmap_leaf_extension_prerequisites
@@ -872,7 +1096,10 @@ rocq_compile_with_closed_count theories/ChannelImage.v 11 \
 python3 "$repo_root/scripts/check-rci2-channel-image-obligations.py" --check
 python3 "$repo_root/scripts/check-rci2-channel-image-obligations.py" --self-test
 rocq_reject_placeholders theories/RSpaceCallerAuthority.v theories/RSpaceCallerAuthorityMutants.v
-rocq_compile_with_closed_count theories/RSpaceCallerAuthority.v 44 \
+# These capstones peak at 885 MiB (measured 2026-11-08), above the default 768M
+# throttle, so only this compilation unit gets the larger ceiling.
+TLC_MEMORY_HIGH=1536M TLC_RSS=2G \
+  rocq_compile_with_closed_count theories/RSpaceCallerAuthority.v 44 \
   "the exact caller-authority contract capstones"
 rocq_compile_with_closed_count theories/RSpaceCallerAuthorityMutants.v 49 \
   "the caller-authority negative controls"
@@ -885,8 +1112,19 @@ rocq_compile_with_closed_count theories/RSpaceConsensusIdentityMutants.v 10 \
   "the consensus-identity nonvacuity witness and negative controls"
 rocq_check_modules "RSpace consensus-identity contract" \
   StackSafePDA.RSpaceConsensusIdentity StackSafePDA.RSpaceConsensusIdentityMutants
+rocq_reject_placeholders theories/EPM1.v
+rocq_compile_with_closed_count theories/EPM1.v 7 "EPM1 mode and positional-marker regressions"
+rocq_check_modules "EPM1 mode contracts" StackSafePDA.EPM1
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
   theories/PathMapCanonicalStreamPublicationBase.v
+rocq_reject_placeholders theories/EPM1ACTree03.v
+rocq_compile_with_closed_count theories/EPM1ACTree03.v 3 \
+  "the ACTree03 arena parser, replay, ByteTrie reconstruction, and EPM1 zero markers"
+rocq_check_modules "ACTree03 reference" StackSafePDA.EPM1ACTree03
+rocq_reject_placeholders theories/EPM1ACTree03Hash.v
+rocq_compile_with_closed_count theories/EPM1ACTree03Hash.v 6 \
+  "the concrete ACTree03 gxhash and fallback replay functions"
+rocq_check_modules "ACTree03 hash reference" StackSafePDA.EPM1ACTree03Hash
 rocq_compile_with_closed_count \
   theories/PathMapCanonicalStreamPublication.v 5 \
   "the exact 45-invariant canonical PathMap stream-publication authority"
@@ -897,15 +1135,6 @@ rocq_check_modules "canonical PathMap stream publication" \
   StackSafePDA.PathMapCanonicalStreamPublicationBase \
   StackSafePDA.PathMapCanonicalStreamPublication \
   StackSafePDA.PathMapCanonicalStreamPublicationMutants
-rocq_compile_with_closed_count \
-  theories/CandidateCatalogAuthorityIsolation.v 5 \
-  "the exact 14-invariant candidate-catalog isolation authority"
-rocq_compile_with_closed_count \
-  theories/CandidateCatalogAuthorityIsolationMutants.v 2 \
-  "the exact 10-mutant candidate-catalog isolation controls"
-rocq_check_modules "candidate-catalog authority isolation" \
-  StackSafePDA.CandidateCatalogAuthorityIsolation \
-  StackSafePDA.CandidateCatalogAuthorityIsolationMutants
 rocq_compile_with_closed_count \
   theories/PathMapPhysicalOwnership.v 12 \
   "the eleven-invariant PathMap ownership authority and four live-write capstones"
@@ -934,6 +1163,17 @@ rocq_compile_with_closed_count \
 rocq_check_modules "channel-prefix replacement" \
   StackSafePDA.ChannelPrefixReplacement \
   StackSafePDA.ChannelPrefixReplacementMutants
+rocq_reject_placeholders theories/CandidateProductPathContinuation.v
+tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/CandidateProductPathContinuation.v
+rocq_compile_with_closed_count \
+  theories/CandidateCatalogAuthorityIsolation.v 5 \
+  "the exact 14-invariant candidate-catalog isolation authority"
+rocq_compile_with_closed_count \
+  theories/CandidateCatalogAuthorityIsolationMutants.v 2 \
+  "the exact 10-mutant candidate-catalog isolation controls"
+rocq_check_modules "candidate-catalog authority isolation" \
+  StackSafePDA.CandidateCatalogAuthorityIsolation \
+  StackSafePDA.CandidateCatalogAuthorityIsolationMutants
 rocq_reject_placeholders \
   theories/PathMapCanonicalStreamPublicationBase.v \
   theories/PathMapCanonicalStreamPublication.v \
@@ -947,7 +1187,60 @@ rocq_reject_placeholders \
   theories/ChannelPrefixReplacement.v \
   theories/ChannelPrefixReplacementMutants.v \
   theories/RPB3Admission.v \
-  theories/RPB3AdmissionMutants.v
+  theories/RPB3DescriptorProjectionData.v \
+  theories/RPB3DescriptorLaws.v \
+  theories/RPB3ProjectionResolutionExact.v \
+  theories/RPB3WireCursor.v \
+  theories/RPB3GeneratedFieldRefinement.v \
+  theories/RPB3RawRegionTree.v \
+  theories/RPB3SourceScalarReduction.v \
+  theories/RPB3SourceReferenceIntegration.v \
+  theories/RPB3AuxiliaryTypedReference.v \
+  theories/RPB3SemanticReducer.v \
+  theories/RPB3SemanticWorklist.v \
+  theories/RPB3SemanticWorklistMutants.v \
+  theories/RPB3RecursiveAuxiliarySourceReference.v \
+  theories/RPB3IndependentOracleCore.v \
+  theories/RPB3IndependentOracleAdmission.v \
+  theories/RPB3IndependentOracleCost.v \
+  theories/RPB3IndependentOracleProcess.v \
+  theories/RPB3IndependentOracleName.v \
+  theories/RPB3IndependentOracleRecursive.v \
+  theories/RPB3IndependentOracleFuel.v \
+  theories/RPB3IndependentOracleAdequacy.v \
+  theories/RPB3IndependentOracleProjection.v \
+  theories/RPB3IndependentOracleProcessProjection.v \
+  theories/RPB3IndependentOracleNameProjection.v \
+  theories/RPB3IndependentOracleNameDecoderBridge.v \
+  theories/RPB3IndependentOracleMutants.v \
+  theories/RPB3IndependentOracleRecursiveProjection.v \
+  theories/RPB3IndependentOracleProcessScalarDecoderBridge.v \
+  theories/RPB3IndependentOracleCostScalarDecoderBridge.v \
+  theories/RPB3IndependentOracleCostChildCorrespondence.v \
+  theories/RPB3IndependentOracleCostVerdictBridge.v \
+  theories/RPB3IndependentOracleGeneratedResolverVerdict.v \
+  theories/RPB3IndependentOracleCostScalarTypeIdMutant.v \
+  theories/RPB3IndependentOracleProcessChildProvenance.v \
+  theories/RPB3IndependentOracleParScalarScoreBridge.v \
+  theories/RPB3IndependentOracleParBytesChildBridge.v \
+  theories/RPB3IndependentOracleParMessageChildBridge.v \
+  theories/RPB3IndependentOracleRegionRebaseBridge.v \
+  theories/RPB3IndependentOracleParMessageBodyDecodeBridge.v \
+  theories/RPB3IndependentOracleParMessageRawRebaseBridge.v \
+  theories/RPB3IndependentOracleStringMapRegionRebaseBridge.v \
+  theories/RPB3IndependentOracleStringMapTypedRebaseBridge.v \
+  theories/RPB3IndependentOracleParMessageEvaluationRebaseBridge.v \
+  theories/RPB3IndependentOracleExprGroundScoreControl.v \
+  theories/RPB3IndependentOracleExprFixed64BitwordBridge.v \
+  theories/RPB3IndependentOracleExprNestedGroundControl.v \
+  theories/RPB3IndependentOracleExprNestedGroundChildBridge.v \
+  theories/RPB3IndependentOracleExprNestedGroundScalarBridge.v \
+  theories/RPB3IndependentOracleExprNestedGroundScoreBridge.v \
+  theories/RPB3SourceIndexedFrames.v \
+  theories/RPB3SourceIndexedTermination.v \
+  theories/RPB3ResidentParAdmissionBridge.v \
+  theories/RPB3AdmissionMutants.v \
+  theories/RPB3SourceIndexedTerminationWitnesses.v
 rspace_commit_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RSpaceCommit.v 2>&1
 )"
@@ -959,8 +1252,30 @@ if [[ "$rspace_commit_closed_capstones" != "6" ]]; then
   echo "stack-safe-pda: expected all six RSpace commit Rocq capstones to be closed; got $rspace_commit_closed_capstones" >&2
   exit 1
 fi
+rpb3_source_indexed_admission_prerequisites
 canonical_key_protocol_proofs
 canonical_sexpr_projection_proofs
+rocq_compile_with_closed_count \
+  theories/RPB3DescriptorLaws.v 5 \
+  "the generated RPB3 descriptor table laws"
+rocq_compile_with_closed_count \
+  theories/RPB3ProjectionResolutionExact.v 5 \
+  "the exact generated RPB3 descriptor projection"
+rocq_compile_with_closed_count \
+  theories/RPB3SemanticWorklist.v 13 \
+  "the full-summary RPB3 semantic worklist, ordered Close frame, and recursive refinement"
+rocq_compile_with_closed_count \
+  theories/RPB3SemanticWorklistMutants.v 3 \
+  "the RPB3 score-order, completed-child order, and source-body mutants"
+rocq_compile_with_closed_count \
+  theories/RPB3ResidentParAdmissionBridge.v 2 \
+  "the resident Par and raw Par descriptor admission bridge"
+# The RPB3 mutants, the witnesses and the 55-module kernel check exceed the
+# defaults (measured 2026-11-08: 946 MiB, 1.3 GiB, and 8.3 GiB over 643 s).
+previous_tlc_memory_high="$TLC_MEMORY_HIGH"
+previous_tlc_rss="$TLC_RSS"
+previous_tlc_runtime="$TLC_RUNTIME_MAX_SEC"
+TLC_MEMORY_HIGH=11G TLC_RSS=13G TLC_RUNTIME_MAX_SEC=1800
 rpb3_admission_mutants_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RPB3AdmissionMutants.v 2>&1
 )"
@@ -968,13 +1283,72 @@ printf '%s\n' "$rpb3_admission_mutants_rocq_output"
 rpb3_admission_mutants_closed_capstones="$({
   printf '%s\n' "$rpb3_admission_mutants_rocq_output" | grep -c '^Closed under the global context$'
 } || true)"
-if [[ "$rpb3_admission_mutants_closed_capstones" != "2" ]]; then
-  echo "stack-safe-pda: expected both RPB3 admission mutant capstones to be closed; got $rpb3_admission_mutants_closed_capstones" >&2
+if [[ "$rpb3_admission_mutants_closed_capstones" != "35" ]]; then
+  echo "stack-safe-pda: expected thirty-five RPB3 admission mutant capstones to be closed; got $rpb3_admission_mutants_closed_capstones" >&2
   exit 1
 fi
+rocq_compile_with_closed_count \
+  theories/RPB3SourceIndexedTerminationWitnesses.v 5 \
+  "the source-indexed terminal acceptance and refusal witnesses"
 rocq_check_modules "RPB3 admission" \
   StackSafePDA.RPB3Admission \
-  StackSafePDA.RPB3AdmissionMutants
+  StackSafePDA.RPB3DescriptorProjectionData \
+  StackSafePDA.RPB3DescriptorLaws \
+  StackSafePDA.RPB3ProjectionResolutionExact \
+  StackSafePDA.RPB3WireCursor \
+  StackSafePDA.RPB3GeneratedFieldRefinement \
+  StackSafePDA.RPB3RawRegionTree \
+  StackSafePDA.RPB3SourceScalarReduction \
+  StackSafePDA.RPB3SourceReferenceIntegration \
+  StackSafePDA.RPB3AuxiliaryTypedReference \
+  StackSafePDA.RPB3SemanticReducer \
+  StackSafePDA.RPB3SemanticWorklist \
+  StackSafePDA.RPB3SemanticWorklistMutants \
+  StackSafePDA.RPB3RecursiveAuxiliarySourceReference \
+  StackSafePDA.RPB3IndependentOracleCore \
+  StackSafePDA.RPB3IndependentOracleAdmission \
+  StackSafePDA.RPB3IndependentOracleCost \
+  StackSafePDA.RPB3IndependentOracleProcess \
+  StackSafePDA.RPB3IndependentOracleName \
+  StackSafePDA.RPB3IndependentOracleRecursive \
+  StackSafePDA.RPB3IndependentOracleFuel \
+  StackSafePDA.RPB3IndependentOracleAdequacy \
+  StackSafePDA.RPB3IndependentOracleProjection \
+  StackSafePDA.RPB3IndependentOracleProcessProjection \
+  StackSafePDA.RPB3IndependentOracleNameProjection \
+  StackSafePDA.RPB3IndependentOracleNameDecoderBridge \
+  StackSafePDA.RPB3IndependentOracleMutants \
+  StackSafePDA.RPB3IndependentOracleRecursiveProjection \
+  StackSafePDA.RPB3IndependentOracleProcessScalarDecoderBridge \
+  StackSafePDA.RPB3IndependentOracleCostScalarDecoderBridge \
+  StackSafePDA.RPB3IndependentOracleCostChildCorrespondence \
+  StackSafePDA.RPB3IndependentOracleCostVerdictBridge \
+  StackSafePDA.RPB3IndependentOracleGeneratedResolverVerdict \
+  StackSafePDA.RPB3IndependentOracleCostScalarTypeIdMutant \
+  StackSafePDA.RPB3IndependentOracleProcessChildProvenance \
+  StackSafePDA.RPB3IndependentOracleParScalarScoreBridge \
+  StackSafePDA.RPB3IndependentOracleParBytesChildBridge \
+  StackSafePDA.RPB3IndependentOracleParMessageChildBridge \
+  StackSafePDA.RPB3IndependentOracleRegionRebaseBridge \
+  StackSafePDA.RPB3IndependentOracleParMessageBodyDecodeBridge \
+  StackSafePDA.RPB3IndependentOracleParMessageRawRebaseBridge \
+  StackSafePDA.RPB3IndependentOracleStringMapRegionRebaseBridge \
+  StackSafePDA.RPB3IndependentOracleStringMapTypedRebaseBridge \
+  StackSafePDA.RPB3IndependentOracleParMessageEvaluationRebaseBridge \
+  StackSafePDA.RPB3IndependentOracleExprGroundScoreControl \
+  StackSafePDA.RPB3IndependentOracleExprFixed64BitwordBridge \
+  StackSafePDA.RPB3IndependentOracleExprNestedGroundControl \
+  StackSafePDA.RPB3IndependentOracleExprNestedGroundChildBridge \
+  StackSafePDA.RPB3IndependentOracleExprNestedGroundScalarBridge \
+  StackSafePDA.RPB3IndependentOracleExprNestedGroundScoreBridge \
+  StackSafePDA.RPB3SourceIndexedFrames \
+  StackSafePDA.RPB3SourceIndexedTermination \
+  StackSafePDA.RPB3ResidentParAdmissionBridge \
+  StackSafePDA.RPB3AdmissionMutants \
+  StackSafePDA.RPB3SourceIndexedTerminationWitnesses
+TLC_MEMORY_HIGH="$previous_tlc_memory_high"
+TLC_RSS="$previous_tlc_rss"
+TLC_RUNTIME_MAX_SEC="$previous_tlc_runtime"
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
@@ -1054,9 +1428,6 @@ if [[ "$streaming_codec_closed_capstones" != "20" ]]; then
   echo "stack-safe-pda: expected all twenty streaming-codec Rocq capstones to be closed; got $streaming_codec_closed_capstones" >&2
   exit 1
 fi
-rocq_reject_placeholders theories/EPM1.v
-rocq_compile_with_closed_count theories/EPM1.v 7 "EPM1 mode and positional-marker regressions"
-rocq_check_modules "EPM1 mode contracts" StackSafePDA.EPM1
 epathmap_import_proofs
 opaque_canonical_segment_import_proofs
 rocq_reject_placeholders theories/UnaryEListConstruction.v theories/UnaryEListConstructionMutants.v
