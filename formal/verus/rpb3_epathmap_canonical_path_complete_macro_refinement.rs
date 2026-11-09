@@ -97,7 +97,7 @@ pub open spec fn canonical_path_epm_complete_macro_selector(
     }
 }
 
-proof fn canonical_path_epm_internal_prefix_preserves(
+pub proof fn canonical_path_epm_internal_prefix_preserves(
     states: Seq<epm::LinkedEpmState>,
     events: Seq<epm::EpmEvent>,
     upto: int,

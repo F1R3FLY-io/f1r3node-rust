@@ -194,7 +194,7 @@ pub open spec fn same_internal_score_and_source_image(
         == before.source.product.indexed_regions
 }
 
-proof fn forward_scalar_prefix_preserves_image(
+pub proof fn forward_scalar_prefix_preserves_image(
     before: integrated::LiveRuntimeProductState,
     after: integrated::LiveRuntimeProductState,
     start: usize,

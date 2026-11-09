@@ -103,7 +103,7 @@ pub open spec fn epm_terminal_end_frame(before: epm::EpmFrame) -> epm::EpmFrame 
     }
 }
 
-proof fn epm_terminal_end_preserves_layout(before: epm::EpmFrame)
+pub proof fn epm_terminal_end_preserves_layout(before: epm::EpmFrame)
     requires epm::frame_layout_wf(before),
     ensures epm::frame_layout_wf(epm_terminal_end_frame(before)),
 {}

@@ -39,7 +39,7 @@ pub open spec fn linked_epm_push_macro(
     &&& epm::linked_epm_push(states.last(), after, terminal_event, action, child)
 }
 
-proof fn linked_epm_internal_prefix_preserves(
+pub proof fn linked_epm_internal_prefix_preserves(
     states: Seq<epm::LinkedEpmState>,
     events: Seq<epm::EpmEvent>,
     upto: int,

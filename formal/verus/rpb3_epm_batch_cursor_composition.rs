@@ -472,7 +472,7 @@ pub open spec fn unwind_virtual_frame(
     }
 }
 
-proof fn saved_parser_gate_survives_global_counter_restore(
+pub proof fn saved_parser_gate_survives_global_counter_restore(
     gate: epm::PathGate,
     saved: epm::parser::ParserImage,
     current: epm::parser::ParserImage,

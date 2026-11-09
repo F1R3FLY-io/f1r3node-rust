@@ -90,7 +90,7 @@ pub open spec fn program31_epm_complete_macro(
     }
 }
 
-proof fn program31_epm_internal_prefix_preserves(
+pub proof fn program31_epm_internal_prefix_preserves(
     states: Seq<epm::LinkedEpmState>,
     events: Seq<epm::EpmEvent>,
     upto: int,

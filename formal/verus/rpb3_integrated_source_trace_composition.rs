@@ -398,7 +398,7 @@ pub open spec fn epm_actions_are_only_continue(
     }
 }
 
-proof fn epm_internal_edges_prefix_wf(
+pub proof fn epm_internal_edges_prefix_wf(
     states: Seq<integrated::LiveRuntimeProductState>,
     events: Seq<epm::EpmEvent>,
     upto: int,

@@ -3932,7 +3932,7 @@ pub open spec fn runtime_noscore_expr_structural_before(binary: bool) -> Runtime
     else { runtime_noscore_expr_unary_before() }
 }
 
-proof fn runtime_noscore_expr_structural_modeled_case(binary: bool)
+pub proof fn runtime_noscore_expr_structural_modeled_case(binary: bool)
     ensures {
         let before = runtime_noscore_expr_structural_before(binary);
         &&& runtime_frame_image_wf(before)

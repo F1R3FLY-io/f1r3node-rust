@@ -859,7 +859,7 @@ pub proof fn product_wire_indexed_field_anchor_exact(
     assert((field.encoded_start as int) < region.bytes.len());
 }
 
-proof fn product_wire_indexed_source_agrees_same_backing(
+pub proof fn product_wire_indexed_source_agrees_same_backing(
     before: wire_source::WireRuntimeCursorImage,
     after: wire_source::WireRuntimeCursorImage,
     image: epm::IndexedRegionImage,
@@ -3544,7 +3544,7 @@ pub proof fn product_epm_score_preserves_map_wf(
     }
 }
 
-proof fn product_epm_score_indexed_frames_preserved(
+pub proof fn product_epm_score_indexed_frames_preserved(
     before: ProductScoreState, after: ProductScoreState,
 )
     requires
@@ -3595,7 +3595,7 @@ proof fn product_epm_score_indexed_frames_preserved(
     }
 }
 
-proof fn product_epm_score_source_anchors_preserved(
+pub proof fn product_epm_score_source_anchors_preserved(
     before: ProductScoreState, after: ProductScoreState,
 )
     requires
@@ -3649,7 +3649,7 @@ pub proof fn product_epm_score_preserves_exact(
     product_score_wf_intro(after);
 }
 
-proof fn product_message_child_score_frame_image_preserved(
+pub proof fn product_message_child_score_frame_image_preserved(
     before: ProductScoreState, after: ProductScoreState,
 )
     requires
@@ -3680,7 +3680,7 @@ proof fn product_message_child_score_frame_image_preserved(
     product_epm_score_source_anchors_preserved(before, after);
 }
 
-proof fn product_message_child_score_product_wf(
+pub proof fn product_message_child_score_product_wf(
     before: ProductScoreState, after: ProductScoreState,
 )
     requires
@@ -4725,7 +4725,7 @@ pub open spec fn live_runtime_product_wf(state: LiveRuntimeProductState) -> bool
     }
 }
 
-proof fn live_runtime_wire_sources_steady(
+pub proof fn live_runtime_wire_sources_steady(
     before: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
 )
@@ -4770,7 +4770,7 @@ proof fn live_runtime_wire_sources_steady(
     }
 }
 
-proof fn live_runtime_wire_sources_pop(
+pub proof fn live_runtime_wire_sources_pop(
     before: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
 )
@@ -5382,7 +5382,7 @@ pub proof fn product_epm_modeled_empty_nested_scores()
 // Keep the score append and the source-derived child frame facts in their own
 // solver context.  The public readiness witness below combines these facts
 // only after the score selector has been established.
-proof fn product_epm_modeled_empty_nested_scored_child_shape()
+pub proof fn product_epm_modeled_empty_nested_scored_child_shape()
     ensures {
         let product = product_epm_nested_source_witness_after(
             product_epm_modeled_empty_nested_source(),
@@ -5414,7 +5414,7 @@ proof fn product_epm_modeled_empty_nested_scored_child_shape()
     ) == Some(true));
 }
 
-proof fn product_epm_modeled_empty_nested_derived_summary()
+pub proof fn product_epm_modeled_empty_nested_derived_summary()
     ensures {
         let product = product_epm_nested_source_witness_after(
             product_epm_modeled_empty_nested_source(),
@@ -5444,7 +5444,7 @@ proof fn product_epm_modeled_empty_nested_derived_summary()
     }));
 }
 
-proof fn product_epm_modeled_empty_nested_complete_enabled()
+pub proof fn product_epm_modeled_empty_nested_complete_enabled()
     ensures {
         let product = product_epm_nested_source_witness_after(
             product_epm_modeled_empty_nested_source(),
@@ -5516,7 +5516,7 @@ pub proof fn product_epm_modeled_empty_nested_complete_ready()
     product_epm_modeled_empty_nested_complete_enabled();
 }
 
-proof fn product_epm_modeled_empty_nested_admission_complete_dispatch()
+pub proof fn product_epm_modeled_empty_nested_admission_complete_dispatch()
     ensures {
         let before = product_epm_nested_source_witness_after(
             product_epm_modeled_empty_nested_source(),
@@ -5570,7 +5570,7 @@ proof fn product_epm_modeled_empty_nested_admission_complete_dispatch()
     }
 }
 
-proof fn product_epm_modeled_empty_nested_map_complete_dispatch()
+pub proof fn product_epm_modeled_empty_nested_map_complete_dispatch()
     ensures {
         let before = product_epm_nested_source_witness_after(
             product_epm_modeled_empty_nested_source(),
@@ -5612,7 +5612,7 @@ proof fn product_epm_modeled_empty_nested_map_complete_dispatch()
     assert(product_map_pop_owned(scored));
 }
 
-proof fn product_epm_modeled_empty_nested_product_complete_dispatch()
+pub proof fn product_epm_modeled_empty_nested_product_complete_dispatch()
     ensures product_epm_source_child_complete_selected(
         product_epm_nested_source_witness_after(
             product_epm_modeled_empty_nested_source(),
@@ -6163,7 +6163,7 @@ pub open spec fn live_runtime_child_cursor(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn live_runtime_wire_sources_push(
+pub proof fn live_runtime_wire_sources_push(
     before: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
     field: admission::IndexedCanonicalFieldModel,
@@ -9396,7 +9396,7 @@ pub open spec fn strict_ancestor_sequence_shape<T>(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn strict_ancestor_sequence_shape_preserves_prefix<T>(
+pub proof fn strict_ancestor_sequence_shape_preserves_prefix<T>(
     before: Seq<T>,
     after: Seq<T>,
 )
@@ -9418,7 +9418,7 @@ proof fn strict_ancestor_sequence_shape_preserves_prefix<T>(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn live_wire_cursor_shape_preserves_prefix(
+pub proof fn live_wire_cursor_shape_preserves_prefix(
     before: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
     limit: int,
@@ -9442,7 +9442,7 @@ proof fn live_wire_cursor_shape_preserves_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_carried_receipts_preserve_prefix(
+pub proof fn product_carried_receipts_preserve_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
     limit: int,
@@ -9472,7 +9472,7 @@ proof fn product_carried_receipts_preserve_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_message_child_score_preserves_ancestor_prefix(
+pub proof fn product_message_child_score_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
 )
@@ -9496,7 +9496,7 @@ proof fn product_message_child_score_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_epm_continue_preserves_ancestor_prefix(
+pub proof fn product_epm_continue_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
     event: epm::EpmEvent,
@@ -9535,7 +9535,7 @@ proof fn product_epm_continue_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_epm_complete_preserves_ancestor_prefix(
+pub proof fn product_epm_complete_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
     action: epm::EpmAction,
@@ -9564,7 +9564,7 @@ proof fn product_epm_complete_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_epm_child_return_preserves_ancestor_prefix(
+pub proof fn product_epm_child_return_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
     summary: epm::ChildSummary,
@@ -9614,7 +9614,7 @@ proof fn product_epm_child_return_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_map_key_preserves_ancestor_prefix(
+pub proof fn product_map_key_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
     field: admission::IndexedCanonicalFieldModel,
@@ -9656,7 +9656,7 @@ proof fn product_map_key_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn live_epm_push_preserves_ancestor_prefix(
+pub proof fn live_epm_push_preserves_ancestor_prefix(
     before: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
     observed: rpb3_epm_push_source_action_refinement::EpmPushLiveObservation,
@@ -9711,7 +9711,7 @@ proof fn live_epm_push_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_epm_finish_accept_preserves_ancestor_prefix(
+pub proof fn product_epm_finish_accept_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
 )
@@ -9762,7 +9762,7 @@ proof fn product_epm_finish_accept_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn concrete_message_continue_preserves_ancestor_prefix(
+pub proof fn concrete_message_continue_preserves_ancestor_prefix(
     before: admission::AdmissionState,
     after: admission::AdmissionState,
     action: admission::ConcreteFrameActionModel,
@@ -9803,7 +9803,7 @@ proof fn concrete_message_continue_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_message_continue_preserves_ancestor_prefix(
+pub proof fn product_message_continue_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
     action: admission::ConcreteFrameActionModel,
@@ -9844,7 +9844,7 @@ proof fn product_message_continue_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn admission_push_preserves_ancestor_prefix(
+pub proof fn admission_push_preserves_ancestor_prefix(
     before: admission::AdmissionState,
     after: admission::AdmissionState,
     parent_next: usize,
@@ -9872,7 +9872,7 @@ proof fn admission_push_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn concrete_message_push_preserves_ancestor_prefix(
+pub proof fn concrete_message_push_preserves_ancestor_prefix(
     before: admission::AdmissionState,
     after: admission::AdmissionState,
     action: admission::ConcreteFrameActionModel,
@@ -9915,7 +9915,7 @@ proof fn concrete_message_push_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_message_push_preserves_ancestor_prefix(
+pub proof fn product_message_push_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
     action: admission::ConcreteFrameActionModel,
@@ -9975,7 +9975,7 @@ proof fn product_message_push_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_map_value_push_preserves_ancestor_prefix(
+pub proof fn product_map_value_push_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
     action: map::IntegratedAdmissionAction,
@@ -10063,7 +10063,7 @@ proof fn product_map_value_push_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn admission_child_pop_preserves_ancestor_prefix(
+pub proof fn admission_child_pop_preserves_ancestor_prefix(
     before: admission::AdmissionState,
     after: admission::AdmissionState,
     returned_id: u64,
@@ -10085,7 +10085,7 @@ proof fn admission_child_pop_preserves_ancestor_prefix(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn product_map_pop_preserves_ancestor_prefix(
+pub proof fn product_map_pop_preserves_ancestor_prefix(
     before: ProductScoreState,
     after: ProductScoreState,
     action: map::IntegratedAdmissionAction,
@@ -10555,7 +10555,7 @@ pub open spec fn live_runtime_retained_path_step(
     }
 }
 
-proof fn live_runtime_retained_path_step_preserves_sync(
+pub proof fn live_runtime_retained_path_step_preserves_sync(
     before: LiveRuntimeRetainedPathState,
     action: rpb3_canonical_path_driver_product_integration::CanonicalPathDriverSourceAction,
 )
@@ -10661,7 +10661,7 @@ pub proof fn live_runtime_product_trace_prefix_wf(
 // A production message EOF scores the child and then accepts it in one driver
 // call.  The two live-product actions refine that one observable transition.
 #[cfg(rpb3_live_push)]
-proof fn live_runtime_message_child_complete_map_dispatch(
+pub proof fn live_runtime_message_child_complete_map_dispatch(
     scored: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
 )
@@ -10693,7 +10693,7 @@ proof fn live_runtime_message_child_complete_map_dispatch(
 }
 
 #[cfg(rpb3_live_push)]
-proof fn live_runtime_message_child_complete_pre_pop_exact(
+pub proof fn live_runtime_message_child_complete_pre_pop_exact(
     before: LiveRuntimeProductState,
     scored: LiveRuntimeProductState,
     after: LiveRuntimeProductState,

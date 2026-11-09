@@ -76,7 +76,7 @@ pub open spec fn nested_epm_complete_macro(
     )
 }
 
-proof fn nested_epm_internal_prefix_preserves(
+pub proof fn nested_epm_internal_prefix_preserves(
     states: Seq<epm::LinkedEpmState>, events: Seq<epm::EpmEvent>, upto: int,
 )
     requires
