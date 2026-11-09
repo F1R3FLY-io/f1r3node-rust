@@ -164,6 +164,7 @@ theories/RPB3IndependentOracleProcessExprChildren.v
 theories/RPB3IndependentOracleProcessNumericChildren.v
 theories/RPB3IndependentOracleProcessTypedChildren.v
 theories/RPB3IndependentOracleProcessChildAssembly.v
+theories/RPB3IndependentOracleScanBridge.v
 theories/RPB3IndependentTypedSemanticReference.v
 theories/RPB3SourceIndexedFrames.v
 theories/RPB3SourceIndexedTermination.v
