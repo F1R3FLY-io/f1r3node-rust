@@ -436,62 +436,160 @@ async fn released_limit(queue: &Queue) -> usize {
     queue.handle.snapshot().await.unwrap().released_limit
 }
 
+/// New tips `from..=to`, finality one behind each.
+fn advance(node: &FakeNode, from: i64, to: i64) {
+    for tip in from..=to {
+        node.emit(block_added(tip, &[]));
+        node.emit(block_finalised(tip - 1));
+    }
+}
+
+fn distinct_received(node: &FakeNode) -> HashSet<Vec<u8>> {
+    node.received()
+        .iter()
+        .map(|request| request.to_signed().unwrap().sig.to_vec())
+        .collect()
+}
+
+// Rounds are 12.5 heights; the first starts when the queue connects at tip
+// 10, so rounds end at tips 23, 36, 49 and so on.
+
+async fn reaches_tip(queue: &Queue, tip: i64) {
+    eventually("the queue reaches the tip", || async {
+        queue.handle.snapshot().await.unwrap().tip == Some(tip)
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn timely_verdicts_grow_the_release_window() {
     let (node, queue, _dir) = queue_with_backlog(60).await;
     node.emit(block_added(11, &[]));
     node.emit(finalized_verdicts(&node, 11));
-    // Thirteen verdicts one height after release, with deploys held back:
-    // slow start adds one deploy per timely verdict.
-    eventually("the doubled window is released", || async {
-        node.received().len() == 13 + 26
+    eventually("the freed window is refilled", || async {
+        node.received().len() == 26
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(node.received().len(), 39);
+    // Thirteen timely verdicts with deploys held back: at the round's end
+    // slow start doubles the window.
+    advance(&node, 12, 24);
+    eventually("the doubled window is released", || async {
+        node.received().len() == 39
+    })
+    .await;
     assert_eq!(released_limit(&queue).await, 26);
     queue.stop();
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn late_verdicts_shrink_the_release_window() {
-    let (node, queue, _dir) = queue_with_backlog(60).await;
-    for tip in 11..=30 {
+async fn a_deploy_that_keeps_losing_does_not_shrink_its_queue() {
+    let (node, queue, _dir) = queue_with_backlog(200).await;
+    let stuck = node.received()[0].to_signed().unwrap().sig.to_vec();
+    // Every other released deploy settles the height after release; one
+    // never does, as a deploy that loses every merge would not.
+    for tip in 11..=60 {
         node.emit(block_added(tip, &[]));
         node.emit(block_finalised(tip - 1));
+        let verdicts: Vec<Value> = distinct_received(&node)
+            .into_iter()
+            .filter(|sig| *sig != stuck)
+            .map(|sig| {
+                json!({"deploy-id": hex::encode(sig), "state": "finalized",
+                       "rejection-count": 0, "block-hash": format!("{:064x}", tip)})
+            })
+            .collect();
+        node.emit(json!({"event": "deploy-verdicts", "schema-version": 1,
+                         "payload": {"verdicts": verdicts}}));
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let snapshot = queue.handle.snapshot().await.unwrap();
+    assert_eq!(queue.state(&stuck).await, Some(QueueState::Submitted));
+    assert_eq!(
+        snapshot.slow_start_threshold,
+        Some(256.0),
+        "a deploy unsettled for 50 heights among timely ones never halves the window: {:?}",
+        snapshot
+    );
+    assert!(snapshot.released_limit > 13, "{:?}", snapshot);
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn admission_tightens_as_soon_as_release_is_cut() {
+    let (node, queue, _dir) = queue_with_backlog(120).await;
+    advance(&node, 11, 30);
+    reaches_tip(&queue, 30).await;
     node.emit(finalized_verdicts(&node, 30));
-    // Released at tip 10 and still unsettled past half the citable depth:
-    // the window halves once for that round, and the late verdicts that
-    // follow inside the same round do not halve it again.
-    eventually("the halved window is released", || async {
-        node.received().len() == 13 + 6
+    advance(&node, 31, 37);
+    reaches_tip(&queue, 37).await;
+    // The round ending at 36 saw only verdicts 20 heights after release:
+    // the window halved to 6.5 deploys at 20 heights each, well below the
+    // settle rate the queue measured.
+    let snapshot = queue.handle.snapshot().await.unwrap();
+    let release_rate = snapshot.release_rate.expect("a round with verdicts sets the rate");
+    assert!(
+        release_rate < snapshot.settled_per_height.unwrap(),
+        "{:?}",
+        snapshot
+    );
+    // With about 107 deploys ahead, a fresh deploy would land in time at the
+    // measured rate but not at what the window now lets through.
+    assert!(matches!(
+        accept(&queue.handle, numbered_deploy(37, 1000)).await,
+        Err(IntakeError::QueueFull { .. })
+    ));
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deploy_without_time_to_be_included_is_not_released() {
+    let node = FakeNode::new(10, 9);
+    node.status.lock().unwrap()["maxUserDeploysPerBlock"] = json!(128);
+    node.status.lock().unwrap()["deployLifespan"] = json!(60);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+    // Twenty deploys whose window runs out at block 69.
+    for number in 0..20 {
+        accept(&queue.handle, numbered_deploy(10, number)).await.unwrap();
+    }
+    eventually("the first window is released", || async {
+        node.received().len() == 13
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(node.received().len(), 19);
-    assert_eq!(released_limit(&queue).await, 6);
+    // The released deploys land in a block one height later and then never
+    // settle, so the other seven wait in the queue until block 68.
+    let released: Vec<Vec<u8>> = distinct_received(&node).into_iter().collect();
+    let ids: Vec<&[u8]> = released.iter().map(Vec::as_slice).collect();
+    node.emit(block_added(11, &ids));
+    node.emit(block_finalised(10));
+    advance(&node, 12, 68);
+    node.emit(finalized_verdicts(&node, 68));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // One height of window left is less than the two the shard takes to
+    // include a deploy: the seven are closed in the queue, not released.
+    assert_eq!(distinct_received(&node).len(), 13);
+    assert_eq!(queue.handle.snapshot().await.unwrap().closed, 7);
     queue.stop();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_that_settles_nothing_shrinks_release_without_verdicts() {
     let (node, queue, _dir) = queue_with_backlog(60).await;
-    for tip in 11..=40 {
-        node.emit(block_added(tip, &[]));
-        node.emit(block_finalised(tip - 1));
-    }
-    // Overdue at 23 and again a round later at 36: 13 -> 6.5 -> 3.25.
+    advance(&node, 11, 49);
+    // The first round holds the release itself; the rounds ending at 36 and
+    // 49 pass with deploys held back, no verdict, and the deploys released
+    // at 10 still waiting: 13 -> 6.5 -> 3.25.
     eventually("the window halves twice", || async {
         released_limit(&queue).await == 3
     })
     .await;
-    let distinct: HashSet<Vec<u8>> = node
-        .received()
-        .iter()
-        .map(|request| request.to_signed().unwrap().sig.to_vec())
-        .collect();
-    assert_eq!(distinct.len(), 13, "no new deploy goes to a node that settles nothing");
+    assert_eq!(
+        distinct_received(&node).len(),
+        13,
+        "no new deploy goes to a node that settles nothing"
+    );
     queue.stop();
 }
 
@@ -499,11 +597,8 @@ async fn a_node_that_settles_nothing_shrinks_release_without_verdicts() {
 async fn a_verdict_after_a_resend_counts_from_the_first_release() {
     let (node, queue, _dir) = queue_with_backlog(60).await;
     // Past the citable depth the stuck deploys are re-sent; their verdicts
-    // then arrive soon after the re-send but long after release.
-    for tip in 11..=36 {
-        node.emit(block_added(tip, &[]));
-        node.emit(block_finalised(tip - 1));
-    }
+    // then arrive one height after the re-send but 27 after release.
+    advance(&node, 11, 36);
     eventually("the stuck deploys are re-sent", || async {
         node.received().len() == 26
     })
@@ -516,10 +611,15 @@ async fn a_verdict_after_a_resend_counts_from_the_first_release() {
         queue.state(&first).await == Some(QueueState::Finalized)
     })
     .await;
+    // The round holding those verdicts ends at 49: late verdicts halve the
+    // window, where timely ones with deploys held back would grow it.
+    advance(&node, 38, 50);
+    reaches_tip(&queue, 50).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let window_after = queue.handle.snapshot().await.unwrap().release_window.unwrap();
     assert!(
-        window_after <= window_before,
-        "verdicts 27 heights after release must not grow the window: {} -> {}",
+        window_after < window_before,
+        "verdicts 27 heights after release must count as late: {} -> {}",
         window_before,
         window_after
     );

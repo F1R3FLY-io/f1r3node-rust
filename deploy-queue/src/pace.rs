@@ -123,18 +123,6 @@ impl Pace {
         };
     }
 
-    /// Heights until `deploys` more of this queue's deploys settle. `None`
-    /// when the observed rate is zero: the shard is settling nothing.
-    pub fn heights_to_settle(&self, deploys: usize) -> Option<i64> {
-        if deploys == 0 {
-            return Some(0);
-        }
-        if self.settled_per_height <= 0.0 {
-            return None;
-        }
-        Some((deploys as f64 / self.settled_per_height).ceil() as i64)
-    }
-
     /// Wall-clock seconds for `heights` heights, once a height has been
     /// timed.
     pub fn seconds_for(&self, heights: i64) -> Option<u64> {
@@ -161,8 +149,6 @@ mod tests {
     fn a_fresh_queue_starts_at_one_deploy_per_height() {
         let pace = Pace::new(25);
         assert_eq!(pace.settled_per_height(), 1.0);
-        assert_eq!(pace.heights_to_settle(0), Some(0));
-        assert_eq!(pace.heights_to_settle(9), Some(9));
         assert_eq!(pace.seconds_for(3), None);
     }
 
@@ -233,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn a_shard_that_settles_nothing_pushes_the_wait_out() {
+    fn a_shard_that_settles_nothing_measures_zero() {
         let start = Instant::now();
         let mut pace = Pace::new(25);
         pace.on_tip(1, start);
@@ -242,7 +228,6 @@ mod tests {
             pace.record_held_back();
             pace.on_tip(tip, at(start, tip as u64));
         }
-        assert_eq!(pace.heights_to_settle(1), None);
-        assert_eq!(pace.heights_to_settle(0), Some(0), "an empty queue still admits");
+        assert_eq!(pace.settled_per_height(), 0.0);
     }
 }
