@@ -1,8 +1,7 @@
 pub use models::rhoapi::connective::ConnectiveInstance::{
     ConnAndBody, ConnBigInt, ConnBigRat, ConnBool, ConnByteArray, ConnFixedPointBody, ConnFloat32,
-    ConnFloat64, ConnInt, ConnInt32, ConnList, ConnMap, ConnNotBody, ConnOrBody, ConnProc, ConnSet,
-    ConnString, ConnTuple, ConnType, ConnUint16, ConnUint32, ConnUint64, ConnUint8, ConnUri,
-    VarRefBody,
+    ConnFloat64, ConnInt, ConnInt32, ConnNotBody, ConnOrBody, ConnString, ConnType, ConnUint16,
+    ConnUint32, ConnUint64, ConnUint8, ConnUri, VarRefBody,
 };
 pub use models::rhoapi::expr::ExprInstance::{
     EAndBody, EAppBody, EDivBody, EEqBody, EGtBody, EGteBody, ELambdaBody, EListBody, ELtBody,

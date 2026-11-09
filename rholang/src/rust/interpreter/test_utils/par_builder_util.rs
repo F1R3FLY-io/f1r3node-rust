@@ -142,35 +142,6 @@ impl ParBuilderUtil {
         }
     }
 
-    // Build a lambda with per-param optional type annotations. Pass
-    // `None` for an unannotated slot, `Some(ty_ann_proc)` otherwise.
-    // Mirrors `(x_0: T_0?, …, x_{n-1}: T_{n-1}?) => body`.
-    pub fn create_ast_lambda_typed<'ast>(
-        params: Vec<(&'ast str, Option<AnnProc<'ast>>)>,
-        body: AnnProc<'ast>,
-        parser: &'ast rholang_parser::RholangParser<'ast>,
-    ) -> AnnProc<'ast> {
-        let pairs: Vec<(Id<'ast>, Option<AnnProc<'ast>>)> = params
-            .into_iter()
-            .map(|(name, ty)| {
-                (
-                    Id {
-                        name,
-                        pos: SourcePos { line: 0, col: 0 },
-                    },
-                    ty,
-                )
-            })
-            .collect();
-        AnnProc {
-            proc: parser.ast_builder().alloc_lambda(&pairs, body),
-            span: SourceSpan {
-                start: SourcePos { line: 0, col: 0 },
-                end: SourcePos { line: 0, col: 0 },
-            },
-        }
-    }
-
     // CoC Phase 1b: build an application AnnProc `fun(arg_0, ..., arg_{n-1})`.
     pub fn create_ast_app<'ast>(
         fun: AnnProc<'ast>,

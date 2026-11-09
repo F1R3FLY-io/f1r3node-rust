@@ -57,7 +57,6 @@ impl Par {
             bundles,
             connectives,
             conditionals,
-            foreaches,
             locally_free,
             connective_used,
         } = self;
@@ -71,7 +70,6 @@ impl Par {
             bundles: bundles.clone(),
             connectives: connectives.clone(),
             conditionals: conditionals.clone(),
-            foreaches: foreaches.clone(),
             locally_free: locally_free.clone(),
             connective_used: *connective_used,
         }
@@ -220,7 +218,6 @@ impl Par {
             bundles: [self.bundles.clone(), other.bundles].concat(),
             connectives: [self.connectives.clone(), other.connectives].concat(),
             conditionals: [self.conditionals.clone(), other.conditionals].concat(),
-            foreaches: [self.foreaches.clone(), other.foreaches].concat(),
             locally_free: union(self.locally_free.clone(), other.locally_free),
             connective_used: self.connective_used || other.connective_used,
         }
