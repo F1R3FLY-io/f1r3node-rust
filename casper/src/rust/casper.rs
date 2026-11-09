@@ -18,10 +18,12 @@ use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::blocks::ingest::block_ingest::IngestHandle;
@@ -157,7 +159,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     // this initial fault weight combined with our fault tolerance threshold t.
     fn normalized_initial_fault(
         &self,
-        weights: HashMap<Validator, u64>,
+        weights: HashMap<Validator, BigInt>,
     ) -> Result<f32, CasperError>;
 
     /// The persisted LFB. Reading it never advances finality.
@@ -281,20 +283,20 @@ pub async fn hash_set_casper(
             &approved_block.body.state.post_state_hash,
         )
         .await?;
-    if (onchain_mpd, onchain_lifespan, onchain_min_phlo)
+    if (onchain_mpd, onchain_lifespan, &onchain_min_phlo)
         != (
             casper_shard_conf.max_parent_depth,
             casper_shard_conf.deploy_lifespan,
-            casper_shard_conf.min_phlo_price,
+            &casper_shard_conf.min_phlo_price,
         )
     {
         tracing::info!(
             onchain_max_parent_depth = onchain_mpd,
             onchain_deploy_lifespan = onchain_lifespan,
-            onchain_min_phlo_price = onchain_min_phlo,
+            onchain_min_phlo_price = %onchain_min_phlo,
             local_max_parent_depth = casper_shard_conf.max_parent_depth,
             local_deploy_lifespan = casper_shard_conf.deploy_lifespan,
-            local_min_phlo_price = casper_shard_conf.min_phlo_price,
+            local_min_phlo_price = %casper_shard_conf.min_phlo_price,
             "Adopting on-chain consensus parameters over local configuration"
         );
     }
@@ -433,7 +435,7 @@ impl CasperSnapshot {
         Ok(metadata
             .weight_map
             .get(validator)
-            .is_some_and(|stake| *stake > 0))
+            .is_some_and(|stake| !stake.is_zero()))
     }
 
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
@@ -455,7 +457,7 @@ impl CasperSnapshot {
 #[derive(Clone)]
 pub struct OnChainCasperState {
     pub shard_conf: CasperShardConf,
-    pub bonds_map: HashMap<Validator, i64>,
+    pub bonds_map: HashMap<Validator, BigInt>,
     pub active_validators: Vec<Validator>,
 }
 
@@ -510,11 +512,11 @@ pub struct CasperShardConf {
     /// re-judgements.
     pub heartbeat_check_interval: std::time::Duration,
     pub casper_version: i64,
-    pub bond_minimum: i64,
-    pub bond_maximum: i64,
+    pub bond_minimum: TokenAmount,
+    pub bond_maximum: TokenAmount,
     pub epoch_length: i32,
     pub quarantine_length: i32,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
     /// wake so the heartbeat task picks up the new deploy on the next
     /// tick rather than waiting up to `check_interval` seconds. Defaults
@@ -566,11 +568,11 @@ impl CasperShardConf {
             deploy_play_budget_is_derived: false,
             heartbeat_check_interval: Duration::ZERO,
             casper_version: 0,
-            bond_minimum: 0,
-            bond_maximum: 0,
+            bond_minimum: 0.into(),
+            bond_maximum: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
@@ -712,7 +714,7 @@ pub mod test_helpers {
             {
                 parent.body.state.bonds.push(Bond {
                     validator,
-                    stake: 100,
+                    stake: 100.into(),
                 });
             }
         }
@@ -787,7 +789,7 @@ pub mod test_helpers {
     impl MultiParentCasper for TestCasperWithSnapshot {
         fn normalized_initial_fault(
             &self,
-            _weights: HashMap<Validator, u64>,
+            _weights: HashMap<Validator, num_bigint::BigInt>,
         ) -> Result<f32, CasperError> {
             Ok(0.0)
         }

@@ -1,6 +1,6 @@
 use models::rust::casper::protocol::casper_message::BlockMessage;
-use rspace_plus_plus::rspace::history::Either;
 
+use crate::rust::block_status::InvalidBlock;
 use crate::rust::metrics_constants::BLOCK_INTEGRITY_REJECTED_METRIC;
 use crate::rust::validate::Validate;
 
@@ -30,13 +30,14 @@ impl CheckedBlock {
         block: BlockMessage,
         source: &'static str,
     ) -> Result<Self, (Box<BlockMessage>, IntegrityFailure)> {
-        let failure = if !(Validate::format_of_fields(&block) && Validate::block_signature(&block))
-        {
+        let failure = if !Validate::format_of_fields(&block) {
             IntegrityFailure::Malformed
-        } else if matches!(Validate::block_hash(&block), Either::Left(_)) {
-            IntegrityFailure::HashMismatch
         } else {
-            return Ok(Self(block));
+            match Validate::block_hash_and_signature(&block) {
+                Ok(()) => return Ok(Self(block)),
+                Err(InvalidBlock::InvalidBlockHash) => IntegrityFailure::HashMismatch,
+                Err(_) => IntegrityFailure::Malformed,
+            }
         };
         metrics::counter!(BLOCK_INTEGRITY_REJECTED_METRIC, "source" => source, "reason" => failure.reason())
             .increment(1);

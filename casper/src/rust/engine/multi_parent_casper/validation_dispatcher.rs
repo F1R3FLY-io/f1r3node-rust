@@ -242,7 +242,7 @@ async fn run_validation_steps(
         async {
             Ok(Validate::phlo_price(
                 block,
-                this.casper_shard_conf.min_phlo_price,
+                &this.casper_shard_conf.min_phlo_price,
             ))
         },
     )

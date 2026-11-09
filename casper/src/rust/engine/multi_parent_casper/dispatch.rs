@@ -133,7 +133,7 @@ impl MultiParentCasper for MultiParentCasperImpl {
 
     fn normalized_initial_fault(
         &self,
-        weights: HashMap<Validator, u64>,
+        weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
         let equivocating_weight =
             self.block_dag_storage

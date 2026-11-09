@@ -157,7 +157,7 @@ impl NoOpsCasperEffect {
 impl MultiParentCasper for NoOpsCasperEffect {
     fn normalized_initial_fault(
         &self,
-        _weights: HashMap<Validator, u64>,
+        _weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
         Ok(0.0)
     }

@@ -213,7 +213,7 @@ impl Intake {
         };
         Ok(match self.dag.lookup(main_parent)? {
             Some(parent) if !parent.invalid => match parent.weight_map.get(&block.sender) {
-                Some(stake) if *stake > 0 => SenderAuthorization::Authorized,
+                Some(stake) if !stake.is_zero() => SenderAuthorization::Authorized,
                 _ => SenderAuthorization::Unauthorized,
             },
             _ => SenderAuthorization::Unknown,
@@ -229,7 +229,7 @@ impl Intake {
         Ok(self.dag.lookup(&last_finalized)?.is_some_and(|meta| {
             meta.weight_map
                 .get(&block.sender)
-                .is_some_and(|stake| *stake > 0)
+                .is_some_and(|stake| !stake.is_zero())
         }))
     }
 }

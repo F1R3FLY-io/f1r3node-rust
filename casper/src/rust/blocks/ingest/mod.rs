@@ -17,6 +17,7 @@ pub mod ingest_step;
 pub mod ingest_view;
 pub mod intake_worker;
 pub mod peer_reputation;
+pub mod receipt_verifier;
 pub mod validation_worker;
 
 #[cfg(test)]

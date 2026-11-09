@@ -176,7 +176,7 @@ impl Fixture {
         let sender = sender_id.public_key.bytes.clone();
         let bonds = vec![Bond {
             validator: sender.clone(),
-            stake: 100,
+            stake: 100.into(),
         }];
 
         let genesis = lean_block(0, 0, None, vec![], vec![]);

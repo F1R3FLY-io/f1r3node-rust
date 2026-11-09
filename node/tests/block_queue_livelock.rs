@@ -138,7 +138,7 @@ impl Validators {
             .iter()
             .map(|identity| Bond {
                 validator: identity.public_key.bytes.clone(),
-                stake: 100,
+                stake: 100.into(),
             })
             .collect();
         Self {
@@ -515,7 +515,7 @@ impl Casper for StubCasper {
 impl MultiParentCasper for StubCasper {
     fn normalized_initial_fault(
         &self,
-        _weights: HashMap<Validator, u64>,
+        _weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
         unreachable!("the node under test does not finalize")
     }

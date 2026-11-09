@@ -13,13 +13,14 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use futures::{FutureExt, StreamExt};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinSet;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::checked_block::CheckedBlock;
+use super::checked_block::{CheckedBlock, IntegrityFailure};
 use super::dependency_tracker::Work;
 use super::fetch_scheduler::FetchAction;
 use super::ingest_state::{
@@ -411,7 +412,7 @@ async fn run_intake(
                 attached.intake.admit(&block, Some(from))
             }
             IntakeJob::Local(hash) => match block_store.get(&hash) {
-                Ok(Some(block)) => match CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE) {
+                Ok(Some(block)) => match check_off_runtime(block).await {
                     // A local lookup always gets a report, or its need would
                     // never reach the network.
                     Ok(checked) => attached.intake.admit(&checked, None).or_else(|error| {
@@ -455,6 +456,20 @@ async fn run_intake(
             Err(error) => tracing::error!(%error, "block intake failed"),
         }
     }
+}
+
+/// The integrity check of a stored copy, off the async runtime. A check that
+/// cannot run counts as a malformed copy, so the block is asked for again.
+async fn check_off_runtime(
+    block: BlockMessage,
+) -> Result<CheckedBlock, (Box<BlockMessage>, IntegrityFailure)> {
+    let copy = block.clone();
+    tokio::task::spawn_blocking(move || CheckedBlock::check(copy, BLOCK_INGEST_METRICS_SOURCE))
+        .await
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "integrity check of a stored block failed to run");
+            Err((Box::new(block), IntegrityFailure::Malformed))
+        })
 }
 
 async fn run_validation<T: TransportLayer + Send + Sync + 'static>(

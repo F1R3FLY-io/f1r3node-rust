@@ -24,8 +24,9 @@ use shared::rust::store::key_value_store::MissingBlockContext;
 use tokio::sync::mpsc;
 
 use crate::rust::blocks::ingest::block_ingest::IngestHandle;
-use crate::rust::blocks::ingest::checked_block::{CheckedBlock, IntegrityFailure};
+use crate::rust::blocks::ingest::checked_block::IntegrityFailure;
 use crate::rust::blocks::ingest::peer_reputation::Strike;
+use crate::rust::blocks::ingest::receipt_verifier::{ReceiptRefusal, ReceiptVerifier};
 use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
@@ -39,7 +40,7 @@ use crate::rust::engine::wal_payload_wire::{
 use crate::rust::errors::CasperError;
 use crate::rust::finality::floor::floor_of_block;
 use crate::rust::metrics_constants::{
-    BLOCK_HASH_RECEIVED_METRIC, BLOCK_INGEST_METRICS_SOURCE,
+    BLOCK_HASH_RECEIVED_METRIC, BLOCK_INGEST_LANE_DROPS_METRIC, BLOCK_INGEST_METRICS_SOURCE,
     BLOCK_INGEST_PEER_REPUTATION_DROPPED_MESSAGES_METRIC, BLOCK_REQUEST_RECEIVED_METRIC,
     RUNNING_METRICS_SOURCE,
 };
@@ -268,25 +269,43 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                 } else {
-                    let checked = match tokio::task::spawn_blocking(move || {
-                        CheckedBlock::check(b, RUNNING_METRICS_SOURCE)
-                    })
-                    .await
-                    .map_err(|err| {
-                        CasperError::RuntimeError(format!(
-                            "Block integrity check failed to run: {}",
-                            err
-                        ))
-                    })? {
+                    let block_hash = b.block_hash.clone();
+                    let checked = match ReceiptVerifier::shared()
+                        .verify(&peer.id.key, b, RUNNING_METRICS_SOURCE, |hash| {
+                            self.is_known(hash)
+                        })
+                        .await
+                    {
                         Ok(checked) => checked,
-                        Err((refused, failure)) => {
+                        Err(ReceiptRefusal::Overloaded) => {
+                            metrics::counter!(
+                                BLOCK_INGEST_LANE_DROPS_METRIC,
+                                "source" => BLOCK_INGEST_METRICS_SOURCE,
+                                "lane" => "verification"
+                            )
+                            .increment(1);
+                            tracing::debug!(
+                                "Dropping BlockMessage {} from {}: block verification is at capacity",
+                                PrettyPrinter::build_string_bytes(&block_hash),
+                                peer.endpoint.host
+                            );
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::AlreadyKnown) => {
+                            tracing::debug!(
+                                "Skipping BlockMessage {}: another copy passed its check",
+                                PrettyPrinter::build_string_bytes(&block_hash)
+                            );
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::Invalid(failure)) => {
                             let strike = match failure {
                                 IntegrityFailure::Malformed => Strike::Malformed,
                                 IntegrityFailure::HashMismatch => Strike::HashMismatch,
                             };
                             tracing::warn!(
                                 "Refused BlockMessage {} from {}: {:?}",
-                                PrettyPrinter::build_string_bytes(&refused.block_hash),
+                                PrettyPrinter::build_string_bytes(&block_hash),
                                 peer,
                                 failure
                             );
@@ -429,17 +448,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             }
             CasperMessage::FloorCacheRequest(req) => {
                 self.handle_floor_cache_request(peer, req.hashes).await
-            }
-            CasperMessage::MergeableEntryRequest(req) => {
-                if self.disable_state_exporter {
-                    tracing::debug!(
-                        "Received MergeableEntryRequest but state-export is disabled; ignoring (from {}).",
-                        peer
-                    );
-                    return Ok(());
-                }
-                self.handle_mergeable_entry_request(peer, req.block_hash)
-                    .await
             }
             // Phase 7b-1 snapshot chunk-fetch dispatch.  Only routed
             // if a `SnapshotChunkContext` has been installed (via
@@ -825,12 +833,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         Ok(())
     }
 
-    /// Respond to a `MergeableEntryRequest`.
-    ///
-    /// - Block not in our store: silent (no response).
-    /// - Block present, no mergeable entry: respond with empty `serialized_entry`.
-    /// - Block present and entry present: respond with raw bincode bytes from
-    ///   the mergeable_store.
     /// Serve cached finalized-floor values for the requested blocks.
     ///
     /// The values are pure functions of the named blocks, computed when this
@@ -886,47 +888,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         self.transport
             .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
             .await?;
-        Ok(())
-    }
-
-    async fn handle_mergeable_entry_request(
-        &self,
-        peer: PeerNode,
-        block_hash: BlockHash,
-    ) -> Result<(), CasperError> {
-        let block = match self.casper.block_store().get(&block_hash)? {
-            Some(b) => b,
-            None => {
-                tracing::debug!(
-                    "MergeableEntryRequest for {} from {}: block not in store; silent ignore.",
-                    PrettyPrinter::build_string_bytes(&block_hash),
-                    peer
-                );
-                return Ok(());
-            }
-        };
-
-        let runtime = self.casper.runtime_manager();
-        let (_key_bytes, value_bytes_opt) = runtime.get_mergeable_entry_bytes(&block)?;
-
-        let serialized_entry: prost::bytes::Bytes = value_bytes_opt
-            .map(prost::bytes::Bytes::from)
-            .unwrap_or_default();
-
-        let resp = casper_message::MergeableEntryResponse {
-            block_hash: block_hash.clone(),
-            serialized_entry,
-        };
-
-        self.transport
-            .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
-            .await?;
-
-        tracing::debug!(
-            "Mergeable entry sent to {} for block {}.",
-            peer,
-            PrettyPrinter::build_string_bytes(&block_hash)
-        );
         Ok(())
     }
 

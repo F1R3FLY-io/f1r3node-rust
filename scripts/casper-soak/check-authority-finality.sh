@@ -40,9 +40,9 @@ for item in authority_finality_complete:0:passed authority_finality_capability_m
     jq -e --argjson code "$code" --arg verdict "$verdict" '.actual_exit == $code and (.stdout | fromjson | .scenario_verdict == $verdict and .node_launch_count == 0 and .soak_verdict == "non_passing")' "$OUT/fixtures/$name/invocation-1.json" >/dev/null
 done
 grep -F 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$OUT/fixtures.txt" >/dev/null
-grep -F 'test result: ok. 12 passed; 0 failed; 1 ignored;' "$OUT/fixtures.txt" >/dev/null
+grep -F 'test result: ok. 13 passed; 0 failed; 1 ignored;' "$OUT/fixtures.txt" >/dev/null
 "$BIN" models --root "$ROOT" --output "$OUT/models" --java "$JAVA" --jar "$TLA_TOOLS_JAR" >"$OUT/models.txt" 2>&1
 shasum -a 256 "${FILES[@]}" >"$OUT/source-after.sha256"
 cmp "$OUT/source-before.sha256" "$OUT/source-after.sha256"
-printf '{"scope":"profile-fixture-and-model-checks","claim_discharge":"pending","node_execution":false,"rust_tests":13,"executor_helper_tests":1,"threshold_cases":2000,"model_controls":4}\n' >"$OUT/summary.json"
+printf '{"scope":"profile-fixture-and-model-checks","claim_discharge":"pending","node_execution":false,"rust_tests":14,"executor_helper_tests":1,"threshold_cases":2000,"model_controls":4}\n' >"$OUT/summary.json"
 COMPLETED=1

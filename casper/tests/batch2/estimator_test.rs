@@ -61,11 +61,11 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let v2 = generate_validator(Some("Validator Two"));
         let v1_bond = Bond {
             validator: v1.clone(),
-            stake: 2,
+            stake: 2.into(),
         };
         let v2_bond = Bond {
             validator: v2.clone(),
-            stake: 3,
+            stake: 3.into(),
         };
         let bonds = vec![v1_bond, v2_bond];
 
@@ -180,11 +180,11 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
         let v2 = generate_validator(Some("Validator Two"));
         let v1_bond = Bond {
             validator: v1.clone(),
-            stake: 2,
+            stake: 2.into(),
         };
         let v2_bond = Bond {
             validator: v2.clone(),
-            stake: 3,
+            stake: 3.into(),
         };
         let bonds = vec![v1_bond, v2_bond];
 
@@ -307,15 +307,15 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
         let v3 = generate_validator(Some("Validator Three"));
         let v1_bond = Bond {
             validator: v1.clone(),
-            stake: 25,
+            stake: 25.into(),
         };
         let v2_bond = Bond {
             validator: v2.clone(),
-            stake: 20,
+            stake: 20.into(),
         };
         let v3_bond = Bond {
             validator: v3.clone(),
-            stake: 15,
+            stake: 15.into(),
         };
         let bonds = vec![v1_bond, v2_bond, v3_bond];
 
@@ -466,7 +466,7 @@ async fn dense_regime_scores(heights: usize) -> DenseRegimeScores {
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 10,
+                stake: 10.into(),
             })
             .collect();
         let genesis = create_genesis_block(
