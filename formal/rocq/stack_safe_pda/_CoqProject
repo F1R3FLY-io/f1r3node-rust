@@ -160,6 +160,7 @@ theories/RPB3IndependentOracleCostFamilyBridge.v
 theories/RPB3IndependentOracleNameFamilyBridge.v
 theories/RPB3IndependentOraclePathMapVerdictBridge.v
 theories/RPB3IndependentOracleProcessChildCorrespondence.v
+theories/RPB3IndependentOracleProcessExprChildren.v
 theories/RPB3IndependentTypedSemanticReference.v
 theories/RPB3SourceIndexedFrames.v
 theories/RPB3SourceIndexedTermination.v
