@@ -1393,7 +1393,11 @@ rocq_reject_placeholders theories/RPB3IndependentOracleProcessNumericChildren.v
 TLC_MEMORY_HIGH=6G TLC_RSS=8G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleProcessNumericChildren.v 29 \
   "Process i32 and New bind-count child correspondences"
-TLC_MEMORY_HIGH=11G TLC_RSS=13G TLC_RUNTIME_MAX_SEC=1800 \
+rocq_reject_placeholders theories/RPB3IndependentOracleProcessTypedChildren.v
+TLC_MEMORY_HIGH=6G TLC_RSS=8G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleProcessTypedChildren.v 14 \
+  "Process child, selected, optional and typed child correspondences"
+TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
   StackSafePDA.RPB3IndependentOracleRegionChildBridge \
@@ -1405,7 +1409,8 @@ TLC_MEMORY_HIGH=11G TLC_RSS=13G TLC_RUNTIME_MAX_SEC=1800 \
   StackSafePDA.RPB3IndependentOraclePathMapVerdictBridge \
   StackSafePDA.RPB3IndependentOracleProcessChildCorrespondence \
   StackSafePDA.RPB3IndependentOracleProcessExprChildren \
-  StackSafePDA.RPB3IndependentOracleProcessNumericChildren
+  StackSafePDA.RPB3IndependentOracleProcessNumericChildren \
+  StackSafePDA.RPB3IndependentOracleProcessTypedChildren
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
