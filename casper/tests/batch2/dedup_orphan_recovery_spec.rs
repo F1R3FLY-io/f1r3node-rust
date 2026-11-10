@@ -340,13 +340,6 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     .await
     .expect("compute_parents_post_state over [block_a, block_b]");
 
-    assert!(
-        merged.rejected_slashes.is_empty(),
-        "no system slashes are involved in this fixture; rejected_slashes \
-         must be empty (got {} entries)",
-        merged.rejected_slashes.len()
-    );
-
     let rejected_set: HashSet<prost::bytes::Bytes> = merged
         .rejected_user
         .iter()

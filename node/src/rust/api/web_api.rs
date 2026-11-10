@@ -467,12 +467,15 @@ impl WebApi for WebApiImpl {
 
         // Advertise the floor admission and validity actually enforce — the
         // chain-adopted value; local conf only until casper is up.
-        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => casper.casper_shard_conf().min_phlo_price.clone(),
-            None => self.min_phlo_price.clone(),
+        let (min_phlo_price, epoch_length) = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => (
+                casper.casper_shard_conf().min_phlo_price.clone(),
+                casper.casper_shard_conf().epoch_length,
+            ),
+            None => (self.min_phlo_price.clone(), self.epoch_length),
         };
-        let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
-            lfb_number / self.epoch_length as i64
+        let current_epoch = if epoch_length > 0 && lfb_number >= 0 {
+            lfb_number / epoch_length as i64
         } else {
             0
         };
@@ -497,7 +500,7 @@ impl WebApi for WebApiImpl {
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
-            epoch_length: self.epoch_length,
+            epoch_length,
         })
     }
 
@@ -981,7 +984,10 @@ impl WebApi for WebApiImpl {
     async fn get_epoch(&self, block_hash: Option<String>) -> Result<EpochResponse> {
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
-        let epoch_length = self.epoch_length as i64;
+        let epoch_length = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => casper.casper_shard_conf().epoch_length,
+            None => self.epoch_length,
+        } as i64;
         let quarantine_length = self.quarantine_length as i64;
 
         let current_epoch = if epoch_length > 0 {
