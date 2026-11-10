@@ -27,7 +27,7 @@
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
@@ -246,17 +246,24 @@ fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, 
     epoch_for_block_number(metadata.block_number, epoch_length)
 }
 
-/// The senders of the invalid blocks whose evidence epoch is the epoch of
-/// `block_number`: the offenders a block at that height may slash.
-pub fn offenders_with_evidence_in_epoch_of(
+/// The offenders a block at `block_number` may slash: senders of invalid
+/// blocks whose evidence epoch is that block's epoch and who hold stake in
+/// `committee`, the bonds received slashes are authorized against.
+pub fn slashable_offenders(
     invalid_blocks: impl IntoIterator<Item = BlockMetadata>,
     block_number: i64,
     epoch_length: i32,
+    committee: &HashMap<Validator, i64>,
 ) -> Result<HashSet<Validator>, DomainError> {
     let epoch = epoch_for_block_number(block_number, epoch_length)?;
     let mut offenders = HashSet::new();
     for metadata in invalid_blocks {
-        if metadata.invalid && evidence_epoch(&metadata, epoch_length)? == epoch {
+        if metadata.invalid
+            && committee
+                .get(&metadata.sender)
+                .is_some_and(|stake| *stake > 0)
+            && evidence_epoch(&metadata, epoch_length)? == epoch
+        {
             offenders.insert(metadata.sender);
         }
     }
@@ -805,5 +812,58 @@ mod kani_proofs {
             ),
             left_offender == right_offender && left_epoch == right_epoch
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap, HashSet};
+
+    use models::rust::block_metadata::BlockMetadata;
+    use models::rust::validator::Validator;
+    use prost::bytes::Bytes;
+
+    use super::slashable_offenders;
+
+    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
+
+    fn evidence(sender: u8, block_number: i64) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: Bytes::from(vec![sender; 32]),
+            parents: Vec::new(),
+            sender: validator(sender),
+            justifications: Vec::new(),
+            weight_map: BTreeMap::new(),
+            block_number,
+            sequence_number: block_number as i32,
+            invalid: true,
+            directly_finalized: false,
+            finalized: false,
+            fault_tolerance_value: 0.0,
+            merge_base: Bytes::new(),
+        }
+    }
+
+    #[test]
+    fn only_committee_offenders_with_evidence_in_the_block_epoch_are_slashable() {
+        let committee: HashMap<Validator, i64> =
+            [(validator(1), 100), (validator(2), 0), (validator(4), 100)]
+                .into_iter()
+                .collect();
+
+        let slashable = slashable_offenders(
+            vec![
+                evidence(1, 94),
+                evidence(2, 94),
+                evidence(3, 94),
+                evidence(4, 84),
+            ],
+            95,
+            10,
+            &committee,
+        )
+        .expect("valid epoch length and block numbers");
+
+        assert_eq!(slashable, HashSet::from([validator(1)]));
     }
 }

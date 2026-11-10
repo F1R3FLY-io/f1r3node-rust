@@ -185,9 +185,9 @@ impl EquivocationDetector {
     /// / T-9.2 atomicity.
     ///
     /// A block owes a slash only where it may issue one: the equivocator is in
-    /// `slashable` (it has evidence the block's epoch authorizes) and still
-    /// holds stake in the block's post-state, so a block that carries the
-    /// slash owes nothing.
+    /// `slashable` (the block is authorized to slash it) and still holds stake
+    /// in the block's post-state, so a block that carries the slash owes
+    /// nothing.
     async fn check_neglected_equivocation(
         block: &BlockMessage,
         dag: &KeyValueDagRepresentation,
