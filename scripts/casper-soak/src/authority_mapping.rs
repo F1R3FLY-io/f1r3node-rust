@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
-use casper_soak::{array, manifest, number, object, text};
+use casper_soak::{array, manifest, number, object, stake, text};
 use eyre::{ensure, eyre, Result};
+use num_bigint::Sign;
 use serde_json::{json, Value};
 
 fn absent(reason: &str) -> Value { json!({"presence":"missing","value":null,"reason":reason}) }
@@ -152,7 +153,7 @@ fn decision(target: &Value, digest: Option<&str>) -> Result<Value> {
             }
             Some("non_positive_stake") => {
                 ensure!(
-                    signed(&w["total_stake"])? <= 0
+                    stake(&w["total_stake"])?.sign() != Sign::Plus
                         && w["agreeing_stake"].is_null()
                         && w["clique_weight"].is_null(),
                     "The nonpositive stake witness differs."
@@ -160,30 +161,30 @@ fn decision(target: &Value, digest: Option<&str>) -> Result<Value> {
                 false
             }
             Some("no_strict_majority") => {
-                let total = signed(&w["total_stake"])?;
-                let agreeing = signed(&w["agreeing_stake"])?;
+                let total = stake(&w["total_stake"])?;
+                let agreeing = stake(&w["agreeing_stake"])?;
                 ensure!(
-                    total > 0
-                        && agreeing >= 0
-                        && agreeing * 2 <= total
+                    total.sign() == Sign::Plus
+                        && agreeing.sign() != Sign::Minus
+                        && &agreeing * 2u8 <= total
                         && w["clique_weight"].is_null(),
                     "The majority witness differs."
                 );
                 false
             }
             None if w["early_return"].is_null() => {
-                let total = signed(&w["total_stake"])?;
-                let agreeing = signed(&w["agreeing_stake"])?;
-                let clique = signed(&w["clique_weight"])?;
+                let total = stake(&w["total_stake"])?;
+                let agreeing = stake(&w["agreeing_stake"])?;
+                let clique = stake(&w["clique_weight"])?;
                 ensure!(
-                    total > 0
+                    total.sign() == Sign::Plus
                         && agreeing <= total
-                        && agreeing * 2 > total
-                        && clique >= 0
+                        && &agreeing * 2u8 > total
+                        && clique.sign() != Sign::Minus
                         && clique <= agreeing,
                     "The stake witness is outside its domain."
                 );
-                let lhs = 2 * clique * d;
+                let lhs = clique * 2u8 * d;
                 let rhs = total * (d + n);
                 if comparator == "gt" {
                     lhs > rhs
@@ -264,7 +265,10 @@ fn target(value: &Value, snapshot: &str, strict: bool) -> Result<Value> {
             );
             manifest::hex(&payload["equivocation_digest"], 64)?;
             for field in ["equivocating_weight", "total_weight"] {
-                manifest::decimal(&payload[field])?;
+                ensure!(
+                    stake(&payload[field])?.sign() != Sign::Minus,
+                    "The display weight is negative."
+                );
             }
             for field in ["matched_records", "distinct_equivocators"] {
                 number(&payload[field])?;

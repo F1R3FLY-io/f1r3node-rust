@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 RUNNER=$ROOT/scripts/run-integration-preflight.sh
+REAL_DATE=$(command -v date)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p \
@@ -68,7 +69,7 @@ case "${FAKE_MODE:-pass}:$suite" in
 	short:standalone) body= ;;
 	fail:custom) body='<testcase name="custom"><failure/></testcase>'; status=1 ;;
 	no-report:custom) exit 0 ;;
-	timeout:shared) sleep 5 ;;
+	timeout:shared) printf '101\n' >"${FAKE_CLOCK_FILE:?}"; sleep 5 ;;
 	pass:* | skip:* | short:* | fail:* | no-report:* | timeout:*) ;;
 	*) exit 2 ;;
 esac
@@ -76,6 +77,30 @@ printf '<testsuites><testsuite>%s</testsuite></testsuites>\n' "$body" >"$xml"
 exit "$status"
 EOF
 chmod +x "$TMP/bin/poetry"
+
+cat >"$TMP/bin/date" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${FAKE_MODE:-}:$*" in
+	timeout:+%s)
+		if [ -f "${FAKE_CLOCK_FILE:?}" ]; then
+			cat "$FAKE_CLOCK_FILE"
+		else
+			printf '100\n'
+		fi
+		;;
+	timeout-before-first-suite:+%s)
+		if [ -f "${FAKE_CLOCK_FILE:?}" ]; then
+			printf '101\n'
+		else
+			printf '100\n' >"$FAKE_CLOCK_FILE"
+			printf '100\n'
+		fi
+		;;
+	*) exec "${FAKE_REAL_DATE:?}" "$@" ;;
+esac
+EOF
+chmod +x "$TMP/bin/date"
 
 run_preflight() {
 	PATH="$TMP/bin:$PATH" \
@@ -86,6 +111,8 @@ run_preflight() {
 	PREFLIGHT_TIMEOUT_SECONDS="${4:-30}" \
 	FAKE_MODE="${3:-pass}" \
 	FAKE_CALLS="$2/calls" \
+	FAKE_CLOCK_FILE="$2/clock" \
+	FAKE_REAL_DATE="$REAL_DATE" \
 		"$RUNNER"
 }
 
@@ -135,6 +162,14 @@ fi
 test "$(cat "$TMP/timeout/result")" = failed
 test "$(cat "$TMP/timeout/calls")" = shared
 grep -Fq 'suite_statuses=shared:124 custom:124 standalone:124' "$TMP/timeout/report.txt"
+
+if run_preflight "$TMP/profile" "$TMP/timeout-before-first-suite" timeout-before-first-suite 1; then
+	printf 'preflight accepted an exhausted timeout before the first suite\n' >&2
+	exit 1
+fi
+test "$(cat "$TMP/timeout-before-first-suite/result")" = failed
+test ! -e "$TMP/timeout-before-first-suite/calls"
+grep -Fq 'suite_statuses=shared:124 custom:124 standalone:124' "$TMP/timeout-before-first-suite/report.txt"
 
 if run_preflight "$TMP/profile" "$TMP/collection-fail" collection-fail; then
 	printf 'preflight accepted a collection failure\n' >&2

@@ -3,7 +3,7 @@
 use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
 use block_storage::rust::pending_blocks::PendingBlockLimits;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::blocks::block_processor::CheckedBlock;
+use casper::rust::blocks::block_processor::{CheckedBlock, OfInterestVerdict};
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
 use casper::rust::engine::block_retriever::AdmitHashReason;
@@ -433,10 +433,10 @@ async fn multi_parent_casper_should_reject_a_parentless_non_genesis_block_that_b
     block.seq_num = 0;
     block.body.state.bonds.push(Bond {
         validator: forger.public_key.bytes.clone(),
-        stake: 1_000,
+        stake: 1_000.into(),
     });
     let forged = forger.sign_block(&block);
-    assert!(proto_util::weight_map(&forged)[&forged.sender] > 0);
+    assert!(proto_util::weight_map(&forged)[&forged.sender] > 0.into());
 
     let status = node.process_block(forged.clone()).await.unwrap();
 
@@ -677,14 +677,32 @@ async fn multi_parent_casper_should_request_an_evicted_parent_that_a_child_waits
     }
     let evicted = &chain[1];
     assert!(!nodes[1].block_store.is_pending(&evicted.block_hash));
-    assert!(!nodes[1].casper.buffer_contains(&evicted.block_hash));
+    assert!(nodes[1].casper.buffer_contains(&evicted.block_hash));
+    assert!(nodes[1]
+        .casper
+        .buffer_waits_on_dependency(&chain[2].block_hash));
     assert!(nodes[1]
         .requested_blocks
         .lock()
         .unwrap()
         .contains_key(&evicted.block_hash));
 
+    let checked = CheckedBlock::check(evicted.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap();
+    assert_eq!(
+        nodes[1]
+            .block_processor
+            .check_if_of_interest(nodes[1].casper.clone(), &checked)
+            .unwrap(),
+        OfInterestVerdict::Fresh
+    );
+    let status = nodes[1].process_block(evicted.clone()).await.unwrap();
+    assert_eq!(status, Either::Left(BlockError::MissingBlocks));
+
     for block in [&chain[0], evicted] {
+        let status = nodes[1].process_block(block.clone()).await.unwrap();
+        assert_eq!(status, Either::Right(Valid));
+    }
+    for block in &chain[2..] {
         let status = nodes[1].process_block(block.clone()).await.unwrap();
         assert_eq!(status, Either::Right(Valid));
     }
@@ -827,7 +845,53 @@ async fn multi_parent_casper_should_release_a_block_evicted_before_it_entered_th
 }
 
 #[tokio::test]
-async fn multi_parent_casper_should_keep_a_refused_dependency_requested() {
+async fn multi_parent_casper_should_not_leave_a_ready_block_without_its_body() {
+    let ctx = TestContext::new().await;
+    let (nodes, chain) = pending_chain(&ctx, 1).await;
+    let block = &chain[0];
+    nodes[1]
+        .block_retriever
+        .admit_hash(
+            block.block_hash.clone(),
+            None,
+            AdmitHashReason::MissingDependencyRequested,
+        )
+        .await
+        .unwrap();
+    assert!(nodes[1]
+        .block_retriever
+        .get_request_state_for_test(&block.block_hash)
+        .await
+        .unwrap()
+        .is_some());
+    nodes[1].block_store.put_pending(block, false).unwrap();
+    nodes[1].block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 0,
+        max_bytes: usize::MAX,
+        max_per_sender: 2_048,
+    });
+
+    let ready = nodes[1]
+        .block_processor
+        .check_dependencies_with_effects(
+            nodes[1].casper.clone(),
+            &CheckedBlock::check(block.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(!ready);
+    assert!(!nodes[1].casper.buffer_contains(&block.block_hash));
+    assert!(nodes[1]
+        .block_retriever
+        .get_request_state_for_test(&block.block_hash)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_recover_when_a_requested_child_fills_the_sender_limit() {
     let ctx = TestContext::new().await;
     let (mut nodes, chain) = pending_chain(&ctx, 3).await;
     nodes[1].block_store.set_pending_limits(PendingBlockLimits {
@@ -849,10 +913,44 @@ async fn multi_parent_casper_should_keep_a_refused_dependency_requested() {
     let status = nodes[1].process_block(chain[1].clone()).await.unwrap();
 
     assert_eq!(status, Either::Left(BlockError::MissingBlocks));
-    assert!(!nodes[1].block_store.is_pending(&chain[1].block_hash));
+    assert!(nodes[1].block_store.is_pending(&chain[1].block_hash));
+    assert!(!nodes[1].block_store.is_pending(&chain[2].block_hash));
     assert!(nodes[1].casper.buffer_contains(&chain[2].block_hash));
-    let requested = nodes[1].requested_blocks.lock().unwrap();
-    assert!(!requested.get(&chain[1].block_hash).unwrap().received);
+
+    assert_eq!(
+        nodes[1].process_block(chain[0].clone()).await.unwrap(),
+        Either::Right(Valid)
+    );
+    let ready = nodes[1].casper.get_dependency_free_from_buffer().unwrap();
+    assert!(ready
+        .iter()
+        .any(|block| block.block_hash == chain[1].block_hash));
+    assert_eq!(
+        nodes[1].process_block(chain[1].clone()).await.unwrap(),
+        Either::Right(Valid)
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if nodes[1]
+                .requested_blocks
+                .lock()
+                .unwrap()
+                .get(&chain[2].block_hash)
+                .is_some_and(|request| !request.received)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        nodes[1].process_block(chain[2].clone()).await.unwrap(),
+        Either::Right(Valid)
+    );
+    assert!(nodes[1].casper.dag_contains(&chain[2].block_hash));
 }
 
 #[tokio::test]
@@ -913,7 +1011,7 @@ async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
     let underpriced = construct_deploy::source_deploy_now_full(
         "Nil".to_string(),
         None,
-        Some(0),
+        Some((0).into()),
         None,
         None,
         Some(ctx.shard_id.clone()),
@@ -1106,7 +1204,12 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
     // blocks over explicitly via the transport layer, exactly as the
     // slash-an-invalid-block-pointer test does.
     for blk in [&signed_block1, &signed_block1_prime] {
-        let pkt = protocol_helper::packet_with_content(&nodes[0].local, "test", blk.to_proto());
+        let pkt = protocol_helper::packet_with_content(
+            &nodes[0].local,
+            "test",
+            Bytes::new(),
+            blk.to_proto(),
+        );
         nodes[0]
             .tle
             .send(&nodes[1].local, &pkt)
@@ -1211,6 +1314,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         let pkt = protocol_helper::packet_with_content(
             &nodes[0].local,
             "test",
+            Bytes::new(),
             signed_block1_prime.to_proto(),
         );
         nodes[0]
@@ -1275,6 +1379,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         let pkt = protocol_helper::packet_with_content(
             &nodes[2].local,
             "test",
+            Bytes::new(),
             signed_block1_prime.to_proto(),
         );
         nodes[2]
@@ -1318,8 +1423,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         .unwrap();
 
     let weight_map = proto_util::weight_map(&ctx.genesis.genesis_block);
-    let weight_map_u64: std::collections::HashMap<Validator, u64> =
-        weight_map.into_iter().map(|(k, v)| (k, v as u64)).collect();
+    let weight_map_u64 = weight_map;
 
     let normalized_fault = nodes[1]
         .casper
@@ -1398,6 +1502,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
     let signed_invalid_block_packet_message = protocol_helper::packet_with_content(
         &nodes[0].local,
         "test", // network_id
+        Bytes::new(),
         signed_invalid_block.to_proto(),
     );
 
@@ -1475,11 +1580,11 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
 
     let bonds = {
         let mut bonds_map = std::collections::HashMap::new();
-        bonds_map.insert(validator_pks[0].clone(), 3i64);
-        bonds_map.insert(validator_pks[1].clone(), 1i64);
-        bonds_map.insert(validator_pks[2].clone(), 5i64);
-        bonds_map.insert(validator_pks[3].clone(), 2i64);
-        bonds_map.insert(validator_pks[4].clone(), 4i64);
+        bonds_map.insert(validator_pks[0].clone(), 3u64.into());
+        bonds_map.insert(validator_pks[1].clone(), 1u64.into());
+        bonds_map.insert(validator_pks[2].clone(), 5u64.into());
+        bonds_map.insert(validator_pks[3].clone(), 2u64.into());
+        bonds_map.insert(validator_pks[4].clone(), 4u64.into());
         bonds_map
     };
 
@@ -1615,9 +1720,13 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
 
     // Slashing should reduce the offender to the configured bond floor (currently 1 in tests).
     // Older behavior allowed 0, so keep this tolerant to either floor.
-    let min_stake = bonds.iter().map(|b| b.stake).min().unwrap_or(0);
+    let min_stake = bonds
+        .iter()
+        .map(|b| b.stake.clone())
+        .min()
+        .unwrap_or(0.into());
     assert!(
-        min_stake <= 1,
+        min_stake <= 1.into(),
         "Slashed validator should be reduced to bond floor (<=1), got {}",
         min_stake
     );
@@ -1684,11 +1793,11 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
     let slashed_validator_stake = bonds_after_second_slash
         .iter()
         .find(|b| b.validator == signed_block.sender)
-        .map(|b| b.stake)
-        .unwrap_or(0);
+        .map(|b| b.stake.clone())
+        .unwrap_or(0.into());
 
     assert!(
-        slashed_validator_stake <= 1,
+        slashed_validator_stake <= 1.into(),
         "Slashed validator should stay at bond floor (<=1) after second slashing attempt, got {}",
         slashed_validator_stake
     );
@@ -1696,7 +1805,7 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
     // Verify all stakes are non-negative
     for bond in &bonds_after_second_slash {
         assert!(
-            bond.stake >= 0,
+            bond.stake >= 0.into(),
             "All validator stakes should be non-negative, found: {}",
             bond.stake
         );

@@ -26,6 +26,22 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+### TASK-031-1: Complete unsigned 256-bit token amount support
+
+```yaml
+id: TASK-031-1
+epic_id: EPIC-031
+status: in_progress
+branch: feature/asi-u256-amounts
+pull_request: 881
+user_story: US-015
+acceptance:
+  - "Migrate all remaining monetary paths and raise the maximum bond."
+  - "Verify boundaries, exact arithmetic, API reporting, persistence, and peer replay."
+  - "Pass the amd64 and arm64 Integration gates with clients that send the new encoding."
+```
+
+
 - **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
@@ -3502,13 +3518,16 @@ tasks:
 
   - id: TASK-012-3
     title: "Reject stale-chain peers after a network-ID relaunch"
-    status: pending
+    status: in_progress
     issues: [13]
     base_branch: dev
     branch: fix/genesis-bound-peer-handshake
     proposed_pr_title: "fix(network): bind peer sessions to genesis identity"
+    pull_request: 709
     claimed_by: null
     blocked_by: []
+    decision: "2026-10-06: mixed-version operation is not supported. There is no production network, so all nodes of a network upgrade together and there is no compatibility setting. The third acceptance item is met by the rollout section in docs/comm/README.md, not by a mixed-version test."
+    design: "docs/comm/README.md#chain-identity"
     acceptance:
       - "The peer handshake carries an immutable genesis/chain identity in addition to networkId"
       - "Peers from an old chain with the same networkId are rejected before dependency fetching or block processing"
@@ -4604,12 +4623,17 @@ execution_contract:
 tasks:
   - id: TASK-016-1
     title: "Authenticated single-value-cell classification"
-    status: pending
+    status: in_progress
     priority: p1
     issues: [104]
     discovered_in: docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+    branch: fix/single-value-cell-classification
+    pull_request: 931
     claimed_by: null
     blocked_by: []
+    decision:
+      - "2026-11-08: the recorded mergeable tag (number_channels_data) is the classifier. No separate classifier function is added, and rholang_merging_logic.rs gets no cbc=mandatory because the guard it would cover is removed."
+      - "2026-11-08: a second produce onto a tagged number cell is folded by its merge type, not rejected. An untagged write to a folded channel is rejected (split_untagged_writes_to_folded_channels)."
     notes:
       - "Two classifiers exist today: binary_data_is_single_number in dag_merger.rs and check_single_value_cell_not_overfilled in rholang_merging_logic.rs. Both classify by datum shape, which is guessable from content."
       - "The Rocq section Overfill in formal/rocq/merge_algebra/theories/ConflictSoundness.v proves guard detection at merge time only. Its header must state that boundary. That edit belongs to PR #311."

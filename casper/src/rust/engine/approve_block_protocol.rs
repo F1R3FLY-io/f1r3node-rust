@@ -16,6 +16,7 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::{bytes, Message};
 use shared::rust::shared::f1r3fly_events::{F1r3flyEvent, F1r3flyEvents};
+use shared::rust::token_amount::TokenAmount;
 use tokio::time::sleep;
 
 use crate::rust::errors::CasperError;
@@ -89,15 +90,15 @@ impl ApproveBlockProtocolFactory {
         bonds_path: String,
         autogen_shard_size: u32,
         vaults_path: String,
-        minimum_bond: i64,
-        maximum_bond: i64,
+        minimum_bond: TokenAmount,
+        maximum_bond: TokenAmount,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
         max_parent_depth: i32,
         deploy_lifespan: i64,
-        min_phlo_price: i64,
+        min_phlo_price: TokenAmount,
         shard_id: String,
         deploy_timestamp: Option<i64>,
         required_sigs: i32,
@@ -167,7 +168,7 @@ impl ApproveBlockProtocolFactory {
                 pos_multi_sig_quorum,
             },
             vaults,
-            supply: i64::MAX,
+            supply: (i64::MAX as u64).into(),
             version: 1,
             native_token_name,
             native_token_symbol,
@@ -335,29 +336,10 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
         Ok(())
     }
 
-    async fn complete_if(
-        &self,
-        time: u64,
-        signatures: &HashSet<SignatureWrapper>,
-    ) -> Result<(), CasperError> {
-        if (time >= self.start + self.duration.as_millis() as u64
+    fn approval_conditions_met(&self, time: u64, signatures: &HashSet<SignatureWrapper>) -> bool {
+        (time >= self.start + self.duration.as_millis() as u64
             && signatures.len() >= self.required_sigs as usize)
             || self.required_sigs == 0
-        {
-            Box::pin(self.complete_genesis_ceremony(signatures.clone())).await
-        } else {
-            tracing::info!(
-                "Failed to meet approval conditions. \
-                Signatures: {} of {} required. \
-                Duration {} ms of {} ms minimum. \
-                Continue broadcasting UnapprovedBlock...",
-                signatures.len(),
-                self.required_sigs,
-                time - self.start,
-                self.duration.as_millis()
-            );
-            Box::pin(self.internal_run()).await
-        }
     }
 
     async fn complete_genesis_ceremony(
@@ -384,18 +366,33 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
     }
 
     async fn internal_run(&self) -> Result<(), CasperError> {
-        self.send_unapproved_block().await?;
-        sleep(self.interval).await;
+        loop {
+            self.send_unapproved_block().await?;
+            sleep(self.interval).await;
 
-        let current_time = ApproveBlockProtocolFactory::current_millis();
-        let signatures = {
-            let sigs_guard = self.sigs.lock().map_err(|_| {
-                CasperError::RuntimeError("Failed to acquire signatures lock".to_string())
-            })?;
-            sigs_guard.clone()
-        };
+            let current_time = ApproveBlockProtocolFactory::current_millis();
+            let signatures = {
+                let sigs_guard = self.sigs.lock().map_err(|_| {
+                    CasperError::RuntimeError("Failed to acquire signatures lock".to_string())
+                })?;
+                sigs_guard.clone()
+            };
 
-        self.complete_if(current_time, &signatures).await
+            if self.approval_conditions_met(current_time, &signatures) {
+                return self.complete_genesis_ceremony(signatures).await;
+            }
+
+            tracing::info!(
+                "Failed to meet approval conditions. \
+                Signatures: {} of {} required. \
+                Duration {} ms of {} ms minimum. \
+                Continue broadcasting UnapprovedBlock...",
+                signatures.len(),
+                self.required_sigs,
+                current_time - self.start,
+                self.duration.as_millis()
+            );
+        }
     }
 
     pub async fn add_approval(&self, approval: BlockApproval) -> Result<(), CasperError> {

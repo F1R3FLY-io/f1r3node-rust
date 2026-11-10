@@ -73,6 +73,9 @@ impl HasLocallyFree for Expr {
             Some(EPathmapBody(e)) => e.connective_used,
             Some(EZipperBody(e)) => e.connective_used,
             Some(EMethodBody(e)) => e.connective_used,
+            Some(ELambdaBody(e)) => e.connective_used,
+            Some(EAppBody(e)) => e.connective_used,
+            Some(EPiBody(e)) => e.connective_used,
 
             Some(EVarBody(EVar { v })) => required(v, "variable").connective_used(),
             Some(ENotBody(ENot { p }) | ENegBody(ENeg { p })) => {
@@ -122,6 +125,9 @@ impl HasLocallyFree for Expr {
             Some(EPathmapBody(e)) => e.locally_free.clone(),
             Some(EZipperBody(e)) => e.locally_free.clone(),
             Some(EMethodBody(e)) => e.locally_free.clone(),
+            Some(ELambdaBody(e)) => e.locally_free.clone(),
+            Some(EAppBody(e)) => e.locally_free.clone(),
+            Some(EPiBody(e)) => e.locally_free.clone(),
 
             Some(EVarBody(EVar { v })) => required(v, "variable").locally_free(depth),
             Some(ENotBody(ENot { p }) | ENegBody(ENeg { p })) => {
@@ -229,8 +235,25 @@ impl HasLocallyFree for Connective {
         match &self.connective_instance {
             None | Some(VarRefBody(_)) => false,
             Some(
-                ConnAndBody(_) | ConnOrBody(_) | ConnNotBody(_) | ConnBool(_) | ConnInt(_)
-                | ConnString(_) | ConnUri(_) | ConnByteArray(_),
+                ConnAndBody(_)
+                | ConnOrBody(_)
+                | ConnNotBody(_)
+                | ConnBool(_)
+                | ConnInt(_)
+                | ConnString(_)
+                | ConnUri(_)
+                | ConnByteArray(_)
+                | ConnType(_)
+                | ConnInt32(_)
+                | ConnUint64(_)
+                | ConnUint32(_)
+                | ConnUint16(_)
+                | ConnUint8(_)
+                | ConnFloat64(_)
+                | ConnFloat32(_)
+                | ConnBigInt(_)
+                | ConnBigRat(_)
+                | ConnFixedPointBody(_),
             ) => true,
         }
     }
@@ -241,6 +264,11 @@ impl HasLocallyFree for Connective {
                 index,
                 depth: var_depth,
             })) if depth == *var_depth => create_bit_vector(&[*index as usize]),
+            Some(ConnFixedPointBody(body)) => body
+                .scale
+                .as_ref()
+                .map(|p| p.locally_free(depth))
+                .unwrap_or_default(),
             _ => Vec::new(),
         }
     }

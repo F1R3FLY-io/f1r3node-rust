@@ -50,6 +50,32 @@ pub(crate) fn resolve_pipeline_width() -> usize {
 
 struct ActiveBlockProcessingGuard;
 
+async fn verify_buffer_pendant<T: TransportLayer + Send + Sync + 'static>(
+    processor: &BlockProcessor<T>,
+    pendant: &BlockMessage,
+) -> Result<Option<CheckedBlock>, CasperError> {
+    let block = pendant.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        CheckedBlock::check(block, BLOCK_PROCESSOR_METRICS_SOURCE)
+    })
+    .await
+    .map_err(|error| {
+        CasperError::RuntimeError(format!("Pendant verification task failed: {error}"))
+    })?;
+    match result {
+        Ok(verified) => Ok(Some(verified)),
+        Err(error) => {
+            tracing::warn!(
+                hash = %PrettyPrinter::build_string_bytes(&pendant.block_hash),
+                ?error,
+                "Removing dependency-free pendant with invalid hash or signature"
+            );
+            processor.drop_refused(pendant).await?;
+            Ok(None)
+        }
+    }
+}
+
 impl ActiveBlockProcessingGuard {
     fn new() -> Self {
         metrics::gauge!(
@@ -349,18 +375,9 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     let checked = match queued {
         QueuedBlock::Network(checked) => checked,
         QueuedBlock::Stored(block) => {
-            match CheckedBlock::check(block, BLOCK_PROCESSOR_METRICS_SOURCE) {
-                Ok(checked) => checked,
-                Err((block, _)) => {
-                    block_processor.drop_refused(&block).await.map_err(|err| {
-                        CasperError::RuntimeError(format!(
-                            "Refused block {} cleanup failed: {}",
-                            PrettyPrinter::build_string_bytes(&block.block_hash),
-                            err
-                        ))
-                    })?;
-                    return Ok(BlockProcessOutcome::Malformed);
-                }
+            match verify_buffer_pendant(&block_processor, &block).await? {
+                Some(checked) => checked,
+                None => return Ok(BlockProcessOutcome::Malformed),
             }
         }
     };
@@ -696,7 +713,7 @@ mod tests {
 
         fn normalized_initial_fault(
             &self,
-            _weights: HashMap<Validator, u64>,
+            _weights: HashMap<Validator, num_bigint::BigInt>,
         ) -> Result<f32, CasperError> {
             panic!("Unexpected fault calculation")
         }
@@ -713,6 +730,8 @@ mod tests {
         }
 
         fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
+
+        fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
 
         fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
 
@@ -909,9 +928,7 @@ mod tests {
         assert!(fixture
             .casper
             .runtime_manager
-            .active_validators_cache_order
-            .lock()
-            .unwrap()
+            .active_validators_cache
             .is_empty());
     }
 
@@ -1041,6 +1058,212 @@ mod tests {
     fn pipeline_width_uses_the_cpu_capacity() {
         for (cores, width) in [(6, 4), (8, 6), (16, 14), (32, 30)] {
             assert_eq!(derive_pipeline_width(cores), width);
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_pendants_are_removed_from_the_buffer_and_retriever() {
+        use models::rust::block_hash::BlockHashSerde;
+
+        let identity =
+            ValidatorIdentity::new(&crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]));
+        for corrupt_hash in [true, false] {
+            let mut stores = InMemoryStoreManager::new();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut stores)
+                .await
+                .unwrap();
+            let buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut stores)
+                .await
+                .unwrap();
+            let dag = BlockDagKeyValueStorage::new(&mut stores).await.unwrap();
+            let local = PeerNode::new(
+                NodeIdentifier {
+                    key: vec![1; 20].into(),
+                },
+                "localhost".to_string(),
+                40400,
+                40404,
+            );
+            let conf = create_rp_conf_ask(local, None, None);
+            let transport = Arc::new(TransportLayerStub::new());
+            let connections = ConnectionsCell::new();
+            let retriever = BlockRetriever::new(
+                Arc::new(Mutex::new(HashMap::new())),
+                transport.clone(),
+                connections.clone(),
+                conf.clone(),
+            );
+            let mut block = identity.sign_block(&get_random_block_default());
+            if corrupt_hash {
+                block.extra_bytes = Bytes::from_static(b"changed after signing");
+            } else {
+                block.sig = Bytes::new();
+            }
+            let hash = block.block_hash.clone();
+            buffer.put_pendant(BlockHashSerde(hash.clone())).unwrap();
+            retriever.ack_receive(hash.clone()).await.unwrap();
+            let processor = BlockProcessor::new(BlockProcessorDependencies::new(
+                block_store,
+                buffer.clone(),
+                dag,
+                retriever.clone(),
+                transport,
+                connections,
+                conf,
+                None,
+            ));
+
+            assert!(super::verify_buffer_pendant(&processor, &block)
+                .await
+                .unwrap()
+                .is_none());
+            assert!(!buffer.contains(&BlockHashSerde(hash.clone())));
+            assert!(!buffer.is_pendant(&BlockHashSerde(hash.clone())));
+            assert!(!retriever.is_received(hash).await.unwrap());
+            assert_eq!(retriever.get_requested_blocks_count().await.unwrap(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_parent_copy_keeps_its_children_waiting_for_the_correct_original() {
+        use std::collections::HashSet;
+
+        use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+        use models::rust::block_hash::BlockHashSerde;
+
+        let identity =
+            ValidatorIdentity::new(&crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]));
+        for corrupt_hash in [true, false] {
+            for replaced_before_cleanup in [false, true] {
+                let mut stores = InMemoryStoreManager::new();
+                let block_store = KeyValueBlockStore::create_from_kvm(&mut stores)
+                    .await
+                    .unwrap();
+                let buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut stores)
+                    .await
+                    .unwrap();
+                let dag = BlockDagKeyValueStorage::new(&mut stores).await.unwrap();
+                let local = PeerNode::new(
+                    NodeIdentifier {
+                        key: vec![1; 20].into(),
+                    },
+                    "localhost".to_string(),
+                    40400,
+                    40404,
+                );
+                let conf = create_rp_conf_ask(local, None, None);
+                let transport = Arc::new(TransportLayerStub::new());
+                let connections = ConnectionsCell::new();
+                let retriever = BlockRetriever::new(
+                    Arc::new(Mutex::new(HashMap::new())),
+                    transport.clone(),
+                    connections.clone(),
+                    conf.clone(),
+                );
+                let processor = BlockProcessor::new(BlockProcessorDependencies::new(
+                    block_store.clone(),
+                    buffer.clone(),
+                    dag.clone(),
+                    retriever.clone(),
+                    transport,
+                    connections,
+                    conf,
+                    None,
+                ));
+                let mut unsigned = get_random_block_default();
+                unsigned.header.parents_hash_list.clear();
+                unsigned.justifications.clear();
+                unsigned.body.system_deploys.clear();
+                unsigned.body.state.bonds.clear();
+                unsigned.body.state.block_number = 1;
+                let parent = identity.sign_block(&unsigned);
+                unsigned.header.parents_hash_list = vec![parent.block_hash.clone()];
+                unsigned.body.state.block_number = 2;
+                unsigned.seq_num += 1;
+                let child = identity.sign_block(&unsigned);
+                let parent_hash = BlockHashSerde(parent.block_hash.clone());
+                let child_hash = BlockHashSerde(child.block_hash.clone());
+                let mut bad_copy = parent.clone();
+                if corrupt_hash {
+                    bad_copy.extra_bytes = Bytes::from_static(b"changed after signing");
+                } else {
+                    bad_copy.sig = Bytes::new();
+                }
+                block_store.put_block_message(&bad_copy).unwrap();
+                block_store.put_block_message(&child).unwrap();
+                buffer.put_pendant(parent_hash.clone()).unwrap();
+                buffer
+                    .add_relation(parent_hash.clone(), child_hash.clone())
+                    .unwrap();
+                retriever
+                    .ack_receive(parent.block_hash.clone())
+                    .await
+                    .unwrap();
+
+                if replaced_before_cleanup {
+                    block_store.put_block_message(&parent).unwrap();
+                }
+
+                assert!(super::verify_buffer_pendant(&processor, &bad_copy)
+                    .await
+                    .unwrap()
+                    .is_none());
+                assert_eq!(
+                    buffer.get_parents(&child_hash),
+                    Some(HashSet::from([parent_hash.clone()]))
+                );
+                assert!(!buffer.is_pendant(&child_hash));
+                assert!(buffer.requested_as_dependency(&parent_hash));
+                if replaced_before_cleanup {
+                    assert!(buffer.is_pendant(&parent_hash));
+                    assert_eq!(
+                        block_store.get(&parent.block_hash).unwrap(),
+                        Some(parent.clone())
+                    );
+                    assert!(retriever
+                        .is_received(parent.block_hash.clone())
+                        .await
+                        .unwrap());
+                } else {
+                    assert!(!buffer.contains(&parent_hash));
+                    assert!(block_store.get(&parent.block_hash).unwrap().is_none());
+                    assert!(retriever.awaits_block(&parent.block_hash));
+                    assert!(!retriever
+                        .is_received(parent.block_hash.clone())
+                        .await
+                        .unwrap());
+                }
+                assert!(!dag
+                    .get_representation()
+                    .unwrap()
+                    .contains(&parent.block_hash));
+
+                let restored_buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut stores)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    restored_buffer.get_parents(&child_hash),
+                    Some(HashSet::from([parent_hash.clone()]))
+                );
+                assert!(!restored_buffer.is_pendant(&child_hash));
+
+                let verified = super::verify_buffer_pendant(&processor, &parent)
+                    .await
+                    .unwrap()
+                    .expect("correct original accepted");
+                block_store.put_block_message(&verified).unwrap();
+                dag.insert(&verified, InsertMode::Normal).unwrap();
+                buffer.remove(parent_hash).unwrap();
+                assert!(buffer.is_pendant(&child_hash));
+                assert!(dag
+                    .get_representation()
+                    .unwrap()
+                    .contains(&parent.block_hash));
+                assert!(super::verify_buffer_pendant(&processor, &child)
+                    .await
+                    .unwrap()
+                    .is_some());
+            }
         }
     }
 

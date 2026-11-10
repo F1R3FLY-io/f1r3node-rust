@@ -84,10 +84,10 @@ for name in current unrelated-lock changed-closure unrelated-workspace-dependenc
         changed-build) printf '\nchanged toolchain\n' >>"$directory/rust-toolchain.toml" ;;
         changed-report) printf '{}\n' >"$directory/report.json" ;;
         missing-signature)
-            signature="$(find "$directory/docs/casper/cbc-evidence" -name '*.acceptance.json' -print -quit)"
+            signature="$(find "$directory/docs/casper/cbc-evidence" -name '*.acceptance.json' -not -path '*/history/*' -print -quit)"
             rm -f "$signature" ;;
         invalid-signature)
-            signature="$(find "$directory/docs/casper/cbc-evidence" -name '*.acceptance.json' -print -quit)"
+            signature="$(find "$directory/docs/casper/cbc-evidence" -name '*.acceptance.json' -not -path '*/history/*' -print -quit)"
             jq '.approval |= gsub("isolated-test-fixture";"changed-review")' "$signature" >"$TMP/changed.json"
             mv "$TMP/changed.json" "$signature" ;;
         missing-policy) printf '/run-merge-recovery-soak.sh cbc-acceptance=unspecified\n' >>"$directory/scripts/.gitattributes" ;;
