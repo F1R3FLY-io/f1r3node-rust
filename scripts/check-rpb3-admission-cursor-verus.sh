@@ -86,6 +86,7 @@ source_files=(
   "$model_dir/rpb3_integrated_dispatcher.rs"
   "$model_dir/rpb3_epm_obligation_return_live.rs"
   "$model_dir/rpb3_epm_parser_escape_invariant.rs"
+  "$model_dir/rpb3_epm_obligation_return_source.rs"
   "$model_dir/rpb3_epathmap_terminal_nested_return_composition.rs"
   "$model_dir/rpb3_canonical_path_eof_owner_obligation_refinement.rs"
   "$model_dir/rpb3_integrated_admission.rs"
@@ -958,6 +959,13 @@ proofs_rpb3_epm_obligation_return_live=(
   epm_end_then_nested_return_is_impossible
   epm_nested_return_excludes_finish_accept
 )
+proofs_rpb3_epm_obligation_return_source=(
+  epm_gate_image_matches
+  epm_raw_par_root_resolution
+  epm_resolution_dead_settles
+  epm_parent_resolved_pop_wf
+  epm_raw_par_return_enabled
+)
 proofs_rpb3_epm_parser_escape_invariant=(
   parser_escape_wf_initial
   parser_escape_bubble_keeps_path
@@ -1811,6 +1819,7 @@ gated_modules=(
   rpb3_epm_nested_accept_checked_stats_refinement
   rpb3_epm_nested_source_refinement
   rpb3_epm_obligation_return_live
+  rpb3_epm_obligation_return_source
   rpb3_epm_parser_escape_invariant
   rpb3_epm_push_live_action_refinement
   rpb3_epm_push_source_action_refinement
@@ -3914,6 +3923,39 @@ fi
 if ! rg -q '^verification results:: 7 verified, 0 errors' "$epm_parser_escape_invariant_log"; then
   cat "$epm_parser_escape_invariant_log"
   echo "rpb3-admission-cursor: EPathMap parser escape invariant module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_epm_obligation_return_source[@]}"; do
+  proof_log="$evidence_dir/epm-obligation-return-source-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_epm_obligation_return_source --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap obligation return source $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap obligation return source $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+epm_obligation_return_source_log="$evidence_dir/epm-obligation-return-source-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_epm_obligation_return_source \
+  "$integrated_source" \
+  >"$epm_obligation_return_source_log" 2>&1; then
+  cat "$epm_obligation_return_source_log"
+  echo "rpb3-admission-cursor: EPathMap obligation return source module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 5 verified, 0 errors' "$epm_obligation_return_source_log"; then
+  cat "$epm_obligation_return_source_log"
+  echo "rpb3-admission-cursor: EPathMap obligation return source module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do

@@ -1,0 +1,586 @@
+//! EPathMap raw-Par obligation returns are enabled wherever production's
+//! accept succeeds.
+//!
+//! `live_runtime_epm_raw_par_return_step` adds production's fatal pre-checks
+//! to the linked child return as guards. This module shows that the guards are
+//! not stricter than production: from a prestate that satisfies
+//! `epm_raw_par_return_source_ready`, the step exists, and its only successor
+//! is the state that `epm_obligation_return_live_after` builds around the
+//! parent frame resolved by `epm_obligation_resolved_frame`.
+//!
+//! Production accepts the return in the obligation arm of the EPathMap frame's
+//! `accept`. `PathObligationWait::resolution` turns the child's Par summary
+//! into `RawPar { canonical_path_stable }`, and the path's `resolve_obligation`
+//! runs `private_preflight` and then `resolve_leaf_obligation` on the focused
+//! top. An unstable raw Par bubbles the root segment as unstable; a stable one
+//! kills the path (EscapeOfStablePar) and still returns Ok. Before the call,
+//! `matches_popped` requires the obligation arm of `before_accept`: the
+//! parent's `active_obligation` is the awaited one, awaiting resolution, which
+//! also means that the path is not dead (`dead_error`).
+//!
+//! `epm_raw_par_return_source_ready` has three parts:
+//! - production's own success conditions: the guards of the step, which are
+//!   the checks above, the child cursor's End, and a derived Par return;
+//! - `epm_child_return_ready`: the before-side conjuncts of
+//!   `linked_epm_child_return`, model invariants that tie the child, the
+//!   parent's admission frame and the parent's EPathMap frame together;
+//! - `epm_obligation_parser_ready`: two facts about the parent's parser that
+//!   production does not check. The resolved root's completed segment count
+//!   fits `usize`, and a RawParEscape obligation is the only frame of the root
+//!   path, with no Region owner. Reachable parser states must supply them.
+//!
+//! Production's `canonical_path_resolutions` counter is not part of the live
+//! product, so its overflow check is not modeled here.
+
+use vstd::prelude::*;
+
+use crate as integrated;
+use crate::{
+    rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
+    rpb3_epm_nested_source_refinement as nested,
+    rpb3_epm_obligation_return_live as obligation_return, rpb3_map_frame_refinement as map,
+    rpb3_path_parser_refinement as parser, rpb3_runtime_frame_source_refinement as runtime,
+    rpb3_score_admission_bridge as score_bridge, rpb3_wire_cursor_source_refinement as wire,
+    LiveRuntimeProductState, LiveSourceProductState, ProductScoreState,
+};
+
+verus! {
+
+/// The EPathMap path gate that mirrors a parser root gate. The completed
+/// segment count is narrowed from `u64` to `usize`.
+pub open spec fn epm_gate_image(gate: parser::ParserGate) -> epm::PathGate {
+    epm::PathGate {
+        dead: gate.dead,
+        stack_empty: gate.stack_empty,
+        split_complete: gate.split_complete,
+        completed_segments: gate.completed_segments as usize,
+        first_is_list: gate.first_is_list,
+        stable: gate.stable,
+        escape_allowed: gate.escape_allowed,
+    }
+}
+
+/// The parent EPathMap frame after its obligation `id` is resolved with
+/// `resolution`: the parser is resolved as `resolve_leaf_obligation` does,
+/// the gate is the image of the resolved root gate, and the frame neither
+/// waits nor holds a pending obligation. Everything else is kept.
+pub open spec fn epm_obligation_resolved_frame(
+    parent: epm::EpmFrame,
+    id: u64,
+    resolution: parser::ParserResolution,
+) -> epm::EpmFrame {
+    let resolved = parser::resolve_parser_obligation(parent.path.parser, id, resolution);
+    epm::EpmFrame {
+        path: epm::PathTopology {
+            pending: None,
+            parser: resolved,
+            gate: epm_gate_image(parser::parser_root_gate(resolved)),
+            ..parent.path
+        },
+        wait: None,
+        ..parent
+    }
+}
+
+/// The product after the child returns into its resolved parent. The child's
+/// admission frame, map frame, EPathMap entry and indexed region are popped;
+/// the parent's admission frame becomes `epm_parent_resolved`, one more frame
+/// is completed, and the parent's EPathMap entry becomes `resolved`. The
+/// receipts are carried from a provisional state, as
+/// `epm_push_source_product_after` does.
+pub open spec fn epm_obligation_return_product_after(
+    before: ProductScoreState,
+    resolved: epm::EpmFrame,
+) -> ProductScoreState {
+    let admission_before = before.bridge.admission;
+    let count = admission_before.frames.len();
+    let admission_after = admission::AdmissionState {
+        frames: admission_before.frames.subrange(0, count - 1).update(
+            count - 2, epm::epm_parent_resolved(admission_before.frames[count - 2]),
+        ),
+        completed: (admission_before.completed as int + 1) as usize,
+        ..admission_before
+    };
+    let provisional = ProductScoreState {
+        bridge: score_bridge::ScoreAdmissionBridge {
+            admission: admission_after,
+            transcript: before.bridge.transcript,
+        },
+        map: map::IntegratedAdmissionState {
+            admission: admission_after,
+            map_frames: before.map.map_frames.drop_last(),
+            transcript: before.map.transcript,
+        },
+        epm_frames: before.epm_frames.drop_last().update(count - 2, Some(resolved)),
+        indexed_regions: before.indexed_regions.drop_last(),
+        accepted_epm_sources: before.accepted_epm_sources,
+    };
+    ProductScoreState {
+        accepted_epm_sources: integrated::product_epm_receipts_carried(before, provisional),
+        ..provisional
+    }
+}
+
+/// The live state after the return: the product of
+/// `epm_obligation_return_product_after`, the runtime image after the
+/// admission step, the same arena, and the child's wire reader and cursor
+/// dropped.
+pub open spec fn epm_obligation_return_live_after(
+    before: LiveRuntimeProductState,
+    resolved: epm::EpmFrame,
+) -> LiveRuntimeProductState {
+    let product = epm_obligation_return_product_after(before.source.product, resolved);
+    LiveRuntimeProductState {
+        source: LiveSourceProductState {
+            product: product,
+            runtime: runtime::runtime_after_admission_step(
+                before.source.runtime, product.bridge.admission,
+            ),
+            arena: before.source.arena,
+            wire: before.source.wire.drop_last(),
+        },
+        cursors: before.cursors.drop_last(),
+    }
+}
+
+/// The before-side conjuncts of `linked_epm_child_return` for the return
+/// that `source_derived_epm_return` derives from `prior` and `frames`: the
+/// admission state is well formed and can count one more completed frame;
+/// the parent is an EPathMap frame whose snapshot is its region; the child is
+/// finished, well formed, admissible, and its summary agrees with the arena;
+/// the child's return id links it to the parent's admission wait and to the
+/// parent's obligation wait, whose pending obligation is ready; the child's
+/// summary is a valid resolution of that obligation; and the parent's gate
+/// matches its parser. A nested child also needs its End event.
+pub open spec fn epm_child_return_ready(
+    prior: epm::LinkedEpmState,
+    frames: Seq<Option<epm::EpmFrame>>,
+) -> bool {
+    match nested::source_derived_epm_return(prior, frames) {
+        Some(derived) => {
+            let count = prior.admission.frames.len();
+            let parent = prior.admission.frames[count - 2];
+            let child = prior.admission.frames.last();
+            &&& admission::admission_state_wf(prior.admission)
+            &&& prior.admission.completed < usize::MAX
+            &&& prior.epm.snapshot == prior.indexed_regions[prior.indexed_regions.len() - 2]
+            &&& parent.frame_kind == 3
+            &&& child.cursor == child.region_end
+            &&& child.waiting_id.is_none()
+            &&& child.nested_started == child.nested_resolved
+            &&& admission::admission_frame_wf(child)
+            &&& admission::admission_family_admissible(child)
+            &&& admission::admission_child_summary_agrees(
+                child, derived.admission_summary, prior.admission.arena,
+            )
+            &&& match (
+                derived.summary, derived.admission_summary,
+                derived.nested_before, derived.nested_after,
+            ) {
+                (
+                    epm::ChildSummary::Par { .. },
+                    admission::AdmissionReturnedKind::Par { .. },
+                    None,
+                    None,
+                ) => child.frame_kind == 1,
+                (
+                    epm::ChildSummary::Epm1 { mode, entries_stable },
+                    admission::AdmissionReturnedKind::Other,
+                    Some(child_before),
+                    Some(child_after),
+                ) => {
+                    &&& child.frame_kind == 3
+                    &&& child_before.snapshot == prior.indexed_regions.last()
+                    &&& epm::event_step(
+                        child_before, child_after, epm::EpmEvent::End,
+                        prior.admission.next_obligation_id,
+                        epm::EpmAction::Complete { mode, entries_stable },
+                    )
+                    &&& child_after.cursor.done
+                },
+                _ => false,
+            }
+            &&& match child.return_id {
+                Some(return_id) => {
+                    &&& parent.waiting_id == Some(return_id)
+                    &&& parent.waiting_kind == child.frame_kind
+                    &&& (child.frame_kind != 3 || parent.nested_resolved < u64::MAX)
+                    &&& match prior.epm.wait {
+                        Some(epm::EpmWait::Obligation { id, kind, return_id: expected_id }) => {
+                            &&& expected_id == return_id
+                            &&& epm::valid_child_resolution(kind, derived.summary)
+                            &&& match prior.epm.path.pending {
+                                Some(obligation) => {
+                                    &&& obligation.id == id
+                                    &&& obligation.kind == kind
+                                    &&& epm::obligation_ready(prior.epm.path)
+                                },
+                                None => false,
+                            }
+                            &&& epm::parser_gate_matches(
+                                prior.epm.path.gate, prior.epm.path.parser,
+                            )
+                        },
+                        _ => false,
+                    }
+                },
+                None => false,
+            }
+        },
+        None => false,
+    }
+}
+
+/// Premises on the parent's parser that production does not check. The
+/// resolved root's completed segment count fits `usize`, so the gate image
+/// keeps it. A RawParEscape obligation is the only frame of the root path,
+/// with no Region owner, so an unstable resolution reaches the root.
+pub open spec fn epm_obligation_parser_ready(
+    parent: epm::EpmFrame,
+    kind: epm::PathObligationKind,
+    summary: epm::ChildSummary,
+) -> bool {
+    match parent.wait {
+        Some(epm::EpmWait::Obligation { id, .. }) => {
+            let resolved = parser::resolve_parser_obligation(
+                parent.path.parser, id, epm::parser_resolution(summary),
+            );
+            &&& parser::parser_root_gate(resolved).completed_segments as int <= usize::MAX as int
+            &&& (kind == epm::PathObligationKind::RawParEscape
+                ==> parent.path.parser.owners.len() == 0
+                    && parent.path.parser.focus.stack.len() == 1)
+        },
+        _ => false,
+    }
+}
+
+/// A prestate at which production accepts a raw-Par return: the live state is
+/// well formed with the child's cursor above its parent's, the top frame is
+/// the returning Message child (kind 1) with no EPathMap entry, the parent
+/// passes production's pre-checks for a RawParEscape wait, the child's cursor
+/// reaches End, the derived return is ready, and the parent's parser meets
+/// `epm_obligation_parser_ready`.
+pub open spec fn epm_raw_par_return_source_ready(before: LiveRuntimeProductState) -> bool {
+    let product = before.source.product;
+    &&& integrated::live_runtime_product_wf(before)
+    &&& before.cursors.len() > 1
+    &&& product.bridge.admission.frames.last().frame_kind == 1
+    &&& product.epm_frames.last().is_none()
+    &&& obligation_return::epm_obligation_parent_ready(
+        product, epm::PathObligationKind::RawParEscape,
+    )
+    &&& match before.cursors.last() {
+        Some(cursor) => wire::wire_runtime_next_field(cursor)
+            == Some(wire::WireConcreteTransition::End {
+                state: wire::wire_runtime_derive_cursor(cursor).unwrap(),
+            }),
+        None => false,
+    }
+    &&& match (
+        integrated::product_linked_parent(product),
+        obligation_return::epm_obligation_derived(product),
+    ) {
+        (Some(prior), Some(derived)) => {
+            &&& epm_child_return_ready(prior, product.epm_frames)
+            &&& epm_obligation_parser_ready(
+                prior.epm, epm::PathObligationKind::RawParEscape, derived.summary,
+            )
+        },
+        _ => false,
+    }
+}
+
+/// When the root's completed segment count fits `usize`, the gate image of
+/// the root gate matches the parser.
+pub proof fn epm_gate_image_matches(image: parser::ParserImage)
+    requires
+        parser::parser_root_gate(image).completed_segments as int <= usize::MAX as int,
+    ensures
+        epm::parser_gate_matches(epm_gate_image(parser::parser_root_gate(image)), image),
+{
+    let gate = parser::parser_root_gate(image);
+    assert(gate.completed_segments as usize as int == gate.completed_segments as int);
+}
+
+/// An unstable raw-Par resolution of the awaited obligation when it is the
+/// only frame of a live root path, as `resolve_leaf_obligation` resolves it:
+/// the stack empties, one more segment completes, the root becomes unstable,
+/// and the path stays live without a fault.
+pub proof fn epm_raw_par_root_resolution(image: parser::ParserImage, id: u64)
+    requires
+        image.owners.len() == 0,
+        image.focus.stack.len() == 1,
+        match image.focus.stack.last() {
+            parser::ParserFrame::Obligation {
+                id: active,
+                kind: parser::ParserObligationKind::RawParEscape,
+                status: parser::ParserObligationStatus::AwaitingResolution { .. },
+                ..
+            } => active == id,
+            _ => false,
+        },
+        !parser::parser_root_gate(image).dead,
+    ensures
+        ({
+            let resolved = parser::resolve_parser_obligation(
+                image, id, parser::ParserResolution::RawPar { canonical_path_stable: false },
+            );
+            &&& resolved.owners.len() == 0
+            &&& resolved.focus.stack.len() == 0
+            &&& resolved.focus.completed_segments
+                == (image.focus.completed_segments + 1) as u64
+            &&& !resolved.focus.stable
+            &&& resolved.focus.status == image.focus.status
+            &&& !resolved.fault
+            &&& !parser::parser_root_gate(resolved).dead
+            &&& parser::parser_root_gate(resolved).stack_empty
+            &&& !parser::parser_root_gate(resolved).stable
+        }),
+{
+    let path = image.focus;
+    let popped = parser::pop_parser_top(path);
+    assert(popped.stack.len() == 0);
+    let bubbled = parser::bubble_parser(popped, false);
+    assert(bubbled.stack.len() == 0);
+    assert(bubbled.completed_segments == (path.completed_segments + 1) as u64);
+    assert(!bubbled.stable);
+    assert(bubbled.status == path.status);
+    let candidate = parser::ParserImage { focus: bubbled, ..image };
+    assert(parser::settle_parser_owners(candidate) == candidate);
+    assert(parser::resolve_parser_obligation(
+        image, id, parser::ParserResolution::RawPar { canonical_path_stable: false },
+    ) == candidate);
+}
+
+/// A child that the reducer rejects (`child_reducer_dead`) leaves the resolved
+/// path dead: every such resolution kills the focused path, and with Region
+/// owners the parser records a fault instead.
+pub proof fn epm_resolution_dead_settles(
+    image: parser::ParserImage,
+    id: u64,
+    kind: epm::PathObligationKind,
+    summary: epm::ChildSummary,
+)
+    requires
+        epm::valid_child_resolution(kind, summary),
+        epm::child_reducer_dead(kind, summary),
+    ensures
+        parser::parser_root_gate(parser::resolve_parser_obligation(
+            image, id, epm::parser_resolution(summary),
+        )).dead,
+{
+    let resolution = epm::parser_resolution(summary);
+    assert(resolution != parser::ParserResolution::RawPar { canonical_path_stable: false });
+    assert(resolution
+        != parser::ParserResolution::NestedEpm1 { is_map: true, entries_stable: true });
+    let candidate = parser::ParserImage { focus: parser::parser_dead(image.focus), ..image };
+    assert(parser::settle_parser_owners(candidate) == candidate);
+    let resolved = parser::resolve_parser_obligation(image, id, resolution);
+    if image.owners.len() == 0 {
+        assert(resolved == candidate);
+        assert(parser::parser_root(resolved) == parser::parser_dead(image.focus));
+    } else {
+        assert(resolved.fault);
+    }
+}
+
+/// Popping the returned child and resolving its parent, as
+/// `linked_epm_child_return` does, keeps `admission_state_wf` and
+/// `linked_indexed_sources`.
+pub proof fn epm_parent_resolved_pop_wf(prior: epm::LinkedEpmState, next: epm::LinkedEpmState)
+    requires
+        admission::admission_state_wf(prior.admission),
+        epm::linked_indexed_sources(prior),
+        prior.admission.frames.len() > 1,
+        prior.admission.completed < usize::MAX,
+        next.admission == (admission::AdmissionState {
+            frames: prior.admission.frames.subrange(0, prior.admission.frames.len() - 1).update(
+                prior.admission.frames.len() - 2,
+                epm::epm_parent_resolved(
+                    prior.admission.frames[prior.admission.frames.len() - 2],
+                ),
+            ),
+            arena: prior.admission.arena,
+            root_end: prior.admission.root_end,
+            pushed: prior.admission.pushed,
+            completed: (prior.admission.completed as int + 1) as usize,
+            next_obligation_id: prior.admission.next_obligation_id,
+        }),
+        next.indexed_regions == prior.indexed_regions.drop_last(),
+    ensures
+        admission::admission_state_wf(next.admission),
+        epm::linked_indexed_sources(next),
+{
+    let state = prior.admission;
+    let popped = next.admission;
+    let parent_index = state.frames.len() - 2;
+    let parent = state.frames[parent_index];
+    let resolved = popped.frames[parent_index];
+    assert(popped.frames.len() == state.frames.len() - 1);
+    assert(resolved == epm::epm_parent_resolved(parent));
+    assert(admission::admission_frame_wf(parent));
+    assert(resolved.program_type_id == parent.program_type_id);
+    assert(resolved.required == parent.required);
+    assert(resolved.slot_count == parent.slot_count);
+    assert(resolved.frame_kind == parent.frame_kind);
+    assert(resolved.seen == parent.seen);
+    assert(resolved.scalar_slots == parent.scalar_slots);
+    assert(resolved.scalar_occurrences == parent.scalar_occurrences);
+    assert(resolved.returns == parent.returns);
+    assert(admission::admission_required_slots_generated(resolved));
+    assert(resolved.nested_started as int == resolved.nested_resolved as int);
+    assert(admission::admission_frame_wf(resolved));
+    assert forall|i: int| 0 <= i < popped.frames.len()
+        implies admission::admission_frame_wf(popped.frames[i]) by {
+        if i < parent_index {
+            assert(popped.frames[i] == state.frames[i]);
+        } else {
+            assert(i == parent_index);
+        }
+    }
+    assert forall|frame_index: int, return_index: int|
+        0 <= frame_index < popped.frames.len()
+            && 0 <= return_index < popped.frames[frame_index].returns.len()
+        implies popped.frames[frame_index].returns[return_index].score_handle.is_some()
+            == popped.frames[frame_index].returns[return_index].score_origin_body_id.is_some()
+            && match popped.frames[frame_index].returns[return_index].score_handle {
+                Some(handle) => (handle as int) < popped.arena.len()
+                    && popped.arena[handle as int].body_id
+                        == popped.frames[frame_index].returns[return_index]
+                            .score_origin_body_id.unwrap(),
+                None => true,
+            } by {
+        if frame_index < parent_index {
+            assert(popped.frames[frame_index] == state.frames[frame_index]);
+        } else {
+            assert(frame_index == parent_index);
+            assert(popped.frames[frame_index].returns == parent.returns);
+        }
+    }
+    assert forall|frame_index: int| 1 <= frame_index < popped.frames.len()
+        implies ((popped.frames[frame_index - 1].frame_kind != 1
+            && popped.frames[frame_index - 1].frame_kind != 2)
+            || #[trigger] admission::admission_child_physical_contained(
+                popped.frames[frame_index - 1], popped.frames[frame_index],
+            )) by {
+        assert(popped.frames[frame_index - 1] == state.frames[frame_index - 1]);
+        if state.frames[frame_index - 1].frame_kind == 1
+            || state.frames[frame_index - 1].frame_kind == 2
+        {
+            assert(admission::admission_child_physical_contained(
+                state.frames[frame_index - 1], state.frames[frame_index],
+            ));
+        }
+        if frame_index < parent_index {
+            assert(popped.frames[frame_index] == state.frames[frame_index]);
+        } else {
+            assert(frame_index == parent_index);
+            assert(resolved.physical_source == parent.physical_source);
+            assert(resolved.physical_start == parent.physical_start);
+            assert(resolved.region_end == parent.region_end);
+            assert(resolved.source_bytes == parent.source_bytes);
+        }
+    }
+    assert(admission::admission_state_wf(popped));
+    assert forall|i: int| 0 <= i < popped.frames.len()
+        implies epm::indexed_image_wf(next.indexed_regions[i])
+            && next.indexed_regions[i].bytes == popped.frames[i].source_bytes
+            && epm::indexed_position_at(next.indexed_regions[i], 0).source
+                == popped.frames[i].physical_source
+            && epm::indexed_position_at(next.indexed_regions[i], 0).offset
+                == popped.frames[i].physical_start by {
+        assert(next.indexed_regions[i] == prior.indexed_regions[i]);
+        if i < parent_index {
+            assert(popped.frames[i] == state.frames[i]);
+        } else {
+            assert(i == parent_index);
+        }
+    }
+    assert(epm::linked_indexed_sources(next));
+}
+
+/// Wherever production accepts a raw-Par return, the raw-Par step exists: it
+/// holds at the state that `epm_obligation_return_live_after` builds around
+/// `epm_obligation_resolved_frame`, and every raw-Par step from the prestate
+/// reaches that state.
+pub proof fn epm_raw_par_return_enabled(before: LiveRuntimeProductState)
+    requires epm_raw_par_return_source_ready(before),
+    ensures
+        ({
+            let product = before.source.product;
+            let prior = integrated::product_linked_parent(product).unwrap();
+            let derived = obligation_return::epm_obligation_derived(product).unwrap();
+            match prior.epm.wait {
+                Some(epm::EpmWait::Obligation { id, .. }) => {
+                    let after = epm_obligation_return_live_after(
+                        before,
+                        epm_obligation_resolved_frame(
+                            prior.epm, id, epm::parser_resolution(derived.summary),
+                        ),
+                    );
+                    &&& obligation_return::live_runtime_epm_raw_par_return_step(before, after)
+                    &&& forall|other: LiveRuntimeProductState|
+                        #[trigger] obligation_return::live_runtime_epm_raw_par_return_step(
+                            before, other,
+                        ) ==> other == after
+                },
+                _ => false,
+            }
+        }),
+{
+    let product = before.source.product;
+    let prior = integrated::product_linked_parent(product).unwrap();
+    let derived = obligation_return::epm_obligation_derived(product).unwrap();
+    let parent = prior.epm;
+    if let Some(epm::EpmWait::Obligation { id, kind, return_id: expected_id }) = parent.wait {
+        let resolution = epm::parser_resolution(derived.summary);
+        let resolved = epm_obligation_resolved_frame(parent, id, resolution);
+        let after = epm_obligation_return_live_after(before, resolved);
+        let product_after = after.source.product;
+        let next = integrated::product_linked_top(product_after).unwrap();
+        let child = product.bridge.admission.frames.last();
+        let stable = match derived.summary {
+            epm::ChildSummary::Par { canonical_path_stable } => canonical_path_stable,
+            _ => false,
+        };
+        assert(derived.summary == epm::ChildSummary::Par { canonical_path_stable: stable });
+        assert(derived.nested_before.is_none() && derived.nested_after.is_none());
+        assert(kind == epm::PathObligationKind::RawParEscape);
+        assert(child.return_id == Some(expected_id));
+        let parser_after = parser::resolve_parser_obligation(parent.path.parser, id, resolution);
+        epm_gate_image_matches(parser_after);
+        if stable {
+            epm_resolution_dead_settles(parent.path.parser, id, kind, derived.summary);
+        } else {
+            epm_raw_par_root_resolution(parent.path.parser, id);
+        }
+        assert(epm::accept_child(parent, resolved, Some(expected_id), derived.summary));
+        assert(next.epm == resolved);
+        epm_parent_resolved_pop_wf(prior, next);
+        assert(epm::linked_epm_child_return(
+            prior, next, derived.summary, derived.admission_summary,
+            derived.nested_before, derived.nested_after,
+        ));
+        assert(integrated::product_epm_source_child_binding(
+            product, prior, next, derived.summary, derived.admission_summary, None,
+        )) by {
+            reveal(integrated::product_epm_source_child_binding);
+        }
+        assert(integrated::product_epm_child_return_step(
+            product, product_after, derived.summary, derived.admission_summary, None,
+        ));
+        assert(obligation_return::epm_obligation_return_pop(before, after));
+        assert(obligation_return::live_runtime_epm_raw_par_return_step(before, after)) by {
+            reveal(obligation_return::live_runtime_epm_raw_par_return_step);
+        }
+        assert forall|other: LiveRuntimeProductState|
+            #[trigger] obligation_return::live_runtime_epm_raw_par_return_step(before, other)
+            implies other == after by {
+            obligation_return::live_runtime_epm_raw_par_return_is_functional(
+                before, after, other,
+            );
+        }
+    }
+}
+
+}

@@ -90,6 +90,8 @@ mod rpb3_integrated_dispatcher;
 mod rpb3_epm_obligation_return_live;
 #[cfg(rpb3_live_push)]
 mod rpb3_epm_parser_escape_invariant;
+#[cfg(rpb3_live_push)]
+mod rpb3_epm_obligation_return_source;
 
 use {
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
