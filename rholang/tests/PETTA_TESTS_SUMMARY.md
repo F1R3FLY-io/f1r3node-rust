@@ -68,10 +68,10 @@ Tests the `petta_execute` function directly:
 ### 3. Integration Tests with Rholang Runtime
 **Location:** `rholang/tests/swipl_petta_integration_spec.rs`
 
-**Coverage:** 15 tests
+**Coverage:** 16 tests
 
 The direct-execution cases through the Rholang runtime, plus consensus mode:
-lockdown escape cases, PLN under lockdown, the inference budget, and phlo
+lockdown escape cases, library imports under lockdown, the inference budget, and phlo
 (`test_petta_cost_grows_with_inferences`, `test_petta_underfunded_deploy_does_not_spawn`,
 `test_petta_run_without_inference_count_pays_full_budget`).
 

@@ -124,8 +124,8 @@ const _: () = assert!(
 ///     order 14 — `FD_ENTROPY_HEADROOM_BITS` (u64_be)
 ///   PR 2.17 (`snapshot` encoder — first `u8_raw`):
 ///     order 15 — `SNAPSHOT_FORMAT_VERSION`  (u8_raw)
-///   PeTTa consensus mode (`swi_prolog_service.rs`): orders 18-29.
-const EXPECTED_ENTRY_COUNT: usize = 29;
+///   PeTTa consensus mode (`swi_prolog_service.rs`): orders 18-28.
+const EXPECTED_ENTRY_COUNT: usize = 28;
 
 /// A single consensus-observable constant's contribution to the
 /// fingerprint fold.
@@ -468,9 +468,9 @@ mod tests {
         //  wire bytes embedded in every WAL entry, and the snapshot
         //  version is the leading byte of the encoded slice whose
         //  Blake2b256 root is the on-chain commitment.)
-        // PeTTa consensus mode → `50121f842c8657a9`: orders 18-29 from
+        // PeTTa consensus mode → `4fb384ac1e75e374`: orders 18-28 from
         // `swi_prolog_service.rs` (limits, phlo, allowlist, backend pins).
-        const EXPECTED_FOR_CURRENT: &str = "50121f842c8657a9";
+        const EXPECTED_FOR_CURRENT: &str = "4fb384ac1e75e374";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \

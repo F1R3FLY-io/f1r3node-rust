@@ -66,10 +66,6 @@ pub const SWIPL_VERSION: &str = "10.0.2";
 pub const PETTA_SRC_TREE_HASH: &str =
     "6338b387b02394e51bed0d84f532eb20f9ec4a373bfe862bbf88f0efac3b2ebf";
 
-/// [`petta_tree_hash`] of the whole dylon/PLN fbb2ae0f tree.
-pub const PLN_SRC_TREE_HASH: &str =
-    "d47114554b1bb75ab090914e5360c8f26f9471bdb77035ce1f4e705a24a2d3a5";
-
 crate::register_consensus_constant!(order = 18, name = PETTA_MAX_INFERENCES, u64_be);
 crate::register_consensus_constant!(order = 19, name = PETTA_STACK_LIMIT_BYTES, u64_be);
 crate::register_consensus_constant!(order = 20, name = PETTA_TABLE_SPACE_BYTES, u64_be);
@@ -81,7 +77,6 @@ crate::register_consensus_constant!(order = 25, name = PETTA_BASE_COST, u64_be);
 crate::register_consensus_constant!(order = 26, name = PETTA_CONSENSUS_ALLOWED_FUNS, str_bytes);
 crate::register_consensus_constant!(order = 27, name = SWIPL_VERSION, str_bytes);
 crate::register_consensus_constant!(order = 28, name = PETTA_SRC_TREE_HASH, str_bytes);
-crate::register_consensus_constant!(order = 29, name = PLN_SRC_TREE_HASH, str_bytes);
 
 /// Hex SHA-256 of `path\0content` for each file under `subdirs` ("" is `root`), in sorted
 /// relative-path order, skipping `.git`.
@@ -116,7 +111,7 @@ pub fn petta_tree_hash(root: &Path, subdirs: &[&str]) -> std::io::Result<String>
     Ok(hex::encode(Sha256Hasher::hash(buf)))
 }
 
-/// Compares `swipl --version`, `PETTA_DIR` and `PLN_DIR` (when set) with the pins.
+/// Compares `swipl --version` and `PETTA_DIR` (when set) with the pins.
 pub fn check_backend() -> Result<(), String> {
     let out = std::process::Command::new("swipl")
         .arg("--version")
@@ -143,8 +138,7 @@ pub fn check_backend() -> Result<(), String> {
             _ => Ok(()),
         }
     };
-    check_tree("PETTA_DIR", &["src", "lib"], PETTA_SRC_TREE_HASH)?;
-    check_tree("PLN_DIR", &[""], PLN_SRC_TREE_HASH)
+    check_tree("PETTA_DIR", &["src", "lib"], PETTA_SRC_TREE_HASH)
 }
 
 /// A frame emitted by the MeTTa interpreter in NODE mode.

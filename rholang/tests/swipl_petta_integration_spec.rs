@@ -416,14 +416,30 @@ async fn test_petta_consensus_escape_cases_yield_no_clock_or_random() {
 
 /// The PLN library imports and runs through `rho:petta:execute` under lockdown.
 #[tokio::test]
-async fn test_petta_pln_import_under_lockdown() {
+async fn test_petta_pln_import_is_ignored_under_lockdown() {
     if should_skip_ecan_test() {
+        return;
+    }
+
+    let term = petta_term("!(import! &self (library PLN lib_pln))");
+    let (result, _runtime) = evaluate_petta_term(&term).await;
+
+    let errors = format!("{:?}", result.errors);
+    assert!(
+        errors.contains("existence_error(procedure,library_path/1)"),
+        "PLN must not be importable under the node path, got: {errors}"
+    );
+}
+
+#[tokio::test]
+async fn test_petta_standard_library_import_under_lockdown() {
+    if should_skip_petta_test() {
         return;
     }
 
     let term = r#"
         new executePetta(`rho:petta:execute`), retCh in {
-            executePetta!("!(import! &self (library PLN lib_pln)) !(let (stv $s $c) (Truth_Deduction (stv 0.5 0.9) (stv 0.5 0.9) (stv 0.5 0.9) (stv 0.5 0.9) (stv 0.5 0.9)) (> $c 0))", *retCh) |
+            executePetta!("!(import! &self (library lib_roman))", *retCh) |
             for(@result <- retCh) {
                 @"output"!(result)
             }
@@ -433,10 +449,7 @@ async fn test_petta_pln_import_under_lockdown() {
     let (result, runtime) = evaluate_petta_term(term).await;
 
     assert!(result.errors.is_empty(), "{:?}", result.errors);
-    let expected = RhoList::create_par(vec![
-        RhoBoolean::create_par(true),
-        RhoBoolean::create_par(true),
-    ]);
+    let expected = RhoList::create_par(vec![RhoBoolean::create_par(true)]);
     let data = read_channel_data(&runtime, output_channel()).await;
     assert!(
         data.contains(&expected),

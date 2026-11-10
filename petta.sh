@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   `!(import! &self (library PLN lib_pln))` resolves without `git-import!`
 #   (which this script disables unconditionally; see below). When PLN_DIR is
 #   unset or empty, the sandbox is unchanged and the PLN library is unavailable.
+#   NODE mode ignores PLN_DIR.
 #
 if [[ ! -v PETTA_DIR ]]; then
   echo "The PETTA_DIR variable is not defined. Please set it to the PeTTa \
@@ -206,9 +207,10 @@ LIB_IMPORT_BIND="--ro-bind ${PATCHED_LIB_IMPORT} /lib/PeTTa/lib/lib_import.metta
 #                          atomic_list_concat([Base, '/', Y], Path).
 # (see PeTTa src/metta.pl). 
 # When PLN_DIR is unset, both variables stay empty and the sandbox is unchanged.
+# NODE mode ignores PLN_DIR: on-chain programs are self-contained.
 PLN_BINDS=""
 PLN_LIBRARY_GOAL=""
-if [[ -v PLN_DIR && -n "${PLN_DIR}" ]]; then
+if [[ "${PETTA_MODE}" != "NODE" && -v PLN_DIR && -n "${PLN_DIR}" ]]; then
   PLN_MOUNT="${SESSION_PATH}/repos/PLN"
   PLN_BINDS="--ro-bind ${PLN_DIR} ${PLN_MOUNT}"
   PLN_LIBRARY_GOAL="asserta(library_path('${PLN_MOUNT}')), "
@@ -255,7 +257,7 @@ if [ "${PETTA_MODE}" = "NODE" ]; then
   NODE_EMIT_ERROR="json_write_dict(current_output, _{type:'error', reason:PR, inferences:PI}, [width(0)])"
   NODE_RUN_AND_EMIT="statistics(inferences, PI0), catch(${NODE_RUN}, PE, true), statistics(inferences, PI1), PN is PI1 - PI0, ( nonvar(PE) -> ${NODE_REASON}, (var(PI) -> PI = PN ; true), ${NODE_EMIT_ERROR} ; ${NODE_OVER} -> PR = inference_limit_exceeded, PI = ${NODE_BUDGET}, ${NODE_EMIT_ERROR} ; nb_getval(petta_out, OT1), string_length(VS, VL), OT1 + VL + 1 > ${OUT_MAX} -> PR = output_limit_exceeded, PI = PN, ${NODE_EMIT_ERROR} ; format(current_output, '{\"type\":\"result\",\"inferences\":~d,\"value\":~s}', [PN, VS]) ), nl(current_output)"
   NODE_PRINTLN="('println!'(Arg,true) :- swrite(Arg,RArg), with_output_to(string(OF), json_write_dict(current_output, _{channel:'rho:io:stdout',arguments:[RArg]}, [width(0)])), string_length(OF, OL), nb_getval(petta_out, OT0), OT is OT0 + OL + 1, ( OT > ${OUT_MAX} -> throw(error(resource_error(tripwire(max_output_chars, ${OUT_MAX})), _)) ; nb_setval(petta_out, OT), write(current_output, OF), nl(current_output) ))"
-  GOAL="${NODE_FIRST_GOAL}, ${PLN_LIBRARY_GOAL}assertz(silent(true)), assertz(working_dir('${WORKDIR}')), catch(use_module(library(json)), _, use_module(library(http/json))), nb_setval(petta_out, 0), dynamic('println!'/2), abolish('println!'/2), asserta(${NODE_PRINTLN}), ${NODE_INT_GOAL}${NODE_RUN_AND_EMIT}."
+  GOAL="${NODE_FIRST_GOAL}, assertz(silent(true)), assertz(working_dir('${WORKDIR}')), catch(use_module(library(json)), _, use_module(library(http/json))), nb_setval(petta_out, 0), dynamic('println!'/2), abolish('println!'/2), asserta(${NODE_PRINTLN}), ${NODE_INT_GOAL}${NODE_RUN_AND_EMIT}."
 else
   # NORMAL mode (default): emit single {results:[...]} JSON envelope, raw println!/trace! to stdout
   NODE_BINDS=""

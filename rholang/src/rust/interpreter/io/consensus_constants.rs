@@ -78,8 +78,7 @@ pub use super::{
 pub use crate::rust::interpreter::swi_prolog_service::{
     PETTA_ADDRESS_SPACE_BYTES, PETTA_BASE_COST, PETTA_CONSENSUS_ALLOWED_FUNS, PETTA_MAX_INFERENCES,
     PETTA_MAX_INTEGER_SIZE_BYTES, PETTA_MAX_OUTPUT_CHARS, PETTA_PHLO_PER_INFERENCE,
-    PETTA_SRC_TREE_HASH, PETTA_STACK_LIMIT_BYTES, PETTA_TABLE_SPACE_BYTES, PLN_SRC_TREE_HASH,
-    SWIPL_VERSION,
+    PETTA_SRC_TREE_HASH, PETTA_STACK_LIMIT_BYTES, PETTA_TABLE_SPACE_BYTES, SWIPL_VERSION,
 };
 
 #[cfg(test)]
@@ -146,7 +145,6 @@ mod tests {
             "PETTA_CONSENSUS_ALLOWED_FUNS",
             "SWIPL_VERSION",
             "PETTA_SRC_TREE_HASH",
-            "PLN_SRC_TREE_HASH",
         ]
         .into_iter()
         .collect();
@@ -210,6 +208,5 @@ mod tests {
         let _ = super::PETTA_CONSENSUS_ALLOWED_FUNS;
         let _ = super::SWIPL_VERSION;
         let _ = super::PETTA_SRC_TREE_HASH;
-        let _ = super::PLN_SRC_TREE_HASH;
     }
 }

@@ -144,7 +144,9 @@ validation rejects the block.
 PeTTa runs without network under `consensus_lockdown/1`, which keeps only the
 functions in `PETTA_CONSENSUS_ALLOWED_FUNS`. Clock, sleep, entropy, host access,
 assertion, and raw Prolog forms fail with `consensus_forbidden(<name>)` or stay
-inert. Seeded `rand-*` stays available.
+inert. Seeded `rand-*` stays available. Programs are self-contained: under
+consensus, `import!` accepts only the standard library of the pinned fork, and
+`PLN_DIR` has no effect on the node path.
 
 | Limit | Value | Error reason |
 |-------|-------|--------------|
@@ -162,7 +164,7 @@ failure sends no output on the acknowledgment channel.
 inference after the run. A run without an inference count pays the full budget.
 
 **Pins.** The consensus fingerprint holds the limits, the phlo rate, the
-allowlist, `SWIPL_VERSION`, and the tree hashes of the PeTTa and PLN sources
+allowlist, `SWIPL_VERSION`, and the tree hash of the PeTTa sources
 (SHA-256 over `path\0content` of each file in sorted path order). When
 `PETTA_DIR` is set, the node runs `check_backend()` at startup and exits on a
 mismatch. `test_petta_backend_matches_pins` checks a local backend.
