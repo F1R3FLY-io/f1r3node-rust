@@ -15070,6 +15070,532 @@ pub proof fn bridge_var_score_wildcard_witness()
         ]);
 }
 
+pub open spec fn bridge_pathmap_score_append(
+    before: ScoreAdmissionBridge, snapshot: Seq<u8>, constructor: i32,
+    flag_slot: usize, flag_tag: u32,
+) -> Option<ScoreAdmissionBridge> {
+    match bridge_bool_slot(before.admission.frames.last(), flag_slot, flag_tag) {
+        None => None,
+        Some(used) => match bridge_append_unattached(
+            before, score::ScoreNode::BytesAtom(snapshot),
+        ) {
+            None => None,
+            Some((after_bytes, bytes_handle)) => match bridge_append_unattached(
+                after_bytes, score::ScoreNode::Integer(if used { 1i64 } else { 0i64 }),
+            ) {
+                None => None,
+                Some((after_flag, flag_handle)) => match bridge_constructor_step(
+                    after_flag, constructor, seq![bytes_handle, flag_handle],
+                ) {
+                    None => None,
+                    Some((next, _, _)) => Some(next),
+                },
+            },
+        },
+    }
+}
+
+pub proof fn bridge_epathmap_connective_used_descriptor_pinned(
+    field: admission::IndexedCanonicalFieldModel, slot: usize, repeated: bool,
+    scalar_kind: u8,
+)
+    ensures
+        field.number == 4 ==> (
+            admission::admission_scalar_descriptor_valid(31, field, slot, repeated, scalar_kind)
+                == (slot == 1 && !repeated && scalar_kind == 1 && field.wire == 0
+                    && field.decoded_varint == 1)
+        ),
+{
+}
+
+pub open spec fn bridge_epathmap_owner_score_step(
+    before: ScoreAdmissionBridge,
+) -> Option<ScoreAdmissionBridge> {
+    if before.admission.frames.len() == 0
+        || before.admission.frames.last().frame_kind != 1
+        || before.admission.frames.last().family != admission::AdmissionFamily::Other
+        || before.admission.frames.last().program_type_id != 31
+        || before.admission.frames.last().waiting_id.is_some()
+        || before.admission.frames.last().score_handle.is_some()
+        || before.admission.frames.last().cursor
+            != before.admission.frames.last().region_end
+        || !admission::admission_family_complete(before.admission.frames.last())
+        || before.admission.frames.last().returns.len() == 0
+        || match before.admission.frames.last().returns.last().kind {
+            admission::AdmissionReturnedKind::EPathMapSnapshot { .. } => false,
+            _ => true,
+        }
+    {
+        None
+    } else {
+        bridge_pathmap_score_append(
+            before, before.admission.frames.last().returns.last().body_bytes,
+            13i32, 1usize, 4u32,
+        )
+    }
+}
+
+pub open spec fn production_pathmap_constructor(is_zipper: bool) -> i32 {
+    if is_zipper { 14i32 } else { 13i32 }
+}
+
+pub open spec fn production_pathmap_score_nodes(
+    is_zipper: bool, snapshot: Seq<u8>, connective_used: bool, base: usize,
+) -> Seq<score::ScoreNode> {
+    seq![
+        score::ScoreNode::BytesAtom(snapshot),
+        score::ScoreNode::Integer(if connective_used { 1i64 } else { 0i64 }),
+    ] + production_score_constructor_nodes(
+        production_pathmap_constructor(is_zipper),
+        seq![base, (base + 1) as usize],
+        (base + 2) as usize,
+    )
+}
+
+pub proof fn bridge_pathmap_score_append_exact(
+    before: ScoreAdmissionBridge, snapshot: Seq<u8>, constructor: i32,
+    flag_slot: usize, flag_tag: u32,
+)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+    ensures match bridge_pathmap_score_append(
+        before, snapshot, constructor, flag_slot, flag_tag,
+    ) {
+        None => true,
+        Some(next) => {
+            let base = before.transcript.entries.len() as int;
+            let handle_base = before.transcript.entries.len() as usize;
+            let used = bridge_bool_slot(
+                before.admission.frames.last(), flag_slot, flag_tag,
+            ).unwrap();
+            &&& bridge_well_formed(next)
+            &&& admission::admission_state_wf(next.admission)
+            &&& bridge_score_step_shape(before, next)
+            &&& next.admission.frames.last().score_handle == Some((base + 3) as usize)
+            &&& next.admission.frames.last() == admission::AdmissionFrameState {
+                score_handle: Some((base + 3) as usize),
+                ..before.admission.frames.last()
+            }
+            &&& next.transcript.entries.len() == base + 4
+            &&& next.admission.arena[base + 3].body_id
+                == before.admission.frames.last().body_id
+            &&& next.admission.arena[base + 3].semantic
+                == admission::admission_family_complete(before.admission.frames.last())
+            &&& next.admission.root_end == before.admission.root_end
+            &&& next.admission.next_obligation_id == before.admission.next_obligation_id
+            &&& bridge_transcript_suffix_kinds(next.transcript, base) == seq![
+                score::ScoreNode::BytesAtom(snapshot),
+                score::ScoreNode::Integer(if used { 1i64 } else { 0i64 }),
+            ] + production_score_constructor_nodes(
+                constructor,
+                seq![handle_base, (handle_base + 1) as usize],
+                (handle_base + 2) as usize,
+            )
+        },
+    },
+{
+    if before.admission.frames.len() > 0 {
+        let top = before.admission.frames.last();
+        if let Some(used) = bridge_bool_slot(top, flag_slot, flag_tag) {
+            let bytes_kind = score::ScoreNode::BytesAtom(snapshot);
+            bridge_append_unattached_exact(before, bytes_kind);
+            bridge_append_unattached_preserves_admission_wf(before, bytes_kind);
+            bridge_append_unattached_shape(before, bytes_kind);
+            if let Some((after_bytes, bytes_handle)) = bridge_append_unattached(
+                before, bytes_kind,
+            ) {
+                let flag_kind = score::ScoreNode::Integer(if used { 1i64 } else { 0i64 });
+                bridge_append_unattached_exact(after_bytes, flag_kind);
+                bridge_append_unattached_preserves_admission_wf(after_bytes, flag_kind);
+                bridge_append_unattached_shape(after_bytes, flag_kind);
+                if let Some((after_flag, flag_handle)) = bridge_append_unattached(
+                    after_bytes, flag_kind,
+                ) {
+                    let children = seq![bytes_handle, flag_handle];
+                    bridge_constructor_exact(after_flag, constructor, children);
+                    bridge_constructor_shape(after_flag, constructor, children);
+                    if let Some((next, constructor_handle, score_handle)) =
+                        bridge_constructor_step(after_flag, constructor, children)
+                    {
+                        bridge_score_step_shape_transitive(before, after_bytes, after_flag);
+                        bridge_score_step_shape_transitive(before, after_flag, next);
+                        let base = before.transcript.entries.len() as int;
+                        let handle_base = before.transcript.entries.len() as usize;
+                        let constructor_kind = score::ScoreNode::Integer(constructor as i64);
+                        bridge_append_unattached_exact(after_flag, constructor_kind);
+                        let (after_constructor, appended_constructor) =
+                            bridge_append_unattached(after_flag, constructor_kind).unwrap();
+                        let node_kind = score::ScoreNode::Node(
+                            seq![appended_constructor] + children,
+                        );
+                        bridge_append_unattached_exact(after_constructor, node_kind);
+                        let (after_node, appended_node) = bridge_append_unattached(
+                            after_constructor, node_kind,
+                        ).unwrap();
+                        assert(appended_constructor == constructor_handle);
+                        assert(appended_node == score_handle);
+                        assert(next.transcript == after_node.transcript);
+                        assert(after_node.admission.frames == before.admission.frames);
+                        assert(next.admission == admission::admission_attach_score_step(
+                            after_node.admission, score_handle, top.body_id,
+                        ).unwrap());
+                        assert(next.admission.frames.last() == admission::AdmissionFrameState {
+                            score_handle: Some(score_handle),
+                            ..top
+                        });
+                        assert(bytes_handle as int == base);
+                        assert(flag_handle as int == base + 1);
+                        assert(constructor_handle as int == base + 2);
+                        assert(score_handle as int == base + 3);
+                        assert(after_node.transcript.entries.len() == base + 4);
+                        assert(after_flag.transcript.entries[base]
+                            == after_bytes.transcript.entries[base]);
+                        assert(after_constructor.transcript.entries[base]
+                            == after_flag.transcript.entries[base]);
+                        assert(after_constructor.transcript.entries[base + 1]
+                            == after_flag.transcript.entries[base + 1]);
+                        assert(after_node.transcript.entries[base]
+                            == after_constructor.transcript.entries[base]);
+                        assert(after_node.transcript.entries[base + 1]
+                            == after_constructor.transcript.entries[base + 1]);
+                        assert(after_node.transcript.entries[base + 2]
+                            == after_constructor.transcript.entries[base + 2]);
+                        let suffix = bridge_transcript_suffix_kinds(next.transcript, base);
+                        assert(suffix.len() == 4);
+                        assert(suffix[0] == bytes_kind);
+                        assert(suffix[1] == flag_kind);
+                        assert(suffix[2] == constructor_kind);
+                        assert(suffix[3] == node_kind);
+                        assert(seq![appended_constructor] + children
+                            =~= seq![(handle_base + 2) as usize]
+                                + seq![handle_base, (handle_base + 1) as usize]);
+                        assert(suffix =~= seq![bytes_kind, flag_kind]
+                            + production_score_constructor_nodes(
+                                constructor,
+                                seq![handle_base, (handle_base + 1) as usize],
+                                (handle_base + 2) as usize,
+                            ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub proof fn bridge_pathmap_score_append_is_production(
+    before: ScoreAdmissionBridge, snapshot: Seq<u8>, is_zipper: bool,
+    flag_slot: usize, flag_tag: u32,
+)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+    ensures match bridge_pathmap_score_append(
+        before, snapshot, production_pathmap_constructor(is_zipper), flag_slot, flag_tag,
+    ) {
+        None => true,
+        Some(next) => {
+            let base = before.transcript.entries.len() as int;
+            let used = bridge_bool_slot(
+                before.admission.frames.last(), flag_slot, flag_tag,
+            ).unwrap();
+            let nodes = production_pathmap_score_nodes(
+                is_zipper, snapshot, used, base as usize,
+            );
+            &&& next.transcript.entries.len() == base + nodes.len()
+            &&& next.transcript.entries.take(base) == before.transcript.entries
+            &&& bridge_transcript_suffix_kinds(next.transcript, base) == nodes
+            &&& next.admission.frames.last().score_handle
+                == Some((base + nodes.len() - 1) as usize)
+        },
+    },
+{
+    bridge_pathmap_score_append_exact(
+        before, snapshot, production_pathmap_constructor(is_zipper), flag_slot, flag_tag,
+    );
+}
+
+pub proof fn bridge_epathmap_owner_score_step_exact(before: ScoreAdmissionBridge)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+    ensures match bridge_epathmap_owner_score_step(before) {
+        None => true,
+        Some(next) => {
+            let top = before.admission.frames.last();
+            let base = before.transcript.entries.len() as int;
+            let used = bridge_bool_slot(top, 1, 4).unwrap();
+            let nodes = production_pathmap_score_nodes(
+                false, top.returns.last().body_bytes, used, base as usize,
+            );
+            &&& bridge_well_formed(next)
+            &&& admission::admission_state_wf(next.admission)
+            &&& bridge_score_step_shape(before, next)
+            &&& next.admission.frames.last().score_handle == Some((base + 3) as usize)
+            &&& next.admission.arena[base + 3].semantic
+            &&& next.admission.arena[base + 3].body_id == top.body_id
+            &&& next.admission.root_end == before.admission.root_end
+            &&& next.admission.next_obligation_id == before.admission.next_obligation_id
+            &&& next.transcript.entries.len() == base + nodes.len()
+            &&& next.transcript.entries.take(base) == before.transcript.entries
+            &&& bridge_transcript_suffix_kinds(next.transcript, base) == nodes
+        },
+    },
+{
+    if before.admission.frames.len() > 0 {
+        let top = before.admission.frames.last();
+        bridge_pathmap_score_append_exact(
+            before, top.returns.last().body_bytes, 13i32, 1usize, 4u32,
+        );
+    }
+}
+
+pub proof fn bridge_pathmap_score_append_succeeds(
+    before: ScoreAdmissionBridge, snapshot: Seq<u8>, constructor: i32,
+    flag_slot: usize, flag_tag: u32,
+)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+        before.transcript.entries.len() + 4 <= usize::MAX,
+        score::bytes_transcript(snapshot).len() + 22 <= usize::MAX,
+        bridge_bool_slot(before.admission.frames.last(), flag_slot, flag_tag).is_some(),
+        before.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.admission.frames.last().score_handle.is_none(),
+        before.admission.frames.last().cursor == before.admission.frames.last().region_end,
+        before.admission.frames.last().waiting_id.is_none(),
+        before.admission.frames.last().nested_started
+            == before.admission.frames.last().nested_resolved,
+        admission::admission_slots_complete(before.admission.frames.last()),
+    ensures bridge_pathmap_score_append(
+        before, snapshot, constructor, flag_slot, flag_tag,
+    ).is_some(),
+{
+    let top = before.admission.frames.last();
+    let base = before.transcript.entries.len() as int;
+    let used = bridge_bool_slot(top, flag_slot, flag_tag).unwrap();
+    let bytes_len = score::bytes_transcript(snapshot).len();
+    score::string_and_bytes_transcripts_exact(snapshot);
+    let bytes_kind = score::ScoreNode::BytesAtom(snapshot);
+    assert(score::kind_transcript(before.transcript.entries, bytes_kind)
+        == score::bytes_transcript(snapshot));
+    assert(bridge_append_unattached(before, bytes_kind).is_some());
+    bridge_append_unattached_exact(before, bytes_kind);
+    bridge_append_unattached_preserves_admission_wf(before, bytes_kind);
+    let (after_bytes, bytes_handle) = bridge_append_unattached(before, bytes_kind).unwrap();
+    let flag_kind = score::ScoreNode::Integer(if used { 1i64 } else { 0i64 });
+    score::integer_transcript_exact(if used { 1i64 } else { 0i64 });
+    assert(bridge_append_unattached(after_bytes, flag_kind).is_some());
+    bridge_append_unattached_exact(after_bytes, flag_kind);
+    bridge_append_unattached_preserves_admission_wf(after_bytes, flag_kind);
+    let (after_flag, flag_handle) = bridge_append_unattached(after_bytes, flag_kind).unwrap();
+    let constructor_kind = score::ScoreNode::Integer(constructor as i64);
+    score::integer_transcript_exact(constructor as i64);
+    assert(bridge_append_unattached(after_flag, constructor_kind).is_some());
+    bridge_append_unattached_exact(after_flag, constructor_kind);
+    bridge_append_unattached_preserves_admission_wf(after_flag, constructor_kind);
+    let (after_constructor, constructor_handle) = bridge_append_unattached(
+        after_flag, constructor_kind,
+    ).unwrap();
+    assert(bytes_handle as int == base);
+    assert(flag_handle as int == base + 1);
+    assert(constructor_handle as int == base + 2);
+    let entries = after_constructor.transcript.entries;
+    assert(entries.len() == base + 3);
+    assert(after_flag.transcript.entries[base] == after_bytes.transcript.entries[base]);
+    assert(entries[base] == after_flag.transcript.entries[base]);
+    assert(entries[base + 1] == after_flag.transcript.entries[base + 1]);
+    assert(entries[base].encoded_len as int == bytes_len);
+    assert(entries[base + 1].encoded_len == 10);
+    assert(entries[base + 2].encoded_len == 10);
+    let tail = seq![bytes_handle, flag_handle];
+    let children = seq![constructor_handle] + tail;
+    assert(children =~= seq![constructor_handle, bytes_handle, flag_handle]);
+    assert(score::child_handles_valid(entries, children));
+    assert forall|i: int| 0 <= i < entries.len()
+        implies entries[i].encoded_len as int == entries[i].transcript.len() by {
+        assert(score::entry_well_formed(entries, i));
+    }
+    score::node_transcript_exact(entries, children);
+    assert(children.drop_first() =~= tail);
+    assert(tail.drop_first() =~= seq![flag_handle]);
+    assert(seq![flag_handle].drop_first() =~= Seq::<usize>::empty());
+    assert(score::children_encoded_len(entries, Seq::<usize>::empty()) == 0);
+    assert(score::children_encoded_len(entries, seq![flag_handle]) == 10);
+    assert(score::children_encoded_len(entries, tail) == bytes_len + 10);
+    assert(score::children_encoded_len(entries, children) == bytes_len + 20);
+    let node_kind = score::ScoreNode::Node(children);
+    assert(bridge_append_unattached(after_constructor, node_kind).is_some());
+    bridge_append_unattached_exact(after_constructor, node_kind);
+    let (after_node, node_handle) = bridge_append_unattached(
+        after_constructor, node_kind,
+    ).unwrap();
+    assert(after_node.admission.frames == before.admission.frames);
+    assert(admission::admission_attach_score_step(
+        after_node.admission, node_handle, top.body_id,
+    ).is_some());
+    assert(bridge_constructor_step(after_flag, constructor, tail).is_some());
+}
+
+pub open spec fn bridge_epathmap_witness_snapshot() -> Seq<u8> {
+    seq![0x45u8, 0x50u8, 0x4du8, 0x31u8, 1u8, 0u8, 0u8, 0u8]
+}
+
+pub open spec fn bridge_epathmap_witness_owner() -> ScoreAdmissionBridge {
+    let bytes = bridge_epathmap_witness_snapshot();
+    let required = Set::<int>::empty().insert(3);
+    let returned = admission::AdmissionReturnedSummary {
+        slot: 3,
+        tag: 9,
+        body_id: 1,
+        body_bytes: bytes,
+        score_handle: None,
+        score_origin_body_id: None,
+        kind: admission::AdmissionReturnedKind::EPathMapSnapshot {
+            mode: 0,
+            entries_canonical_path_stable: true,
+        },
+    };
+    let owner = admission::AdmissionFrameState {
+        physical_source: 0,
+        physical_start: 0,
+        program_type_id: 31,
+        region_start: 0,
+        region_end: 8,
+        source_bytes: bytes,
+        cursor: 8,
+        slot_count: 4,
+        last_slot: Some(3),
+        seen: required,
+        required,
+        scalar_slots: Set::empty(),
+        scalar_occurrences: Seq::empty(),
+        returns: seq![returned],
+        family: admission::AdmissionFamily::Other,
+        waiting_id: None,
+        waiting_kind: 0,
+        waiting_slot: None,
+        waiting_tag: None,
+        return_id: None,
+        frame_kind: 1,
+        body_id: 0,
+        score_handle: None,
+        nested_started: 1,
+        nested_resolved: 1,
+    };
+    ScoreAdmissionBridge {
+        admission: admission::AdmissionState {
+            frames: seq![owner],
+            arena: Seq::empty(),
+            root_end: 8,
+            pushed: 2,
+            completed: 1,
+            next_obligation_id: 1,
+        },
+        transcript: score::empty_arena(),
+    }
+}
+
+pub proof fn bridge_epathmap_witness_snapshot_score_length()
+    ensures
+        score::zero_count(bridge_epathmap_witness_snapshot()) == 3,
+        score::bytes_transcript(bridge_epathmap_witness_snapshot()).len() == 15,
+{
+    let bytes = bridge_epathmap_witness_snapshot();
+    score::string_and_bytes_transcripts_exact(bytes);
+    reveal_with_fuel(score::zero_count, 9);
+    assert(score::zero_count(bytes) == 3);
+}
+
+pub proof fn bridge_epathmap_frame_required_slots_generated(
+    frame: admission::AdmissionFrameState,
+)
+    requires
+        frame.program_type_id == 31,
+        frame.slot_count == 4,
+        frame.required == Set::<int>::empty().insert(3),
+    ensures admission::admission_required_slots_generated(frame),
+{
+    assert forall|slot: int| 0 <= slot < frame.slot_count as int implies
+        frame.required.contains(slot) == (exists|tag: u32|
+            admission::admission_required_descriptor_slot(
+                frame.program_type_id, tag, slot,
+            )) by {
+        if slot == 3 {
+            assert(admission::admission_required_descriptor_slot(frame.program_type_id, 9, 3));
+        } else {
+            assert(!frame.required.contains(slot));
+            assert forall|tag: u32| !admission::admission_required_descriptor_slot(
+                frame.program_type_id, tag, slot,
+            ) by {}
+        }
+    }
+}
+
+pub proof fn bridge_epathmap_witness_owner_wf()
+    ensures {
+        let owner = bridge_epathmap_witness_owner();
+        let top = owner.admission.frames.last();
+        &&& bridge_well_formed(owner)
+        &&& admission::admission_state_wf(owner.admission)
+        &&& top.returns.last().body_bytes == bridge_epathmap_witness_snapshot()
+        &&& bridge_bool_slot(top, 1, 4) == Some(false)
+        &&& admission::admission_slots_complete(top)
+    },
+{
+    let owner = bridge_epathmap_witness_owner();
+    let frame = owner.admission.frames[0];
+    assert(owner.admission.frames.last() == frame);
+    score::empty_arena_well_formed();
+    assert(bridge_well_formed(owner));
+    assert(admission::admission_epathmap_snapshot_descriptor());
+    assert(frame.program_type_id == 31);
+    assert(frame.slot_count == 4);
+    assert(frame.required == Set::<int>::empty().insert(3));
+    bridge_epathmap_frame_required_slots_generated(frame);
+    assert(admission::admission_frame_wf(frame));
+    assert(admission::admission_state_wf(owner.admission));
+    assert(bridge_bool_slot(frame, 1, 4) == Some(false));
+}
+
+pub proof fn bridge_epathmap_owner_score_modeled_witness()
+    ensures {
+        let owner = bridge_epathmap_witness_owner();
+        &&& bridge_well_formed(owner)
+        &&& admission::admission_state_wf(owner.admission)
+        &&& match bridge_epathmap_owner_score_step(owner) {
+            None => false,
+            Some(next) => {
+                &&& next.admission.frames.last().score_handle == Some(3usize)
+                &&& bridge_transcript_suffix_kinds(next.transcript, 0) == seq![
+                    score::ScoreNode::BytesAtom(bridge_epathmap_witness_snapshot()),
+                    score::ScoreNode::Integer(0i64),
+                    score::ScoreNode::Integer(13i64),
+                    score::ScoreNode::Node(seq![2usize, 0usize, 1usize]),
+                ]
+            },
+        }
+    },
+{
+    bridge_epathmap_witness_owner_wf();
+    bridge_epathmap_witness_snapshot_score_length();
+    let owner = bridge_epathmap_witness_owner();
+    let top = owner.admission.frames.last();
+    let snapshot = bridge_epathmap_witness_snapshot();
+    assert(admission::admission_family_complete(top));
+    bridge_pathmap_score_append_succeeds(owner, snapshot, 13i32, 1usize, 4u32);
+    assert(bridge_epathmap_owner_score_step(owner)
+        == bridge_pathmap_score_append(owner, snapshot, 13i32, 1usize, 4u32));
+    bridge_epathmap_owner_score_step_exact(owner);
+    assert(seq![2usize] + seq![0usize, 1usize] =~= seq![2usize, 0usize, 1usize]);
+    assert(production_pathmap_score_nodes(false, snapshot, false, 0usize) =~= seq![
+        score::ScoreNode::BytesAtom(snapshot),
+        score::ScoreNode::Integer(0i64),
+        score::ScoreNode::Integer(13i64),
+        score::ScoreNode::Node(seq![2usize, 0usize, 1usize]),
+    ]);
+}
+
 }
 
 fn main() {}
