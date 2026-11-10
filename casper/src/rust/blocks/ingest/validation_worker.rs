@@ -228,7 +228,14 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
         let status = IngestStep::Validation
             .time_async(casper.validate(block, &mut snapshot))
             .await?;
-        let status = guard_deferral(status, approved_block_number);
+        let status = match guard_deferral(status, approved_block_number) {
+            // A storage failure says nothing about the block: it is retried,
+            // never recorded as a verdict.
+            Either::Left(BlockError::BlockException(CasperError::KvStoreError(error))) => {
+                return Err(CasperError::KvStoreError(error));
+            }
+            status => status,
+        };
         let verdict_metric = match &status {
             Either::Right(_) => BLOCK_VALIDATION_SUCCESS_METRIC,
             Either::Left(_) => BLOCK_VALIDATION_FAILED_METRIC,
@@ -421,7 +428,152 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        DeployId, KeyValueDagRepresentation,
+    };
+    use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
+    use comm::rust::rp::connect::Connections;
+    use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+    use crypto::rust::signatures::signed::Signed;
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::DeployData;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use shared::rust::store::key_value_store::KvStoreError;
+
     use super::*;
+    use crate::rust::block_status::ValidBlock;
+    use crate::rust::casper::{CasperSnapshot, DeployError};
+
+    struct StorageFailingCasper {
+        anchor: BlockMessage,
+        dag: BlockDagKeyValueStorage,
+    }
+
+    #[async_trait]
+    impl Casper for StorageFailingCasper {
+        async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
+            Ok(CasperSnapshot::new(self.dag.get_representation()?))
+        }
+
+        fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
+
+        fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.anchor) }
+
+        fn deploy(
+            &self,
+            _deploy: Signed<DeployData>,
+        ) -> Result<Either<DeployError, DeployId>, CasperError> {
+            unimplemented!("judge does not deploy")
+        }
+
+        async fn estimator(
+            &self,
+            _dag: &mut KeyValueDagRepresentation,
+        ) -> Result<Vec<BlockHash>, CasperError> {
+            unimplemented!("judge does not run the estimator")
+        }
+
+        fn get_version(&self) -> i64 { 1 }
+
+        async fn validate(
+            &self,
+            _block: &BlockMessage,
+            _snapshot: &mut crate::rust::casper::CasperSnapshot,
+        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+            Ok(Either::Left(BlockError::BlockException(
+                CasperError::KvStoreError(KvStoreError::IoError("disk read failed".into())),
+            )))
+        }
+
+        async fn validate_self_created(
+            &self,
+            _block: &BlockMessage,
+            _snapshot: &mut crate::rust::casper::CasperSnapshot,
+            _pre_state_hash: Bytes,
+            _post_state_hash: Bytes,
+        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+            unimplemented!("judge validates received blocks")
+        }
+
+        async fn handle_valid_block(
+            &self,
+            _block: &BlockMessage,
+        ) -> Result<KeyValueDagRepresentation, CasperError> {
+            panic!("a storage failure is not a valid verdict")
+        }
+
+        fn handle_invalid_block(
+            &self,
+            _block: &BlockMessage,
+            _status: &InvalidBlock,
+            _dag: &KeyValueDagRepresentation,
+        ) -> Result<KeyValueDagRepresentation, CasperError> {
+            panic!("a storage failure must not record the block as invalid")
+        }
+    }
+
+    fn block(number: i64) -> BlockMessage {
+        get_random_block(
+            Some(number),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            Some(vec![]),
+            Some(vec![]),
+            Some(vec![]),
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_storage_failure_during_validation_is_retried_not_judged_invalid() {
+        let mut manager = InMemoryStoreManager::new();
+        let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let anchor = block(0);
+        dag.insert(&anchor, InsertMode::Approved).unwrap();
+        let local = PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from_static(b"local"),
+            },
+            endpoint: Endpoint {
+                host: "host".to_string(),
+                tcp_port: 40400,
+                udp_port: 40400,
+            },
+        };
+        let validation = Validation::new(
+            block_store,
+            dag.clone(),
+            Arc::new(TransportLayerStub::new()),
+            ConnectionsCell {
+                peers: Arc::new(std::sync::Mutex::new(Connections::empty())),
+            },
+            create_rp_conf_ask(local, None, None),
+            None,
+        );
+        let casper: Arc<dyn Casper + Send + Sync> = Arc::new(StorageFailingCasper { anchor, dag });
+        let received = block(1);
+
+        assert!(matches!(
+            validation.judge(casper.clone(), &received).await,
+            Err(CasperError::KvStoreError(_))
+        ));
+        assert_eq!(
+            validation.validate(casper, &received).await,
+            WorkOutcome::Failed
+        );
+    }
 
     #[test]
     fn settled_history_admission_needs_every_condition() {
