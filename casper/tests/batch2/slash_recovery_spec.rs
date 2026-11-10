@@ -865,14 +865,25 @@ async fn a_slash_lost_to_the_merge_is_issued_again_by_the_merge_proposer() {
         slashes_in(&merge_block).contains(&invalid_block.block_hash),
         "the merge proposer issues the lost slash again"
     );
-    let verdict = nodes[1]
-        .process_block(merge_block.clone())
+    observe_slashable_evidence(&nodes[2], &invalid_block);
+    let verdict = nodes[2]
+        .process_block(block_1.clone())
         .await
-        .expect("node 1 validates merge_block");
+        .expect("node 2 processes block_1");
     assert!(
         matches!(verdict, Either::Right(ValidBlock::Valid)),
-        "merge_block: {verdict:?}"
+        "block_1 at node 2: {verdict:?}"
     );
+    for i in [1, 2] {
+        let verdict = nodes[i]
+            .process_block(merge_block.clone())
+            .await
+            .expect("validate merge_block");
+        assert!(
+            matches!(verdict, Either::Right(ValidBlock::Valid)),
+            "merge_block at node {i}: {verdict:?}"
+        );
+    }
     let post_state_bonds = nodes[1]
         .runtime_manager
         .compute_bonds(&merge_block.body.state.post_state_hash)
