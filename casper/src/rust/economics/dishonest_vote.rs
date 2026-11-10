@@ -53,10 +53,9 @@ fn spills(
         }
         pending.extend(block.parents.iter().cloned());
         if block.sender != *claimant
-            || testimony
-                .freezes
-                .iter()
-                .any(|interval| interval.covers(block.block_number))
+            || testimony.freezes.iter().any(|interval| {
+                interval.covers(block.block_number, Some(i64::from(block.sequence_number)))
+            })
         {
             continue;
         }

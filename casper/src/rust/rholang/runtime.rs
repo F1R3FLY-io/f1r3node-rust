@@ -1779,8 +1779,8 @@ impl RuntimeOps {
     }
 
     /// Each validator's freezes, keyed in state by the floor each ejection
-    /// passed at; a freeze its rejoin closed carries the paying block and the
-    /// topup.
+    /// passed at and carrying the validator's sequence number there; a freeze
+    /// its rejoin closed carries the paying block and the topup.
     fn to_freezes(
         history: &Par,
         bad: &impl Fn(&str) -> CasperError,
@@ -1825,7 +1825,11 @@ impl RuntimeOps {
                                 return Err(bad(&detail));
                             }
                         };
-                        Ok(FreezeInterval { from, rejoin })
+                        Ok(FreezeInterval {
+                            from,
+                            from_sequence: record.int("fromSequence", bad)?,
+                            rejoin,
+                        })
                     })
                     .into_iter()
                     .collect::<Result<Vec<_>, CasperError>>()?;

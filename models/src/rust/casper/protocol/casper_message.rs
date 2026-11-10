@@ -1046,9 +1046,18 @@ pub enum ClaimOutcome {
 pub struct ClaimResolution {
     pub claim: ClaimId,
     pub outcome: ClaimOutcome,
+    /// For a passed ejection, and only for one: the target's last sequence
+    /// number at the floor the ejection passed at, from which its freeze
+    /// covers its own blocks.
+    pub from_sequence: Option<i64>,
 }
 
 impl ClaimResolution {
+    /// Whether this resolution must carry `from_sequence`.
+    pub fn freezes_target(&self) -> bool {
+        self.claim.family == ClaimFamily::Eject && self.outcome == ClaimOutcome::Pass
+    }
+
     fn from_proto(proto: ClaimResolutionProto) -> Result<Self, String> {
         let outcome = match ClaimOutcomeProto::try_from(proto.outcome) {
             Ok(ClaimOutcomeProto::ClaimOutcomePass) => ClaimOutcome::Pass,
@@ -1057,7 +1066,7 @@ impl ClaimResolution {
                 return Err(format!("Unknown claim outcome {}", proto.outcome))
             }
         };
-        Ok(Self {
+        let resolution = Self {
             claim: ClaimId {
                 family: ClaimFamily::from_proto(proto.family)?,
                 target: proto.target,
@@ -1065,7 +1074,15 @@ impl ClaimResolution {
                 proposer: proto.proposer,
             },
             outcome,
-        })
+            from_sequence: proto.from_sequence.map(|sequence| sequence.value),
+        };
+        if resolution.freezes_target() != resolution.from_sequence.is_some() {
+            return Err(format!(
+                "a claim resolution carries a sequence number exactly when it passes an \
+                 ejection: {resolution:?}"
+            ));
+        }
+        Ok(resolution)
     }
 
     fn to_proto(&self) -> ClaimResolutionProto {
@@ -1079,6 +1096,9 @@ impl ClaimResolution {
             opened_at: self.claim.opened_at,
             proposer: self.claim.proposer.clone(),
             outcome: outcome as i32,
+            from_sequence: self
+                .from_sequence
+                .map(|value| SequenceNumberProto { value }),
         }
     }
 }
@@ -1130,12 +1150,15 @@ pub struct OverflowTestimony {
     pub freezes: Vec<FreezeInterval>,
 }
 
-/// One ejection's freeze over block numbers: from the floor the ejection
+/// One ejection's freeze: over block numbers from the floor the ejection
 /// passed at through the block that paid its rejoin, or open while the
-/// validator is still ejected.
+/// validator is still ejected; and over the frozen validator's own blocks
+/// above `from_sequence`, its last sequence number at that floor, however
+/// low their numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FreezeInterval {
     pub from: i64,
+    pub from_sequence: i64,
     pub rejoin: Option<Rejoin>,
 }
 
@@ -1147,13 +1170,21 @@ pub struct Rejoin {
 }
 
 impl FreezeInterval {
-    pub fn covers(&self, number: i64) -> bool {
-        self.from <= number && self.rejoin.is_none_or(|rejoin| number <= rejoin.at)
+    /// Whether the freeze covers a block numbered `number`, for the frozen
+    /// validator's bucket. `own_sequence` is the block's sequence number when
+    /// the frozen validator sent it: a block it built on old parents after
+    /// the freeze began carries a low number, but not a low sequence number.
+    pub fn covers(&self, number: i64, own_sequence: Option<i64>) -> bool {
+        let before_rejoin = self.rejoin.is_none_or(|rejoin| number <= rejoin.at);
+        before_rejoin
+            && (self.from <= number
+                || own_sequence.is_some_and(|sequence| sequence > self.from_sequence))
     }
 
     fn from_proto(proto: FreezeIntervalProto) -> Self {
         Self {
             from: proto.from,
+            from_sequence: proto.from_sequence,
             rejoin: proto.rejoin.map(|rejoin| Rejoin {
                 at: rejoin.at,
                 topup: rejoin.topup,
@@ -1164,6 +1195,7 @@ impl FreezeInterval {
     fn to_proto(&self) -> FreezeIntervalProto {
         FreezeIntervalProto {
             from: self.from,
+            from_sequence: self.from_sequence,
             rejoin: self.rejoin.map(|rejoin| RejoinProto {
                 at: rejoin.at,
                 topup: rejoin.topup,

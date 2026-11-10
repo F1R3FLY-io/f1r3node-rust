@@ -440,11 +440,18 @@ enum ClaimOutcomeProto {
 }
 
 message ClaimResolutionProto {
-  ClaimFamilyProto family   = 1;
-  bytes target              = 2;
-  int64 openedAt            = 3;
-  bytes proposer            = 4;
-  ClaimOutcomeProto outcome = 5;
+  ClaimFamilyProto family        = 1;
+  bytes target                   = 2;
+  int64 openedAt                 = 3;
+  bytes proposer                 = 4;
+  ClaimOutcomeProto outcome      = 5;
+  // Set on a passed ejection only: the target's last sequence number at the
+  // floor the ejection passed at.
+  SequenceNumberProto fromSequence = 6;
+}
+
+message SequenceNumberProto {
+  int64 value = 1;
 }
 
 message ClaimIdProto {
@@ -542,10 +549,12 @@ message OverflowTestimonyProto {
   repeated FreezeIntervalProto freezes = 4;
 }
 
-// An ejection's freeze over block numbers, closed by the rejoin that paid.
+// An ejection's freeze over block numbers, closed by the rejoin that paid,
+// and over the frozen validator's own blocks above `fromSequence`.
 message FreezeIntervalProto {
-  int64 from        = 1;
+  int64 from         = 1;
   RejoinProto rejoin = 2;
+  int64 fromSequence = 3;
 }
 
 message RejoinProto {

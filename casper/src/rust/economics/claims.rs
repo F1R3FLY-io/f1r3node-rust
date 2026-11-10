@@ -335,8 +335,7 @@ impl<'a> VoteHistory<'a> {
             }
         }
 
-        Ok(open
-            .into_iter()
+        open.into_iter()
             .filter_map(|record| {
                 let outcome = tally(&record.electorate, &floor.slashed, &floor.seated, |voter| {
                     votes.get(&(&record.claim, voter.clone())).copied()
@@ -344,9 +343,32 @@ impl<'a> VoteHistory<'a> {
                 Some(ClaimResolution {
                     claim: record.claim.clone(),
                     outcome,
+                    from_sequence: None,
                 })
             })
-            .collect())
+            .map(|mut resolution| {
+                if resolution.freezes_target() {
+                    resolution.from_sequence =
+                        Some(self.sequence_at(&resolution.claim.target, floor)?);
+                }
+                Ok(resolution)
+            })
+            .collect()
+    }
+
+    /// `validator`'s sequence number in its latest block at `floor`, or 0 if
+    /// the floor holds no block of its own: its slot then holds genesis or
+    /// another sender's block, and every block it signs is above 0.
+    fn sequence_at(&self, validator: &Validator, floor: &FloorView) -> Result<i64, CasperError> {
+        let Some(latest) = floor.latest.get(validator) else {
+            return Ok(0);
+        };
+        let metadata = self.dag.lookup_unsafe(latest)?;
+        Ok(if metadata.sender == *validator {
+            i64::from(metadata.sequence_number)
+        } else {
+            0
+        })
     }
 }
 
@@ -567,6 +589,7 @@ mod tests {
         let passed = ClaimResolution {
             claim: record.claim,
             outcome: ClaimOutcome::Pass,
+            from_sequence: None,
         };
         assert!(
             book.expiries(11, 10, &[passed]).is_empty(),

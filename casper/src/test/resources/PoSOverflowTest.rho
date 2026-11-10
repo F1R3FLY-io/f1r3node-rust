@@ -173,7 +173,7 @@ in {
 
     contract ejectionPassed(@target, @openedAt, @proposer, retCh) = {
       resolve!([{"family": "eject", "target": target, "openedAt": openedAt,
-                 "proposer": proposer, "passed": true}], [], openedAt, *retCh)
+                 "proposer": proposer, "passed": true, "fromSequence": 7}], [], openedAt, *retCh)
     } |
 
     contract rejoinPassed(@target, @openedAt, retCh) = {

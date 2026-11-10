@@ -883,7 +883,11 @@ in {
                                   }))
                                   .set("freezeHistory", current.get("freezeHistory").set(target,
                                     current.get("freezeHistory").getOrElse(target, {})
-                                      .set(floorNumber, {"to": Nil, "topup": Nil})))
+                                      .set(floorNumber, {
+                                        "to"          : Nil,
+                                        "topup"       : Nil,
+                                        "fromSequence": resolution.get("fromSequence")
+                                      })))
                                   .set("ejectionEvidence", current.get("ejectionEvidence").delete(target)))
                               }
                               ("eject", target, false) => {
@@ -907,10 +911,11 @@ in {
                                           retCh!(current
                                             .set("freezeHistory", current.get("freezeHistory").set(target,
                                               current.get("freezeHistory").get(target).set(
-                                                current.get("ejectedValidators").get(target).get("ejectFloor"), {
-                                                  "to"   : blockNumber,
-                                                  "topup": current.get("pendingRejoins").get(target).get("topup")
-                                                })))
+                                                current.get("ejectedValidators").get(target).get("ejectFloor"),
+                                                current.get("freezeHistory").get(target)
+                                                  .get(current.get("ejectedValidators").get(target).get("ejectFloor"))
+                                                  .set("to", blockNumber)
+                                                  .set("topup", current.get("pendingRejoins").get(target).get("topup")))))
                                             .set("heldTopups", current.get("heldTopups") +
                                               current.get("pendingRejoins").get(target).get("topup").toBigInt())
                                             .set("ejectedValidators", current.get("ejectedValidators").delete(target))

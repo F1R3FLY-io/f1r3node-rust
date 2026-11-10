@@ -124,7 +124,7 @@ in {
                 atBlock!(11, *b11) |
                 for (_ <- b11) {
                   @PoS!("resolveClaims",
-                    [{"family": "eject", "target": v.nth(1), "openedAt": 10, "proposer": v.nth(0), "passed": true}],
+                    [{"family": "eject", "target": v.nth(1), "openedAt": 10, "proposer": v.nth(0), "passed": true, "fromSequence": 7}],
                     [], [], "aa".hexToBytes(), 5, sysAuthToken, *ejectedOk) |
                   failOnRefusal!(*ejectedOk, *rhoSpec, *ackCh) |
                   for (@(true, _) <- ejectedOk) {
@@ -247,7 +247,7 @@ in {
                   atBlock!(3001, *b3001) |
                   for (_ <- b3001) {
                     @PoS!("resolveClaims",
-                      [{"family": "eject", "target": v.nth(3), "openedAt": 3000, "proposer": v.nth(0), "passed": true}],
+                      [{"family": "eject", "target": v.nth(3), "openedAt": 3000, "proposer": v.nth(0), "passed": true, "fromSequence": 7}],
                       [], [], "aa".hexToBytes(), 2990, sysAuthToken, *resolved) |
                     for (@result <- resolved) {
                       @PoS!("getEjectionEvidence", *evidenceCh) |

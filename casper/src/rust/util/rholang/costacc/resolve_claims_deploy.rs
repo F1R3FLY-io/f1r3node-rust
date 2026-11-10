@@ -88,6 +88,12 @@ impl ResolveClaimsDeploy {
                         self.mk_deployer_id(&PublicKey::from_bytes(&resolution.claim.target));
                     fields.insert(string_par("payer"), payer);
                 }
+                if let Some(from_sequence) = resolution.from_sequence {
+                    fields.insert(
+                        string_par("fromSequence"),
+                        new_gint_par(from_sequence, Vec::new(), false),
+                    );
+                }
                 map_par(fields)
             })
             .collect();

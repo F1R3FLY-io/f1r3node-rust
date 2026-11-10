@@ -120,7 +120,7 @@ in {
 
     contract resolveEjection(@target, @openedAt, @proposer, @floorNumber, retCh) = {
       @PoS!("resolveClaims",
-        [{"family": "eject", "target": target, "openedAt": openedAt, "proposer": proposer, "passed": true}],
+        [{"family": "eject", "target": target, "openedAt": openedAt, "proposer": proposer, "passed": true, "fromSequence": 7}],
         [], [], "aa".hexToBytes(), floorNumber, sysAuthToken, *retCh)
     } |
 

@@ -471,7 +471,8 @@ in {
 
     contract resolve(@target, @openedAt, @proposer, @passed, @floorNumber, retCh) = {
       @PoS!("resolveClaims",
-        [{"family": "eject", "target": target, "openedAt": openedAt, "proposer": proposer, "passed": passed}],
+        [{"family": "eject", "target": target, "openedAt": openedAt, "proposer": proposer, "passed": passed,
+          "fromSequence": 7}],
         [], [], "aa".hexToBytes(), floorNumber, sysAuthToken, *retCh)
     } |
 
@@ -531,7 +532,7 @@ in {
                         ((6990 + 2000, "==", ejected.get(validators.nth(1)).get("graceEnd")), "grace runs two epochs from the floor the claim passed at"),
                         (("aa".hexToBytes(), "==", ejected.get(validators.nth(1)).get("ejectFloorHash")), "the ejection records its floor"),
                         ((6990, "==", ejected.get(validators.nth(1)).get("ejectFloor")), "and the floor's number"),
-                        (({6990: {"to": Nil, "topup": Nil}}, "==", history.get(validators.nth(1))), "the freeze opens at the floor"),
+                        (({6990: {"to": Nil, "topup": Nil, "fromSequence": 7}}, "==", history.get(validators.nth(1))), "the freeze opens at the floor"),
                         (ejected.get(validators.nth(1)).get("ejectionSnapshot").contains(validators.nth(0)), "the ejection keeps the claim's electorate"),
                         ((false, "==", evidence.contains(validators.nth(1))), "the claim's slot is cleared")
                       ],
@@ -825,7 +826,7 @@ in {
                     ((before + 5n, "==", after), "the topup is paid into the PoS vault"),
                     ((false, "==", ejected.contains(validators.nth(1))), "the validator is reinstated"),
                     ((false, "==", pending.contains(validators.nth(1))), "the rejoin's slot is cleared"),
-                    (({6990: {"to": 8103, "topup": 5}}, "==", history.get(validators.nth(1))), "the freeze closes at the paying block, with the topup")
+                    (({6990: {"to": 8103, "topup": 5, "fromSequence": 7}}, "==", history.get(validators.nth(1))), "the freeze closes at the paying block, with the topup")
                   ],
                   *ackCh
                 )
@@ -861,7 +862,7 @@ in {
                         (((true, Nil), "==", resolved), "the resolution itself succeeds"),
                         (ejected.contains(validators.nth(0)), "an unpaid rejoin leaves its validator ejected"),
                         ((false, "==", pending.contains(validators.nth(0))), "and clears its slot"),
-                        (({7000: {"to": Nil, "topup": Nil}}, "==", history.get(validators.nth(0))), "and leaves its freeze open")
+                        (({7000: {"to": Nil, "topup": Nil, "fromSequence": 7}}, "==", history.get(validators.nth(0))), "and leaves its freeze open")
                       ],
                       *ackCh
                     )
@@ -1018,7 +1019,7 @@ in {
                               (((true, Nil), "==", resolved), "and passes"),
                               ((2, "==", before.size()), "the closed freeze survived the close at 9000"),
                               ((false, "==", after.contains(rejoined)), "and leaves at 10000"),
-                              (({9490: {"to": Nil, "topup": Nil}}, "==", after.get(target)), "while the open one stays")
+                              (({9490: {"to": Nil, "topup": Nil, "fromSequence": 7}}, "==", after.get(target)), "while the open one stays")
                             ],
                             *ackCh
                           )

@@ -1,4 +1,4 @@
-use casper::rust::block_status::{BlockError, InvalidBlock};
+use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
 use casper::rust::validator_identity::ValidatorIdentity;
@@ -275,6 +275,242 @@ async fn a_rejoin_the_electorate_backs_reinstates_its_validator() {
                         topup: 100
                     }))),
         "the paid rejoin closes the freeze at its block"
+    );
+}
+
+/// One bond unit in the bucket's `1 / PPM` units.
+const PPM_UNIT: u128 = 1_000_000;
+
+async fn admit_except(nodes: &mut [TestNode], skip: usize, block: &BlockMessage) {
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if index != skip {
+            let verdict = node.add_block(block.clone()).await.expect("process");
+            assert!(
+                matches!(verdict, Either::Right(ValidBlock::Valid)),
+                "block {} refused: {verdict:?}",
+                block.body.state.block_number
+            );
+        }
+    }
+}
+
+/// A validator that was cut off and ejected, once back, proposes on the view
+/// it held before the cut. Its block is numbered below its ejection floor,
+/// outside the freeze, and must still credit its bucket nothing.
+#[tokio::test]
+async fn a_backdated_block_from_an_ejected_validator_does_not_refill_its_bucket() {
+    let (mut nodes, _, _) = funded_network_with(|proof_of_stake| {
+        proof_of_stake.lambda_base_ppm = 5_000;
+        proof_of_stake.theta_eject_ppm = 900_000;
+        proof_of_stake.eject_observation_blocks = 10;
+        proof_of_stake.reward_rate_ppm = 50_000;
+    })
+    .await;
+    let bonds = nodes[0]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("snapshot")
+        .on_chain_state
+        .bonds_map
+        .clone();
+    let target = (0..nodes.len())
+        .find(|i| bonds[&identity(&nodes[*i])] == 5)
+        .expect("a validator bonded at 5");
+    let target_key: Validator = identity(&nodes[target]);
+    let others: Vec<usize> = (0..nodes.len()).filter(|i| *i != target).collect();
+    let voter = others[0];
+    let shortfall_in = |node: &TestNode| {
+        node.casper
+            .bucket_view()
+            .proposal(&identity(node))
+            .shortfall
+            .get(&target_key)
+            .copied()
+            .expect("the voter tracks the target")
+    };
+
+    for round in 0..60 {
+        let block = propose(&mut nodes[others[round % others.len()]], &[], &[]).await;
+        admit_except(&mut nodes, target, &block).await;
+    }
+    let opening = propose(&mut nodes[others[0]], std::slice::from_ref(&target_key), &[
+    ])
+    .await;
+    admit_except(&mut nodes, target, &opening).await;
+    let mut ejected = false;
+    for round in 0..200 {
+        let block = propose(
+            &mut nodes[others[round % others.len()]],
+            &[],
+            std::slice::from_ref(&target_key),
+        )
+        .await;
+        admit_except(&mut nodes, target, &block).await;
+        if matches!(resolutions_of(&block), Some(SystemDeployData::ResolveClaims { resolutions, .. })
+            if resolutions.iter().any(|r| r.claim.family == ClaimFamily::Eject
+                && r.claim.target == target_key && r.outcome == ClaimOutcome::Pass))
+        {
+            ejected = true;
+            break;
+        }
+    }
+    assert!(ejected, "the cut-off target is ejected");
+
+    // A view applies a freeze once its floor shows the ejection.
+    for round in 0..2 * others.len() {
+        let block = propose(&mut nodes[others[round % others.len()]], &[], &[]).await;
+        admit_except(&mut nodes, target, &block).await;
+    }
+    let before = shortfall_in(&nodes[voter]);
+    assert!(
+        before > PPM_UNIT,
+        "the target is drained: shortfall {before}"
+    );
+    let backdated = propose(&mut nodes[target], &[], &[]).await;
+    let backdated_number = backdated.body.state.block_number;
+    admit_except(&mut nodes, target, &backdated).await;
+    for round in 0..2 * others.len() {
+        let block = propose(&mut nodes[others[round % others.len()]], &[], &[]).await;
+        admit_except(&mut nodes, target, &block).await;
+    }
+    let after = shortfall_in(&nodes[voter]);
+    assert!(
+        after >= before,
+        "block #{backdated_number} from the ejected target refilled its bucket: \
+         shortfall {before} before, {after} after"
+    );
+}
+
+/// Blocks an ejected validator proposes while frozen credit its bucket
+/// nothing in other views, so a token topup leaves its shortfall uncovered
+/// and its rejoin does not pass.
+#[tokio::test]
+async fn blocks_an_ejected_validator_proposes_during_grace_do_not_refill_its_bucket() {
+    let (mut nodes, _, shard_id) = funded_network_with(|proof_of_stake| {
+        proof_of_stake.lambda_base_ppm = 5_000;
+        proof_of_stake.theta_eject_ppm = 900_000;
+        proof_of_stake.eject_observation_blocks = 10;
+        proof_of_stake.reward_rate_ppm = 50_000;
+    })
+    .await;
+    // A stake of 5 drains well over one bond unit below capacity, so a topup
+    // of 1 cannot cover its shortfall; the other three still hold more than
+    // two thirds of the stake to eject it.
+    let bonds = nodes[0]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("snapshot")
+        .on_chain_state
+        .bonds_map
+        .clone();
+    let target = (0..nodes.len())
+        .find(|i| bonds[&identity(&nodes[*i])] == 5)
+        .expect("a validator bonded at 5");
+    let target_key: Validator = identity(&nodes[target]);
+    let voter = (target + 1) % nodes.len();
+    let bucket_in = |node: &TestNode| {
+        node.casper
+            .bucket_view()
+            .snapshot()
+            .buckets
+            .into_iter()
+            .find(|bucket| bucket.validator == target_key)
+            .expect("the voter tracks the target's bucket")
+    };
+    let level_in = |node: &TestNode| bucket_in(node).level;
+
+    for round in 0..60 {
+        let index = (target + 1 + round % (nodes.len() - 1)) % nodes.len();
+        let block = propose(&mut nodes[index], &[], &[]).await;
+        admit_everywhere(&mut nodes, &block).await;
+    }
+    let silenced = bucket_in(&nodes[voter]);
+    assert!(
+        silenced.drained,
+        "the silent target is drained before its ejection: {silenced:?}"
+    );
+    eject(&mut nodes, target).await;
+
+    let frozen_at = level_in(&nodes[voter]);
+    let mut height = 0;
+    for round in 0..3 * nodes.len() {
+        let index = round % nodes.len();
+        let block = propose(&mut nodes[index], &[], &[]).await;
+        height = block.body.state.block_number;
+        admit_everywhere(&mut nodes, &block).await;
+    }
+    assert!(
+        level_in(&nodes[voter]) <= frozen_at,
+        "the ejected validator's own blocks refilled its bucket: {} after, {} at ejection",
+        level_in(&nodes[voter]),
+        frozen_at
+    );
+
+    let rejoin_deploy = construct_deploy::source_deploy(
+        r#"
+          new rl(`rho:registry:lookup`), poSCh, deployerId(`rho:system:deployerId`), ret in {
+            rl!(`rho:system:pos`, *poSCh) |
+            for (@(_, PoS) <- poSCh) {
+              @PoS!("rejoinFromEjection", *deployerId, 1, *ret)
+            }
+          }
+        "#
+        .to_string(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_millis() as i64,
+        Some(500_000),
+        None,
+        Some(key_of(&nodes[target]).private_key.clone()),
+        Some(height),
+        Some(shard_id.clone()),
+    )
+    .expect("deploy");
+    let mut requesting = None;
+    for node in nodes.iter_mut() {
+        if let casper::rust::blocks::proposer::propose_result::BlockCreatorResult::Created(
+            block,
+            ..,
+        ) = node
+            .create_block(std::slice::from_ref(&rejoin_deploy))
+            .await
+            .expect("block creation")
+        {
+            requesting = Some(block);
+            break;
+        }
+    }
+    let requesting = requesting.expect("some node includes the rejoin");
+    admit_everywhere(&mut nodes, &requesting).await;
+    let shortfall = nodes[voter]
+        .casper
+        .bucket_view()
+        .proposal(&identity(&nodes[voter]))
+        .shortfall
+        .get(&target_key)
+        .copied();
+    assert!(
+        shortfall.is_some_and(|s| s > PPM_UNIT),
+        "the voter sees more than one bond unit of shortfall: {shortfall:?}"
+    );
+    let resolving = propose_until(&mut nodes, None, |data| {
+        matches!(data, SystemDeployData::ResolveClaims { resolutions, .. }
+            if resolutions.iter().any(|r| r.claim.family == ClaimFamily::Rejoin
+                && r.claim.target == target_key))
+    })
+    .await;
+    let Some(SystemDeployData::ResolveClaims { resolutions, .. }) = resolutions_of(&resolving)
+    else {
+        unreachable!()
+    };
+    assert!(
+        resolutions
+            .iter()
+            .any(|r| r.claim.target == target_key && r.outcome == ClaimOutcome::Fail),
+        "a token rejoin fails: {resolutions:?}"
     );
 }
 
@@ -1823,7 +2059,7 @@ async fn a_backed_rejoin_passes_after_a_voter_leaves() {
                 .iter()
                 .find(|r| r.claim.family == ClaimFamily::Rejoin && r.claim.target == target_key)
             {
-                resolved = Some((resolution.outcome.clone(), block));
+                resolved = Some((resolution.outcome, block));
                 break;
             }
         }

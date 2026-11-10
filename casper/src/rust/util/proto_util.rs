@@ -1476,6 +1476,7 @@ mod merkle_block_hash_tests {
                 claimed_total: 0,
                 freezes: vec![FreezeInterval {
                     from: 3,
+                    from_sequence: 2,
                     rejoin: None,
                 }],
             }),

@@ -268,6 +268,8 @@ pub struct ClaimResolutionSerde {
     #[serde(with = "base64_bytes")]
     pub proposer: Vec<u8>,
     pub outcome: i32,
+    #[serde(rename = "fromSequence")]
+    pub from_sequence: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -327,6 +329,7 @@ impl From<ResolveClaimsSystemDeployDataProto> for ResolveClaimsSystemDeployDataS
                     opened_at: resolution.opened_at,
                     proposer: resolution.proposer.to_vec(),
                     outcome: resolution.outcome,
+                    from_sequence: resolution.from_sequence.map(|sequence| sequence.value),
                 })
                 .collect(),
             grace_expiries: validators_serde(data.grace_expiries),
@@ -358,6 +361,9 @@ impl From<ResolveClaimsSystemDeployDataSerde> for ResolveClaimsSystemDeployDataP
                     opened_at: resolution.opened_at,
                     proposer: resolution.proposer.into(),
                     outcome: resolution.outcome,
+                    from_sequence: resolution
+                        .from_sequence
+                        .map(|value| models::casper::SequenceNumberProto { value }),
                 })
                 .collect(),
             grace_expiries: validators_proto(data.grace_expiries),
@@ -894,6 +900,7 @@ mod tests {
                             opened_at: 2,
                             proposer: vec![3].into(),
                             outcome: 1,
+                            from_sequence: Some(models::casper::SequenceNumberProto { value: 7 }),
                         }],
                         floor_hash: vec![4].into(),
                         floor_number: 5,

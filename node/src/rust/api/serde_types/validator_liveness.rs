@@ -152,6 +152,7 @@ pub struct Freezes {
 #[serde(rename_all = "camelCase")]
 pub struct Freeze {
     pub from: i64,
+    pub from_sequence: i64,
     pub rejoined_at: Option<i64>,
     pub topup: Option<i64>,
 }
@@ -231,10 +232,12 @@ pub(crate) fn sample() -> ValidatorLiveness {
                 freezes: vec![(v(3), vec![
                     FreezeInterval {
                         from: 10,
+                        from_sequence: 4,
                         rejoin: Some(Rejoin { at: 20, topup: 5 }),
                     },
                     FreezeInterval {
                         from: 30,
+                        from_sequence: 9,
                         rejoin: None,
                     },
                 ])],
@@ -295,6 +298,7 @@ fn family(family: ClaimFamily) -> String {
 fn freeze(interval: &FreezeInterval) -> Freeze {
     Freeze {
         from: interval.from,
+        from_sequence: interval.from_sequence,
         rejoined_at: interval.rejoin.map(|rejoin| rejoin.at),
         topup: interval.rejoin.map(|rejoin| rejoin.topup),
     }

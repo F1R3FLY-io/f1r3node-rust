@@ -361,6 +361,8 @@ impl LeakyBucketProposal {
 pub struct Observation {
     pub block_hash: BlockHash,
     pub sender: Validator,
+    /// The sender's sequence number for this block.
+    pub sequence_number: i64,
     pub block_number: i64,
     pub committee: Committee,
     pub parents: Vec<ParentFact>,
@@ -383,6 +385,7 @@ impl Observation {
         Self {
             block_hash: block.block_hash.clone(),
             sender: block.sender.clone(),
+            sequence_number: i64::from(block.seq_num),
             block_number: block.body.state.block_number,
             committee: committee_of(&block.body.state.bonds),
             parents: parents
@@ -415,6 +418,7 @@ impl Observation {
 struct Logged {
     number: i64,
     sender: Validator,
+    sequence_number: i64,
     committee: Arc<BTreeMap<Validator, NonZeroU64>>,
     reward: u128,
 }
@@ -423,7 +427,7 @@ impl LeakyBucketParams {
     /// Folds one block into `validator`'s entry. A block whose committee
     /// leaves the validator out does not touch it: it stops draining and
     /// keeps its overflow, which a validator on its way out of the bond can
-    /// still claim. A block numbered inside one of its freezes only seats it.
+    /// still claim. A block one of its freezes covers only seats it.
     fn step(
         &self,
         entry: &mut Option<BucketEntry>,
@@ -435,7 +439,10 @@ impl LeakyBucketParams {
         let Some(capacity) = block.committee.get(validator).copied() else {
             return;
         };
-        let frozen = freezes.iter().any(|interval| interval.covers(block.number));
+        let own_sequence = (block.sender == *validator).then_some(block.sequence_number);
+        let frozen = freezes
+            .iter()
+            .any(|interval| interval.covers(block.number, own_sequence));
         let entry = match entry {
             Some(entry) => {
                 entry.refill(freezes, block.number, uncredited_through);
@@ -753,6 +760,7 @@ impl BucketView {
         let block = Logged {
             number: observation.block_number,
             sender: observation.sender.clone(),
+            sequence_number: observation.sequence_number,
             committee,
             reward,
         };
@@ -1118,11 +1126,20 @@ mod tests {
         }
     }
 
-    fn open_from(from: i64) -> FreezeInterval { FreezeInterval { from, rejoin: None } }
+    /// Observations carry their block number as their sequence number, so a
+    /// freeze from `from` holds the validator's sequence at `from - 1`.
+    fn open_from(from: i64) -> FreezeInterval {
+        FreezeInterval {
+            from,
+            from_sequence: from - 1,
+            rejoin: None,
+        }
+    }
 
     fn closed(from: i64, at: i64, topup: i64) -> FreezeInterval {
         FreezeInterval {
             from,
+            from_sequence: from - 1,
             rejoin: Some(Rejoin { at, topup }),
         }
     }
@@ -1153,6 +1170,7 @@ mod tests {
         Observation {
             block_hash: Bytes::from([number.to_le_bytes().as_slice(), &[sender]].concat()),
             sender: validator(sender),
+            sequence_number: number,
             block_number: number,
             committee: committee_of(&bonds(committee)),
             parents: parent_senders
@@ -1868,6 +1886,23 @@ mod tests {
         assert!(targets(&view).is_empty());
     }
 
+    /// A frozen validator's own block built on parents below its freeze
+    /// carries a low number but a sequence number past the freeze, and
+    /// credits it nothing.
+    #[test]
+    fn a_frozen_validators_backdated_block_credits_nothing() {
+        let committee = TRIO;
+        let view = draining_second_member();
+        view.reconcile(&frozen_floor(&committee, 2, &[open_from(71)]), 71);
+        let before = view.status_of(&validator(2)).expect("tracked");
+        let backdated = Observation {
+            sequence_number: 75,
+            ..observation(60, 2, &[1, 3], &committee)
+        };
+        view.observe(&backdated);
+        assert_eq!(view.status_of(&validator(2)), Some(before));
+    }
+
     fn rejoin_claim(target: u8, topup: i64) -> crate::rust::economics::claims::ClaimRecord {
         crate::rust::economics::claims::ClaimRecord {
             claim: models::rust::casper::protocol::casper_message::ClaimId {
@@ -2482,11 +2517,16 @@ mod tests {
                             let at = from + length;
                             intervals.push(FreezeInterval {
                                 from,
+                                from_sequence: from - 1,
                                 rejoin: Some(Rejoin { at, topup }),
                             });
                             from = at + 1;
                         } else {
-                            intervals.push(FreezeInterval { from, rejoin: None });
+                            intervals.push(FreezeInterval {
+                                from,
+                                from_sequence: from - 1,
+                                rejoin: None,
+                            });
                             break;
                         }
                     }
@@ -2577,6 +2617,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, interval)| FreezeInterval {
                     from: interval.from,
+                    from_sequence: interval.from_sequence,
                     rejoin: if index < stage.ends {
                         interval.rejoin
                     } else {
@@ -2607,6 +2648,7 @@ mod tests {
                         let at = from + length;
                         let interval = FreezeInterval {
                             from,
+                            from_sequence: from - 1,
                             rejoin: Some(Rejoin { at, topup }),
                         };
                         from = at + 1;
@@ -2702,7 +2744,11 @@ mod tests {
                     let spill: u128 = observed
                         .iter()
                         .filter(|(_, obs)| obs.sender == validator(W))
-                        .filter(|(_, obs)| !frozen.iter().any(|interval| interval.covers(obs.block_number)))
+                        .filter(|(_, obs)| {
+                            !frozen.iter().any(|interval| {
+                                interval.covers(obs.block_number, Some(obs.sequence_number))
+                            })
+                        })
                         .map(|(w_stake, obs)| {
                             reward_of(&view, obs).saturating_sub(*w_stake as u128 * PPM as u128)
                         })

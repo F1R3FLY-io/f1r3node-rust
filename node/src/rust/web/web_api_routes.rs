@@ -1437,7 +1437,7 @@ mod router_tests {
         );
         assert_eq!(json["decision"]["ejectionOffers"][0], validator(2));
         assert_eq!(json["decision"]["shortfall"][0]["amount"], "970000000");
-        assert_eq!(json["params"]["thetaEjectPpm"].is_u64(), true);
+        assert!(json["params"]["thetaEjectPpm"].is_u64());
 
         let finalized = &json["finalizedState"];
         assert_eq!(finalized["blockNumber"], 40);
@@ -1454,8 +1454,8 @@ mod router_tests {
         assert_eq!(
             finalized["freezes"][0]["intervals"],
             serde_json::json!([
-                { "from": 10, "rejoinedAt": 20, "topup": 5 },
-                { "from": 30, "rejoinedAt": null, "topup": null }
+                { "from": 10, "fromSequence": 4, "rejoinedAt": 20, "topup": 5 },
+                { "from": 30, "fromSequence": 9, "rejoinedAt": null, "topup": null }
             ])
         );
     }
