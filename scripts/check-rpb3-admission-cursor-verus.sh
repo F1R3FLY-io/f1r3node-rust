@@ -5,8 +5,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export TLC_REPO_ROOT="$repo_root"
 # The common CanonicalPath proof reaches roughly 1 GiB RSS; a 1 GiB soft
 # throttle spent its ten-minute limit reclaiming while consuming 10s CPU.
-export TLC_MEMORY_HIGH="${TLC_MEMORY_HIGH:-2G}"
-export TLC_RSS="${TLC_RSS:-3G}"
+# Per-function jobs on the integrated root now reach about 2.3 GiB with
+# Verus and Z3 together, and a 2 GiB soft throttle stalled one the same way.
+export TLC_MEMORY_HIGH="${TLC_MEMORY_HIGH:-4G}"
+export TLC_RSS="${TLC_RSS:-6G}"
 export TLC_CPU_QUOTA="${TLC_CPU_QUOTA:-100%}"
 export TLC_TASKS_MAX="${TLC_TASKS_MAX:-64}"
 export TLC_RUNTIME_MAX_SEC="${TLC_RUNTIME_MAX_SEC:-600}"
