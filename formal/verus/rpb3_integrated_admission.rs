@@ -2873,6 +2873,550 @@ pub proof fn product_root_initial_exact(
     product_frame_source_anchors_root(state);
 }
 
+/// The lemmas from here to `product_map_push_index_wf` carry the shape of a map
+/// push step, each in a solver query of its own: the child region, the admission
+/// frames of the two push steps, one lemma per concrete push action (for the
+/// indexed map value, its driver outcome and admission step are derived apart),
+/// the dispatcher over the action, and the per-index part of `product_score_wf`.
+/// `product_map_push_preserves_exact` then only combines their stated facts, so
+/// its own query never has to search the driver step for an abstract action.
+pub proof fn product_map_push_child_image(
+    parent: epm::IndexedRegionImage,
+    field: admission::IndexedCanonicalFieldModel,
+)
+    requires product_indexed_child(parent, field).is_some(),
+    ensures
+        product_indexed_child(parent, field).unwrap().bytes == field.payload_bytes,
+        epm::indexed_image_wf(product_indexed_child(parent, field).unwrap()),
+{
+    let child = product_indexed_child(parent, field).unwrap();
+    assert(child.bytes.len() == child.positions.len());
+}
+
+pub proof fn product_map_push_admission_frames(
+    state: admission::AdmissionState,
+    next: admission::AdmissionState,
+    parent_next: usize,
+    child: admission::AdmissionFrameState,
+    slot: usize,
+    repeated: bool,
+    field_tag: u32,
+    frame_bytes: usize,
+)
+    requires
+        admission::admission_push_step(
+            state, parent_next, child, slot, repeated, field_tag, frame_bytes,
+        ) == Some(next),
+    ensures
+        state.frames.len() > 0,
+        next.frames.len() == state.frames.len() + 1,
+        forall|i: int| 0 <= i < state.frames.len() - 1
+            ==> next.frames[i] == state.frames[i],
+        next.frames[state.frames.len() - 1].source_bytes == state.frames.last().source_bytes,
+        next.frames[state.frames.len() - 1].physical_start
+            == state.frames.last().physical_start,
+        next.frames[state.frames.len() - 1].physical_source
+            == state.frames.last().physical_source,
+        next.frames[state.frames.len() - 1].frame_kind == state.frames.last().frame_kind,
+        next.frames.last().source_bytes == child.source_bytes,
+{
+    assert forall|i: int| 0 <= i < state.frames.len() - 1
+        implies next.frames[i] == state.frames[i] by {}
+}
+
+pub proof fn product_map_push_concrete_frames(
+    state: admission::AdmissionState,
+    next: admission::AdmissionState,
+    action: admission::ConcreteFrameActionModel,
+)
+    requires
+        match action {
+            admission::ConcreteFrameActionModel::Push { .. }
+            | admission::ConcreteFrameActionModel::PushIndexed { .. } => true,
+            _ => false,
+        },
+        admission::concrete_message_driver_step(state, action)
+            == Some(admission::ConcreteFrameOutcomeModel::Pushed { state: next }),
+    ensures
+        state.frames.len() > 0,
+        next.frames.len() == state.frames.len() + 1,
+        forall|i: int| 0 <= i < state.frames.len() - 1
+            ==> next.frames[i] == state.frames[i],
+        next.frames[state.frames.len() - 1].source_bytes == state.frames.last().source_bytes,
+        next.frames[state.frames.len() - 1].physical_start
+            == state.frames.last().physical_start,
+        next.frames[state.frames.len() - 1].physical_source
+            == state.frames.last().physical_source,
+        next.frames[state.frames.len() - 1].frame_kind == state.frames.last().frame_kind,
+        match action {
+            admission::ConcreteFrameActionModel::Push { field, .. } =>
+                next.frames.last().source_bytes == field.payload_bytes,
+            admission::ConcreteFrameActionModel::PushIndexed { field, .. } =>
+                next.frames.last().source_bytes == field.payload_bytes,
+            _ => true,
+        },
+{
+    let view = admission::concrete_message_view(state).unwrap();
+    match action {
+        admission::ConcreteFrameActionModel::Push { field, child, frame_bytes } => {
+            assert(admission::concrete_message_push(view, field, child, frame_bytes)
+                == Some(next));
+            assert forall|i: int| 0 <= i < state.frames.len() - 1
+                implies next.frames[i] == state.frames[i] by {}
+        },
+        admission::ConcreteFrameActionModel::PushIndexed {
+            field, child, parent_source, frame_bytes,
+        } => {
+            assert(admission::concrete_message_push_indexed(
+                view, field, child, parent_source, frame_bytes,
+            ) == Some(next));
+            assert forall|i: int| 0 <= i < state.frames.len() - 1
+                implies next.frames[i] == state.frames[i] by {}
+        },
+        _ => {},
+    }
+}
+
+pub proof fn product_map_push_message_shape(
+    before: ProductScoreState, after: ProductScoreState,
+    field: admission::IndexedCanonicalFieldModel,
+    child: admission::AdmissionFrameState,
+    frame_bytes: usize,
+)
+    requires
+        before.map.admission == before.bridge.admission,
+        product_map_step(
+            before, after,
+            map::IntegratedAdmissionAction::Message {
+                action: admission::ConcreteFrameActionModel::Push { field, child, frame_bytes },
+            },
+        ),
+    ensures
+        map::integrated_admission_wf(after.map),
+        score_bridge::bridge_well_formed(after.bridge),
+        after.map.admission == after.bridge.admission,
+        after.map.transcript == after.bridge.transcript,
+        after.epm_frames == before.epm_frames.push(None),
+        after.accepted_epm_sources == product_epm_receipts_carried(before, after),
+        after.indexed_regions.len() == before.indexed_regions.len() + 1,
+        after.indexed_regions.drop_last() == before.indexed_regions,
+        before.bridge.admission.frames.len() > 0,
+        after.bridge.admission.frames.len()
+            == before.bridge.admission.frames.len() + 1,
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1
+            ==> after.bridge.admission.frames[i]
+                == before.bridge.admission.frames[i],
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .source_bytes == before.bridge.admission.frames.last().source_bytes,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_start == before.bridge.admission.frames.last().physical_start,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_source == before.bridge.admission.frames.last().physical_source,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .frame_kind == before.bridge.admission.frames.last().frame_kind,
+        epm::indexed_image_wf(after.indexed_regions.last()),
+        after.bridge.admission.frames.last().source_bytes
+            == after.indexed_regions.last().bytes,
+        after.bridge.admission.frames.last().physical_start
+            == product_indexed_start_anchor(after.indexed_regions.last()).offset,
+        after.bridge.admission.frames.last().physical_source
+            == product_indexed_start_anchor(after.indexed_regions.last()).source,
+{
+    let push = admission::ConcreteFrameActionModel::Push { field, child, frame_bytes };
+    let action = map::IntegratedAdmissionAction::Message { action: push };
+    map::integrated_driver_preserves_wf(before.map, action);
+    let source_action = map::integrated_source_message_action(before.map.admission, push).unwrap();
+    assert(map::integrated_admission_driver_step(before.map, action)
+        == Some(map::IntegratedAdmissionOutcome::MessagePushed { state: after.map }));
+    assert(admission::concrete_message_driver_step(before.map.admission, source_action)
+        == Some(admission::ConcreteFrameOutcomeModel::Pushed { state: after.map.admission }));
+    product_map_push_concrete_frames(
+        before.bridge.admission, after.bridge.admission, source_action,
+    );
+    let image = product_indexed_child(before.indexed_regions.last(), field).unwrap();
+    product_map_push_child_image(before.indexed_regions.last(), field);
+    assert(after.indexed_regions == before.indexed_regions.push(image));
+    assert(after.indexed_regions.drop_last() =~= before.indexed_regions);
+}
+
+pub proof fn product_map_push_message_indexed_shape(
+    before: ProductScoreState, after: ProductScoreState,
+    field: admission::IndexedCanonicalFieldModel,
+    child: admission::AdmissionFrameState,
+    parent_source: admission::AdmissionIndexedSourceImage,
+    frame_bytes: usize,
+)
+    requires
+        before.map.admission == before.bridge.admission,
+        product_map_step(
+            before, after,
+            map::IntegratedAdmissionAction::Message {
+                action: admission::ConcreteFrameActionModel::PushIndexed {
+                    field, child, parent_source, frame_bytes,
+                },
+            },
+        ),
+    ensures
+        map::integrated_admission_wf(after.map),
+        score_bridge::bridge_well_formed(after.bridge),
+        after.map.admission == after.bridge.admission,
+        after.map.transcript == after.bridge.transcript,
+        after.epm_frames == before.epm_frames.push(None),
+        after.accepted_epm_sources == product_epm_receipts_carried(before, after),
+        after.indexed_regions.len() == before.indexed_regions.len() + 1,
+        after.indexed_regions.drop_last() == before.indexed_regions,
+        before.bridge.admission.frames.len() > 0,
+        after.bridge.admission.frames.len()
+            == before.bridge.admission.frames.len() + 1,
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1
+            ==> after.bridge.admission.frames[i]
+                == before.bridge.admission.frames[i],
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .source_bytes == before.bridge.admission.frames.last().source_bytes,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_start == before.bridge.admission.frames.last().physical_start,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_source == before.bridge.admission.frames.last().physical_source,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .frame_kind == before.bridge.admission.frames.last().frame_kind,
+        epm::indexed_image_wf(after.indexed_regions.last()),
+        after.bridge.admission.frames.last().source_bytes
+            == after.indexed_regions.last().bytes,
+        after.bridge.admission.frames.last().physical_start
+            == product_indexed_start_anchor(after.indexed_regions.last()).offset,
+        after.bridge.admission.frames.last().physical_source
+            == product_indexed_start_anchor(after.indexed_regions.last()).source,
+{
+    let push = admission::ConcreteFrameActionModel::PushIndexed {
+        field, child, parent_source, frame_bytes,
+    };
+    let action = map::IntegratedAdmissionAction::Message { action: push };
+    map::integrated_driver_preserves_wf(before.map, action);
+    product_map_indexed_push_anchor_exact(
+        before, after, field, child, parent_source, frame_bytes,
+    );
+    let source_action = map::integrated_source_message_action(before.map.admission, push).unwrap();
+    assert(map::integrated_admission_driver_step(before.map, action)
+        == Some(map::IntegratedAdmissionOutcome::MessagePushed { state: after.map }));
+    assert(admission::concrete_message_driver_step(before.map.admission, source_action)
+        == Some(admission::ConcreteFrameOutcomeModel::Pushed { state: after.map.admission }));
+    product_map_push_concrete_frames(
+        before.bridge.admission, after.bridge.admission, source_action,
+    );
+    let image = product_indexed_child(before.indexed_regions.last(), field).unwrap();
+    product_map_push_child_image(before.indexed_regions.last(), field);
+    assert(after.indexed_regions == before.indexed_regions.push(image));
+    assert(after.indexed_regions.drop_last() =~= before.indexed_regions);
+}
+
+pub proof fn product_map_push_value_shape(
+    before: ProductScoreState, after: ProductScoreState,
+    field: admission::IndexedCanonicalFieldModel,
+    child: admission::AdmissionFrameState,
+    frame_bytes: usize,
+)
+    requires
+        before.map.admission == before.bridge.admission,
+        product_map_step(
+            before, after,
+            map::IntegratedAdmissionAction::MapValue { field, child, frame_bytes },
+        ),
+    ensures
+        map::integrated_admission_wf(after.map),
+        score_bridge::bridge_well_formed(after.bridge),
+        after.map.admission == after.bridge.admission,
+        after.map.transcript == after.bridge.transcript,
+        after.epm_frames == before.epm_frames.push(None),
+        after.accepted_epm_sources == product_epm_receipts_carried(before, after),
+        after.indexed_regions.len() == before.indexed_regions.len() + 1,
+        after.indexed_regions.drop_last() == before.indexed_regions,
+        before.bridge.admission.frames.len() > 0,
+        after.bridge.admission.frames.len()
+            == before.bridge.admission.frames.len() + 1,
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1
+            ==> after.bridge.admission.frames[i]
+                == before.bridge.admission.frames[i],
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .source_bytes == before.bridge.admission.frames.last().source_bytes,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_start == before.bridge.admission.frames.last().physical_start,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_source == before.bridge.admission.frames.last().physical_source,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .frame_kind == before.bridge.admission.frames.last().frame_kind,
+        epm::indexed_image_wf(after.indexed_regions.last()),
+        after.bridge.admission.frames.last().source_bytes
+            == after.indexed_regions.last().bytes,
+        after.bridge.admission.frames.last().physical_start
+            == product_indexed_start_anchor(after.indexed_regions.last()).offset,
+        after.bridge.admission.frames.last().physical_source
+            == product_indexed_start_anchor(after.indexed_regions.last()).source,
+{
+    let action = map::IntegratedAdmissionAction::MapValue { field, child, frame_bytes };
+    map::integrated_driver_preserves_wf(before.map, action);
+    let current = before.map.map_frames[before.map.admission.frames.len() - 1].unwrap();
+    assert(map::integrated_admission_driver_step(before.map, action)
+        == Some(map::IntegratedAdmissionOutcome::MapValuePushed { state: after.map }));
+    let pushed = map::map_admission_value_push(
+        current, before.map.admission, field, child, frame_bytes,
+    ).unwrap();
+    assert(after.map.admission == pushed.1);
+    assert(child.source_bytes == field.payload_bytes);
+    assert(admission::admission_push_step(
+        before.bridge.admission, field.encoded_end, child, 1, false, 2, frame_bytes,
+    ) == Some(after.bridge.admission));
+    product_map_push_admission_frames(
+        before.bridge.admission, after.bridge.admission, field.encoded_end, child,
+        1, false, 2, frame_bytes,
+    );
+    let image = product_indexed_child(before.indexed_regions.last(), field).unwrap();
+    product_map_push_child_image(before.indexed_regions.last(), field);
+    assert(after.indexed_regions == before.indexed_regions.push(image));
+    assert(after.indexed_regions.drop_last() =~= before.indexed_regions);
+}
+
+pub proof fn product_map_push_value_indexed_outcome(
+    before: ProductScoreState, after: ProductScoreState,
+    field: admission::IndexedCanonicalFieldModel,
+    child: admission::AdmissionFrameState,
+    parent_source: admission::AdmissionIndexedSourceImage,
+    frame_bytes: usize,
+)
+    requires
+        product_map_step(
+            before, after,
+            map::IntegratedAdmissionAction::MapValueIndexed {
+                field, child, parent_source, frame_bytes,
+            },
+        ),
+    ensures
+        map::integrated_admission_driver_step(
+            before.map,
+            map::IntegratedAdmissionAction::MapValueIndexed {
+                field, child, parent_source, frame_bytes,
+            },
+        ) == Some(map::IntegratedAdmissionOutcome::MapValuePushed { state: after.map }),
+{
+}
+
+pub proof fn product_map_push_value_indexed_admission(
+    state: map::IntegratedAdmissionState,
+    next: map::IntegratedAdmissionState,
+    field: admission::IndexedCanonicalFieldModel,
+    child: admission::AdmissionFrameState,
+    parent_source: admission::AdmissionIndexedSourceImage,
+    frame_bytes: usize,
+)
+    requires
+        map::integrated_admission_driver_step(
+            state,
+            map::IntegratedAdmissionAction::MapValueIndexed {
+                field, child, parent_source, frame_bytes,
+            },
+        ) == Some(map::IntegratedAdmissionOutcome::MapValuePushed { state: next }),
+    ensures
+        admission::admission_push_step(
+            state.admission, field.encoded_end, child, 1, false, 2, frame_bytes,
+        ) == Some(next.admission),
+{
+    let current = state.map_frames[state.admission.frames.len() - 1].unwrap();
+    let pushed = map::map_admission_value_push_indexed(
+        current, state.admission, field, child, parent_source, frame_bytes,
+    ).unwrap();
+    assert(next.admission == pushed.1);
+}
+
+pub proof fn product_map_push_value_indexed_shape(
+    before: ProductScoreState, after: ProductScoreState,
+    field: admission::IndexedCanonicalFieldModel,
+    child: admission::AdmissionFrameState,
+    parent_source: admission::AdmissionIndexedSourceImage,
+    frame_bytes: usize,
+)
+    requires
+        before.map.admission == before.bridge.admission,
+        product_map_step(
+            before, after,
+            map::IntegratedAdmissionAction::MapValueIndexed {
+                field, child, parent_source, frame_bytes,
+            },
+        ),
+    ensures
+        map::integrated_admission_wf(after.map),
+        score_bridge::bridge_well_formed(after.bridge),
+        after.map.admission == after.bridge.admission,
+        after.map.transcript == after.bridge.transcript,
+        after.epm_frames == before.epm_frames.push(None),
+        after.accepted_epm_sources == product_epm_receipts_carried(before, after),
+        after.indexed_regions.len() == before.indexed_regions.len() + 1,
+        after.indexed_regions.drop_last() == before.indexed_regions,
+        before.bridge.admission.frames.len() > 0,
+        after.bridge.admission.frames.len()
+            == before.bridge.admission.frames.len() + 1,
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1
+            ==> after.bridge.admission.frames[i]
+                == before.bridge.admission.frames[i],
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .source_bytes == before.bridge.admission.frames.last().source_bytes,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_start == before.bridge.admission.frames.last().physical_start,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_source == before.bridge.admission.frames.last().physical_source,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .frame_kind == before.bridge.admission.frames.last().frame_kind,
+        epm::indexed_image_wf(after.indexed_regions.last()),
+        after.bridge.admission.frames.last().source_bytes
+            == after.indexed_regions.last().bytes,
+        after.bridge.admission.frames.last().physical_start
+            == product_indexed_start_anchor(after.indexed_regions.last()).offset,
+        after.bridge.admission.frames.last().physical_source
+            == product_indexed_start_anchor(after.indexed_regions.last()).source,
+{
+    let action = map::IntegratedAdmissionAction::MapValueIndexed {
+        field, child, parent_source, frame_bytes,
+    };
+    map::integrated_driver_preserves_wf(before.map, action);
+    product_map_push_value_indexed_outcome(
+        before, after, field, child, parent_source, frame_bytes,
+    );
+    product_map_push_value_indexed_admission(
+        before.map, after.map, field, child, parent_source, frame_bytes,
+    );
+    product_map_push_admission_frames(
+        before.bridge.admission, after.bridge.admission, field.encoded_end, child,
+        1, false, 2, frame_bytes,
+    );
+    product_map_value_indexed_push_anchor_exact(
+        before, after, field, child, parent_source, frame_bytes,
+    );
+    let image = product_indexed_child(before.indexed_regions.last(), field).unwrap();
+    product_map_push_child_image(before.indexed_regions.last(), field);
+    assert(after.indexed_regions == before.indexed_regions.push(image));
+    assert(after.indexed_regions.drop_last() =~= before.indexed_regions);
+}
+
+pub proof fn product_map_push_shape(
+    before: ProductScoreState, after: ProductScoreState,
+    action: map::IntegratedAdmissionAction,
+    outcome: map::IntegratedAdmissionOutcome,
+)
+    requires
+        before.map.admission == before.bridge.admission,
+        product_map_step(before, after, action),
+        map::integrated_admission_driver_step(before.map, action) == Some(outcome),
+        match outcome {
+            map::IntegratedAdmissionOutcome::MessagePushed { .. }
+            | map::IntegratedAdmissionOutcome::MapValuePushed { .. } => true,
+            _ => false,
+        },
+    ensures
+        map::integrated_admission_wf(after.map),
+        score_bridge::bridge_well_formed(after.bridge),
+        after.map.admission == after.bridge.admission,
+        after.map.transcript == after.bridge.transcript,
+        after.epm_frames == before.epm_frames.push(None),
+        after.accepted_epm_sources == product_epm_receipts_carried(before, after),
+        after.indexed_regions.len() == before.indexed_regions.len() + 1,
+        after.indexed_regions.drop_last() == before.indexed_regions,
+        before.bridge.admission.frames.len() > 0,
+        after.bridge.admission.frames.len()
+            == before.bridge.admission.frames.len() + 1,
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1
+            ==> after.bridge.admission.frames[i]
+                == before.bridge.admission.frames[i],
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .source_bytes == before.bridge.admission.frames.last().source_bytes,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_start == before.bridge.admission.frames.last().physical_start,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .physical_source == before.bridge.admission.frames.last().physical_source,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .frame_kind == before.bridge.admission.frames.last().frame_kind,
+        epm::indexed_image_wf(after.indexed_regions.last()),
+        after.bridge.admission.frames.last().source_bytes
+            == after.indexed_regions.last().bytes,
+        after.bridge.admission.frames.last().physical_start
+            == product_indexed_start_anchor(after.indexed_regions.last()).offset,
+        after.bridge.admission.frames.last().physical_source
+            == product_indexed_start_anchor(after.indexed_regions.last()).source,
+{
+    match action {
+        map::IntegratedAdmissionAction::Message {
+            action: admission::ConcreteFrameActionModel::Push { field, child, frame_bytes },
+        } => product_map_push_message_shape(before, after, field, child, frame_bytes),
+        map::IntegratedAdmissionAction::Message {
+            action: admission::ConcreteFrameActionModel::PushIndexed {
+                field, child, parent_source, frame_bytes,
+            },
+        } => product_map_push_message_indexed_shape(
+            before, after, field, child, parent_source, frame_bytes,
+        ),
+        map::IntegratedAdmissionAction::MapValue { field, child, frame_bytes } =>
+            product_map_push_value_shape(before, after, field, child, frame_bytes),
+        map::IntegratedAdmissionAction::MapValueIndexed {
+            field, child, parent_source, frame_bytes,
+        } => product_map_push_value_indexed_shape(
+            before, after, field, child, parent_source, frame_bytes,
+        ),
+        _ => assert(product_map_regions(before, action, outcome).is_none()),
+    }
+}
+
+pub proof fn product_map_push_index_wf(
+    before: ProductScoreState, after: ProductScoreState, index: int,
+)
+    requires
+        product_score_wf(before),
+        0 <= index < after.epm_frames.len(),
+        after.epm_frames == before.epm_frames.push(None),
+        after.indexed_regions.len() == before.indexed_regions.len() + 1,
+        after.indexed_regions.drop_last() == before.indexed_regions,
+        before.bridge.admission.frames.len() > 0,
+        after.bridge.admission.frames.len()
+            == before.bridge.admission.frames.len() + 1,
+        forall|i: int| 0 <= i < before.bridge.admission.frames.len() - 1
+            ==> after.bridge.admission.frames[i]
+                == before.bridge.admission.frames[i],
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .source_bytes == before.bridge.admission.frames.last().source_bytes,
+        after.bridge.admission.frames[before.bridge.admission.frames.len() - 1]
+            .frame_kind == before.bridge.admission.frames.last().frame_kind,
+        epm::indexed_image_wf(after.indexed_regions.last()),
+        after.bridge.admission.frames.last().source_bytes
+            == after.indexed_regions.last().bytes,
+    ensures
+        epm::indexed_image_wf(after.indexed_regions[index]),
+        after.indexed_regions[index].bytes
+            == after.bridge.admission.frames[index].source_bytes,
+        match after.epm_frames[index] {
+            None => true,
+            Some(frame) => {
+                &&& after.bridge.admission.frames[index].frame_kind == 3
+                &&& frame.snapshot == after.indexed_regions[index]
+                &&& epm::frame_layout_wf(frame)
+            },
+        },
+{
+    let parent = before.bridge.admission.frames.len() - 1;
+    if index <= parent {
+        assert(index < before.epm_frames.len());
+        assert(index < before.indexed_regions.len());
+        vstd::seq::lemma_seq_push_index_different_alt(before.epm_frames, None, index);
+        vstd::seq::lemma_seq_subrange_index_alt(
+            after.indexed_regions, 0, after.indexed_regions.len() as int - 1, index,
+        );
+        assert(after.epm_frames[index] == before.epm_frames[index]);
+        assert(after.indexed_regions[index] == before.indexed_regions[index]);
+        if index < parent {
+            assert(after.bridge.admission.frames[index]
+                == before.bridge.admission.frames[index]);
+        }
+    } else {
+        assert(index == parent + 1);
+        assert(after.epm_frames[index].is_none());
+    }
+}
+
 pub proof fn product_map_push_preserves_exact(
     before: ProductScoreState, after: ProductScoreState,
     action: map::IntegratedAdmissionAction,
@@ -2889,69 +3433,13 @@ pub proof fn product_map_push_preserves_exact(
         },
     ensures product_score_wf(after),
 {
-    map::integrated_driver_preserves_wf(before.map, action);
-    assert(map::integrated_admission_wf(after.map));
-    assert(score_bridge::bridge_well_formed(after.bridge));
-    assert(admission::admission_state_wf(after.bridge.admission));
-    let parent = before.bridge.admission.frames.len() - 1;
-    assert(after.epm_frames == before.epm_frames.push(None));
-    assert(after.epm_frames.len() == after.bridge.admission.frames.len());
-    assert(after.indexed_regions.len() == after.bridge.admission.frames.len());
-    match action {
-        map::IntegratedAdmissionAction::Message {
-            action: admission::ConcreteFrameActionModel::Push { field, .. },
-        } => {
-            let child = product_indexed_child(before.indexed_regions.last(), field).unwrap();
-            assert(after.indexed_regions == before.indexed_regions.push(child));
-            assert(child.bytes == field.payload_bytes);
-            assert(child.bytes == after.bridge.admission.frames[parent + 1].source_bytes);
-            assert(epm::indexed_image_wf(child));
-            assert(after.bridge.admission.frames[parent + 1].physical_source
-                == product_indexed_start_anchor(child).source);
-            assert(after.bridge.admission.frames[parent + 1].physical_start
-                == product_indexed_start_anchor(child).offset);
-        },
-        map::IntegratedAdmissionAction::Message {
-            action: admission::ConcreteFrameActionModel::PushIndexed { field, .. },
-        } => {
-            let child = product_indexed_child(before.indexed_regions.last(), field).unwrap();
-            assert(after.indexed_regions == before.indexed_regions.push(child));
-            assert(child.bytes == field.payload_bytes);
-            assert(child.bytes == after.bridge.admission.frames[parent + 1].source_bytes);
-            assert(epm::indexed_image_wf(child));
-            assert(after.bridge.admission.frames[parent + 1].physical_source
-                == product_indexed_start_anchor(child).source);
-            assert(after.bridge.admission.frames[parent + 1].physical_start
-                == product_indexed_start_anchor(child).offset);
-        },
-        map::IntegratedAdmissionAction::MapValue { field, .. } => {
-            let child = product_indexed_child(before.indexed_regions.last(), field).unwrap();
-            assert(after.indexed_regions == before.indexed_regions.push(child));
-            assert(child.bytes == field.payload_bytes);
-            assert(child.bytes == after.bridge.admission.frames[parent + 1].source_bytes);
-            assert(epm::indexed_image_wf(child));
-            assert(after.bridge.admission.frames[parent + 1].physical_source
-                == product_indexed_start_anchor(child).source);
-            assert(after.bridge.admission.frames[parent + 1].physical_start
-                == product_indexed_start_anchor(child).offset);
-        },
-        map::IntegratedAdmissionAction::MapValueIndexed { field, .. } => {
-            let child = product_indexed_child(before.indexed_regions.last(), field).unwrap();
-            assert(after.indexed_regions == before.indexed_regions.push(child));
-            assert(child.bytes == field.payload_bytes);
-            assert(child.bytes == after.bridge.admission.frames[parent + 1].source_bytes);
-            assert(epm::indexed_image_wf(child));
-            assert(after.bridge.admission.frames[parent + 1].physical_source
-                == product_indexed_start_anchor(child).source);
-            assert(after.bridge.admission.frames[parent + 1].physical_start
-                == product_indexed_start_anchor(child).offset);
-        },
-        _ => assert(false),
-    }
-    assert(after.indexed_regions.drop_last() == before.indexed_regions);
+    product_map_push_shape(before, after, action, outcome);
     product_frame_source_anchors_push(before, after);
     product_epm_receipts_carried_preserves(before, after);
-    assert forall|i: int| 0 <= i < after.epm_frames.len() ==> {
+    assert forall|i: int|
+        #![trigger after.indexed_regions[i]]
+        #![trigger after.epm_frames[i]]
+        0 <= i < after.epm_frames.len() implies {
         &&& epm::indexed_image_wf(after.indexed_regions[i])
         &&& after.indexed_regions[i].bytes
             == after.bridge.admission.frames[i].source_bytes
@@ -2964,57 +3452,8 @@ pub proof fn product_map_push_preserves_exact(
             },
         }
     } by {
-        if 0 <= i && i < after.epm_frames.len() {
-            if i <= parent {
-                assert(i < before.epm_frames.len());
-                assert(i < before.indexed_regions.len());
-                assert(after.indexed_regions.len() == before.indexed_regions.len() + 1);
-                assert(after.indexed_regions.len() > 0);
-                assert(i < after.indexed_regions.len() as int - 1);
-                assert(after.epm_frames == before.epm_frames.push(None));
-                assert(after.indexed_regions.drop_last() == before.indexed_regions);
-                vstd::seq::lemma_seq_push_index_different_alt(
-                    before.epm_frames, None, i,
-                );
-                vstd::seq::lemma_seq_subrange_index_alt(
-                    after.indexed_regions, 0,
-                    after.indexed_regions.len() as int - 1, i,
-                );
-                assert(after.epm_frames[i] == before.epm_frames[i]);
-                assert(after.indexed_regions[i] == before.indexed_regions[i]);
-                if i < parent {
-                    assert(after.bridge.admission.frames[i]
-                        == before.bridge.admission.frames[i]);
-                } else {
-                    assert(i == parent);
-                    assert(after.bridge.admission.frames[i].source_bytes
-                        == before.bridge.admission.frames[i].source_bytes);
-                    assert(after.bridge.admission.frames[i].physical_source
-                        == before.bridge.admission.frames[i].physical_source);
-                    assert(after.bridge.admission.frames[i].physical_start
-                        == before.bridge.admission.frames[i].physical_start);
-                    assert(after.bridge.admission.frames[i].frame_kind
-                        == before.bridge.admission.frames[i].frame_kind);
-                }
-            } else {
-                assert(i == parent + 1);
-                assert(after.epm_frames[i].is_none());
-            }
-        }
+        product_map_push_index_wf(before, after, i);
     }
-    assert(forall|i: int| 0 <= i < after.epm_frames.len() ==> {
-        &&& epm::indexed_image_wf(after.indexed_regions[i])
-        &&& after.indexed_regions[i].bytes
-            == after.bridge.admission.frames[i].source_bytes
-        &&& match after.epm_frames[i] {
-            None => true,
-            Some(frame) => {
-                &&& after.bridge.admission.frames[i].frame_kind == 3
-                &&& frame.snapshot == after.indexed_regions[i]
-                &&& epm::frame_layout_wf(frame)
-            },
-        }
-    });
     product_score_wf_intro(after);
 }
 

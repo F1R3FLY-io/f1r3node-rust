@@ -284,6 +284,17 @@ integrated_core_proofs=(
   product_epm_source_root_score_selected_exact
   product_epm_source_child_score_selected_exact
   product_epm_child_return_source_exact product_root_initial_exact
+  product_map_push_child_image
+  product_map_push_admission_frames
+  product_map_push_concrete_frames
+  product_map_push_message_shape
+  product_map_push_message_indexed_shape
+  product_map_push_value_shape
+  product_map_push_value_indexed_outcome
+  product_map_push_value_indexed_admission
+  product_map_push_value_indexed_shape
+  product_map_push_shape
+  product_map_push_index_wf
   product_map_push_preserves_exact product_map_pop_preserves_exact
   product_map_steady_preserves_exact product_map_step_preserves_exact
   product_epm_handoff_preserves_exact product_epm_continue_preserves_exact
