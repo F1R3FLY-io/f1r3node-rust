@@ -482,6 +482,31 @@ async fn timely_verdicts_grow_the_release_window() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn verdicts_of_deploys_that_lost_merges_do_not_cut_release() {
+    let (node, queue, _dir) = queue_with_backlog(60).await;
+    // The first window settles twenty heights after release, every deploy
+    // after losing merges: conflicts between deploys, not a shard short of
+    // room. They still show the shard settling, so the round is no stall.
+    advance(&node, 11, 30);
+    reaches_tip(&queue, 30).await;
+    let verdicts: Vec<Value> = distinct_received(&node)
+        .into_iter()
+        .map(|sig| {
+            json!({"deploy-id": hex::encode(sig), "state": "finalized",
+                   "rejection-count": 2, "block-hash": format!("{:064x}", 30)})
+        })
+        .collect();
+    node.emit(json!({"event": "deploy-verdicts", "schema-version": 1,
+                     "payload": {"verdicts": verdicts}}));
+    advance(&node, 31, 37);
+    reaches_tip(&queue, 37).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let snapshot = queue.handle.snapshot().await.unwrap();
+    assert_eq!(snapshot.release_cuts, Some(0), "{:?}", snapshot);
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_deploy_that_keeps_losing_does_not_shrink_its_queue() {
     let (node, queue, _dir) = queue_with_backlog(200).await;
     let stuck = node.received()[0].to_signed().unwrap().sig.to_vec();

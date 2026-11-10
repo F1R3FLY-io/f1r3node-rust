@@ -1037,7 +1037,12 @@ impl Engine {
                 released_at,
                 self.window.as_mut(),
             ) {
-                window.on_verdict(tip - released_at);
+                let lost_merges = node.as_ref().is_some_and(|(rejections, _)| *rejections > 0);
+                if lost_merges {
+                    window.on_lost_merge_verdict();
+                } else {
+                    window.on_verdict(tip - released_at);
+                }
             }
         }
         self.update(sig, |record| {

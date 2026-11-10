@@ -25,6 +25,7 @@ struct Round {
     start: i64,
     on_time: usize,
     late: usize,
+    lost_merges: usize,
     held_back: bool,
     settle_delays: Vec<i64>,
     inclusion_delays: Vec<i64>,
@@ -37,10 +38,12 @@ struct Round {
 /// typical deploy cannot settle in time, so the window halves; a round in
 /// which a full window settled nothing (deploys held back, no verdict, a
 /// deploy released before the round still waiting) is a stall and halves it
-/// too. One deploy that keeps losing merges is one late verdict in
-/// its round, never a cut by itself. Otherwise, if deploys were held back
-/// for want of room and some settled in time, the window grows by one. It starts at one deploy per
-/// height of a round, already near what a validator settles, so growth is
+/// too. A deploy that lost merges settles late because it conflicted with
+/// other deploys, not for want of room: its verdict shows the shard settling,
+/// so it rules out a stall, but it is neither late nor on time. Otherwise, if
+/// deploys were held back for want of room and some settled in time, the
+/// window grows by one. It starts at one deploy per height of a round,
+/// already near what a validator settles, so growth is
 /// additive from the start: doubling would overshoot the shard by the time
 /// a round's late verdicts could show it. Queues sharing the shard see the
 /// same rounds and converge on equal shares of it.
@@ -92,6 +95,13 @@ impl ReleaseWindow {
         }
     }
 
+    /// A released deploy settled after losing at least one merge.
+    pub fn on_lost_merge_verdict(&mut self) {
+        if let Some(round) = self.round.as_mut() {
+            round.lost_merges += 1;
+        }
+    }
+
     /// A released deploy reached its first block `delay` heights after
     /// release.
     pub fn on_inclusion(&mut self, delay: i64) {
@@ -140,7 +150,7 @@ impl ReleaseWindow {
         }
         let cut = if verdicts > 0 && round.late * 2 > verdicts {
             Some(Cut::OverCapacity)
-        } else if verdicts == 0
+        } else if verdicts + round.lost_merges == 0
             && round.held_back
             && oldest_unsettled_release.is_some_and(|at| at < round.start)
         {
@@ -241,6 +251,19 @@ mod tests {
             None,
             "one old deploy waiting on an otherwise idle queue is not a stall"
         );
+    }
+
+    #[test]
+    fn verdicts_of_deploys_that_lost_merges_neither_cut_nor_grow_and_rule_out_a_stall() {
+        let mut w = started();
+        w.record_held_back();
+        assert_eq!(w.on_tip(13, Some(0)), None);
+        for _ in 0..13 {
+            w.on_lost_merge_verdict();
+        }
+        w.record_held_back();
+        assert_eq!(w.on_tip(26, Some(0)), None);
+        assert_eq!((w.limit(), w.cuts()), (13, 0));
     }
 
     #[test]
