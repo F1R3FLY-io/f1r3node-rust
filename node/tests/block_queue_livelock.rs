@@ -1111,6 +1111,59 @@ async fn a_chain_is_validated_when_its_parent_arrives_while_a_paused_peer_is_ask
     );
 }
 
+// ── R7: a child received while its parent is being validated ───────────────
+
+/// Three validators. The first validator's block is held in validation. While
+/// it is, the second validator's block on it arrives, then a block of the
+/// first validator that cites that one. Every block request is held shut, so
+/// nothing the node lacks can be fetched: once validation opens, every block
+/// must reach the DAG from what the node already received.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn a_child_received_while_its_parent_is_validated_is_validated_without_a_request() {
+    init_tracing();
+    let mut validators = Validators::new(3);
+    let genesis = validators.genesis();
+    let mut stores = Stores::with_genesis(genesis.clone()).await;
+    let paused_peer = Gate::new(false);
+    let validation = Gate::new(false);
+    let node = Node::start(&mut stores, NodeSetup {
+        peers: 3,
+        behaviour: PeerBehaviour::holding_nothing(),
+        block_requests: paused_peer,
+        validation: validation.clone(),
+    })
+    .await;
+
+    let parent = validators.sign(0, &[&genesis]);
+    node.gossip(0, &parent).await;
+    wait_until(Duration::from_secs(10), || {
+        node.casper.validation_started(&parent.block_hash)
+    })
+    .await
+    .expect("the parent is held in validation");
+
+    let child = validators.sign(1, &[&parent]);
+    node.gossip_and_settle(1, &child).await;
+    let grandchild = validators.sign(0, &[&child]);
+    node.gossip_and_settle(0, &grandchild).await;
+    assert!(!node.in_dag(&parent), "the parent is still in validation");
+
+    validation.open();
+    let chain = [parent, child, grandchild];
+    let outcome = wait_until(Duration::from_secs(30), || {
+        node.count_in_dag(&chain) == chain.len()
+    })
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "{} of {} blocks received while the first was in validation were validated after {:?}",
+        node.count_in_dag(&chain),
+        chain.len(),
+        outcome.unwrap_err(),
+    );
+}
+
 // ── A flood of announcements must not hold off block requests ──────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
