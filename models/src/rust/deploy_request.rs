@@ -172,7 +172,9 @@ mod tests {
         };
         assert_eq!(
             unsupported.to_signed(),
-            Err(DeployRequestError::UnsupportedAlgorithm("rot13".to_string()))
+            Err(DeployRequestError::UnsupportedAlgorithm(
+                "rot13".to_string()
+            ))
         );
 
         let (_sk, pk) = Secp256k1.new_key_pair();

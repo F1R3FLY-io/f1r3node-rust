@@ -205,7 +205,11 @@ mod tests {
 
             // This should wake up when event arrives (~50ms)
             // If waker is broken, this hangs until timeout (2s)
-            let received = stream.next().await.expect("No event available").expect("stream did not lag");
+            let received = stream
+                .next()
+                .await
+                .expect("No event available")
+                .expect("stream did not lag");
 
             match received {
                 F1r3flyEvent::BlockFinalised(BlockFinalised { block_hash, .. }) => {
@@ -252,7 +256,11 @@ mod tests {
             .expect("Failed to publish event");
 
         // Consume events from the stream
-        let first_received = stream.next().await.expect("No event available").expect("stream did not lag");
+        let first_received = stream
+            .next()
+            .await
+            .expect("No event available")
+            .expect("stream did not lag");
         match first_received {
             F1r3flyEvent::BlockFinalised(BlockFinalised { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash123");
@@ -260,7 +268,11 @@ mod tests {
             _ => panic!("Wrong event type received"),
         }
 
-        let second_received = stream.next().await.expect("No event available").expect("stream did not lag");
+        let second_received = stream
+            .next()
+            .await
+            .expect("No event available")
+            .expect("stream did not lag");
         match second_received {
             F1r3flyEvent::BlockCreated(BlockCreated { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash456");
@@ -268,7 +280,11 @@ mod tests {
             _ => panic!("Wrong event type received"),
         }
 
-        let third_received = stream.next().await.expect("No event available").expect("stream did not lag");
+        let third_received = stream
+            .next()
+            .await
+            .expect("No event available")
+            .expect("stream did not lag");
         match third_received {
             F1r3flyEvent::BlockAdded(BlockAdded { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash789");
@@ -295,7 +311,11 @@ mod tests {
             .expect("Failed to publish event");
 
         // Consume events from the stream
-        let first_received = stream.next().await.expect("No event available").expect("stream did not lag");
+        let first_received = stream
+            .next()
+            .await
+            .expect("No event available")
+            .expect("stream did not lag");
         match first_received {
             F1r3flyEvent::BlockFinalised(BlockFinalised { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash123");
@@ -303,7 +323,11 @@ mod tests {
             _ => panic!("Wrong event type received"),
         }
 
-        let second_received = stream.next().await.expect("No event available").expect("stream did not lag");
+        let second_received = stream
+            .next()
+            .await
+            .expect("No event available")
+            .expect("stream did not lag");
         match second_received {
             F1r3flyEvent::BlockCreated(BlockCreated { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash456");

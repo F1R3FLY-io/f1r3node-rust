@@ -12,15 +12,16 @@ use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
     BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
-    ExploratoryDeployReadOnlyError,
-    ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
-    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError,
+    ExploratoryDeployReadOnlyError, ExploratoryDeployRejection, InvalidHashError,
+    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+    ProposeRefusal, ProposeRefusedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
 use casper::rust::errors::CasperError;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
+use models::rust::deploy_request::DeployRequest;
 use rholang::rust::interpreter::errors::InterpreterError;
 use serde::Serialize;
 use serde_json::json;
@@ -30,8 +31,6 @@ use utoipa::ToSchema;
 
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
-use models::rust::deploy_request::DeployRequest;
-
 use crate::rust::api::web_api::{
     ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode, WebApi,
 };

@@ -496,7 +496,10 @@ fn settle_blocking(
 
 fn publish_verdicts(
     event_publisher: &F1r3flyEvents,
-    terminal: &[(prost::bytes::Bytes, block_storage::rust::dag::deploy_lifecycle_types::TerminalRecord)],
+    terminal: &[(
+        prost::bytes::Bytes,
+        block_storage::rust::dag::deploy_lifecycle_types::TerminalRecord,
+    )],
 ) {
     use block_storage::rust::dag::deploy_lifecycle_types::TerminalState;
     use shared::rust::shared::f1r3fly_event::{DeployVerdict, DeployVerdictState, F1r3flyEvent};

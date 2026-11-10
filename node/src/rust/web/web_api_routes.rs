@@ -616,9 +616,8 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::StatusCode;
-    use tower::ServiceExt;
-
     use models::rust::deploy_request::DeployRequest;
+    use tower::ServiceExt;
 
     use super::*;
     use crate::rust::api::web_api::{
@@ -1035,11 +1034,10 @@ mod router_tests {
     use comm::rust::peer_node::{NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::ConnectionsCell;
     use comm::rust::rp::rp_conf::{RPConf, RPConfCell};
+    use models::rust::deploy_request::DeployRequest;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
     use tower::ServiceExt;
-
-    use models::rust::deploy_request::DeployRequest;
 
     use super::*;
     use crate::rust::api::admin_web_api::AdminWebApi;
