@@ -150,7 +150,7 @@ pub fn block(
                     .into_iter()
                     .map(|validator| Bond {
                         validator,
-                        stake: 100,
+                        stake: 100.into(),
                     })
                     .collect(),
                 block_number: i64::from(seq_num),

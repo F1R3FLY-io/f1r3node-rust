@@ -51,7 +51,10 @@ struct TestContext {
 
 type BondsFunction = fn(
     Vec<crypto::rust::public_key::PublicKey>,
-) -> std::collections::HashMap<crypto::rust::public_key::PublicKey, i64>;
+) -> std::collections::HashMap<
+    crypto::rust::public_key::PublicKey,
+    shared::rust::token_amount::TokenAmount,
+>;
 
 impl TestContext {
     async fn new() -> Self { Self::build(None, None).await }
@@ -83,14 +86,18 @@ impl TestContext {
         // built by `build_genesis_parameters_with_defaults(_, None)`.
         fn bonds_function(
             validators: Vec<crypto::rust::public_key::PublicKey>,
-        ) -> std::collections::HashMap<crypto::rust::public_key::PublicKey, i64> {
+        ) -> std::collections::HashMap<
+            crypto::rust::public_key::PublicKey,
+            shared::rust::token_amount::TokenAmount,
+        > {
             validators
                 .into_iter()
-                .zip(vec![100i64, 100, 100, 100])
+                .zip(vec![100u64, 100, 100, 100])
+                .map(|(key, stake)| (key, stake.into()))
                 .collect()
         }
         let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(
-            Some(bonds.unwrap_or(bonds_function)),
+            Some(bonds.unwrap_or(bonds_function as BondsFunction)),
             None,
         );
         if let Some(epoch_length) = epoch_length {
@@ -278,10 +285,10 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let equivocator_stake = post_merge_bonds
         .iter()
         .find(|b| b.validator == equivocator_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("equivocator must still appear in bonds map");
     assert!(
-        equivocator_stake <= 1,
+        equivocator_stake <= 1.into(),
         "post-merge equivocator stake must be at the bond floor (<=1); got {}",
         equivocator_stake
     );
@@ -291,7 +298,7 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let proposer_stake = post_merge_bonds
         .iter()
         .find(|b| b.validator == merge_proposer_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("merge proposer must still appear in bonds map");
     let proposer_genesis_stake = ctx
         .genesis
@@ -301,7 +308,7 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
         .bonds
         .iter()
         .find(|b| b.validator == merge_proposer_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("merge proposer must be bonded at genesis");
     assert_eq!(
         proposer_stake, proposer_genesis_stake,
@@ -511,10 +518,10 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     let equivocator_stake = post_merge_bonds
         .iter()
         .find(|b| b.validator == equivocator_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("equivocator must still appear in bonds map");
     assert!(
-        equivocator_stake <= 1,
+        equivocator_stake <= 1.into(),
         "post-merge equivocator stake must be at the bond floor (<=1) even when a \
          pre-slash sibling is merged; got {}",
         equivocator_stake
@@ -738,10 +745,14 @@ async fn slash_block_replays_with_its_own_slash_targets() {
 /// takes its block as the main parent.
 fn validator_2_heaviest(
     validators: Vec<crypto::rust::public_key::PublicKey>,
-) -> std::collections::HashMap<crypto::rust::public_key::PublicKey, i64> {
+) -> std::collections::HashMap<
+    crypto::rust::public_key::PublicKey,
+    shared::rust::token_amount::TokenAmount,
+> {
     validators
         .into_iter()
-        .zip(vec![100i64, 100, 300, 100])
+        .zip(vec![100u64, 100, 300, 100])
+        .map(|(key, stake)| (key, stake.into()))
         .collect()
 }
 
@@ -776,7 +787,7 @@ async fn a_slash_lost_to_the_merge_is_issued_again_by_the_merge_proposer() {
         bonds
             .iter()
             .find(|bond| bond.validator == offender)
-            .map(|bond| bond.stake)
+            .map(|bond| bond.stake.clone())
     };
 
     let signed_block = nodes[0]
@@ -846,7 +857,7 @@ async fn a_slash_lost_to_the_merge_is_issued_again_by_the_merge_proposer() {
         .await
         .expect("pre-state bonds");
     assert!(
-        stake(&pre_state_bonds).is_some_and(|s| s > 0),
+        stake(&pre_state_bonds).is_some_and(|s| !s.is_zero()),
         "precondition: the merge drops block_1's slash"
     );
 
@@ -869,7 +880,7 @@ async fn a_slash_lost_to_the_merge_is_issued_again_by_the_merge_proposer() {
         .expect("post-state bonds");
     assert_eq!(
         stake(&post_state_bonds),
-        Some(0),
+        Some(shared::rust::token_amount::TokenAmount::zero()),
         "a block whose own slash succeeded leaves the offender at stake 0"
     );
 }

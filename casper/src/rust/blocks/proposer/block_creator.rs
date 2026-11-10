@@ -23,10 +23,10 @@ use models::rust::casper::protocol::casper_message::{
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::blocking::in_blocking;
 use tracing;
 
@@ -433,11 +433,6 @@ fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
     match err {
-        CasperError::HistoryError(HistoryError::MergeError(msg)) => {
-            msg.contains("single-value cell")
-                && msg.contains("would hold")
-                && msg.contains("after merge")
-        }
         CasperError::RuntimeError(msg) => {
             (msg.contains("number channel")
                 && msg.contains("holds")
@@ -1718,13 +1713,13 @@ fn storage_has_unresolved_in_scope_deploys(
 #[cfg(test)]
 fn filter_slashable_invalid_messages(
     invalid_latest_messages: HashMap<Validator, BlockHash>,
-    bonds_map: &HashMap<Validator, i64>,
+    bonds_map: &HashMap<Validator, BigInt>,
     active_validators: &[Validator],
 ) -> Vec<(Validator, BlockHash)> {
     invalid_latest_messages
         .into_iter()
         .filter(|(validator, _)| {
-            bonds_map.get(validator).copied().unwrap_or(0) > 0
+            bonds_map.get(validator).cloned().unwrap_or_default() > 0.into()
                 && active_validators.contains(validator)
         })
         .collect()
@@ -1786,9 +1781,9 @@ async fn prepare_slashing_deploys(
         .on_chain_state
         .bonds_map
         .get(&self_id)
-        .copied()
-        .unwrap_or(0);
-    if proposer_bond <= 0 {
+        .cloned()
+        .unwrap_or_default();
+    if proposer_bond <= BigInt::from(0) {
         return Ok(Vec::new());
     }
 
@@ -2022,7 +2017,7 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
                 .on_chain_state
                 .bonds_map
                 .iter()
-                .filter(|(_, stake)| **stake > 0)
+                .filter(|(_, stake)| **stake > BigInt::from(0))
                 .map(|(validator, _)| validator.clone())
                 .collect()
         };
@@ -3159,7 +3154,7 @@ pub async fn create_with_progress(
                 .sender;
             if pre_state_bonds
                 .iter()
-                .any(|bond| bond.validator == offender && bond.stake > 0)
+                .any(|bond| bond.validator == offender && !bond.stake.is_zero())
             {
                 still_bonded.push(slash_deploy);
             }
@@ -3611,6 +3606,7 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 #[cfg(test)]
 mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use rspace_plus_plus::rspace::errors::HistoryError;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -3888,7 +3884,7 @@ mod tests {
                 DeployData {
                     term: format!("@{}!(Nil)", time_stamp),
                     time_stamp,
-                    phlo_price: 1,
+                    phlo_price: (1).into(),
                     phlo_limit: 100_000,
                     valid_after_block_number,
                     shard_id: "test".to_string(),
@@ -5490,7 +5486,7 @@ mod tests {
         invalid_latest_messages.insert(equivocator.clone(), invalid_block.clone());
 
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 5);
+        bonds_map.insert(equivocator.clone(), 5.into());
 
         let active_validators = vec![equivocator.clone()];
 
@@ -5516,7 +5512,7 @@ mod tests {
         invalid_latest_messages.insert(equivocator.clone(), invalid_block);
 
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 0);
+        bonds_map.insert(equivocator.clone(), 0.into());
 
         let active_validators = vec![equivocator];
 
@@ -5544,7 +5540,7 @@ mod tests {
 
         // Bond floor > 0 — equivocator's stake stays at 1 after slash.
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 1);
+        bonds_map.insert(equivocator.clone(), 1.into());
 
         // PoS has removed the slashed validator from the active set.
         let active_validators: Vec<Validator> = vec![];
@@ -5616,12 +5612,6 @@ mod tests {
 
     #[test]
     fn detects_retryable_single_value_batch_errors() {
-        let err = CasperError::HistoryError(HistoryError::MergeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        ));
-
-        assert!(is_retryable_single_value_batch_error(&err));
-
         let runtime = CasperError::RuntimeError(
             "number channel abc holds 2 values [0, 0]; IntegerAdd single-value invariant violated"
                 .to_string(),
@@ -5637,11 +5627,6 @@ mod tests {
             "MergeType mismatch on channel abc".to_string(),
         ));
         assert!(!is_retryable_single_value_batch_error(&other));
-
-        let unrelated_runtime = CasperError::RuntimeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        );
-        assert!(!is_retryable_single_value_batch_error(&unrelated_runtime));
     }
 
     #[test]

@@ -35,6 +35,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::epoch::Epoch;
@@ -189,7 +190,9 @@ pub fn slash_evidence_epoch_matches_target(
         .map(|evidence_epoch| target_activation_epoch == evidence_epoch)
 }
 
-pub fn slash_target_has_positive_bond(bond: i64) -> bool { bond > 0 }
+pub fn slash_target_has_positive_bond<T: PartialOrd + From<i32>>(bond: T) -> bool {
+    bond > T::from(0)
+}
 
 pub fn slash_target_key(
     offender: &Validator,
@@ -221,12 +224,12 @@ pub fn slash_target_key_collides<T: Eq>(
 /// conjunction is the precondition proven sufficient by Theorem T-9.13
 /// (`formal/rocq/slashing/theories/BugFixSlashAuthorization.v`) and modeled
 /// in `kani_proofs::received_slash_deploy_authorized_*`.
-pub fn received_slash_deploy_authorized(
+pub fn received_slash_deploy_authorized<T: PartialOrd + From<i32>>(
     reference_block_number: i64,
     evidence_block_number: i64,
     target_activation_epoch: Epoch,
     epoch_length: i32,
-    bond: i64,
+    bond: T,
     invalid: bool,
 ) -> Result<bool, DomainError> {
     let current = slash_target_epoch_is_current(
@@ -253,7 +256,7 @@ pub fn slashable_offenders(
     invalid_blocks: impl IntoIterator<Item = BlockMetadata>,
     block_number: i64,
     epoch_length: i32,
-    committee: &HashMap<Validator, i64>,
+    committee: &HashMap<Validator, BigInt>,
 ) -> Result<HashSet<Validator>, DomainError> {
     let epoch = epoch_for_block_number(block_number, epoch_length)?;
     let mut offenders = HashSet::new();
@@ -261,7 +264,7 @@ pub fn slashable_offenders(
         if metadata.invalid
             && committee
                 .get(&metadata.sender)
-                .is_some_and(|stake| *stake > 0)
+                .is_some_and(|stake| *stake > BigInt::from(0))
             && evidence_epoch(&metadata, epoch_length)? == epoch
         {
             offenders.insert(metadata.sender);
@@ -336,9 +339,9 @@ pub fn authorized_slash_candidates(
             .on_chain_state
             .bonds_map
             .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
+            .cloned()
+            .unwrap_or_default();
+        if bond <= BigInt::from(0) {
             continue;
         }
         let candidate = AuthorizedSlashCandidate {
@@ -494,9 +497,9 @@ pub fn validate_received_slash_deploys(
             .on_chain_state
             .bonds_map
             .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
+            .cloned()
+            .unwrap_or_default();
+        if bond <= BigInt::from(0) {
             return Err(SlashAuthError::TargetNotBonded {
                 validator: hex::encode(&metadata.sender),
             }
@@ -821,6 +824,7 @@ mod tests {
 
     use models::rust::block_metadata::BlockMetadata;
     use models::rust::validator::Validator;
+    use num_bigint::BigInt;
     use prost::bytes::Bytes;
 
     use super::slashable_offenders;
@@ -846,10 +850,13 @@ mod tests {
 
     #[test]
     fn only_committee_offenders_with_evidence_in_the_block_epoch_are_slashable() {
-        let committee: HashMap<Validator, i64> =
-            [(validator(1), 100), (validator(2), 0), (validator(4), 100)]
-                .into_iter()
-                .collect();
+        let committee: HashMap<Validator, BigInt> = [
+            (validator(1), BigInt::from(100)),
+            (validator(2), BigInt::from(0)),
+            (validator(4), BigInt::from(100)),
+        ]
+        .into_iter()
+        .collect();
 
         let slashable = slashable_offenders(
             vec![

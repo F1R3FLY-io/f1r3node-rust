@@ -41,7 +41,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::rho_type::{bytes_to_bigint, RhoNumber};
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
@@ -52,6 +52,7 @@ use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -86,11 +87,11 @@ fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
 }
 
 /// The parameters validity rules fork on, as genesis baked them into PoS.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConsensusParameters {
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     pub epoch_length: i32,
 }
 
@@ -449,6 +450,10 @@ impl RuntimeOps {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
+        deploy
+            .data
+            .validate_amounts()
+            .map_err(CasperError::RuntimeError)?;
         let mut eval_collector_state = EvalCollector::new();
 
         let deploy_pk = deploy.pk.bytes.clone();
@@ -1064,7 +1069,7 @@ impl RuntimeOps {
             let data = DeployData {
                 term,
                 time_stamp: 0,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit,
                 valid_after_block_number: 0,
                 shard_id: String::new(),
@@ -1619,7 +1624,15 @@ impl RuntimeOps {
             Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 4 => {
                 let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
                 let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
-                let min_phlo = int_at(tuple, 2).ok_or_else(|| bad("non-integer minPhloPrice"))?;
+                let min_phlo = match tuple.ps[2]
+                    .exprs
+                    .first()
+                    .and_then(|expr| expr.expr_instance.as_ref())
+                {
+                    Some(ExprInstance::GBigInt(bytes)) => TokenAmount::new(bytes_to_bigint(bytes))
+                        .map_err(|error| bad(&format!("minPhloPrice: {error}")))?,
+                    _ => return Err(bad("non-BigInt minPhloPrice")),
+                };
                 let epoch_length =
                     int_at(tuple, 3).ok_or_else(|| bad("non-integer epochLength"))?;
                 // RANGE GATES at the single read choke point. The parent-spread
@@ -1636,11 +1649,6 @@ impl RuntimeOps {
                 if !(1..=i32::MAX as i64).contains(&lifespan) {
                     return Err(bad(&format!(
                         "deployLifespan out of range [1, i32::MAX]: {lifespan}"
-                    )));
-                }
-                if min_phlo < 0 {
-                    return Err(bad(&format!(
-                        "minPhloPrice out of range [0, i64::MAX]: {min_phlo}"
                     )));
                 }
                 // Epochs divide block numbers; zero or less has no epoch.
@@ -1763,9 +1771,10 @@ impl RuntimeOps {
                 }?;
 
                 let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
-                    ExprInstance::GInt(g_int) => Ok(*g_int),
+                    ExprInstance::GBigInt(bytes) => TokenAmount::new(bytes_to_bigint(bytes))
+                        .map_err(|error| CasperError::RuntimeError(format!("stake: {error}"))),
                     _ => Err(CasperError::RuntimeError(
-                        "Expected GInt in stake data".to_string(),
+                        "Expected BigInt in stake data".to_string(),
                     )),
                 }?;
 

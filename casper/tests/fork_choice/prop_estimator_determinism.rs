@@ -133,15 +133,15 @@ async fn build_flipping_dag(
     let bonds = vec![
         Bond {
             validator: v1.clone(),
-            stake: 25,
+            stake: 25.into(),
         },
         Bond {
             validator: v2.clone(),
-            stake: 20,
+            stake: 20.into(),
         },
         Bond {
             validator: v3.clone(),
-            stake: 15,
+            stake: 15.into(),
         },
     ];
 
@@ -307,11 +307,11 @@ async fn filter_t10_invalid_latest_message_excluded() {
         let bonds = vec![
             Bond {
                 validator: v1.clone(),
-                stake: 5,
+                stake: 5.into(),
             },
             Bond {
                 validator: v0.clone(),
-                stake: 7,
+                stake: 7.into(),
             },
         ];
 

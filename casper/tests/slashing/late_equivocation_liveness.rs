@@ -50,7 +50,7 @@ impl Proposal {
             .bonds
             .iter()
             .find(|bond| bond.validator.as_ref() == self.equivocator.as_slice())
-            .map(|bond| bond.stake);
+            .map(|bond| bond.stake.clone());
         format!(
             "block #{}: cites the sibling as the equivocator's justification: {cited:?}; \
              equivocator's stake in the bonds field: {stake:?}; carries the slash: {}",

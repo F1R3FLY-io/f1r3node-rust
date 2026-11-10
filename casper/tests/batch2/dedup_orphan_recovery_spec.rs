@@ -128,7 +128,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         // admission and obscure what this test is checking.
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(validator.clone(), 100);
+        bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
