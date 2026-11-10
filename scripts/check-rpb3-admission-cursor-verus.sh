@@ -1119,6 +1119,9 @@ proofs_rpb3_live_canonical_path_map_finish_action_lift=(
   canonical_map_finish_preserves_trace_wf
 )
 proofs_rpb3_live_canonical_path_pop_action_lift=(
+  canonical_message_child_complete_pop_shape
+  canonical_map_value_accept_pop_shape
+  canonical_nested_pop_shape_source_ready
   canonical_nested_pop_refines_retained_source
   canonical_nested_pop_preserves_trace_wf
 )
@@ -2657,8 +2660,7 @@ if ! rg -q '^verification results:: 3 verified, 0 errors' "$live_canonical_path_
 fi
 
 live_canonical_path_pop_source="$model_dir/rpb3_live_canonical_path_pop_action_lift.rs"
-for proof in canonical_nested_pop_refines_retained_source \
-  canonical_nested_pop_preserves_trace_wf; do
+for proof in "${proofs_rpb3_live_canonical_path_pop_action_lift[@]}"; do
   if ! rg -q "^pub proof fn ${proof}\\(" "$live_canonical_path_pop_source"; then
     echo "rpb3-admission-cursor: missing live CanonicalPath nested-pop action proof $proof" >&2
     exit 1
@@ -2675,7 +2677,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: live CanonicalPath nested-pop action module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 2 verified, 0 errors' "$live_canonical_path_pop_log"; then
+if ! rg -q '^verification results:: 5 verified, 0 errors' "$live_canonical_path_pop_log"; then
   cat "$live_canonical_path_pop_log"
   echo "rpb3-admission-cursor: live CanonicalPath nested-pop action module did not verify" >&2
   exit 1

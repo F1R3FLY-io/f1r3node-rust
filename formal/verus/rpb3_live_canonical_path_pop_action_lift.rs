@@ -35,52 +35,116 @@ pub open spec fn canonical_nested_pop_step(
     &&& crate::live_runtime_product_step(before.base, after_base, action)
 }
 
-pub proof fn canonical_nested_pop_refines_retained_source(
+/// Frame, indexed-region, wire and cursor shape of one nested pop. The kind-1
+/// top child is removed; every frame below its parent is unchanged; the parent
+/// keeps its return header and its kind (1 for a message child accepted by a
+/// message parent, 2 for a map value accepted by its map entry).
+pub open spec fn canonical_nested_pop_shape(
+    before: crate::LiveRuntimeProductState,
+    after: crate::LiveRuntimeProductState,
+    action: crate::LiveRuntimeProductAction,
+) -> bool {
+    let old_len = before.source.product.bridge.admission.frames.len();
+    let new_len = after.source.product.bridge.admission.frames.len();
+    &&& new_len + 1 == old_len
+    &&& after.source.product.indexed_regions
+        == before.source.product.indexed_regions.drop_last()
+    &&& after.source.wire == before.source.wire.drop_last()
+    &&& after.cursors == before.cursors.drop_last()
+    &&& forall|i: int| 0 <= i < new_len - 1 ==>
+        after.source.product.bridge.admission.frames[i]
+            == before.source.product.bridge.admission.frames[i]
+    &&& after.source.product.bridge.admission.frames[new_len - 1].return_id
+        == before.source.product.bridge.admission.frames[new_len - 1].return_id
+    &&& after.source.product.bridge.admission.frames[new_len - 1].frame_kind
+        == before.source.product.bridge.admission.frames[new_len - 1].frame_kind
+    &&& before.source.product.bridge.admission.frames.last().frame_kind == 1
+    &&& match action {
+        crate::LiveRuntimeProductAction::MessageChildComplete =>
+            before.source.product.bridge.admission.frames[old_len - 2].frame_kind == 1,
+        crate::LiveRuntimeProductAction::MapValueAccept =>
+            before.source.product.bridge.admission.frames[old_len - 2].frame_kind == 2,
+        _ => false,
+    }
+}
+
+/// The live message-child completion step has the nested pop shape.
+pub proof fn canonical_message_child_complete_pop_shape(
+    before: crate::LiveRuntimeProductState,
+    after: crate::LiveRuntimeProductState,
+)
+    requires crate::live_runtime_product_message_child_complete_step(before, after),
+    ensures
+        crate::live_runtime_product_wf(after),
+        canonical_nested_pop_shape(
+            before, after, crate::LiveRuntimeProductAction::MessageChildComplete,
+        ),
+{
+    crate::live_runtime_product_message_child_complete_preserves_wf(before, after);
+    let old_len = before.source.product.bridge.admission.frames.len();
+    let new_len = after.source.product.bridge.admission.frames.len();
+    assert(before.source.product.bridge.admission.frames[old_len - 2].frame_kind == 1);
+    assert(new_len + 1 == old_len);
+    assert(after.source.product.indexed_regions
+        == before.source.product.indexed_regions.drop_last());
+    assert(after.source.wire == before.source.wire.drop_last());
+    assert(after.cursors == before.cursors.drop_last());
+    assert forall|i: int| 0 <= i < new_len - 1 implies
+        after.source.product.bridge.admission.frames[i]
+            == before.source.product.bridge.admission.frames[i] by {}
+    assert(after.source.product.bridge.admission.frames[new_len - 1].return_id
+        == before.source.product.bridge.admission.frames[new_len - 1].return_id);
+    assert(after.source.product.bridge.admission.frames[new_len - 1].frame_kind
+        == before.source.product.bridge.admission.frames[new_len - 1].frame_kind);
+}
+
+/// The live map-value acceptance step has the nested pop shape.
+pub proof fn canonical_map_value_accept_pop_shape(
+    before: crate::LiveRuntimeProductState,
+    after: crate::LiveRuntimeProductState,
+)
+    requires crate::live_runtime_product_map_value_accept_step(before, after),
+    ensures
+        crate::live_runtime_product_wf(after),
+        canonical_nested_pop_shape(
+            before, after, crate::LiveRuntimeProductAction::MapValueAccept,
+        ),
+{
+    crate::live_runtime_product_map_value_accept_preserves_wf(before, after);
+    let old_len = before.source.product.bridge.admission.frames.len();
+    let new_len = after.source.product.bridge.admission.frames.len();
+    assert(before.source.product.bridge.admission.frames[old_len - 2].frame_kind == 2);
+    assert(new_len + 1 == old_len);
+    assert(after.source.product.indexed_regions
+        == before.source.product.indexed_regions.drop_last());
+    assert(after.source.wire == before.source.wire.drop_last());
+    assert(after.cursors == before.cursors.drop_last());
+    assert forall|i: int| 0 <= i < new_len - 1 implies
+        after.source.product.bridge.admission.frames[i]
+            == before.source.product.bridge.admission.frames[i] by {}
+    assert(after.source.product.bridge.admission.frames[new_len - 1].return_id
+        == before.source.product.bridge.admission.frames[new_len - 1].return_id);
+    assert(after.source.product.bridge.admission.frames[new_len - 1].frame_kind
+        == before.source.product.bridge.admission.frames[new_len - 1].frame_kind);
+}
+
+/// The retained CanonicalPath frames survive any nested pop shape. Neither the
+/// live product step nor a runtime step is a premise.
+pub proof fn canonical_nested_pop_shape_source_ready(
     before: path_live::LiveCanonicalPathState,
     after_base: crate::LiveRuntimeProductState,
     action: crate::LiveRuntimeProductAction,
 )
-    requires canonical_nested_pop_step(before, after_base, action),
+    requires
+        path_live::live_canonical_path_wf(before),
+        before.path_frames.len() > 2,
+        before.path_frames[0].is_some(),
+        crate::live_runtime_product_wf(after_base),
+        canonical_nested_pop_shape(before.base, after_base, action),
     ensures trace::canonical_descendant_source_ready(before, after_base),
 {
-    crate::live_runtime_product_step_preserves_wf(before.base, after_base, action);
     let old_len = before.path_frames.len();
     let new_len = after_base.source.product.bridge.admission.frames.len();
-    match action {
-        crate::LiveRuntimeProductAction::MessageChildComplete => {
-            assert(crate::live_runtime_product_message_child_complete_step(
-                before.base, after_base,
-            ));
-            crate::live_runtime_product_message_child_complete_preserves_wf(
-                before.base, after_base,
-            );
-            assert(before.base.source.product.bridge.admission.frames[old_len - 2]
-                .frame_kind == 1);
-        },
-        crate::LiveRuntimeProductAction::MapValueAccept => {
-            assert(crate::live_runtime_product_map_value_accept_step(
-                before.base, after_base,
-            ));
-            crate::live_runtime_product_map_value_accept_preserves_wf(
-                before.base, after_base,
-            );
-            assert(before.base.source.product.bridge.admission.frames[old_len - 2]
-                .frame_kind == 2);
-        },
-        _ => assert(false),
-    }
-    assert(new_len + 1 == old_len);
-    assert(after_base.source.product.indexed_regions
-        == before.base.source.product.indexed_regions.drop_last());
-    assert(after_base.source.wire == before.base.source.wire.drop_last());
-    assert(after_base.cursors == before.base.cursors.drop_last());
-    assert forall|i: int| 0 <= i < new_len - 1 implies
-        after_base.source.product.bridge.admission.frames[i]
-            == before.base.source.product.bridge.admission.frames[i] by {}
-    assert(after_base.source.product.bridge.admission.frames[new_len - 1].return_id
-        == before.base.source.product.bridge.admission.frames[new_len - 1].return_id);
-    assert(after_base.source.product.bridge.admission.frames[new_len - 1].frame_kind
-        == before.base.source.product.bridge.admission.frames[new_len - 1].frame_kind);
     assert forall|i: int| 0 <= i < old_len && before.path_frames[i].is_some()
         implies i < new_len by {
         assert(path_live::path_frame_matches_live(before, i));
@@ -145,6 +209,32 @@ pub proof fn canonical_nested_pop_refines_retained_source(
             == before.base.source.product.indexed_regions[i + 1]);
     }
     assert(trace::canonical_descendant_source_ready(before, after_base));
+}
+
+pub proof fn canonical_nested_pop_refines_retained_source(
+    before: path_live::LiveCanonicalPathState,
+    after_base: crate::LiveRuntimeProductState,
+    action: crate::LiveRuntimeProductAction,
+)
+    requires canonical_nested_pop_step(before, after_base, action),
+    ensures trace::canonical_descendant_source_ready(before, after_base),
+{
+    match action {
+        crate::LiveRuntimeProductAction::MessageChildComplete => {
+            assert(crate::live_runtime_product_message_child_complete_step(
+                before.base, after_base,
+            ));
+            canonical_message_child_complete_pop_shape(before.base, after_base);
+        },
+        crate::LiveRuntimeProductAction::MapValueAccept => {
+            assert(crate::live_runtime_product_map_value_accept_step(
+                before.base, after_base,
+            ));
+            canonical_map_value_accept_pop_shape(before.base, after_base);
+        },
+        _ => assert(false),
+    }
+    canonical_nested_pop_shape_source_ready(before, after_base, action);
 }
 
 pub proof fn canonical_nested_pop_preserves_trace_wf(
