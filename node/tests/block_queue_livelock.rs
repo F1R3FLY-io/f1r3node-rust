@@ -766,7 +766,7 @@ async fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> Result
     }
 }
 
-// ── R1 (2a): a block missing a parent must not hold a processing slot ──────
+// ── A block missing a parent must not hold a processing slot ───────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
@@ -806,7 +806,7 @@ async fn a_ready_block_is_validated_while_blocks_missing_parents_wait_on_slow_re
     );
 }
 
-// ── R2 (2b): arriving blocks must not be dropped while validation is busy ──
+// ── Arriving blocks must not be dropped while validation is busy ───────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
@@ -845,7 +845,7 @@ async fn every_ready_block_received_while_validation_is_busy_is_validated() {
     );
 }
 
-// ── R3 (2c): a restart must not put unready stored blocks into slots ───────
+// ── A restart must not put unready stored blocks into slots ────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
@@ -923,7 +923,7 @@ async fn a_restarted_node_validates_a_ready_block_while_stored_blocks_wait_on_lo
     );
 }
 
-// ── R4 (2d): a long-withheld ancestor must not lose its waiting chain ──────
+// ── A long-withheld ancestor must not lose its waiting chain ───────────────
 
 /// Long past the time re-requests take to reach their slowest interval.
 const WITHHELD_FOR: Duration = Duration::from_secs(190);
@@ -978,7 +978,7 @@ async fn a_chain_waiting_on_a_long_withheld_ancestor_is_validated_once_it_is_ser
     );
 }
 
-// ── R5 (2e): many missing ancestors must each still reach a peer holding it ─
+// ── Many missing ancestors must each still reach a peer holding it ─────────
 
 /// `waiting_count` blocks each cite a distinct missing parent that only the
 /// peers after the first `SEED_PEERS` hold. Returns how many of the waiting
@@ -1051,7 +1051,7 @@ async fn missing_parents_held_beyond_the_seed_peers_are_fetched_when_thousands_a
     );
 }
 
-// ── R6: a parent validated while its child waits on a paused peer ─────────
+// ── A parent validated while its child waits on a paused peer ─────────────
 
 /// Three validators. The third is paused, so a request for a missing block
 /// does not complete until it times out. The first validator's block arrives
