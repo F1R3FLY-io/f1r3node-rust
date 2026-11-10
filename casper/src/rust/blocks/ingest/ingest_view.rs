@@ -10,7 +10,7 @@ struct Sets {
     started: Instant,
     held: DashSet<BlockHash>,
     solicited_held: DashSet<BlockHash>,
-    waited_on: DashSet<BlockHash>,
+    cited: DashSet<BlockHash>,
     needed: DashSet<BlockHash>,
     solicited_needs: DashSet<BlockHash>,
     ignored_until: DashMap<PeerNode, u64>,
@@ -18,7 +18,7 @@ struct Sets {
 
 /// Read-only answers about block ingest for the tasks around its owner: the
 /// network handler and intake. Each set has one writer, the record it mirrors:
-/// the dependency tracker writes the held and waited-on sets, the fetch
+/// the dependency tracker writes the held and cited sets, the fetch
 /// scheduler the needed sets, peer reputation the ignore list. An answer can
 /// lag the owner by the input it is processing, never more.
 #[derive(Debug, Clone)]
@@ -34,7 +34,7 @@ impl IngestView {
             started: Instant::now(),
             held: DashSet::new(),
             solicited_held: DashSet::new(),
-            waited_on: DashSet::new(),
+            cited: DashSet::new(),
             needed: DashSet::new(),
             solicited_needs: DashSet::new(),
             ignored_until: DashMap::new(),
@@ -57,8 +57,9 @@ impl IngestView {
         self.0.solicited_needs.contains(hash) || self.0.solicited_held.contains(hash)
     }
 
-    /// Some held block lists the hash as a missing dependency.
-    pub fn has_waiters(&self, hash: &BlockHash) -> bool { self.0.waited_on.contains(hash) }
+    /// Some held block lists the hash as a parent or a justification, whether
+    /// or not it waits on it yet.
+    pub fn is_cited(&self, hash: &BlockHash) -> bool { self.0.cited.contains(hash) }
 
     /// Block traffic from `peer` is ignored now.
     pub fn is_ignored(&self, peer: &PeerNode) -> bool { self.is_ignored_at(peer, self.now_ms()) }
@@ -75,8 +76,8 @@ impl IngestView {
         set(&self.0.solicited_held, hash, held && solicited);
     }
 
-    pub(super) fn set_waited_on(&self, hash: &BlockHash, waited_on: bool) {
-        set(&self.0.waited_on, hash, waited_on);
+    pub(super) fn set_cited(&self, hash: &BlockHash, cited: bool) {
+        set(&self.0.cited, hash, cited);
     }
 
     pub(super) fn set_needed(&self, hash: &BlockHash, needed: bool, solicited: bool) {

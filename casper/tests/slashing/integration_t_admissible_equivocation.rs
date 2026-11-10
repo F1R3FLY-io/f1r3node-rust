@@ -7,8 +7,8 @@
 // Plan-agent designed Track 2 / equivocation-construction recipe.
 //
 // AdmissibleEquivocation differs from IgnorableEquivocation by whether a
-// block the node holds waits on the equivocation (block ingest's
-// `has_waiters(b1p)`):
+// block the node holds cites the equivocation (block ingest's
+// `is_cited(b1p)`):
 //   * Ignorable: no held block cites b1p
 //   * Admissible: a held block cites b1p, so it MUST be added to the DAG
 //     even though it's an equivocation — see equivocation_detector.rs:38-41
@@ -87,8 +87,8 @@ async fn integration_t_admissible_equivocation() {
     );
     nodes[1].process_block(c2).await.expect("nodes[1] holds c2");
     assert!(
-        nodes[1].ingest_view.has_waiters(&b1p.block_hash),
-        "a held block must wait on b1p"
+        nodes[1].ingest_view.is_cited(&b1p.block_hash),
+        "a held block must cite b1p"
     );
 
     // Process b1 on nodes[1] — must classify Valid.

@@ -121,12 +121,14 @@ pub enum VictimClass {
 /// Held blocks, what each waits on, and the blocks ready to dispatch, lowest
 /// height first. A held block waits on missing blocks and at most one state
 /// root; it becomes ready when the last of them arrives. Publishes which
-/// blocks are held and which are waited on to the view.
+/// blocks are held and which are cited by a held block to the view.
 #[derive(Debug)]
 pub struct DependencyTracker {
     view: IngestView,
     held: HashMap<BlockHash, Held>,
     waiters: HashMap<BlockHash, HashSet<BlockHash>>,
+    /// How many held blocks list each hash among their dependencies.
+    citations: HashMap<BlockHash, usize>,
     root_waiters: HashMap<Blake2b256Hash, HashSet<BlockHash>>,
     ready: BTreeSet<(i64, u64, BlockHash)>,
     cooling: BTreeSet<(u64, BlockHash)>,
@@ -143,6 +145,7 @@ impl DependencyTracker {
             view,
             held: HashMap::new(),
             waiters: HashMap::new(),
+            citations: HashMap::new(),
             root_waiters: HashMap::new(),
             ready: BTreeSet::new(),
             cooling: BTreeSet::new(),
@@ -166,6 +169,13 @@ impl DependencyTracker {
             *self.disk_by_sender.entry(meta.sender.clone()).or_insert(0) += 1;
         }
         self.view.set_held(&hash, true, meta.solicited);
+        for dependency in &meta.deps {
+            let citations = self.citations.entry(dependency.clone()).or_insert(0);
+            if *citations == 0 {
+                self.view.set_cited(dependency, true);
+            }
+            *citations += 1;
+        }
         let seq = self.next_seq;
         self.next_seq += 1;
         let missing: HashSet<BlockHash> = missing.into_iter().collect();
@@ -248,7 +258,6 @@ impl DependencyTracker {
             false => Departure::default(),
         };
         if let Some(waiters) = self.waiters.remove(hash) {
-            self.view.set_waited_on(hash, false);
             for waiter in waiters {
                 let held = self
                     .held
@@ -402,9 +411,7 @@ impl DependencyTracker {
             departure.unwaited.append(&mut taken.unwaited);
             departure.unawaited_roots.append(&mut taken.unawaited_roots);
         }
-        if self.waiters.remove(hash).is_some() {
-            self.view.set_waited_on(hash, false);
-        }
+        self.waiters.remove(hash);
         departure
             .unwaited
             .retain(|h| !seen.contains(h) && !self.waiters.contains_key(h));
@@ -545,16 +552,26 @@ impl DependencyTracker {
     }
 
     fn add_waiter(&mut self, dependency: &BlockHash, waiter: &BlockHash) {
-        let waiters = self.waiters.entry(dependency.clone()).or_default();
-        if waiters.is_empty() {
-            self.view.set_waited_on(dependency, true);
-        }
-        waiters.insert(waiter.clone());
+        self.waiters
+            .entry(dependency.clone())
+            .or_default()
+            .insert(waiter.clone());
     }
 
     fn take(&mut self, hash: &BlockHash) -> Departure {
         let held = self.held.remove(hash).expect("only held entries are taken");
         self.view.set_held(hash, false, false);
+        for dependency in &held.meta.deps {
+            let citations = self
+                .citations
+                .get_mut(dependency)
+                .expect("every dependency of a held block is counted");
+            *citations -= 1;
+            if *citations == 0 {
+                self.citations.remove(dependency);
+                self.view.set_cited(dependency, false);
+            }
+        }
         self.failures.remove(hash);
         if held.meta.body == BodyAt::Disk {
             self.disk_entries -= 1;
@@ -582,7 +599,6 @@ impl DependencyTracker {
             waiters.remove(hash);
             if waiters.is_empty() {
                 self.waiters.remove(dependency);
-                self.view.set_waited_on(dependency, false);
                 unwaited.push(dependency.clone());
             }
         }
@@ -670,7 +686,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_view_mirrors_held_and_waited_on_blocks() {
+    fn the_view_mirrors_held_and_cited_blocks() {
         let view = IngestView::new();
         let mut t = DependencyTracker::new(view.clone());
         let mut solicited = meta(1, 1, &[9]);
@@ -679,12 +695,25 @@ pub(crate) mod tests {
         hold(&mut t, 2, 2, &[1]);
         assert!(view.is_held(&hash(1)) && view.is_solicited(&hash(1)));
         assert!(view.is_held(&hash(2)) && !view.is_solicited(&hash(2)));
-        assert!(view.has_waiters(&hash(9)) && view.has_waiters(&hash(1)));
+        assert!(view.is_cited(&hash(9)) && view.is_cited(&hash(1)));
         t.evict(&hash(1));
         assert!(!view.is_held(&hash(1)) && !view.is_solicited(&hash(1)));
-        assert!(!view.has_waiters(&hash(9)) && view.has_waiters(&hash(1)));
+        assert!(!view.is_cited(&hash(9)) && view.is_cited(&hash(1)));
         t.drop_with_dependents(&hash(1));
-        assert!(!view.is_held(&hash(2)) && !view.has_waiters(&hash(1)));
+        assert!(!view.is_held(&hash(2)) && !view.is_cited(&hash(1)));
+    }
+
+    #[test]
+    fn a_dependency_stays_cited_until_its_last_citing_block_leaves() {
+        let view = IngestView::new();
+        let mut t = DependencyTracker::new(view.clone());
+        t.hold(meta(1, 2, &[5, 6]), Work::Validate, vec![hash(5)]);
+        t.hold(meta(2, 2, &[6]), Work::Validate, vec![]);
+        assert!(view.is_cited(&hash(6)), "cited though no block waits on it");
+        t.evict(&hash(1));
+        assert!(!view.is_cited(&hash(5)) && view.is_cited(&hash(6)));
+        t.evict(&hash(2));
+        assert!(!view.is_cited(&hash(6)));
     }
 
     #[test]

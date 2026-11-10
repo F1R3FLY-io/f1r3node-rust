@@ -154,14 +154,14 @@ fn a_block_with_missing_parents_waits_and_its_parents_become_solicited_needs() {
         assert!(s.is_needed(&hash(parent)));
         assert!(view.is_solicited(&hash(parent)));
         assert!(view.is_awaited(&hash(parent)));
-        assert!(view.has_waiters(&hash(parent)));
+        assert!(view.is_cited(&hash(parent)));
     }
     assert!(!s.is_needed(&hash(0)));
 }
 
 #[test]
 fn a_block_is_dispatched_once_its_parents_are_inserted() {
-    let (mut s, view) = state();
+    let (mut s, _) = state();
     let mut dag = dag_with(&[0]);
     s.handle(received(meta(10, 2, &[7])), 0, &dag);
     s.handle(received(meta(7, 1, &[0])), 0, &dag);
@@ -177,7 +177,7 @@ fn a_block_is_dispatched_once_its_parents_are_inserted() {
         0,
         &dag,
     );
-    assert!(!s.is_held(&hash(7)) && !view.has_waiters(&hash(7)));
+    assert!(!s.is_held(&hash(7)));
     assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
 }
 
@@ -759,7 +759,7 @@ fn a_block_too_large_for_the_area_expires_its_need_and_its_waiters() {
         &dag,
     );
     assert!(!s.is_needed(&hash(1)) && !s.is_held(&hash(10)));
-    assert!(!view.is_awaited(&hash(1)) && !view.has_waiters(&hash(1)));
+    assert!(!view.is_awaited(&hash(1)) && !view.is_cited(&hash(1)));
 }
 
 fn network_fetches_for(effects: &[Effect], h: &BlockHash) -> usize {
@@ -1211,6 +1211,23 @@ fn a_deferred_block_cites_the_rest_once_its_main_parent_shows_it_fits() {
     assert!(
         s.next_dispatch().is_none(),
         "the block waits on its justifications"
+    );
+}
+
+#[test]
+fn a_justification_a_deferred_block_names_is_cited_while_it_is_validated() {
+    let (mut s, view) = state();
+    let stores = Bonds {
+        dag: dag_with(&[0]),
+        by_block: HashMap::new(),
+        last_finalized: bonds_of(&[1, 2, 3]),
+    };
+    s.handle(received(shaped(100, 50, &[1, 2, 3, 4], 60)), 0, &stores);
+    s.handle(received(meta(60, 9, &[0])), 0, &stores);
+    assert_eq!(s.next_dispatch(), Some((hash(60), Work::Validate)));
+    assert!(
+        view.is_cited(&hash(60)),
+        "the deferred block waits only on its main parent but names 60"
     );
 }
 

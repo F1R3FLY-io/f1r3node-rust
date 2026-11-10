@@ -259,7 +259,7 @@ async fn run_validation_steps(
         return Ok(Either::Left(block_error));
     }
 
-    let requested_as_dependency = this.ingest.view().has_waiters(&block.block_hash);
+    let requested_as_dependency = this.ingest.view().is_cited(&block.block_hash);
 
     let (equivocation_result, t7) = timed_step(
         "simple-equivocation",
