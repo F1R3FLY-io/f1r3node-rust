@@ -483,6 +483,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
@@ -492,8 +494,45 @@ jobs:
           if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
           git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
           source_validator="$RUNNER_TEMP/commit-policy-source.sh"
+          policy_revision="$BASE_SHA"
+          source_branch=
+          if ! git cat-file -e "${BASE_SHA}:.github/scripts/commit-policy-source.sh" 2>/dev/null &&
+            [ "${PR_AUTHOR:-}" = 'f1r3node-promotion[bot]' ] && [ "${PR_AUTHOR_TYPE:-}" = Bot ]; then
+            case "${BASE_REF:-}:${HEAD_REF:-}" in
+              master:promote/*) source_branch=dev ;;
+              ca-release:promote/ca-release-*) source_branch=ca-canary ;;
+              dev:backmerge/master-*) source_branch=master ;;
+              ca-canary:backmerge/ca-release-*) source_branch=ca-release ;;
+              ca-canary:ca/sync-dev-*) source_branch=dev ;;
+            esac
+          fi
+          if [ -n "$source_branch" ]; then
+            [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+            [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+            metadata="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq \
+              '[.base.repo.full_name, .head.repo.full_name, .base.ref, .head.ref, .base.sha, .head.sha, .user.login, .user.type] | @tsv')"
+            expected="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+              "$GITHUB_REPOSITORY" "$GITHUB_REPOSITORY" "$BASE_REF" "$HEAD_REF" \
+              "$BASE_SHA" "$HEAD_SHA" "$PR_AUTHOR" "$PR_AUTHOR_TYPE")"
+            if [ "$metadata" != "$expected" ]; then
+              echo '::error::The transfer metadata does not match the workflow event.'
+              exit 1
+            fi
+            source_metadata="$(gh api "repos/$GITHUB_REPOSITORY/branches/$source_branch" --jq \
+              '[.protected, .commit.sha] | @tsv')"
+            IFS=$'\t' read -r protected source_tip <<< "$source_metadata"
+            if [ "$protected" != true ] || ! [[ "$source_tip" =~ ^[0-9a-f]{40}$ ]]; then
+              echo '::error::The transfer source must be a protected branch with a valid commit.'
+              exit 1
+            fi
+            git fetch --quiet --no-tags --filter=tree:0 origin "$source_tip"
+            policy_revision="$(git merge-base "$HEAD_SHA" "$source_tip")"
+            git show "${policy_revision}:.github/scripts/commit-policy-source.sh" > "$source_validator"
+            echo "Commit Policy uses accepted $source_branch policy at $policy_revision."
+          fi
           ratification=(--ratified-from "$BASE_SHA")
-          if git show "${BASE_SHA}:.github/scripts/commit-policy-source.sh" > "$source_validator" 2>/dev/null; then
+          if [ -n "$source_branch" ] || git show "${BASE_SHA}:.github/scripts/commit-policy-source.sh" > "$source_validator" 2>/dev/null; then
             source_bases="$(bash "$source_validator")"
             while IFS= read -r source_sha; do
               if [ -n "$source_sha" ]; then
@@ -509,26 +548,29 @@ jobs:
           fi
           # commit-policy-exemptions.sh lists the commits of a human pull
           # request author and the commits of an imported fork pull request.
-          # The base commit's copy runs, so a pull request cannot widen its own
-          # exemption. Before the script reaches the base branch, the pull
-          # request's copy runs.
           exempt="$RUNNER_TEMP/exempt-authors.txt"
           exemptions="$RUNNER_TEMP/commit-policy-exemptions.sh"
-          git show "${BASE_SHA}:.github/scripts/commit-policy-exemptions.sh" > "$exemptions" 2>/dev/null ||
-            cp .github/scripts/commit-policy-exemptions.sh "$exemptions"
+          if [ -n "$source_branch" ]; then
+            git show "${policy_revision}:.github/scripts/commit-policy-exemptions.sh" > "$exemptions"
+          else
+            git show "${BASE_SHA}:.github/scripts/commit-policy-exemptions.sh" > "$exemptions" 2>/dev/null ||
+              cp .github/scripts/commit-policy-exemptions.sh "$exemptions"
+          fi
           bash "$exemptions" > "$exempt"
-          # The base commit's denied list applies, so a pull request cannot
-          # remove its own block. Before the list reaches the base branch,
-          # the pull request's copy applies.
           denied="$RUNNER_TEMP/denied-identities.txt"
-          git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied" 2>/dev/null ||
-            cp .github/denied-identities.txt "$denied"
-          # The base commit's checker runs, so a pull request cannot weaken its
-          # own check. Before the checker reaches the base branch, the pull
-          # request's copy runs.
           checker="$RUNNER_TEMP/check-commit-trailers.sh"
-          git show "${BASE_SHA}:.github/scripts/check-commit-trailers.sh" > "$checker" 2>/dev/null ||
-            cp .github/scripts/check-commit-trailers.sh "$checker"
+          if [ -n "$source_branch" ]; then
+            git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied"
+            git show "${policy_revision}:.github/denied-identities.txt" > "$RUNNER_TEMP/source-denied-identities.txt"
+            printf '\n' >> "$denied"
+            cat "$RUNNER_TEMP/source-denied-identities.txt" >> "$denied"
+            git show "${policy_revision}:.github/scripts/check-commit-trailers.sh" > "$checker"
+          else
+            git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied" 2>/dev/null ||
+              cp .github/denied-identities.txt "$denied"
+            git show "${BASE_SHA}:.github/scripts/check-commit-trailers.sh" > "$checker" 2>/dev/null ||
+              cp .github/scripts/check-commit-trailers.sh "$checker"
+          fi
           bash "$checker" range "${BASE_SHA}..${HEAD_SHA}" \
             "${ratification[@]}" --exempt-authors "$exempt" --denied "$denied"
 
@@ -724,6 +766,10 @@ jobs:
       - name: Verify Commit Policy source history
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-commit-policy-source.sh
+
+      - name: Verify Commit Policy bootstrap
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-commit-policy-bootstrap.sh
 
       - name: Verify release promotion
         shell: bash -euo pipefail {0}
