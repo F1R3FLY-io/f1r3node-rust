@@ -567,19 +567,27 @@ impl MultiParentCasper for StubCasper {
 /// Stores that outlive a node, so a node can be restarted over them.
 struct Stores {
     manager: InMemoryStoreManager,
-    genesis: BlockMessage,
+    approved: BlockMessage,
 }
 
 impl Stores {
-    async fn with_genesis(genesis: BlockMessage) -> Self {
+    async fn with_genesis(genesis: BlockMessage) -> Self { Self::anchored(&[], genesis).await }
+
+    /// Stores as a joiner's state sync leaves them: `history` in the DAG
+    /// below `approved`, the block the node synced to.
+    async fn anchored(history: &[&BlockMessage], approved: BlockMessage) -> Self {
         let mut manager = InMemoryStoreManager::new();
         let blocks = KeyValueBlockStore::create_from_kvm(&mut manager)
             .await
             .unwrap();
         let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
-        blocks.put_block_message(&genesis).unwrap();
-        dag.insert(&genesis, InsertMode::Approved).unwrap();
-        Self { manager, genesis }
+        for b in history {
+            blocks.put_block_message(b).unwrap();
+            dag.insert(b, InsertMode::Normal).unwrap();
+        }
+        blocks.put_block_message(&approved).unwrap();
+        dag.insert(&approved, InsertMode::Approved).unwrap();
+        Self { manager, approved }
     }
 }
 
@@ -645,7 +653,7 @@ impl Node {
         .expect("block ingest starts");
 
         let casper = Arc::new(StubCasper {
-            approved: stores.genesis.clone(),
+            approved: stores.approved.clone(),
             snapshot: TestCasperWithSnapshot::create_empty_snapshot(),
             dag,
             blocks,
@@ -682,7 +690,7 @@ impl Node {
             casper.clone(),
             ApprovedBlock {
                 candidate: ApprovedBlockCandidate {
-                    block: stores.genesis.clone(),
+                    block: stores.approved.clone(),
                     required_sigs: 0,
                 },
                 sigs: vec![],
@@ -1310,5 +1318,63 @@ async fn a_panic_validating_one_block_leaves_block_ingest_running() {
     assert!(
         validated.is_ok(),
         "a block received after the panic was not validated"
+    );
+}
+
+// ── A requested block below the anchor must reach the DAG ──────────────────
+
+/// The node synced to block 6 and holds the chain below it. Validator 2,
+/// resuming on a stale view, built blocks 3 and 4 off block 2, and validator
+/// 0's block 7 has block 4 as its main parent. The node asks for block 4,
+/// which is below its anchor and arrives before its own parent. Once the
+/// parent is in the DAG, block 4 must be validated, not dropped as old.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn a_requested_block_below_the_anchor_waits_for_its_parent_and_reaches_the_dag() {
+    init_tracing();
+    let mut validators = Validators::new(3);
+    let mut chain = vec![validators.genesis()];
+    for height in 1..=6 {
+        let parent = chain.last().expect("the chain starts at genesis").clone();
+        chain.push(validators.sign(height % 2, &[&parent]));
+    }
+    let anchor = chain[6].clone();
+    let stale_parent = validators.sign(2, &[&chain[2]]);
+    let stale = validators.sign(2, &[&stale_parent]);
+    let tip = validators.sign(0, &[&stale, &anchor]);
+    assert_eq!(
+        (
+            stale_parent.body.state.block_number,
+            stale.body.state.block_number
+        ),
+        (3, 4),
+        "precondition: both of validator 2's blocks are below the anchor"
+    );
+
+    let history: Vec<&BlockMessage> = chain[..6].iter().collect();
+    let mut stores = Stores::anchored(&history, anchor).await;
+    let node = Node::start(&mut stores, NodeSetup {
+        peers: 3,
+        behaviour: PeerBehaviour::new(&[&stale_parent, &stale], |_, _| true),
+        block_requests: Gate::new(true),
+        validation: Gate::new(true),
+    })
+    .await;
+
+    node.gossip(0, &tip).await;
+    let blocks = [stale_parent, stale, tip];
+    let outcome = wait_until(Duration::from_secs(30), || {
+        node.count_in_dag(&blocks) == blocks.len()
+    })
+    .await;
+    let in_dag = node.count_in_dag(&blocks);
+    let sent = node.sent.to_string();
+    node.stop().await;
+    assert!(
+        outcome.is_ok(),
+        "{in_dag} of {} blocks reached the DAG after {:?}: block 3, block 4 below the anchor, \
+         and block 7 citing it; {sent}",
+        blocks.len(),
+        outcome.unwrap_err(),
     );
 }
