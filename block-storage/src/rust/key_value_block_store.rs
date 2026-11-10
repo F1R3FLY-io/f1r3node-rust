@@ -286,6 +286,23 @@ impl KeyValueBlockStore {
         self.put(block.block_hash.clone(), block)
     }
 
+    pub fn remove_if_matches(&self, expected: &BlockMessage) -> Result<bool, KvStoreError> {
+        let key = expected.block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(false);
+        };
+        let actual = BlockMessage::from_proto(Self::bytes_to_block_proto(&bytes)?)
+            .map_err(KvStoreError::SerializationError)?;
+        if actual != *expected || !self.store.delete_if_value(&key, &bytes)? {
+            return Ok(false);
+        }
+        if let Ok(mut cache) = Self::deploy_sig_cache().lock() {
+            cache.entries.remove(&key);
+            cache.order.retain(|hash| hash != &key);
+        }
+        Ok(true)
+    }
+
     pub fn put_pending(
         &self,
         block: &BlockMessage,
@@ -296,7 +313,16 @@ impl KeyValueBlockStore {
         } else {
             PendingClass::Unsolicited
         };
-        self.put_pending_as(block, class)
+        self.put_pending_inner(block, class, None)
+    }
+
+    pub fn put_pending_replacing(
+        &self,
+        block: &BlockMessage,
+        victim: &BlockHash,
+        class: PendingClass,
+    ) -> Result<PendingOutcome, KvStoreError> {
+        self.put_pending_inner(block, class, Some(victim))
     }
 
     pub fn put_pending_as(
@@ -304,13 +330,25 @@ impl KeyValueBlockStore {
         block: &BlockMessage,
         class: PendingClass,
     ) -> Result<PendingOutcome, KvStoreError> {
+        self.put_pending_inner(block, class, None)
+    }
+
+    fn put_pending_inner(
+        &self,
+        block: &BlockMessage,
+        class: PendingClass,
+        replacement: Option<&BlockHash>,
+    ) -> Result<PendingOutcome, KvStoreError> {
         if self.disk_contains(&block.block_hash)? {
             return Ok(PendingOutcome {
                 status: PendingInsert::Accepted,
                 evicted: Vec::new(),
             });
         }
-        let outcome = self.pending.insert_as(block, class);
+        let outcome = match replacement {
+            Some(victim) => self.pending.insert_replacing(block, victim, class),
+            None => self.pending.insert_as(block, class),
+        };
         if self.disk_contains(&block.block_hash)? {
             self.pending.remove(&block.block_hash);
         }
@@ -1301,6 +1339,29 @@ mod tests {
             rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
         );
         (KeyValueBlockStore::new(disk.clone(), approved), disk)
+    }
+
+    #[test]
+    fn remove_if_matches_preserves_a_replacement_and_removes_the_expected_copy() {
+        let (store, disk) = in_mem_store();
+        let original = models::rust::block_implicits::get_random_block_default();
+        let mut damaged = original.clone();
+        damaged.extra_bytes = prost::bytes::Bytes::from_static(b"corrupt copy");
+
+        assert!(!store.remove_if_matches(&damaged).unwrap());
+        store.put_block_message(&original).unwrap();
+        assert!(!store.remove_if_matches(&damaged).unwrap());
+        assert_eq!(
+            store.get(&original.block_hash).unwrap(),
+            Some(original.clone())
+        );
+        store.put_block_message(&damaged).unwrap();
+        assert!(store.remove_if_matches(&damaged).unwrap());
+        assert!(disk
+            .get_one(&original.block_hash.to_vec())
+            .unwrap()
+            .is_none());
+        assert!(store.get(&original.block_hash).unwrap().is_none());
     }
 
     #[test]

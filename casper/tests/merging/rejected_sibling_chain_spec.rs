@@ -476,15 +476,14 @@ fn chain_with(block: &IndexedBlock, sig: &Bytes) -> DeployChainIndex {
         .unwrap()
 }
 
-/// Review of #895: the sibling rejection must not leave a survivor set that
-/// over-fills a single-value cell. The base holds `5` on the cell. Block A
-/// holds X, which feeds R in block B and K in block C, so X, R and K form one
-/// branch. R consumes `5`, K writes `7`, and Z, a sibling of R in B, loses to
-/// W of block D. R shares a channel with Z, so the merge rejects R. K must then
-/// go too, because `7` next to `5` over-fills the cell, and the merge must not
-/// fail.
+/// Review of #895: the sibling rejection runs inside the retry loop, so the
+/// branch walk sees the final survivor set. The base holds `5` on an untagged
+/// cell. Block A holds X, which feeds R in block B and K in block C, so X, R
+/// and K form one branch. R consumes `5`, K writes `7`, and Z, a sibling of R
+/// in B, loses to W of block D. R shares a channel with Z, so the merge rejects
+/// R. The merge must not fail, and the cell keeps `5` next to the `7` of K.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_sibling_rejection_does_not_leave_an_overfilled_single_value_cell() {
+async fn a_sibling_rejection_of_a_cell_consumer_keeps_the_merge_consistent() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
             let genesis_state = genesis_block.body.state.post_state_hash.clone();
@@ -543,7 +542,7 @@ async fn a_sibling_rejection_does_not_leave_an_overfilled_single_value_cell() {
                     .await;
             assert!(
                 chain_with(&block_b, &r_sig) < chain_with(&block_c, &k_sig),
-                "R must sort before K, so the branch walk accepts K after R frees the cell"
+                "R must sort before K, as in the review scenario"
             );
 
             let root = block_p.hash.clone();
@@ -575,13 +574,13 @@ async fn a_sibling_rejection_does_not_leave_an_overfilled_single_value_cell() {
                 "R shares a non-mergeable channel with the rejected Z"
             );
             assert!(
-                outcome.rejected.contains(&k_sig),
-                "without R, the 7 of K over-fills the cell that holds 5"
+                outcome.applied.contains(&k_sig),
+                "K writes an untagged cell, so the merge keeps it without R"
             );
             assert_eq!(
                 channel_values(&runtime_manager, &outcome.merged_state, "issue-873-cell").await,
-                vec!["5".to_string()],
-                "the cell must keep its base value"
+                vec!["5".to_string(), "7".to_string()],
+                "the cell must keep the base value that the rejected R consumed, next to the 7 of K"
             );
         },
     )
@@ -591,9 +590,10 @@ async fn a_sibling_rejection_does_not_leave_an_overfilled_single_value_cell() {
 
 /// Review of #895, lineage variant: the same cell layout, but Z sits in block
 /// A2 between A and B, so the merge rejects R because B descends from the
-/// rejected A2. K must go with R, and the merge must not fail.
+/// rejected A2. The merge must not fail, and the cell keeps `5` next to the
+/// `7` of K.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_lineage_rejection_does_not_leave_an_overfilled_single_value_cell() {
+async fn a_lineage_rejection_of_a_cell_consumer_keeps_the_merge_consistent() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
             let genesis_state = genesis_block.body.state.post_state_hash.clone();
@@ -631,7 +631,7 @@ async fn a_lineage_rejection_does_not_leave_an_overfilled_single_value_cell() {
             let block_d = index_block(&runtime_manager, &block_p.post_state, vec![w], validator(0), block_hash(0xD1), 1).await;
             assert!(
                 chain_with(&block_b, &r_sig) < chain_with(&block_c, &k_sig),
-                "R must sort before K, so the branch walk accepts K after R frees the cell"
+                "R must sort before K, as in the review scenario"
             );
 
             let root = block_p.hash.clone();
@@ -664,13 +664,13 @@ async fn a_lineage_rejection_does_not_leave_an_overfilled_single_value_cell() {
                 "block B descends from the rejected block A2"
             );
             assert!(
-                outcome.rejected.contains(&k_sig),
-                "without R, the 7 of K over-fills the cell that holds 5"
+                outcome.applied.contains(&k_sig),
+                "K writes an untagged cell, so the merge keeps it without R"
             );
             assert_eq!(
                 channel_values(&runtime_manager, &outcome.merged_state, "issue-873-cell").await,
-                vec!["5".to_string()],
-                "the cell must keep its base value"
+                vec!["5".to_string(), "7".to_string()],
+                "the cell must keep the base value that the rejected R consumed, next to the 7 of K"
             );
         },
     )

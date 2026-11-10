@@ -201,7 +201,6 @@ impl TestResultCollector {
         message: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> () {
         let is_contract_call = ContractCall {
-            space: ctx.space.clone(),
             dispatcher: ctx.dispatcher.clone(),
         };
 
