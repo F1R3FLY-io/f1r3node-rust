@@ -56,6 +56,16 @@ The measured runs of 2026-10-13 ran on this host and tree:
 The file `system.txt` of each run directory records these facts.
 The profiles use AMD uProf, the profiler of this AMD processor, with frame-pointer call stacks (Section 3.5).
 
+The timed run of 2026-11-10 used the same CPU, memory, pinned CPUs, governor, driver, boost and compiler, with these changes:
+
+- System: Linux 7.2.14.
+- The load average at the start of the run: 26.54 over one minute, from other processes on other CPUs.
+- Tree: revision `dde077f81`, with no change to a tracked file.
+
+Before the run, a gate waited until CPUs 2 to 5 and their SMT siblings were at least 90 % idle for 60 s.
+During the run, the SMT siblings of CPUs 2 and 3 stayed at least 91 % idle in each minute.
+The run folder records these facts in `system.txt`, `gate.json` and `mpstat-during.txt`.
+
 ### 2.2 The test chain and the limits
 
 A benchmark plays each deploy on the native test chain `NativeChain` of the test support.
@@ -63,7 +73,8 @@ The chain keeps its history trie in an in-memory store, and a tokio runtime with
 
 Every benchmark deploy has a phlo limit of 1,000,000,000.
 No measured deploy reaches it.
-The test suites use a phlo limit of 1,000,000, and a series of host sends reaches that limit at 1,503 sends.
+The test suites use a phlo limit of 1,000,000.
+In the measurement before [decision 89](decision-register.md#decision-89), a series of host sends reached that limit at 1,503 sends.
 
 ### 2.3 One case
 
@@ -96,6 +107,7 @@ The series `queue_ordering/send_and_drain` runs the counts 1, 10 and 31 (the con
 A read series measures one operation on a collection of 10, 100, 1,000 and 10,000 records.
 It fills the collection in setup deploys.
 The checkpoint series of Section 5.2 spreads its records over channels of 100 records.
+The timed run of 2026-11-10 sets `RRS_BENCH_MAX_SIZE` to 1,000, so it measures no collection of more than 1,000 records.
 
 ### 2.6 Statistics and experiments
 
@@ -113,11 +125,16 @@ The runs pin their CPUs with `taskset`, because the placement of a process can b
 
 ## 3. The cost of one space operation
 
-The numbers of the tables in Sections 3 and 4 come from the measurement before [decision 89](decision-register.md#decision-89), and the next timed run replaces them.
+Table 2 and Tables 10 to 24 come from the timed run of 2026-11-10 (Section 2.1).
+The after column of Table 25, Table 27 and the medians in Sections 3.4, 8.3 and 8.4 also come from that run.
+Tables 3 to 9 and Figure 2 keep the measurement of step S8, before [decision 89](decision-register.md#decision-89).
+The timed run measures no host work and runs no profile.
+
+*Changed by [decision 89](decision-register.md#decision-89): the tables of the timed run have no column of VerificationBytes, because a deploy meters no host work. Before, the last row of each series in Tables 11 and 12 was the most operations that fit the host-work limits.*
 
 ### 3.1 One operation
 
-Table 2 lists the phlo and the VerificationBytes of one send, and of one send-receive pair, for each family and for the host program.
+Table 2 lists the phlo of one send, and of one send-receive pair, for each family and for the host program.
 The host program sends on ordinary channels, with no space.
 The id of a data channel or a collection counter holds the [collection key](glossary.md#collection-key) of the channel.
 So each `Par` of the inner channel adds 8 bytes to the id ([decision 112](decision-register.md#decision-112)).
@@ -125,20 +142,20 @@ The channel bytes of a produce or a consume pay for the id at the byte rate.
 
 *Table 2. The cost of one operation in a deploy of one operation.*
 
-| Family | Phlo of one send | VerificationBytes of one send | Phlo of one send-receive pair | VerificationBytes of one pair |
-|---|---|---|---|---|
-| bag | 4,374 | 1,989,604 | 6,512 | 4,581,934 |
-| set | 4,374 | 2,002,296 | 6,512 | 4,610,846 |
-| queue | 7,878 | 4,074,773 | 12,917 | 8,611,752 |
-| stack | 7,878 | 4,080,874 | 12,917 | 8,624,086 |
-| priority queue | 7,936 | 4,170,901 | 12,976 | 8,773,523 |
-| VectorDB | 4,453 | 2,860,916 | 6,755 | 8,482,995 |
-| cell | 8,351 | 4,111,381 | not measured | not measured |
-| PathMap bag | 9,245 | 5,024,750 | not measured | not measured |
-| Array bag | 7,107 | 5,609,903 | not measured | not measured |
-| Vector bag | 7,107 | 5,204,770 | not measured | not measured |
-| HashSet bag | 7,491 | 3,501,259 | not measured | not measured |
-| host program | 664 | 54,361 | 2,532 | 343,578 |
+| Family | Phlo of one send | Phlo of one send-receive pair |
+|---|---|---|
+| bag | 4,382 | 6,525 |
+| set | 4,382 | 6,525 |
+| queue | 6,644 | 10,462 |
+| stack | 6,644 | 10,462 |
+| priority queue | 6,668 | 10,487 |
+| VectorDB | 4,457 | 6,725 |
+| cell | 7,145 | not measured |
+| PathMap bag | 8,005 | not measured |
+| Array bag | 5,869 | not measured |
+| Vector bag | 5,869 | not measured |
+| HashSet bag | 7,505 | not measured |
+| host program | 666 | 2,540 |
 
 ### 3.2 Operations in one deploy
 
@@ -218,8 +235,8 @@ The first read of a channel in a transaction loads every record of the channel i
 A send, a receive and a fire each read the list of their channel (`TxnCore::read_data` at `rspace++/src/rspace/space_store_handle.rs:3273-3278` and `TxnCore::load_group` at `rspace++/src/rspace/space_store_handle.rs:3529-3537`).
 
 Native play of the host program copies the data of its channel too (`fetch_channel_to_index_data`, `rspace++/src/rspace/rspace/ops_consume.rs:313-325`).
-Its time grows: a host receive takes 0.45 ms at 10 records and 5.79 ms at 1,000 records.
-A bag receive takes 1.72 ms and 25.74 ms at the same sizes.
+Its time grows: a host receive takes 0.32 ms at 10 records and 5.68 ms at 1,000 records.
+A bag receive takes 1.02 ms and 12.91 ms at the same sizes.
 So the copy costs time on both paths.
 
 ### 3.5 Where the time goes
@@ -285,10 +302,10 @@ The phlo is that of the native contract with the weights of the test chain.
 
 *Table 10. One factory call that creates a space.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `factory/hashmap_bag` | fits | 7,144 | 2,039,308 | 1.05 (1.05 to 1.05) |
-| `factory/hashmap_vectordb` | fits | 7,352 | 2,532,744 | 1.37 (1.35 to 1.38) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `factory/hashmap_bag` | fits | 7,150 | 0.69 (0.68 to 0.71) |
+| `factory/hashmap_vectordb` | fits | 7,294 | 0.80 (0.79 to 0.82) |
 
 ### 4.2 Sends
 
@@ -297,127 +314,128 @@ The cell series sends to n channels, because a cell holds one record.
 
 *Table 11. Sends in one deploy.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `send/array_bag/1` | fits | 7,107 | 5,609,903 | 1.47 (1.46 to 1.47) |
-| `send/array_bag/10` | fits | 15,276 | 25,728,154 | 4.48 (4.46 to 4.50) |
-| `send/array_bag/57` | fits | 57,905 | 262,618,219 | 28.20 (27.96 to 28.28) |
-| `send/bag/1` | fits | 4,374 | 1,989,604 | 0.98 (0.97 to 0.98) |
-| `send/bag/10` | fits | 12,082 | 20,243,769 | 3.70 (3.67 to 3.71) |
-| `send/bag/59` | fits | 54,026 | 261,934,176 | 27.10 (27.02 to 27.24) |
-| `send/cell/1` | fits | 8,351 | 4,111,381 | 1.41 (1.41 to 1.41) |
-| `send/cell/10` | fits | 51,852 | 37,010,815 | 7.32 (7.28 to 7.38) |
-| `send/cell/72` | fits | 351,555 | 266,338,920 | 50.93 (50.68 to 51.48) |
-| `send/hashset_bag/1` | fits | 7,491 | 3,501,259 | 1.47 (1.46 to 1.47) |
-| `send/hashset_bag/10` | fits | 17,278 | 17,338,716 | 4.71 (4.70 to 4.72) |
-| `send/hashset_bag/170` | fits | 191,304 | 268,236,963 | 70.17 (69.72 to 71.09) |
-| `send/host/1` | fits | 664 | 54,361 | 0.18 (0.17 to 0.18) |
-| `send/host/10` | fits | 6,640 | 633,303 | 0.64 (0.64 to 0.64) |
-| `send/host/3224` | fits | 2,143,896 | 268,434,862 | 2,587.01 (2,556.19 to 2,608.77) |
-| `send/pathmap_bag/1` | fits | 9,245 | 5,024,750 | 1.61 (1.60 to 1.62) |
-| `send/pathmap_bag/10` | fits | 60,792 | 84,866,740 | 10.93 (10.83 to 11.24) |
-| `send/pathmap_bag/20` | fits | 118,062 | 255,040,777 | 25.63 (25.38 to 25.90) |
-| `send/priorityqueue/1` | fits | 7,936 | 4,170,901 | 1.49 (1.48 to 1.50) |
-| `send/priorityqueue/10` | fits | 42,265 | 42,951,136 | 7.60 (7.58 to 7.64) |
-| `send/priorityqueue/40` | fits | 156,685 | 261,616,173 | 32.96 (32.80 to 33.20) |
-| `send/queue/1` | fits | 7,878 | 4,074,773 | 1.34 (1.34 to 1.35) |
-| `send/queue/10` | fits | 41,695 | 39,629,144 | 6.04 (6.02 to 6.08) |
-| `send/queue/46` | fits | 176,947 | 263,476,819 | 30.34 (30.04 to 30.90) |
-| `send/set/1` | fits | 4,374 | 2,002,296 | 0.98 (0.98 to 0.99) |
-| `send/set/10` | fits | 12,082 | 20,370,227 | 3.76 (3.75 to 3.78) |
-| `send/set/59` | fits | 54,026 | 262,681,552 | 27.79 (27.61 to 28.11) |
-| `send/stack/1` | fits | 7,878 | 4,080,874 | 1.35 (1.34 to 1.35) |
-| `send/stack/10` | fits | 41,695 | 39,766,354 | 6.38 (6.36 to 6.41) |
-| `send/stack/46` | fits | 176,947 | 264,138,498 | 32.43 (32.21 to 32.71) |
-| `send/vector_bag/1` | fits | 7,107 | 5,204,770 | 1.44 (1.42 to 1.45) |
-| `send/vector_bag/10` | fits | 15,276 | 23,499,972 | 4.27 (4.27 to 4.29) |
-| `send/vector_bag/59` | fits | 59,719 | 265,464,110 | 28.01 (27.83 to 28.17) |
-| `send/vectordb/1` | fits | 4,453 | 2,860,916 | 1.15 (1.13 to 1.15) |
-| `send/vectordb/10` | fits | 12,872 | 36,073,239 | 5.48 (5.45 to 5.51) |
-| `send/vectordb/37` | fits | 38,117 | 261,310,401 | 25.16 (25.07 to 25.50) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `send/array_bag/1` | fits | 5,869 | 0.93 (0.89 to 0.96) |
+| `send/array_bag/10` | fits | 14,127 | 2.50 (2.48 to 2.54) |
+| `send/array_bag/100` | fits | 96,729 | 26.46 (26.22 to 26.76) |
+| `send/bag/1` | fits | 4,382 | 0.59 (0.58 to 0.60) |
+| `send/bag/10` | fits | 12,215 | 2.00 (1.99 to 2.01) |
+| `send/bag/100` | fits | 90,515 | 24.21 (24.10 to 24.33) |
+| `send/cell/1` | fits | 7,145 | 0.83 (0.81 to 0.84) |
+| `send/cell/10` | fits | 39,845 | 3.81 (3.72 to 3.88) |
+| `send/cell/100` | fits | 366,996 | 39.56 (38.62 to 40.22) |
+| `send/hashset_bag/1` | fits | 7,505 | 0.99 (0.99 to 1.01) |
+| `send/hashset_bag/10` | fits | 17,525 | 2.81 (2.80 to 2.83) |
+| `send/hashset_bag/100` | fits | 117,731 | 24.75 (24.53 to 25.24) |
+| `send/host/1` | fits | 666 | 0.10 (0.10 to 0.10) |
+| `send/host/10` | fits | 6,660 | 0.43 (0.43 to 0.43) |
+| `send/host/100` | fits | 66,636 | 5.25 (5.12 to 5.29) |
+| `send/pathmap_bag/1` | fits | 8,005 | 0.88 (0.87 to 0.90) |
+| `send/pathmap_bag/10` | fits | 48,445 | 4.74 (4.68 to 4.79) |
+| `send/pathmap_bag/100` | fits | 452,960 | 81.39 (79.94 to 82.50) |
+| `send/priorityqueue/1` | fits | 6,668 | 0.78 (0.76 to 0.78) |
+| `send/priorityqueue/10` | fits | 29,792 | 3.24 (3.22 to 3.28) |
+| `send/priorityqueue/100` | fits | 261,111 | 41.33 (40.65 to 41.95) |
+| `send/queue/1` | fits | 6,644 | 0.72 (0.71 to 0.74) |
+| `send/queue/10` | fits | 29,552 | 2.95 (2.93 to 2.97) |
+| `send/queue/100` | fits | 258,711 | 34.81 (34.49 to 34.99) |
+| `send/set/1` | fits | 4,382 | 0.60 (0.59 to 0.61) |
+| `send/set/10` | fits | 12,215 | 1.99 (1.98 to 1.99) |
+| `send/set/100` | fits | 90,515 | 24.22 (23.96 to 24.45) |
+| `send/stack/1` | fits | 6,644 | 0.74 (0.73 to 0.76) |
+| `send/stack/10` | fits | 29,552 | 3.01 (3.00 to 3.03) |
+| `send/stack/100` | fits | 258,711 | 37.23 (36.63 to 37.67) |
+| `send/vector_bag/1` | fits | 5,869 | 0.84 (0.82 to 0.86) |
+| `send/vector_bag/10` | fits | 14,127 | 2.28 (2.27 to 2.30) |
+| `send/vector_bag/100` | fits | 96,729 | 24.80 (24.70 to 25.01) |
+| `send/vectordb/1` | fits | 4,457 | 0.73 (0.73 to 0.75) |
+| `send/vectordb/10` | fits | 12,965 | 3.06 (3.03 to 3.10) |
+| `send/vectordb/100` | fits | 98,015 | 46.65 (46.09 to 47.55) |
 
 ### 4.3 Send-receive pairs
 
 *Table 12. Send-receive pairs in one deploy.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `send_receive/bag/1` | fits | 6,512 | 4,581,934 | 1.43 (1.42 to 1.44) |
-| `send_receive/bag/10` | fits | 33,462 | 55,199,751 | 8.50 (8.46 to 8.54) |
-| `send_receive/bag/30` | fits | 93,342 | 256,312,748 | 30.64 (30.57 to 30.81) |
-| `send_receive/host/1` | fits | 2,532 | 343,578 | 0.37 (0.37 to 0.38) |
-| `send_receive/host/10` | fits | 25,320 | 3,574,437 | 2.17 (2.15 to 2.18) |
-| `send_receive/host/682` | fits | 1,728,678 | 267,898,911 | 1,479.57 (1,472.20 to 1,484.57) |
-| `send_receive/priorityqueue/1` | fits | 12,976 | 8,773,523 | 2.22 (2.21 to 2.22) |
-| `send_receive/priorityqueue/10` | fits | 92,655 | 101,110,763 | 15.47 (15.38 to 15.57) |
-| `send_receive/priorityqueue/21` | fits | 190,038 | 260,076,714 | 35.03 (34.84 to 35.26) |
-| `send_receive/queue/1` | fits | 12,917 | 8,611,752 | 2.08 (2.06 to 2.11) |
-| `send_receive/queue/10` | fits | 92,085 | 95,625,138 | 13.54 (13.46 to 13.68) |
-| `send_receive/queue/22` | fits | 197,637 | 253,689,042 | 31.85 (31.70 to 32.04) |
-| `send_receive/set/1` | fits | 6,512 | 4,610,846 | 1.45 (1.44 to 1.46) |
-| `send_receive/set/10` | fits | 33,462 | 59,214,996 | 9.13 (9.10 to 9.30) |
-| `send_receive/set/28` | fits | 87,354 | 263,213,842 | 32.28 (32.21 to 32.37) |
-| `send_receive/stack/1` | fits | 12,917 | 8,624,086 | 2.09 (2.08 to 2.11) |
-| `send_receive/stack/10` | fits | 92,085 | 95,823,688 | 13.95 (13.93 to 14.08) |
-| `send_receive/stack/22` | fits | 197,637 | 254,136,232 | 32.94 (32.72 to 33.07) |
-| `send_receive/vectordb/1` | fits | 6,755 | 8,482,995 | 2.08 (2.07 to 2.10) |
-| `send_receive/vectordb/10` | fits | 35,852 | 119,171,080 | 16.13 (16.09 to 16.27) |
-| `send_receive/vectordb/17` | fits | 58,483 | 253,569,548 | 31.08 (30.74 to 31.31) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `send_receive/bag/1` | fits | 6,525 | 0.84 (0.83 to 0.84) |
+| `send_receive/bag/10` | fits | 33,645 | 5.69 (5.48 to 5.85) |
+| `send_receive/bag/100` | fits | 304,815 | 86.32 (82.93 to 95.26) |
+| `send_receive/host/1` | fits | 2,540 | 0.23 (0.22 to 0.23) |
+| `send_receive/host/10` | fits | 25,400 | 1.89 (1.88 to 1.90) |
+| `send_receive/host/100` | fits | 254,108 | 41.91 (39.81 to 46.45) |
+| `send_receive/priorityqueue/1` | fits | 10,487 | 1.15 (1.14 to 1.16) |
+| `send_receive/priorityqueue/10` | fits | 67,972 | 8.22 (8.07 to 8.30) |
+| `send_receive/priorityqueue/100` | fits | 643,211 | 118.52 (116.15 to 120.42) |
+| `send_receive/queue/1` | fits | 10,462 | 1.11 (1.09 to 1.12) |
+| `send_receive/queue/10` | fits | 67,732 | 7.88 (7.75 to 7.94) |
+| `send_receive/queue/100` | fits | 640,811 | 104.44 (103.40 to 105.33) |
+| `send_receive/set/1` | fits | 6,525 | 0.89 (0.88 to 0.90) |
+| `send_receive/set/10` | fits | 33,645 | 6.02 (5.91 to 6.17) |
+| `send_receive/set/100` | fits | 304,815 | 112.77 (111.19 to 120.48) |
+| `send_receive/stack/1` | fits | 10,462 | 1.12 (1.11 to 1.14) |
+| `send_receive/stack/10` | fits | 67,732 | 8.04 (7.87 to 8.08) |
+| `send_receive/stack/100` | fits | 640,811 | 104.93 (103.65 to 106.05) |
+| `send_receive/vectordb/1` | fits | 6,725 | 1.17 (1.17 to 1.18) |
+| `send_receive/vectordb/10` | fits | 35,635 | 9.81 (9.74 to 9.92) |
+| `send_receive/vectordb/100` | fits | 324,715 | 266.00 (261.42 to 269.20) |
 
 ### 4.4 A receive from n records
 
 *Table 13. One receive from a collection of n records.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `receive_from_n/bag/10` | fits | 8,379 | 5,290,131 | 1.72 (1.71 to 1.72) |
-| `receive_from_n/bag/100` | fits | 8,385 | 23,866,747 | 3.62 (3.61 to 3.70) |
-| `receive_from_n/bag/1000` | fits | 8,385 | 212,535,867 | 25.74 (25.67 to 26.06) |
-| `receive_from_n/host/10` | fits | 2,585 | 360,523 | 0.45 (0.44 to 0.45) |
-| `receive_from_n/host/100` | fits | 2,588 | 360,523 | 0.92 (0.92 to 0.92) |
-| `receive_from_n/host/1000` | fits | 2,588 | 360,523 | 5.79 (5.75 to 5.88) |
-| `receive_from_n/host/10000` | fits | 2,588 | 360,523 | 72.08 (71.93 to 72.92) |
-| `receive_from_n/priorityqueue/10` | fits | 11,280 | 7,862,222 | 2.06 (2.06 to 2.07) |
-| `receive_from_n/priorityqueue/100` | fits | 11,285 | 31,721,033 | 4.28 (4.20 to 4.45) |
-| `receive_from_n/queue/10` | fits | 11,280 | 7,495,268 | 2.05 (2.04 to 2.07) |
-| `receive_from_n/queue/100` | fits | 11,285 | 28,343,039 | 4.11 (4.06 to 4.25) |
-| `receive_from_n/queue/1000` | fits | 11,285 | 236,816,983 | 27.12 (26.81 to 27.95) |
-| `receive_from_n/set/10` | fits | 8,379 | 6,053,253 | 1.84 (1.83 to 1.85) |
-| `receive_from_n/set/100` | fits | 8,379 | 32,385,448 | 4.62 (4.52 to 4.73) |
-| `receive_from_n/stack/10` | fits | 11,280 | 7,501,336 | 2.04 (2.03 to 2.04) |
-| `receive_from_n/stack/100` | fits | 11,291 | 28,349,173 | 4.10 (4.07 to 4.16) |
-| `receive_from_n/stack/1000` | fits | 11,291 | 236,823,051 | 27.48 (27.19 to 27.95) |
-| `receive_from_n/vectordb/10` | fits | 8,638 | 12,002,112 | 2.51 (2.49 to 2.58) |
-| `receive_from_n/vectordb/100` | fits | 8,638 | 66,553,531 | 9.29 (9.19 to 9.60) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `receive_from_n/bag/10` | fits | 8,386 | 1.02 (1.01 to 1.03) |
+| `receive_from_n/bag/100` | fits | 8,386 | 1.98 (1.95 to 2.00) |
+| `receive_from_n/bag/1000` | fits | 8,386 | 12.91 (12.86 to 13.09) |
+| `receive_from_n/host/10` | fits | 2,599 | 0.32 (0.32 to 0.32) |
+| `receive_from_n/host/100` | fits | 2,599 | 0.80 (0.79 to 0.80) |
+| `receive_from_n/host/1000` | fits | 2,599 | 5.68 (5.59 to 5.74) |
+| `receive_from_n/priorityqueue/10` | fits | 10,061 | 1.16 (1.15 to 1.16) |
+| `receive_from_n/priorityqueue/100` | fits | 10,064 | 2.15 (2.13 to 2.17) |
+| `receive_from_n/priorityqueue/1000` | fits | 10,064 | 13.68 (13.64 to 13.77) |
+| `receive_from_n/queue/10` | fits | 10,061 | 1.15 (1.14 to 1.15) |
+| `receive_from_n/queue/100` | fits | 10,064 | 2.09 (2.09 to 2.12) |
+| `receive_from_n/queue/1000` | fits | 10,064 | 12.94 (12.87 to 13.08) |
+| `receive_from_n/set/10` | fits | 8,386 | 1.12 (1.11 to 1.12) |
+| `receive_from_n/set/100` | fits | 8,386 | 2.48 (2.46 to 2.52) |
+| `receive_from_n/set/1000` | fits | 8,386 | 18.50 (18.15 to 18.75) |
+| `receive_from_n/stack/10` | fits | 10,061 | 1.15 (1.15 to 1.17) |
+| `receive_from_n/stack/100` | fits | 10,064 | 2.12 (2.10 to 2.15) |
+| `receive_from_n/stack/1000` | fits | 10,064 | 13.01 (12.92 to 13.13) |
+| `receive_from_n/vectordb/10` | fits | 8,605 | 1.47 (1.46 to 1.49) |
+| `receive_from_n/vectordb/100` | fits | 8,605 | 5.32 (5.23 to 5.37) |
+| `receive_from_n/vectordb/1000` | fits | 8,605 | 57.73 (57.50 to 57.82) |
 
 ### 4.5 A send to n records
 
 *Table 14. One send to a collection of n records.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `send_to_n/bag/10` | fits | 4,374 | 2,989,112 | 1.15 (1.14 to 1.15) |
-| `send_to_n/bag/100` | fits | 4,376 | 11,980,844 | 2.56 (2.55 to 2.57) |
-| `send_to_n/bag/1000` | fits | 4,376 | 101,896,116 | 17.44 (17.37 to 17.48) |
-| `send_to_n/host/10` | fits | 664 | 54,361 | 0.22 (0.22 to 0.22) |
-| `send_to_n/host/100` | fits | 665 | 54,361 | 0.56 (0.56 to 0.56) |
-| `send_to_n/host/1000` | fits | 665 | 54,361 | 3.93 (3.90 to 3.94) |
-| `send_to_n/host/10000` | fits | 666 | 54,361 | 48.35 (47.87 to 49.05) |
-| `send_to_n/priorityqueue/10` | fits | 7,333 | 5,528,807 | 1.64 (1.64 to 1.65) |
-| `send_to_n/priorityqueue/100` | fits | 7,340 | 19,203,533 | 3.18 (3.16 to 3.31) |
-| `send_to_n/priorityqueue/1000` | fits | 7,340 | 155,949,471 | 19.67 (19.48 to 20.05) |
-| `send_to_n/queue/10` | fits | 7,275 | 4,911,995 | 1.42 (1.42 to 1.42) |
-| `send_to_n/queue/100` | fits | 7,282 | 13,903,727 | 2.80 (2.79 to 2.81) |
-| `send_to_n/queue/1000` | fits | 7,282 | 103,819,065 | 17.44 (17.27 to 17.69) |
-| `send_to_n/set/10` | fits | 4,374 | 3,001,771 | 1.15 (1.15 to 1.16) |
-| `send_to_n/set/100` | fits | 4,376 | 11,993,536 | 2.59 (2.59 to 2.61) |
-| `send_to_n/set/1000` | fits | 4,376 | 101,908,775 | 17.38 (17.35 to 17.59) |
-| `send_to_n/stack/10` | fits | 7,275 | 4,926,548 | 1.45 (1.44 to 1.47) |
-| `send_to_n/stack/100` | fits | 7,282 | 13,918,313 | 2.84 (2.82 to 2.84) |
-| `send_to_n/stack/1000` | fits | 7,282 | 103,833,585 | 17.75 (17.68 to 17.80) |
-| `send_to_n/vectordb/10` | fits | 4,453 | 5,442,815 | 1.44 (1.43 to 1.44) |
-| `send_to_n/vectordb/100` | fits | 4,453 | 28,666,123 | 4.02 (3.99 to 4.07) |
-| `send_to_n/vectordb/1000` | fits | 4,453 | 260,907,395 | 34.27 (34.01 to 34.69) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `send_to_n/bag/10` | fits | 4,382 | 0.67 (0.67 to 0.68) |
+| `send_to_n/bag/100` | fits | 4,382 | 1.46 (1.45 to 1.46) |
+| `send_to_n/bag/1000` | fits | 4,382 | 10.29 (10.20 to 10.36) |
+| `send_to_n/host/10` | fits | 666 | 0.14 (0.14 to 0.14) |
+| `send_to_n/host/100` | fits | 667 | 0.50 (0.50 to 0.50) |
+| `send_to_n/host/1000` | fits | 667 | 4.06 (4.06 to 4.08) |
+| `send_to_n/priorityqueue/10` | fits | 6,081 | 0.79 (0.79 to 0.80) |
+| `send_to_n/priorityqueue/100` | fits | 6,084 | 1.70 (1.69 to 1.73) |
+| `send_to_n/priorityqueue/1000` | fits | 6,084 | 11.39 (11.18 to 11.49) |
+| `send_to_n/queue/10` | fits | 6,057 | 0.76 (0.75 to 0.76) |
+| `send_to_n/queue/100` | fits | 6,060 | 1.65 (1.62 to 1.66) |
+| `send_to_n/queue/1000` | fits | 6,060 | 11.49 (11.35 to 11.70) |
+| `send_to_n/set/10` | fits | 4,382 | 0.67 (0.66 to 0.68) |
+| `send_to_n/set/100` | fits | 4,382 | 1.49 (1.49 to 1.49) |
+| `send_to_n/set/1000` | fits | 4,382 | 10.91 (10.77 to 11.10) |
+| `send_to_n/stack/10` | fits | 6,057 | 0.77 (0.77 to 0.78) |
+| `send_to_n/stack/100` | fits | 6,060 | 1.65 (1.63 to 1.66) |
+| `send_to_n/stack/1000` | fits | 6,060 | 11.08 (10.95 to 11.16) |
+| `send_to_n/vectordb/10` | fits | 4,457 | 0.85 (0.85 to 0.86) |
+| `send_to_n/vectordb/100` | fits | 4,457 | 2.44 (2.43 to 2.48) |
+| `send_to_n/vectordb/1000` | fits | 4,457 | 22.39 (22.05 to 22.69) |
 
 ### 4.6 Matching
 
@@ -428,21 +446,23 @@ The `send_fires_waiter` case parks n receives on one channel, and the measured s
 
 *Table 15. Matching over a collection of n records.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `matcher/bag_first/10` | fits | 8,379 | 5,289,635 | 1.76 (1.75 to 1.76) |
-| `matcher/bag_first/100` | fits | 8,385 | 23,866,251 | 3.76 (3.69 to 3.80) |
-| `matcher/bag_first/1000` | fits | 8,385 | 212,533,883 | 25.88 (25.76 to 26.83) |
-| `matcher/bag_scan_miss/10` | fits | 4,571 | 4,330,802 | 1.37 (1.37 to 1.38) |
-| `matcher/bag_scan_miss/100` | fits | 4,571 | 24,533,474 | 3.65 (3.60 to 3.70) |
-| `matcher/bag_scan_miss/1000` | fits | 4,571 | 229,487,985 | 27.03 (26.80 to 27.90) |
-| `matcher/join_two/10` | fits | 11,149 | 8,621,329 | 2.30 (2.27 to 2.38) |
-| `matcher/join_two/100` | fits | 11,149 | 45,761,539 | 6.01 (5.95 to 6.08) |
-| `matcher/queue_head/10` | fits | 11,280 | 7,495,202 | 2.09 (2.05 to 2.12) |
-| `matcher/queue_head/100` | fits | 11,285 | 28,343,006 | 4.09 (4.05 to 4.20) |
-| `matcher/queue_head/1000` | fits | 11,285 | 236,816,983 | 27.13 (26.94 to 27.52) |
-| `matcher/send_fires_waiter/10` | fits | 5,564 | 6,097,880 | 1.53 (1.52 to 1.54) |
-| `matcher/send_fires_waiter/100` | fits | 5,564 | 35,864,408 | 4.70 (4.68 to 4.88) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `matcher/bag_first/10` | fits | 8,386 | 1.06 (1.05 to 1.07) |
+| `matcher/bag_first/100` | fits | 8,386 | 2.02 (2.00 to 2.03) |
+| `matcher/bag_first/1000` | fits | 8,386 | 13.49 (13.46 to 13.65) |
+| `matcher/bag_scan_miss/10` | fits | 4,561 | 0.81 (0.81 to 0.82) |
+| `matcher/bag_scan_miss/100` | fits | 4,561 | 1.77 (1.76 to 1.79) |
+| `matcher/bag_scan_miss/1000` | fits | 4,561 | 11.90 (11.67 to 12.01) |
+| `matcher/join_two/10` | fits | 11,190 | 1.34 (1.33 to 1.37) |
+| `matcher/join_two/100` | fits | 11,190 | 3.65 (3.62 to 3.67) |
+| `matcher/join_two/1000` | fits | 11,190 | 29.09 (28.91 to 29.17) |
+| `matcher/queue_head/10` | fits | 10,061 | 1.15 (1.14 to 1.15) |
+| `matcher/queue_head/100` | fits | 10,064 | 2.11 (2.10 to 2.15) |
+| `matcher/queue_head/1000` | fits | 10,064 | 13.77 (13.64 to 13.88) |
+| `matcher/send_fires_waiter/10` | fits | 5,572 | 0.90 (0.89 to 0.90) |
+| `matcher/send_fires_waiter/100` | fits | 5,572 | 2.05 (2.05 to 2.06) |
+| `matcher/send_fires_waiter/1000` | fits | 5,572 | 15.57 (15.25 to 15.80) |
 
 ### 4.7 VectorDB queries
 
@@ -450,15 +470,20 @@ The queries select by a threshold, the best record, the best eight records, or e
 
 *Table 16. VectorDB queries over a collection of n records.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `vectordb_query/best/10` | fits | 8,638 | 12,003,441 | 2.50 (2.50 to 2.53) |
-| `vectordb_query/best/100` | fits | 8,638 | 66,562,892 | 8.87 (8.73 to 9.09) |
-| `vectordb_query/k8/10` | fits | 50,839 | 29,431,200 | 4.47 (4.44 to 4.58) |
-| `vectordb_query/k8/100` | fits | 50,839 | 83,992,649 | 11.11 (10.95 to 11.44) |
-| `vectordb_query/list_all/10` | fits | 74,730 | 32,811,622 | 4.61 (4.58 to 4.70) |
-| `vectordb_query/threshold/10` | fits | 8,700 | 12,266,850 | 2.70 (2.66 to 2.71) |
-| `vectordb_query/threshold/100` | fits | 8,700 | 66,841,146 | 9.38 (9.25 to 9.58) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `vectordb_query/best/10` | fits | 8,605 | 1.53 (1.51 to 1.56) |
+| `vectordb_query/best/100` | fits | 8,605 | 5.60 (5.36 to 5.68) |
+| `vectordb_query/best/1000` | fits | 8,605 | 62.14 (60.90 to 63.04) |
+| `vectordb_query/k8/10` | fits | 19,480 | 2.85 (2.81 to 2.87) |
+| `vectordb_query/k8/100` | fits | 19,480 | 8.84 (8.74 to 8.95) |
+| `vectordb_query/k8/1000` | fits | 19,480 | 85.72 (83.23 to 91.24) |
+| `vectordb_query/list_all/10` | fits | 22,703 | 2.94 (2.91 to 2.96) |
+| `vectordb_query/list_all/100` | fits | 170,213 | 32.50 (32.03 to 32.87) |
+| `vectordb_query/list_all/1000` | fits | 1,645,328 | 1,694.76 (1,622.20 to 1,769.00) |
+| `vectordb_query/threshold/10` | fits | 8,663 | 1.60 (1.59 to 1.61) |
+| `vectordb_query/threshold/100` | fits | 8,663 | 5.84 (5.80 to 5.86) |
+| `vectordb_query/threshold/1000` | fits | 8,663 | 63.78 (62.94 to 64.46) |
 
 ### 4.8 Concurrent operations
 
@@ -467,12 +492,12 @@ They use one channel, eight channels of one space, four send-receive pairs on on
 
 *Table 17. Eight parallel operations in one deploy.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `concurrency/many_channels/8` | fits | 12,314 | 12,908,742 | 3.42 (3.40 to 3.43) |
-| `concurrency/many_spaces/8` | fits | 29,288 | 15,962,322 | 5.39 (5.37 to 5.43) |
-| `concurrency/mixed_one_channel/8` | fits | 15,498 | 18,718,661 | 3.62 (3.61 to 3.66) |
-| `concurrency/one_channel/8` | fits | 10,369 | 15,492,909 | 3.09 (3.08 to 3.11) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `concurrency/many_channels/8` | fits | 12,515 | 1.92 (1.90 to 1.94) |
+| `concurrency/many_spaces/8` | fits | 29,304 | 2.92 (2.89 to 2.96) |
+| `concurrency/mixed_one_channel/8` | fits | 15,535 | 2.26 (2.21 to 2.36) |
+| `concurrency/one_channel/8` | fits | 10,442 | 1.63 (1.62 to 1.64) |
 
 ### 4.9 Queue order
 
@@ -481,11 +506,11 @@ The series runs the counts 1, 10 and 31.
 
 *Table 18. Sends and a FIFO drain in one deploy.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `queue_ordering/send_and_drain/1` | fits | 12,919 | 8,908,585 | 2.18 (2.17 to 2.20) |
-| `queue_ordering/send_and_drain/10` | fits | 57,446 | 62,257,327 | 8.76 (8.71 to 9.00) |
-| `queue_ordering/send_and_drain/31` | fits | 161,333 | 259,997,336 | 28.92 (28.70 to 29.11) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `queue_ordering/send_and_drain/1` | fits | 10,456 | 1.16 (1.14 to 1.17) |
+| `queue_ordering/send_and_drain/10` | fits | 44,074 | 4.10 (4.09 to 4.15) |
+| `queue_ordering/send_and_drain/31` | fits | 122,509 | 11.04 (10.96 to 11.22) |
 
 ## 5. Results of the persistence benchmarks
 
@@ -500,14 +525,14 @@ Each case sends 10 records to one collection, and it times the deploy with its c
 
 *Table 19. One deploy of 10 sends with its checkpoint.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `commit/bag/10` | fits | 14,512 | 20,500,537 | 5.28 (5.25 to 5.30) |
-| `commit/priorityqueue/10` | fits | 49,065 | 43,342,685 | 9.42 (9.38 to 9.46) |
-| `commit/queue/10` | fits | 48,495 | 40,002,917 | 7.87 (7.81 to 8.03) |
-| `commit/set/10` | fits | 14,512 | 20,627,061 | 5.38 (5.34 to 5.40) |
-| `commit/stack/10` | fits | 48,495 | 40,164,112 | 8.48 (8.41 to 8.60) |
-| `commit/vectordb/10` | fits | 15,302 | 36,337,039 | 7.06 (7.04 to 7.09) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `commit/bag/10` | fits | 14,765 | 3.71 (3.64 to 3.76) |
+| `commit/priorityqueue/10` | fits | 37,016 | 5.03 (5.00 to 5.06) |
+| `commit/queue/10` | fits | 36,776 | 4.67 (4.66 to 4.69) |
+| `commit/set/10` | fits | 14,765 | 3.75 (3.70 to 3.78) |
+| `commit/stack/10` | fits | 36,776 | 4.87 (4.85 to 4.91) |
+| `commit/vectordb/10` | fits | 15,555 | 4.92 (4.85 to 4.95) |
 
 ### 5.2 The checkpoint against the size of the space
 
@@ -525,10 +550,10 @@ The open and the close are not timed.
 
 *Table 20. The first receive after a reset and after a restart.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `restart_attach/bag/100` | fits | 8,379 | 23,862,746 | 3.89 (3.87 to 3.95) |
-| `restart_attach/bag/100/cold` | fits | as above | as above | 3.99 (3.95 to 4.04) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `restart_attach/bag/100` | fits | 8,386 | 2.58 (2.56 to 2.60) |
+| `restart_attach/bag/100/cold` | fits | as above | 2.74 (2.71 to 2.77) |
 
 The contract checks the cached case only. The cold case plays the same deploy on the same root.
 It makes its own picks, so its result and root can differ from those of the cached case.
@@ -543,7 +568,7 @@ A bag has no counter, so the merger accepts both branches, and the contract hold
 
 | Case | Merged root | Median time in ms (95 % interval) |
 |---|---|---|
-| `merge/bag_two_branches/10` | `f74cb026c832dcaf…` | 0.83 (0.83 to 0.83) |
+| `merge/bag_two_branches/10` | `baa4d476f675852a…` | 0.76 (0.75 to 0.77) |
 
 ### 5.5 Replay
 
@@ -554,7 +579,7 @@ It then times the native replay of both blocks, which certifies each play agains
 
 | Case | Phlo of block 2 | Median time in ms (95 % interval) |
 |---|---|---|
-| `replay/queue_two_blocks/10` | 41,695 | 16.12 (16.06 to 16.29) |
+| `replay/queue_two_blocks/10` | 29,512 | 8.48 (8.39 to 8.55) |
 
 ### 5.6 The bytes of a block on LMDB
 
@@ -569,22 +594,22 @@ Table 23 sums the data files of both, and it gives the bytes that each environme
 
 | Block | Length of the data files | Added to the length | Added to the cold store | Added to the history |
 |---|---|---|---|---|
-| 1 | 118,784 | 40,960 | 40,960 | 0 |
-| 2 | 163,840 | 45,056 | 45,056 | 0 |
-| 3 | 225,280 | 61,440 | 61,440 | 0 |
-| 4 | 299,008 | 73,728 | 65,536 | 8,192 |
-| 5 | 380,928 | 81,920 | 73,728 | 8,192 |
-| 6 | 475,136 | 94,208 | 86,016 | 8,192 |
-| 7 | 585,728 | 110,592 | 106,496 | 4,096 |
-| 8 | 696,320 | 110,592 | 110,592 | 0 |
-| 9 | 827,392 | 131,072 | 126,976 | 4,096 |
-| 10 | 966,656 | 139,264 | 139,264 | 0 |
+| 1 | 122,880 | 49,152 | 40,960 | 8,192 |
+| 2 | 172,032 | 49,152 | 45,056 | 4,096 |
+| 3 | 237,568 | 65,536 | 65,536 | 0 |
+| 4 | 303,104 | 65,536 | 57,344 | 8,192 |
+| 5 | 389,120 | 86,016 | 77,824 | 8,192 |
+| 6 | 491,520 | 102,400 | 94,208 | 8,192 |
+| 7 | 610,304 | 118,784 | 110,592 | 8,192 |
+| 8 | 733,184 | 122,880 | 118,784 | 4,096 |
+| 9 | 880,640 | 147,456 | 143,360 | 4,096 |
+| 10 | 1,028,096 | 147,456 | 147,456 | 0 |
 
 *Table 24. One block of 10 sends with its checkpoint on LMDB.*
 
-| Case | Outcome | Phlo | VerificationBytes | Median time in ms (95 % interval) |
-|---|---|---|---|---|
-| `lmdb_commit/bag/10` | fits | 12,082 | 20,243,703 | 5.03 (5.01 to 5.05) |
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `lmdb_commit/bag/10` | fits | 12,175 | 3.65 (3.54 to 3.70) |
 
 ## 6. Before and after
 
@@ -607,21 +632,21 @@ The last column explains each ratio.
 
 | Legacy case | Before: ns for one element | Counterpart now | After: ms for one operation | After over before | Why the time differs |
 |---|---|---|---|---|---|
-| `collection_types/bag_insert_1000` | 1.2 | one more send of a deploy to a bag space | 0.302 | 243,974 | The legacy case pushes an integer into an in-memory vector. A send now runs a space job: routing, locks, a copy of the list, events and the observer calls. |
-| `collection_types/queue_insert_1000` | 1.3 | one more send of a deploy to a queue space | 0.522 | 394,905 | As for the bag, and each send also bumps the counter of the collection with three events (M-1). |
-| `collection_types/stack_insert_1000` | 1.3 | one more send of a deploy to a stack space | 0.559 | 433,603 | As for the queue. |
-| `collection_types/set_insert_1000` | 55.2 | one more send of a deploy to a set space | 0.309 | 5,596 | The legacy case inserts into a hash set. A send now stores a record, and a receive later retires its class. |
-| `produce_consume_cycle/produce_only/1000` | 19.6 | one more send of a deploy to a bag space | 0.302 | 15,432 | The legacy space had no events, no metering and no history. A send now makes all three. |
-| `produce_consume_cycle/consume_immediate_match/1000` | 76.6 | one more send-receive pair of a deploy on a bag space | 0.785 | 10,252 | The legacy consume matched with the wildcard matcher. A receive now matches its pattern, fires a COMM and commits it. |
-| `produce_consume_cycle/produce_multi_channel/1000` | 91.3 | one more send of a deploy, each to its own cell | 0.656 | 7,190 | Each send now reads its own collection and bumps its own counter. |
-| `collection_retrieval/bag_find_all` | 184.6 | one receive from a bag space of 1,000 records | 25.745 | 139,427 | The legacy case removes 1,000 items from an in-memory vector, so one removal scans part of it. A receive now copies the whole list of 1,000 records into its staged view first (Section 3.4). |
-| `collection_retrieval/queue_find_all` | 0.4 | one receive from a queue space of 1,000 records | 27.122 | 73,091,165 | The legacy queue removed its head in place. A receive now copies the whole list, although it inspects only the head. |
-| `collection_retrieval/stack_find_all` | 1.3 | one receive from a stack space of 1,000 records | 27.480 | 20,442,133 | As for the queue. |
-| `matcher_comparison/exact_match/1000` | 0.4 | one record of a receive that scans 1,000 records and matches none | 0.027 | 63,154 | The legacy case compares two integers. The receive now matches a Rholang pattern against each record with the matcher, inside a deploy. |
-| `vectordb_top_k/top_10/1000` | 117.9 | one record of a query for the best eight records of a VectorDB space of 100 records | 0.111 | 942 | The legacy case ranks 1,000 vectors of 384 floats in memory. The space query ranks exact numbers inside a deploy. |
-| `lock_contention_same_channel/produce/8` | 90.5 | one of eight parallel sends to one channel of a bag space | 0.386 | 4,264 | The legacy case writes a shared map from eight threads. The eight space jobs share the footprint key of their space ([I-11](decision-register.md#i-11)), so they run one after another. |
-| `lock_contention_different_channels/isolated_channels/8` | 81.9 | one of eight parallel sends to eight channels of a bag space | 0.427 | 5,214 | The legacy case writes eight maps from eight threads. The jobs of different channels of one space also share its footprint key, so they also run one after another. |
-| `atomic_ordering/seqcst_fetch_add` | 1.8 | one send and one drain round of a queue space, in a deploy of 10 sends | 0.876 | 479,935 | The legacy case increments an atomic counter. The order of a queue record now comes from the counter record of the collection, with its events. |
+| `collection_types/bag_insert_1000` | 1.2 | one more send of a deploy to a bag space | 0.156 | 126,118 | The legacy case pushes an integer into an in-memory vector. A send now runs a space job: routing, locks, a copy of the list, events and the observer calls. |
+| `collection_types/queue_insert_1000` | 1.3 | one more send of a deploy to a queue space | 0.247 | 186,987 | As for the bag, and each send also bumps the counter of the collection with three events (M-1). |
+| `collection_types/stack_insert_1000` | 1.3 | one more send of a deploy to a stack space | 0.252 | 195,826 | As for the queue. |
+| `collection_types/set_insert_1000` | 55.2 | one more send of a deploy to a set space | 0.154 | 2,792 | The legacy case inserts into a hash set. A send now stores a record, and a receive later retires its class. |
+| `produce_consume_cycle/produce_only/1000` | 19.6 | one more send of a deploy to a bag space | 0.156 | 7,977 | The legacy space had no events, no metering and no history. A send now makes all three. |
+| `produce_consume_cycle/consume_immediate_match/1000` | 76.6 | one more send-receive pair of a deploy on a bag space | 0.539 | 7,038 | The legacy consume matched with the wildcard matcher. A receive now matches its pattern, fires a COMM and commits it. |
+| `produce_consume_cycle/produce_multi_channel/1000` | 91.3 | one more send of a deploy, each to its own cell | 0.331 | 3,629 | Each send now reads its own collection and bumps its own counter. |
+| `collection_retrieval/bag_find_all` | 184.6 | one receive from a bag space of 1,000 records | 12.910 | 69,920 | The legacy case removes 1,000 items from an in-memory vector, so one removal scans part of it. A receive now copies the whole list of 1,000 records into its staged view first (Section 3.4). |
+| `collection_retrieval/queue_find_all` | 0.4 | one receive from a queue space of 1,000 records | 12.940 | 34,873,271 | The legacy queue removed its head in place. A receive now copies the whole list, although it inspects only the head. |
+| `collection_retrieval/stack_find_all` | 1.3 | one receive from a stack space of 1,000 records | 13.010 | 9,678,546 | As for the queue. |
+| `matcher_comparison/exact_match/1000` | 0.4 | one record of a receive that scans 1,000 records and matches none | 0.012 | 27,811 | The legacy case compares two integers. The receive now matches a Rholang pattern against each record with the matcher, inside a deploy. |
+| `vectordb_top_k/top_10/1000` | 117.9 | one record of a query for the best eight records of a VectorDB space of 100 records | 0.088 | 749 | The legacy case ranks 1,000 vectors of 384 floats in memory. The space query ranks exact numbers inside a deploy. |
+| `lock_contention_same_channel/produce/8` | 90.5 | one of eight parallel sends to one channel of a bag space | 0.204 | 2,252 | The legacy case writes a shared map from eight threads. The eight space jobs share the footprint key of their space ([I-11](decision-register.md#i-11)), so they run one after another. |
+| `lock_contention_different_channels/isolated_channels/8` | 81.9 | one of eight parallel sends to eight channels of a bag space | 0.240 | 2,925 | The legacy case writes eight maps from eight threads. The jobs of different channels of one space also share its footprint key, so they also run one after another. |
+| `atomic_ordering/seqcst_fetch_add` | 1.8 | one send and one drain round of a queue space, in a deploy of 10 sends | 0.410 | 224,788 | The legacy case increments an atomic counter. The order of a queue record now comes from the counter record of the collection, with its events. |
 
 ### 6.3 The legacy groups with no counterpart
 
@@ -645,36 +670,39 @@ Table 27 divides the median of each space case by the median of its host case of
 
 | Space case | Median of the space case, ms | Median of the host program, ms | Space over host |
 |---|---|---|---|
-| `send/bag/10` | 3.70 | 0.64 | 5.80 |
-| `send/set/10` | 3.76 | 0.64 | 5.91 |
-| `send/queue/10` | 6.04 | 0.64 | 9.48 |
-| `send/stack/10` | 6.38 | 0.64 | 10.01 |
-| `send/priorityqueue/10` | 7.60 | 0.64 | 11.93 |
-| `send/vectordb/10` | 5.48 | 0.64 | 8.60 |
-| `send_receive/bag/10` | 8.50 | 2.17 | 3.92 |
-| `send_receive/set/10` | 9.13 | 2.17 | 4.22 |
-| `send_receive/queue/10` | 13.54 | 2.17 | 6.25 |
-| `send_receive/stack/10` | 13.95 | 2.17 | 6.44 |
-| `send_receive/priorityqueue/10` | 15.47 | 2.17 | 7.14 |
-| `send_receive/vectordb/10` | 16.13 | 2.17 | 7.45 |
-| `receive_from_n/bag/10` | 1.72 | 0.45 | 3.85 |
-| `receive_from_n/set/10` | 1.84 | 0.45 | 4.12 |
-| `receive_from_n/queue/10` | 2.05 | 0.45 | 4.60 |
-| `receive_from_n/stack/10` | 2.04 | 0.45 | 4.56 |
-| `receive_from_n/priorityqueue/10` | 2.06 | 0.45 | 4.63 |
-| `receive_from_n/vectordb/10` | 2.51 | 0.45 | 5.62 |
-| `receive_from_n/bag/100` | 3.62 | 0.92 | 3.93 |
-| `receive_from_n/set/100` | 4.62 | 0.92 | 5.01 |
-| `receive_from_n/queue/100` | 4.11 | 0.92 | 4.46 |
-| `receive_from_n/stack/100` | 4.10 | 0.92 | 4.45 |
-| `receive_from_n/priorityqueue/100` | 4.28 | 0.92 | 4.64 |
-| `receive_from_n/vectordb/100` | 9.29 | 0.92 | 10.09 |
-| `receive_from_n/bag/1000` | 25.74 | 5.79 | 4.45 |
-| `receive_from_n/queue/1000` | 27.12 | 5.79 | 4.68 |
-| `receive_from_n/stack/1000` | 27.48 | 5.79 | 4.75 |
+| `send/bag/10` | 2.00 | 0.43 | 4.61 |
+| `send/set/10` | 1.99 | 0.43 | 4.59 |
+| `send/queue/10` | 2.95 | 0.43 | 6.80 |
+| `send/stack/10` | 3.01 | 0.43 | 6.96 |
+| `send/priorityqueue/10` | 3.24 | 0.43 | 7.48 |
+| `send/vectordb/10` | 3.06 | 0.43 | 7.07 |
+| `send_receive/bag/10` | 5.69 | 1.89 | 3.01 |
+| `send_receive/set/10` | 6.02 | 1.89 | 3.18 |
+| `send_receive/queue/10` | 7.88 | 1.89 | 4.17 |
+| `send_receive/stack/10` | 8.04 | 1.89 | 4.25 |
+| `send_receive/priorityqueue/10` | 8.22 | 1.89 | 4.35 |
+| `send_receive/vectordb/10` | 9.81 | 1.89 | 5.19 |
+| `receive_from_n/bag/10` | 1.02 | 0.32 | 3.17 |
+| `receive_from_n/set/10` | 1.12 | 0.32 | 3.47 |
+| `receive_from_n/queue/10` | 1.15 | 0.32 | 3.56 |
+| `receive_from_n/stack/10` | 1.15 | 0.32 | 3.58 |
+| `receive_from_n/priorityqueue/10` | 1.16 | 0.32 | 3.58 |
+| `receive_from_n/vectordb/10` | 1.47 | 0.32 | 4.56 |
+| `receive_from_n/bag/100` | 1.98 | 0.80 | 2.48 |
+| `receive_from_n/set/100` | 2.48 | 0.80 | 3.12 |
+| `receive_from_n/queue/100` | 2.09 | 0.80 | 2.63 |
+| `receive_from_n/stack/100` | 2.12 | 0.80 | 2.66 |
+| `receive_from_n/priorityqueue/100` | 2.15 | 0.80 | 2.70 |
+| `receive_from_n/vectordb/100` | 5.32 | 0.80 | 6.69 |
+| `receive_from_n/bag/1000` | 12.91 | 5.68 | 2.27 |
+| `receive_from_n/set/1000` | 18.50 | 5.68 | 3.26 |
+| `receive_from_n/queue/1000` | 12.94 | 5.68 | 2.28 |
+| `receive_from_n/stack/1000` | 13.01 | 5.68 | 2.29 |
+| `receive_from_n/priorityqueue/1000` | 13.68 | 5.68 | 2.41 |
+| `receive_from_n/vectordb/1000` | 57.73 | 5.68 | 10.17 |
 
-The experiments of Table 28 test the differences that matter with 60 replicates of each arm.
-Each experiment is open in pgmcp with its criterion fixed before the measurement.
+The experiments of Table 28 tested the differences that matter in step S8, with 60 replicates of each arm.
+Each experiment was opened in pgmcp with its criterion fixed before the measurement.
 
 *Table 28. The experiments of step S8.*
 
@@ -695,6 +723,8 @@ The cost-base captures time the bincode codec, LMDB keys and values, and RSpace 
 These captures measure internals of the base, not space operations, so this document does not compare them.
 
 ## 7. The examples from end to end
+
+This section keeps the measurement of step S8, because the timed run of 2026-11-10 did not time the examples.
 
 Each example of `examples/reified_rspaces/` runs as one command.
 The command is the release binary of the examples harness with `--exact example_NAME`.
@@ -795,21 +825,21 @@ Tables 3 and 4 record this finding for the measurement before that decision.
 
 ### 8.3 F3: a space deploy takes more time than the host program
 
-A deploy of 10 sends to a bag space takes 3.70 ms, and the host program takes 0.64 ms: 5.8 times as long.
-Experiment 421 tests this difference with 60 replicates of each arm.
-Its verdict is accepted (Welch's t-test: $`t = 115.90`$, $`p < 10^{-6}`$, $`d = 21.16`$, and the difference is 3.09 to 3.19 ms).
+A deploy of 10 sends to a bag space takes 2.00 ms, and the host program takes 0.43 ms: 4.6 times as long.
+Experiment 421 tested this difference in step S8, with 60 replicates of each arm.
+Its verdict was accepted (Welch's t-test: $`t = 115.90`$, $`p < 10^{-6}`$, $`d = 21.16`$, and the difference was 3.09 to 3.19 ms).
 
-A receive from a bag of 1,000 records takes 25.74 ms, against 1.72 ms from 10 records.
-Experiment 422 tests this growth.
-Its verdict is accepted (Welch's t-test: $`t = 332.56`$, $`p < 10^{-6}`$, $`d = 60.72`$, and the difference is 24.57 to 24.87 ms).
+A receive from a bag of 1,000 records takes 12.91 ms, against 1.02 ms from 10 records.
+Experiment 422 tested this growth in step S8.
+Its verdict was accepted (Welch's t-test: $`t = 332.56`$, $`p < 10^{-6}`$, $`d = 60.72`$, and the difference was 24.57 to 24.87 ms).
 
 ### 8.4 F4: the persistence costs
 
-After a restart of its LMDB store, the first receive from a bag of 100 records takes 3.99 ms, against 3.89 ms after a reset.
-Experiment 423 tests this difference.
-Its verdict is accepted (Welch's t-test: $`t = 11.55`$, $`p < 10^{-6}`$, $`d = 2.11`$, and the difference is 0.14 to 0.20 ms).
-The first block of 10 sends to one bag adds 40,960 bytes to the LMDB store.
-Block 10 adds 139,264 bytes (Table 23).
+After a restart of its LMDB store, the first receive from a bag of 100 records takes 2.74 ms, against 2.58 ms after a reset.
+Experiment 423 tested this difference in step S8.
+Its verdict was accepted (Welch's t-test: $`t = 11.55`$, $`p < 10^{-6}`$, $`d = 2.11`$, and the difference was 0.14 to 0.20 ms).
+The first block of 10 sends to one bag adds 49,152 bytes to the LMDB store.
+Block 10 adds 147,456 bytes (Table 23).
 The history stores the record list of a channel as one value, so each block that changes the channel stores the whole list again (`rspace++/src/rspace/history/history_repository_impl.rs:267-278`).
 
 ### 8.5 Candidate optimizations

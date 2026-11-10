@@ -1,12 +1,24 @@
 ' 57 The VerificationBytes of one receive against the records of its
 ' collection, for each discipline, with the host-work limit of protocol
+' Changed by decision 89: no run measures VerificationBytes after decision
+' 89, so no timed run replaces the chart. The text before:
+' ' version 6. Decision 89 retired that limit. The chart keeps the measurement
+' ' before decision 89, and the next timed run replaces it.
 ' version 6. Decision 89 retired that limit. The chart keeps the measurement
-' before decision 89, and the next timed run replaces it.
+' before decision 89.
 '
+' Changed by decision 120: merge 2 captured the v1 contract again in place,
+' and that capture holds no host work, so the source names the revision of
+' the data. The text before:
+' ' Source of Figure 2 of ../performance.md (section 3.3). The measured points
+' ' are the receive_from_n cases of test-vectors/reified-bench-contract-v1.json
+' ' that fit the limit. Each line is the least-squares line of Table 5 of that
+' ' document, drawn from 0 records to the size where it reaches the limit:
 ' Source of Figure 2 of ../performance.md (section 3.3). The measured points
 ' are the receive_from_n cases of test-vectors/reified-bench-contract-v1.json
-' that fit the limit. Each line is the least-squares line of Table 5 of that
-' document, drawn from 0 records to the size where it reaches the limit:
+' at revision 71c10078c that fit the limit. Each line is the least-squares
+' line of Table 5 of that document, drawn from 0 records to the size where it
+' reaches the limit:
 '     bag: 1,267 records
 '     set: 907 records
 '     queue and stack: 1,136 records
