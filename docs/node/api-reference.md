@@ -305,8 +305,8 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed body or invalid field value: invalid signature, deployer key or signature not valid hex, unsupported signature algorithm, invalid amount or parameters, read-only node, unbonded validator, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
-| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `400` | Malformed body or invalid field value: invalid signature, deployer key or signature not valid hex, unsupported signature algorithm, invalid amount after decoding (for example negative `phloLimit` or total-charge overflow), read-only node, unbonded validator, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `422` | Body field fails decoding, for example invalid deploy parameters (`invalid_request_body`); or term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
 
