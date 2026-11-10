@@ -1,7 +1,7 @@
 // Quarantine of undecodable records in the node-local deploy stores. The
 // behavior and the operator procedure are in docs/block-storage/README.md.
 //
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
@@ -9,6 +9,8 @@ use models::rust::casper::protocol::casper_message::DeployData;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::{ByteBuffer, ByteString};
+
+use super::key_value_deploy_storage::DeployMetadata;
 
 pub(super) type DeployTypedStore = KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>;
 
@@ -29,6 +31,23 @@ struct DamagedRecord {
     value: ByteBuffer,
     error: KvStoreError,
     reason: &'static str,
+}
+
+#[derive(Clone)]
+pub(super) struct VerifiedMetadata {
+    fingerprint: [u8; 32],
+    metadata: DeployMetadata,
+}
+
+fn record_fingerprint(key: &[u8], value: &[u8]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(8 + key.len() + value.len());
+    input.extend_from_slice(&(key.len() as u64).to_be_bytes());
+    input.extend_from_slice(key);
+    input.extend_from_slice(value);
+    let digest = crypto::rust::hash::blake2b256::Blake2b256::hash(input);
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
 }
 
 #[derive(Clone)]
@@ -136,6 +155,56 @@ impl DeployRecordQuarantine {
         }
         self.isolate(store, damaged)?;
         Ok(deploys)
+    }
+
+    pub(super) fn read_metadata(
+        &self,
+        store: &DeployTypedStore,
+        verified: &mut HashMap<ByteString, VerifiedMetadata>,
+    ) -> Result<(imbl::HashMap<ByteString, DeployMetadata>, usize), KvStoreError> {
+        let raw = store.raw_store().to_map()?;
+        let mut next = HashMap::with_capacity(raw.len());
+        let mut entries = imbl::HashMap::new();
+        let mut damaged = Vec::new();
+        let mut decoded = 0;
+        for (key, value) in raw {
+            let record = store
+                .decode_key(&key)
+                .map_err(|error| RecordError {
+                    reason: "decode",
+                    error,
+                })
+                .and_then(|signature| {
+                    let fingerprint = record_fingerprint(&key, &value);
+                    let record = match verified.get(&signature) {
+                        Some(record) if record.fingerprint == fingerprint => record.clone(),
+                        _ => {
+                            let deploy = self.decode_checked(store, &key, &value)?;
+                            decoded += 1;
+                            VerifiedMetadata {
+                                fingerprint,
+                                metadata: DeployMetadata::from(&deploy),
+                            }
+                        }
+                    };
+                    Ok((signature, record))
+                });
+            match record {
+                Ok((signature, record)) => {
+                    entries.insert(record.metadata.signature.clone(), record.metadata.clone());
+                    next.insert(signature, record);
+                }
+                Err(RecordError { error, reason }) => damaged.push(DamagedRecord {
+                    key,
+                    value,
+                    error,
+                    reason,
+                }),
+            }
+        }
+        self.isolate(store, damaged)?;
+        *verified = next;
+        Ok((entries, decoded))
     }
 
     pub(super) fn any<F>(
@@ -322,6 +391,18 @@ fn bounded_error(error: &KvStoreError) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn metadata_fingerprint_covers_the_key_and_value_without_ambiguous_boundaries() {
+        assert_ne!(
+            super::record_fingerprint(b"a", b"bc"),
+            super::record_fingerprint(b"ab", b"c")
+        );
+        assert_ne!(
+            super::record_fingerprint(b"key", b"first"),
+            super::record_fingerprint(b"key", b"second")
+        );
+    }
+
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Barrier, Mutex};
@@ -383,6 +464,54 @@ mod tests {
         ))
         .encode_key(&sig.to_vec())
         .unwrap()
+    }
+
+    #[test]
+    fn metadata_reuses_checked_current_records_without_rewriting_them() {
+        let live = in_memory();
+        let quarantine = in_memory();
+        let store = DeployTypedStore::with_value_codec(
+            live.clone(),
+            super::super::deploy_codec::encode,
+            super::super::deploy_codec::decode,
+        );
+        let handler = DeployRecordQuarantine::new(DEPLOY_STORAGE_DB, quarantine.clone());
+        let mut verified = HashMap::new();
+        let deploy = stored_deploy();
+        let key = key_for(&deploy.sig);
+        let bytes = stored_bytes();
+        live.put(vec![(key.clone(), bytes.clone())]).unwrap();
+        let (first, decoded) = handler.read_metadata(&store, &mut verified).unwrap();
+        assert_eq!(decoded, 1);
+        assert_eq!(first[&deploy.sig.to_vec()], DeployMetadata::from(&deploy));
+        assert_eq!(live.get_one(&key).unwrap(), Some(bytes.clone()));
+        let (second, decoded) = handler.read_metadata(&store, &mut verified).unwrap();
+        assert_eq!(second, first);
+        assert_eq!(decoded, 0);
+        assert_eq!(live.get_one(&key).unwrap(), Some(bytes));
+        assert!(!quarantine.non_empty().unwrap());
+    }
+
+    #[test]
+    fn metadata_quarantines_earlier_formats_corrupt_checksums_and_mismatched_keys() {
+        let valid = stored_deploy();
+        let key = key_for(&valid.sig);
+        let mut corrupt = stored_bytes();
+        corrupt[b"F1R3DEP\x02".len()] ^= 1;
+        for (key, value) in [
+            (key.clone(), earlier_format_bytes(&valid)),
+            (key, corrupt),
+            (key_for(&deploy(2).sig), stored_bytes()),
+        ] {
+            let live = in_memory();
+            let quarantine = in_memory();
+            let storage =
+                KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+            live.put(vec![(key.clone(), value.clone())]).unwrap();
+            assert!(storage.metadata_snapshot().unwrap().entries.is_empty());
+            assert!(live.get_one(&key).unwrap().is_none());
+            assert_eq!(quarantine.get_one(&key).unwrap(), Some(value));
+        }
     }
 
     enum Pool {

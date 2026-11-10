@@ -62,5 +62,6 @@
 /src/rust/blocks/block_processor.rs cbc=mandatory cbc-weight=high
 /src/rust/engine/multi_parent_casper/buffer_resolver.rs cbc=mandatory cbc-weight=high
 /src/rust/engine/multi_parent_casper/block_admission.rs cbc=mandatory cbc-weight=high
+/src/rust/deploy_admission.rs cbc=mandatory cbc-weight=high
 /src/rust/casper.rs cbc=mandatory cbc-weight=medium
 /src/rust/engine/block_retriever.rs cbc=mandatory cbc-weight=medium
