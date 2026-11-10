@@ -27,7 +27,7 @@
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
@@ -249,17 +249,17 @@ fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, 
     epoch_for_block_number(metadata.block_number, epoch_length)
 }
 
-/// The offenders a block at `block_number` may slash: senders of invalid
-/// blocks whose evidence epoch is that block's epoch and who hold stake in
-/// `committee`, the bonds received slashes are authorized against.
-pub fn slashable_offenders(
+/// The evidence a block at `block_number` may slash on: invalid blocks in
+/// that block's epoch whose senders hold stake in `committee`, the bonds
+/// received slashes are authorized against.
+pub fn slashable_evidence(
     invalid_blocks: impl IntoIterator<Item = BlockMetadata>,
     block_number: i64,
     epoch_length: i32,
     committee: &HashMap<Validator, BigInt>,
-) -> Result<HashSet<Validator>, DomainError> {
+) -> Result<Vec<BlockMetadata>, DomainError> {
     let epoch = epoch_for_block_number(block_number, epoch_length)?;
-    let mut offenders = HashSet::new();
+    let mut evidence = Vec::new();
     for metadata in invalid_blocks {
         if metadata.invalid
             && committee
@@ -267,10 +267,10 @@ pub fn slashable_offenders(
                 .is_some_and(|stake| *stake > BigInt::from(0))
             && evidence_epoch(&metadata, epoch_length)? == epoch
         {
-            offenders.insert(metadata.sender);
+            evidence.push(metadata);
         }
     }
-    Ok(offenders)
+    Ok(evidence)
 }
 
 /// Proposer-side enumeration of slash candidates for the block being built.
@@ -297,57 +297,24 @@ pub fn authorized_slash_candidates(
             snapshot.max_block_num
         ))
     })?;
-    // Phase 9 (C-6): `epoch_for_block_number` now returns
-    // `Result<i64, DomainError>`. Map directly to the corresponding
-    // `SlashAuthError` (and on into `CasperError::SlashAuth` via the
-    // `From` impl in `errors.rs`).
     let current_epoch =
         epoch_for_block_number(proposed_block_num, epoch_length).map_err(SlashAuthError::from)?;
+    let evidence = slashable_evidence(
+        snapshot.dag.invalid_blocks(),
+        proposed_block_num,
+        epoch_length,
+        &snapshot.on_chain_state.bonds_map,
+    )
+    .map_err(SlashAuthError::from)?;
 
     // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
     // the resulting Vec is what feeds the block body.
     let mut by_offender: BTreeMap<Validator, AuthorizedSlashCandidate> = BTreeMap::new();
-    for metadata in snapshot.dag.invalid_blocks() {
-        if !metadata.invalid {
-            continue;
-        }
-        // Phase 9 (C-6): skip blocks whose own (sender's) metadata has a
-        // domain-invalid block number — protocol invariant says this
-        // can't happen for already-stored blocks, but the typed Result
-        // makes the explicit-skip choice visible. We `warn!` because a
-        // hit here means either the configured `epoch_length` is invalid
-        // (operator misconfiguration) or the metadata store contains a
-        // domain-invalid record (corruption). Silently producing an empty
-        // slash list would mask both modes.
-        let target_activation_epoch = match evidence_epoch(&metadata, epoch_length) {
-            Ok(epoch) => epoch,
-            Err(e) => {
-                tracing::warn!(
-                    "authorized_slash_candidates: skipping invalid-block metadata for {} \
-                     (sender {}): {}; check `epoch_length` configuration",
-                    hex::encode(&metadata.block_hash),
-                    hex::encode(&metadata.sender),
-                    e
-                );
-                continue;
-            }
-        };
-        if target_activation_epoch != current_epoch {
-            continue;
-        }
-        let bond = snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&metadata.sender)
-            .cloned()
-            .unwrap_or_default();
-        if bond <= BigInt::from(0) {
-            continue;
-        }
+    for metadata in evidence {
         let candidate = AuthorizedSlashCandidate {
             offender: metadata.sender.clone(),
-            invalid_block_hash: metadata.block_hash.clone(),
-            target_activation_epoch,
+            invalid_block_hash: metadata.block_hash,
+            target_activation_epoch: current_epoch,
         };
         match by_offender.entry(metadata.sender.clone()) {
             Entry::Vacant(entry) => {
@@ -820,14 +787,14 @@ mod kani_proofs {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap};
 
     use models::rust::block_metadata::BlockMetadata;
     use models::rust::validator::Validator;
     use num_bigint::BigInt;
     use prost::bytes::Bytes;
 
-    use super::slashable_offenders;
+    use super::slashable_evidence;
 
     fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
 
@@ -849,21 +816,27 @@ mod tests {
     }
 
     #[test]
-    fn only_committee_offenders_with_evidence_in_the_block_epoch_are_slashable() {
+    fn only_invalid_committee_evidence_in_the_block_epoch_is_slashable() {
         let committee: HashMap<Validator, BigInt> = [
             (validator(1), BigInt::from(100)),
             (validator(2), BigInt::from(0)),
             (validator(4), BigInt::from(100)),
+            (validator(5), BigInt::from(100)),
         ]
         .into_iter()
         .collect();
+        let valid = BlockMetadata {
+            invalid: false,
+            ..evidence(5, 94)
+        };
 
-        let slashable = slashable_offenders(
+        let slashable = slashable_evidence(
             vec![
                 evidence(1, 94),
                 evidence(2, 94),
                 evidence(3, 94),
                 evidence(4, 84),
+                valid,
             ],
             95,
             10,
@@ -871,6 +844,7 @@ mod tests {
         )
         .expect("valid epoch length and block numbers");
 
-        assert_eq!(slashable, HashSet::from([validator(1)]));
+        let senders: Vec<Validator> = slashable.into_iter().map(|m| m.sender).collect();
+        assert_eq!(senders, vec![validator(1)]);
     }
 }

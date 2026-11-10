@@ -37,7 +37,7 @@ use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
-use crate::rust::slashing_authorization::{checked_base_seq, slashable_offenders, SlashAuthError};
+use crate::rust::slashing_authorization::{checked_base_seq, slashable_evidence, SlashAuthError};
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
 use crate::rust::validate::Validate;
@@ -234,13 +234,16 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         "neglected-equivocation",
         BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
         async {
-            let slashable = slashable_offenders(
+            let slashable = slashable_evidence(
                 snapshot.dag.invalid_blocks(),
                 block.body.state.block_number,
                 snapshot.on_chain_state.shard_conf.epoch_length,
                 &snapshot.on_chain_state.bonds_map,
             )
-            .map_err(SlashAuthError::from)?;
+            .map_err(SlashAuthError::from)?
+            .into_iter()
+            .map(|evidence| evidence.sender)
+            .collect();
             EquivocationDetector::check_neglected_equivocations_with_update(
                 block,
                 &snapshot.dag,

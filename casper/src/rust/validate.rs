@@ -32,7 +32,7 @@
 //! `engine::multi_parent_casper::validation_dispatcher::dispatch_handle_invalid_block`
 //! path.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -73,8 +73,7 @@ use crate::rust::metrics_constants::{
     REPEAT_DEPLOY_RETRY_GATE_TIME_METRIC,
 };
 use crate::rust::slashing_authorization::{
-    epoch_for_block_number, received_slash_deploy_authorized, validate_received_slash_deploys,
-    SlashAuthError,
+    slashable_evidence, validate_received_slash_deploys, SlashAuthError,
 };
 use crate::rust::system_deploy::is_system_deploy_id;
 use crate::rust::util::proto_util;
@@ -1726,76 +1725,48 @@ impl Validate {
         }
     }
 
-    /// If block contains an invalid justification block B and the creator of B may still be
-    /// slashed by it, return a RejectableBlock. Otherwise, return an IncludeableBlock. A slash
-    /// is owed only where one is authorized, so the creator must be in the snapshot's committee
-    /// (what `validate_received_slash_deploys` checks), and only while it holds stake in the
-    /// block's post-state: a slash the block or a parent carries leaves it unbonded there.
+    /// If block contains an invalid justification block B whose creator the block may slash and
+    /// the creator still holds stake in the block's post-state, return a RejectableBlock.
+    /// Otherwise, return an IncludeableBlock. A slash the block or a parent carries leaves the
+    /// creator unbonded in the post-state.
     pub fn neglected_invalid_block(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
         post_state_bonds: &[Bond],
     ) -> ValidBlockProcessing {
-        let epoch_length = s.on_chain_state.shard_conf.epoch_length;
-        let current_epoch =
-            match epoch_for_block_number(block.body.state.block_number, epoch_length) {
-                Ok(epoch) => epoch,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        SlashAuthError::from(error),
-                    )))
-                }
-            };
-        let post_state_stake: HashMap<&Validator, BigInt> = post_state_bonds
-            .iter()
-            .map(|bond| (&bond.validator, bond.stake.to_bigint()))
-            .collect();
-
+        let mut cited = Vec::new();
         for justification in &block.justifications {
-            let metadata = match s.dag.lookup(&justification.latest_block_hash) {
-                Ok(Some(metadata)) => metadata,
-                Ok(None) => continue,
+            match s.dag.lookup(&justification.latest_block_hash) {
+                Ok(Some(metadata)) => cited.push(metadata),
+                Ok(None) => {}
                 Err(error) => {
                     return Either::Left(BlockError::from_validation_error(CasperError::from(
                         error,
                     )))
                 }
-            };
-            if !metadata.invalid {
-                continue;
             }
+        }
+        let slashable = match slashable_evidence(
+            cited,
+            block.body.state.block_number,
+            s.on_chain_state.shard_conf.epoch_length,
+            &s.on_chain_state.bonds_map,
+        ) {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                return Either::Left(BlockError::from_validation_error(CasperError::from(
+                    SlashAuthError::from(error),
+                )))
+            }
+        };
 
-            if !s
-                .on_chain_state
-                .bonds_map
-                .get(&metadata.sender)
-                .is_some_and(|stake| *stake > BigInt::from(0))
-            {
-                continue;
-            }
-            let bond = post_state_stake
-                .get(&metadata.sender)
-                .or_else(|| post_state_stake.get(&justification.validator))
-                .cloned()
-                .unwrap_or_default();
-            let slash_required = match received_slash_deploy_authorized(
-                block.body.state.block_number,
-                metadata.block_number,
-                current_epoch,
-                epoch_length,
-                bond,
-                metadata.invalid,
-            ) {
-                Ok(required) => required,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        SlashAuthError::from(error),
-                    )))
-                }
-            };
-            if slash_required {
-                return Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock));
-            }
+        let still_bonded = slashable.iter().any(|evidence| {
+            post_state_bonds.iter().any(|bond| {
+                bond.validator == evidence.sender && bond.stake.to_bigint() > BigInt::from(0)
+            })
+        });
+        if still_bonded {
+            return Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock));
         }
 
         Either::Right(ValidBlock::Valid)
