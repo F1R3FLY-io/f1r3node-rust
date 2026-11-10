@@ -948,6 +948,14 @@ proofs_rpb3_epm_obligation_return_live=(
   epm_raw_par_return_resolution_shape
   epm_raw_par_return_preflight_agrees
   epm_raw_par_return_excludes_child_steps
+  live_runtime_epm_nested_return_top_kind
+  live_runtime_epm_nested_return_is_functional
+  live_runtime_epm_nested_return_preserves_wf
+  live_runtime_epm_nested_return_has_effects
+  epm_nested_return_resolution_shape
+  epm_nested_return_parent_alive
+  epm_end_then_nested_return_is_impossible
+  epm_nested_return_excludes_finish_accept
 )
 proofs_rpb3_epm_push_live_action_refinement=(
   epm_push_live_action_is_checked
@@ -3857,7 +3865,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: EPathMap obligation return live module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 13 verified, 0 errors' "$epm_obligation_return_live_log"; then
+if ! rg -q '^verification results:: 21 verified, 0 errors' "$epm_obligation_return_live_log"; then
   cat "$epm_obligation_return_live_log"
   echo "rpb3-admission-cursor: EPathMap obligation return live module did not verify" >&2
   exit 1
