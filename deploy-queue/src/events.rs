@@ -134,7 +134,9 @@ pub async fn run_event_link(node: NodeHttp, commands: mpsc::Sender<Command>) {
         match link_once(&node, &commands, &mut delay).await {
             Ok(()) => tracing::warn!(target: "deploy_queue::link", "node closed the event stream"),
             Err(LinkError::EngineStopped) => return,
-            Err(e) => tracing::warn!(target: "deploy_queue::link", error = %e, "node event link failed"),
+            Err(e) => {
+                tracing::warn!(target: "deploy_queue::link", error = %e, "node event link failed")
+            }
         }
         if commands.send(Command::Disconnected).await.is_err() {
             return;

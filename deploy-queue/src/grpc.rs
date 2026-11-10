@@ -6,9 +6,8 @@ use models::casper::v1::{
     deploy_finalization_status_response, deploy_response, BlockInfoResponse, BlockResponse,
     BondStatusResponse, ContinuationAtNameResponse, DeployFinalizationStatusResponse,
     DeployResponse, EventInfoResponse, ExploratoryDeployResponse, FindDeployResponse,
-    IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
-    PendingDeploysResponse, PrivateNamePreviewResponse, RhoDataResponse, StatusResponse,
-    VisualizeBlocksResponse,
+    IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse, PendingDeploysResponse,
+    PrivateNamePreviewResponse, RhoDataResponse, StatusResponse, VisualizeBlocksResponse,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
@@ -83,7 +82,9 @@ fn state_proto(state: QueueState) -> DeployFinalizationStateProto {
             DeployFinalizationStateProto::DeployStatePending
         }
         QueueState::Finalized => DeployFinalizationStateProto::DeployStateFinalized,
-        QueueState::Failed | QueueState::Rejected => DeployFinalizationStateProto::DeployStateFailed,
+        QueueState::Failed | QueueState::Rejected => {
+            DeployFinalizationStateProto::DeployStateFailed
+        }
         QueueState::Expired => DeployFinalizationStateProto::DeployStateExpired,
     }
 }
@@ -151,7 +152,11 @@ impl DeployService for QueueGrpc {
                     },
                 )),
             })),
-            None => self.node().deploy_finalization_status(request.into_inner()).await,
+            None => {
+                self.node()
+                    .deploy_finalization_status(request.into_inner())
+                    .await
+            }
         }
     }
 
@@ -173,7 +178,9 @@ impl DeployService for QueueGrpc {
         &self,
         request: Request<MachineVerifyQuery>,
     ) -> Result<Response<MachineVerifyResponse>, Status> {
-        self.node().machine_verifiable_dag(request.into_inner()).await
+        self.node()
+            .machine_verifiable_dag(request.into_inner())
+            .await
     }
 
     async fn show_main_chain(
@@ -217,7 +224,9 @@ impl DeployService for QueueGrpc {
         &self,
         request: Request<PrivateNamePreviewQuery>,
     ) -> Result<Response<PrivateNamePreviewResponse>, Status> {
-        self.node().preview_private_names(request.into_inner()).await
+        self.node()
+            .preview_private_names(request.into_inner())
+            .await
     }
 
     async fn last_finalized_block(
@@ -252,7 +261,9 @@ impl DeployService for QueueGrpc {
         &self,
         request: Request<BlocksQueryByHeight>,
     ) -> Result<Response<Self::getBlocksByHeightsStream>, Status> {
-        self.node().get_blocks_by_heights(request.into_inner()).await
+        self.node()
+            .get_blocks_by_heights(request.into_inner())
+            .await
     }
 
     async fn get_event_by_hash(
@@ -305,7 +316,9 @@ impl DeployQueue for QueueGrpc {
     ) -> Result<Response<Self::watchDeploysStream>, Status> {
         let sigs: Vec<Sig> = request.into_inner().deploy_sigs;
         if sigs.is_empty() {
-            return Err(Status::invalid_argument("name at least one deploy signature"));
+            return Err(Status::invalid_argument(
+                "name at least one deploy signature",
+            ));
         }
         let start = self
             .engine

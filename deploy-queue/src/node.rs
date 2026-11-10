@@ -59,22 +59,34 @@ impl NodeStatus {
     /// The snapshot, once casper is up and has finalized at least genesis.
     /// `Err` for values no running shard can hold.
     pub fn chain(&self) -> Result<Option<ChainSnapshot>, String> {
-        let (Some(tip), Some(deploy_lifespan), Some(max_user_deploys_per_block), Some(max_parent_depth)) = (
+        let (
+            Some(tip),
+            Some(deploy_lifespan),
+            Some(max_user_deploys_per_block),
+            Some(max_parent_depth),
+        ) = (
             self.latest_block_number,
             self.deploy_lifespan,
             self.max_user_deploys_per_block,
             self.max_parent_depth,
-        ) else {
+        )
+        else {
             return Ok(None);
         };
         if self.last_finalized_block_number < 0 {
             return Ok(None);
         }
         if deploy_lifespan < 0 {
-            return Err(format!("node reports a negative deploy lifespan: {}", deploy_lifespan));
+            return Err(format!(
+                "node reports a negative deploy lifespan: {}",
+                deploy_lifespan
+            ));
         }
         if max_parent_depth < 0 {
-            return Err(format!("node reports a negative max parent depth: {}", max_parent_depth));
+            return Err(format!(
+                "node reports a negative max parent depth: {}",
+                max_parent_depth
+            ));
         }
         Ok(Some(ChainSnapshot {
             shard: ShardValues {
@@ -113,7 +125,10 @@ pub enum SubmitOutcome {
     /// The deploy's window or expiration has closed.
     Expired(String),
     /// The node refused the deploy for a reason resubmitting cannot change.
-    Rejected { kind: String, message: String },
+    Rejected {
+        kind: String,
+        message: String,
+    },
     /// The node could not take the deploy now.
     Retry {
         reason: String,
@@ -155,7 +170,11 @@ impl NodeHttp {
 
     pub fn ws_events_url(&self) -> String {
         let mut url = self.url("/ws/events");
-        let scheme = if self.base.scheme() == "https" { "wss" } else { "ws" };
+        let scheme = if self.base.scheme() == "https" {
+            "wss"
+        } else {
+            "ws"
+        };
         url.set_scheme(scheme)
             .expect("http and https URLs take the ws schemes");
         url.to_string()
@@ -240,7 +259,10 @@ fn classify_submit(status: StatusCode, body: &str, retry_after: Option<Duration>
             message: error.message,
         },
         _ => SubmitOutcome::Retry {
-            reason: format!("node answered {} {}: {}", status, error.error, error.message),
+            reason: format!(
+                "node answered {} {}: {}",
+                status, error.error, error.message
+            ),
             retry_after,
         },
     }

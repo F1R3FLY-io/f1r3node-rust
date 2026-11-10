@@ -215,7 +215,13 @@ mod tests {
         w
     }
 
-    fn round(w: &mut ReleaseWindow, end_tip: i64, on_time: usize, late: usize, held_back: bool) -> Option<Cut> {
+    fn round(
+        w: &mut ReleaseWindow,
+        end_tip: i64,
+        on_time: usize,
+        late: usize,
+        held_back: bool,
+    ) -> Option<Cut> {
         for _ in 0..on_time {
             w.on_verdict(3);
         }
@@ -231,7 +237,11 @@ mod tests {
     #[test]
     fn a_few_late_verdicts_do_not_cut_but_mostly_late_ones_do() {
         let mut w = started();
-        assert_eq!(round(&mut w, 13, 12, 1, false), None, "one deploy that keeps losing is not congestion");
+        assert_eq!(
+            round(&mut w, 13, 12, 1, false),
+            None,
+            "one deploy that keeps losing is not congestion"
+        );
         assert_eq!(w.limit(), 13);
         assert_eq!(round(&mut w, 26, 4, 9, true), Some(Cut::OverCapacity));
         assert_eq!(w.limit(), 6);
@@ -242,10 +252,18 @@ mod tests {
     fn a_full_window_that_settles_nothing_for_a_round_is_a_stall() {
         let mut w = started();
         w.record_held_back();
-        assert_eq!(w.on_tip(13, Some(0)), None, "released at the round's start is not older than it");
+        assert_eq!(
+            w.on_tip(13, Some(0)),
+            None,
+            "released at the round's start is not older than it"
+        );
         w.record_held_back();
         assert_eq!(w.on_tip(26, Some(0)), Some(Cut::Stall));
-        assert_eq!(w.limit(), 6, "a round without timely verdicts does not grow the window");
+        assert_eq!(
+            w.limit(),
+            6,
+            "a round without timely verdicts does not grow the window"
+        );
         assert_eq!(
             w.on_tip(39, Some(0)),
             None,
@@ -270,9 +288,17 @@ mod tests {
     fn growth_is_one_deploy_per_held_back_round() {
         let mut w = started();
         round(&mut w, 13, 13, 0, true);
-        assert_eq!(w.limit(), 14, "a round of timely verdicts adds one, however many");
+        assert_eq!(
+            w.limit(),
+            14,
+            "a round of timely verdicts adds one, however many"
+        );
         round(&mut w, 26, 14, 0, false);
-        assert_eq!(w.limit(), 14, "without deploys held back demand, not capacity, is the limit");
+        assert_eq!(
+            w.limit(),
+            14,
+            "without deploys held back demand, not capacity, is the limit"
+        );
         round(&mut w, 39, 14, 0, true);
         assert_eq!(w.limit(), 15);
         round(&mut w, 52, 5, 10, true);
@@ -310,6 +336,11 @@ mod tests {
             }
         }
         let ratio = shares[0] / shares[1];
-        assert!((0.8..=1.25).contains(&ratio), "shares {:?}, ratio {}", shares, ratio);
+        assert!(
+            (0.8..=1.25).contains(&ratio),
+            "shares {:?}, ratio {}",
+            shares,
+            ratio
+        );
     }
 }

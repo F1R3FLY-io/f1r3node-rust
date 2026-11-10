@@ -236,7 +236,10 @@ async fn a_deploy_is_released_and_follows_the_node_to_its_verdict() {
     let deploy = deploy(5, "root", 1);
     let sig = accept(&queue.handle, deploy.clone()).await.unwrap();
     assert_eq!(sig, deploy.sig.to_vec());
-    eventually("the node receives the deploy", || async { node.received().len() == 1 }).await;
+    eventually("the node receives the deploy", || async {
+        node.received().len() == 1
+    })
+    .await;
     assert_eq!(node.received()[0].to_signed().unwrap(), deploy);
     assert_eq!(queue.state(&sig).await, Some(QueueState::Submitted));
 
@@ -257,7 +260,10 @@ async fn a_deploy_is_released_and_follows_the_node_to_its_verdict() {
     })
     .await;
     let view = queue.handle.status(sig.clone()).await.unwrap().unwrap();
-    assert_eq!(view.latest_block_hash, Some(hex::decode(format!("{:064x}", 11)).unwrap()));
+    assert_eq!(
+        view.latest_block_hash,
+        Some(hex::decode(format!("{:064x}", 11)).unwrap())
+    );
     queue.stop();
 }
 
@@ -270,7 +276,10 @@ async fn release_waits_while_finality_trails_the_tip() {
 
     let sig = accept(&queue.handle, deploy(39, "root", 2)).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(node.received().is_empty(), "40 - 10 exceeds the parent depth of 25");
+    assert!(
+        node.received().is_empty(),
+        "40 - 10 exceeds the parent depth of 25"
+    );
     assert_eq!(queue.state(&sig).await, Some(QueueState::Queued));
 
     node.emit(block_finalised(20));
@@ -350,7 +359,9 @@ async fn release_waits_for_released_deploys_to_settle() {
     let queue = Queue::start(&url, dir.path()).await;
 
     for seed in 20..36 {
-        accept(&queue.handle, deploy(5, "root", seed)).await.unwrap();
+        accept(&queue.handle, deploy(5, "root", seed))
+            .await
+            .unwrap();
     }
     eventually("release starts", || async { !node.received().is_empty() }).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -410,7 +421,9 @@ async fn queue_with_backlog(count: i64) -> (FakeNode, Queue, tempfile::TempDir) 
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
     for number in 0..count {
-        accept(&queue.handle, numbered_deploy(10, number)).await.unwrap();
+        accept(&queue.handle, numbered_deploy(10, number))
+            .await
+            .unwrap();
     }
     eventually("the first window is released", || async {
         node.received().len() == 13
@@ -552,7 +565,9 @@ async fn admission_tightens_as_soon_as_release_is_cut() {
     // the window halved to 6.5 deploys at 20 heights each, well below the
     // settle rate the queue measured.
     let snapshot = queue.handle.snapshot().await.unwrap();
-    let release_rate = snapshot.release_rate.expect("a round with verdicts sets the rate");
+    let release_rate = snapshot
+        .release_rate
+        .expect("a round with verdicts sets the rate");
     assert!(
         release_rate < snapshot.settled_per_height.unwrap(),
         "{:?}",
@@ -577,7 +592,9 @@ async fn a_deploy_without_time_to_be_included_is_not_released() {
     let queue = Queue::start(&url, dir.path()).await;
     // Twenty deploys whose window runs out at block 69.
     for number in 0..20 {
-        accept(&queue.handle, numbered_deploy(10, number)).await.unwrap();
+        accept(&queue.handle, numbered_deploy(10, number))
+            .await
+            .unwrap();
     }
     eventually("the first window is released", || async {
         node.received().len() == 13
@@ -628,7 +645,13 @@ async fn a_verdict_after_a_resend_counts_from_the_first_release() {
         node.received().len() == 26
     })
     .await;
-    let window_before = queue.handle.snapshot().await.unwrap().release_window.unwrap();
+    let window_before = queue
+        .handle
+        .snapshot()
+        .await
+        .unwrap()
+        .release_window
+        .unwrap();
     let first = node.received()[0].to_signed().unwrap().sig.to_vec();
     node.emit(block_added(37, &[]));
     node.emit(finalized_verdicts(&node, 37));
@@ -641,7 +664,13 @@ async fn a_verdict_after_a_resend_counts_from_the_first_release() {
     advance(&node, 38, 50);
     reaches_tip(&queue, 50).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let window_after = queue.handle.snapshot().await.unwrap().release_window.unwrap();
+    let window_after = queue
+        .handle
+        .snapshot()
+        .await
+        .unwrap()
+        .release_window
+        .unwrap();
     assert!(
         window_after < window_before,
         "verdicts 27 heights after release must count as late: {} -> {}",
@@ -713,7 +742,10 @@ async fn queued_deploys_survive_a_restart_and_are_released_after_it() {
 
     *node.status.lock().unwrap() = status_body(41, 30);
     let queue = Queue::start(&url, dir.path()).await;
-    eventually("the restarted queue releases", || async { node.received().len() == 1 }).await;
+    eventually("the restarted queue releases", || async {
+        node.received().len() == 1
+    })
+    .await;
     assert_eq!(queue.state(&sig).await, Some(QueueState::Submitted));
     queue.stop();
 }

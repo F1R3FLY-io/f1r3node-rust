@@ -10,7 +10,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::error::{EngineStopped, IntakeError};
 use crate::events::{NodeEvent, VerdictState};
-use crate::node::{ChainSnapshot, NodeDeployStatus, NodeError, NodeHttp, ShardValues, SubmitOutcome};
+use crate::node::{
+    ChainSnapshot, NodeDeployStatus, NodeError, NodeHttp, ShardValues, SubmitOutcome,
+};
 use crate::pace::Pace;
 use crate::ready::ReadyQueue;
 use crate::record::{DeployView, QueueRecord, QueueState, Sig};
@@ -376,7 +378,9 @@ impl Engine {
             let fresh_span = last_includable(chain.tip, shard.deploy_lifespan) - chain.tip;
             let retry_after_secs = wait
                 .and_then(|heights| {
-                    pace.seconds_for(heights_until_a_fresh_window_fits(heights, depth, fresh_span))
+                    pace.seconds_for(heights_until_a_fresh_window_fits(
+                        heights, depth, fresh_span,
+                    ))
                 })
                 .unwrap_or(UNTIMED_RETRY_SECS);
             return Ok(Err(IntakeError::QueueFull { retry_after_secs }));
@@ -451,7 +455,9 @@ impl Engine {
                     }
                     if state == QueueState::Submitted {
                         let released_at = self.records[&sig].submitted_at_height;
-                        if let (Some(released_at), Some(window)) = (released_at, self.window.as_mut()) {
+                        if let (Some(released_at), Some(window)) =
+                            (released_at, self.window.as_mut())
+                        {
                             window.on_inclusion(number - released_at);
                         }
                     }
@@ -492,7 +498,12 @@ impl Engine {
                     let block_hash = verdict
                         .block_hash
                         .and_then(|hash| decode_hex("block hash", &hash));
-                    self.decide(&sig, state, Some((verdict.rejection_count, block_hash)), None)?;
+                    self.decide(
+                        &sig,
+                        state,
+                        Some((verdict.rejection_count, block_hash)),
+                        None,
+                    )?;
                 }
             }
             NodeEvent::Lagged { skipped } => {
@@ -945,7 +956,10 @@ impl Engine {
 
     /// Files a queued deploy: ready if its window has opened, waiting if not.
     fn place(&mut self, sig: &Sig, at_front: bool) {
-        let chain = self.chain.as_ref().expect("deploys are placed once the chain is known");
+        let chain = self
+            .chain
+            .as_ref()
+            .expect("deploys are placed once the chain is known");
         let record = &self.records[sig];
         let key = (record.valid_after, record.sequence);
         let last = last_includable(record.valid_after, chain.shard.deploy_lifespan);
@@ -993,7 +1007,10 @@ impl Engine {
     }
 
     fn close(&mut self, sig: &Sig) {
-        let chain = self.chain.as_ref().expect("deploys close once the chain is known");
+        let chain = self
+            .chain
+            .as_ref()
+            .expect("deploys close once the chain is known");
         let depth = i64::from(chain.shard.max_parent_depth);
         let record = &self.records[sig];
         let (valid_after, sequence, deployer) =
@@ -1093,11 +1110,17 @@ impl Engine {
     fn count(&self, state: QueueState) -> usize { self.counts[&state] }
 
     fn discount(&mut self, state: QueueState) {
-        *self.counts.get_mut(&state).expect("counts hold every state") -= 1;
+        *self
+            .counts
+            .get_mut(&state)
+            .expect("counts hold every state") -= 1;
     }
 
     fn enter(&mut self, state: QueueState) {
-        *self.counts.get_mut(&state).expect("counts hold every state") += 1;
+        *self
+            .counts
+            .get_mut(&state)
+            .expect("counts hold every state") += 1;
     }
 
     fn snapshot(&self) -> QueueSnapshot {
@@ -1116,7 +1139,10 @@ impl Engine {
             release_cuts: self.window.as_ref().map(ReleaseWindow::cuts),
             late_share: self.window.as_ref().and_then(ReleaseWindow::late_share),
             settle_delay: self.window.as_ref().and_then(ReleaseWindow::settle_delay),
-            inclusion_delay: self.window.as_ref().and_then(ReleaseWindow::inclusion_delay),
+            inclusion_delay: self
+                .window
+                .as_ref()
+                .and_then(ReleaseWindow::inclusion_delay),
             release_rate: self.window.as_ref().and_then(ReleaseWindow::release_rate),
             held: self.records.len(),
             settled_per_height: self.pace.as_ref().map(Pace::settled_per_height),
