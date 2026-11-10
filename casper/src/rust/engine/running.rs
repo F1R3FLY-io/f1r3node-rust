@@ -275,24 +275,58 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                 } else {
-                    let checked = match tokio::task::spawn_blocking(move || {
-                        CheckedBlock::check(b, RUNNING_METRICS_SOURCE)
-                    })
-                    .await
-                    .map_err(|err| {
-                        CasperError::RuntimeError(format!(
-                            "Block integrity check failed to run: {}",
-                            err
-                        ))
-                    })? {
-                        Ok(checked) => checked,
-                        Err((refused, failure)) => {
-                            let strike = match failure {
-                                IntegrityFailure::Malformed => Strike::Malformed,
-                                IntegrityFailure::HashMismatch => Strike::HashMismatch,
+                    let block_hash = b.block_hash.clone();
+                    let (checked, guard) = match ReceiptVerifier::shared()
+                        .verify_and_mark(&peer.id.key, b, &self.blocks_in_processing)
+                        .await
+                    {
+                        Ok(admitted) => admitted,
+                        Err(ReceiptRefusal::Overloaded) => {
+                            if self.block_retriever.awaits_block(&block_hash) {
+                                self.block_retriever.note_local_backpressure_drop(
+                                    &block_hash,
+                                    "running-verification",
+                                );
+                            } else {
+                                metrics::counter!(
+                                    crate::rust::metrics_constants::BLOCK_INFLIGHT_CAP_DROP_METRIC,
+                                    "site" => "running-verification"
+                                )
+                                .increment(1);
+                            }
+                            tracing::debug!(
+                                "Dropping BlockMessage {} from {}: block verification is at capacity",
+                                PrettyPrinter::build_string_bytes(&block_hash),
+                                peer.endpoint.host
+                            );
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::Invalid(invalid)) => {
+                            let (strike, reason) = match invalid {
+                                crate::rust::block_status::InvalidBlock::InvalidBlockHash => {
+                                    (Strike::HashMismatch, "hash-mismatch")
+                                }
+                                _ => (Strike::Malformed, "malformed"),
                             };
+                            metrics::counter!(
+                                crate::rust::metrics_constants::BLOCK_INTEGRITY_REJECTED_METRIC,
+                                "source" => RUNNING_METRICS_SOURCE,
+                                "reason" => reason
+                            )
+                            .increment(1);
+                            self.block_retriever.strike_peer(&peer, &block_hash, strike);
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::AlreadyInFlight) => {
+                            tracing::debug!(
+                                "Skipping BlockMessage {} because it is already queued/in-processing",
+                                PrettyPrinter::build_string_bytes(&block_hash)
+                            );
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::InFlightCapReached) => {
                             self.block_retriever
-                                .strike_peer(&peer, &refused.block_hash, strike);
+                                .note_local_backpressure_drop(&block_hash, "running-receipt");
                             return Ok(());
                         }
                     };
@@ -309,28 +343,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         PrettyPrinter::build_string_block_message(checked.block(), true),
                         peer.endpoint.host
                     );
-                    let block_hash = checked.block().block_hash.clone();
-                    let guard = match mark_in_flight(&self.blocks_in_processing, block_hash.clone())
-                    {
-                        InFlightMark::Marked(guard) => guard,
-                        InFlightMark::AlreadyInFlight => {
-                            tracing::debug!(
-                                    "Skipping BlockMessage {} enqueue because it is already queued/in-processing",
-                                    PrettyPrinter::build_string_bytes(&block_hash)
-                                );
-                            return Ok(());
-                        }
-                        InFlightMark::CapReached => {
-                            self.block_retriever
-                                .note_local_backpressure_drop(&block_hash, "running-receipt");
-                            tracing::warn!(
-                                    "Dropping BlockMessage {} because in-flight block cap {} is reached",
-                                    PrettyPrinter::build_string_bytes(&block_hash),
-                                    MAX_BLOCKS_IN_PROCESSING
-                                );
-                            return Ok(());
-                        }
-                    };
                     self.block_retriever.note_block_source(&block_hash, &peer)?;
                     self.block_processing_queue_tx
                         .send((self.casper.clone(), QueuedBlock::Network(checked), guard))
@@ -464,17 +476,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             }
             CasperMessage::FloorCacheRequest(req) => {
                 self.handle_floor_cache_request(peer, req.hashes).await
-            }
-            CasperMessage::MergeableEntryRequest(req) => {
-                if self.disable_state_exporter {
-                    tracing::debug!(
-                        "Received MergeableEntryRequest but state-export is disabled; ignoring (from {}).",
-                        peer
-                    );
-                    return Ok(());
-                }
-                self.handle_mergeable_entry_request(peer, req.block_hash)
-                    .await
             }
             // Phase 7b-1 snapshot chunk-fetch dispatch.  Only routed
             // if a `SnapshotChunkContext` has been installed (via
@@ -625,8 +626,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, CheckedBlock, InFlightBlocks, InFlightMark, IntegrityFailure,
-    QueuedBlock, MAX_BLOCKS_IN_PROCESSING,
+    BlockQueueItem, InFlightBlocks, QueuedBlock, ReceiptRefusal, ReceiptVerifier,
 };
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
@@ -911,12 +911,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         Ok(())
     }
 
-    /// Respond to a `MergeableEntryRequest`.
-    ///
-    /// - Block not in our store: silent (no response).
-    /// - Block present, no mergeable entry: respond with empty `serialized_entry`.
-    /// - Block present and entry present: respond with raw bincode bytes from
-    ///   the mergeable_store.
     /// Serve cached finalized-floor values for the requested blocks.
     ///
     /// The values are pure functions of the named blocks, computed when this
@@ -972,47 +966,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         self.transport
             .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
             .await?;
-        Ok(())
-    }
-
-    async fn handle_mergeable_entry_request(
-        &self,
-        peer: PeerNode,
-        block_hash: BlockHash,
-    ) -> Result<(), CasperError> {
-        let block = match self.casper.block_store().get(&block_hash)? {
-            Some(b) => b,
-            None => {
-                tracing::debug!(
-                    "MergeableEntryRequest for {} from {}: block not in store; silent ignore.",
-                    PrettyPrinter::build_string_bytes(&block_hash),
-                    peer
-                );
-                return Ok(());
-            }
-        };
-
-        let runtime = self.casper.runtime_manager();
-        let (_key_bytes, value_bytes_opt) = runtime.get_mergeable_entry_bytes(&block)?;
-
-        let serialized_entry: prost::bytes::Bytes = value_bytes_opt
-            .map(prost::bytes::Bytes::from)
-            .unwrap_or_default();
-
-        let resp = casper_message::MergeableEntryResponse {
-            block_hash: block_hash.clone(),
-            serialized_entry,
-        };
-
-        self.transport
-            .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
-            .await?;
-
-        tracing::debug!(
-            "Mergeable entry sent to {} for block {}.",
-            peer,
-            PrettyPrinter::build_string_bytes(&block_hash)
-        );
         Ok(())
     }
 

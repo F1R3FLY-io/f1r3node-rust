@@ -55,7 +55,7 @@ async fn integration_t_invalid_bonds_cache() {
         // computed bonds (from post-state) will not match.
         b.body.state.bonds = vec![Bond {
             validator: Bytes::from(vec![0u8; 32]),
-            stake: 999_999_999,
+            stake: 999_999_999.into(),
         }];
     })
     .await

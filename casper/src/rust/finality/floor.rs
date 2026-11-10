@@ -32,6 +32,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
+use shared::rust::blocking::in_blocking;
 use shared::rust::dag::observation_work::{sort_by_metered, NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::MissingBlockContext;
 
@@ -490,13 +491,33 @@ async fn decidable_tips_metered<W: WorkMeter>(
     Ok(decidable)
 }
 
+/// The settled position a new LFB must contain. The current LFB's own state
+/// is not settled: a co-finalized sibling at its height can be the base of
+/// the merge above both and reject the LFB's conflicting deploys. Its floor's
+/// state is settled. A restored node cannot read a floor below its restore
+/// window; there the LFB is the restore point whose state the node was handed
+/// as finalized, and checking against it is the only check this node can make.
+async fn containment_reference<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    current: &Floor,
+    ftt: FtThreshold,
+) -> Result<Floor, CasperError> {
+    match floor_of_block_metered(meter, dag, block_store, &current.hash, ftt).await {
+        Ok(floor) if dag.contains(&floor.hash) => Ok(floor),
+        Ok(_) | Err(CasperError::BlockNotHeld(_, _)) => Ok(current.clone()),
+        Err(other) => Err(other),
+    }
+}
+
 /// The LFB decision over the LIVE view — the one finality clock: derive the
 /// floor of the current frontier (the deduped latest-message blocks, over
 /// the live snapshot) and advance only onto a strictly higher floor whose
-/// state CONTAINS the current LFB's settled effects — the same containment
-/// check the per-block derivation runs, so the read surface can never
-/// designate a state missing settled content. Both the finalization runner
-/// and the API path consume exactly this.
+/// state CONTAINS the state of the current LFB's floor — the same
+/// containment check the per-block derivation runs, so the read surface can
+/// never designate a state missing settled content. Both the finalization
+/// runner and the API path consume exactly this.
 pub async fn floor_of_view(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -598,25 +619,27 @@ pub async fn floor_of_view_metered<W: WorkMeter>(
     if derived.hash == current.hash || derived.block_number <= current.block_number {
         return Ok(FloorOfView::NoAdvance);
     }
+    let settled = containment_reference(meter, dag, block_store, current, ftt).await?;
     let mut memo = IntroducedSigsMemo::new();
-    match state_contains_metered(meter, dag, block_store, &derived, current, &mut memo) {
+    match in_blocking(|| {
+        state_contains_metered(meter, dag, block_store, &derived, &settled, &mut memo)
+    }) {
         Ok(true) => Ok(FloorOfView::Advance(derived)),
         Ok(false) => {
-            // A refused floor that descends from the current LFB is settled
-            // content a merge deduped, not a divergence.
             tracing::warn!(
                 target: "f1r3fly.finalizer",
                 derived = %PrettyPrinter::build_string_bytes(&derived.hash),
                 derived_number = derived.block_number,
                 current = %PrettyPrinter::build_string_bytes(&current.hash),
-                derived_descends_from_current = match dag
-                    .is_dag_ancestor(&current.hash, &derived.hash)
+                settled = %PrettyPrinter::build_string_bytes(&settled.hash),
+                derived_descends_from_settled = match dag
+                    .is_dag_ancestor(&settled.hash, &derived.hash)
                 {
                     Ok(true) => "yes",
                     Ok(false) => "no",
                     Err(_) => "walk-failed",
                 },
-                "floor-of-view does not capture the current LFB; holding"
+                "floor-of-view does not contain the state of the LFB's floor; holding"
             );
             Ok(FloorOfView::ContainmentHold { derived })
         }
@@ -986,79 +1009,82 @@ async fn derive_floor_metered<W: WorkMeter>(
             .then_with(|| b.hash.cmp(&a.hash))
     })?;
 
-    let mut chosen: Option<Floor> = None;
-    let mut memo = IntroducedSigsMemo::new();
-    'cands: for cand in ordered {
-        meter.step(WorkKind::Traversal)?;
-        meter.allocate(4, 256)?;
-        for other in &inherited_floors {
+    let chosen = in_blocking(|| -> Result<Option<Floor>, CasperError> {
+        let mut chosen: Option<Floor> = None;
+        let mut memo = IntroducedSigsMemo::new();
+        'cands: for cand in ordered {
             meter.step(WorkKind::Traversal)?;
             meter.allocate(4, 256)?;
-            if other.hash == cand.hash {
-                continue;
-            }
-            let sound_with_other =
-                if state_contains_metered(meter, dag, block_store, cand, other, &mut memo)? {
-                    true
-                } else if !dag.is_dag_ancestor_metered(meter, &other.hash, &cand.hash)? {
-                    // `other` is NOT in `cand`'s DAG past, so its chains are
-                    // expected back as this merge's diffs, with the merge-time
-                    // settled-rejection tripwire guarding the re-application.
-                    // (That expectation is weaker than it reads since the base
-                    // became the main parent — see the CAVEAT above.) Sound ONLY when
-                    // `cand` is a pure cut — it introduces no sigs of its own
-                    // relative to its meet with `other`. A competing branch
-                    // with content of its own must never become the settled
-                    // position: its content can be exactly what the canonical
-                    // chain rejected, and every future canonical floor would
-                    // then be refused against it (the floor deadlocks instead
-                    // of advancing — observed when the reproduction's eraser R
-                    // slipped in as a floor through the join block's parents).
-                    let mut re_merged = false;
-                    for parent in parents {
-                        meter.step(WorkKind::Traversal)?;
-                        meter.allocate(4, 256)?;
-                        if dag.is_dag_ancestor_metered(meter, &other.hash, parent)?
-                            && dag.is_dag_ancestor_metered(meter, &cand.hash, parent)?
-                        {
-                            re_merged = true;
-                            break;
+            for other in &inherited_floors {
+                meter.step(WorkKind::Traversal)?;
+                meter.allocate(4, 256)?;
+                if other.hash == cand.hash {
+                    continue;
+                }
+                let sound_with_other =
+                    if state_contains_metered(meter, dag, block_store, cand, other, &mut memo)? {
+                        true
+                    } else if !dag.is_dag_ancestor_metered(meter, &other.hash, &cand.hash)? {
+                        // `other` is NOT in `cand`'s DAG past, so its chains are
+                        // expected back as this merge's diffs, with the merge-time
+                        // settled-rejection tripwire guarding the re-application.
+                        // (That expectation is weaker than it reads since the base
+                        // became the main parent — see the CAVEAT above.) Sound ONLY when
+                        // `cand` is a pure cut — it introduces no sigs of its own
+                        // relative to its meet with `other`. A competing branch
+                        // with content of its own must never become the settled
+                        // position: its content can be exactly what the canonical
+                        // chain rejected, and every future canonical floor would
+                        // then be refused against it (the floor deadlocks instead
+                        // of advancing — observed when the reproduction's eraser R
+                        // slipped in as a floor through the join block's parents).
+                        let mut re_merged = false;
+                        for parent in parents {
+                            meter.step(WorkKind::Traversal)?;
+                            meter.allocate(4, 256)?;
+                            if dag.is_dag_ancestor_metered(meter, &other.hash, parent)?
+                                && dag.is_dag_ancestor_metered(meter, &cand.hash, parent)?
+                            {
+                                re_merged = true;
+                                break;
+                            }
                         }
-                    }
-                    if re_merged {
-                        match state_lineage_meet_metered(meter, dag, &cand.hash, &other.hash)? {
-                            StateLineage::Meet(meet) => segment_introduced_sigs_metered(
-                                meter,
-                                dag,
-                                block_store,
-                                &cand.hash,
-                                &meet,
-                                &mut memo,
-                            )?
-                            .is_empty(),
-                            StateLineage::Disconnected => false,
+                        if re_merged {
+                            match state_lineage_meet_metered(meter, dag, &cand.hash, &other.hash)? {
+                                StateLineage::Meet(meet) => segment_introduced_sigs_metered(
+                                    meter,
+                                    dag,
+                                    block_store,
+                                    &cand.hash,
+                                    &meet,
+                                    &mut memo,
+                                )?
+                                .is_empty(),
+                                StateLineage::Disconnected => false,
+                            }
+                        } else {
+                            false
                         }
                     } else {
                         false
-                    }
-                } else {
-                    false
-                };
-            if !sound_with_other {
-                tracing::debug!(
-                    target: "f1r3.trace.floor",
-                    candidate = %PrettyPrinter::build_string_bytes(&cand.hash),
-                    candidate_number = cand.block_number,
-                    inherited = %PrettyPrinter::build_string_bytes(&other.hash),
-                    inherited_number = other.block_number,
-                    "floor candidate skipped: neither captures nor re-merges an inherited floor"
-                );
-                continue 'cands;
+                    };
+                if !sound_with_other {
+                    tracing::debug!(
+                        target: "f1r3.trace.floor",
+                        candidate = %PrettyPrinter::build_string_bytes(&cand.hash),
+                        candidate_number = cand.block_number,
+                        inherited = %PrettyPrinter::build_string_bytes(&other.hash),
+                        inherited_number = other.block_number,
+                        "floor candidate skipped: neither captures nor re-merges an inherited floor"
+                    );
+                    continue 'cands;
+                }
             }
+            chosen = Some(cand.clone());
+            break;
         }
-        chosen = Some(cand.clone());
-        break;
-    }
+        Ok(chosen)
+    })?;
 
     let floor = chosen.ok_or_else(|| {
         CasperError::IncompatibleFinalizedFork(format!(
@@ -1227,7 +1253,7 @@ pub async fn floor_of_block_metered<W: WorkMeter>(
 #[derive(Default)]
 pub(crate) struct WitnessMemo {
     verdicts: HashMap<BlockHash, bool>,
-    committees: HashMap<BlockHash, HashMap<Validator, i64>>,
+    committees: HashMap<BlockHash, HashMap<Validator, num_bigint::BigInt>>,
     evaluations: u64,
 }
 
@@ -1263,7 +1289,7 @@ impl WitnessMemo {
         meter: &W,
         dag: &KeyValueDagRepresentation,
         block: &BlockHash,
-    ) -> Result<HashMap<Validator, i64>, CasperError> {
+    ) -> Result<HashMap<Validator, num_bigint::BigInt>, CasperError> {
         if let Some(committee) = self.committees.get(block) {
             return Ok(committee.clone());
         }
@@ -1636,7 +1662,7 @@ mod frontier_determinism_tests {
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
-        wm.insert(v.clone(), 1i64);
+        wm.insert(v.clone(), 1u64.into());
         BlockMetadata {
             block_hash: hash,
             parents,
@@ -2195,7 +2221,10 @@ mod frontier_determinism_tests {
     ) -> BlockMetadata {
         let mut weight_map = BTreeMap::new();
         for (validator, weight) in wm {
-            weight_map.insert(validator, weight);
+            weight_map.insert(
+                validator,
+                u64::try_from(weight).expect("fixture weight").into(),
+            );
         }
         BlockMetadata {
             block_hash: hash,
@@ -2417,6 +2446,79 @@ mod frontier_determinism_tests {
         assert!(state_contains(&dag, &store, &at(&t, 3), &at(&e, 0), &mut memo).unwrap());
     }
 
+    /// An LFB whose own deploy a later merge dropped (the co-finalized
+    /// sibling that lost the merge) is not the containment reference: its
+    /// floor is, so a floor built on that merge still advances. Below a
+    /// restore window the floor is not held, or held only as metadata outside
+    /// the DAG, and the LFB stands in.
+    #[tokio::test]
+    async fn containment_is_checked_against_the_lfbs_floor() {
+        let v = val();
+        let (e, c, d, m, t, w) = (h(0), h(1), h(2), h(3), h(4), h(5));
+        let sig = Bytes::from_static(b"sibling_sig_dropped");
+        let mut dag = build_dag(vec![
+            md(e.clone(), vec![], 0, &v),
+            md(c.clone(), vec![e.clone()], 1, &v),
+            md(d.clone(), vec![e.clone()], 1, &v),
+            based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
+            md(t.clone(), vec![m.clone()], 3, &v),
+            md(w.clone(), vec![e.clone()], 1, &v),
+        ]);
+        let store = store_with(vec![
+            body_block(&e, vec![], 0, vec![], None, vec![]),
+            body_block(&c, vec![e.clone()], 1, vec![sig.clone()], None, vec![]),
+            body_block(&d, vec![e.clone()], 1, vec![], None, vec![]),
+            body_block(
+                &m,
+                vec![c.clone(), d.clone()],
+                2,
+                vec![],
+                Some(e.clone()),
+                vec![],
+            ),
+            body_block(&t, vec![m.clone()], 3, vec![], None, vec![]),
+        ]);
+        let at = |hash: &Bytes, n: i64| Floor {
+            hash: hash.clone(),
+            block_number: n,
+        };
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let mut memo = IntroducedSigsMemo::new();
+
+        dag.put_cached_floor(c.clone(), e.clone()).unwrap();
+        let reference = containment_reference(&NoopWork, &dag, &store, &at(&c, 1), thr)
+            .await
+            .unwrap();
+        assert_eq!(reference.hash, e, "the reference is the LFB's floor");
+        assert!(
+            !state_contains(&dag, &store, &at(&t, 3), &at(&c, 1), &mut memo).unwrap(),
+            "against the LFB itself the floor built on the merge would hold"
+        );
+        assert!(
+            state_contains(&dag, &store, &at(&t, 3), &reference, &mut memo).unwrap(),
+            "against the LFB's floor it advances"
+        );
+
+        dag.put_cached_floor(d.clone(), h(9)).unwrap();
+        let restored = containment_reference(&NoopWork, &dag, &store, &at(&d, 1), thr)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.hash, d,
+            "an unheld floor leaves the LFB as the reference"
+        );
+
+        dag.dag_set.remove(&w);
+        dag.put_cached_floor(m.clone(), w.clone()).unwrap();
+        let metadata_only = containment_reference(&NoopWork, &dag, &store, &at(&m, 2), thr)
+            .await
+            .unwrap();
+        assert_eq!(
+            metadata_only.hash, m,
+            "a floor held only as metadata outside the DAG leaves the LFB as the reference"
+        );
+    }
+
     /// R-COMM: the certifying committee is `bonds_of(floor(B))`, and the bonds a
     /// block carries ARE that set — `Validate::bonds_cache_from_floor` rejects any
     /// other. The oracle must therefore read the target's own committee: a block
@@ -2435,6 +2537,7 @@ mod frontier_determinism_tests {
             meta.weight_map = bonds
                 .iter()
                 .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .map(|(key, stake)| (key, u64::try_from(stake).expect("fixture stake").into()))
                 .collect();
             meta
         };
@@ -2465,6 +2568,7 @@ mod frontier_determinism_tests {
                 .expect("metadata")
                 .weight_map
                 .into_iter()
+                .map(|(validator, stake)| (validator, stake.into_bigint()))
                 .collect::<HashMap<_, _>>()
         };
 
@@ -2506,6 +2610,7 @@ mod frontier_determinism_tests {
             meta.weight_map = bonds
                 .iter()
                 .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .map(|(key, stake)| (key, u64::try_from(stake).expect("fixture stake").into()))
                 .collect();
             meta
         };
@@ -2524,7 +2629,7 @@ mod frontier_determinism_tests {
             .expect("committee");
         assert_eq!(
             bonded_committee.get(&joiner),
-            Some(&400),
+            Some(&400.into()),
             "the bond belongs to the target's own committee"
         );
 
@@ -2543,8 +2648,8 @@ mod frontier_determinism_tests {
              threshold the oracle measures against"
         );
         assert_eq!(
-            participating.values().sum::<i64>(),
-            100,
+            participating.values().sum::<num_bigint::BigInt>(),
+            100.into(),
             "the certifying weight is the stake that has actually spoken"
         );
 
@@ -2559,8 +2664,8 @@ mod frontier_determinism_tests {
             CliqueOracle::participating_weight_map(plain_committee, &dag, &unheard)
                 .expect("participating");
         assert_eq!(
-            plain_participating.values().sum::<i64>(),
-            participating.values().sum::<i64>(),
+            plain_participating.values().sum::<num_bigint::BigInt>(),
+            participating.values().sum::<num_bigint::BigInt>(),
             "both siblings certify over the same participating stake until the \
              joiner produces a message"
         );
@@ -2571,10 +2676,10 @@ mod frontier_determinism_tests {
         heard.insert(joiner.clone(), bonded.clone());
         let after = CliqueOracle::participating_weight_map(bonded_committee, &dag, &heard)
             .expect("participating");
-        assert_eq!(after.get(&joiner), Some(&400));
+        assert_eq!(after.get(&joiner), Some(&400.into()));
         assert_eq!(
-            after.values().sum::<i64>(),
-            500,
+            after.values().sum::<num_bigint::BigInt>(),
+            500.into(),
             "the joiner's stake joins the certifying weight once it has spoken"
         );
     }

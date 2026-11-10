@@ -55,6 +55,24 @@ The job verifies the commit identities of pull request commits (pull requests on
 
 `.github/scripts/commit-policy-exemptions.sh` lists the exempt commits: the commits of a human pull request author, and the contributor commits of an imported fork pull request. The step runs the base copy of that script.
 
+Approved branch transfers can also use source history to ratify identities. This prevents a target branch from rejecting authors already accepted on the source.
+
+| Target | Temporary head | Protected source |
+|---|---|---|
+| `master` | `promote/*` | `dev` |
+| `dev` | `backmerge/master-*` | `master` |
+| `ca-canary` | `ca/sync-dev-*` | `dev` |
+| `ca-canary` | `backmerge/ca-release-*` | `ca-release` |
+| `ca-release` | `promote/ca-release-*` | `ca-canary` |
+
+The base copy of `.github/scripts/commit-policy-source.sh` validates each transfer. Both PR repositories must match the workflow repository. The API head must match the event head. The source must be protected.
+
+After validation, the checker finds all merge bases between the PR head and the protected source tip. Those shared ancestors add accepted source authors to the ratified set. This supports snapshots and later base updates. PR-only commits and later source commits cannot ratify identities absent from shared history. Denied identities and forbidden trailers still fail. Ordinary feature PRs and forks retain their existing checks.
+
+If the base commit lacks the source validator, the job uses target-only ratification and reports a notice. It never executes the PR copy of the source validator. A trusted validator failure stops the job.
+
+The policy files must reach a target branch before that branch can use source ratification. A merge into `dev` alone does not update the checker on `ca-canary`.
+
 ### Script Tests
 
 The job runs these script tests:
