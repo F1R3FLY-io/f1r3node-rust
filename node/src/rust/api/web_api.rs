@@ -6,14 +6,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use casper::rust::api::block_api::{
-    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
-use casper::rust::api::block_api::DeployValidationError;
 use crypto::rust::public_key::PublicKey;
 use eyre::{eyre, Result};
 use hex;

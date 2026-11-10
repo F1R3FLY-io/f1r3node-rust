@@ -1962,9 +1962,7 @@ mod settle_and_release_tests {
                 .insert(block, InsertMode::Normal)
                 .expect("insert block");
         }
-        dag_storage
-            .record_deploy_admitted(&sig, 1)
-            .expect("admit");
+        dag_storage.record_deploy_admitted(&sig, 1).expect("admit");
 
         // Window start 1, lifespan 1, bound 1: decidable only past 3.
         dag_storage
@@ -1974,7 +1972,10 @@ mod settle_and_release_tests {
         let dag = dag_storage.get_representation().expect("dag");
         let early = settle_at_lfb(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
             .expect("settle at #3");
-        assert!(early.terminal.is_empty(), "inside the bound the deploy stays Pending");
+        assert!(
+            early.terminal.is_empty(),
+            "inside the bound the deploy stays Pending"
+        );
 
         dag_storage
             .record_directly_finalized(chain[4].block_hash.clone(), 0.5, |_| async { Ok(()) })
