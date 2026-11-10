@@ -86,6 +86,7 @@ source_files=(
   "$model_dir/rpb3_epm_loop_observation_bridge.rs"
   "$model_dir/rpb3_integrated_source_trace_composition.rs"
   "$model_dir/rpb3_integrated_dispatcher.rs"
+  "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_plain_parser_source_refinement.rs"
   "$model_dir/rpb3_epm_obligation_return_live.rs"
   "$model_dir/rpb3_epm_parser_escape_invariant.rs"
@@ -1025,6 +1026,27 @@ proofs_rpb3_epm_parser_escape_invariant=(
   parser_escape_wf_restore
   parser_escape_raw_par_top_is_root
 )
+proofs_rpb3_epm_path_invariant_integrated=(
+  epm_frames_paths_wf_push_none
+  epm_frames_paths_wf_prefix
+  epm_frames_paths_wf_update
+  parser_same_path_shape_keeps_facts
+  parser_forward_payload_same_shape
+  parser_restore_checkpoint_same_shape
+  canonical_path_driver_epm_lengths
+  canonical_path_push_epm_frames
+  canonical_path_child_return_epm_frames
+  integrated_canonical_path_push_keeps_epm_paths_wf
+  integrated_canonical_path_child_return_keeps_epm_paths_wf
+  integrated_canonical_path_root_complete_keeps_epm_paths_wf
+  integrated_canonical_path_keeps_epm_paths_wf
+  act_forward_after_epm_frames
+  integrated_act_forward_keeps_epm_paths_wf
+  unwind_product_virtual_epm_frames
+  act_unwind_after_epm_frames
+  act_unwind_selected_checkpoint
+  integrated_act_unwind_keeps_epm_paths_wf
+)
 proofs_rpb3_epm_push_live_action_refinement=(
   epm_push_live_action_is_checked
   epm_push_live_action_dispatches
@@ -1962,6 +1984,7 @@ gated_modules=(
   rpb3_epm_obligation_return_live
   rpb3_epm_obligation_return_source
   rpb3_epm_parser_escape_invariant
+  rpb3_epm_path_invariant_integrated
   rpb3_epm_push_live_action_refinement
   rpb3_epm_push_source_action_refinement
   rpb3_epm_push_transport_source_refinement
@@ -4167,6 +4190,39 @@ if ! rg -q '^verification results:: 45 verified, 0 errors' "$plain_parser_source
   exit 1
 fi
 sha256sum "$plain_parser_source_log"
+for proof in "${proofs_rpb3_epm_path_invariant_integrated[@]}"; do
+  proof_log="$evidence_dir/epm-path-invariant-integrated-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_epm_path_invariant_integrated --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap path invariant integrated $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap path invariant integrated $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+epm_path_invariant_integrated_log="$evidence_dir/epm-path-invariant-integrated-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_epm_path_invariant_integrated \
+  "$integrated_source" \
+  >"$epm_path_invariant_integrated_log" 2>&1; then
+  cat "$epm_path_invariant_integrated_log"
+  echo "rpb3-admission-cursor: EPathMap path invariant integrated module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 19 verified, 0 errors' "$epm_path_invariant_integrated_log"; then
+  cat "$epm_path_invariant_integrated_log"
+  echo "rpb3-admission-cursor: EPathMap path invariant integrated module did not verify" >&2
+  exit 1
+fi
 for proof in "${integrated_witness_proofs[@]}"; do
   proof_log="$evidence_dir/integrated-$proof.log"
   if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
