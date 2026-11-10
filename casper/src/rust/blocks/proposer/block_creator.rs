@@ -27,7 +27,6 @@ use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::blocking::in_blocking;
 use tracing;
 
@@ -434,11 +433,6 @@ fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
     match err {
-        CasperError::HistoryError(HistoryError::MergeError(msg)) => {
-            msg.contains("single-value cell")
-                && msg.contains("would hold")
-                && msg.contains("after merge")
-        }
         CasperError::RuntimeError(msg) => {
             (msg.contains("number channel")
                 && msg.contains("holds")
@@ -3709,6 +3703,7 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 #[cfg(test)]
 mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use rspace_plus_plus::rspace::errors::HistoryError;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -5715,12 +5710,6 @@ mod tests {
 
     #[test]
     fn detects_retryable_single_value_batch_errors() {
-        let err = CasperError::HistoryError(HistoryError::MergeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        ));
-
-        assert!(is_retryable_single_value_batch_error(&err));
-
         let runtime = CasperError::RuntimeError(
             "number channel abc holds 2 values [0, 0]; IntegerAdd single-value invariant violated"
                 .to_string(),
@@ -5736,11 +5725,6 @@ mod tests {
             "MergeType mismatch on channel abc".to_string(),
         ));
         assert!(!is_retryable_single_value_batch_error(&other));
-
-        let unrelated_runtime = CasperError::RuntimeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        );
-        assert!(!is_retryable_single_value_batch_error(&unrelated_runtime));
     }
 
     #[test]
