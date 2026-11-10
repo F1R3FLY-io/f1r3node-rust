@@ -4641,12 +4641,17 @@ execution_contract:
 tasks:
   - id: TASK-016-1
     title: "Authenticated single-value-cell classification"
-    status: pending
+    status: in_progress
     priority: p1
     issues: [104]
     discovered_in: docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+    branch: fix/single-value-cell-classification
+    pull_request: 931
     claimed_by: null
     blocked_by: []
+    decision:
+      - "2026-11-08: the recorded mergeable tag (number_channels_data) is the classifier. No separate classifier function is added, and rholang_merging_logic.rs gets no cbc=mandatory because the guard it would cover is removed."
+      - "2026-11-08: a second produce onto a tagged number cell is folded by its merge type, not rejected. An untagged write to a folded channel is rejected (split_untagged_writes_to_folded_channels)."
     notes:
       - "Two classifiers exist today: binary_data_is_single_number in dag_merger.rs and check_single_value_cell_not_overfilled in rholang_merging_logic.rs. Both classify by datum shape, which is guessable from content."
       - "The Rocq section Overfill in formal/rocq/merge_algebra/theories/ConflictSoundness.v proves guard detection at merge time only. Its header must state that boundary. That edit belongs to PR #311."
