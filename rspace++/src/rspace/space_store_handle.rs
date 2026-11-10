@@ -5211,16 +5211,29 @@ fn tail_candidate<C, P: Clone, A: Clone, K: Clone>(
 // RADD2v2 6.6 and RADD2 1.2): true when the sources of the staged rows `rest`
 // follow the store unit `unit` and the finish rows `finish` in order, as the
 // cursor follows the record (P2).
-fn follows_finish<C, P: Clone, A: Clone, K: Clone>(
+// Changed by CD-2 (clippy -D warnings, the final verification of merge 2):
+// each bound of a parameter is in the `where` clause
+// (`clippy::multiple_bound_locations`). The text before:
+// fn follows_finish<C, P: Clone, A: Clone, K: Clone>(
+//     rest: &[Staged<C, P, A, K>],
+//     unit: &[OpSource],
+//     finish: &[FinishRow<C, P, A, K>],
+// ) -> bool
+// where
+//     C: Clone + Serialize,
+//     P: Serialize,
+//     A: Serialize,
+//     K: Serialize,
+fn follows_finish<C, P, A, K>(
     rest: &[Staged<C, P, A, K>],
     unit: &[OpSource],
     finish: &[FinishRow<C, P, A, K>],
 ) -> bool
 where
     C: Clone + Serialize,
-    P: Serialize,
-    A: Serialize,
-    K: Serialize,
+    P: Clone + Serialize,
+    A: Clone + Serialize,
+    K: Clone + Serialize,
 {
     let mut sources = unit
         .iter()
@@ -5405,11 +5418,19 @@ where
                     // the later retires no longer name the store. Each record
                     // is still located by its bytes.
                     match (parked_before, &mut entry.operation) {
-                        (true, StagedOperation::Consume(row)) => match row.fire.as_mut() {
-                            Some(fire) => fire.removed.clear(),
-                            None => {}
-                        },
+                        // Changed by CD-2 (clippy -D warnings, the final
+                        // verification of merge 2): the empty arm comes
+                        // first (`clippy::single_match`). The text before:
+                        // (true, StagedOperation::Consume(row)) => match row.fire.as_mut() {
+                        //     Some(fire) => fire.removed.clear(),
+                        //     None => {}
+                        // },
+                        // (true, StagedOperation::Produce(_)) | (false, _) => {}
                         (true, StagedOperation::Produce(_)) | (false, _) => {}
+                        (true, StagedOperation::Consume(row)) => match row.fire.as_mut() {
+                            None => {}
+                            Some(fire) => fire.removed.clear(),
+                        },
                     }
                     let applied =
                         commit_row(backend, &*store, reads, parent, at, entry, footprint_key)

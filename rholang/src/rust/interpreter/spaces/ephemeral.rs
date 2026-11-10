@@ -475,8 +475,12 @@ impl SeqClaims {
         // Changed by decision 124 (plan v4 C7.19, ruling RADD 1.8): the commit reads the same
         // admission (`admitted`).
         match admitted(&self.registry, &self.history, id) {
-            false => return Err(SpaceError::SeqConcurrent { space: self.space }),
+            // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the empty
+            // arm comes first (`clippy::single_match`). The text before:
+            // false => return Err(SpaceError::SeqConcurrent { space: self.space }),
+            // true => {}
             true => {}
+            false => return Err(SpaceError::SeqConcurrent { space: self.space }),
         }
         // Changed by decision 124 (plan v4 C7.19): the claim is open until its row stages. The
         // text before:

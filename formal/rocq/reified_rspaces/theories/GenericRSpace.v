@@ -106,7 +106,7 @@
                             authority (design report of decision 45, A.1,
                             A.2, C.4)
    cell_offer_loop,         offer_head and receive_head of S1
-     cell_receive_loop      (spaces/generic.rs:3812-3899, 3908-4020) with
+     cell_receive_loop      (spaces/generic.rs:3817-3904, 3913-4025) with
                             Cx::check_capacity (spaces/generic.rs:2424-2439)
                             and the plain restore of Discipline::restore
                             (spaces/generic.rs:435-448, 1247-1267). The cell

@@ -665,10 +665,17 @@ mod tests {
                         ))),
                     }
                 });
-                let mut polls = 0;
+                // Changed by CD-2 (the final verification of merge 2, decision 93): the wait has
+                // no count bound. Under CPU starvation 10,000 yields passed before the other
+                // worker ran the spawned job. The timeout `DEADLINE` around the evaluation bounds
+                // the wait, and a job that never parks fails there. The text before:
+                // let mut polls = 0;
+                // while played.session.progress_counts().1 == 0 {
+                //     polls += 1;
+                //     assert!(polls < 10_000, "the job never parked");
+                //     tokio::task::yield_now().await;
+                // }
                 while played.session.progress_counts().1 == 0 {
-                    polls += 1;
-                    assert!(polls < 10_000, "the job never parked");
                     tokio::task::yield_now().await;
                 }
                 assert_eq!(played.session.progress_counts(), (2, 1));

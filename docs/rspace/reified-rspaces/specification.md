@@ -466,7 +466,7 @@ So a process never observes that a unit is absent (SQ-6 (d) of the P7 design).
 Their factories take the params of their discipline only (Table 1a), after the qualifier `"seq"`.
 
 The checks of HS-2 and HS-3 are hooks of the outer store.
-They run after the key check and before the params, in the driver and in the join engine (`rholang/src/rust/interpreter/spaces/generic.rs:5519-5524`, `rholang/src/rust/interpreter/spaces/join.rs:401-454`).
+They run after the key check and before the params, in the driver and in the join engine (`rholang/src/rust/interpreter/spaces/generic.rs:5524-5529`, `rholang/src/rust/interpreter/spaces/join.rs:401-454`).
 Each check charges nothing ([decision 89](decision-register.md#decision-89)).
 Headline `hashset_unit_rules` of `HashMapStore.v` proves the unit rules.
 
@@ -775,7 +775,7 @@ The settle fires the top pair. It lifts a stored record that is not persistent w
 **Rule SK-4: peeks in a settle.** A record that a peek waiter did not spend stays in flight, and it lands at its order when the settle ends (Rule E).
 
 **Rule SK-5: fire count.** One transaction makes at most `FIRE_ROUND_CAP` fires, its settles included ([decision I-21](decision-register.md#i-21)).
-The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:3791-3804`).
+The settle before the plan, the plan and the settle after it count on one count of the transaction (`rholang/src/rust/interpreter/spaces/generic.rs:3796-3809`).
 A plan whose transaction is full after the settle before it stages nothing, and its operation re-issues.
 
 **Rule SK-6: re-issues.** At the cap or at a divergent pair, the settle before the plan re-issues the operation, which it has not inserted yet.
@@ -1078,7 +1078,7 @@ A higher similarity and a lower distance are better.
 Without a query vector, a single read takes the pick order of the operation, and a list read keeps the canonical order of DR-75.
 Figure N15.2 of the design shows the selection.
 
-**Rule VD-5: single mode.** A receive without `k` and `results` takes the first record of $`E`$ whose payload its pattern binds (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:2235-2326`).
+**Rule VD-5: single mode.** A receive without `k` and `results` takes the first record of $`E`$ whose payload its pattern binds (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:2238-2329`).
 It checks its `where` guard once, on that record, and a refusal parks the receive ([decision 37](decision-register.md#decision-37)).
 The fire is one COMM over $`[D]`$. With `scores = true`, the receive binds `[score, value]`.
 Without a record, the receive parks, with its query in the policy slot of its envelope.
@@ -1111,10 +1111,10 @@ A divergent pair re-issues the operation at the end of the transaction, after th
 A re-issued element keeps its record and its identity ([decision 43](decision-register.md#decision-43)).
 
 **Rule VD-9: peeks.** A peek fire removes each non-persistent record that it binds, as the host COMM does ([decision 45](decision-register.md#decision-45), Rule E).
-The same transaction sends each removed record again with its vector, the last owed record first (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3478-3526`).
+The same transaction sends each removed record again with its vector, the last owed record first (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3485-3533`).
 A send that fires a peek waiter keeps its datum in flight and offers it to the next waiter ([decision 30](decision-register.md#decision-30)).
 
-**Rule VD-10: LIST-CASCADE.** After each removal, the tail checks the parked list waiters in the canonical order (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3753-3930`).
+**Rule VD-10: LIST-CASCADE.** After each removal, the tail checks the parked list waiters in the canonical order (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3760-3937`).
 It fires the first waiter whose list $`L(W, R)`$ is not empty, binds its pattern and passes its guard.
 The fire lifts the first member of the list with `K_lift`, when the member is not persistent, and offers it to the waiter.
 The tail repeats until no parked list waiter can fire, or until the fire count reaches `FIRE_ROUND_CAP`.

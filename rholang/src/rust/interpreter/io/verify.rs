@@ -394,9 +394,16 @@ mod tests {
         let empty_ok = ok_par(models::rhoapi::Par::default());
         let empty_ok_hash = par_stable_hash(&empty_ok);
         // Pinned bytes (regenerate on intentional roll).
+        // Changed by decision 112 (plan-112-protobuf.md 1.5, decision 18): the field `use_blocks`
+        // adds 8 bytes to the bincode of each Par, so the stable hash of every reply changes. The
+        // text before:
+        // const EXPECTED_EMPTY_OK: [u8; 32] = [
+        //     89, 167, 148, 142, 26, 75, 85, 14, 41, 59, 13, 160, 239, 236, 58, 176, 116, 38, 180,
+        //     54, 121, 32, 0, 75, 107, 121, 123, 46, 228, 251, 160, 110,
+        // ];
         const EXPECTED_EMPTY_OK: [u8; 32] = [
-            89, 167, 148, 142, 26, 75, 85, 14, 41, 59, 13, 160, 239, 236, 58, 176, 116, 38, 180,
-            54, 121, 32, 0, 75, 107, 121, 123, 46, 228, 251, 160, 110,
+            52, 247, 20, 41, 233, 21, 136, 235, 119, 226, 7, 38, 235, 239, 149, 169, 243, 237, 55,
+            70, 65, 59, 206, 99, 154, 94, 146, 111, 85, 50, 79, 93,
         ];
         assert_eq!(
             empty_ok_hash, EXPECTED_EMPTY_OK,
@@ -410,9 +417,15 @@ mod tests {
         // through stable_hash.
         let bad_arg_reply = err(FSERR_BAD_ARG, "example");
         let bad_arg_hash = par_stable_hash(&bad_arg_reply);
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_BAD_ARG: [u8; 32] = [
+        //     7, 68, 175, 62, 6, 223, 205, 97, 254, 101, 101, 108, 179, 34, 2, 59, 84, 168, 160, 44,
+        //     237, 45, 237, 179, 38, 147, 155, 123, 196, 89, 14, 129,
+        // ];
         const EXPECTED_BAD_ARG: [u8; 32] = [
-            7, 68, 175, 62, 6, 223, 205, 97, 254, 101, 101, 108, 179, 34, 2, 59, 84, 168, 160, 44,
-            237, 45, 237, 179, 38, 147, 155, 123, 196, 89, 14, 129,
+            46, 164, 158, 38, 31, 2, 83, 54, 212, 185, 178, 3, 175, 44, 154, 53, 208, 202, 95, 171,
+            4, 188, 125, 229, 196, 240, 150, 220, 41, 34, 135, 246,
         ];
         assert_eq!(
             bad_arg_hash, EXPECTED_BAD_ARG,
@@ -430,9 +443,15 @@ mod tests {
         // — without this, a drift that flipped both bad_arg AND
         // io hashes identically would still pass the assert_ne!
         // below.  The per-shape pin catches that.
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_IO_ERR: [u8; 32] = [
+        //     166, 134, 208, 92, 33, 174, 4, 188, 26, 50, 224, 252, 24, 64, 186, 196, 66, 113, 51,
+        //     238, 225, 93, 81, 144, 225, 123, 158, 48, 211, 144, 81, 192,
+        // ];
         const EXPECTED_IO_ERR: [u8; 32] = [
-            166, 134, 208, 92, 33, 174, 4, 188, 26, 50, 224, 252, 24, 64, 186, 196, 66, 113, 51,
-            238, 225, 93, 81, 144, 225, 123, 158, 48, 211, 144, 81, 192,
+            239, 241, 146, 15, 65, 0, 129, 48, 36, 96, 251, 106, 212, 30, 213, 224, 71, 26, 8, 208,
+            241, 52, 20, 83, 171, 102, 255, 72, 202, 174, 65, 197,
         ];
         assert_eq!(
             io_hash, EXPECTED_IO_ERR,
@@ -456,9 +475,15 @@ mod tests {
         // Case 1 (which is `[true, ]` with a trailing Par::default()
         // — subtly different wire bytes).
         let bare_ok_hash = par_stable_hash(&ok_bare());
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_OK_BARE: [u8; 32] = [
+        //     82, 147, 151, 219, 74, 164, 235, 233, 239, 18, 199, 89, 244, 91, 142, 82, 96, 141, 214,
+        //     219, 56, 78, 181, 71, 121, 197, 126, 184, 153, 217, 232, 6,
+        // ];
         const EXPECTED_OK_BARE: [u8; 32] = [
-            82, 147, 151, 219, 74, 164, 235, 233, 239, 18, 199, 89, 244, 91, 142, 82, 96, 141, 214,
-            219, 56, 78, 181, 71, 121, 197, 126, 184, 153, 217, 232, 6,
+            122, 215, 223, 0, 127, 148, 229, 222, 15, 198, 244, 212, 88, 240, 66, 30, 181, 122,
+            161, 18, 62, 30, 235, 76, 123, 138, 199, 121, 191, 179, 19, 99,
         ];
         assert_eq!(
             bare_ok_hash, EXPECTED_OK_BARE,
@@ -469,9 +494,15 @@ mod tests {
         // fs_write's reply (bytes-written count), fs_size, fs_seek
         // (position), etc.  Pins the GInt encoding.
         let ok_int_hash = par_stable_hash(&ok_int(42));
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_OK_INT_42: [u8; 32] = [
+        //     51, 96, 87, 171, 31, 222, 60, 15, 222, 21, 30, 120, 92, 184, 132, 206, 41, 146, 180,
+        //     180, 104, 64, 40, 150, 147, 209, 204, 34, 95, 93, 134, 255,
+        // ];
         const EXPECTED_OK_INT_42: [u8; 32] = [
-            51, 96, 87, 171, 31, 222, 60, 15, 222, 21, 30, 120, 92, 184, 132, 206, 41, 146, 180,
-            180, 104, 64, 40, 150, 147, 209, 204, 34, 95, 93, 134, 255,
+            120, 135, 94, 145, 18, 129, 11, 246, 5, 93, 18, 237, 34, 64, 168, 5, 145, 189, 196,
+            231, 2, 180, 187, 46, 214, 156, 59, 93, 250, 116, 147, 231,
         ];
         assert_eq!(
             ok_int_hash, EXPECTED_OK_INT_42,
@@ -482,9 +513,15 @@ mod tests {
         // fs_exists.  A subtle regression that made GBool encode
         // identically to GInt(0/1) would surface here vs. Case 5.
         let ok_bool_hash = par_stable_hash(&ok_bool(true));
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_OK_BOOL_TRUE: [u8; 32] = [
+        //     47, 136, 47, 67, 46, 225, 56, 12, 207, 13, 251, 168, 53, 69, 16, 147, 54, 70, 249, 24,
+        //     232, 200, 240, 73, 236, 26, 198, 53, 94, 146, 237, 108,
+        // ];
         const EXPECTED_OK_BOOL_TRUE: [u8; 32] = [
-            47, 136, 47, 67, 46, 225, 56, 12, 207, 13, 251, 168, 53, 69, 16, 147, 54, 70, 249, 24,
-            232, 200, 240, 73, 236, 26, 198, 53, 94, 146, 237, 108,
+            59, 173, 243, 90, 81, 123, 15, 87, 15, 80, 205, 20, 21, 15, 166, 89, 7, 112, 113, 180,
+            249, 122, 180, 246, 89, 172, 139, 210, 242, 93, 165, 151,
         ];
         assert_eq!(
             ok_bool_hash, EXPECTED_OK_BOOL_TRUE,
@@ -494,9 +531,15 @@ mod tests {
         // Case 7: `[true, <bytes>]` — the ok_bytes shape used by
         // fs_read's reply.  Pins the GByteArray encoding.
         let ok_bytes_hash = par_stable_hash(&ok_bytes(vec![0xaa, 0xbb, 0xcc]));
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_OK_BYTES_AABBCC: [u8; 32] = [
+        //     247, 91, 85, 18, 230, 71, 121, 102, 35, 39, 202, 202, 109, 173, 38, 132, 150, 31, 18,
+        //     130, 118, 50, 245, 107, 157, 75, 250, 81, 219, 28, 249, 29,
+        // ];
         const EXPECTED_OK_BYTES_AABBCC: [u8; 32] = [
-            247, 91, 85, 18, 230, 71, 121, 102, 35, 39, 202, 202, 109, 173, 38, 132, 150, 31, 18,
-            130, 118, 50, 245, 107, 157, 75, 250, 81, 219, 28, 249, 29,
+            109, 249, 151, 192, 150, 101, 169, 48, 173, 177, 198, 150, 2, 101, 82, 229, 120, 157,
+            165, 70, 5, 19, 128, 108, 12, 31, 166, 8, 48, 160, 129, 21,
         ];
         assert_eq!(
             ok_bytes_hash, EXPECTED_OK_BYTES_AABBCC,
@@ -506,9 +549,15 @@ mod tests {
         // Case 8: `[true, "hello"]` — the ok_string shape used by
         // fs_quarantine's reply.  Pins the GString encoding.
         let ok_string_hash = par_stable_hash(&ok_string("hello".to_string()));
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_OK_STRING_HELLO: [u8; 32] = [
+        //     175, 78, 235, 95, 251, 71, 13, 48, 55, 45, 152, 93, 156, 127, 199, 206, 96, 216, 5, 75,
+        //     56, 51, 81, 238, 189, 154, 43, 32, 100, 66, 142, 232,
+        // ];
         const EXPECTED_OK_STRING_HELLO: [u8; 32] = [
-            175, 78, 235, 95, 251, 71, 13, 48, 55, 45, 152, 93, 156, 127, 199, 206, 96, 216, 5, 75,
-            56, 51, 81, 238, 189, 154, 43, 32, 100, 66, 142, 232,
+            180, 129, 163, 110, 234, 151, 80, 252, 136, 134, 134, 182, 230, 107, 57, 12, 107, 78,
+            34, 79, 80, 163, 133, 105, 102, 141, 215, 68, 252, 22, 180, 12,
         ];
         assert_eq!(
             ok_string_hash, EXPECTED_OK_STRING_HELLO,
@@ -521,9 +570,15 @@ mod tests {
         let entry_a = ok_string("file.bin".to_string());
         let entry_b = ok_string("dir".to_string());
         let ok_nested_hash = par_stable_hash(&ok_list(vec![entry_a, entry_b]));
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_OK_NESTED_LIST: [u8; 32] = [
+        //     100, 4, 18, 166, 58, 200, 157, 131, 71, 140, 90, 225, 181, 138, 116, 166, 190, 138,
+        //     238, 116, 22, 92, 3, 3, 77, 137, 187, 221, 93, 71, 228, 213,
+        // ];
         const EXPECTED_OK_NESTED_LIST: [u8; 32] = [
-            100, 4, 18, 166, 58, 200, 157, 131, 71, 140, 90, 225, 181, 138, 116, 166, 190, 138,
-            238, 116, 22, 92, 3, 3, 77, 137, 187, 221, 93, 71, 228, 213,
+            100, 17, 176, 51, 70, 148, 101, 10, 58, 193, 212, 83, 25, 255, 219, 245, 90, 253, 149,
+            56, 220, 86, 163, 41, 164, 49, 174, 225, 186, 193, 189, 29,
         ];
         assert_eq!(
             ok_nested_hash, EXPECTED_OK_NESTED_LIST,
@@ -535,9 +590,15 @@ mod tests {
         // msg]`); a regression that collapsed EOS into a full
         // FSERR shape would hash differently.
         let eos_hash = par_stable_hash(&err_eos());
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_ERR_EOS: [u8; 32] = [
+        //     148, 21, 6, 250, 199, 107, 135, 241, 69, 250, 125, 251, 136, 233, 51, 174, 251, 53, 83,
+        //     99, 135, 163, 15, 247, 41, 210, 170, 50, 227, 53, 29, 212,
+        // ];
         const EXPECTED_ERR_EOS: [u8; 32] = [
-            148, 21, 6, 250, 199, 107, 135, 241, 69, 250, 125, 251, 136, 233, 51, 174, 251, 53, 83,
-            99, 135, 163, 15, 247, 41, 210, 170, 50, 227, 53, 29, 212,
+            115, 34, 102, 94, 35, 194, 85, 132, 125, 85, 84, 161, 244, 90, 98, 13, 177, 134, 130,
+            193, 235, 37, 217, 161, 1, 86, 11, 18, 94, 93, 84, 18,
         ];
         assert_eq!(
             eos_hash, EXPECTED_ERR_EOS,
@@ -563,9 +624,15 @@ mod tests {
         // both `stat_record`-in-Consensus and `error_record` output,
         // so `error_record` is a faithful proxy.
         let emap_hash = par_stable_hash(&ok_par(error_record("target", "example error")));
+        // Changed by decision 112 (plan-112-protobuf.md 1.5), as for `EXPECTED_EMPTY_OK`. The
+        // text before:
+        // const EXPECTED_ERR_EMAP: [u8; 32] = [
+        //     230, 153, 196, 238, 244, 219, 255, 88, 230, 152, 182, 167, 24, 235, 206, 201, 13, 18,
+        //     45, 86, 65, 63, 20, 219, 250, 23, 249, 96, 18, 162, 132, 180,
+        // ];
         const EXPECTED_ERR_EMAP: [u8; 32] = [
-            230, 153, 196, 238, 244, 219, 255, 88, 230, 152, 182, 167, 24, 235, 206, 201, 13, 18,
-            45, 86, 65, 63, 20, 219, 250, 23, 249, 96, 18, 162, 132, 180,
+            172, 5, 168, 135, 185, 18, 237, 224, 198, 126, 63, 40, 94, 151, 96, 6, 104, 160, 209,
+            92, 48, 47, 66, 164, 216, 106, 109, 128, 174, 154, 203, 12,
         ];
         assert_eq!(
             emap_hash, EXPECTED_ERR_EMAP,

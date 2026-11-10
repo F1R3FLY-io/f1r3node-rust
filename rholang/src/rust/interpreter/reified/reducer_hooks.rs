@@ -5976,6 +5976,8 @@ mod tests {
     async fn reducer_space_routing_allocation_jobs_give_index_names() {
         use rspace_plus_plus::rspace::internal::Datum;
 
+        // Added by decision 124 (plan v2 C7.2, decision 99): the seal of a machinery record.
+        use crate::rust::interpreter::accounting::authority::system_residue_authority_with_caller;
         use crate::rust::interpreter::reified::handle::alloc_harness::{
             allocator, allocator_values, counted_creation, TestFamilies,
         };
@@ -6042,10 +6044,20 @@ mod tests {
                 .map(|datum| datum.a.cost_authority)
                 .collect()
         };
+        // Added by decision 124 (plan v2 C7.2, decision 99): the allocator record is a machinery
+        // record, so it carries the residue seal of the authority of the process (DR-101).
+        let deploy_id = reducer.metering.budget().deploy_id();
+        let seal = |authority: &CostAuthority| {
+            system_residue_authority_with_caller(authority, &deploy_id, None)
+                .expect("the machinery seal builds")
+        };
         for space in [first, second] {
             assert_eq!(
                 authorities(fixture.host.get_data(&allocator(space)).await),
-                vec![Some(region(7))]
+                // Changed by decision 124 (plan v2 C7.2, decision 99): the record carries the
+                // seal. The text before:
+                // vec![Some(region(7))]
+                vec![Some(seal(&region(7)))]
             );
         }
         assert!(fixture.host.get_data(&allocator(plain)).await.is_empty());
@@ -6064,7 +6076,10 @@ mod tests {
         );
         assert_eq!(
             authorities(fixture.host.get_data(&allocator(first)).await),
-            vec![Some(region(8))]
+            // Changed by decision 124 (plan v2 C7.2, decision 99): the record carries the seal.
+            // The text before:
+            // vec![Some(region(8))]
+            vec![Some(seal(&region(8)))]
         );
     }
 

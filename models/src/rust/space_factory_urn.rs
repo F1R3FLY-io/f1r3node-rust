@@ -794,16 +794,59 @@ mod tests {
             SpaceFactoryConstructor::parse_elements(&[flagged]),
             Err(SpaceFactoryConstructorError::NonCanonical)
         );
+        // Changed by decision 112: no decoder reads a derived flag, so a flagged theory or params
+        // element still parses, as the integration copy of this test states. The malformed forms
+        // are a bad theory name and a bad param key. The text before:
+        // ```
+        // let mut stale_theory = nat;
+        // stale_theory.connective_used = true;
+        // assert!(matches!(
+        //     SpaceFactoryConstructor::parse_elements(&[stale_theory]),
+        //     Err(SpaceFactoryConstructorError::MalformedTheory(_))
+        // ));
+        // let mut stale_params = named;
+        // stale_params.connective_used = true;
+        // assert!(matches!(
+        //     SpaceFactoryConstructor::parse_elements(&[stale_params]),
+        //     Err(SpaceFactoryConstructorError::MalformedParams(_))
+        // ));
+        // ```
         let mut stale_theory = nat;
         stale_theory.connective_used = true;
         assert!(matches!(
             SpaceFactoryConstructor::parse_elements(&[stale_theory]),
+            Ok(SpaceFactoryConstructor {
+                theory: Some(_),
+                ..
+            })
+        ));
+        let bad_theory = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EFreeBody(crate::rhoapi::EFree {
+                theory: "new".to_owned(),
+                args: Vec::new(),
+            })),
+        }]);
+        assert!(matches!(
+            SpaceFactoryConstructor::parse_elements(&[bad_theory]),
             Err(SpaceFactoryConstructorError::MalformedTheory(_))
         ));
         let mut stale_params = named;
         stale_params.connective_used = true;
         assert!(matches!(
             SpaceFactoryConstructor::parse_elements(&[stale_params]),
+            Ok(SpaceFactoryConstructor {
+                params: Some(_),
+                ..
+            })
+        ));
+        let bad_params = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EParamsBody(SendParams {
+                positional: Vec::new(),
+                named: BTreeMap::from([("Nil".to_owned(), int(4))]),
+            })),
+        }]);
+        assert!(matches!(
+            SpaceFactoryConstructor::parse_elements(&[bad_params]),
             Err(SpaceFactoryConstructorError::MalformedParams(_))
         ));
         for ctor in [

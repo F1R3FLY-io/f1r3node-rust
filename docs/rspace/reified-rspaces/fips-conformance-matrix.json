@@ -236,7 +236,7 @@
         "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:335-361",
         "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:1169-1280",
         "rholang/src/rust/interpreter/spaces/settle.rs:473-478",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3753-3930",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3760-3937",
         "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:1411-1507",
         "rholang/src/rust/interpreter/spaces/settle.rs:453-577"
       ],
@@ -1409,7 +1409,7 @@
       "clause": "The outer store HashSet of channels: a send adds the channel to the set, a receive uses only the empty pattern, and joins are allowed.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/generic.rs:5519-5524",
+        "rholang/src/rust/interpreter/spaces/generic.rs:5524-5529",
         "rholang/src/rust/interpreter/spaces/join.rs:401-454"
       ],
       "formal": [
@@ -2136,7 +2136,7 @@
       "status": "implemented",
       "code": [
         "rholang/src/rust/interpreter/spaces/settle.rs:453-577",
-        "rholang/src/rust/interpreter/spaces/generic.rs:3791-3804"
+        "rholang/src/rust/interpreter/spaces/generic.rs:3796-3809"
       ],
       "formal": [
         {
@@ -2233,12 +2233,12 @@
         "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:590-690",
         "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1028-1129",
         "rholang/src/rust/interpreter/tensor/exact.rs:478-521",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:2235-2326",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:2238-2329",
         "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1369-1429",
         "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:949-984",
         "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1817-1905",
         "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1477-1525",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3478-3526",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3485-3533",
         "rholang/src/rust/interpreter/spaces/join.rs:401-454",
         "rholang/src/rust/interpreter/spaces/generic.rs:2424-2439",
         "rholang/src/rust/interpreter/tensor/exact.rs:578-599"
@@ -2679,7 +2679,7 @@
       "status": "implemented",
       "code": [
         "rholang/src/rust/interpreter/reified/seq.rs:107-126",
-        "rholang/src/rust/interpreter/spaces/ephemeral.rs:392-566"
+        "rholang/src/rust/interpreter/spaces/ephemeral.rs:392-570"
       ],
       "formal": [
         {

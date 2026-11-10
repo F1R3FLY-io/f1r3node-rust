@@ -538,7 +538,12 @@ const PINNED: [PinnedCost; 2] = [
         label: "send on a stored collection",
         body: "a!(4)",
         // phlo: 7_909,
-        phlo: 7_929,
+        // Changed by decision 124 (plan v2 C7.2, decision 99) and decision 112 (class M-7): the
+        // records of the counter bump carry the residue seal of DR-101, a region without a
+        // price, so the send pays 1,250 phlo less. Its three operations on channels whose id
+        // holds the key of `a` each pay 8 phlo more. The text before:
+        // phlo: 7_929,
+        phlo: 6_703,
     },
 ];
 
@@ -1478,9 +1483,26 @@ async fn reified_factory_theory_argument() {
         "admitted",
     )
     .await;
-    assert_eq!(delivered(&admitted, "nat", "take"), vec![vec![
-        models::rust::utils::new_gint_par(1, Vec::new(), false)
-    ]]);
+    // Changed by CD-2 (the final verification of merge 2, decisions 93 and 111): the creation runs
+    // `a!(1)` and `a!(2)` as parallel tasks, and racing sends take their ords in arrival order. So
+    // the queue head, the record that arrived first, is 1 or 2 (`allowed_outcomes` of
+    // `reified_determinism.rs`). The text before:
+    // assert_eq!(delivered(&admitted, "nat", "take"), vec![vec![
+    //     models::rust::utils::new_gint_par(1, Vec::new(), false)
+    // ]]);
+    let taken = delivered(&admitted, "nat", "take");
+    let [take] = taken.as_slice() else {
+        panic!("one take: {taken:?}");
+    };
+    let [head] = take.as_slice() else {
+        panic!("one value in the take: {take:?}");
+    };
+    assert!(
+        [1, 2]
+            .map(|value| models::rust::utils::new_gint_par(value, Vec::new(), false))
+            .contains(head),
+        "the take delivers the record that arrived first, 1 or 2: {head:?}"
+    );
     let refused = play_certified(
         &mut cold,
         &family.with_stash(r#"a!("five")"#),

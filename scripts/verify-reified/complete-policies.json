@@ -214,6 +214,14 @@
         "pattern": "event_coverage",
         "reason": "item 4: no production EventCoverage"
       }
+    ],
+    "base_text": [
+      {
+        "file": "rspace++/src/rspace/serializers/cold_store_decode.rs",
+        "pattern": "ParBag",
+        "line": "//! stored by authoritative ParBag. The benefit is that \"which types are decoded",
+        "note": "Base text: base commit 2538d1f82 (DR-131 P2a) added this doc comment, and the file is byte-identical to the base revision 702496775. The campaign footprint keeps rspace++/src/rspace/serializers/** unchanged."
+      }
     ]
   },
   "phases": {
@@ -329,18 +337,6 @@
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub fn marker_of(par: &Par) -> Option<Marker>"
-        },
-        {
-          "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub fn is_process_marker_tuple(tuple: &ETuple) -> bool"
-        },
-        {
-          "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub fn sole_marker_tuple(par: &Par) -> Option<(Marker, &ETuple)>"
-        },
-        {
-          "file": "models/src/rust/reified/encoding.rs",
           "pattern": "pub struct UseBlock {"
         },
         {
@@ -349,11 +345,11 @@
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub struct SendParams {"
+          "pattern": "pub use crate::rhoapi::{QuerySpec, SendParams};"
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub struct QuerySpec {"
+          "pattern": "pub use crate::rhoapi::{QuerySpec, SendParams};"
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
@@ -365,10 +361,6 @@
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub enum ProcessConstruct {"
-        },
-        {
-          "file": "models/src/rust/reified/encoding.rs",
           "pattern": "pub enum ReifiedEncodeError {"
         },
         {
@@ -377,23 +369,7 @@
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub fn encode(construct: &ReifiedConstruct) -> Result<Expr, ReifiedEncodeError>"
-        },
-        {
-          "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub fn encode_use(block: &UseBlock) -> Expr"
-        },
-        {
-          "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub fn encode_new_space(new_space: &NewSpace) -> Result<Expr, ReifiedEncodeError>"
-        },
-        {
-          "file": "models/src/rust/reified/encoding.rs",
           "pattern": "pub fn encode_params(params: &SendParams) -> Result<Option<Par>, ReifiedEncodeError>"
-        },
-        {
-          "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub fn encode_query(query: &QuerySpec) -> Result<Par, ReifiedEncodeError>"
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
@@ -401,7 +377,7 @@
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub fn decode_process_tuple(tuple: &ETuple) -> Result<ProcessConstruct, ReifiedDecodeError>"
+          "pattern": "pub fn decode_use_block(block: &crate::rhoapi::UseBlock) -> Result<UseBlock, ReifiedDecodeError>"
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
@@ -409,7 +385,7 @@
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
-          "pattern": "pub fn decode_query_source(source: &Par) -> Result<Option<QuerySpec>, ReifiedDecodeError>"
+          "pattern": "pub fn check_query_spec(query: &QuerySpec) -> Result<(), ReifiedDecodeError>"
         },
         {
           "file": "models/src/rust/reified/encoding.rs",
@@ -421,7 +397,7 @@
         },
         {
           "file": "models/src/rust/reified/builders.rs",
-          "pattern": "pub fn use_block(space: Par, body: Par) -> ETuple"
+          "pattern": "pub fn use_block(space: Par, body: Par) -> UseBlock"
         },
         {
           "file": "models/src/rust/reified/builders.rs",
@@ -429,7 +405,7 @@
         },
         {
           "file": "models/src/rust/reified/builders.rs",
-          "pattern": "pub fn send_params(params: Vec<SendParam>) -> Result<Option<Par>, ReifiedSyntaxError>"
+          "pattern": "pub fn send_params(params: Vec<SendParam>) -> Result<Option<SendParams>, ReifiedSyntaxError>"
         },
         {
           "file": "models/src/rust/reified/builders.rs",
@@ -437,11 +413,11 @@
         },
         {
           "file": "models/src/rust/reified/builders.rs",
-          "pattern": "pub fn efree(name: &str, args: Vec<Par>) -> Result<ETuple, ReifiedSyntaxError>"
+          "pattern": "pub fn efree(name: &str, args: Vec<Par>) -> Result<EFree, ReifiedSyntaxError>"
         },
         {
           "file": "models/src/rust/reified/builders.rs",
-          "pattern": "pub fn push_process_expr(par: Par, tuple: ETuple) -> Par"
+          "pattern": "pub fn push_use_block(par: Par, block: UseBlock) -> Par"
         },
         {
           "file": "models/src/rust/reified/params.rs",
@@ -497,7 +473,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "pub(super) fn eval_marker<'a>("
+          "pattern": "pub(super) fn eval_use_block<'a>("
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
@@ -505,7 +481,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "pub(super) fn reject_query_source(source: &Par) -> Result<(), InterpreterError>"
+          "pattern": "pub(super) fn reject_query_source(query: Option<&QuerySpec>) -> Result<(), InterpreterError>"
         },
         {
           "file": "rholang/src/rust/interpreter/util/mod.rs",
@@ -521,7 +497,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reduce.rs",
-          "pattern": "ExprInstance::ETupleBody(t) => self.eval_marker(t, env, rand, authority).await,"
+          "pattern": "self.eval_use_block(term, env, rand, authority).await"
         },
         {
           "file": "rholang/src/rust/interpreter/reduce.rs",
@@ -529,7 +505,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reduce.rs",
-          "pattern": "reified_hooks::reject_query_source(&subst)?;"
+          "pattern": "reified_hooks::reject_query_source(rb.query_spec.as_ref())?;"
         }
       ],
       "tests": [
@@ -550,10 +526,8 @@
         "rholang/src/rust/interpreter/reified/errors.rs",
         "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
         "rholang/src/rust/interpreter/reified/costs.rs",
-        "rholang/src/rust/interpreter/reified/legacy_charges.rs",
         "rholang/src/rust/interpreter/reified/route.rs",
         "rholang/src/rust/interpreter/reified/runtime.rs",
-        "rholang/src/rust/interpreter/reified/schedule.rs",
         "rholang/src/rust/interpreter/reified/scope.rs",
         "rholang/src/rust/interpreter/reified/system_channels.rs",
         "rholang/src/rust/interpreter/reified/execution.rs",
@@ -619,18 +593,6 @@
           "pattern": "        self.reified_new(new, env, rand, authority).await"
         },
         {
-          "file": "rholang/src/rust/interpreter/deterministic_reduction.rs",
-          "pattern": "    Space(reified_schedule::SpaceIntent),"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/deterministic_reduction.rs",
-          "pattern": "            Intent::Space(space) => space.extend_footprint(&mut footprint, &self.budget),"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/deterministic_reduction.rs",
-          "pattern": "            Intent::Space(space) => space.execute(self, order).await,"
-        },
-        {
           "file": "rholang/src/rust/interpreter/rho_runtime.rs",
           "pattern": "        reified::execution::wrap(rspace.clone(), &reified_runtime, &reducer_cell),"
         },
@@ -652,7 +614,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "pub(super) fn eval_marker<'a>("
+          "pattern": "pub(super) fn eval_use_block<'a>("
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
@@ -679,34 +641,6 @@
           "pattern": "pub const FIRE_ROUND_CAP: usize = 64;"
         },
         {
-          "file": "rholang/src/rust/interpreter/reified/mod.rs",
-          "pattern": "pub mod legacy_charges;"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "pattern": "pub fn produce_charges(op: &ParSpaceProduce) -> Result<LegacyCharges, SpaceError>"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "pattern": "pub fn consume_charges(op: &ParSpaceConsume) -> Result<LegacyCharges, SpaceError>"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "pattern": "pub struct LegacyChain {"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "pattern": "pub fn finish(self) -> Result<(), SpaceError>"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-          "pattern": "legacy.finish()?;"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/spaces/counter.rs",
-          "pattern": "legacy: &mut LegacyChain"
-        },
-        {
           "file": "rholang/src/rust/interpreter/reified/route.rs",
           "pattern": "pub fn classify_channel(channel: &Par) -> ChannelClass"
         },
@@ -725,14 +659,6 @@
         {
           "file": "rholang/src/rust/interpreter/reified/runtime.rs",
           "pattern": "pub fn ensure_available(&self) -> Result<(), SpaceError>"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/schedule.rs",
-          "pattern": "pub(crate) async fn submit_space<T: Send + 'static>("
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/schedule.rs",
-          "pattern": "pub(super) async fn execute(\n        self,\n        session: &ReductionSession,\n        order: OperationOrder,\n    ) -> Completion"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/scope.rs",
@@ -808,7 +734,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/matching.rs",
-          "pattern": "pub struct SpaceMatcher<'a> {"
+          "pattern": "pub struct SpaceMatcher {"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -899,12 +825,10 @@
         "rholang/tests/reified_queue_source.rs",
         "rholang/tests/reified_p4_props.rs",
         "rholang/tests/reified_p4_smoke.rs",
-        "rholang/tests/reified_native_fail_closed.rs",
-        "rholang/tests/reified_legacy_charges.rs"
+        "rholang/tests/reified_native_fail_closed.rs"
       ],
       "property_files": [
-        "rholang/tests/reified_p4_props.rs",
-        "rholang/tests/reified_legacy_charges.rs"
+        "rholang/tests/reified_p4_props.rs"
       ]
     },
     "p5": {
@@ -1007,16 +931,12 @@
           "pattern": "    pub async fn allocate("
         },
         {
-          "file": "rholang/src/rust/interpreter/reified/costs.rs",
-          "pattern": "pub fn ordered_lookup(&self, entries: usize, key_bytes: usize) -> Result<(), RSpaceError> {"
-        },
-        {
           "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
           "pattern": "pub fn allocator_channel(space: NativeSpace) -> Vec<u8> {"
         },
         {
           "file": "rspace++/src/rspace/space_store_handle.rs",
-          "pattern": "pub fn canonical_data_order<A>("
+          "pattern": "pub fn canonical_data_order<A: Clone + Serialize>(data: &[Datum<A>]) -> Vec<usize> {"
         },
         {
           "file": "rspace++/src/rspace/space_store_handle.rs",
@@ -1064,7 +984,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/families.rs",
-          "pattern": "pub enum Family {"
+          "pattern": "pub struct Family {"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -1195,10 +1115,6 @@
           "pattern": "fn space_canonical_iteration_bag_views() {"
         },
         {
-          "file": "rholang/tests/reified_determinism.rs",
-          "pattern": "async fn space_candidate_serialize_failure_ordered() {"
-        },
-        {
           "file": "rholang/tests/reified_pattern_enforcement.rs",
           "pattern": "async fn pattern_enforcement_unsupported_pairs_reject() {"
         },
@@ -1237,10 +1153,6 @@
         {
           "file": "rholang/src/rust/interpreter/spaces/pathmap/join.rs",
           "pattern": "impl<D: Discipline> JoinSource for PrefixSource<'_, D> {"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
-          "pattern": "    const ALWAYS_ESCALATES: bool = true;"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/families.rs",
@@ -1346,30 +1258,6 @@
           "pattern": "    NativeReplay,"
         },
         {
-          "file": "rspace++/src/rspace/space_store_handle.rs",
-          "pattern": "pub async fn begin_metered("
-        },
-        {
-          "file": "rspace++/src/rspace/space_store_handle.rs",
-          "pattern": "pub trait ViewReads<C, P, A, K>: Send + Sync"
-        },
-        {
-          "file": "rspace++/src/rspace/space_store_handle.rs",
-          "pattern": "pub struct NativeViewReads<M> {"
-        },
-        {
-          "file": "rspace++/src/rspace/space_store_handle.rs",
-          "pattern": "pub(crate) struct Reads<'r, C, P, A, K>"
-        },
-        {
-          "file": "rspace++/src/rspace/space_store_handle.rs",
-          "pattern": "    fn history(&self) -> Result<(SharedHistory<C, P, A, K>, [u8; 32]), SpaceTxnError>;"
-        },
-        {
-          "file": "rspace++/src/rspace/space_store_handle.rs",
-          "pattern": "pub(crate) fn store_waiting_continuation<C, P, A, K>("
-        },
-        {
           "file": "rspace++/src/rspace/replay_rspace/native_session.rs",
           "pattern": "pub mod space;"
         },
@@ -1403,15 +1291,14 @@
         },
         {
           "file": "rholang/src/rust/interpreter/rho_runtime.rs",
-          "pattern": "    native_space_runtime.bind_native_replay(session.space_store(cost.clone())?, cost.clone())?;"
+          "pattern": "        .bind_native_replay(session.space_store(cost.clone(), installed), cost.clone())?;"
         }
       ],
       "tests": [
         "rspace++/src/rspace/replay_rspace/native_session/space.rs",
         "rholang/tests/reified_native_fail_closed.rs",
         "rholang/tests/reified_native_spaces.rs",
-        "rholang/tests/support/native.rs",
-        "rholang/src/rust/interpreter/reified/schedule.rs"
+        "rholang/tests/support/native.rs"
       ],
       "property_files": []
     },
@@ -1426,7 +1313,6 @@
         "rholang/src/rust/interpreter/spaces/types/config.rs",
         "rholang/src/rust/interpreter/tensor/num.rs",
         "rholang/src/rust/interpreter/tensor/exact.rs",
-        "rholang/src/rust/interpreter/tensor/costs.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/similarity.rs",
         "rholang/src/rust/interpreter/spaces/families.rs",
@@ -1458,19 +1344,19 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/record.rs",
-          "pattern": "pub fn wrap_policy_continuation_metered("
+          "pattern": "pub fn wrap_policy_continuation_from_parts("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/record.rs",
-          "pattern": "pub fn continuation_policy_slots_metered("
+          "pattern": "pub fn continuation_policy_slots("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/record.rs",
-          "pattern": "pub fn wrap_vdb_datum_metered("
+          "pattern": "pub fn wrap_vdb_datum("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/record.rs",
-          "pattern": "pub fn unwrap_vdb_datum_metered("
+          "pattern": "pub fn unwrap_vdb_datum("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -1486,7 +1372,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/num.rs",
-          "pattern": "pub fn number_of(par: &Par, meter: &ScanMeter) -> Result<Number, NumError> {"
+          "pattern": "pub fn number_of(par: &Par) -> Result<Number, NumError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/num.rs",
@@ -1494,15 +1380,15 @@
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/num.rs",
-          "pattern": "pub fn round_to_f64(x: &Exact, meter: &ScanMeter) -> Result<f64, NumError> {"
+          "pattern": "pub fn round_to_f64(x: &Exact) -> Result<f64, NumError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/num.rs",
-          "pattern": "pub fn sqrt_to_f64(x: &Exact, meter: &ScanMeter) -> Result<f64, NumError> {"
+          "pattern": "pub fn sqrt_to_f64(x: &Exact) -> Result<f64, NumError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/exact.rs",
-          "pattern": "pub fn dot(a: &ExactVector, b: &ExactVector, meter: &ScanMeter) -> Result<Exact, NumError> {"
+          "pattern": "pub fn dot(a: &ExactVector, b: &ExactVector) -> Result<Exact, NumError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/exact.rs",
@@ -1510,7 +1396,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/exact.rs",
-          "pattern": "pub fn better(a: &Score, b: &Score, meter: &ScanMeter) -> Result<Option<Ordering>, NumError> {"
+          "pattern": "pub fn better(a: &Score, b: &Score) -> Result<Option<Ordering>, NumError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/exact.rs",
@@ -1518,7 +1404,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/exact.rs",
-          "pattern": "pub fn delivered(score: &Score, query: &Query, meter: &ScanMeter) -> Result<f64, NumError> {"
+          "pattern": "pub fn delivered(score: &Score, query: &Query) -> Result<f64, NumError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/exact.rs",
@@ -1534,7 +1420,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
-          "pattern": "pub fn vdb_config(config: &SpaceConfig, meter: &ScanMeter) -> Result<VdbConfig, SpaceError> {"
+          "pattern": "pub fn vdb_config(config: &SpaceConfig) -> Result<VdbConfig, SpaceError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
@@ -1546,15 +1432,15 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
-          "pattern": "pub fn eligible("
+          "pattern": "pub fn eligible<V: StoreView>("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
-          "pattern": "pub fn list_selection("
+          "pattern": "pub fn list_selection<V: StoreView>("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
-          "pattern": "pub fn list_offer("
+          "pattern": "pub fn list_offer<V: StoreView>("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
@@ -1618,11 +1504,11 @@
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/ops.rs",
-          "pattern": "pub fn evaluate(call: &Par, meter: &ScanMeter) -> Result<Par, OpFailure> {"
+          "pattern": "pub fn evaluate(call: &Par) -> Result<Par, OpFailure> {"
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/ops.rs",
-          "pattern": "pub fn reply(result: Result<Par, OpFailure>, meter: &ScanMeter) -> Result<Par, OpFailure> {"
+          "pattern": "pub fn reply(result: Result<Par, OpFailure>) -> Result<Par, OpFailure> {"
         },
         {
           "file": "rholang/src/rust/interpreter/tensor/ops.rs",
@@ -1638,7 +1524,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
-          "pattern": "pub const fn packs_arguments(op: u8) -> bool {"
+          "pattern": "pub fn packs_arguments(op: u8) -> bool {"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
@@ -1878,10 +1764,6 @@
           "pattern": "DanglingName { space: SpaceId },"
         },
         {
-          "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
-          "pattern": "SpaceQualifier::Default | SpaceQualifier::Temp => {}"
-        },
-        {
           "file": "rholang/src/rust/interpreter/reified/runtime.rs",
           "pattern": "pub fn record_ephemeral_space(&self, space: NativeSpace, qualifier: SpaceQualifier) {"
         },
@@ -1903,19 +1785,11 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "pub(in crate::rust::interpreter) async fn end_root_evaluation("
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
           "pattern": "pub(in crate::rust::interpreter) async fn end_root_evaluation_observed("
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
           "pattern": "fn check_route_live(&self, channel: &Par, route: &Route) -> Result<(), SpaceError> {"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/factory.rs",
-          "pattern": "self.runtime.record_ephemeral_space(space, config.qualifier);"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
@@ -1939,7 +1813,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
-          "pattern": "pub fn store(self) { self.registry.store_claims(self.pending, &self.path); }"
+          "pattern": "pub fn store(self, rows: usize, actual: Option<RowClaims<Par>>) {"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
@@ -1959,7 +1833,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
-          "pattern": "if !family.supports_qualifier(qualifier) {"
+          "pattern": "if !registered.supports_qualifier(qualifier) {"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/factory.rs",
@@ -1967,11 +1841,11 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "branch.space_op_from(op, None, OpOrigin::Internal).await"
+          "pattern": "let origin = OpOrigin::Internal { anchor_first };"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "seq::check_send(&chan, &data.pars, &seq, &meter)?;"
+          "pattern": "seq::check_send(&chan, &data.pars, &seq)?;"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/errors.rs",
@@ -1987,27 +1861,27 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
-          "pattern": "fn check_payload(&self, data: &ListParWithRandom, meter: &ScanMeter) -> Result<(), SpaceError> {"
+          "pattern": "fn check_payload(&self, data: &ListParWithRandom) -> Result<(), SpaceError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/outer/hashset.rs",
-          "pattern": "fn check_patterns(&self, pattern: &BindPattern, meter: &ScanMeter) -> Result<(), SpaceError> {"
+          "pattern": "fn check_patterns(&self, pattern: &BindPattern) -> Result<(), SpaceError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-          "pattern": "SpaceOp::Produce(op) => self.outer.check_payload(&op.data, meter)?,"
+          "pattern": "SpaceOp::Produce(op) => self.outer.check_payload(&op.data)?,"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-          "pattern": "SpaceOp::Consume(op) => self.outer.check_patterns(&op.pattern, meter)?,"
+          "pattern": "SpaceOp::Consume(op) => self.outer.check_patterns(&op.pattern)?,"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/join.rs",
-          "pattern": "agent.outer().check_patterns(&bind.pattern, meter)?;"
+          "pattern": "agent.outer().check_patterns(&bind.pattern)?;"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/join.rs",
-          "pattern": "agent.outer().check_payload(&op.data, meter)?;"
+          "pattern": "agent.outer().check_payload(&op.data)?;"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/errors.rs",
@@ -2019,7 +1893,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/families.rs",
-          "pattern": "Family::HashSetPriorityQueue => &HASHSET_PRIORITY_QUEUE,"
+          "pattern": "pub const HashSetPriorityQueue: Family = Family::new("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/factory/urn.rs",
@@ -2031,7 +1905,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
-          "pattern": "SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector | SpaceOuter::HashSet,"
+          "pattern": "Family::of_urn(family).map(|family| (family.constructor_schema(), family.required_params()))"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
@@ -2079,7 +1953,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/join.rs",
-          "pattern": "fn stored_payload("
+          "pattern": "fn stored_payload<V: StoreView>("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/errors.rs",
@@ -2145,7 +2019,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
-          "pattern": "pub fn decode(bytes: &[u8], meter: &ScanMeter) -> Result<Option<Self>, SpaceError> {"
+          "pattern": "pub fn decode(bytes: &[u8]) -> Result<Option<Self>, SpaceError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
@@ -2193,7 +2067,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "pattern": "let (call, call_data) = user_agent::produce_call(&agent, raw, data, &meter)?;"
+          "pattern": "let (call, call_data) = user_agent::produce_call(&agent, raw, data)?;"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/execution.rs",
@@ -2209,7 +2083,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/user_agent.rs",
-          "pattern": "pub fn guard_indices(guard: &Par, meter: &ScanMeter) -> Result<BTreeSet<u32>, SpaceError> {"
+          "pattern": "pub fn guard_indices(guard: &Par) -> Result<BTreeSet<u32>, SpaceError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/handle.rs",

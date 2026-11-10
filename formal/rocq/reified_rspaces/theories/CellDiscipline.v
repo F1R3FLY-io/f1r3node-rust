@@ -87,15 +87,15 @@
                             reified/costs.rs:17, 71-82 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
    store_checked, park_checked
-                            spaces/generic.rs:3823-3824, 3832-3833, 3842-3843,
-                            3854-3855, 3925-3926, 3936-3937, 3946-3947, 3953-3954
+                            spaces/generic.rs:3828-3829, 3837-3838, 3847-3848,
+                            3859-3860, 3930-3931, 3941-3942, 3951-3952, 3958-3959
                             (check_capacity, then store or park)
-   offer, offer_loop        spaces/generic.rs:3812-3899 (offer_head, the
+   offer, offer_loop        spaces/generic.rs:3817-3904 (offer_head, the
                             default Discipline::offer)
-   receive, receive_loop    spaces/generic.rs:3908-4020 (receive_head, the
+   receive, receive_loop    spaces/generic.rs:3913-4025 (receive_head, the
                             default Discipline::receive)
    fire_view, restores, receive_ops, receive_fired
-                            spaces/generic.rs:4105-4110, 1852-1881 and
+                            spaces/generic.rs:4110-4115, 1852-1881 and
                             1853-1863 (the copy of a peeked non-persistent
                             record, the fire, and restore_peeked), the
                             default Discipline::restore at
@@ -118,8 +118,8 @@
                             or the rule precedes, and Inconsistent on an
                             equal ord)
    reenter_offer, reenter_receive, reenter_produce, reenter_consume
-                            spaces/generic.rs:3812-3899, 3908-4020 and
-                            5446-5492 (the plans with a reissued_ord)
+                            spaces/generic.rs:3817-3904, 3913-4025 and
+                            5451-5497 (the plans with a reissued_ord)
    step_view, replay_view   the substrate applies each staged operation to
                             the staged view: a store and a re-store put a
                             record at the front of its list, a park puts a

@@ -62,7 +62,7 @@
                             (spaces/generic.rs:835-841)
    head_receive, head_offer the head driver of S1: receive_head and
                             offer_head match the head with Cx::matches
-                            (spaces/generic.rs:3812-3899, 3908-4020)
+                            (spaces/generic.rs:3817-3904, 3913-4025)
    host_consume             the host consume (rspace++/src/rspace/rspace/
                             ops_consume.rs:95-151): extract_data_candidates
                             takes the first datum of the bind that matches

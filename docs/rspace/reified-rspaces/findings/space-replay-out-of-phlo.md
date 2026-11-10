@@ -84,7 +84,7 @@ Figure F1 shows the three runs side by side.
 ### 4.1 Play
 
 Staging makes no host call.
-The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:5239-5558`).
+The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:5252-5579`).
 For each operation, play makes its charges first and logs its events only after the observer accepts them (`rspace++/src/rspace/rspace/space_play.rs:302-308` and `492-498`).
 When a charge of operation $`k`$ rejects, the commit stops at operation $`k`$.
 The operations before $`k`$ stay applied and logged (D6), and operation $`k`$ leaves no event.
@@ -183,7 +183,7 @@ The fix changes only two substrate files. Casper, the host, and the P4 agents do
 | `ReplayBackend::produce_fire` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:286-295` |
 | `ReplayBackend::produce_observed` | A failed fire rolls the counter step back, also for an unpaired fire. | `rspace++/src/rspace/replay_rspace/space_replay.rs:241-243` |
 | `ReplayBackend::consume_observed` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:450-459` |
-| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:122-126` and `5239-5246` |
+| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:122-126` and `5252-5259` |
 
 ### 6.4 The proofs and the models
 
@@ -200,8 +200,8 @@ The [verification dossier](../verification.md#42-headlines-of-eventcorrelationv)
 
 | Test | Location | What it checks |
 |---|---|---|
-| `prop_native_space_replay_fails_closed` | `rspace++/src/rspace/replay_rspace/native_session/space.rs:4113` | An outcome that does not fit, another candidate, or a row that is not ready fails the commit closed (H4, H19). The failed operation has no effect, and the operations before it stay applied. |
-| `prop_native_space_replay_denial_keeps_prefix` | `rspace++/src/rspace/replay_rspace/native_session/space.rs:4066` | A recorded denial at one operation fails the commit with the denial error of the epoch (H23, T6). The operations before it stay applied, as play of the prefix applies them. |
+| `prop_native_space_replay_fails_closed` | `rspace++/src/rspace/replay_rspace/native_session/space.rs:4124` | An outcome that does not fit, another candidate, or a row that is not ready fails the commit closed (H4, H19). The failed operation has no effect, and the operations before it stay applied. |
+| `prop_native_space_replay_denial_keeps_prefix` | `rspace++/src/rspace/replay_rspace/native_session/space.rs:4077` | A recorded denial at one operation fails the commit with the denial error of the epoch (H23, T6). The operations before it stay applied, as play of the prefix applies them. |
 | `space_queue_out_of_phlo_sweep_replays_equal` | `rholang/tests/reified_queue_replay.rs:1149` | The control of the fix: a queue deploy at many phlo limits replays to the error codes and the cost of play. |
 
 The P4 test `space_queue_replay_equal` passes with no change.

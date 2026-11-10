@@ -1890,7 +1890,10 @@ async fn space_joins_vectordb_persistent_incoming_binds_two_positions() {
     };
     let x = send(vector(&[1.0, 0.1]), &[], "x", true);
     let id = record_id(&x);
-    let script = vec![SpaceOp::Join(join), SpaceOp::Produce(x)];
+    // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the test only
+    // indexes the script, so an array holds it (`clippy::useless_vec`). The text before:
+    // let script = vec![SpaceOp::Join(join), SpaceOp::Produce(x)];
+    let script = [SpaceOp::Join(join), SpaceOp::Produce(x)];
     let group = vec![data(), data()];
     let play = play().await;
     let play_rig = Rig::over(play.clone(), COSINE).await;

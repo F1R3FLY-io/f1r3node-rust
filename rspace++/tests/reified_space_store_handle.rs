@@ -5793,8 +5793,15 @@ where P: Clone + Send + Sync + 'static
                     record.persist,
                 )?;
                 match admitted {
-                    false => failed.push((record.source.hash.clone(), waiter.source.hash.clone())),
+                    // Changed by CD-2 (clippy -D warnings, the final
+                    // verification of merge 2): the empty arm comes first
+                    // (`clippy::single_match`). The text before:
+                    // ```
+                    // false => failed.push((record.source.hash.clone(), waiter.source.hash.clone())),
+                    // true => {}
+                    // ```
                     true => {}
+                    false => failed.push((record.source.hash.clone(), waiter.source.hash.clone())),
                 }
             }
         }
@@ -6848,8 +6855,13 @@ async fn deviating_store_of_a_stored_persistent_record_keeps_one_copy() {
         let mut ops = Vec::with_capacity(2);
         ops.push(Op::consume(&["a"], vec![Pat::Exact(s("y"))], "k1", false));
         match held {
-            true => ops.push(Op::produce("a", "x", true)),
+            // Changed by CD-2 (clippy -D warnings, the final
+            // verification of merge 2): the empty arm comes first
+            // (`clippy::single_match`). The text before:
+            // true => ops.push(Op::produce("a", "x", true)),
+            // false => {}
             false => {}
+            true => ops.push(Op::produce("a", "x", true)),
         }
         let space = funded_space(&ops).await;
         let k1 = consume_source(&["a"], &[Pat::Exact(s("y"))], "k1", false);
@@ -6896,6 +6908,21 @@ async fn deviating_store_of_a_stored_persistent_record_keeps_one_copy() {
         let (_session, handle) = replay_session(&script).await;
         native_park(&script, &handle, "a", "k1").await;
         match held {
+            // Changed by CD-2 (clippy -D warnings, the final
+            // verification of merge 2): the empty arm comes first
+            // (`clippy::single_match`). The text before:
+            // true => {
+            //     script.push(ReplayRow::stored());
+            //     let mut txn = handle.begin(&[s("a")]).await.expect("begin");
+            //     txn.produce(SpaceProduce {
+            //         persist: true,
+            //         ..native_store_op("a", "x")
+            //     })
+            //     .expect("stage the store of x");
+            //     txn.commit().await.expect("commit the store of x");
+            // }
+            // false => {}
+            false => {}
             true => {
                 script.push(ReplayRow::stored());
                 let mut txn = handle.begin(&[s("a")]).await.expect("begin");
@@ -6906,7 +6933,6 @@ async fn deviating_store_of_a_stored_persistent_record_keeps_one_copy() {
                 .expect("stage the store of x");
                 txn.commit().await.expect("commit the store of x");
             }
-            false => {}
         }
         let search = scripted_row::<String>(&["a"], vec![native_consume_source("a", "k1")]);
         let mut txn = handle.begin(&[s("a")]).await.expect("begin");
@@ -6969,7 +6995,11 @@ async fn alternative_runs_the_commit_checks_of_a_staged_fire() {
     .await;
     let x = produce_source("a", "x", false);
     let handle = SpaceStoreHandle::new(space.clone());
-    let before = counters_at(&handle, &[x.clone()]).await;
+    // Changed by CD-2 (clippy -D warnings, the final verification of merge
+    // 2): the slice borrows `x` (`clippy::cloned_ref_to_slice_refs`). The
+    // text before:
+    // let before = counters_at(&handle, &[x.clone()]).await;
+    let before = counters_at(&handle, std::slice::from_ref(&x)).await;
     let k2 = consume_source(&["a"], &[Pat::Any], "k2", false);
     let mut search = scripted_row::<Pat>(&["a"], vec![k2]);
     search.tuple = Some(vec![incoming_x()]);

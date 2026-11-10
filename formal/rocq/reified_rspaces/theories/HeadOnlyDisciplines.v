@@ -63,9 +63,9 @@
    fire_round_cap, after_fire
                             reified/costs.rs:17, 71-82 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
-   offer, offer_loop        spaces/generic.rs:3812-3899 (offer_head, the
+   offer, offer_loop        spaces/generic.rs:3817-3904 (offer_head, the
                             head driver of Discipline::offer)
-   receive, receive_loop    spaces/generic.rs:3908-4020 (receive_head, the
+   receive, receive_loop    spaces/generic.rs:3913-4025 (receive_head, the
                             head driver of Discipline::receive. The row of
                             code_ops covers its re-store of decision 45.)
    head_waiter, head_record spaces/generic.rs:2384-2400, 2404-2417, 1037-1048
@@ -93,7 +93,7 @@
                             or an ord that precedes the head, and
                             Inconsistent on an equal ord)
    reenter_offer, reenter_receive
-                            spaces/generic.rs:3812-3899, 3908-4020
+                            spaces/generic.rs:3817-3904, 3913-4025
                             (offer_head and receive_head: store or park at
                             its place when not at the head, else the loop)
    reenter_produce, reenter_consume
@@ -109,7 +109,7 @@
                             Intent::Space, the last dispatch branch of the
                             same deploy)
    code_staged, code_of, code_ops
-                            spaces/generic.rs:1265-1276, 1919-1928, 4105-4110
+                            spaces/generic.rs:1265-1276, 1919-1928, 4110-4115
                             and 1820-1849 (Cx::restore and Cx::restore_on
                             stage a Store of the same record bytes with
                             persist = false, and restore_peeked calls

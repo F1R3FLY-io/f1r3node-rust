@@ -99,7 +99,7 @@
 \*   Lift                  disciplines/vectordb.rs:1929-1974 (lift_and_reoffer)
 \*   RunTail               disciplines/vectordb.rs:1787-1822, 1874-1922 (run_tail, first_cascade_target)
 \*   RunOp                 disciplines/vectordb.rs:1768-1782 (finish_tail)
-\*   NewJobs               disciplines/vectordb.rs:1828-1854 (conclude), join.rs:4753-4815 (Engine::commit)
+\*   NewJobs               disciplines/vectordb.rs:1828-1854 (conclude), join.rs:4757-4819 (Engine::commit)
 \*   RunSettle             join.rs:371-404 (classify), 2645-2732 (Engine::run), 4362-4394 (drain_and_cascade)
 
 EXTENDS Naturals, Sequences, FiniteSets

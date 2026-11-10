@@ -106,14 +106,14 @@
    fires (the fire count)    spaces/generic.rs:707, 800 and 2619
                              (Plan.rounds, Cx::rounds, and the new
                              FireRounds of each transaction in run_with)
-   plan_at_cap               spaces/generic.rs:3791-3804 (open_plan: the
+   plan_at_cap               spaces/generic.rs:3796-3809 (open_plan: the
                              settle before the plan, then the cap check of
                              the transaction)
-   offer_loop                spaces/generic.rs:3812-3899 (offer_head)
-   receive_loop,             spaces/generic.rs:3908-4020 and 4023-4032
+   offer_loop                spaces/generic.rs:3817-3904 (offer_head)
+   receive_loop,             spaces/generic.rs:3913-4025 and 4028-4037
    consume_fire              (receive_head and restore_peeked: the plain
                              re-store of a peeked record, Rule E)
-   with_settles              spaces/generic.rs:3791-3804, 3812-3899 and
+   with_settles              spaces/generic.rs:3796-3809, 3817-3904 and
                              1085-1101 (open_plan and the settle hooks
                              around the plans) and
                              spaces/disciplines/stack.rs:112-138

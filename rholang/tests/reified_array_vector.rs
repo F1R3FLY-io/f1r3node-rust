@@ -36,6 +36,8 @@ use models::rust::utils::new_gbool_par;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
+// Added by decision 124 (plan v2 C7.3, decision 99): the seal of a machinery record.
+use rholang::rust::interpreter::accounting::authority::system_residue_authority_with_caller;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
     native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
@@ -490,7 +492,14 @@ async fn space_array_creation_stages_the_allocator() {
             record::counter_record(
                 0,
                 &RandomPurpose::Allocator.derive(&made.random).split_byte(1),
-                Some(authority)
+                // Changed by decision 124 (plan v2 C7.3, decision 99): the allocator record of
+                // the creation carries the residue seal of the authority of the caller (DR-101).
+                // The text before:
+                // Some(authority)
+                Some(
+                    system_residue_authority_with_caller(&authority, &env.budget.deploy_id(), None)
+                        .expect("the machinery seal builds")
+                )
             ),
             "{store:?}: A(sid) = 0 with the allocator purpose and the authority of the caller"
         );

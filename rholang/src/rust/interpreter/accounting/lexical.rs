@@ -474,8 +474,12 @@ impl<'u> FundingResolver<'u> {
             // annotation, and the index of the schedule still advances. The text before:
             // ordered.push(Task::Enter(new, split(index)?));
             match new.space_types.as_slice() {
+                // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the
+                // empty arm comes first (`clippy::single_match`). The text before:
+                // [] => ordered.push(Task::Enter(new, split(index)?)),
+                // [..] => {}
+                [_, ..] => {}
                 [] => ordered.push(Task::Enter(new, split(index)?)),
-                [..] => {}
             }
             index += 1;
         }

@@ -2016,7 +2016,10 @@ fn first_offer_target(
 // Changed by decision 124 (plan v4 C7.11, ruling RADD 1.2): the reads of this fn go through
 // the view `view` in place of `cx`. The comment above a changed line keeps its text before.
 // fn waiter_at<'v>(cx: &'v mut Cx<'_, '_>, index: usize) -> Result<&'v ParWaiter, SpaceError> {
-fn waiter_at<'v, V: StoreView>(view: &'v mut V, index: usize) -> Result<&'v ParWaiter, SpaceError> {
+// Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the lifetime of the
+// view is elided (`clippy::needless_lifetimes`). The text before:
+// fn waiter_at<'v, V: StoreView>(view: &'v mut V, index: usize) -> Result<&'v ParWaiter, SpaceError> {
+fn waiter_at<V: StoreView>(view: &mut V, index: usize) -> Result<&ParWaiter, SpaceError> {
     // cx.waiters()?.get(index).ok_or(SpaceError::Inconsistent(
     view.waiters()?.get(index).ok_or(SpaceError::Inconsistent(
         "a canonical index is outside the staged view",
@@ -2467,8 +2470,12 @@ fn alternative_admits(
         .matcher
         .check_commit_by_reference(request.continuation, &[matched])
     {
-        false => return Ok(false),
+        // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the empty arm
+        // comes first (`clippy::single_match`). The text before:
+        // false => return Ok(false),
+        // true => {}
         true => {}
+        false => return Ok(false),
     }
     let Some(theory) = theory else {
         return Ok(true);

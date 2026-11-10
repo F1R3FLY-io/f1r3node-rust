@@ -569,7 +569,7 @@ The Error controls are `step-doublepair-unsafe` (marker `vStaged[`), `step-joinr
 
 The substrate suites hold four negative controls:
 
-- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:6378`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:6400`) show that the event correlation of the commit rejects a defect.
+- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:6399`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:6421`) show that the event correlation of the commit rejects a defect.
 - `space_store_handle_remove_all_continuations_keeps_joins_control` (`reified_space_store_handle.rs:2355`) pins the HEAD behavior that `JoinResidueUnsafe` models.
 - `space_store_handle_host_permuted_keys_break_checkpoint_control` (`reified_space_store_handle.rs:2690`) shows that the host refuses a checkpoint with one channel set under two orders.
 - Changed by [decision 89](decision-register.md#decision-89) (DR-129): host replay of a repeated channel now follows the play log. So `space_store_handle_host_replay_follows_a_repeated_channel` (`reified_space_store_handle.rs:3755`) replaces the former fifth control.
@@ -635,9 +635,9 @@ Where a property allows peeks, a generated consume peeks with the probability 0.
 | 17 | `prop_space_txn_rejects_uncovered_channels` | `reified_space_store_handle_props.rs:2687` | T5 | An operation on a channel without its stripe fails with `UnlockedChannel` and no effect, and the final state equals a serial order. |
 | 18 | `prop_space_txn_par_identity_ignores_locally_free` | `reified_space_store_handle_par.rs:359` | H21 | `Par` channels that differ only in `locally_free` stage, read, commit, and checkpoint as one channel. |
 | 19 | `prop_space_txn_repeated_channel_groups_equal_host` | `reified_space_store_handle_props.rs:2692` | H1, H2, H5, H17, T1 | Sorted groups that repeat a channel give the calls, events, state, and root of the host, and they replay to the play root. |
-| 20 | `prop_native_space_replay_fails_closed` | `native_session/space.rs:4113` | H4, H19 | An outcome that does not fit, another candidate, or a row that is not ready fails the commit closed. The failed operation has no effect, and the operations before it stay applied. |
-| 21 | `prop_native_space_replay_denial_keeps_prefix` | `native_session/space.rs:4066` | H23, T6 | A recorded denial at one operation fails the commit with the denial error of the epoch. The operations before it stay applied, as play of the prefix applies them. |
-| 22 | `prop_native_space_replay_reproduces_play` | `native_session/space.rs:4031` | T1, T3 | Native replay over the rows of play commits the receipts, the store and the produce counters of play. It consumes one row for each operation. |
+| 20 | `prop_native_space_replay_fails_closed` | `native_session/space.rs:4124` | H4, H19 | An outcome that does not fit, another candidate, or a row that is not ready fails the commit closed. The failed operation has no effect, and the operations before it stay applied. |
+| 21 | `prop_native_space_replay_denial_keeps_prefix` | `native_session/space.rs:4077` | H23, T6 | A recorded denial at one operation fails the commit with the denial error of the epoch. The operations before it stay applied, as play of the prefix applies them. |
+| 22 | `prop_native_space_replay_reproduces_play` | `native_session/space.rs:4042` | T1, T3 | Native replay over the rows of play commits the receipts, the store and the produce counters of play. It consumes one row for each operation. |
 | 23 | `space_native_vectordb_replay_equal` | `rholang/tests/reified_native_spaces.rs:1644` | H29 | The test plays deploys in order on one chain and certifies each through its own native replay from its parent root. |
 
 ### 7.3 The 18 witness tests
@@ -666,7 +666,7 @@ The test `space_store_handle_commit_checks_cost_changed_entries` covers no headl
 | `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:5009` | FR-10 | H1, H11 | Every result of a peek fire keeps the persist flag of the host, and the re-store and the re-offer report Stored with the identities of their records. |
 | `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:5167` | FR-10 | H1, H2, H11, H12 | A peek and its re-stores have the events, observer calls, state, and root of the HEAD program, whose reducer sends the peeked data again, in play, replay, and reporting. |
 | `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:5332` | FR-10 | H2, H11 | Control: the removal and the re-store leave one copy of the record. A re-store without the removal leaves two copies, and a removal without the re-store loses the record. |
-| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:6801` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:6822` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
 | `space_queue_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:1149` | Decision 36 | H23, T6 | A queue deploy that runs out of phlo at each limit of a sweep replays to the error codes and the cost of play, which Casper compares. A divergent pair at the limit 100000 does too. |
 
 ### 7.4 Deterministic substrate suites
@@ -724,28 +724,31 @@ The prefix `rs/` stands for `rspace++/src/rspace/`, and `ri/` stands for `rholan
 
 | # | Item | Checks: test or checker, step, category | Assertion |
 |---|---|---|---|
-| 1 | COMM produce sort | `reified_ordinary_regression_r1_comm_produce_sort` (`reified_ordinary_regression.rs:1153`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>`prop_space_txn_play_trace_equals_host` (`reified_space_store_handle_props.rs:2654`), `p1-regression-substrate-props` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `rs/replay_rspace/**`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C) | Join COMMs list their produces in the order of `COMM::new`, as at HEAD, and the substrate logs the same event bytes as the host. |
-| 2 | No retention of peeked or matched-persistent data | `reified_ordinary_regression_r2_peek_removes_and_reproduces` (`reified_ordinary_regression.rs:1312`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r8_state_dump` (`reified_ordinary_regression.rs:2104`), `p1-regression-ordinary` (T)<br>`producing_then_consuming_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:323`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:370`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_persistent_flag_should_return_continuation_and_data_and_not_insert_persistent_data` (`storage_actions_test.rs:414`), `p1-regression-head-storage` (T)<br>`peek_removal_does_not_refund_or_recharge_an_introduction` (`comm_observer_tests.rs:446`), `p1-regression-head-observer` (T)<br>`creating_a_comm_event_with_peek_consume_first_should_replay_correctly` (`replay_rspace_tests.rs:472`), `p1-regression-head-replay` (T)<br>`creating_a_comm_event_with_peek_produce_first_should_replay_correctly` (`replay_rspace_tests.rs:545`), `p1-regression-head-replay` (T)<br>`creating_comm_events_on_many_channels_with_peek_should_replay_correctly` (`replay_rspace_tests.rs:607`), `p1-regression-head-replay` (T)<br>Footprint `byte_identical`: `rspace++/tests/storage_actions_test.rs`, `rspace++/tests/replay_rspace_tests.rs`, `rspace++/tests/comm_observer_tests.rs`, `rspace++/tests/comm_observer_tests/**`, `rs/rspace/ops_consume.rs`, `rs/rspace/ops_produce.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `ri/reduce.rs`, `p1-footprint` (C) | A peek removes the datum and the reducer produces it again with the same identity, and the six HEAD peek tests of decision 19 pass unchanged. |
-| 3 | Greedy joins | `reified_ordinary_regression_r3_greedy_join_first_match` (`reified_ordinary_regression.rs:1516`), `p1-regression-ordinary` (T)<br>`joined_consume_with_same_channel_given_twice_followed_by_produce_should_not_error` (`storage_actions_test.rs:914`), `p1-regression-head-storage` (T)<br>Production scan, key `production_scan.patterns`: `datum_index_key`, `search_data_candidates`, `p1-production-scan` (C)<br>Phase scan of `p1`, key `forbidden_anywhere`: the same tokens, `p1-complete` (C)<br>Footprint `byte_identical`: `rs/match.rs`, `rs/space_matcher.rs`, `ri/matcher/**`, `p1-footprint` (C) | The greedy matcher leaves a join unmatched where a backtracking search would match it, and no arity index or backtracking search exists. |
+| 1 | COMM produce sort | `reified_ordinary_regression_r1_comm_produce_sort` (`reified_ordinary_regression.rs:1153`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1682`), `p1-regression-ordinary` (T)<br>`prop_space_txn_play_trace_equals_host` (`reified_space_store_handle_props.rs:2654`), `p1-regression-substrate-props` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `rs/replay_rspace/**`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C) | Join COMMs list their produces in the order of `COMM::new`, as at HEAD, and the substrate logs the same event bytes as the host. |
+| 2 | No retention of peeked or matched-persistent data | `reified_ordinary_regression_r2_peek_removes_and_reproduces` (`reified_ordinary_regression.rs:1312`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r8_state_dump` (`reified_ordinary_regression.rs:2107`), `p1-regression-ordinary` (T)<br>`producing_then_consuming_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:323`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:370`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_persistent_flag_should_return_continuation_and_data_and_not_insert_persistent_data` (`storage_actions_test.rs:414`), `p1-regression-head-storage` (T)<br>`peek_removal_does_not_refund_or_recharge_an_introduction` (`comm_observer_tests.rs:446`), `p1-regression-head-observer` (T)<br>`creating_a_comm_event_with_peek_consume_first_should_replay_correctly` (`replay_rspace_tests.rs:472`), `p1-regression-head-replay` (T)<br>`creating_a_comm_event_with_peek_produce_first_should_replay_correctly` (`replay_rspace_tests.rs:545`), `p1-regression-head-replay` (T)<br>`creating_comm_events_on_many_channels_with_peek_should_replay_correctly` (`replay_rspace_tests.rs:607`), `p1-regression-head-replay` (T)<br>Footprint `byte_identical`: `rspace++/tests/storage_actions_test.rs`, `rspace++/tests/replay_rspace_tests.rs`, `rspace++/tests/comm_observer_tests.rs`, `rspace++/tests/comm_observer_tests/**`, `rs/rspace/ops_consume.rs`, `rs/rspace/ops_produce.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `ri/reduce.rs`, `p1-footprint` (C) | A peek removes the datum and the reducer produces it again with the same identity, and the six HEAD peek tests of decision 19 pass unchanged. |
+| 3 | Greedy joins | `reified_ordinary_regression_r3_greedy_join_first_match` (`reified_ordinary_regression.rs:1519`), `p1-regression-ordinary` (T)<br>`joined_consume_with_same_channel_given_twice_followed_by_produce_should_not_error` (`storage_actions_test.rs:914`), `p1-regression-head-storage` (T)<br>Production scan, key `production_scan.patterns`: `datum_index_key`, `search_data_candidates`, `p1-production-scan` (C)<br>Phase scan of `p1`, key `forbidden_anywhere`: the same tokens, `p1-complete` (C)<br>Footprint `byte_identical`: `rs/match.rs`, `rs/space_matcher.rs`, `ri/matcher/**`, `p1-footprint` (C) | The greedy matcher leaves a join unmatched where a backtracking search would match it, and no arity index or backtracking search exists. |
 | 4 | No production EventCoverage | Footprint `byte_identical`: `casper/src/rust/merging/block_index.rs`, `casper/src/rust/merging/mod.rs`, key `no_new_files`: `casper/src/**`, `p1-footprint` (C)<br>Production scan: `event_coverage`, `p1-production-scan` (C)<br>Phase scan of `p1`: `event_coverage`, `p1-complete` (C) | Both merging files equal HEAD, `casper/src` gains no file, and no source holds the token. |
-| 5 | Leaf, serializer, and event-struct formats | `reified_ordinary_regression_r4_leaf_bytes` (`reified_ordinary_regression.rs:1592`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>`legacy_golden_corpus_nonempty_root_and_event` (`legacy_golden_corpus.rs:75`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/internal.rs`, `rs/trace/**`, `rs/serializers/**`, `rs/history/**`, key `no_new_files`: `rs/trace/**`, `rs/serializers/**`, `rs/history/**`, `p1-footprint` (C) | Leaf bytes and event bytes equal the corpora, and a new field of a host struct fails to compile in R5. |
-| 6 | Derived bincode and candidate ranking | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>`deterministic_candidates_hash_unchanged` (`reified_ordinary_regression.rs:2426`), `p1-regression-ordinary` (T)<br>Footprint `byte_identical`: `rs/internal.rs`, `rs/trace/**`, `rs/space_matcher.rs`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `models/src/main/protobuf/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `p1-footprint` (C) | Consumes and produces take candidates in ascending order of the hash of their bincode, and the hashes equal the corpus. |
-| 7 | Produce and Consume identities | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>`legacy_golden_corpus_event_identities` (`legacy_golden_corpus.rs:42`), `p1-regression-legacy-golden` (T)<br>`legacy_golden_corpus_channel_hashes` (`legacy_golden_corpus.rs:28`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/hashing/**`, `models/src/main/protobuf/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `p1-footprint` (C) | Event identities and channel hashes equal the corpora. |
-| 8 | Event proto bytes | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>Production scan: `write_exclusive`, `writeExclusive`, `p1-production-scan` (C)<br>Footprint `byte_identical`: `models/src/main/protobuf/**`, `models/build.rs`, `casper/src/**`, key `no_new_files`: `models/src/main/protobuf/**`, `p1-footprint` (C) | The prost bytes of the events equal the corpus, and no protobuf or Rust source holds the field of M-1. |
+| 5 | Leaf, serializer, and event-struct formats | `reified_ordinary_regression_r4_leaf_bytes` (`reified_ordinary_regression.rs:1595`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1682`), `p1-regression-ordinary` (T)<br>`legacy_golden_corpus_nonempty_root_and_event` (`legacy_golden_corpus.rs:75`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/internal.rs`, `rs/trace/**`, `rs/serializers/**`, `rs/history/**`, key `no_new_files`: `rs/trace/**`, `rs/serializers/**`, `rs/history/**`, `p1-footprint` (C) | Leaf bytes and event bytes equal the corpora, and a new field of a host struct fails to compile in R5. |
+| 6 | Derived bincode and candidate ranking | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1682`), `p1-regression-ordinary` (T)<br>`deterministic_candidates_hash_unchanged` (`reified_ordinary_regression.rs:2429`), `p1-regression-ordinary` (T)<br>Footprint `byte_identical`: `rs/internal.rs`, `rs/trace/**`, `rs/space_matcher.rs`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `models/src/main/protobuf/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `p1-footprint` (C) | Consumes and produces take candidates in ascending order of the hash of their bincode, and the hashes equal the corpus. |
+| 7 | Produce and Consume identities | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1682`), `p1-regression-ordinary` (T)<br>`legacy_golden_corpus_event_identities` (`legacy_golden_corpus.rs:42`), `p1-regression-legacy-golden` (T)<br>`legacy_golden_corpus_channel_hashes` (`legacy_golden_corpus.rs:28`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/hashing/**`, `models/src/main/protobuf/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `p1-footprint` (C) | Event identities and channel hashes equal the corpora. |
+| 8 | Event proto bytes | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1682`), `p1-regression-ordinary` (T)<br>Production scan: `write_exclusive`, `writeExclusive`, `p1-production-scan` (C)<br>Footprint `byte_identical`: `models/src/main/protobuf/**`, `models/build.rs`, `casper/src/**`, key `no_new_files`: `models/src/main/protobuf/**`, `p1-footprint` (C) | The prost bytes of the events equal the corpus, and no protobuf or Rust source holds the field of M-1. |
 | 9 | Merger unchanged | Footprint `byte_identical`: `rs/merger/**`, `casper/src/rust/merging/**`, key `no_new_files`: `rs/merger/**`, `casper/src/**`, `p1-footprint` (C) | Both merger trees equal HEAD byte for byte and gain no file. |
-| 10 | Host replay acceptance | `reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2196`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3419`), `p1-regression-ordinary` (T, P)<br>`ordinary_play_replay_negative_control_detects_mutants` (`reified_ordinary_regression.rs:3430`), `p1-regression-ordinary` (T)<br>`ordinary_program_generator_covers_every_construct` (`reified_ordinary_regression.rs:3618`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C)<br>Footprint `byte_identical`: `rs/replay_rspace/**`, `casper/src/rust/rholang/replay_runtime.rs`, `p1-footprint` (C) | Replay of a fixed program and of 64 generated programs reaches the play roots with the play costs, and the property rejects both replay mutants. |
-| 11 | Cost and host-work accounting | `reified_ordinary_regression_r6_cost_vectors` (`reified_ordinary_regression.rs:2013`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2196`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3419`), `p1-regression-ordinary` (T, P)<br>Footprint `byte_identical`: `ri/accounting/**`, `ri/host_work.rs`, `models/src/rust/host_work.rs`, `rs/rspace/accounting.rs`, key `no_new_files`: `ri/accounting/**`, `p1-footprint` (C) | The cost and host-work vectors equal the corpus, and play and replay charge the same cost. |
+| 10 | Host replay acceptance | `reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2199`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3422`), `p1-regression-ordinary` (T, P)<br>`ordinary_play_replay_negative_control_detects_mutants` (`reified_ordinary_regression.rs:3433`), `p1-regression-ordinary` (T)<br>`ordinary_program_generator_covers_every_construct` (`reified_ordinary_regression.rs:3621`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C)<br>Footprint `byte_identical`: `rs/replay_rspace/**`, `casper/src/rust/rholang/replay_runtime.rs`, `p1-footprint` (C) | Replay of a fixed program and of 64 generated programs reaches the play roots with the play costs, and the property rejects both replay mutants. |
+| 11 | Cost and host-work accounting | `reified_ordinary_regression_r6_cost_vectors` (`reified_ordinary_regression.rs:2016`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2199`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3422`), `p1-regression-ordinary` (T, P)<br>Footprint `byte_identical`: `ri/accounting/**`, `ri/host_work.rs`, `models/src/rust/host_work.rs`, `rs/rspace/accounting.rs`, key `no_new_files`: `ri/accounting/**`, `p1-footprint` (C) | The cost and host-work vectors equal the corpus, and play and replay charge the same cost. |
 | 12 | Hot-store dedup identity | `space_store_handle_parity_continuation_dedup` (`reified_space_store_handle.rs:510`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical`: `rs/hot_store.rs`, `rs/hot_store/**`, `rs/internal.rs`, `models/src/main/protobuf/**`, `models/build.rs`, key `no_new_files`: `rs/hot_store/**`, `p1-footprint` (C) | The host keeps one of two identical continuations, and the code of that identity equals HEAD. |
-| 13 | Checkpoint root | `reified_ordinary_regression_r4_leaf_bytes` (`reified_ordinary_regression.rs:1592`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2196`), `p1-regression-ordinary` (T)<br>`empty_state_hash_should_be_the_same_as_hard_coded_cached_value` (`casper/tests/util/rholang/runtime_spec.rs:18`), `p1-regression-casper-fixture` (T)<br>`state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_without_hard_fork` (`casper/tests/util/rholang/runtime_spec.rs:43`), `p1-regression-casper-fixture` (T)<br>`legacy_golden_corpus_nonempty_root_and_event` (`legacy_golden_corpus.rs:75`), `p1-regression-legacy-golden` (T)<br>`legacy_golden_corpus_empty_radix_root` (`legacy_golden_corpus.rs:59`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/history/**`, `rs/hashing/**`, `rs/hot_store.rs`, `rs/hot_store_action.rs`, `rs/hot_store_trie_action.rs`, `rs/rspace/ispace_impl.rs`, `casper/tests/util/rholang/runtime_spec.rs`, `casper/src/rust/util/rholang/runtime_manager.rs`, `p1-footprint` (C) | The empty-state root, the fixed-term root, and the checkpoint roots equal their HEAD constants and corpora. |
-| 14 | Scheduler footprints | Footprint `approved_edits`: `ri/deterministic_reduction.rs`, `p1-footprint` (C)<br>Footprint `byte_identical`: `models/src/main/protobuf/**`, `models/build.rs`, `p1-footprint` (C) | The scheduler code and the prost encoding of channel keys hold only approved edits, and P1 approves none. |
+| 13 | Checkpoint root | `reified_ordinary_regression_r4_leaf_bytes` (`reified_ordinary_regression.rs:1595`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2199`), `p1-regression-ordinary` (T)<br>`empty_state_hash_should_be_the_same_as_hard_coded_cached_value` (`casper/tests/util/rholang/runtime_spec.rs:18`), `p1-regression-casper-fixture` (T)<br>`state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_without_hard_fork` (`casper/tests/util/rholang/runtime_spec.rs:43`), `p1-regression-casper-fixture` (T)<br>`legacy_golden_corpus_nonempty_root_and_event` (`legacy_golden_corpus.rs:75`), `p1-regression-legacy-golden` (T)<br>`legacy_golden_corpus_empty_radix_root` (`legacy_golden_corpus.rs:59`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/history/**`, `rs/hashing/**`, `rs/hot_store.rs`, `rs/hot_store_action.rs`, `rs/hot_store_trie_action.rs`, `rs/rspace/ispace_impl.rs`, `casper/tests/util/rholang/runtime_spec.rs`, `casper/src/rust/util/rholang/runtime_manager.rs`, `p1-footprint` (C) | The empty-state root, the fixed-term root, and the checkpoint roots equal their HEAD constants and corpora. |
+| 14 | Scheduler footprints | Footprint `byte_identical`: `models/src/main/protobuf/**`, `models/build.rs`, `p1-footprint` (C) | The prost encoding of channel keys matches HEAD. |
 | 15 | System byte names | Footprint `byte_identical`: `ri/system_processes.rs`, `p1-footprint` (C) | The byte names and the fixed channels of the system processes equal HEAD. |
-| 16 | No schema shift | `reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:2002`), `p1-regression-ordinary` (T)<br>`ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:284`), `p1-regression-source` (T)<br>`empty_state_hash_should_be_the_same_as_hard_coded_cached_value` (`casper/tests/util/rholang/runtime_spec.rs:18`), `p1-regression-casper-fixture` (T)<br>`state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_without_hard_fork` (`casper/tests/util/rholang/runtime_spec.rs:43`), `p1-regression-casper-fixture` (T)<br>Footprint `byte_identical`: `*.proto`, `comm/src/main/protobuf/**`, `comm/src/scalapb/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `casper/tests/util/rholang/runtime_spec.rs`, `casper/src/rust/util/rholang/runtime_manager.rs`, key `no_new_files`: `models/src/main/protobuf/**`, `comm/src/main/protobuf/**`, `p1-footprint` (C)<br>Scheduled from p2 (owner P2): `protobuf_schema_unchanged_vs_head`, `ordinary_prost_unchanged`, and `ordinary_bincode_grows_by_the_formula` in `models/tests/reified_encoding.rs`, step `encoding` | Twenty ordinary terms and every repository source keep their bytes, every protobuf file equals HEAD, and both HEAD constants hold. |
-| 17 | `ISpace` implementors | `reified_space_txn_host_bounds_hold_for_par_hosts` (`reified_space_txn_host_bounds.rs:42`), `p1-regression-host-bounds` (T)<br>Production scan: `suffix_key`, `p1-production-scan` (C)<br>Footprint `byte_identical`: `rs/rspace_interface.rs`, `rs/replay_rspace_interface.rs`, `rs/tuplespace_interface.rs`, `rs/rspace/ispace_impl.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `rs/reporting_rspace.rs`, `ri/deterministic_reduction.rs`, `p1-footprint` (C) | The `rspace++` implementors compile and serve as `Par` hosts, and the traits equal HEAD. |
+| 16 | No schema shift | `reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:2005`), `p1-regression-ordinary` (T)<br>`ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:284`), `p1-regression-source` (T)<br>`empty_state_hash_should_be_the_same_as_hard_coded_cached_value` (`casper/tests/util/rholang/runtime_spec.rs:18`), `p1-regression-casper-fixture` (T)<br>`state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_without_hard_fork` (`casper/tests/util/rholang/runtime_spec.rs:43`), `p1-regression-casper-fixture` (T)<br>Footprint `byte_identical`: `*.proto`, `comm/src/main/protobuf/**`, `comm/src/scalapb/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `casper/tests/util/rholang/runtime_spec.rs`, `casper/src/rust/util/rholang/runtime_manager.rs`, key `no_new_files`: `models/src/main/protobuf/**`, `comm/src/main/protobuf/**`, `p1-footprint` (C)<br>Scheduled from p2 (owner P2): `protobuf_schema_unchanged_vs_head`, `ordinary_prost_unchanged`, and `ordinary_bincode_grows_by_the_formula` in `models/tests/reified_encoding.rs`, step `encoding` | Twenty ordinary terms and every repository source keep their bytes, every protobuf file equals HEAD, and both HEAD constants hold. |
+| 17 | `ISpace` implementors | `reified_space_txn_host_bounds_hold_for_par_hosts` (`reified_space_txn_host_bounds.rs:42`), `p1-regression-host-bounds` (T)<br>Production scan: `suffix_key`, `p1-production-scan` (C)<br>Footprint `byte_identical`: `rs/rspace_interface.rs`, `rs/replay_rspace_interface.rs`, `rs/tuplespace_interface.rs`, `rs/rspace/ispace_impl.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `rs/reporting_rspace.rs`, `p1-footprint` (C) | The `rspace++` implementors compile and serve as `Par` hosts, and the traits equal HEAD. |
 | 18 | No synthesized multi-channel join | Footprint `byte_identical` until p1: `ri/reduce.rs`, key `no_new_files`: `rholang/src/**`, `p1-footprint` (C)<br>Scheduled from p4 (owner P4): `reified_handle_cross_block_merge_no_conflict` and its control `reified_handle_cross_block_merge_join_handle_conflicts` in `rholang/tests/reified_merge.rs`, step `reified-merge` | P1 adds no file under `rholang/src` and leaves `reduce.rs` unchanged, so no synthesized machinery exists. |
 | 19 | Namespaced channels never mergeable | Footprint `byte_identical` until p1: `ri/reduce.rs`, key `no_new_files`: `rholang/src/**`, `p1-footprint` (C)<br>Scheduled from p4 (owner P4): `reified_namespaced_channels_never_mergeable` in `rholang/tests/reified_queue.rs`, step `reified-queue` | P1 has no routing, and the detection of mergeable channels still matches only tagged tuples. |
 | 20 | Volatile sweep scope | `prop_sweep_volatile_exact_and_root_neutral` (`reified_space_store_handle_props.rs:2703`), `p1-regression-substrate-props` (T)<br>`space_store_handle_sweep_in_open_transaction_fails_closed` (`reified_space_store_handle.rs:3938`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical` until p1: `ri/reduce.rs`, `p1-footprint` (C)<br>Scheduled from p7 (owner P7): `reified_volatile_sweep_skips_ordinary_channels` in `rholang/tests/reified_volatile_sweep.rs`, step `reified-volatile-sweep` | The sweep removes exactly the listed volatile channels, and no production code calls it in P1. |
 | 21 | Protected runtime files | Footprint `byte_identical`: `ri/contract_call.rs`, `ri/dispatch.rs`, `rs/rspace/ispace_impl.rs`, `ri/accounting/**`, key `no_new_files`: `ri/accounting/**`, `p1-footprint` (C) | The four protected paths equal HEAD byte for byte. |
-| 22 | Parser conservative extension | `ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:297`), `p1-regression-source` (T)<br>`ordinary_float_forms_unchanged` (`reified_source_normalization.rs:533`), `p1-regression-source` (T)<br>`reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:2040`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `ri/compiler/**`, `p1-footprint` (C) | Every source and every float form that HEAD accepts keeps its bytes. |
+| 22 | Parser conservative extension | `ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:297`), `p1-regression-source` (T)<br>`ordinary_float_forms_unchanged` (`reified_source_normalization.rs:533`), `p1-regression-source` (T)<br>`reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:2043`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `ri/compiler/**`, `p1-footprint` (C) | Every source and every float form that HEAD accepts keeps its bytes. |
+
+Changed by [decision 90](decision-register.md#decision-90): the base `702496775` deleted `ri/deterministic_reduction.rs` (DR-132, base commit `97d020154`).
+So items 14 and 17 no longer check that file, and item 14 checks only the prost encoding of channel keys.
 
 *Table 18. The 10 steps of the recipe `rrs-p1-regression` and their exact counts.*
 
@@ -785,16 +788,16 @@ A separate merge or copy then puts the result into `test-vectors/`, so a normal 
 
 ### 8.3 The ordinary play/replay property
 
-The property `prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3415-3427`) generates ordinary Rholang programs of one or two deploys.
+The property `prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3418-3430`) generates ordinary Rholang programs of one or two deploys.
 It plays each program and replays it under the replay rules of Casper, and it requires that replay accepts what play did.
 It is the property of the checklist entry O1, and its witness tests are R9 and the negative control of section [8.4](#84-negative-controls-of-the-regression-suite).
 
 #### 8.3.1 Protocols D and B
 
-The function `play_replay_equal` (`reified_ordinary_regression.rs:3405-3413`) runs two protocols on fresh runtimes, and both must pass:
+The function `play_replay_equal` (`reified_ordinary_regression.rs:3408-3416`) runs two protocols on fresh runtimes, and both must pass:
 
-- **Protocol D** (`reified_ordinary_regression.rs:3259-3324`). Play creates a checkpoint after each deploy. Replay resets to the start root once. For each deploy, replay rigs the log of the deploy, evaluates it, passes `check_replay_data`, and creates a checkpoint. Then it discards its event log, as Casper does after each deploy.
-- **Protocol B** (`reified_ordinary_regression.rs:3330-3402`), the block protocol of Casper. Play takes the event log after each deploy (`casper/src/rust/rholang/runtime.rs:609`) and creates one checkpoint for the block. Replay resets once, rigs and evaluates each deploy, and discards its event log after each deploy (`casper/src/rust/rholang/replay_runtime.rs:162-163`, `casper/src/rust/rholang/replay_runtime.rs:536`). Then it creates one checkpoint for the block.
+- **Protocol D** (`reified_ordinary_regression.rs:3262-3327`). Play creates a checkpoint after each deploy. Replay resets to the start root once. For each deploy, replay rigs the log of the deploy, evaluates it, passes `check_replay_data`, and creates a checkpoint. Then it discards its event log, as Casper does after each deploy.
+- **Protocol B** (`reified_ordinary_regression.rs:3333-3405`), the block protocol of Casper. Play takes the event log after each deploy (`casper/src/rust/rholang/runtime.rs:609`) and creates one checkpoint for the block. Replay resets once, rigs and evaluates each deploy, and discards its event log after each deploy (`casper/src/rust/rholang/replay_runtime.rs:162-163`, `casper/src/rust/rholang/replay_runtime.rs:536`). Then it creates one checkpoint for the block.
 
 The pseudocode below gives both protocols in the order of the code.
 
@@ -836,7 +839,7 @@ So the [times-repeated](glossary.md#times-repeated) value of the COMM in replay 
 `check_replay_data` then failed with `UnusedCommEvent` in deploy 1 (`target/verification/reified-rspaces/p1-closeout/rt/ro-property-1.log`).
 
 Casper never checkpoints a replay between two deploys without a discard of the event log.
-So protocol D now discards it, as the comment at `reified_ordinary_regression.rs:3307` records.
+So protocol D now discards it, as the comment at `reified_ordinary_regression.rs:3310` records.
 
 #### 8.3.3 Generator bounds
 
@@ -864,9 +867,9 @@ Each exclusion keeps every case free of errors and keeps the termination proof s
 
 The generator and the renderer enforce three rules by construction:
 
-- **S1 (strata).** A receive body uses only channels whose level is above the highest level of the channels of the receive. The generator draws the body with `gen_body(top + 1, depth + 1)` (`reified_ordinary_regression.rs:2642-2663`).
-- **S2 (no persistent pair).** No channel carries both `!!` and `<=` in one case, across deploys too. The renderer collects each channel that carries a persistent receive, and it prints `!!` only on other channels (`reified_ordinary_regression.rs:3000-3050`).
-- **S3 (static channels).** A received variable never appears in channel position. The only exception is the aliased join, whose two variables carry one fixed public channel name. The resolver maps each channel to a static channel or to a `new` binder (`reified_ordinary_regression.rs:2964-2996`).
+- **S1 (strata).** A receive body uses only channels whose level is above the highest level of the channels of the receive. The generator draws the body with `gen_body(top + 1, depth + 1)` (`reified_ordinary_regression.rs:2645-2666`).
+- **S2 (no persistent pair).** No channel carries both `!!` and `<=` in one case, across deploys too. The renderer collects each channel that carries a persistent receive, and it prints `!!` only on other channels (`reified_ordinary_regression.rs:3003-3053`).
+- **S3 (static channels).** A received variable never appears in channel position. The only exception is the aliased join, whose two variables carry one fixed public channel name. The resolver maps each channel to a static channel or to a `new` binder (`reified_ordinary_regression.rs:2967-2999`).
 
 #### 8.3.5 Termination: Lemmas A and B
 
@@ -933,7 +936,7 @@ If a defect of the generator makes a program loop, the deploy ends after about 7
 The vector `out_of_phlo` of R6 shows that HEAD reports this error deterministically, and the conjunct on errors then fails.
 R9 uses `EVALUATION_PHLO` = 100,000,000, so a loop under that limit would take minutes.
 
-The configuration is `property_config` (`reified_ordinary_regression.rs:2461-2468`): 64 cases, the fixed seed `0x0E0_5EED_2026_1004`, and no failure persistence.
+The configuration is `property_config` (`reified_ordinary_regression.rs:2464-2471`): 64 cases, the fixed seed `0x0E0_5EED_2026_1004`, and no failure persistence.
 Each case builds its own multi-thread runtime with 2 workers, as R9 does.
 The file `.cargo/config.toml` sets `RUST_MIN_STACK` to 8 MiB for the test threads.
 In a debug build on the host, the property took 8.7 s, and the whole target of 13 tests took 10.6 s.
@@ -952,7 +955,7 @@ The seed pair of deploy 0 guarantees this COMM.
 
 ### 8.4 Negative controls of the regression suite
 
-- **The named control.** `ordinary_play_replay_negative_control_detects_mutants` (`reified_ordinary_regression.rs:3430`) replays the programs of R9 and R8 as two deploys. The unmutated replay must pass, which shows that each failure below comes from its mutation alone. The mutants `ReplaySeed` (another seed in replay) and `ExtraSend` (one more send in replay) must fail. In the last run, each mutant failed `check_replay_data` in deploy 0 of protocol D with `UnusedCommEvent` and 16 leftover entries (`target/verification/reified-rspaces/p1-closeout/rt/negative-control-protocols-nocapture.log`).
+- **The named control.** `ordinary_play_replay_negative_control_detects_mutants` (`reified_ordinary_regression.rs:3433`) replays the programs of R9 and R8 as two deploys. The unmutated replay must pass, which shows that each failure below comes from its mutation alone. The mutants `ReplaySeed` (another seed in replay) and `ExtraSend` (one more send in replay) must fail. In the last run, each mutant failed `check_replay_data` in deploy 0 of protocol D with `UnusedCommEvent` and 16 leftover entries (`target/verification/reified-rspaces/p1-closeout/rt/negative-control-protocols-nocapture.log`).
 - **The property mutant.** A one-off run set `ReplaySeed` in the property itself. The property failed on its first case and shrank it to the one-deploy program `@"rrs-prop-c00"!(0) | for (@x0 <- @"rrs-prop-c00") { @"rrs-prop-out0"!(x0) } | @"rrs-prop-c00"!(0)`. Its replay failed in protocol D with `UnusedCommEvent` (`target/verification/reified-rspaces/p1-closeout/regression-mutant-replay-seed.log`).
 - **The cost mutant.** A one-off run changed a cost constant in a scratch copy of the worktree (`target/verification/reified-rspaces/p1-capture/mutant-65-r6.log`). R6 then failed on seven host-work vectors, for example `VerificationBytes` of the join program, 9,623,240 for the expected 9,623,236. The plan names this kind of drift, a constant changed from 65 to 66, as a reason for R6.
 - **The checker unit tests.** The module `test_checkers` holds the negative controls of the regression checkers. They test the consensus-checklist checker (20 tests), the production scan (7), and the footprint checker (14). They also test the completeness checker (11) and the ORD phase of the invariant map (8).
@@ -986,6 +989,11 @@ The production scan is the grep gate of the plan: `python3 scripts/verify-reifie
 It reads the roots `casper/src`, `comm/src`, `models/build.rs`, `models/src`, `node/src`, `rho-pure-eval/src`, `rholang/src`, and `rspace++/src`.
 In a directory root, it reads each file with the suffix `.rs` or `.proto`, and it always reads a file root.
 A line with a listed token, or a missing root, is a finding, and the last run printed `complete production scan: 783 files, 0 findings`.
+
+The list `base_text` of the section pins a line of the base by its file, its token, and its whole text.
+Each pin accepts one such line, and a pin that accepts no line is a finding.
+The one pin accepts the doc comment of `rspace++/src/rspace/serializers/cold_store_decode.rs` that names `ParBag`.
+The base commit `2538d1f82` (DR-131 P2a) added that comment, and the campaign footprint keeps the file equal to the base.
 
 *Table 22. The 24 tokens of the production scan and their reasons.*
 
@@ -1814,8 +1822,8 @@ Retired by [decision 90](decision-register.md#decision-90): the 3 properties of 
 | `handle_under_a_bundle_without_write_flag_is_not_writable` | `reified/scope.rs:273` | Q39 |
 | `other_reified_ids_are_not_space_refs_and_other_values_are_agents` | `reified/scope.rs:287` | Q40 |
 | `wrap_body_restores_the_context_as_a_use_tuple` | `reified/scope.rs:332` | Q46 |
-| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:7092` | Q78 |
-| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:7165` | Q78 |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:7097` | Q78 |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:7170` | Q78 |
 
 After [decision 46](decision-register.md#decision-46), the invariant-map checker printed `invariant-map: PASS=213 FAIL=0 MISSING=0 PENDING=0` for the phase `P4`, and `PASS=333` for all phases (`target/verification/reified-rspaces/d46/invariant-map-p4.log`, `invariant-map-all.log`).
 The P4 entries of the map have the test status `required`, because every P4 test exists and passes.
@@ -2008,7 +2016,7 @@ Decision 47 removes the guard and adds the native backend in one change, so nati
 The element re-enters at its place.
 It is at the head of its side when that side is empty or its order precedes the head.
 Otherwise it rests behind the head and fires nothing.
-`operation_ord` (`spaces/generic.rs:4077-4094`) checks the kept order against the counter.
+`operation_ord` (`spaces/generic.rs:4082-4099`) checks the kept order against the counter.
 `Cx::at_head` (`spaces/generic.rs:2398-2417`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:65-74`) compares two orders.
 
 `HeadOnlyDisciplines.v` adds the 10 headlines of Table 49, with no axiom.
@@ -2076,15 +2084,15 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:7251` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
-| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:7308` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
-| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:7423` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
-| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:7464` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
-| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:7495` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
-| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:7535` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
-| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:7580` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
-| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:7615` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
-| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:7649` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
+| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:7256` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
+| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:7313` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
+| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:7428` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
+| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:7469` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
+| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:7500` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
+| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:7540` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
+| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:7585` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
+| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:7620` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
+| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:7654` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
 | `space_native_persistent_retry_rows` | `rholang/tests/reified_native_spaces.rs:427` | Play records the re-offer of a persistent element as a retry, a staged space produce links to the retry, and native replay reproduces the play. |
 | `space_queue_reissue_persistent_send` | `reified_queue.rs:1096` | In a deploy, a capped persistent send rests at its first order, and its produce events on the data channel are equal. |
 | `space_queue_reissue_reenters_ahead_of_younger_records` | `reified_queue.rs:1171` | In a deploy, a body of the first round sends a younger datum, and the second round re-enters ahead of it and fires the head waiter. |
@@ -2129,7 +2137,7 @@ The substrate keeps no record for a peek, also not the stored candidates of a pr
 The play and replay backends always call `remove_matched_datum_and_join` or `store_persistent_data`.
 
 The agent then makes a [re-store](glossary.md#re-store).
-`receive_head` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:3964-3969`).
+`receive_head` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:3969-3974`).
 Right after the fire, `Discipline::restore` and its default `Cx::restore` (`rholang/src/rust/interpreter/spaces/generic.rs:1074-1081`, `2711-2725`) stage a produce of the same record bytes with the outcome Store and `persist = false`.
 `Introduction::for_record` (`rholang/src/rust/interpreter/spaces/record.rs:1616-1650`) gives the re-store the cost authority of the record, as `produce_peeks` does.
 The re-store bumps no counter, and the record keeps its envelope, its order, and its place at the head.
@@ -2177,10 +2185,10 @@ The three mutants of decision 45 in `EventCorrelation.v` are in Table 12: `ec-pe
 | `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:5167` | A peek and its re-stores equal the HEAD program in play, replay, and reporting: events, calls, counters, state, and root. |
 | `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:5332` | Control: Rule E leaves one copy, a re-store without the removal leaves two, and a removal without the re-store leaves none. |
 | `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2739` | Generated peek runs with re-offers and re-stores equal the HEAD peek path exactly, and they replay and report (H5, H11, H12). |
-| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:6801` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
-| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:7092` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
-| `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:7125` | The re-store registers the authority of the record, and the peek registers its own. |
-| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:7165` | A peek of a persistent record removes nothing and stores nothing again. |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:6822` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:7097` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
+| `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:7130` | The re-store registers the authority of the record, and the peek registers its own. |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:7170` | A peek of a persistent record removes nothing and stores nothing again. |
 | `space_queue_observer_parity` | `reified_queue.rs:1458` | In deploys, the space events of each queue step equal the host events of the same program, the re-store after a peek included. |
 | `prop_queue_restore_realizes_plan` | `reified_p4_props.rs:4671` | Over runs that peek often, a peek keeps the records, its receipt keeps the persist flag, and the re-store follows the COMM with the identity of the record (Q78). |
 
@@ -2425,7 +2433,7 @@ S1 makes these changes:
 - `Discipline` holds the plans of the operations. The default plans are the head driver `offer_head` and `receive_head`, the P4 plans as free functions over the discipline.
 - `Cx` (`spaces/generic.rs:714-717`) is the only path from a plan to the transaction. It adds group fires over `[D]`, retirements and lifts.
   `Cx` and `AllocCx` expose no raw transaction, and the legacy chain of a plan is private to `generic.rs`. So the types keep the design rule that only `generic.rs` and `counter.rs` stage operations.
-- `run_with` (`spaces/generic.rs:5506-5799`) checks the key, the params and the query before the bump, and bumps the counter only for a discipline that uses one.
+- `run_with` (`spaces/generic.rs:5511-5804`) checks the key, the params and the query before the bump, and bumps the counter only for a discipline that uses one.
 - The outer-store hooks check a routed key, stage the records of a creation, and allocate index names. A store without an allocator answers with `Baseline` and no work.
 - The substrate gives the canonical order of DR-75 over borrowed views (`space_store_handle.rs:843-851`, `890-902`).
 
@@ -2439,18 +2447,18 @@ So the golden pins the one comparison of the family check.
 | Test | Location | What it checks |
 |---|---|---|
 | `space_engine_staged_kinds_stay_one_byte` | removed by merge 1 | A staged kind is one byte, so the reserved staged list of a head-only plan keeps its size. Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so merge 1 removed this test. |
-| `space_engine_checks_params_and_queries_before_the_bump` | `generic.rs:9230` | An unknown key, a query that the discipline does not take, and a rejected value fail before the bump. The counter and the log stay unchanged. |
-| `space_engine_plans_see_the_round_counter_and_the_operation` | `generic.rs:9316` | A plan sees the counter value of its round (`Cx::bumped`), and each settle hook sees its operation (`OpView`). |
-| `space_engine_capacity_abort_stages_nothing` | `generic.rs:9369` | A store or a park on a full side fails with `CellOccupied`, and the transaction applies nothing. Disabled by [decision 92](decision-register.md#decision-92): a failure at a position of the state commits the anchor of its job. `space_engine_positional_failure_commits_the_anchor_only` (`generic.rs:9408`) checks the new rule. |
-| `space_engine_group_fire_lines_up_and_dispatches_its_prefix` | `generic.rs:9445` | A fire over `[D; 3]` that binds one result removes three records and dispatches one result. A group that does not line up stages nothing. |
-| `space_engine_retire_and_lift_fire_without_dispatch` | `generic.rs:9640` | A retirement and a lift remove their records and dispatch nothing. |
-| `space_engine_outcome_dispatches_the_prefix_of_a_group_fire` | `generic.rs:9790` | The outcome keeps the prefix of a prefix fire and rejects a missing or extra count. |
+| `space_engine_checks_params_and_queries_before_the_bump` | `generic.rs:9235` | An unknown key, a query that the discipline does not take, and a rejected value fail before the bump. The counter and the log stay unchanged. |
+| `space_engine_plans_see_the_round_counter_and_the_operation` | `generic.rs:9321` | A plan sees the counter value of its round (`Cx::bumped`), and each settle hook sees its operation (`OpView`). |
+| `space_engine_capacity_abort_stages_nothing` | `generic.rs:9374` | A store or a park on a full side fails with `CellOccupied`, and the transaction applies nothing. Disabled by [decision 92](decision-register.md#decision-92): a failure at a position of the state commits the anchor of its job. `space_engine_positional_failure_commits_the_anchor_only` (`generic.rs:9413`) checks the new rule. |
+| `space_engine_group_fire_lines_up_and_dispatches_its_prefix` | `generic.rs:9450` | A fire over `[D; 3]` that binds one result removes three records and dispatches one result. A group that does not line up stages nothing. |
+| `space_engine_retire_and_lift_fire_without_dispatch` | `generic.rs:9645` | A retirement and a lift remove their records and dispatch nothing. |
+| `space_engine_outcome_dispatches_the_prefix_of_a_group_fire` | `generic.rs:9795` | The outcome keeps the prefix of a prefix fire and rejects a missing or extra count. |
 | `space_engine_staged_list_growth_is_reserved_before_it_grows` | removed by merge 1 | A list at its capacity reserves the doubled buffer before it grows. A budget that is one operation short rejects the growth and leaves the list unchanged. Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so merge 1 removed this test. |
-| `space_engine_operation_ord_without_a_counter_is_zero` | `generic.rs:10542` | Without a counter every order is 0, and a re-issued order other than 0 is `Inconsistent`. |
-| `space_engine_allocation_without_an_allocator_is_baseline` | `generic.rs:10562` | An allocation in a HashMap space is `Baseline` and logs nothing, and a missing config is `DanglingHandle`. |
-| `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:10588` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
-| `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:10632` | The family agent gives the fires, events, records and waiters of the queue agent. Changed by [decision 89](decision-register.md#decision-89): before, it also gave the host work of the queue agent. |
-| `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:10809` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
+| `space_engine_operation_ord_without_a_counter_is_zero` | `generic.rs:10547` | Without a counter every order is 0, and a re-issued order other than 0 is `Inconsistent`. |
+| `space_engine_allocation_without_an_allocator_is_baseline` | `generic.rs:10567` | An allocation in a HashMap space is `Baseline` and logs nothing, and a missing config is `DanglingHandle`. |
+| `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:10593` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
+| `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:10637` | The family agent gives the fires, events, records and waiters of the queue agent. Changed by [decision 89](decision-register.md#decision-89): before, it also gave the host work of the queue agent. |
+| `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:10814` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
 | `space_families_wire_exactly_the_listed_families` | `families.rs:1163` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
 | `space_families_dispatch_by_config` | `families.rs:1363` | Each wired pair of names dispatches to its family, and each pair that is not wired dispatches to no family. Changed by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so the dispatch reserves no comparison. |
 | `space_order_primitives_reserve_the_restated_formula` | removed by merge 1 | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so merge 1 removed this test. |
@@ -3267,7 +3275,7 @@ It then runs the journal check, the trace binding, the native replay environment
 | `space_native_forged_predecessor_fails_closed` | `reified_native_spaces.rs:971` | The journal check rejects a forged predecessor, and a matching forged footprint fails closed at the footprint check. |
 | `space_native_forged_footprints_never_hang` | `reified_native_spaces.rs:625` | Every forgery of a space row on a later host row ends within 60 s and is rejected. |
 
-The unit tests of the backend add `native_space_replay_rejects_another_valid_candidate` (`native_session/space.rs:2489`).
+The unit tests of the backend add `native_space_replay_rejects_another_valid_candidate` (`native_session/space.rs:2500`).
 Disabled by [decision 90](decision-register.md#decision-90) (DR-132): the scheduler and its tests `space_native_single_conflict_group` and `space_native_space_key_groups` are gone.
 
 **The random picks suite.**
@@ -3300,8 +3308,8 @@ It misses a pick of a two-candidate family with a chance of about $`4.7 \cdot 10
 | `space_guarded_join_park_with_a_theory_replays` | `reified_native_random_picks.rs:804` | A theory counts as a veto for a join. The join fires or parks by its pick, and replay parks a `Stored` row without a search. |
 | `set_cascade_fires_the_guarded_receive_that_a_vetoed_pick_parked` | `reified_native_random_picks.rs:838` | A pick that fails its guard parks a receive. A take by a second receive then fires the parked receive through the set cascade, in one transaction. The test adds a join that never fires, because the one-bind route has no cascade. |
 | `racing_space_play_agrees_with_native_replay` | `native_runtime/tests/random_candidate_order.rs:873` | Each space family plays once and replays twice, with equal phlo, equal byte observations, an equal root and an idle progress word. |
-| `forged_stored_row_on_an_unguarded_send_fails_closed` | `reified_native_owner_rows.rs:8226` | A forger edits the row of a firing send to `Stored` and removes its COMM records. The waiter has no guard and no theory, so replay fails closed. |
-| `space_seq_concurrent_after_a_pick_restages_in_dr75_order` | `spaces/generic.rs:12220` | After a pick, `SeqConcurrent` restages its records in the order of DR-75. |
+| `forged_stored_row_on_an_unguarded_send_fails_closed` | `reified_native_owner_rows.rs:8266` | A forger edits the row of a firing send to `Stored` and removes its COMM records. The waiter has no guard and no theory, so replay fails closed. |
+| `space_seq_concurrent_after_a_pick_restages_in_dr75_order` | `spaces/generic.rs:12225` | After a pick, `SeqConcurrent` restages its records in the order of DR-75. |
 | `space_r_a_resets_the_pathmap_source_state` | `spaces/pathmap/join.rs:5327` | A restage after a failed staging clears the paths, the root flag, the owed second sends and the change flag of the PathMap source. |
 
 Only the tests of the crate can read the progress word of native replay, so the racing property is in the crate.
@@ -3538,7 +3546,7 @@ OFFER-VDB fires $`W`$ with an incoming record $`x`$ when $`x \in L(W, R \cup \{x
 The fire is one COMM over `[D]` with $`x`$ (`list_offer`, `vectordb.rs:1441-1463`).
 Each other member of the list that is not persistent leaves through a `K_retire` COMM (`retire_members`, `vectordb.rs:1477-1525`).
 A removal can also make a parked list waiter fireable (CE-2 of the arbitration).
-So after each removal, LIST-CASCADE lifts the first member of the list of the first such waiter and offers it again (`run_tail`, `vectordb.rs:3478-3526`).
+So after each removal, LIST-CASCADE lifts the first member of the list of the first such waiter and offers it again (`run_tail`, `vectordb.rs:3485-3533`).
 
 A single-mode waiter needs no cascade.
 The eligibility of a record does not depend on the other records, so a removal never exposes a single-mode waiter without a guard.
@@ -3548,15 +3556,15 @@ The eligibility of a record does not depend on the other records, so a removal n
 A peek fire removes each member that is not persistent, and the same transaction sends each one again in delivery order ([decision 45](decision-register.md#decision-45)).
 The driver runs the owed second sends first and the cascade second, as the DRAIN-AND-CASCADE of the join engine does.
 At the round cap, the transaction stops ([decision 49](decision-register.md#decision-49)).
-It re-issues one `SettleOp` whose cascade state holds the owed second sends and the re-issue of the operation (`conclude`, `vectordb.rs:3700-3736`).
+It re-issues one `SettleOp` whose cascade state holds the owed second sends and the re-issue of the operation (`conclude`, `vectordb.rs:3707-3743`).
 A settle with a cascade state always runs in the join engine, which applies the same rules.
 A second send keeps its record bytes, so it keeps its embedding and its id.
 
 ### 15.4 The join engine
 
 `JoinWindow::Similarity` is the window shape of the VectorDB discipline.
-Each position on a VectorDB collection sees its own eligible records in its own selection order (`similarity_bind`, `join.rs:5378-5483`).
-The engine has its own list paths: OFFER-LIST (`join.rs:6121-6191`), RECEIVE-LIST (`join.rs:7196-7427`) and the list cascade (`join.rs:7845-7905`, `8021-8175`).
+Each position on a VectorDB collection sees its own eligible records in its own selection order (`similarity_bind`, `join.rs:5382-5487`).
+The engine has its own list paths: OFFER-LIST (`join.rs:6129-6199`), RECEIVE-LIST (`join.rs:7214-7445`) and the list cascade (`join.rs:7863-7923`, `8039-8193`).
 A join with a list-mode bind fails with `ListModeInJoin` before any staging (`join.rs:447`).
 A PathMap space has no VectorDB family, so the PathMap source fails closed on the similarity window.
 
@@ -5844,7 +5852,7 @@ So it keeps the rules HM-1 to HM-4, and it adds two checks before any staging.
 *Changed by [decision 89](decision-register.md#decision-89): each check reserved one operation on the meter of the job before it read. The meter is gone.*
 
 The checks are two hooks of `OuterStore` with defaults that accept everything (`rholang/src/rust/interpreter/spaces/generic.rs:783-801`).
-The driver calls them after the key check and before the params (`rholang/src/rust/interpreter/spaces/generic.rs:5519-5524`).
+The driver calls them after the key check and before the params (`rholang/src/rust/interpreter/spaces/generic.rs:5524-5529`).
 The join engine calls them for a send, for a receive and for each bind of a join (`rholang/src/rust/interpreter/spaces/join.rs:401-454`).
 The PathMap engine calls the same hooks, which accept everything in a PathMap store, so its checks stay the checks of the keyed engine.
 
@@ -5978,7 +5986,7 @@ The module `spaces/theory` holds the verdicts, the trait `SpaceTheory`, the reso
 The builtins decide by shape, for one work unit of the limit profile of the theory (`rholang/src/rust/interpreter/spaces/theory/builtin.rs:159-219`).
 Gate 4 of the factory accepts a builtin name without arguments (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:240-251`).
 
-`Admission::of` resolves the theory of the config and admits the values of a send, after the gates of the send and before any staging (`rholang/src/rust/interpreter/spaces/generic.rs:4972-5065`).
+`Admission::of` resolves the theory of the config and admits the values of a send, after the gates of the send and before any staging (`rholang/src/rust/interpreter/spaces/generic.rs:4977-5070`).
 The driver and the join engine call it, and both check the leases before the commit with `check_leases`.
 After the guard, `Cx::theory_admits` checks each stored datum of a match (`rholang/src/rust/interpreter/spaces/generic.rs:2274-2293`).
 Every user-match site names its stored data: the head driver, the scan, the stack, the priority queue, VectorDB, and the join engine through `JoinSource::stored_payload`.
@@ -6223,8 +6231,8 @@ So the tests compare two plays only when both log the same events in any order.
 Before, each warm and cold pair gave equal outcomes and cost vectors, and so did the two runtimes of `reducer_space_costs`.
 The parent compared the records of the children with its own warm run.
 
-`space_lazy_attach`, `space_checkpoint_reset` and `space_attach_warm_cold_cost_equal` assert that at least one family compares on each racing runtime (`rholang/tests/reified_rehydrate.rs:394-402`, `447-455`, `648-656`).
-`prop_attach_warm_cold_cost_equal` asserts that at least one case compares (`rholang/tests/reified_rehydrate.rs:805-842`).
+`space_lazy_attach`, `space_checkpoint_reset` and `space_attach_warm_cold_cost_equal` assert that at least one family compares on each racing runtime (`rholang/tests/reified_rehydrate.rs:394-402`, `447-455`, `653-661`).
+`prop_attach_warm_cold_cost_equal` asserts that at least one case compares (`rholang/tests/reified_rehydrate.rs:810-847`).
 `reducer_space_costs` and the restart harness check each run on its own.
 
 Changed by [decision 89](decision-register.md#decision-89): `space_attach_cost` pins the phlo usage alone, because DR-131 of the base removed host work.
@@ -6248,11 +6256,17 @@ On each racing runtime, the parent then certifies every record of the three chil
 
 | Value | Handle call `config` | Send `a!(4)` |
 |---|---|---|
-| Phlo usage | 13,628 | 7,929 |
+| Phlo usage | 13,628 | 6,703 |
 
 Changed by [decision 90](decision-register.md#decision-90) (step E): the merge with `feature/cost-accounted-rho` at `702496775` changes the phlo of both programs.
 The build measures 13,628 and 7,929 phlo, warm and cold, in eight of eight runs.
 Before, the programs used 13,594 and 7,909 phlo.
+
+Changed by [decision 124](decision-register.md#decision-124) and [decision 112](decision-register.md#decision-112): the send `a!(4)` uses 6,703 phlo, warm and cold.
+The records of the counter bump of `a` carry the residue seal of DR-101, which is a region without a price.
+So the send pays 1,250 phlo less.
+The send makes three operations on channels whose id holds the key of `a`.
+Under the class M-7, each of these operations pays 8 phlo more.
 
 Retired by [decision 89](decision-register.md#decision-89): the table also pinned the host work of both programs in the 16 dimensions, from `StructuralItems` to `VerificationBytes`.
 DR-131 of the base removed host work, so the test pins the phlo usage alone.
@@ -7041,7 +7055,7 @@ The mechanism has three parts:
 
 The `SeqSent` verdict never varied, because a holder of a seq name follows the reply of the factory, and the reply follows the record.
 P7 design v3 (VR-2) already put the record in the creation job, and the fix restores that place.
-The finish closure of `GenericSpace::prepare_create` records an ephemeral space as the last step of the job (`spaces/generic.rs:6078-6079, 6207-6210`).
+The finish closure of `GenericSpace::prepare_create` records an ephemeral space as the last step of the job (`spaces/generic.rs:6083-6084, 6212-6215`).
 The scheduler ran no participant during a job, and each read of the book happened in a registered participant before its first dispatch.
 So all reads of one scheduling window saw one book, in native play and in native replay, which ran under the same scheduler.
 The factory keeps its reply after the job, so VR-2 still holds.
@@ -7330,7 +7344,7 @@ The routing, ord and dispatch models also let the operations on one space run at
 | Test | Protocol | Properties |
 |---|---|---|
 | `loom_space_routing` | Two jobs of one space, a job of a second space and a host produce take the stripes of their channels. A job takes its stripes in phase A and then in phase B, each set sorted and deduplicated (`striped_locks.rs:41-82`). A host produce takes the stripe of its channel in phase A and the stripes of its joins in phase B (`rspace/locks.rs:33-66`). | No deadlock. No two jobs update one space at the same time. Each space holds the updates of its own jobs only. |
-| `loom_seq_guard` | The jobs of a `seq` space check their claim on a channel under the stripe of the space (`ephemeral.rs:436-486`). The model keeps the check and the store together with the footprint of the space. *Changed by [decision 90](decision-register.md#decision-90): before, the commit released the stripe, and then the job stored its claim. The store now runs in the finish of the job, under the stripes of the commit (`generic.rs:5199-5205`).* | Each stored claim descends from the claim that it replaces. One of two sibling lineages uses the channel. A job of another space always commits. |
+| `loom_seq_guard` | The jobs of a `seq` space check their claim on a channel under the stripe of the space (`ephemeral.rs:436-490`). The model keeps the check and the store together with the footprint of the space. *Changed by [decision 90](decision-register.md#decision-90): before, the commit released the stripe, and then the job stored its claim. The store now runs in the finish of the job, under the stripes of the commit (`generic.rs:5204-5210`).* | Each stored claim descends from the claim that it replaces. One of two sibling lineages uses the channel. A job of another space always commits. |
 | `loom_ord_assignment` | Two enqueues and a dequeue of one queue each read the counter, write the next value and commit in one transaction under the stripes of the collection (`counter.rs:168-278`). | Each operation gets a different `ord`. The records stay in commit order, and the dequeue takes the first committed record. |
 | `loom_handle_dispatch` | Calls are sends on the handle channel `H(sid)`, which a persistent receive serves. A fire on a stored call removes the call in its COMM, and then the body and the re-issued receive run at the same time (`ops_consume.rs:254-291`, `reduce.rs:1469-1538`). | Each call has one reply, on its own return channel. The receive waits at the end, and no call stays stored. |
 
@@ -7950,7 +7964,7 @@ Tables 231 to 234 give the disposition of each.
 | `Routing/Routing.v` | Superseded by `SpaceRefs.v` |
 | `Safety/Properties.v` | Superseded by `Namespace.v` `seq_name_iff` and the invariant `SeqNotSent` of `SpaceCoordination.tla` |
 | `Prelude.v` | Its list facts are restated in each module, because each module is standalone |
-| `Substitution.v` | Superseded by the marker encoding of [decision 18](decision-register.md#decision-18) and `Encoding.v` |
+| `Substitution.v` | Superseded by the marker encoding of [decision 18](decision-register.md#decision-18) and `Encoding.v`. *Changed by [decision 112](decision-register.md#decision-112): `SyntaxFields.v` replaces `Encoding.v` in the gate, and `Encoding.v` stays on disk as the frozen evidence of the marker encoding.* |
 | `Phlogiston.v` | Retargeted (Table 234) |
 | `Registry/Invariants.v` | Retargeted (Table 234) |
 

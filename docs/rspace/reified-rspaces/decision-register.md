@@ -3566,7 +3566,7 @@ One shared helper gives the two Reified handlers the exact replay checks of the 
 **Reified facts.**
 
 - Bounded collections (the VectorDB capacity and the cell) and theory leases (TH-9) can fail a staging.
-- [Decision 92](#decision-92) then commits only the anchor (`prepare_failure`, `spaces/generic.rs:4953-4978`).
+- [Decision 92](#decision-92) then commits only the anchor (`prepare_failure`, `spaces/generic.rs:4958-4983`).
 - In production, only a guarded join in a bounded VectorDB space can fail in this way, after a pick among tied scores.
 
 **Statement.**
@@ -3620,7 +3620,7 @@ The base rule for persistent entries also adds fires.
 
 **Fix of the blocking defect G1.**
 
-- `class_candidates` puts the representative first (`join.rs:6215-6278`), and a fire of width 1 dispatches only the first result (`spaces/generic.rs:2854-2965`).
+- `class_candidates` puts the representative first (`join.rs:6223-6286`), and a fire of width 1 dispatches only the first result (`spaces/generic.rs:2854-2965`).
 - A COMM names its produces as a sorted set (`event.rs:56-61`), so replay cannot find a random representative.
 - Rule: every member, the representative included, takes its place in DR-75 order, and the fire dispatches the first.
 - The rule goes into `join.rs`, so the PathMap store gets it too. Rule ST-5 is restated.

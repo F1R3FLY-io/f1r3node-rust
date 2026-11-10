@@ -129,7 +129,7 @@
    fresh_receive,            416-437 (reaches_head, precedes and
    reenter_offer,            at_lane_head: a fresh element joins the tail of
    reenter_receive           its lane, and a re-entry precedes with <)
-   with_settles,             spaces/generic.rs:3791-3804 (open_plan) and
+   with_settles,             spaces/generic.rs:3796-3809 (open_plan) and
    plan_at_cap               spaces/disciplines/priority_queue.rs:319-345
                              (the settle hooks)
    carried, next_round       spaces/settle.rs:643-675 and 681-705, and

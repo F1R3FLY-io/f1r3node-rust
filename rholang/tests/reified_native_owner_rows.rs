@@ -4213,10 +4213,14 @@ const T21_CASES: [TailCase; 19] = [
 /// on the path `[a, 1]` of a PathMap space as one deploy body, each a receive of any value with
 /// the body `Nil`.
 fn capped_prefix_waiters(count: usize) -> String {
-    let mut waiters = Vec::<&str>::with_capacity(count);
-    for _ in 0..count {
-        waiters.push("for (@v <- @[*a, 1]) { Nil }");
-    }
+    // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): `vec!` with a
+    // count fills the vector with `count` copies at its exact capacity
+    // (`clippy::same_item_push`). The text before:
+    // let mut waiters = Vec::<&str>::with_capacity(count);
+    // for _ in 0..count {
+    //     waiters.push("for (@v <- @[*a, 1]) { Nil }");
+    // }
+    let waiters = vec!["for (@v <- @[*a, 1]) { Nil }"; count];
     format!("use space {{ {} }}", waiters.join(" |\n"))
 }
 
@@ -4442,6 +4446,12 @@ const CAP_ALTERNATIVE_WAITER: &str =
 /// fires at the cap.
 async fn vdb_list_cap_case(workers: usize, labels: &mut Vec<String>) {
     let label = format!("T-C4-21 VDB list 6, {workers} workers");
+    // Added by decision 112 (plan-112-protobuf.md 1.5 and 1.6, ruling RADD2v2 8.4 item 5): every
+    // runtime creates the space with the label of the first runtime. The space id and the names
+    // `a` and `b` follow from that label, and the hash of each parked waiter follows from them.
+    // So the salted labels that the first runtime finds keep each waiter in its band on every
+    // runtime.
+    let setup = format!("T-C4-21 VDB list 6, {} workers", RACING_WORKERS[0]);
     let creation = stashing(
         "rho:space:hashmap:vectordb",
         VECTORDB_CTOR,
@@ -4456,7 +4466,10 @@ async fn vdb_list_cap_case(workers: usize, labels: &mut Vec<String>) {
     waiters.push((Role::Owner, CAP_OWNER_WAITER, Band::Middle));
     waiters.push((Role::UnfundedClient, CAP_ALTERNATIVE_WAITER, Band::Above));
     let mut chain = OwnedChain::new().await;
-    let mut last = steps_setup(&mut chain, &label, &creation, &[]).await;
+    // Changed by decision 112 (plan-112-protobuf.md 1.5 and 1.6, ruling RADD2v2 8.4 item 5): the
+    // space of the first runtime. The text before:
+    // let mut last = steps_setup(&mut chain, &label, &creation, &[]).await;
+    let mut last = steps_setup(&mut chain, &setup, &creation, &[]).await;
     for (index, &(role, body, band)) in waiters.iter().enumerate() {
         last = match labels.get(index) {
             Some(salted) => park_salted(&mut chain, (role, body), salted).await,
@@ -4500,7 +4513,10 @@ async fn vdb_list_cap_case(workers: usize, labels: &mut Vec<String>) {
         "{trigger}: the re-offer of the stored persistent doc leaves its one copy"
     );
     let mut control = NativeChain::new().await;
-    steps_setup(&mut control, &label, &creation, &[]).await;
+    // Changed by decision 112 (plan-112-protobuf.md 1.5 and 1.6, ruling RADD2v2 8.4 item 5): the
+    // space of the first runtime. The text before:
+    // steps_setup(&mut control, &label, &creation, &[]).await;
+    steps_setup(&mut control, &setup, &creation, &[]).await;
     for (&(role, body, _), salted) in waiters.iter().zip(labels.iter()) {
         park_salted(&mut control, (role, body), salted).await;
     }
@@ -7300,8 +7316,12 @@ fn forged_remove_retries(forged: &mut ForgedEvidence, gone: &BTreeSet<usize>) {
     let mut retries = Vec::with_capacity(forged.recording.retries.len() - gone.len());
     for (index, retry) in forged.recording.retries.iter().enumerate() {
         match gone.contains(&index) {
-            false => retries.push(retry.clone()),
+            // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the empty
+            // arm comes first (`clippy::single_match`). The text before:
+            // false => retries.push(retry.clone()),
+            // true => {}
             true => {}
+            false => retries.push(retry.clone()),
         }
     }
     forged.recording.retries = retries.into();
@@ -7348,14 +7368,22 @@ fn forged_hide_rows(forged: &mut ForgedEvidence, hidden: &BTreeSet<usize>) {
     let mut rows = Vec::with_capacity(forged.rows.len() - hidden.len());
     for (index, row) in forged.rows.drain(..).enumerate() {
         match hidden.contains(&index) {
-            false => rows.push(row),
+            // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the empty
+            // arm comes first (`clippy::single_match`). The text before:
+            // false => rows.push(row),
+            // true => {}
             true => {}
+            false => rows.push(row),
         }
     }
     forged.rows = rows;
     forged_remove_attempts(forged, &attempts_gone);
     forged_remove_retries(forged, &retries_gone);
-    events_gone.sort_by(|left, right| right.start.cmp(&left.start));
+    // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the sort reads
+    // the key once for each range (`clippy::unnecessary_sort_by`). The order stays: the latest
+    // start first, and a stable sort for an equal start. The text before:
+    // events_gone.sort_by(|left, right| right.start.cmp(&left.start));
+    events_gone.sort_by_key(|range| std::cmp::Reverse(range.start));
     for range in events_gone {
         drop(forged.log.drain(range));
     }
@@ -7567,7 +7595,10 @@ fn forged_rename_record(
     };
     let renamed = ForgedComm {
         consume: comm.consume.clone(),
-        produces: comm.produces.iter().map(|event| produce(event)).collect(),
+        // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the map takes
+        // the closure `produce` itself (`clippy::redundant_closure`). The text before:
+        // produces: comm.produces.iter().map(|event| produce(event)).collect(),
+        produces: comm.produces.iter().map(&produce).collect(),
         peeks: comm.peeks.clone(),
         times_repeated: comm
             .times_repeated
@@ -7584,7 +7615,10 @@ fn forged_rename_record(
         true => new.source.clone(),
     };
     let mut produces = Vec::with_capacity(record.source.produces.len());
-    produces.extend(record.source.produces.iter().map(|source| swap(source)));
+    // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the map takes the
+    // closure `swap` itself (`clippy::redundant_closure`). The text before:
+    // produces.extend(record.source.produces.iter().map(|source| swap(source)));
+    produces.extend(record.source.produces.iter().map(&swap));
     let mut repetitions = Vec::with_capacity(record.source.repetitions.len());
     repetitions.extend(
         record
@@ -7825,14 +7859,20 @@ async fn forged_least_firing_budget(
 ) -> u64 {
     let mut low = 0_u64;
     let mut high = 1_u64;
-    loop {
-        match forged_probe_fires(chain, root, high, term, label).await {
-            false => {
-                low = high;
-                high = high.checked_mul(2).expect("the owner budget doubles");
-            }
-            true => break,
-        }
+    // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the condition tests
+    // the probe (`clippy::while_let_loop`, `clippy::redundant_pattern_matching`). The text before:
+    // loop {
+    //     match forged_probe_fires(chain, root, high, term, label).await {
+    //         false => {
+    //             low = high;
+    //             high = high.checked_mul(2).expect("the owner budget doubles");
+    //         }
+    //         true => break,
+    //     }
+    // }
+    while !forged_probe_fires(chain, root, high, term, label).await {
+        low = high;
+        high = high.checked_mul(2).expect("the owner budget doubles");
     }
     while high - low > 1 {
         let middle = low + (high - low) / 2;

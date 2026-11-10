@@ -3032,8 +3032,13 @@ impl<'p> Cx<'_, 'p> {
     /// Added by decision 124 (plan v2 C7.5, F5): records the pair `pair` of the lift that
     /// was staged last, for the book of a refused lift (CR-20).
     pub fn record_lift(&mut self, pair: BookPair) {
-        let at = self.plan.staged.len().saturating_sub(1);
-        self.plan.lifts.push((at, pair));
+        // Changed by FR-6 (checked arithmetic only, the final gates of merge 2): the entry names
+        // the last staged row, and a plan with no staged row books no entry (CR-6). The text
+        // before took the index with a subtraction that stops at zero, so it gave index 0 to a
+        // plan with no staged row.
+        if let Some(at) = self.plan.staged.len().checked_sub(1) {
+            self.plan.lifts.push((at, pair));
+        }
     }
 
     /// Stages a non-persistent consume fire that removes stored records and is never

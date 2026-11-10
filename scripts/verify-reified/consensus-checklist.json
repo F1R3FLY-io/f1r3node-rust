@@ -910,16 +910,6 @@
         {
           "kind": "footprint",
           "policy": "@milestone",
-          "mode": "approved_edits",
-          "paths": [
-            "rholang/src/rust/interpreter/deterministic_reduction.rs"
-          ],
-          "step": "footprint",
-          "proves": "Intent, prepare and the footprint helpers hold only approved edits."
-        },
-        {
-          "kind": "footprint",
-          "policy": "@milestone",
           "mode": "byte_identical",
           "paths": [
             "models/src/main/protobuf/**",
@@ -1083,8 +1073,7 @@
           "mode": "approved_edits",
           "paths": [
             "rspace++/src/rspace/replay_rspace.rs",
-            "rspace++/src/rspace/reporting_rspace.rs",
-            "rholang/src/rust/interpreter/deterministic_reduction.rs"
+            "rspace++/src/rspace/reporting_rspace.rs"
           ],
           "step": "footprint",
           "proves": "The other implementors hold only approved edits."

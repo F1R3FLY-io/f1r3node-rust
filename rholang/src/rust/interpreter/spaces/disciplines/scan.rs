@@ -1966,9 +1966,12 @@ impl<D: ScanDiscipline> RowSearch<Par, BindPattern, ListParWithRandom, TaggedCon
     /// offers the second send of RESTORE-SCAN, gives no end either: the finish re-issues that
     /// send as `restore_scan` does (`restore_reissue`).
     fn tail_reissue(&mut self) -> Option<RowReissue> {
-        let Some((peeks, persistent)) = self.fired_waiter.take() else {
-            return None;
-        };
+        // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the `?`
+        // operator returns the `None` (`clippy::question_mark`). The text before:
+        // let Some((peeks, persistent)) = self.fired_waiter.take() else {
+        //     return None;
+        // };
+        let (peeks, persistent) = self.fired_waiter.take()?;
         let Some(tail) = &self.tail else {
             return None;
         };
@@ -2329,9 +2332,12 @@ impl<D: ScanDiscipline> RowSearch<Par, BindPattern, ListParWithRandom, TaggedCon
     /// that re-issues returns the re-issue of the fire loop (`receive_reissue`). Otherwise the
     /// finish builds the end from the receipt.
     fn tail_reissue(&mut self) -> Option<RowReissue> {
-        let Some(class_persistent) = self.fired_class.take() else {
-            return None;
-        };
+        // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the `?`
+        // operator returns the `None` (`clippy::question_mark`). The text before:
+        // let Some(class_persistent) = self.fired_class.take() else {
+        //     return None;
+        // };
+        let class_persistent = self.fired_class.take()?;
         let Some(tail) = &self.tail else {
             return None;
         };

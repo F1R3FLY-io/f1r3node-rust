@@ -1486,7 +1486,10 @@ async fn r3_join(
             // receive step run in parallel, so both logs follow their arrival (DR-132), and the
             // corpus keeps them as multisets.
             // "data": { "kinds": kinds_json(&data_log), "events": events_json(&data_log) },
-            "data": { "kinds": arrival_kinds_json(&data_log), "events": arrival_events_json(&data_log) },
+            "data": {
+                "kinds": arrival_kinds_json(&data_log),
+                "events": arrival_events_json(&data_log),
+            },
             "deterministic_data_order": ordered
                 .iter()
                 .map(|datum| datum.a.pars.iter().map(pretty).collect::<Vec<_>>())

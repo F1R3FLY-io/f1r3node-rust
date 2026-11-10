@@ -3213,7 +3213,10 @@ async fn space_set_discipline_guarded_waiter_then_equal_send_retires_class() {
     let waiter = guarded(receiving("w", any()), equals(2));
     let stored = ordered_sends(&[(1, false), (2, false)]);
     let incoming = salted(2, 1_000, false);
-    let script = vec![
+    // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the test only
+    // indexes the script, so an array holds it (`clippy::useless_vec`). The text before:
+    // let script = vec![
+    let script = [
         SpaceOp::Produce(stored[0].clone()),
         SpaceOp::Produce(stored[1].clone()),
         // Changed by decision 102 (rule CR-1): the receive of the script is the parked waiter.

@@ -572,7 +572,10 @@ async fn space_stack_push_exposes_a_buried_waiter_and_settles() {
             "produce D",
             "comm D",
             "consume D",
-            "comm D",
+            // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel. The text before:
+            // "comm D",
+            "comm D peek",
             "produce D",
             "comm D"
         ])
@@ -608,7 +611,10 @@ async fn space_stack_pop_exposes_a_buried_record_and_settles() {
             "consume D",
             "comm D",
             "consume D",
-            "comm D",
+            // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel. The text before:
+            // "comm D",
+            "comm D peek",
             "produce D",
             "comm D"
         ])
@@ -658,7 +664,10 @@ async fn space_stack_settle_lift_events_shape() {
         Event::Comm(comm) => {
             assert_eq!(comm.consume, lift);
             assert_eq!(comm.produces, vec![stored_h.clone()]);
-            assert!(comm.peeks.is_empty());
+            // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel. The text before:
+            // assert!(comm.peeks.is_empty());
+            assert_eq!(comm.peeks, BTreeSet::from([0]));
         }
         other => panic!("the lift is a COMM: {other:?}"),
     }
@@ -759,7 +768,10 @@ async fn space_stack_peek_waiter_leaves_the_lifted_record_in_flight() {
             "produce D",
             "comm D",
             "consume D",
-            "comm D",
+            // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel. The text before:
+            // "comm D",
+            "comm D peek",
             "produce D",
             "comm D peek",
             "produce D"
@@ -797,7 +809,10 @@ async fn space_stack_peek_waiter_leaves_the_lifted_record_in_flight() {
             "produce D",
             "comm D",
             "consume D",
-            "comm D",
+            // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel. The text before:
+            // "comm D",
+            "comm D peek",
             "produce D",
             "comm D peek",
             "produce D",
@@ -928,7 +943,10 @@ async fn space_stack_round_cap_reissues_a_settle() {
     assert_eq!(rest.reissue, None);
     assert_eq!(
         labels(&space.take_event_log().await),
-        bumped(&["consume D", "comm D", "produce D", "comm D"])
+        // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire peeks
+        // its channel. The text before:
+        // bumped(&["consume D", "comm D", "produce D", "comm D"])
+        bumped(&["consume D", "comm D peek", "produce D", "comm D"])
     );
     assert!(records(&space).await.is_empty());
     // Disabled by I-21 (one fire count for each transaction): the setup sent cap() + 1 records.

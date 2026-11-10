@@ -2144,6 +2144,9 @@ async fn pathmap_cap_restores_owed_markers() {
     for prefix in prefixes_of(&at) {
         stored.push(rig.marker_datums(&prefix).await);
     }
+    // Added by decision 112 (plan-112-protobuf.md 1.6, rule FR-1'): the source of the datum of
+    // [0,1], whose markers the capped transaction restores.
+    let source = rig.datums(&at).await[0].source.hash.clone();
     let first = rig.ok(put(&[5], 2)).await;
     assert_eq!(
         first.fires.len(),
@@ -2152,7 +2155,16 @@ async fn pathmap_cap_restores_owed_markers() {
     );
     for (depth, prefix) in prefixes_of(&at).iter().enumerate() {
         assert_eq!(
-            rig.marker_datums(prefix).await,
+            // Changed by decision 112 (plan-112-protobuf.md 1.5 and 1.6, rule FR-1'): the join
+            // orders its binds by the stable hash of each index channel, and that hash changes.
+            // So after the cap the root can also hold the marker of the datum of [5]. The markers
+            // of the datum of [0,1] keep their bytes. The text before:
+            // rig.marker_datums(prefix).await,
+            rig.marker_datums(prefix)
+                .await
+                .into_iter()
+                .filter(|datum| decode_marker(&datum.a).expect("a marker").is_of(&source))
+                .collect::<Vec<_>>(),
             stored[depth],
             "the capped transaction restores the marker of depth {depth} with its bytes"
         );

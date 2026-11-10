@@ -513,8 +513,67 @@ fn derive_predecessors(rows: &mut [NativeOperationRecord]) {
     }
 }
 
-/// `block` with its offered deploy's operation journal replaced: the first space row gets a
+/// Added by CD-2 (the final verification of merge 2, decisions 47 and 93): the forgeries of
+/// `rows`, in the order of the text before of [`with_forged_space_row`], as the rholang sweep
+/// `space_native_forged_footprints_never_hang` builds them. For each space row and each later
+/// host row, the forgery adds the first channel of the host row that the footprint of the space
+/// row lacks, and the predecessors follow the new footprints.
+fn forgeries(
+    rows: &[NativeOperationRecord],
+) -> impl Iterator<Item = Vec<NativeOperationRecord>> + '_ {
+    let mut space = Vec::with_capacity(rows.len());
+    space.extend(rows.iter().map(is_space_row));
+    let space_rows = space.iter().filter(|&&is_space| is_space).count();
+    let mut pairs = Vec::with_capacity(space_rows * (rows.len() - space_rows));
+    for (target, _) in space.iter().enumerate().filter(|&(_, &is_space)| is_space) {
+        for (host, _) in space
+            .iter()
+            .enumerate()
+            .skip(target + 1)
+            .filter(|&(_, &is_space)| !is_space)
+        {
+            match rows[host]
+                .footprint
+                .iter()
+                .find(|channel| !rows[target].footprint.contains(channel))
+            {
+                None => {}
+                Some(channel) => pairs.push((target, Arc::clone(channel))),
+            }
+        }
+    }
+    pairs.into_iter().map(move |(target, channel)| {
+        let mut forged = rows.to_vec();
+        let mut footprint = Vec::with_capacity(forged[target].footprint.len() + 1);
+        footprint.extend(forged[target].footprint.iter().cloned());
+        footprint.push(channel);
+        footprint.sort();
+        footprint.dedup();
+        forged[target].footprint = footprint.into();
+        derive_predecessors(&mut forged);
+        forged
+    })
+}
+
+/// Added by CD-2 (the final verification of merge 2, decision 93): true when each predecessor of
+/// each row of `rows` closed its budget interval before the row opened its own, as the rholang
+/// sweep `space_native_forged_footprints_never_hang` checks. The journal check rejects every
+/// other predecessor (`check_dependencies`).
+fn intervals_ordered(rows: &[NativeOperationRecord]) -> bool {
+    rows.iter().all(|row| {
+        row.predecessors
+            .iter()
+            .all(|prior| rows[*prior].budget_end <= row.budget_start)
+    })
+}
+
+/// `block` with its offered deploy's operation journal replaced by the first forgery of
+/// [`forgeries`] that passes the journal check ([`intervals_ordered`]): a space row gets a
 /// channel of a later host row, and the predecessors follow the new footprints.
+// Changed by CD-2 (the final verification of merge 2, decisions 47 and 93): the forgery passes
+// the journal check. The text before:
+// /// `block` with its offered deploy's operation journal replaced: the first space row gets a
+// /// channel of a later host row, and the predecessors follow the new footprints.
 fn with_forged_space_row(block: &BlockMessage) -> BlockMessage {
     let protocol = offered_funded_v6_limits();
     let offered = block.body.deploys[0]
@@ -528,7 +587,10 @@ fn with_forged_space_row(block: &BlockMessage) -> BlockMessage {
         .expect("the recording decodes");
     let journal = decode_native_operation_journal(evidence.operation_journal, &mut recording, wire)
         .expect("the journal decodes");
-    let mut rows: Vec<NativeOperationRecord> = journal.to_vec();
+    // Changed by CD-2 (the final verification of merge 2, decisions 47 and 93): the forgeries
+    // copy the journal rows. The text before:
+    // let mut rows: Vec<NativeOperationRecord> = journal.to_vec();
+    let rows: Vec<NativeOperationRecord> = journal.to_vec();
     // Changed by decision 92: the space-row check reads only the row.
     // let (target, channel) = (0..rows.len())
     //     .filter(|&target| is_space_row(&recording, &rows[target]))
@@ -537,27 +599,36 @@ fn with_forged_space_row(block: &BlockMessage) -> BlockMessage {
     //             .iter()
     //             .filter(|row| !is_space_row(&recording, row))
     //             .find_map(|row| {
-    let (target, channel) = (0..rows.len())
-        .filter(|&target| is_space_row(&rows[target]))
-        .find_map(|target| {
-            rows[target + 1..]
-                .iter()
-                .filter(|row| !is_space_row(row))
-                .find_map(|row| {
-                    row.footprint
-                        .iter()
-                        .find(|channel| !rows[target].footprint.contains(channel))
-                        .map(Arc::clone)
-                })
-                .map(|channel| (target, channel))
-        })
-        .expect("a space row and a later host row with another channel exist");
-    let mut footprint = rows[target].footprint.to_vec();
-    footprint.push(channel);
-    footprint.sort();
-    footprint.dedup();
-    rows[target].footprint = footprint.into();
-    derive_predecessors(&mut rows);
+    // Changed by CD-2 (the final verification of merge 2, decisions 47 and 93, the forgery rule
+    // of the rholang sweep `space_native_forged_footprints_never_hang`): racing evaluation can
+    // run the two rows of a new predecessor edge at the same time, and then the journal check
+    // rejects the forgery before the replay (`check_dependencies`). The forgery is the first one,
+    // in the order of the text before, whose new predecessors each closed their budget interval
+    // before their row opened, so the replay must reject it. The text before:
+    // let (target, channel) = (0..rows.len())
+    //     .filter(|&target| is_space_row(&rows[target]))
+    //     .find_map(|target| {
+    //         rows[target + 1..]
+    //             .iter()
+    //             .filter(|row| !is_space_row(row))
+    //             .find_map(|row| {
+    //                 row.footprint
+    //                     .iter()
+    //                     .find(|channel| !rows[target].footprint.contains(channel))
+    //                     .map(Arc::clone)
+    //             })
+    //             .map(|channel| (target, channel))
+    //     })
+    //     .expect("a space row and a later host row with another channel exist");
+    // let mut footprint = rows[target].footprint.to_vec();
+    // footprint.push(channel);
+    // footprint.sort();
+    // footprint.dedup();
+    // rows[target].footprint = footprint.into();
+    // derive_predecessors(&mut rows);
+    let rows = forgeries(&rows)
+        .find(|forged| intervals_ordered(forged))
+        .expect("a forgery of a space row passes the journal check");
     let rows: Arc<[NativeOperationRecord]> = rows.into();
     let journal_bytes = encode_native_operation_journal(&rows, &recording.paths, wire)
         .expect("the forged journal encodes");

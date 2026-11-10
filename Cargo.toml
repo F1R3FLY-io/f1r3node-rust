@@ -83,7 +83,7 @@ utoipa = "5"
 validated = "1.0"
 serial_test = "3.1"
 metrics-util = "0.17"
-rholang-parser = { version = "0.1.0", git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "02cef80d32214ecdac3ee7d3b91c3786a34174d5" }
+rholang-parser = { version = "0.1.0", git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "6548aec3a5736f35055e546a5ae92e6a4c3a8f39" }
 reqwest = "0.12"
 
 [profile.dev]

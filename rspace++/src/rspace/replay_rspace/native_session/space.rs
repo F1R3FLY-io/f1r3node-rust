@@ -1518,6 +1518,18 @@ where
                 // })?;
                 // ```
                 match writes {
+                    // Changed by CD-2 (clippy -D warnings, the final
+                    // verification of merge 2): the empty arm comes first
+                    // (`clippy::single_match`). The text before:
+                    // true => {
+                    //     session.store.put_datum(&channel, key, Datum {
+                    //         a: data,
+                    //         persist,
+                    //         source: produce_ref.clone(),
+                    //     })?;
+                    // }
+                    // false => {}
+                    false => {}
                     true => {
                         session.store.put_datum(&channel, key, Datum {
                             a: data,
@@ -1525,7 +1537,6 @@ where
                             source: produce_ref.clone(),
                         })?;
                     }
-                    false => {}
                 }
                 counter.publish();
                 completion.publish();

@@ -169,7 +169,7 @@ A test build also resolves the test checkers of section [10](#10-leases-and-test
 
 On a space with a theory, the checker admits each value of a send in order (rule TH-5).
 The admission runs after the config read and the gates of the send: the key, the payload, and the params.
-It runs before any staging or counter bump, so a refused send changes no state and emits no event (`spaces/generic.rs:4972-5065`).
+It runs before any staging or counter bump, so a refused send changes no state and emits no event (`spaces/generic.rs:4977-5070`).
 
 ```text
 ADMIT(theory, values):                             ▷ theory/mod.rs, admit_values
@@ -247,7 +247,7 @@ A theory may give a commit lease (`SpaceTheory::commit_lease`).
 The fire of a match takes one lease for each stored datum that the check proved.
 The commit must revalidate each lease under the authority of its language (rule TH-9).
 The acquire, the revalidation, and the release of a lease belong to the guard composition of phase P12 ([F1r3lang integration](f1r3lang-integration.md)).
-Until then, a transaction with two or more leases aborts with `NestedCommitGuard` before its commit (`spaces/generic.rs:4504-4509`).
+Until then, a transaction with two or more leases aborts with `NestedCommitGuard` before its commit (`spaces/generic.rs:4509-4514`).
 The builtins attach no lease, so no program of this build reaches that abort.
 
 The checkers that test the lease, the refusal at a match, and the starved limit profile exist only in test builds (rule TH-10).

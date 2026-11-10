@@ -2590,8 +2590,12 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                     candidate.datum.persist,
                     candidate.channel == *channel,
                 ) {
-                    (true, false, true) => moved.push(&candidate.datum.source.hash),
+                    // Changed by CD-2 (clippy -D warnings, the final verification of merge 2):
+                    // the empty arm comes first (`clippy::single_match`). The text before:
+                    // (true, false, true) => moved.push(&candidate.datum.source.hash),
+                    // (false, _, _) | (true, true, _) | (true, false, false) => {}
                     (false, _, _) | (true, true, _) | (true, false, false) => {}
+                    (true, false, true) => moved.push(&candidate.datum.source.hash),
                 }
             }
             let records = view.data_on(channel)?;
@@ -5754,8 +5758,12 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             //     return Err(bound.full());
             // }
             match (held >= bound.limit(), search.is_some()) {
-                (true, false) => return Err(bound.full()),
+                // Changed by CD-2 (clippy -D warnings, the final verification of merge 2): the
+                // empty arm comes first (`clippy::single_match`). The text before:
+                // (true, false) => return Err(bound.full()),
+                // (true, true) | (false, _) => {}
                 (true, true) | (false, _) => {}
+                (true, false) => return Err(bound.full()),
             }
         }
         self.touch(cx, x.coll)?;
@@ -6461,6 +6469,17 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     .ok_or(SpaceError::Inconsistent("a list waiter has no collection"))?;
                 let mut sends = Vec::<Work>::with_capacity(1);
                 match (peek, head.persist) {
+                    // Changed by CD-2 (clippy -D warnings, the final verification of merge 2):
+                    // the empty arm comes first (`clippy::single_match`). The text before:
+                    // (true, false) => sends.push(Work {
+                    //     coll,
+                    //     record: head.a.clone(),
+                    //     persist: false,
+                    //     own: false,
+                    //     restore: None,
+                    // }),
+                    // (true, true) | (false, _) => {}
+                    (true, true) | (false, _) => {}
                     (true, false) => sends.push(Work {
                         coll,
                         record: head.a.clone(),
@@ -6468,7 +6487,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         own: false,
                         restore: None,
                     }),
-                    (true, true) | (false, _) => {}
                 }
                 let facts = FireFacts {
                     spent: !waiting.persist,

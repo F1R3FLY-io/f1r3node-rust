@@ -209,7 +209,7 @@
 (*                         (settle_before_plan, settle_after_plan and      *)
 (*                         settle_job) and spaces/settle.rs:643-675,       *)
 (*                         681-703 (reissued_operation, settle_operation)  *)
-(*   PlanStart             spaces/generic.rs:3791-3804 (open_plan) and     *)
+(*   PlanStart             spaces/generic.rs:3796-3809 (open_plan) and     *)
 (*                         spaces/disciplines/priority_queue.rs:795-854    *)
 (*                         and 821-924 (the head check of offer_pq and     *)
 (*                         receive_pq)                                     *)

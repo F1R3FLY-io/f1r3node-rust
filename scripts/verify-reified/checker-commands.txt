@@ -23,7 +23,7 @@ python3 scripts/verify-reified/check-complete.py --phase p8
 python3 scripts/verify-reified/check-complete.py --phase p9
 python3 scripts/verify-reified/check-complete.py --phase p10
 python3 scripts/verify-reified/check-complete.py --production-scan
-python3 scripts/verify-reified/check-footprint.py --policy p10
+python3 scripts/verify-reified/check-footprint.py --policy d112
 python3 scripts/verify-reified/check-model-map.py
 python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p4.json
 python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p5.json
