@@ -1092,6 +1092,40 @@ proofs_rpb3_epm_obligation_return_witness=(
   epm_nested_dead_witness_returned_pop
   epm_nested_dead_witness_is_step
   epm_nested_dead_witness_is_integrated_step
+  epm_nested_alive_witness_act_layout_carried
+  epm_nested_alive_witness_child_layout
+  epm_nested_alive_witness_child_ends
+  epm_nested_alive_witness_child_frame_facts
+  epm_nested_alive_witness_frame_kinds
+  epm_nested_alive_witness_regions_shape
+  epm_nested_alive_witness_top_replaced_wf
+  epm_nested_alive_witness_frames_wf
+  epm_nested_alive_witness_linked_sources
+  epm_nested_alive_witness_popped_wf
+  epm_nested_alive_witness_admission_is_wf
+  epm_nested_alive_witness_parent_layouts
+  epm_nested_alive_witness_layouts
+  epm_nested_alive_witness_bridge_wf
+  epm_nested_alive_witness_product_shape
+  epm_nested_alive_witness_product_is_wf
+  epm_nested_alive_witness_before_shape
+  epm_nested_alive_witness_live_parts
+  epm_nested_alive_witness_state_is_wf
+  epm_nested_alive_witness_returned_shape
+  epm_nested_alive_witness_resolves_alive
+  epm_nested_alive_witness_parent_accepts
+  epm_nested_alive_witness_stack_source
+  epm_nested_alive_witness_derived_parts
+  epm_nested_alive_witness_derived_summary
+  epm_nested_alive_witness_parent_ready
+  epm_nested_alive_witness_linked_parts
+  epm_nested_alive_witness_linked_return
+  epm_nested_alive_witness_source_return
+  epm_nested_alive_witness_return_parts
+  epm_nested_alive_witness_product_return
+  epm_nested_alive_witness_returned_pop
+  epm_nested_alive_witness_is_step
+  epm_nested_alive_witness_is_integrated_step
 )
 proofs_rpb3_epm_parser_escape_invariant=(
   parser_escape_wf_initial
@@ -4328,7 +4362,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: EPathMap obligation return witness module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 71 verified, 0 errors' "$epm_obligation_return_witness_log"; then
+if ! rg -q '^verification results:: 105 verified, 0 errors' "$epm_obligation_return_witness_log"; then
   cat "$epm_obligation_return_witness_log"
   echo "rpb3-admission-cursor: EPathMap obligation return witness module did not verify" >&2
   exit 1
