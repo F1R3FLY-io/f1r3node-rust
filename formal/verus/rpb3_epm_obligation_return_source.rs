@@ -30,8 +30,8 @@
 //!   path, with no Region owner. Reachable parser states must supply them.
 //!
 //! Production's `canonical_path_resolutions` counter is not part of the live
-//! product. The checked accept below models its overflow check for nested
-//! returns; for raw-Par returns it is not modeled here.
+//! product. The checked accepts below model its overflow check for nested and
+//! raw-Par returns.
 //!
 //! A NestedEpm1 EPathMap child ends and returns into its EPathMap parent in
 //! one driver iteration. `epathmap_terminal_step` ends the child: it runs the
@@ -77,6 +77,27 @@
 //! `epm_nested_return_checked_accept_agrees` shows that this accept agrees with
 //! every nested return: it resolves the awaited obligation with the mode and
 //! entries stability of the step's parser resolution, counts one more
+//! resolution below `usize::MAX`, and at `usize::MAX` reports the overflow after
+//! the reducer call with the counter unchanged.
+//!
+//! Production's accept of a raw-Par return takes the resolution from the
+//! child's summary, `RawPar { canonical_path_stable }`, resolves the awaited
+//! obligation with `resolve_obligation`, and then increments
+//! `canonical_path_resolutions` with `checked_add(1)`, which fails with
+//! SizeOverflow after the reducer call has been applied. The completion then
+//! checks the effect: `matches_effect` requires the stability of the returned
+//! Par to equal the stability of the resolution, or the completion fails after
+//! the increment. `RawParEpmAcceptSource` and `raw_par_epm_accept_from_source`
+//! model that accept in the shape of the checked-stats module's nested accept,
+//! and `epm_raw_par_accept_source_of` builds the source from the raw-Par
+//! return's prestate: the parent's EPathMap and admission frames, the child's
+//! admission frame, the child's indexed region as its body and as the retained
+//! child view, the child's Par summary with the child's own stability, any
+//! counter value, and a reducer call that is applied exactly when the parent
+//! passes `epm_obligation_before_accept`.
+//! `epm_raw_par_return_checked_accept_agrees` shows that this accept agrees with
+//! every raw-Par return: it resolves the awaited obligation with the stability
+//! of the step's parser resolution, passes the effect check, counts one more
 //! resolution below `usize::MAX`, and at `usize::MAX` reports the overflow after
 //! the reducer call with the counter unchanged.
 
@@ -1092,6 +1113,267 @@ pub proof fn epm_nested_return_checked_accept_agrees(
         assert(nested_accept::nested_epm_accept_source_ready(source));
         assert(source.reducer_call == nested_accept::NestedReducerCallResult::Applied);
         assert(product_after.epm_frames.last() == Some(next.epm));
+    }
+}
+
+/// Production's accept of a raw-Par return on a source-shaped prestate: the
+/// parent's EPathMap and admission frames, the returning Message child's
+/// admission frame and body, the parent's retained child view, the child's
+/// summary as the accept takes it, the value of `canonical_path_resolutions`
+/// before the accept, and the result of the reducer call, which is the same
+/// `resolve_obligation` call as for a nested return.
+pub struct RawParEpmAcceptSource {
+    pub parent: epm::EpmFrame,
+    pub parent_admission: admission::AdmissionFrameState,
+    pub child_admission: admission::AdmissionFrameState,
+    pub ghost child_body: epm::IndexedRegionImage,
+    pub ghost retained_child: epm::IndexedRegionImage,
+    pub summary: epm::ChildSummary,
+    pub resolutions_before: usize,
+    pub reducer_call: nested_accept::NestedReducerCallResult,
+}
+
+/// The outcomes of the raw-Par accept, in production's order: the reducer call
+/// fails with the counter unchanged; `checked_add(1)` overflows after an
+/// applied reducer call, with the counter unchanged; `matches_effect` rejects
+/// the effect after the counter was incremented; or the obligation is resolved
+/// with one more resolution.
+pub enum RawParEpmAcceptOutcome {
+    ReducerError { resolutions_after: usize },
+    OverflowAfterReducerApplied {
+        id: u64,
+        canonical_path_stable: bool,
+        resolutions_after: usize,
+    },
+    EffectMismatch { resolutions_after: usize },
+    Resolved {
+        id: u64,
+        canonical_path_stable: bool,
+        resolutions_after: usize,
+    },
+}
+
+/// The checks production makes before the raw-Par accept.
+/// `CompleteParentSource::before` requires the retained child view to be the
+/// same view as the Message child's body, and the obligation arm of
+/// `before_accept` requires the awaited RawParEscape obligation to be pending
+/// and awaiting resolution. The child is a finished raw Par (kind 1, program 1)
+/// with a score, and its admission frame covers exactly its body.
+pub open spec fn raw_par_epm_accept_source_ready(source: RawParEpmAcceptSource) -> bool {
+    &&& epm::frame_layout_wf(source.parent)
+    &&& epm::indexed_image_wf(source.retained_child)
+    &&& source.retained_child == source.child_body
+    &&& source.parent_admission.frame_kind == 3
+    &&& source.parent_admission.source_bytes == source.parent.snapshot.bytes
+    &&& source.child_admission.frame_kind == 1
+    &&& source.child_admission.program_type_id == 1
+    &&& source.child_admission.score_handle.is_some()
+    &&& source.child_admission.cursor == source.child_admission.region_end
+    &&& source.child_admission.source_bytes == source.child_body.bytes
+    &&& source.child_admission.region_start == 0
+    &&& source.child_admission.region_end as int == source.child_body.bytes.len()
+    &&& source.child_admission.physical_source
+        == epm::indexed_position_at(source.child_body, 0).source
+    &&& source.child_admission.physical_start
+        == epm::indexed_position_at(source.child_body, 0).offset
+    &&& match source.parent.wait {
+        Some(epm::EpmWait::Obligation {
+            id,
+            kind: epm::PathObligationKind::RawParEscape,
+            return_id,
+        }) => {
+            &&& source.parent_admission.waiting_id == Some(return_id)
+            &&& source.parent_admission.waiting_kind == 1
+            &&& source.child_admission.return_id == Some(return_id)
+            &&& match source.parent.path.pending {
+                Some(pending) => {
+                    &&& pending.id == id
+                    &&& pending.kind == epm::PathObligationKind::RawParEscape
+                    &&& pending.awaiting_resolution
+                },
+                None => false,
+            }
+        },
+        _ => false,
+    }
+}
+
+/// The raw-Par accept in production's order. The resolution comes from the
+/// summary: `PathObligationWait::resolution` gives `RawPar { canonical_path_stable }`
+/// for a Par summary and nothing for any other summary. A failed reducer call
+/// leaves the counter unchanged; after an applied call, `checked_add(1)`
+/// overflows at `usize::MAX`. Below it, the effect check accepts the resolution
+/// only when the returned Par has the resolution's stability; the completed
+/// child frame fixes that stability as `admission_raw_par_path_stability`, the
+/// flag `admission_child_summary_agrees` requires of a returned Par summary.
+pub open spec fn raw_par_epm_accept_from_source(
+    source: RawParEpmAcceptSource,
+) -> Option<RawParEpmAcceptOutcome> {
+    if !raw_par_epm_accept_source_ready(source) {
+        None
+    } else {
+        match (source.parent.wait, source.summary) {
+            (
+                Some(epm::EpmWait::Obligation {
+                    id,
+                    kind: epm::PathObligationKind::RawParEscape,
+                    ..
+                }),
+                epm::ChildSummary::Par { canonical_path_stable },
+            ) => match source.reducer_call {
+                nested_accept::NestedReducerCallResult::Failed => Some(
+                    RawParEpmAcceptOutcome::ReducerError {
+                        resolutions_after: source.resolutions_before,
+                    },
+                ),
+                nested_accept::NestedReducerCallResult::Applied => {
+                    let returned = admission::admission_raw_par_path_stability(
+                        source.child_admission,
+                    );
+                    if source.resolutions_before == usize::MAX {
+                        Some(RawParEpmAcceptOutcome::OverflowAfterReducerApplied {
+                            id,
+                            canonical_path_stable,
+                            resolutions_after: source.resolutions_before,
+                        })
+                    } else if returned == Some(canonical_path_stable) {
+                        Some(RawParEpmAcceptOutcome::Resolved {
+                            id,
+                            canonical_path_stable,
+                            resolutions_after: (source.resolutions_before as int + 1) as usize,
+                        })
+                    } else {
+                        Some(RawParEpmAcceptOutcome::EffectMismatch {
+                            resolutions_after: (source.resolutions_before as int + 1) as usize,
+                        })
+                    }
+                },
+            },
+            _ => None,
+        }
+    }
+}
+
+/// The source of production's checked raw-Par accept at the prestate of a
+/// raw-Par return, with `resolutions_before` as the value of
+/// `canonical_path_resolutions`. The parent is the EPathMap frame under the
+/// child, with the admission frame under the top one; the child is the top
+/// admission frame, whose indexed region is both its body and the retained
+/// child view; the summary is the child's Par summary with the child's own
+/// stability; and the reducer call is applied exactly when the parent passes
+/// `epm_obligation_before_accept` for a RawParEscape wait.
+pub open spec fn epm_raw_par_accept_source_of(
+    before: LiveRuntimeProductState,
+    resolutions_before: usize,
+) -> RawParEpmAcceptSource {
+    let product = before.source.product;
+    let frames = product.bridge.admission.frames;
+    let parent = product.epm_frames[product.epm_frames.len() - 2].unwrap();
+    let child = frames.last();
+    RawParEpmAcceptSource {
+        parent,
+        parent_admission: frames[frames.len() - 2],
+        child_admission: child,
+        child_body: product.indexed_regions.last(),
+        retained_child: product.indexed_regions.last(),
+        summary: epm::ChildSummary::Par {
+            canonical_path_stable: admission::admission_raw_par_path_stability(child).unwrap(),
+        },
+        resolutions_before,
+        reducer_call: if obligation_return::epm_obligation_before_accept(
+            parent, epm::PathObligationKind::RawParEscape,
+        ) {
+            nested_accept::NestedReducerCallResult::Applied
+        } else {
+            nested_accept::NestedReducerCallResult::Failed
+        },
+    }
+}
+
+/// Every raw-Par return agrees with production's checked accept. On the source
+/// that `epm_raw_par_accept_source_of` builds from the step's prestate, for any
+/// counter value `resolutions_before`, `raw_par_epm_accept_from_source` takes
+/// the awaited obligation's id and the stability of the step's summary, which
+/// give the step's parser resolution of the parent, and the effect check
+/// passes. Below `usize::MAX` the outcome is `Resolved` with one more
+/// resolution; at `usize::MAX` it is `OverflowAfterReducerApplied` with the
+/// counter unchanged.
+pub proof fn epm_raw_par_return_checked_accept_agrees(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    resolutions_before: usize,
+)
+    requires obligation_return::live_runtime_epm_raw_par_return_step(before, after),
+    ensures
+        ({
+            let product = before.source.product;
+            let parent = product.epm_frames[product.epm_frames.len() - 2].unwrap();
+            let outcome = raw_par_epm_accept_from_source(
+                epm_raw_par_accept_source_of(before, resolutions_before),
+            );
+            match (
+                parent.wait,
+                obligation_return::epm_obligation_derived(product).unwrap().summary,
+            ) {
+                (
+                    Some(epm::EpmWait::Obligation { id, .. }),
+                    epm::ChildSummary::Par { canonical_path_stable },
+                ) => {
+                    &&& after.source.product.epm_frames.last().unwrap().path.parser
+                        == parser::resolve_parser_obligation(
+                            parent.path.parser,
+                            id,
+                            parser::ParserResolution::RawPar { canonical_path_stable },
+                        )
+                    &&& (resolutions_before < usize::MAX ==> outcome == Some(
+                        RawParEpmAcceptOutcome::Resolved {
+                            id,
+                            canonical_path_stable,
+                            resolutions_after: (resolutions_before + 1) as usize,
+                        },
+                    ))
+                    &&& (resolutions_before == usize::MAX ==> outcome == Some(
+                        RawParEpmAcceptOutcome::OverflowAfterReducerApplied {
+                            id,
+                            canonical_path_stable,
+                            resolutions_after: resolutions_before,
+                        },
+                    ))
+                },
+                _ => false,
+            }
+        }),
+{
+    reveal(obligation_return::live_runtime_epm_raw_par_return_step);
+    obligation_return::epm_raw_par_return_resolution_shape(before, after);
+    let product = before.source.product;
+    let product_after = after.source.product;
+    let prior = integrated::product_linked_parent(product).unwrap();
+    let next = integrated::product_linked_top(product_after).unwrap();
+    let derived = obligation_return::epm_obligation_derived(product).unwrap();
+    let frames = product.bridge.admission.frames;
+    let parent = product.epm_frames[product.epm_frames.len() - 2].unwrap();
+    let parent_admission = frames[frames.len() - 2];
+    let child = frames.last();
+    let body = product.indexed_regions.last();
+    let source = epm_raw_par_accept_source_of(before, resolutions_before);
+    assert(prior.epm == parent);
+    assert(epm::linked_epm_child_return(
+        prior, next, derived.summary, derived.admission_summary,
+        product.epm_frames.last(), None,
+    ));
+    if let Some(epm::EpmWait::Obligation { id, kind, return_id }) = parent.wait {
+        assert(kind == epm::PathObligationKind::RawParEscape);
+        assert(child.return_id == Some(return_id));
+        assert(parent.snapshot == product.indexed_regions[product.indexed_regions.len() - 2]);
+        assert(epm::frame_layout_wf(parent));
+        assert(parent_admission.source_bytes == parent.snapshot.bytes);
+        assert(child.source_bytes == body.bytes);
+        assert(admission::admission_summary_has_score(derived.admission_summary));
+        assert(admission::admission_score_body_agrees(child, product.bridge.admission.arena));
+        assert(child.score_handle.is_some());
+        assert(raw_par_epm_accept_source_ready(source));
+        assert(source.reducer_call == nested_accept::NestedReducerCallResult::Applied);
     }
 }
 
