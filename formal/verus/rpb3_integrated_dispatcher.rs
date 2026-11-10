@@ -4046,13 +4046,14 @@ pub proof fn act_forward_witness_suffix_expansion()
         ) == Some(act_forward_witness_raw_events().subrange(1, 8))
     }),
 {
-    let plan = act_forward_witness_plan();
-    let raw = act_forward_witness_raw_events();
-    reveal_with_fuel(epm::act_line_forward_work, 3);
-    reveal_with_fuel(epm::act_expand_work, 8);
-    let work = epm::act_line_forward_work(plan.records[0], 0) + act_forward_witness_continuation();
-    assert(work.len() == 7);
-    assert(epm::act_expand_work(plan, work, 7) == Some(raw.subrange(1, 8)));
+    assert({
+        let plan = act_forward_witness_plan();
+        epm::act_expand_work(
+            plan,
+            epm::act_line_forward_work(plan.records[0], 0) + act_forward_witness_continuation(),
+            7,
+        ) == Some(act_forward_witness_raw_events().subrange(1, 8))
+    }) by (compute_only);
 }
 
 /// The plan source's record, counts and first-violation folds agree with the
