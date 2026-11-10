@@ -1485,6 +1485,67 @@ pub proof fn integrated_live_relation_message_push_refines_live_step(
     }
 }
 
+/// At a MapValuePush action, `integrated_live_relation` is the route-selected
+/// step at the action's fields. The relation is unfolded once, at the action's
+/// constructor; the route-selected step stays hidden, so it is matched by
+/// congruence on the fields and its push relations are never unfolded.
+pub proof fn integrated_live_relation_map_value_push_is_route_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+    route: IntegratedPushRoute,
+    request: runtime::SourceFrameRequestImage,
+    actual_top_kind: Option<runtime::SourceFrameRequestKind>,
+    after_len: usize,
+    after_capacity: usize,
+    stats_frame_variant_bytes: usize,
+)
+    requires
+        action == (LiveRuntimeProductAction::MapValuePush {
+            request, actual_top_kind, after_len, after_capacity, stats_frame_variant_bytes,
+        }),
+        integrated_live_relation(before, after, action, route),
+    ensures
+        integrated_map_value_push_route_step(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes, route,
+        ),
+{
+    hide(integrated_map_value_push_route_step);
+}
+
+/// At a MapValuePush action, the observed MapValuePush step at the action's
+/// fields is a `live_runtime_product_step`. The Live step is unfolded once, at
+/// the action's constructor; the observed step stays hidden, so it is matched
+/// by congruence on the fields and its push relations are never unfolded.
+pub proof fn integrated_map_value_push_observed_is_live_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+    request: runtime::SourceFrameRequestImage,
+    actual_top_kind: Option<runtime::SourceFrameRequestKind>,
+    after_len: usize,
+    after_capacity: usize,
+    stats_frame_variant_bytes: usize,
+)
+    requires
+        action == (LiveRuntimeProductAction::MapValuePush {
+            request, actual_top_kind, after_len, after_capacity, stats_frame_variant_bytes,
+        }),
+        integrated::live_runtime_product_map_value_push_observed_step(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        ),
+    ensures integrated::live_runtime_product_step(before, after, action),
+{
+    hide(integrated::live_runtime_product_map_value_push_observed_step);
+}
+
+/// The relation's MapValuePush arm is the route-selected step,
+/// `integrated_map_value_push_route_implies_observed` turns it into the
+/// observed step, and that is the Live step's MapValuePush arm. The two
+/// unfoldings are separate lemmas; all four relations stay hidden here, so this
+/// proof uses only the three lemma contracts and unfolds nothing.
 pub proof fn integrated_live_relation_map_value_push_refines_live_step(
     before: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
@@ -1496,14 +1557,28 @@ pub proof fn integrated_live_relation_map_value_push_refines_live_step(
         integrated_live_relation(before, after, action, route),
     ensures integrated::live_runtime_product_step(before, after, action),
 {
+    hide(integrated_live_relation);
+    hide(integrated::live_runtime_product_step);
+    hide(integrated_map_value_push_route_step);
+    hide(integrated::live_runtime_product_map_value_push_observed_step);
     match action {
         LiveRuntimeProductAction::MapValuePush {
             request, actual_top_kind, after_len, after_capacity,
             stats_frame_variant_bytes,
-        } => integrated_map_value_push_route_implies_observed(
-            before, after, request, actual_top_kind, after_len, after_capacity,
-            stats_frame_variant_bytes, route,
-        ),
+        } => {
+            integrated_live_relation_map_value_push_is_route_step(
+                before, after, action, route, request, actual_top_kind, after_len,
+                after_capacity, stats_frame_variant_bytes,
+            );
+            integrated_map_value_push_route_implies_observed(
+                before, after, request, actual_top_kind, after_len, after_capacity,
+                stats_frame_variant_bytes, route,
+            );
+            integrated_map_value_push_observed_is_live_step(
+                before, after, action, request, actual_top_kind, after_len,
+                after_capacity, stats_frame_variant_bytes,
+            );
+        },
         _ => {},
     }
 }
