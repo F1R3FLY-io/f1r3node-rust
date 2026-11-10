@@ -99,6 +99,7 @@ impl Intake {
                 unsolicited: !solicited,
                 size,
                 sender: block.sender.clone(),
+                height: proto_util::block_number(block),
                 reason,
             })
         };

@@ -926,6 +926,7 @@ mod tests {
                     unsolicited,
                     size: 0,
                     sender: block.sender.clone(),
+                    height: block.body.state.block_number,
                     reason: Refusal::Unauthorized,
                 }),
             );

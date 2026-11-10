@@ -57,7 +57,8 @@ pub enum PendingClass {
 }
 
 /// What the area holds against its limits: blocks, encoded bytes, and blocks
-/// per sender (only senders with a block in the area).
+/// per sender (only senders with a block in the area), each counting the room
+/// reserved for blocks not yet inserted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PendingUsage {
     pub limits: PendingBlockLimits,
@@ -69,6 +70,11 @@ pub struct PendingUsage {
 struct Entry {
     encoded: Bytes,
     sender: Bytes,
+}
+
+struct Reservation {
+    sender: Bytes,
+    bytes: usize,
 }
 
 fn decode(encoded: &Bytes) -> BlockMessage {
@@ -83,9 +89,35 @@ struct Inner {
     entries: HashMap<BlockHash, Entry>,
     per_sender: HashMap<Bytes, usize>,
     bytes: usize,
+    reservations: HashMap<BlockHash, Reservation>,
+    reserved_bytes: usize,
 }
 
 impl Inner {
+    /// Room the area has promised to blocks other than `hash`: blocks, bytes,
+    /// and blocks of `sender`.
+    fn reserved_for_others(&self, hash: &BlockHash, sender: &Bytes) -> (usize, usize, usize) {
+        let own = self.reservations.get(hash);
+        let blocks = self.reservations.len() - usize::from(own.is_some());
+        let bytes = self.reserved_bytes - own.map_or(0, |r| r.bytes);
+        let of_sender = self
+            .reservations
+            .iter()
+            .filter(|(reserved, r)| *reserved != hash && r.sender == *sender)
+            .count();
+        (blocks, bytes, of_sender)
+    }
+
+    fn release(&mut self, hash: &BlockHash) -> bool {
+        match self.reservations.remove(hash) {
+            Some(reservation) => {
+                self.reserved_bytes -= reservation.bytes;
+                true
+            }
+            None => false,
+        }
+    }
+
     fn remove(&mut self, hash: &BlockHash) -> Option<Entry> {
         let entry = self.entries.remove(hash)?;
         self.bytes -= entry.encoded.len();
@@ -106,7 +138,8 @@ impl Inner {
 /// asked for is refused only at the hard limits; an unsolicited block from a
 /// known sender once the area, or its sender's share, is above the low-water
 /// mark; one from an unknown sender once the area is above the unknown-sender
-/// mark. The area never evicts: block ingest decides what leaves.
+/// mark. Room reserved for a block counts as taken for every other block. The
+/// area never evicts: block ingest decides what leaves and what is reserved.
 pub struct PendingBlocks {
     inner: Mutex<Inner>,
 }
@@ -119,6 +152,8 @@ impl PendingBlocks {
                 entries: HashMap::new(),
                 per_sender: HashMap::new(),
                 bytes: 0,
+                reservations: HashMap::new(),
+                reserved_bytes: 0,
             }),
         }
     }
@@ -157,15 +192,20 @@ impl PendingBlocks {
                 PendingBlockLimits::low_water(limits.max_per_sender),
             ),
         };
+        let (reserved_blocks, reserved_bytes, reserved_of_sender) =
+            inner.reserved_for_others(&block.block_hash, &block.sender);
         // A sender absent from the count holds no block in the area.
         let sender_blocks = inner.per_sender.get(&block.sender).copied().unwrap_or(0);
-        if sender_blocks + 1 > max_per_sender {
+        if sender_blocks + reserved_of_sender + 1 > max_per_sender {
             return PendingInsert::SenderLimitReached;
         }
-        if inner.entries.len() + 1 > max_blocks || inner.bytes + bytes > max_bytes {
+        if inner.entries.len() + reserved_blocks + 1 > max_blocks
+            || inner.bytes + reserved_bytes + bytes > max_bytes
+        {
             return PendingInsert::AreaFull;
         }
 
+        inner.release(&block.block_hash);
         *inner.per_sender.entry(block.sender.clone()).or_insert(0) += 1;
         inner.bytes += bytes;
         inner.entries.insert(block.block_hash.clone(), Entry {
@@ -182,6 +222,25 @@ impl PendingBlocks {
 
     pub fn contains(&self, hash: &BlockHash) -> bool { self.lock().entries.contains_key(hash) }
 
+    /// Keep room for `hash`, a block of `sender` encoding to `bytes`, until it
+    /// is inserted or the reservation is released. Every other insert counts
+    /// the room as taken.
+    pub fn reserve(&self, hash: &BlockHash, sender: &Bytes, bytes: usize) {
+        let mut inner = self.lock();
+        if inner.entries.contains_key(hash) {
+            return;
+        }
+        inner.release(hash);
+        inner.reserved_bytes += bytes;
+        inner.reservations.insert(hash.clone(), Reservation {
+            sender: sender.clone(),
+            bytes,
+        });
+    }
+
+    /// Give up the room kept for `hash`; false when none was kept.
+    pub fn release(&self, hash: &BlockHash) -> bool { self.lock().release(hash) }
+
     pub fn remove(&self, hash: &BlockHash) -> bool { self.lock().remove(hash).is_some() }
 
     pub fn len(&self) -> usize { self.lock().entries.len() }
@@ -192,11 +251,15 @@ impl PendingBlocks {
 
     pub fn usage(&self) -> PendingUsage {
         let inner = self.lock();
+        let mut by_sender = inner.per_sender.clone();
+        for reservation in inner.reservations.values() {
+            *by_sender.entry(reservation.sender.clone()).or_insert(0) += 1;
+        }
         PendingUsage {
             limits: inner.limits,
-            blocks: inner.entries.len(),
-            bytes: inner.bytes,
-            by_sender: inner.per_sender.clone(),
+            blocks: inner.entries.len() + inner.reservations.len(),
+            bytes: inner.bytes + inner.reserved_bytes,
+            by_sender,
         }
     }
 }
@@ -451,5 +514,62 @@ mod tests {
         assert_eq!(area.bytes(), encoded);
         assert_eq!(area.usage().bytes, encoded);
         assert_eq!(area.get(&big.block_hash), Some(big));
+    }
+
+    #[test]
+    fn room_reserved_for_a_block_is_refused_to_others_and_taken_by_it() {
+        let area = PendingBlocks::new(limits(1, usize::MAX, 10));
+        let (kept, other) = (block(1, 1), block(2, 2));
+        area.reserve(&kept.block_hash, &kept.sender, size());
+        assert_eq!(area.usage().blocks, 1);
+        assert_eq!(
+            area.insert(&other, PendingClass::Solicited),
+            PendingInsert::AreaFull
+        );
+        assert_eq!(
+            area.insert(&kept, PendingClass::Solicited),
+            PendingInsert::Accepted
+        );
+        assert_eq!(
+            area.usage().blocks,
+            1,
+            "the insert took its own reservation"
+        );
+        assert!(!area.release(&kept.block_hash));
+    }
+
+    #[test]
+    fn a_released_reservation_frees_its_room() {
+        let area = PendingBlocks::new(limits(1, usize::MAX, 10));
+        let (kept, other) = (block(1, 1), block(2, 2));
+        area.reserve(&kept.block_hash, &kept.sender, size());
+        assert!(area.release(&kept.block_hash));
+        assert_eq!(area.usage(), PendingUsage {
+            limits: limits(1, usize::MAX, 10),
+            ..PendingUsage::default()
+        });
+        assert_eq!(
+            area.insert(&other, PendingClass::Solicited),
+            PendingInsert::Accepted
+        );
+    }
+
+    #[test]
+    fn room_reserved_for_a_sender_counts_against_its_share() {
+        let area = PendingBlocks::new(limits(10, usize::MAX, 1));
+        let kept = block(1, 7);
+        area.reserve(&kept.block_hash, &kept.sender, size());
+        assert_eq!(
+            area.insert(&block(2, 7), PendingClass::Solicited),
+            PendingInsert::SenderLimitReached
+        );
+        assert_eq!(
+            area.insert(&block(3, 8), PendingClass::Solicited),
+            PendingInsert::Accepted
+        );
+        assert_eq!(
+            area.insert(&kept, PendingClass::Solicited),
+            PendingInsert::Accepted
+        );
     }
 }

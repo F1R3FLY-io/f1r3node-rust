@@ -43,6 +43,8 @@ pub struct Refused {
     pub unsolicited: bool,
     pub size: usize,
     pub sender: Validator,
+    /// Self-declared.
+    pub height: i64,
     pub reason: Refusal,
 }
 
@@ -121,6 +123,14 @@ pub enum IngestInput {
 pub enum Effect {
     Fetch(FetchAction),
     DiscardPending(BlockHash),
+    /// Keep room in the pending area for a block that was refused for room,
+    /// so no other block takes the room made for it.
+    Reserve {
+        hash: BlockHash,
+        sender: Validator,
+        size: usize,
+    },
+    ReleaseReservation(BlockHash),
     /// Delete the block's body from disk unless the block is in the DAG.
     DiscardStored(BlockHash),
     Struck {
@@ -185,6 +195,8 @@ pub struct IngestState {
     /// Blocks inserted while a worker still validated them; their waiters
     /// are released when the outcome arrives.
     inserted_while_working: HashSet<BlockHash>,
+    /// Needed blocks the pending area keeps room for.
+    reserved: HashSet<BlockHash>,
     tracker: DependencyTracker,
     scheduler: FetchScheduler,
     reputation: PeerReputation,
@@ -196,6 +208,7 @@ impl IngestState {
             anchor_height: None,
             max_parents: None,
             inserted_while_working: HashSet::new(),
+            reserved: HashSet::new(),
             tracker: DependencyTracker::new(view.clone()),
             scheduler: FetchScheduler::new(view.clone()),
             reputation: PeerReputation::new(view),
@@ -298,7 +311,21 @@ impl IngestState {
                 );
             }
         }
+        self.release_unneeded_reservations(&mut effects);
         effects
+    }
+
+    /// Room is kept only for a block the node still needs: one that arrived,
+    /// or whose need ended, gives its room back.
+    fn release_unneeded_reservations(&mut self, effects: &mut Vec<Effect>) {
+        let scheduler = &self.scheduler;
+        self.reserved.retain(|hash| {
+            let needed = scheduler.is_needed(hash);
+            if !needed {
+                effects.push(Effect::ReleaseReservation(hash.clone()));
+            }
+            needed
+        });
     }
 
     fn received(
@@ -398,6 +425,7 @@ impl IngestState {
             unsolicited,
             size,
             sender,
+            height,
             reason,
         } = refused;
         if unsolicited {
@@ -422,10 +450,14 @@ impl IngestState {
             }
             Refusal::Pending(_) if unsolicited => {}
             Refusal::Pending(PendingRefusal::AreaFull) => {
-                self.reactive_pass(&stores.pending_usage(), size, now_ms, effects);
+                let reserve_at = effects.len();
+                if self.reactive_pass(&stores.pending_usage(), size, height, now_ms, effects) {
+                    self.reserve(&hash, &sender, size, reserve_at, stores, effects);
+                }
                 self.keep_wanted(&hash, now_ms, stores);
             }
             Refusal::Pending(PendingRefusal::SenderLimitReached) => {
+                let reserve_at = effects.len();
                 let area = stores.pending_usage();
                 // The area lists only senders with blocks in it.
                 let count = area.by_sender.get(&sender).copied().unwrap_or(0);
@@ -448,8 +480,12 @@ impl IngestState {
                     .filter(|victim| dependents.contains(victim))
                     .take(excess)
                     .collect();
+                excess -= waiting.len();
                 for victim in waiting {
                     self.displace(&victim, now_ms, effects);
+                }
+                if excess == 0 {
+                    self.reserve(&hash, &sender, size, reserve_at, stores, effects);
                 }
                 self.keep_wanted(&hash, now_ms, stores);
             }
@@ -774,35 +810,70 @@ impl IngestState {
         }
     }
 
-    /// A requested block was refused for room: evict unsolicited blocks, then
-    /// requested ones only once no unsolicited block remains, until it fits.
+    /// Keep the room just made for `hash`, a needed block, until it arrives
+    /// or its need ends. The reservation goes ahead of the evictions that make
+    /// the room, so no other block can take it in between.
+    fn reserve(
+        &mut self,
+        hash: &BlockHash,
+        sender: &Validator,
+        size: usize,
+        at: usize,
+        stores: &dyn StoreReads,
+        effects: &mut Vec<Effect>,
+    ) {
+        if stores.in_dag(hash) || self.tracker.contains(hash) || !self.reserved.insert(hash.clone())
+        {
+            return;
+        }
+        effects.insert(at, Effect::Reserve {
+            hash: hash.clone(),
+            sender: sender.clone(),
+            size,
+        });
+    }
+
+    /// A requested block at `height` was refused for room: evict unsolicited
+    /// blocks, then requested blocks above it, until it fits. A requested
+    /// block never makes room by taking a lower one's, so the blocks nearest
+    /// the DAG keep theirs. Returns whether the block fits.
     fn reactive_pass(
         &mut self,
         area: &PendingUsage,
         size: usize,
+        height: i64,
         now_ms: u64,
         effects: &mut Vec<Effect>,
-    ) {
+    ) -> bool {
         let limits = area.limits;
         let mut blocks = area.blocks;
         let mut bytes = area.bytes;
+        let fits = |blocks: usize, bytes: usize| {
+            blocks < limits.max_blocks && bytes.saturating_add(size) <= limits.max_bytes
+        };
+        let higher: Vec<(BlockHash, usize)> = self
+            .tracker
+            .victims(BodyAt::Pending, VictimClass::Solicited, None)
+            .into_iter()
+            .filter(|(victim, _)| {
+                self.tracker.meta(victim).expect("a victim is held").height > height
+            })
+            .collect();
         let victims: Vec<(BlockHash, usize)> = self
             .tracker
             .victims(BodyAt::Pending, VictimClass::Unsolicited, None)
             .into_iter()
-            .chain(
-                self.tracker
-                    .victims(BodyAt::Pending, VictimClass::Solicited, None),
-            )
+            .chain(higher)
             .collect();
         for (victim, victim_size) in victims {
-            if blocks < limits.max_blocks && bytes.saturating_add(size) <= limits.max_bytes {
+            if fits(blocks, bytes) {
                 break;
             }
             self.displace(&victim, now_ms, effects);
             blocks = blocks.saturating_sub(1);
             bytes = bytes.saturating_sub(victim_size);
         }
+        fits(blocks, bytes)
     }
 
     fn strike(&mut self, peer: &PeerNode, strike: Strike, now_ms: u64, effects: &mut Vec<Effect>) {

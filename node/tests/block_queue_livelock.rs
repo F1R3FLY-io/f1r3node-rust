@@ -24,6 +24,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, InsertMode, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::pending_blocks::PendingBlockLimits;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::ingest::block_ingest::{self, IngestHandle, IngestSetup};
 use casper::rust::blocks::ingest::fetch_scheduler::SEED_PEERS;
@@ -1111,7 +1112,7 @@ async fn a_chain_is_validated_when_its_parent_arrives_while_a_paused_peer_is_ask
     );
 }
 
-// ── R7: a child received while its parent is being validated ───────────────
+// ── A child received while its parent is being validated ───────────────────
 
 /// Three validators. The first validator's block is held in validation. While
 /// it is, the second validator's block on it arrives, then a block of the
@@ -1161,6 +1162,54 @@ async fn a_child_received_while_its_parent_is_validated_is_validated_without_a_r
         node.count_in_dag(&chain),
         chain.len(),
         outcome.unwrap_err(),
+    );
+}
+
+// ── Requested blocks competing for a nearly full pending area ──────────────
+
+/// A chain Q ← P ← A ← B ← C where only Q's sender is known to be bonded in
+/// its main parent, so P, A, B and C each need a slot in a pending area of two
+/// blocks. C is pushed; the node asks for B, A, P and Q itself, more blocks
+/// than the area holds. Ancestors must win the slots and every requested block
+/// must reach the DAG.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn requested_blocks_competing_for_a_full_pending_area_all_reach_the_dag() {
+    init_tracing();
+    let mut validators = Validators::new(3);
+    let genesis = validators.genesis();
+    let q = validators.sign(0, &[&genesis]);
+    let p = validators.sign(1, &[&q]);
+    let a = validators.sign(1, &[&p]);
+    let b = validators.sign(1, &[&a]);
+    let c = validators.sign(2, &[&b]);
+    let mut stores = Stores::with_genesis(genesis.clone()).await;
+    let node = Node::start(&mut stores, NodeSetup {
+        peers: 3,
+        behaviour: PeerBehaviour::new(&[&q, &p, &a, &b], |_, _| true),
+        block_requests: Gate::new(true),
+        validation: Gate::new(true),
+    })
+    .await;
+    node.casper.blocks.set_pending_limits(PendingBlockLimits {
+        max_blocks: 2,
+        ..PendingBlockLimits::default()
+    });
+
+    node.gossip(2, &c).await;
+    let requested = [q, p, a, b];
+    let outcome = wait_until(Duration::from_secs(30), || {
+        node.count_in_dag(&requested) == requested.len()
+    })
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "{} of {} requested blocks reached the DAG through a two-block pending area after \
+         {:?}; {}",
+        node.count_in_dag(&requested),
+        requested.len(),
+        outcome.unwrap_err(),
+        node.sent,
     );
 }
 

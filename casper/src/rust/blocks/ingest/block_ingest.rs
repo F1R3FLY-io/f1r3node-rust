@@ -695,6 +695,16 @@ impl Owner {
                 self.block_store.discard_pending(&hash);
                 None
             }
+            Effect::Reserve { hash, sender, size } => {
+                self.block_store
+                    .pending_blocks()
+                    .reserve(&hash, &sender, size);
+                None
+            }
+            Effect::ReleaseReservation(hash) => {
+                self.block_store.pending_blocks().release(&hash);
+                None
+            }
             Effect::DiscardStored(hash) => {
                 if !self.dag.contains(&hash) {
                     if let Err(error) = self.block_store.discard_stored(&hash) {

@@ -99,8 +99,20 @@ fn pending(
 
 fn received(meta: HeldMeta) -> IngestInput { IngestInput::Received(meta) }
 
+/// Block `i` refused, declaring height 0: every held block is above it.
 fn refused(
     i: u32,
+    from: &str,
+    solicited: bool,
+    sender: &'static [u8],
+    reason: Refusal,
+) -> IngestInput {
+    refused_at(i, 0, from, solicited, sender, reason)
+}
+
+fn refused_at(
+    i: u32,
+    height: i64,
     from: &str,
     solicited: bool,
     sender: &'static [u8],
@@ -112,8 +124,17 @@ fn refused(
         unsolicited: !solicited,
         size: 10,
         sender: Bytes::from_static(sender),
+        height,
         reason,
     })
+}
+
+fn reserve(i: u32, sender: &'static [u8]) -> Effect {
+    Effect::Reserve {
+        hash: hash(i),
+        sender: Bytes::from_static(sender),
+        size: 10,
+    }
 }
 
 fn state() -> (IngestState, IngestView) {
@@ -610,6 +631,7 @@ fn a_refused_requested_block_evicts_unsolicited_before_requested_blocks() {
         )
     };
     assert_eq!(s.handle(area_full(), 0, &dag), vec![
+        reserve(50, b"v2"),
         Effect::DiscardPending(hash(2))
     ]);
     assert_eq!(s.handle(area_full(), 0, &dag), vec![
@@ -651,7 +673,78 @@ fn a_sender_at_its_quota_loses_only_its_own_unsolicited_blocks() {
         0,
         &dag,
     );
-    assert_eq!(effects, vec![Effect::DiscardPending(hash(1))]);
+    assert_eq!(effects, vec![
+        reserve(50, b"v1"),
+        Effect::DiscardPending(hash(1))
+    ]);
+}
+
+/// A full area holding block 5, requested at height 5 and waiting on block 4.
+fn full_area_holding_a_waiting_child() -> (IngestState, Dag) {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(
+        received(pending(meta(5, 5, &[4]), b"v1", true, None)),
+        0,
+        &dag,
+    );
+    dag.area = usage(LIMITS.max_blocks, HashMap::new());
+    (s, dag)
+}
+
+fn area_full_at(block: u32, height: i64) -> IngestInput {
+    refused_at(
+        block,
+        height,
+        "q",
+        true,
+        b"v1",
+        Refusal::Pending(PendingRefusal::AreaFull),
+    )
+}
+
+#[test]
+fn the_room_made_for_a_refused_block_is_reserved_before_it_is_freed() {
+    let (mut s, dag) = full_area_holding_a_waiting_child();
+    assert_eq!(s.handle(area_full_at(4, 4), 0, &dag), vec![
+        reserve(4, b"v1"),
+        Effect::DiscardPending(hash(5)),
+    ]);
+    assert!(s.is_needed(&hash(4)) && s.is_needed(&hash(5)));
+}
+
+#[test]
+fn a_refused_block_takes_no_room_from_a_lower_requested_block() {
+    let (mut s, dag) = full_area_holding_a_waiting_child();
+    assert_eq!(s.handle(area_full_at(9, 9), 0, &dag), vec![]);
+    assert!(s.is_held(&hash(5)));
+    assert!(
+        s.is_needed(&hash(9)),
+        "the refused block is asked for again"
+    );
+}
+
+#[test]
+fn a_reservation_is_released_when_its_block_arrives() {
+    let (mut s, dag) = full_area_holding_a_waiting_child();
+    s.handle(area_full_at(4, 4), 0, &dag);
+    let effects = s.handle(
+        received(pending(meta(4, 4, &[0]), b"v1", true, None)),
+        0,
+        &dag,
+    );
+    assert!(effects.contains(&Effect::ReleaseReservation(hash(4))));
+    assert!(s.is_held(&hash(4)));
+}
+
+#[test]
+fn a_reservation_is_released_when_its_need_ends() {
+    let (mut s, mut dag) = full_area_holding_a_waiting_child();
+    s.handle(area_full_at(4, 4), 0, &dag);
+    dag.blocks.insert(hash(4));
+    let effects = s.handle(IngestInput::Inserted { hash: hash(4) }, 0, &dag);
+    assert!(effects.contains(&Effect::ReleaseReservation(hash(4))));
+    assert!(!s.is_needed(&hash(4)));
 }
 
 /// A requested pending block of sender `v1` that waits on `dependency`.
@@ -696,10 +789,11 @@ fn a_requested_parent_at_its_sender_quota_makes_room_among_its_own_requested_chi
 
     let effects = refused_at_quota(&mut s, &dag, 100);
 
-    assert_eq!(effects.len(), 1, "one slot is missing: {effects:?}");
+    assert_eq!(effects.len(), 2, "one slot is missing: {effects:?}");
+    assert_eq!(effects[0], reserve(100, b"v1"));
     assert!(
         matches!(
-            &effects[0],
+            &effects[1],
             Effect::DiscardPending(child) if (1..=quota).map(hash).any(|c| c == *child)
         ),
         "the parent's own children hold every slot of its sender: {effects:?}"
@@ -731,7 +825,10 @@ fn a_requested_parent_displacing_its_only_waiter_keeps_both_needed() {
 
     let effects = refused_at_quota(&mut s, &dag, 100);
 
-    assert_eq!(effects, vec![Effect::DiscardPending(hash(1))]);
+    assert_eq!(effects, vec![
+        reserve(100, b"v1"),
+        Effect::DiscardPending(hash(1))
+    ]);
     assert!(
         s.is_needed(&hash(100)),
         "the parent stays needed after its only waiter left"
@@ -899,6 +996,7 @@ fn a_local_copy_refused_without_a_peer_moves_its_need_to_the_network() {
             unsolicited: false,
             size: 10,
             sender: Bytes::from_static(b"v0"),
+            height: 1,
             reason: Refusal::NotOfInterest,
         }),
         0,
@@ -1446,7 +1544,11 @@ impl<'a> Sim<'a> {
                         self.handle(IngestInput::Announced { hash: h, peer });
                     }
                 }
-                Effect::Fetch(FetchAction::FetchStateRoot(_)) | Effect::Struck { .. } => {}
+                // Intake here never refuses a block for room.
+                Effect::Reserve { .. }
+                | Effect::ReleaseReservation(_)
+                | Effect::Fetch(FetchAction::FetchStateRoot(_))
+                | Effect::Struck { .. } => {}
             }
         }
     }

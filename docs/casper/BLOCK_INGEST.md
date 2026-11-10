@@ -86,9 +86,11 @@ Intake gives each block a class. A requested block is `Solicited`. Another block
 - An `Unsolicited` block is refused above 80 percent of the block and byte limits, and above 90 percent of its sender's limit. New sender keys cannot use the room that known senders use.
 - The area never evicts. The owner decides what leaves.
 
-The owner evicts in two passes. The proactive pass runs on each tick and after each pending block arrives. It evicts unsolicited blocks from unknown senders down to 80 percent of each limit, then any unsolicited block down to 90 percent. The reactive pass runs when the area refuses a requested block because it is full. It evicts unsolicited blocks first. It evicts requested blocks only when no unsolicited block is left. A block that another held block waits on counts as requested. Untrusted blocks leave before trusted blocks, and higher blocks leave first.
+The owner evicts in two passes. The proactive pass runs on each tick and after each pending block arrives. It evicts unsolicited blocks from unknown senders down to 80 percent of each limit, then any unsolicited block down to 90 percent. The reactive pass runs when the area refuses a requested block because it is full. It evicts unsolicited blocks first. Then it evicts requested blocks that are higher than the refused block, never lower ones, so the blocks nearest the DAG keep their room. A block that another held block waits on counts as requested. Untrusted blocks leave before trusted blocks, and higher blocks leave first.
 
 A requested block that the area refuses because its sender is at its limit takes slots from that sender's blocks: first the sender's unsolicited blocks, then the sender's requested blocks that wait on it, directly or through other held blocks. The refused block stays needed and is asked for again after one base interval.
+
+When either pass makes room for a refused block, the area reserves that room for it before the evictions free it. Every other block counts the reserved room as taken. The reservation ends when the block arrives or when the node no longer needs it.
 
 An evicted block that others wait on becomes a need again. It keeps the peer that pushed it.
 
