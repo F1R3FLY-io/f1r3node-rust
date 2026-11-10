@@ -68,7 +68,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 10](#decision-10) | Parser branch name | 2026-10-03 | In force |
 | [Decision 11](#decision-11) | Head-only matching | 2026-10-04 | In force |
 | [Decision 12](#decision-12) | Lane rule | 2026-10-04 | In force |
-| [Decision 13](#decision-13) | Verification command defaults | 2026-10-04 | In force |
+| [Decision 13](#decision-13) | Verification command defaults | 2026-10-04 | In force. Amended by [decision 137](#decision-137) |
 | [Decision 14](#decision-14) | Rocq line-reference audit | 2026-10-04 | In force |
 | [Decision 15](#decision-15) | Empty-state hash fixture | 2026-10-04 | Fixture commit superseded by decision 18. [Decision 112](#decision-112) changes the hash once |
 | [Decision 16](#decision-16) | Tracker dispositions | 2026-10-04 | In force |
@@ -89,8 +89,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 31](#decision-31) | Every operation on an ordered collection bumps its counter | 2026-10-04 | In force |
 | [Decision 32](#decision-32) | P4 plan-text changes | 2026-10-04 | In force. Its open P8 item is settled by decision 77. [Decision 106](#decision-106) replaces item A21 for `embed` and `ann` |
 | [Decision 33](#decision-33) | assertEqual has arity 3 | 2026-10-04 | In force |
-| [Decision 34](#decision-34) | P4 detail items | 2026-10-04 | In force |
-| [Decision 35](#decision-35) | P1 close-out scope: lean, verify at P4 | 2026-10-04 | In force. Its shared freeze moved to P11 by decision 75 |
+| [Decision 34](#decision-34) | P4 detail items | 2026-10-04 | In force. Item A15 amended by [decision 137](#decision-137) |
+| [Decision 35](#decision-35) | P1 close-out scope: lean, verify at P4 | 2026-10-04 | In force. Its shared freeze moved to P11 by decision 75, and [decision 137](#decision-137) replaces the freeze with the host verification |
 | [Decision 36](#decision-36) | Space replay reproduces play when a deploy runs out of phlo | 2026-10-05 | In force |
 | [Decision 37](#decision-37) | Receive selection follows the F1r3lang rule from the F1r3lang merge on | 2026-10-05 | In force. Implemented in P12 |
 | [Decision 38](#decision-38) | Priority-queue waiters wait in one queue per level | 2026-10-05 | In force |
@@ -130,7 +130,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 72](#decision-72) | The P7 design process | 2026-10-09 | In force |
 | [Decision 73](#decision-73) | P7 design v2, Seq claims per channel, HashSet on units | 2026-10-09 | In force. Implemented in P7 steps 2 (the Seq claims) and 3 (the HashSet store). [Decision 91](#decision-91) amends the basis of its Seq claims |
 | [Decision 74](#decision-74) | The config persists the theory identity as compact bytes | 2026-10-09 | In force. Implemented in P7 step 4 |
-| [Decision 75](#decision-75) | One pgmcp freeze at P11 | 2026-10-09 | In force |
+| [Decision 75](#decision-75) | One pgmcp freeze at P11 | 2026-10-09 | Superseded by [decision 137](#decision-137) on 2026-11-10 |
 | [Decision 76](#decision-76) | The P8 design process | 2026-10-09 | In force |
 | [Decision 77](#decision-77) | P8 design v2, the URNs of the internal ops, the space-view clause | 2026-10-10 | In force |
 | [Decision 78](#decision-78) | One native replay test runs at the v6 host-work limits | 2026-10-10 | Retired by [decision 89](#decision-89). It was implemented in P8 step 1 |
@@ -141,7 +141,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 83](#decision-83) | The creation job records a seq space | 2026-10-12 | In force. Its second half is a recorded follow-up |
 | [Decision 84](#decision-84) | Revert the DR-119 backport | 2026-10-12 | In force. [Decision 108](#decision-108) restores its concurrent row |
 | [Decision 85](#decision-85) | P10 design v2 | 2026-10-12 | In force |
-| [Decision 86](#decision-86) | The gate of the node command line waits for its repair | 2026-10-12 | In force. Amended by [decision 89](#decision-89) |
+| [Decision 86](#decision-86) | The gate of the node command line waits for its repair | 2026-10-12 | In force. Amended by [decision 89](#decision-89) and [decision 136](#decision-136) |
 | [Decision 87](#decision-87) | No new capacity param | 2026-10-12 | In force. Amended by [decision 89](#decision-89) |
 | [Decision 88](#decision-88) | The legacy vector operations come with tensor logic | 2026-10-12 | In force |
 | [Decision 89](#decision-89) | The base removed host-work metering, so Reified RSpaces removes its own | 2026-10-16 | In force. Decisions [96](#decision-96), [102](#decision-102), [105](#decision-105) and [107](#decision-107) amend it |
@@ -189,6 +189,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 133](#decision-133) | The unit loop commits the finish rows of a cut row, and native replay follows them | 2026-11-04 | In force |
 | [Decision 134](#decision-134) | The end of a refused lift varies through the trait `RowEnd` | 2026-11-04 | In force |
 | [Decision 135](#decision-135) | Three divergent SCAN chain cases leave the run | 2026-11-08 | In force |
+| [Decision 136](#decision-136) | The node command line runs the examples, and an exploratory deploy reads their results | 2026-11-10 | In force |
+| [Decision 137](#decision-137) | The campaign closes at claimed_done on the host verification, with no pgmcp run | 2026-11-10 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -506,7 +508,7 @@ The four proposals follow the words and the reason.
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. Amended by [decision 137](#decision-137). |
 | Supersedes | None |
 | Related | [Decision 22](#decision-22) |
 
@@ -517,6 +519,7 @@ The four proposals follow the words and the reason.
 - The node CLI verifies the examples, as the contract requires.
 - The workspace regression gate skips the 27 pre-existing `#[ignore]` tests by exact name and records their reasons.
 - The user still sees the exact recipe command list for the VPI-1 relay before registration.
+  *Changed by [decision 137](#decision-137): pgmcp registers no recipe, so the VPI-1 relay is not asked.*
 
 **User's words.** The plan records these defaults as "user-approved".
 
@@ -1041,7 +1044,7 @@ The two-argument call of the FIPS is pseudo-code.
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. Item A15 amended by [decision 137](#decision-137). |
 | Supersedes | None |
 | Related | [Decision 32](#decision-32), [decision 33](#decision-33), [lock coverage](glossary.md#lock-coverage), [evaluation scope](glossary.md#evaluation-scope) |
 
@@ -1055,6 +1058,7 @@ The two-argument call of the FIPS is pseudo-code.
 - A13: a new Rocq module `SpaceFactory.v`, which the tracker leaves cite.
 - A14: checker extensions, and a cumulative footprint policy `p4` that extends the policy `campaign`.
 - A15: amendments of tracker leaves under the AAI-1 relay. The next items list them.
+  *Amended by [decision 137](#decision-137): the AAI-1 relay is not asked. The tracker leaves keep their texts, and their closure reads them with these amendments.*
   - Real events: the canonical COMM sort (I-6), events of temp spaces (I-4), no activation boundary (decision 27), and filters through the module wrappers.
   - Replay consult: the case with several results moves to P6.
   - Private channels: bound to a URN.
@@ -1092,7 +1096,7 @@ They follow the recorded decisions, or they fill details that the plan left open
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force. Its shared freeze moved to P11 by [decision 75](#decision-75) |
+| Status | In force. Its shared freeze moved to P11 by [decision 75](#decision-75), and [decision 137](#decision-137) replaces the freeze with the host verification |
 | Supersedes | The A5 realignment ledgers of the P1 close-out design |
 | Related | [Decision 5](#decision-5), [decision 16](#decision-16), [verification.md](verification.md) |
 
@@ -1102,6 +1106,7 @@ They follow the recorded decisions, or they fill details that the plan left open
 - No realignment ledger is built. The seven ledger leaves close with existing evidence: the P0 backup manifest, the footprint pin of policy `p1-realign`, and the TRI-1 ledger in pgmcp.
 - The six realignment leaves of the `SpaceStoreHandle` group are duplicates of the substrate leaf, which carries the same tests.
 - The pgmcp verification runs of the P1 leaves happen in the same freeze as those of P4.
+  *Changed by [decision 137](#decision-137): no freeze takes place. The final gate set runs the checks of the P1 and P4 leaves on a development host, and the leaves close at claimed_done.*
 
 **User's words.** "Lean, verify at P4 (Recommended)", after "just make sure you remain focused and don't get lost in the woods" and "don't get stuck in perpetual support changes and never get around to the reified rspaces!"
 
@@ -2226,7 +2231,7 @@ Both checks run before any staging, in the driver and in the join engine.
 | Field | Value |
 |---|---|
 | Date | 2026-10-09 |
-| Status | In force |
+| Status | Superseded by [decision 137](#decision-137) on 2026-11-10 |
 | Amends | [Decision 35](#decision-35) (the shared freeze of P1 and P4), and the per-leaf verification of the plan's execution protocol |
 | Related | [Decision 13](#decision-13), [decision 48](#decision-48), [verification.md](verification.md) |
 
@@ -2237,6 +2242,8 @@ Both checks run before any staging, in the driver and in the join engine.
 - At P11 one freeze registers the recipes and shows the user the exact recipe command list (VPI-1).
 - The same freeze amends the acceptance criteria (AAI-1) and runs the verifier for every active leaf, together with the final gates.
 - Until then, each phase records its evidence in pgmcp progress notes and in the dossier.
+
+*Superseded by [decision 137](#decision-137): no freeze registers the recipes, and pgmcp runs no leaf. The final gate set runs on a development host, and the leaves close at claimed_done.*
 
 **User's words.** "One freeze at P11 (Recommended)", after P7 step 6.
 
@@ -2586,7 +2593,7 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 | Field | Value |
 |---|---|
 | Date | 2026-10-12 |
-| Status | In force. Amended by [decision 89](#decision-89). |
+| Status | In force. Amended by [decision 89](#decision-89) and [decision 136](#decision-136). |
 | Amends | [Decision 13](#decision-13) (the timing of the gate of the node command line) |
 | Related | [Decision 69](#decision-69) |
 
@@ -2595,9 +2602,11 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 - With offered funding active, the node refuses legacy deploys and rejects a block that holds one (`casper/src/rust/api/block_api.rs:712-716`, `validation_dispatcher.rs:124-130`).
   *Changed by DR-134 of the base, which merge 2 takes: the node refuses legacy deploys on every shard.*
 - On this branch and on feature/cost-accounted-rho, `node deploy` builds a legacy deploy and `node eval` evaluates on the legacy path. Only the HTTP route `/deploy/offered` and the gRPC deploy service take offered deploys.
+  *Changed by DR-134 of the base, which merge 2 takes: `node deploy` signs an owner-direct offer. `node eval` still evaluates on the legacy path ([decision 136](#decision-136)).*
 - P10 verifies every example in the native harness, with native play and native-replay certification at the v6 limits.
   *Amended by [decision 89](#decision-89): the v6 limits have no host-work limits, so the harness certifies at the phlo limits only.*
 - The gate of decision 13 is written against the repaired command line and runs every example after the repair reaches this branch. The campaign changes no file of `node/src` for it.
+  *Amended by [decision 136](#decision-136): the gate runs each example with `node deploy`, `node propose` and `node show-block`, and an exploratory deploy reads the results.*
 
 **User's words.** "I am repairing the node CLI with the cost-accounting agent"
 
@@ -2971,12 +2980,12 @@ Owners pay for their processes (DR-135). The suggestion of the design agent that
 **Reason.** The space session already reaches the replay through the epoch trait for its other calls.
 Two defaulted methods keep the replay accessor test-only and change no behavior of the base.
 
-## User decisions 96 to 135
+## User decisions 96 to 137
 
 The merge 2 review of 2026-10-27 aligned the earlier decisions with the [base](#terms-used-in-this-register) at `702496775` ([decision 97](#decision-97)).
 Decisions 96 to 121 record its results and the answers of the user on 2026-10-27 and 2026-10-28.
 Decisions 122 to 124 record the results of 2026-10-29.
-Decisions 125 to 129 and 132 to 135 record the answers of the user from 2026-11-01 to 2026-11-08.
+Decisions 125 to 129 and 132 to 137 record the answers of the user from 2026-11-01 to 2026-11-10.
 These decisions override the earlier decisions where they conflict.
 Each entry names the decisions and the clauses that it replaces, and the old entries keep their text with a note.
 
@@ -4049,6 +4058,61 @@ A second parameter with a default varies the end in the same way.
 
 **Reason.** Each retired case runs a persistent send against a persistent receive on a kind without a counter.
 The recorder of the base treats each round of that pair as a free retry (`try_record_retry` in `accounting/native_runtime/recording.rs`), so phlo cannot end the run.
+
+### <a id="decision-136"></a>Decision 136: The node command line runs the examples, and an exploratory deploy reads their results
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-10 |
+| Status | In force |
+| Amends | [Decision 86](#decision-86) (the method of the gate of the node command line) |
+| Related | [Decision 13](#decision-13), [decision 59](#decision-59), [decision 113](#decision-113) |
+
+**Statement.**
+
+- `node eval` cannot run the examples. The REPL service of the node evaluates on the legacy path, and that path never starts native execution. So each entry point of a host space returns `RuntimeUnavailable`.
+- The script `scripts/verify-reified/node-cli-examples.sh` runs the examples on a standalone node. Each file of an example is one deploy and one block, in the order of the manifest.
+- For each file, the script runs `node deploy`, `node propose` and `node show-block`. The block must hold one deploy, with the signature that `node deploy` printed.
+- The node command line has no command that reads the data at a name. So the gRPC method `exploratoryDeploy`, a dry run at the state of a block, reads the results. The campaign changes no file of `node/src`.
+- A block stores only the flag `errored` of a deploy. So the code of an error example comes from a dry run of its last file at the pre-state of its block.
+- Phase A runs the 68 examples that need no service on the default build of the node. Phase B runs `vectordb-embed` and `vectordb-mirror` on a build with the feature `rholang/chromadb` and a disposable ChromaDB server.
+- The node embeds with its SBERT model, and the harness of the examples uses a fake embedder. So the gate checks the shape of the reply of `vectordb-embed`: `[true, v, "all-MiniLM-L6-v2"]`, where `v` holds 384 values of type `Float32`.
+
+**User's words.** "Shape check on the chromadb node (Recommended)".
+The question stated the method of this entry, with the second build and the live ChromaDB server.
+
+**Reason.** The deploy path is the path of a user of the node, and each file becomes a block of the node.
+The exploratory deploy reads on the native path without a change to the node.
+The vector of the real embedder depends on the model, so only its shape is a stable expectation.
+
+### <a id="decision-137"></a>Decision 137: The campaign closes at claimed_done on the host verification, with no pgmcp run
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-10 |
+| Status | In force |
+| Supersedes | [Decision 75](#decision-75) (the one pgmcp freeze at P11) |
+| Amends | [Decision 13](#decision-13) (the VPI-1 relay), [decision 34](#decision-34) (item A15) and [decision 35](#decision-35) (the shared freeze) |
+| Related | [Decision 136](#decision-136), [verification.md](verification.md), [pgmcp](glossary.md#pgmcp) |
+
+**Statement.**
+
+- pgmcp registers no recipe, and its verifier runs no leaf of the campaign. So the relays VPI-1 and AAI-1 are not asked.
+- The final gate set runs each check of the campaign once, on a development host, on the frozen candidate. Section 35 of [verification.md](verification.md) records the results.
+- A leaf closes at the tracker status claimed_done when each requirement and each verification step of the leaf has passed. No leaf moves to the status verified.
+- The requirements of a leaf are its tracker text with the changes of the register decisions. No acceptance amendment writes these changes into the tracker.
+- The closure report in the tracker gives the host result of each gate, and it checks each result against the frozen candidate.
+- A tracker change that needs the authority of the user (TRI-1) is asked only when an approved disposition cannot close a leaf.
+- This rule completes decision 131 of the plan, of 2026-11-03. That decision runs the full verification once, when each item of the campaign is claimed_done.
+
+**User's words.** "Host gates, stay claimed_done".
+On the verifier of pgmcp: "Verify everything yourself, there's no need to re-run the same verification within pgmcp; claimed_done, so long as you completed all the requirements and verification steps, is sufficient for me."
+
+**Reason.** pgmcp sets an item to verified only from the runs of its own verifier, and it refuses imported results.
+The verifier builds in a RAM-backed `/tmp`.
+Its snapshot holds no git-ignored file, so the checkers that stay on the development host cannot run in it.
+The route through the verifier needed about 245 runs and the relays VPI-1 and AAI-1.
+The host gates run the same commands once, on the same candidate.
 
 ## Minimal-footprint revision: M-1 to M-5
 

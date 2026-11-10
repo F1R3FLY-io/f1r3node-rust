@@ -171,6 +171,7 @@ Phases P0 to P9 are complete.
 The next table gives the commit that closed each phase and the section of the dossier that records it.
 Phase P10 is in progress, and section 35 of the dossier records each of its steps.
 Phase P11 runs the one pgmcp freeze of [decision 75](decision-register.md#decision-75), and phase P12 waits for the readiness signal of F1r3lang.
+Changed by [decision 137](decision-register.md#decision-137): P11 runs the final gate set on a development host, and pgmcp runs no leaf.
 
 | Phase | Closing commit | Record |
 |---|---|---|
@@ -193,6 +194,7 @@ Figure 1 shows the days of each phase, from the first commit of the phase to its
 *Figure 1. Source: [diagrams/14-phase-gantt.puml](diagrams/14-phase-gantt.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
 The pgmcp runs of the leaves take place in the freeze of [decision 75](decision-register.md#decision-75).
+Changed by [decision 137](decision-register.md#decision-137): pgmcp runs no leaf, and the leaves close at claimed_done on the host verification.
 
 ## Normative status
 

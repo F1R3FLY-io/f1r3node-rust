@@ -129,6 +129,11 @@ The pgmcp runs of the P1 leaves take place in the same freeze as the runs of P4.
 The user decided this on 2026-10-04, as [decision 35](decision-register.md#decision-35).
 So this dossier names the planned recipe ids and step keys, without recipe hashes.
 
+Changed by [decision 137](decision-register.md#decision-137): pgmcp registers no recipe and runs no leaf.
+The final gate set runs the commands of the recipe steps on a development host, and section 35 records the results.
+Each leaf closes at the tracker status claimed_done ([pgmcp](glossary.md#pgmcp)).
+The recipe ids and the step keys of this dossier name those commands.
+
 *Table 3. The six acceptance categories in P1.*
 
 | Category | Evidence in P1 | Local gate | Recipe: step keys |
@@ -157,11 +162,12 @@ The realignment leaves `rrs-ra-03-04` and `rrs-ra-05-01` to `rrs-ra-05-06` also 
 
 Figure V1 shows how the sources of every phase reach the six acceptance categories.
 Its counts are those of the gate sets of P9 and of P10.
-Read it from the left to the right: sources, checks, local gates, pgmcp recipes, and categories.
+Read it from the left to the right: sources, checks, local gates, recipe families, and categories.
 The negative controls are checks that must fail, and their gates require the expected failure.
-Each recipe runs the same command as its local gate, in the verifier sandbox.
+Each recipe runs the same command as its local gate.
+Changed by [decision 137](decision-register.md#decision-137): the final gate set runs the recipe families on a development host, and pgmcp registers no recipe.
 
-![Verification pipeline of all phases as five columns from the left to the right. Sources: the Rust code of P1 to P10 (the substrate of rspace++, the syntax layer of models, and reified and spaces of rholang, with their tests), the base code at 4d67b5ccc and its suites, the Rocq models with 308 headlines from EventCorrelation.v to Checkpoint.v, the TLA+ models with 128 configurations with BOUNDS headers, the three Z3 scripts and the Sage script with the numeric reference vectors, the maps and policies, the corpora with the 70 examples, and the documents with chapter 21 and the diagram sources. Checks: the Rocq kernel checks (hygiene, coqc alone, Print Assumptions closed for 308 headlines, rocqchk), TLC and Apalache with BASE and STEP, the Z3 and Sage checks, the property-based tests with one property for each invariant, the deterministic suites (the suites of each phase, N1 to N9, the examples harness, loom, the bench smoke, the base suites and the empty-state hashes), the 48 Python checker commands with the FIPS matrix and the P0 archive digests, the document checks, and the negative controls that must fail (456 Rocq negative checks and the axiom control, the Unsafe TLC configurations, the Apalache Error controls, the mutant harnesses and the checker self-tests). Each check reads its sources. Local gates: the proofs gate and the TLA gate run inside the aggregate gate scripts/check-reified-rspaces-ALL.sh with the legs proofs, tla, z3, sage, checkers, examples, loom and benches, and cargo test runs the suites G2 to G17 of each phase; the negative controls go to the gates that require their failure. pgmcp recipes: the recipe families RF0 to RF12, registered in the one freeze of P11 (decision 75), with RF12 for the aggregate gate. Each recipe step binds evidence of the six acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented per the pgmcp guidelines.](diagrams/13-verification-pipeline.svg)
+![Verification pipeline of all phases as five columns from the left to the right. Sources: the Rust code of P1 to P10 (the substrate of rspace++, the syntax layer of models, and reified and spaces of rholang, with their tests), the base code at 4d67b5ccc and its suites, the Rocq models with 308 headlines from EventCorrelation.v to Checkpoint.v, the TLA+ models with 128 configurations with BOUNDS headers, the three Z3 scripts and the Sage script with the numeric reference vectors, the maps and policies, the corpora with the 70 examples, and the documents with chapter 21 and the diagram sources. Checks: the Rocq kernel checks (hygiene, coqc alone, Print Assumptions closed for 308 headlines, rocqchk), TLC and Apalache with BASE and STEP, the Z3 and Sage checks, the property-based tests with one property for each invariant, the deterministic suites (the suites of each phase, N1 to N9, the examples harness, loom, the bench smoke, the base suites and the empty-state hashes), the 48 Python checker commands with the FIPS matrix and the P0 archive digests, the document checks, and the negative controls that must fail (456 Rocq negative checks and the axiom control, the Unsafe TLC configurations, the Apalache Error controls, the mutant harnesses and the checker self-tests). Each check reads its sources. Local gates: the proofs gate and the TLA gate run inside the aggregate gate scripts/check-reified-rspaces-ALL.sh with the legs proofs, tla, z3, sage, checkers, examples, loom and benches, and cargo test runs the suites G2 to G17 of each phase; the negative controls go to the gates that require their failure. Recipe families: the recipe families RF0 to RF12 of the final gate set, which runs them on a development host (decision 137), with RF12 for the aggregate gate. Each recipe step gives evidence of the six acceptance categories: formally modeled, formal verification passes, every invariant extracted as a property-based test, implementation complete, thoroughly tested, and documented per the pgmcp guidelines.](diagrams/13-verification-pipeline.svg)
 
 *Figure V1. Source: [diagrams/13-verification-pipeline.puml](diagrams/13-verification-pipeline.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -1441,6 +1447,7 @@ The [model map](glossary.md#model-map) of P4 ties each id to its Rust items.
 
 Table 24 gives the evidence of each [acceptance category](glossary.md#acceptance-category) in P4 and its local gate.
 The pgmcp runs of the P4 leaves take place in the freeze of [decision 35](decision-register.md#decision-35), so this table names only the local gates.
+Changed by [decision 137](decision-register.md#decision-137): pgmcp runs no leaf, and the final gate set runs these local gates on a development host.
 
 *Table 24. The six acceptance categories in P4.*
 
@@ -3859,6 +3866,7 @@ A failure of the library tests then stopped cargo before the suite, so the count
 Native replay could not see `process-unmetered`, because play and replay then both reserved nothing and still agreed.
 Only the process test, which read the budget of the reduction context, killed it.
 *Changed by [decision 89](decision-register.md#decision-89): the harness keeps the entry of `process-unmetered` as a comment and runs 7 mutants.*
+*Changed by [decision 127](decision-register.md#decision-127): `packs_arguments` is not `const` now, and a comment keeps its text from before decision 127. The old text of `vector-not-packed` matched only that comment, so the mutant now names the new signature. Table 256 of [section 35.8](#358-the-mutation-controls-of-the-final-gates) gives the run of the 7 mutants in the final gates.*
 
 ### 17.5 Running the step-6 checks
 
@@ -4136,9 +4144,11 @@ Merge 2 makes these changes to the harness:
 - Retired by [decision 104](decision-register.md#decision-104): `ann-checks-only-in-play` states the rule now, so it is a comment. Its replacement `ann-replay-checks` makes replay check the call again, so a replay without a host fails.
 - Changed by [decision 104](decision-register.md#decision-104) and [decision 116](decision-register.md#decision-116): `embed-replay-recomputes` and `ann-replay-recomputes` make replay ask the service, although the record is present.
 - Changed by [decision 90](decision-register.md#decision-90): `embed-not-recorded` and `ann-not-recorded` take the process out of `is_recorded_process`, the set that native execution reads.
+- Changed by [decision 127](decision-register.md#decision-127): `is_recorded_process` puts each comparison on its own line, and a comment keeps the text from before decision 127. The old texts of `embed-not-recorded` and `ann-not-recorded` matched only that comment, so both mutants survived in the final gates. Their texts now start at the signature of the function ([section 35.8.1](#3581-a-mutant-that-edits-a-comment)).
 - Changed by [decision 113](decision-register.md#decision-113): the harness runs with `--features chromadb`, and it stops when `LIBTORCH` is not set.
 
-Table 136a of section 24.5 gives the run of the 12 services mutants after these changes.
+Table 136a of section 24.5 gives the run of the 12 services mutants after the changes of decisions 90, 104, 113 and 116.
+Table 256 of [section 35.8](#358-the-mutation-controls-of-the-final-gates) gives the run after the change of decision 127.
 
 ### 18.7 Running the step-7a checks
 
@@ -5380,6 +5390,7 @@ P4 and P5 built the named tests of their rows, so step 8f audited each P6 leaf a
 Table 141 gives the result.
 A test of another name covers a requirement, a recorded decision supersedes it, or a new test of this step covers it.
 The freeze of [decision 35](decision-register.md#decision-35) binds each criterion to its evidence and amends the names that the leaves use.
+Changed by [decision 137](decision-register.md#decision-137): no freeze takes place, and the closure of each leaf reads the leaf with the evidence of Table 141.
 
 *Table 141. The evidence of each P6 leaf. "New" marks a test of step 8f.*
 
@@ -5466,6 +5477,7 @@ A sha256 manifest showed that the copy equals the worktree file for file.
 
 Table 145 gives the evidence of each [acceptance category](glossary.md#acceptance-category) in P6 and its local gate, as Table 24 does for P4.
 The pgmcp runs of the P6 leaves take place in the freeze of [decision 35](decision-register.md#decision-35), so the table names only the local gates.
+Changed by [decision 137](decision-register.md#decision-137): pgmcp runs no leaf, and the final gate set runs these local gates on a development host.
 
 *Table 145. The six acceptance categories in P6.*
 
@@ -7848,11 +7860,11 @@ The phase has eleven steps, and this section records each step when it lands:
 1. S1: the aggregate gate and the policies of the phase.
 2. S7: the model `Checkpoint.v`, the dispositions of the legacy models and the axiom control.
 3. S2: the examples, their harness and the invalid rows of the syntax corpus.
-4. S3: the gate of the examples through the node command line, after the repair of that command line ([decision 86](decision-register.md#decision-86)).
+4. S3: the gate of the examples through the node command line, after the repair of that command line ([decision 86](decision-register.md#decision-86)). Changed by [decision 136](decision-register.md#decision-136): section 35.7 records the gate.
 5. S5 and S6: the documents and the diagrams.
 6. S4: the FIPS clause matrix and its checker.
 7. S8: the benchmarks and `performance.md`.
-8. S9 to S11: the claims gate, the tracker notes and the full gate set.
+8. S9 to S11: the claims gate, the tracker notes and the full gate set. Changed by decision 131: the final verification of the epic runs the full gate set. The leaf `rrs-final-claims-audit` is the claims gate, and pgmcp holds the tracker notes. Changed by [decision 137](decision-register.md#decision-137): the full gate set runs on a development host, and the leaves close at claimed_done.
 
 ### 35.1 Step S1: the aggregate gate
 
@@ -8052,6 +8064,7 @@ The phase `P10` of the invariant map binds each headline to its property test.
 Step S2 adds the example programs of `examples/reified_rspaces/`, the harness that runs them, and the invalid rows of the syntax corpus (design v2, section 2.3).
 It also adds the manifest rule of `doc_lint.py`.
 The node command line cannot run these examples yet ([decision 86](decision-register.md#decision-86)), so step S3 adds that gate after the repair.
+Changed by [decision 136](decision-register.md#decision-136): step S3 runs these examples through the node command line (section 35.7).
 
 #### 35.3.1 The harness
 
@@ -8583,6 +8596,8 @@ The FIPS root is an input of the checker, so the recipe of P11 mounts the FIPS r
 The pinned files are those of commit `7a8a093` of that repository.
 The leaf names the script `scripts/audit/check-reified-rspaces-citations.py`, which never existed.
 The matrix checker and the citation rules of `doc_lint.py` make its checks, and the freeze of P11 binds the criterion to them.
+Changed by [decision 137](decision-register.md#decision-137): no recipe mounts the FIPS repository.
+The checkers leg of the final gate set runs the matrix checker on a development host, with the default FIPS root.
 
 The matrix also holds the four spec holes of the design ledger and their resolutions.
 They are the syntax of queries and params, the theory documents, the unification question of the quantale section, and tensor logic with the nonlinear operations.
@@ -8596,6 +8611,241 @@ They are the syntax of queries and params, the theory documents, the unification
 | `doc_lint.py` over every campaign document and every Reified section, the matrix included | No finding |
 | The checkers of `checker-commands.txt` | 47 of 47 pass, the matrix checker included, and the checker self-tests are 332 |
 | `render.sh --check` over the diagram directory | 59 of 59 diagrams are current, diagram 13 with 47 checker commands |
+
+### 35.7 Step S3: the examples through the node command line
+
+Step S3 runs every example of `examples/reified_rspaces/` on a standalone node, through the node command line ([decision 136](decision-register.md#decision-136)).
+It is the gate of recipe family RF10 and of the leaf `rrs-examples-node-cli`.
+The script is `scripts/verify-reified/node-cli-examples.sh`, and the step changes no file of `node/src` ([decision 86](decision-register.md#decision-86)).
+The harness of step S2 stays the gate of play and native replay at the phlo limits.
+Step S3 adds the same examples on a real node, which makes a real block for each file.
+
+#### 35.7.1 Why the gate does not use `node eval`
+
+`node eval` sends a program to the REPL service of the node, and that service calls `evaluate` of the runtime (`node/src/rust/api/repl_grpc_service.rs`).
+`evaluate` runs on the legacy path, as decision 86 records, so it never starts native execution.
+Outside native execution, each entry point of a host space returns `RuntimeUnavailable`, and the factory gives the error `reified:RuntimeUnavailable`.
+The test `host_runtime_fails_closed_outside_native_execution` of `reified/runtime.rs` covers this rule.
+So `node eval` fails each example file that names a `rho:space:` URN, and 59 of the 73 files do.
+The REPL service also makes no block.
+
+#### 35.7.2 One example on the node
+
+An example is an ordered list of files, and each file is one deploy, as in the harness of step S2.
+The script runs the examples in the order of the manifest, and each file becomes one block.
+For each file, the script runs three commands of the node command line on the internal gRPC port of the node:
+
+1. `node deploy` signs the file as an owner-direct offer and sends it to the node.
+2. `node propose` makes a block, and it prints the hash of the block.
+3. `node show-block` prints the block. The script reads the signature, the flag `errored`, the phlo cost and the number of the block.
+
+The block must hold exactly one deploy, and its signature must equal the deploy id that `node deploy` printed.
+Each file before the last file of its example must not error.
+A deploy expires 50 blocks after its valid-after block number (`deploy-lifespan`), and the node of phase A makes 70 blocks.
+So the script gives each deploy the number of the last block as its valid-after block number.
+
+The gate follows this algorithm.
+The plan joins the manifest with the table of the harness, so the two cannot drift.
+The check by kind is the check of Table 254.
+
+```text
+gate(manifest, table):
+    plan := join(manifest, table)           -- the names, the files and their order must agree
+    require: each result channel is named only by the files of its own example
+    for phase in [A, B]:
+        build the node of the phase         -- B: with the feature rholang/chromadb
+        start a fresh standalone node       -- B: and a disposable ChromaDB server
+        after := 0
+        for each example e of the phase, in the order of the manifest:
+            for each file f of e:
+                id    := node deploy f, valid after block `after`
+                hash  := node propose
+                block := node show-block hash      -- one deploy, whose signature is id
+                after := the number of block
+                require block.errored = false, unless f is the last file of e
+            verdict(e) := check(e, hash)           -- by the kind of e (Table 254)
+        stop the node and the ChromaDB server
+    control := read one passing values example with one more expected datum
+    PASS iff each example passes and the comparison of the control fails
+```
+
+#### 35.7.3 The reads
+
+The node command line has no command that reads the data at a name, and a new command would change `node/src`.
+So the script reads with the gRPC method `exploratoryDeploy` of `casper.v1.DeployService`, through `grpcurl` and the server reflection of the node.
+The method is a dry run on the native path at the state of a block, and it reverts its changes.
+It returns the data at the first unforgeable name of its term.
+A standalone node serves it, because `run-local/conf/standalone.conf` sets `dev-mode = true`.
+
+The read term of an example makes a fresh name, `rf10Result`, as its first unforgeable name.
+For each result channel and each arity, a persistent receive reads each datum of that arity on the channel.
+It sends a record with the tag `a` to `rf10Result`, with the number of the channel, the arity and the value.
+The term also sends one record with the tag `e` for each expected datum of the harness table.
+The arity runs from 1 to the largest expected arity, and at least to 4.
+
+```text
+read_term(the result channels c_1 .. c_n, the expected datums E):
+    K := max(4, the largest arity in E)
+    new rf10Result:
+        for i in 1 .. n, for k in 1 .. K:
+            persistent receive of k values x_1 .. x_k on c_i:
+                send ["a", i, k, v] on rf10Result   -- v = x_1 when k = 1, else [x_1, .., x_k]
+        for each expected datum (i, k, v) in E:
+            send ["e", i, k, v] on rf10Result
+```
+
+The script then compares the multiset of the records with the tag `a` and the multiset of the records with the tag `e`.
+It compares each value as canonical JSON without the field `locallyFree`.
+The equality of `Par` and `EList` in `models/src/lib.rs` also ignores that field, so the comparison agrees with the harness.
+
+#### 35.7.4 The error examples
+
+A block stores only the flag `errored` of a deploy, not its error.
+So the script takes the code from a second dry run, of the last file of the example at the pre-state of its block.
+The dry run returns the first error of the evaluation, and the script reads the code from the text `reified:<Code>` of that error.
+An error example passes when its last block holds `errored: true` and the code equals the expected code of the harness table.
+
+#### 35.7.5 The two phases
+
+Phase A uses the default build of the node, and it runs the 68 examples that need no service.
+Phase B uses a build with the feature `rholang/chromadb`, because only that build registers `rho:vectordb:embed` and `rho:vectordb:ann` ([decision 113](decision-register.md#decision-113)).
+Phase B runs the two examples `vectordb-embed` and `vectordb-mirror`.
+It starts a disposable ChromaDB server of the image that `docker/shard.yml` pins, with a new database, as `chroma-live.sh` does.
+A server that does not start fails both examples of the phase, as [decision 59](decision-register.md#decision-59) requires.
+
+The node embeds with its SBERT model, and the harness of step S2 uses a fake embedder.
+So the gate checks only the shape of the reply of `vectordb-embed` ([decision 136](decision-register.md#decision-136)).
+The reply must be one datum `[true, v, "all-MiniLM-L6-v2"]`, where `v` holds 384 values of type `Float32`.
+The script reads the model and the dimension from `vectordb_services.rs`, so the check follows the code.
+
+The first file of `vectordb-mirror` stores three records in a VectorDB space with a ChromaDB mirror.
+The mirror writes the records after the commit of the block, through an asynchronous writer.
+So before the second file, the script waits until the mirror holds a stable count of records that is not zero.
+The wait stops after 60 s, and the comparison of the values stays the check.
+
+#### 35.7.6 The limits of the gate
+
+1. A node validates its own block without a replay, because play already computed the state (`validate_self_created`). So step S3 does not certify replay. The harness of step S2 certifies the native replay of each example.
+2. The dry run returns only the first error of the evaluation. The harness of step S2 also checks that an error example gives exactly one error.
+3. A persistent receive reads only the arities that the term names. The harness of step S2 compares all the data of each result channel, so it fails on a datum of another arity.
+4. A dry run has at most 5,000,000 phlo and 15 s (`defaults.conf`). The reads and the error files of the examples use much less.
+
+#### 35.7.7 The control and the result
+
+The script runs one negative control, as the test `examples_reject_a_changed_expectation` of the harness does.
+It reads the first passing values example of phase A again, with one more expected datum.
+The comparison of that read must fail.
+For each example, `records.txt` gets one line with the files, the block hashes, the `errored` flags, the phlo and the outcome.
+Its last line is `node-cli examples: PASS=p FAIL=f (manifest n); control: <verdict>`.
+The script exits with 0 only when each example of the manifest passes and the control passes.
+
+*Table 254. The checks of step S3 by kind of example.*
+
+| Kind | Examples | Check |
+|---|---|---|
+| Values | 35 in phase A, and `vectordb-mirror` in phase B | Each block holds `errored: false`. The records with the tag `a` and the records with the tag `e` are equal multisets. |
+| Error | 32 in phase A | Each earlier block holds `errored: false`, and the last block holds `errored: true`. The dry run at the pre-state of the last block gives the expected `reified:<Code>`. |
+| One of | `determinism-demo` in phase A | The block holds `errored: false`. The read gives exactly one datum, and it equals one of the three choices of the table. |
+| Embedder | `vectordb-embed` in phase B | The block holds `errored: false`. The read gives one datum `[true, v, "all-MiniLM-L6-v2"]`, with 384 values of type `Float32` in `v`. |
+
+*Table 255. The gates of step S3.*
+
+| Gate | Result |
+|---|---|
+| `node-cli-examples.sh --plan-only` | 70 examples, 73 files, 68 examples in phase A and 2 in phase B. 38 result channels, each named only by its own example |
+| `node-cli-examples.sh`, run 1 | 70 of 70 examples pass, 68 in phase A and 2 in phase B. The run took 489 s, and the two builds of the node took 366 s of it. |
+| The negative control | The comparison of `queue-fifo` with one more expected datum fails, as required. |
+| `shellcheck` of the script | No finding |
+| `doc_lint.py` over every campaign document and every Reified section | No finding |
+| The checkers of `checker-commands.txt` | The checkers leg gives `reified-rspaces ALL: PASS=50 FAIL=0 SKIP=0` in 94 s. The FIPS matrix checker passes 1,065 checks over 57 rows. |
+
+### 35.8 The mutation controls of the final gates
+
+Mutation analysis measures a test suite by the small changes of the code that the suite detects ([DLS78](#ref-dls78)).
+Each such change is a mutant.
+A harness applies one mutant at a time, runs the tests that the mutant names, and restores the source files.
+A mutant fails tests when at least one of those tests fails, and otherwise it survives.
+The final gates run the six harnesses of Table 227 on the Rust code of commit `cf4bcb410`.
+Table 256 gives the result: each mutant of each harness fails tests, and each harness restores its sources.
+
+*Table 256. The mutant harnesses in the final gates.*
+
+| Harness | Mutants | Fail tests | Stale | Seconds |
+|---|---|---|---|---|
+| `mirror-mutants.py` | 17 | 17 | 0 | 2,005 |
+| `vectordb-services-mutants.py` | 12 | 12 | 0 | 1,452 |
+| `vector-ops-mutants.py` | 7 | 7 | 0 | 726 |
+| `p7-mutants.py` | 10 | 10 | 0 | 820 |
+| `tensor-mutants.py` | 6 | 6 | 0 | 602 |
+| `vectordb-mutants.py` | 14 | 14 | 0 | 1,521 |
+
+The mutant sets changed from Table 227 in these ways:
+
+- `mirror-mutants.py` runs 17 mutants, not 34. Decisions 98 and 114 retired 20 mutants, and decision 98 added 3 (section 24.5).
+- `vector-ops-mutants.py` runs 7 mutants, not 8, because decision 89 retired `process-unmetered` (section 17.4).
+- `p7-mutants.py` runs 10 mutants, not 11. Decisions 89 and 90 retired one mutant each, and decision 90 added one (section 32.3).
+- `vectordb-services-mutants.py` still runs 12 mutants. Decision 104 replaced `ann-checks-only-in-play` with `ann-replay-checks` (section 18.6).
+
+Two jobs ran the harnesses.
+The first job ran the legs of the aggregate gate, then `mirror-mutants.py` and the first run of `vectordb-services-mutants.py`.
+The second job ran the other five rows of Table 256 in the order of the table, after the fixes of sections 35.8.1 and 35.8.2.
+
+#### 35.8.1 A mutant that edits a comment
+
+In the first job, 10 of the 12 mutants of `vectordb-services-mutants.py` failed tests, in 1,397 s.
+`embed-not-recorded` and `ann-not-recorded` survived, although 7 and 6 tests failed on them in the run of Table 136a.
+The hypothesis was that the old text of each mutant occurs only in a comment, so the mutant changes no code.
+[Decision 127](decision-register.md#decision-127) changed `is_recorded_process` of `reified/system_channels.rs`, and a comment keeps the text from before the change.
+The old text of both mutants occurs once in the file, inside that comment, so the hypothesis holds.
+
+A mutant of this kind always survives, because its harness applies the edit and the code does not change.
+So it can give a false survivor, but never a false kill.
+The fix makes both mutants start at the signature `pub fn is_recorded_process(body: BodyRef) -> bool {` and span the two comparison lines after it.
+`embed-not-recorded` removes the comparison with `EMBED_BODY_REF`, and `ann-not-recorded` removes the comparison with `ANN_BODY_REF`.
+The function also accepts the recorded processes of the registered kinds through `kind_processes()`, and both mutants keep that line.
+
+The library registers one kind, `VECTORDB_KIND`, with no process, and only the test plugin `rholang/tests/reified_kind_plugin.rs` registers processes.
+So each mutant removes a process from the set that native execution reads.
+It is not an equivalent mutant, which changes the code but not its behavior, so that no test can detect it.
+In the second job, `embed-not-recorded` fails 7 tests and `ann-not-recorded` fails 6 tests, the same tests as in Table 136a.
+
+#### 35.8.2 The static check of the mutant texts
+
+A static check finds each mutant of this kind before a run.
+It reads the edits of the six harnesses: 66 mutants with 68 edits.
+For each edit, it counts the occurrences of the old text in the file of the edit.
+The check is a script of the development host, outside the repository, so this algorithm defines it.
+
+```text
+check(the harnesses):
+    for each mutant m of the harnesses:
+        for each edit e of m:
+            at   := the offsets of the old text of e in the file of e
+            span := the text from the start of the line of at[0] to the end of the match
+            state(e) := MISSING     when at is empty
+                        AMBIGUOUS   when at has more than one offset
+                        COMMENT     when each line of span starts with // after its blanks,
+                                    or each line of span is blank
+                        LIVE        otherwise
+        verdict(m) := LIVE when state(e) = LIVE for each edit e of m, else STALE
+    print each verdict, and the counts of LIVE and STALE
+```
+
+The first check found 65 live mutants and 1 stale mutant, `vector-not-packed` of `vector-ops-mutants.py`.
+Decision 127 made `packs_arguments` a function that is not `const`.
+The old text of the mutant matched only the comment that keeps the text from before.
+The fix names the new signature (section 17.4), and the second check found 66 live mutants and no stale mutant.
+
+#### 35.8.3 The guard of the tree
+
+A harness edits the source files in place, so a failed restore would change the tree that the later gates check.
+So each job records three values before and after each harness: the commit of `HEAD`, the SHA-256 of `git status --porcelain` and the SHA-256 of `git diff HEAD`.
+A difference stops the job, and the job keeps the status and the diff of the changed tree.
+In both jobs, the three values after each harness equal the values before it, and each harness reports `restored=True`.
+
+No test failed because of a time limit.
+Each of the 54 test logs of the second job holds the line `finished in` of its suite.
+The slowest suite took 78.6 s, in `vectordb-mutants.py`.
 
 ## References
 

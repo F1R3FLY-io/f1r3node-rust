@@ -1,12 +1,13 @@
 ' 13 Verification pipeline: how the sources of every phase go through checks,
-' local gates and pgmcp recipes to the evidence of the six acceptance
+' local gates and recipe families to the evidence of the six acceptance
 ' categories.
 '
 ' Source of Figure V1 in ../verification.md (section 3). The figure restates
 ' the aggregate gate scripts/check-reified-rspaces-ALL.sh with its eight legs,
 ' the two gates that it calls, the checker list
 ' scripts/verify-reified/checker-commands.txt, the cargo suites of the
-' phases, and the recipe families RF0 to RF12 of the freeze of decision 75.
+' phases, and the recipe families RF0 to RF12 of the final gate set, which
+' runs them on a development host (decision 137).
 ' The counts are those of the gate sets of P9 and of P10. It adds no new
 ' fact.
 '
@@ -17,10 +18,10 @@
 '   2. Checks: each check reads its sources. The negative controls are
 '      checks that must fail.
 '   3. Local gates: the aggregate gate and the cargo suites of each phase.
-'   4. pgmcp recipes: the same commands in the verifier sandbox, in the one
-'      freeze of P11 (decision 75).
-'   5. Acceptance categories: each recipe step binds a criterion of one
-'      category.
+'   4. Recipe families: the same commands, grouped by recipe family. The
+'      final gate set runs them on a development host (decision 137).
+'   5. Acceptance categories: each recipe step gives evidence for a
+'      criterion of one category.
 '
 ' Colors: the shared palette and concept-colors.iuml. The aliases $v_* below
 ' give the concepts of this figure a color. Each alias names a palette
@@ -50,7 +51,7 @@
 !$v_control = $rrs_reject
 ' A local gate.
 !$v_gate = $ca_control
-' A pgmcp verification recipe.
+' A recipe family of the final gate set.
 !$v_recipe = $ca_pool
 ' An acceptance category.
 !$v_category = $ca_delta
@@ -187,11 +188,11 @@ package "3. Local gates" as GATES {
   ]
 }
 
-package "4. pgmcp recipes" as RECIPES {
+package "4. Recipe families" as RECIPES {
   rectangle R_FAMILIES $v_recipe [
   **Recipe families RF0 to RF12**
-  registered in the one freeze of P11
-  (decision 75), one recipe for each leaf
+  run on a development host in the final
+  gate set (decision 137), one recipe for each leaf
   RF12 runs the aggregate gate
   ]
 }
@@ -269,12 +270,12 @@ legend bottom
 |<$v_check>    | check that must pass |
 |<$v_control>  | negative control: check that must fail |
 |<$v_gate>     | local gate on a development host |
-|<$v_recipe>   | pgmcp verification recipe |
+|<$v_recipe>   | recipe family of the final gate set |
 |<$v_category> | acceptance category |
 **Arrows**
 |<$rrs_relation> | the check reads the source |
 |<$rrs_flow>     | runs in, or runs the same command as |
 |<$rrs_fail>     | the gate requires the expected failure |
-|<$rrs_effect>   | the recipe step binds evidence of the category |
+|<$rrs_effect>   | the recipe step gives evidence of the category |
 endlegend
 @enduml

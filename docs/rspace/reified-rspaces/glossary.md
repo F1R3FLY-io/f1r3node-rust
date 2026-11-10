@@ -407,6 +407,10 @@ A leaf is a work item without children.
 The verifier of pgmcp runs the checks of a leaf in a sandbox, on a read-only snapshot of the worktrees.
 A leaf is complete only when the verifier confirms each of its criteria.
 
+Changed by [decision 137](decision-register.md#decision-137): the verifier runs no leaf of this campaign.
+A leaf closes at the status claimed_done when each of its checks has passed on a development host.
+The status claimed_done records the claim of the agent that the work is complete, and only the verifier sets the status verified.
+
 ## Part 2: campaign terms
 
 ### Reified RSpace
@@ -1317,6 +1321,9 @@ A missing tool counts as a failure, never as a skip.
 A verification recipe is a pgmcp record of the commands of a check, with their pinned inputs and limits.
 Each command is a step with a key, such as `p1-props`.
 A criterion of a leaf binds to one step of a recipe.
+
+Changed by [decision 137](decision-register.md#decision-137): pgmcp registers no recipe of this campaign.
+The recipe ids and the step keys name the commands that the final gate set runs on a development host.
 
 ### Acceptance category
 
