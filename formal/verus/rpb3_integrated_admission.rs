@@ -5825,6 +5825,53 @@ pub proof fn live_runtime_epm_source_child_eof_accepts(
     runtime_epm_source_child_selected_complete(before.source.runtime, bytes);
 }
 
+/// This lemma and the next two each prove, in a solver query of their own, a
+/// few concrete facts about the modeled empty nested after-accept state. The EOF
+/// witness below passes them to `live_runtime_epm_source_child_eof_accepts`, so
+/// its own query never has to unfold that state.
+pub proof fn live_epm_modeled_empty_nested_eof_product_identity()
+    ensures {
+        let before = live_epm_modeled_empty_nested_after_accept();
+        let product = product_epm_nested_source_witness_after(
+            product_epm_modeled_empty_nested_source(),
+        );
+        &&& before.source.product == product
+        &&& before.source.runtime.score.admission == product.bridge.admission
+    },
+{
+}
+
+pub proof fn live_epm_modeled_empty_nested_eof_admission_counts()
+    ensures {
+        let accepted = product_epm_nested_source_witness_after(
+            product_epm_modeled_empty_nested_source(),
+        ).bridge.admission;
+        &&& accepted.frames.len() == 2
+        &&& accepted.completed == 1
+    },
+{
+    product_epm_modeled_empty_nested_source_accepts();
+    let source = product_epm_modeled_empty_nested_source();
+    let finished = epm_source_accept::epm_end_linked(source);
+    let accepted = epm_source_accept::epm_source_finish_accept(source).unwrap();
+    epm_source_accept::epm_source_accept_carries_end_summary(source, finished, accepted);
+}
+
+pub proof fn live_epm_modeled_empty_nested_eof_frame_shape()
+    ensures {
+        let accepted = product_epm_nested_source_witness_after(
+            product_epm_modeled_empty_nested_source(),
+        ).bridge.admission;
+        &&& accepted.frames.last().cursor == accepted.frames.last().region_end
+        &&& accepted.frames[0].family == admission::AdmissionFamily::Expr
+        &&& accepted.frames[0].waiting_slot == Some(0)
+        &&& accepted.frames[0].waiting_tag == Some(32)
+    },
+{
+    product_epm_modeled_empty_nested_source_accepts();
+    live_epm_modeled_empty_nested_eof_admission_counts();
+}
+
 pub proof fn live_epm_modeled_empty_nested_eof_accepts()
     ensures match live_runtime_epm_source_eof_selected(
         live_epm_modeled_empty_nested_after_accept(),
@@ -5838,6 +5885,9 @@ pub proof fn live_epm_modeled_empty_nested_eof_accepts()
 {
     product_epm_modeled_empty_nested_complete_ready();
     live_epm_modeled_empty_nested_accept_witness();
+    live_epm_modeled_empty_nested_eof_product_identity();
+    live_epm_modeled_empty_nested_eof_admission_counts();
+    live_epm_modeled_empty_nested_eof_frame_shape();
     let before = live_epm_modeled_empty_nested_after_accept();
     live_runtime_epm_source_child_eof_accepts(before);
 }

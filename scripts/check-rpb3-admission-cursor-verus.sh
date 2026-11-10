@@ -272,6 +272,9 @@ integrated_core_proofs=(
   live_epm_modeled_empty_nested_after_wf
   live_epm_modeled_empty_nested_after_cursor_end
   live_epm_modeled_empty_nested_accept_witness
+  live_epm_modeled_empty_nested_eof_product_identity
+  live_epm_modeled_empty_nested_eof_admission_counts
+  live_epm_modeled_empty_nested_eof_frame_shape
   live_epm_modeled_empty_nested_eof_accepts
   live_epm_modeled_empty_nested_poststate_selected
   live_epm_modeled_empty_nested_poststate_wf
