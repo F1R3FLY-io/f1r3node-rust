@@ -8549,7 +8549,7 @@ Table 248 lists the diagrams of the step.
 The counts of diagram 13 come from the gate logs of step S7.
 They are 308 closed headlines, 456 negative checks, 128 TLA+ configurations with a BOUNDS header, three Z3 scripts and 46 checker commands.
 The dates of diagram 14 are the author dates of the commits of the branch.
-P10 step S11 adds the closing commit of P10 to diagram 14.
+P10 step S11 added the closing commit of P10 and the bar of P11 to diagram 14.
 The README row of P0 now names the commit `6f7a80da3`, which recorded the design ledger after the restore, as diagram 14 does.
 
 *Table 249. The gates of step S6.*

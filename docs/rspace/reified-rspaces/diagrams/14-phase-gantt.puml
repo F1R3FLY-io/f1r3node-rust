@@ -1,5 +1,5 @@
 ' 14 Phase Gantt chart: the days of each phase of the campaign, from the
-' realignment P0 to P10, and the two phases that have no date.
+' realignment P0 to P11, and the phase that has no date.
 '
 ' Source of Figure 1 in ../README.md (section "Status of the phases"). The
 ' figure restates Table 2 of that section and the dates of the commits in the
@@ -17,9 +17,16 @@
 '      execution (decision 47), VectorDB and ChromaDB (P6), and the temp and
 '      seq qualifiers, HashSet, theories and rehydration (P7).
 '   4. The user agent-backed spaces (P8) and the consensus integration (P9).
-'   5. P10, which is in progress. A note names its done and its open steps.
-'   6. A note gives P11 and P12, which have no date: P11 follows P10, and
-'      P12 waits for the readiness signal of F1r3lang (SIG-F).
+'   5. The verification and the documents (P10), and the final gate set
+'      (P11), which overlaps the last days of P10.
+'   6. A note gives the steps of P10, the gate set of P11, and P12, which has
+'      no date: P12 waits for the readiness signal of F1r3lang (SIG-F).
+'
+' Changed by decision 137: P11 ran the final gate set on a development host,
+' and pgmcp ran no leaf. The text before, in the note of the figure:
+' '   **Phases with no date**
+' '   P11 follows P10: one pgmcp freeze registers the recipes and runs the
+' '   verifier for every active leaf (decision 75), with the final gates.
 '
 ' Each bar covers the days from the first commit of its phase to its closing
 ' commit. The label of each bar names the closing commit.
@@ -46,7 +53,7 @@
 !$g_decision = $rrs_tag
 ' The consensus integration.
 !$g_consensus = $rrs_storage
-' The verification and the documents of P10.
+' The verification and the documents of P10, and the final gate set of P11.
 !$g_verification = $rrs_system
 ' The border of every bar.
 !$g_border = $rrs_relation
@@ -91,17 +98,18 @@ printscale daily zoom 3
 [P9] is colored in $g_consensus/$g_border
 
 -- Verification and documents --
-[P10: formal models, examples, documents, FIPS matrix, benchmarks (in progress)] as [P10] starts 2026-10-12 and ends 2026-10-12
+[P10: formal models, examples, documents, FIPS matrix, benchmarks (c31318b45)] as [P10] starts 2026-10-12 and ends 2026-11-10
 [P10] is colored in $g_verification/$g_border
+[P11: the final gate set on a development host (c31318b45)] as [P11] starts 2026-11-09 and ends 2026-11-10
+[P11] is colored in $g_verification/$g_border
 note bottom
-  **P10 is in progress.** Done: S1 (the aggregate gate), S7 (Checkpoint.v),
-  S2 (the examples), S5 (the documents) and S6 (the diagrams).
-  Open: S4 (the FIPS matrix), S8 (the benchmarks), S9 to S11 (close-out).
-  S3 (the node CLI gate) waits for the repair of the node CLI (decision 86).
+  **P10 and P11 are complete.** P10: S1 (the aggregate gate), S7 (Checkpoint.v),
+  S2 (the examples), S5 (the documents), S6 (the diagrams), S4 (the FIPS matrix),
+  S8 (the benchmarks), S3 (the node CLI gate, decision 136) and S9 to S11 (close-out).
+  P11 ran the final gate set on a development host, with no pgmcp run (decision 137).
+  Section 35 of the dossier records P10, and section 35.9 records P11.
 
-  **Phases with no date**
-  P11 follows P10: one pgmcp freeze registers the recipes and runs the
-  verifier for every active leaf (decision 75), with the final gates.
+  **Phase with no date**
   P12 waits for the readiness signal of F1r3lang (SIG-F): the merge of
   F1r3lang, the Rholang 1.4 productions, and TensorLogic.
 
@@ -112,6 +120,6 @@ note bottom
   |<$g_spaces>       | space families and agents |
   |<$g_decision>     | merge and decisions for every family |
   |<$g_consensus>    | consensus integration |
-  |<$g_verification> | verification and documents |
+  |<$g_verification> | verification, documents and the final gate set |
 end note
 @endgantt

@@ -97,7 +97,7 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 11 | [Layout of the record envelope](diagrams/11-record-envelope.svg) (component) | Drawn in P5 wave W3, with the join continuation of version 2 |
 | 12 | [Routing decision](diagrams/12-routing-decision.svg) (activity) | Drawn in P4 |
 | 13 | [Verification pipeline](diagrams/13-verification-pipeline.svg) (component) | Drawn for the checks of P1. P10 step S6 extended it to every phase, with the aggregate gate (`rrs-doc-diagrams`). |
-| 14 | [Phase Gantt chart](diagrams/14-phase-gantt.svg) (Gantt) | Drawn in P10 step S6. P10 step S11 adds the closing commit of P10 (`rrs-doc-diagrams`). |
+| 14 | [Phase Gantt chart](diagrams/14-phase-gantt.svg) (Gantt) | Drawn in P10 step S6. P10 step S11 added the closing commit of P10 and the bar of P11 (`rrs-doc-diagrams`). |
 | 15 | [Normalization of the Reified syntax](diagrams/15-syntax-normalization.svg) (activity) | Drawn in P3 |
 | 16 | [Space replay when a deploy runs out of phlo](diagrams/16-space-replay-out-of-phlo.svg) (sequence) | Drawn for the finding. Its third part shows the fix of decision 36. |
 | 17 | [Legacy charges of a space transaction](diagrams/17-legacy-charge-chain.svg) (sequence) | Drawn for decision 45, Option P |
@@ -167,11 +167,12 @@ P3 runs in parallel in the parser worktree.
 
 ### Status of the phases
 
-Phases P0 to P9 are complete.
+Phases P0 to P11 are complete.
 The next table gives the commit that closed each phase and the section of the dossier that records it.
-Phase P10 is in progress, and section 35 of the dossier records each of its steps.
-Phase P11 runs the one pgmcp freeze of [decision 75](decision-register.md#decision-75), and phase P12 waits for the readiness signal of F1r3lang.
-Changed by [decision 137](decision-register.md#decision-137): P11 runs the final gate set on a development host, and pgmcp runs no leaf.
+Section 35 of the dossier records the steps of P10, and section 35.9 records the final gate set of P11.
+Phase P11 ran the final gate set on a development host, and pgmcp ran no leaf ([decision 137](decision-register.md#decision-137)).
+That gate set replaces the one pgmcp freeze of [decision 75](decision-register.md#decision-75).
+Phase P12 waits for the readiness signal of F1r3lang.
 
 | Phase | Closing commit | Record |
 |---|---|---|
@@ -186,10 +187,12 @@ Changed by [decision 137](decision-register.md#decision-137): P11 runs the final
 | P7 | `be4e9def3` | Sections 27 to 32 |
 | P8 | `d003151d3` | [Section 33](verification.md#33-phase-p8-the-spaces-of-user-agents) |
 | P9 | `e8cd072ff` | [Section 34](verification.md#34-phase-p9-consensus-integration) |
+| P10 | `c31318b45` | [Section 35](verification.md#35-phase-p10-the-formal-verification-closure-the-documents-the-examples-and-the-benchmarks) |
+| P11 | `c31318b45`, with the pin of the parser revision in `cf4bcb410` | [Section 35.9](verification.md#359-step-s11-the-full-gate-set) |
 
 Figure 1 shows the days of each phase, from the first commit of the phase to its closing commit.
 
-![Gantt chart of the phases of the campaign on a daily scale from Sunday 2026-10-04 to Monday 2026-10-12. Realignment: P0, the backup, the restore and the ledger record, on October 4 (6f7a80da3). Foundations: P1, the storage substrate, on October 4 (b783d6122); P2, the marker encoding of the syntax, on October 4 (e9812d0e5); P3, the parser v3 and the normalizers, from October 4 to October 5 (a0bcaf90e). Space families: P4, the family hashmap:queue, on October 5 (294c95632); the milestone of decision 44, the merge of feature/cost-accounted-rho, on October 5 (881257d75); decisions 42, 43, 45 and 46 on October 6 (2c2b45bf5); P5, the other disciplines, the outer stores and the joins, from October 6 to October 7 (418d81d7c); decision 47, spaces in native execution, on October 7 (d559efa48); P6, the VectorDB family and the ChromaDB backend, from October 8 to October 9 (8ecc6b786); P7, the temp and seq qualifiers, HashSet, theories and rehydration, from October 9 to October 10 (be4e9def3). Agents and consensus: P8, the user agent-backed spaces, from October 10 to October 11 (d003151d3); P9, the consensus integration, from October 11 to October 12 (e8cd072ff). Verification and documents: P10, in progress from October 12. A note names the done steps of P10 (S1, S7, S2, S5 and S6) and its open steps (S4, S8, S9 to S11, and S3, which waits for the repair of the node CLI, decision 86). The note also gives the two phases with no date: P11, the one pgmcp freeze of decision 75 after P10, and P12, which waits for the readiness signal of F1r3lang. The colors mark the kind of work: realignment, storage substrate, syntax, space families and agents, merge and decisions, consensus integration, and verification and documents.](diagrams/14-phase-gantt.svg)
+![Gantt chart of the phases of the campaign on a daily scale from Sunday 2026-10-04 to Tuesday 2026-11-10. Realignment: P0, the backup, the restore and the ledger record, on October 4 (6f7a80da3). Foundations: P1, the storage substrate, on October 4 (b783d6122); P2, the marker encoding of the syntax, on October 4 (e9812d0e5); P3, the parser v3 and the normalizers, from October 4 to October 5 (a0bcaf90e). Space families: P4, the family hashmap:queue, on October 5 (294c95632); the milestone of decision 44, the merge of feature/cost-accounted-rho, on October 5 (881257d75); decisions 42, 43, 45 and 46 on October 6 (2c2b45bf5); P5, the other disciplines, the outer stores and the joins, from October 6 to October 7 (418d81d7c); decision 47, spaces in native execution, on October 7 (d559efa48); P6, the VectorDB family and the ChromaDB backend, from October 8 to October 9 (8ecc6b786); P7, the temp and seq qualifiers, HashSet, theories and rehydration, from October 9 to October 10 (be4e9def3). Agents and consensus: P8, the user agent-backed spaces, from October 10 to October 11 (d003151d3); P9, the consensus integration, from October 11 to October 12 (e8cd072ff). Verification and documents: P10, from October 12 to November 10 (c31318b45), and P11, the final gate set, from November 9 to November 10 (c31318b45). A note names the steps of P10: S1, S7, S2, S5, S6, S4, S8, S3, and S9 to S11. It says that P11 ran on a development host with no pgmcp run (decision 137). It also gives the phase with no date: P12, which waits for the readiness signal of F1r3lang. The colors mark the kind of work: realignment, storage substrate, syntax, space families and agents, merge and decisions, consensus integration, and verification, documents and the final gate set.](diagrams/14-phase-gantt.svg)
 
 *Figure 1. Source: [diagrams/14-phase-gantt.puml](diagrams/14-phase-gantt.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
