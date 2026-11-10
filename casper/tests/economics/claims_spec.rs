@@ -180,7 +180,10 @@ async fn tally(
         &dag.lookup_unsafe(&floor.block_hash).unwrap(),
         &FloorState {
             bonds: bonds(bonds_at_floor),
-            active_validators: bonds_at_floor.iter().map(|(byte, _)| validator(*byte)).collect(),
+            active_validators: bonds_at_floor
+                .iter()
+                .map(|(byte, _)| validator(*byte))
+                .collect(),
             withdrawers: bonds(withdrawers_at_floor),
             claims: Vec::new(),
             ejected: Vec::new(),
