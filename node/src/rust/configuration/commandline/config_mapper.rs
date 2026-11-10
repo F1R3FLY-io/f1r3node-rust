@@ -774,6 +774,7 @@ mod tests {
                 http_max_body_bytes: 16777216,
                 max_blocks_limit: 100,
                 enable_reporting: false,
+                report_cache_retention_blocks: 0,
                 exploratory_deploy_max_concurrent: 1,
                 exploratory_deploy_phlo_limit: 5_000_000,
                 exploratory_deploy_execution_timeout: Duration::from_secs(15),

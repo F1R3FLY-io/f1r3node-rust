@@ -852,7 +852,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         block_store.clone(),
         oracle,
         conf.dev_mode,
-    );
+    )
+    .with_report_cache_retention(conf.api_server.report_cache_retention_blocks);
 
     // API Servers - gRPC services for REPL, Deploy, Propose, and LSP
     let is_node_read_only = conf.casper.validator_private_key.is_none();
