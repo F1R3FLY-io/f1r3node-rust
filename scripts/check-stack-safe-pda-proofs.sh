@@ -2052,7 +2052,7 @@ rpb3_run_tests 9 --lib incomplete_preservation_tests
 rpb3_run_tests 14 --lib protobuf_decoder_oracle::
 rpb3_run_tests 2 --release -j4 --features protobuf-projection-experiment --lib protobuf_decoder_oracle::measurement::measurement_
 rpb3_run_tests 2 --lib oracle_body_guards::
-rpb3_run_tests 5 --lib decoder_control_tests::
+rpb3_run_tests 6 --lib decoder_control_tests::
 rpb3_run_tests 3 --lib snapshot_continuation_tests::
 rpb3_run_tests 6 --lib admission_retained_history::
 rpb3_run_tests 4 --lib planned_fragment_comparison_tests::

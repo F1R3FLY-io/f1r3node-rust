@@ -1855,7 +1855,7 @@ fn protobuf_decoder_control_composition_has_proof_and_native_bindings() {
     ]));
     assert!(has_runner_command(&runner, &[
         "rpb3_run_tests",
-        "5",
+        "6",
         "--lib",
         "decoder_control_tests::"
     ]));
