@@ -87,6 +87,7 @@ source_files=(
   "$model_dir/rpb3_epm_obligation_return_live.rs"
   "$model_dir/rpb3_epm_parser_escape_invariant.rs"
   "$model_dir/rpb3_epm_obligation_return_source.rs"
+  "$model_dir/rpb3_epm_frame_path_invariant.rs"
   "$model_dir/rpb3_epathmap_terminal_nested_return_composition.rs"
   "$model_dir/rpb3_canonical_path_eof_owner_obligation_refinement.rs"
   "$model_dir/rpb3_integrated_admission.rs"
@@ -897,6 +898,34 @@ proofs_rpb3_epm_batch_cursor_source_extraction=(
   accepted_plan_raw_expansion_has_count
   accepted_plan_attachment_preserves_raw_count
   accepted_act_source_count_equals_expansion
+)
+proofs_rpb3_epm_frame_path_invariant=(
+  parser_top_only_obligation_free
+  parser_pop_top_frames
+  parser_replace_top_frames
+  parser_bubble_frames
+  parser_settle_frames
+  parser_tag_step_frames
+  parser_bytes_step_frames
+  parser_varint_finish_frames
+  parser_focus_step_frames
+  parser_reusable_payload_top
+  parser_feed_byte_frames
+  parser_resolve_frames
+  epm_layout_path_lengths
+  epm_restore_push_wf
+  epm_frame_path_wf_initial
+  epm_frame_path_wf_plain_edge
+  epm_frame_path_wf_start_edge
+  epm_frame_path_wf_payload_edge
+  epm_frame_path_wf_leave
+  epm_frame_path_wf_value
+  epm_frame_path_wf_end
+  epm_frame_path_wf_event_step
+  epm_frame_path_wf_map_value_accept
+  epm_frame_path_wf_obligation_accept
+  epm_frame_path_wf_accept_child
+  epm_frame_path_wf_discharges_return_premises
 )
 proofs_rpb3_epm_loop_continuation_source=(
   forward_scalar_prefix_preserves_image
@@ -1814,6 +1843,7 @@ gated_modules=(
   rpb3_epm_active_line_work_source
   rpb3_epm_batch_cursor_composition
   rpb3_epm_batch_cursor_source_extraction
+  rpb3_epm_frame_path_invariant
   rpb3_epm_loop_continuation_source
   rpb3_epm_loop_observation_bridge
   rpb3_epm_nested_accept_checked_stats_refinement
@@ -3956,6 +3986,39 @@ fi
 if ! rg -q '^verification results:: 5 verified, 0 errors' "$epm_obligation_return_source_log"; then
   cat "$epm_obligation_return_source_log"
   echo "rpb3-admission-cursor: EPathMap obligation return source module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_epm_frame_path_invariant[@]}"; do
+  proof_log="$evidence_dir/epm-frame-path-invariant-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_epm_frame_path_invariant --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap frame path invariant $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap frame path invariant $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+epm_frame_path_invariant_log="$evidence_dir/epm-frame-path-invariant-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_epm_frame_path_invariant \
+  "$integrated_source" \
+  >"$epm_frame_path_invariant_log" 2>&1; then
+  cat "$epm_frame_path_invariant_log"
+  echo "rpb3-admission-cursor: EPathMap frame path invariant module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 26 verified, 0 errors' "$epm_frame_path_invariant_log"; then
+  cat "$epm_frame_path_invariant_log"
+  echo "rpb3-admission-cursor: EPathMap frame path invariant module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do

@@ -92,6 +92,8 @@ mod rpb3_epm_obligation_return_live;
 mod rpb3_epm_parser_escape_invariant;
 #[cfg(rpb3_live_push)]
 mod rpb3_epm_obligation_return_source;
+#[cfg(rpb3_live_push)]
+mod rpb3_epm_frame_path_invariant;
 
 use {
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
