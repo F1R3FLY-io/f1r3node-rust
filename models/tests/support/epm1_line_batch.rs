@@ -72,10 +72,20 @@ fn compare(input: IndexedByteRegion<'_>, requested: usize) -> (usize, usize) {
     );
     let mut batches = (0, 0);
     loop {
+        let work_source = actual.active_line_work_source();
+        let event_index = actual.topology_events;
+        let source_position = actual.topology_source_position();
         let committed = {
             actual
                 .line_span()
                 .map(|span| {
+                    let work = work_source
+                        .as_ref()
+                        .expect("active EPathMap line has ACT work");
+                    assert_eq!(work.event_index, event_index);
+                    assert_eq!(Some(work.position), source_position);
+                    assert_eq!(work.source_range, span.source_range());
+                    assert_eq!(work.direction, span.direction());
                     let direction = span.direction();
                     let width = requested.min(span.capacity());
                     assert!(width > 0);
@@ -108,7 +118,7 @@ fn compare(input: IndexedByteRegion<'_>, requested: usize) -> (usize, usize) {
                             }
                         }
                     }
-                    let source = span.prepare(width).unwrap().commit();
+                    let source = span.prepare(width).unwrap().commit().0;
                     assert_eq!(Some(source), last);
                     match direction {
                         CanonicalCompactTrieLineDirection::Forward => batches.0 += 1,
@@ -222,9 +232,19 @@ fn prepared_epm_declines_preserve_cursor_and_value_authority() {
     assert_eq!(actual.line_span().unwrap().source_range(), range);
     for remaining in [0, 1, 2, 6] {
         actual.topology_events = usize::MAX - remaining;
-        let span = actual.line_span().unwrap();
-        assert_eq!(span.capacity(), range.len().min(remaining / 2));
-        assert!(span.prepare(remaining / 2 + 1).is_none());
+        let capacity = actual.line_span().unwrap().capacity();
+        assert_eq!(capacity, range.len().min(remaining / 2));
+        let work = actual.active_line_work_source().unwrap();
+        assert_eq!(work.event_index, actual.topology_events);
+        assert_eq!(work.source_range, range);
+        assert_eq!(work.remaining_work_events, range.len().checked_mul(2));
+        assert_eq!(work.admissible_source_width, capacity);
+        assert_eq!(work.admissible_work_events, capacity * 2);
+        assert!(actual
+            .line_span()
+            .unwrap()
+            .prepare(remaining / 2 + 1)
+            .is_none());
         assert_eq!(actual.topology_events, usize::MAX - remaining);
         assert_eq!(actual.line_span().unwrap().source_range(), range);
     }
@@ -250,11 +270,22 @@ fn prepared_epm_declines_preserve_cursor_and_value_authority() {
     assert_eq!(actual.line_span().unwrap().source_range(), reverse);
     actual.topology_events = usize::MAX;
     assert_eq!(actual.line_span().unwrap().capacity(), 0);
+    assert_eq!(
+        actual
+            .active_line_work_source()
+            .unwrap()
+            .admissible_source_width,
+        0
+    );
     assert!(actual.line_span().unwrap().prepare(1).is_none());
     assert_eq!(actual.line_span().unwrap().source_range(), reverse);
     actual.topology_events = usize::MAX - 1;
     expected.topology_events = usize::MAX - 1;
     assert_eq!(actual.line_span().unwrap().capacity(), 1);
+    let work = actual.active_line_work_source().unwrap();
+    assert_eq!(work.source_range, reverse);
+    assert_eq!(work.admissible_source_width, 1);
+    assert_eq!(work.admissible_work_events, 1);
     assert!(actual.line_span().unwrap().prepare(2).is_none());
     assert_authority(&actual, &expected);
     assert_eq!(actual.line_span().unwrap().source_range(), reverse);
@@ -262,7 +293,7 @@ fn prepared_epm_declines_preserve_cursor_and_value_authority() {
     assert_authority(&actual, &expected);
     let prepared = actual.line_span().unwrap().prepare(1).unwrap();
     let last = event(expected.next_event().unwrap().unwrap()).4;
-    assert_eq!(prepared.commit(), last);
+    assert_eq!(prepared.commit().0, last);
     assert_authority(&actual, &expected);
     assert_eq!(actual.topology_events, usize::MAX);
     for terminal in [

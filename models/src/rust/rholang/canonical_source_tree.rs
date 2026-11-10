@@ -1,6 +1,10 @@
+#[cfg(test)]
+use std::collections::HashMap;
 use std::fmt;
-use std::ops::Range;
-use std::sync::Arc;
+use std::ops::{Deref, Range};
+use std::sync::{Arc, Weak};
+
+use verified_score_store::{SourceBorrowedLeaf, SourceNodeShape};
 
 use super::canonical_bytes_arena::{
     CanonicalByteProvenance, CanonicalLocatedByte, FrozenCanonicalByteCursor, FrozenCanonicalBytes,
@@ -11,25 +15,28 @@ use super::canonical_bytes_arena::{
 #[path = "../../../tests/support/canonical_source_tree.rs"]
 pub(crate) mod tests;
 
+#[cfg(test)]
+#[path = "../../../tests/support/source_tree_score_projection.rs"]
+mod score_projection_tests;
+
 const RELEASE_CAPACITY: usize = 1 + 2 * (usize::BITS as usize - 1);
 
 type NodeRef<'src> = Arc<SourceNode<'src>>;
 type Root<'src> = Option<NodeRef<'src>>;
 
 struct SourceNode<'src> {
-    len: usize,
-    height: u8,
+    shape: SourceNodeShape,
     payload: Option<SourcePayload<'src>>,
 }
 
+impl Deref for SourceNode<'_> {
+    type Target = SourceNodeShape;
+
+    fn deref(&self) -> &Self::Target { &self.shape }
+}
+
 enum SourcePayload<'src> {
-    Borrowed {
-        bytes: &'src [u8],
-        start: usize,
-        len: usize,
-        source: u32,
-        absolute_start: usize,
-    },
+    Borrowed(SourceBorrowedLeaf<'src>),
     Frozen(FrozenCanonicalBytes),
     Branch2([NodeRef<'src>; 2]),
     Branch3([NodeRef<'src>; 3]),
@@ -41,27 +48,17 @@ impl<'src> SourcePayload<'src> {
         range: Range<usize>,
         source: u32,
         absolute_start: usize,
-    ) -> Option<Self> {
-        let len = range.end.checked_sub(range.start)?;
-        bytes.get(range.clone())?;
-        absolute_start.checked_add(range.start)?;
-        if len != 0 {
-            absolute_start.checked_add(range.end - 1)?;
-        }
-        Some(Self::Borrowed {
-            bytes,
-            start: range.start,
-            len,
-            source,
-            absolute_start,
-        })
+    ) -> Option<(Self, SourceNodeShape)> {
+        let leaf = SourceBorrowedLeaf::new(bytes, range.start, range.end, source, absolute_start)?;
+        let shape = leaf.shape();
+        Some((Self::Borrowed(leaf), shape))
     }
 }
 
 impl Drop for SourceNode<'_> {
     fn drop(&mut self) {
         match self.payload.take() {
-            None | Some(SourcePayload::Borrowed { .. }) => {}
+            None | Some(SourcePayload::Borrowed(_)) => {}
             Some(SourcePayload::Frozen(value)) => drop(value),
             Some(payload) => release_branch(payload),
         }
@@ -88,7 +85,7 @@ fn release_branch(payload: SourcePayload<'_>) {
                 }
             }
             Some(SourcePayload::Frozen(value)) => drop(value),
-            None | Some(SourcePayload::Borrowed { .. }) => {}
+            None | Some(SourcePayload::Borrowed(_)) => {}
         }
         loop {
             if count == 0 {
@@ -111,6 +108,231 @@ pub(crate) struct SourceTreeWindow<'src> {
     len: usize,
 }
 
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) enum ProjectedSourcePayload {
+    Borrowed(Vec<u8>),
+    Frozen(Vec<u8>),
+    Branch2([usize; 2]),
+    Branch3([usize; 3]),
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct ProjectedSourceNode {
+    pub(crate) identity: usize,
+    pub(crate) len: usize,
+    pub(crate) payload: ProjectedSourcePayload,
+    pub(crate) anchors: Option<Vec<CanonicalByteProvenance>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ProjectedSourceWindow {
+    pub(crate) root: Option<usize>,
+    pub(crate) start: usize,
+    pub(crate) len: usize,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct SourceDagProjection {
+    pub(crate) nodes: Vec<ProjectedSourceNode>,
+    pub(crate) root: ProjectedSourceWindow,
+    pub(crate) pending: Vec<ProjectedSourceWindow>,
+}
+
+#[cfg(test)]
+impl SourceDagProjection {
+    pub(crate) fn capture(source: &SourceTreeWindow<'_>, pending: &[SourceTreeWindow<'_>]) -> Self {
+        let mut nodes: Vec<ProjectedSourceNode> = Vec::new();
+        let mut ids = HashMap::new();
+        for window in std::iter::once(source).chain(pending) {
+            let Some(root) = window.root.as_ref() else {
+                assert_eq!(window.len, 0);
+                continue;
+            };
+            let mut walk = vec![(root, false)];
+            while let Some((node, expanded)) = walk.pop() {
+                let identity = Arc::as_ptr(node) as usize;
+                if ids.contains_key(&identity) {
+                    continue;
+                }
+                if !expanded {
+                    walk.push((node, true));
+                    match node.payload.as_ref().expect("live source node payload") {
+                        SourcePayload::Branch2(children) => {
+                            walk.extend(children.iter().rev().map(|child| (child, false)));
+                        }
+                        SourcePayload::Branch3(children) => {
+                            walk.extend(children.iter().rev().map(|child| (child, false)));
+                        }
+                        SourcePayload::Borrowed(_) | SourcePayload::Frozen(_) => {}
+                    }
+                    continue;
+                }
+                let (payload, anchors) =
+                    match node.payload.as_ref().expect("live source node payload") {
+                        SourcePayload::Borrowed(leaf) => {
+                            let (selected, _) = leaf
+                                .selected_slice(0, leaf.len())
+                                .expect("borrowed source leaf");
+                            let anchors = (0..leaf.len())
+                                .map(|at| {
+                                    let located =
+                                        leaf.located_at(at).expect("verified borrowed leaf");
+                                    CanonicalByteProvenance::new(located.1, located.2)
+                                })
+                                .collect();
+                            (
+                                ProjectedSourcePayload::Borrowed(selected.to_vec()),
+                                Some(anchors),
+                            )
+                        }
+                        SourcePayload::Frozen(value) => {
+                            let located = value.located_bytes().collect::<Vec<_>>();
+                            let bytes = located.iter().map(|entry| entry.byte).collect();
+                            let anchors = located.iter().map(|entry| entry.provenance).collect();
+                            (ProjectedSourcePayload::Frozen(bytes), Some(anchors))
+                        }
+                        SourcePayload::Branch2(children) => (
+                            ProjectedSourcePayload::Branch2(std::array::from_fn(|i| {
+                                ids[&(Arc::as_ptr(&children[i]) as usize)]
+                            })),
+                            None,
+                        ),
+                        SourcePayload::Branch3(children) => (
+                            ProjectedSourcePayload::Branch3(std::array::from_fn(|i| {
+                                ids[&(Arc::as_ptr(&children[i]) as usize)]
+                            })),
+                            None,
+                        ),
+                    };
+                let length = match &payload {
+                    ProjectedSourcePayload::Borrowed(bytes)
+                    | ProjectedSourcePayload::Frozen(bytes) => bytes.len(),
+                    ProjectedSourcePayload::Branch2(children) => children
+                        .iter()
+                        .try_fold(0usize, |length, child| {
+                            length.checked_add(nodes[*child].len)
+                        })
+                        .expect("checked branch length"),
+                    ProjectedSourcePayload::Branch3(children) => children
+                        .iter()
+                        .try_fold(0usize, |length, child| {
+                            length.checked_add(nodes[*child].len)
+                        })
+                        .expect("checked branch length"),
+                };
+                assert_eq!(length, node.len);
+                let id = nodes.len();
+                nodes.push(ProjectedSourceNode {
+                    identity,
+                    len: length,
+                    payload,
+                    anchors,
+                });
+                ids.insert(identity, id);
+            }
+        }
+        let project_window = |window: &SourceTreeWindow<'_>| {
+            let root = window
+                .root
+                .as_ref()
+                .map(|node| ids[&(Arc::as_ptr(node) as usize)]);
+            assert!(window
+                .start
+                .checked_add(window.len)
+                .is_some_and(|end| end <= root.map_or(0, |id| nodes[id].len)));
+            ProjectedSourceWindow {
+                root,
+                start: window.start,
+                len: window.len,
+            }
+        };
+        Self {
+            root: project_window(source),
+            pending: pending.iter().map(project_window).collect(),
+            nodes,
+        }
+    }
+
+    pub(crate) fn window_bytes(&self, window: ProjectedSourceWindow) -> Vec<u8> {
+        self.window_located_bytes(window)
+            .into_iter()
+            .map(|entry| entry.byte)
+            .collect()
+    }
+
+    /// Test-only byte/anchor image reconstructed from the retained DAG payloads.
+    /// This is executable differential evidence, not an Arc-to-ghost proof.
+    pub(crate) fn window_located_bytes(
+        &self,
+        window: ProjectedSourceWindow,
+    ) -> Vec<CanonicalLocatedByte> {
+        (0..window.len)
+            .map(|offset| {
+                let mut at = window.start + offset;
+                let mut node_id = window.root.expect("nonempty projected window");
+                loop {
+                    let node = &self.nodes[node_id];
+                    match &node.payload {
+                        ProjectedSourcePayload::Borrowed(bytes)
+                        | ProjectedSourcePayload::Frozen(bytes) => {
+                            let anchor = node.anchors.as_ref().expect("leaf anchor image")[at];
+                            break CanonicalLocatedByte::new(bytes[at], anchor);
+                        }
+                        ProjectedSourcePayload::Branch2(children) => {
+                            let left = children[0];
+                            if at < self.nodes[left].len {
+                                node_id = left;
+                            } else {
+                                at -= self.nodes[left].len;
+                                node_id = children[1];
+                            }
+                        }
+                        ProjectedSourcePayload::Branch3(children) => {
+                            let first = children[0];
+                            let second = children[1];
+                            if at < self.nodes[first].len {
+                                node_id = first;
+                            } else {
+                                at -= self.nodes[first].len;
+                                if at < self.nodes[second].len {
+                                    node_id = second;
+                                } else {
+                                    at -= self.nodes[second].len;
+                                    node_id = children[2];
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+            .collect()
+    }
+}
+
+pub(crate) struct WeakSourceTreeWindow<'src> {
+    root: Weak<SourceNode<'src>>,
+    start: usize,
+    len: usize,
+}
+
+impl<'src> WeakSourceTreeWindow<'src> {
+    pub(crate) fn upgrade(&self) -> Option<SourceTreeWindow<'src>> {
+        let root = self.root.upgrade()?;
+        if self.start.checked_add(self.len)? > root.len {
+            return None;
+        }
+        Some(SourceTreeWindow {
+            root: Some(root),
+            start: self.start,
+            len: self.len,
+        })
+    }
+}
+
 impl fmt::Debug for SourceTreeWindow<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -124,6 +346,18 @@ impl fmt::Debug for SourceTreeWindow<'_> {
 
 impl<'src> SourceTreeWindow<'src> {
     pub(crate) fn empty() -> Self { Self::default() }
+
+    pub(crate) fn downgrade(&self) -> Option<WeakSourceTreeWindow<'src>> {
+        let root = self.root.as_ref()?;
+        if self.start.checked_add(self.len)? > root.len {
+            return None;
+        }
+        Some(WeakSourceTreeWindow {
+            root: Arc::downgrade(root),
+            start: self.start,
+            len: self.len,
+        })
+    }
 
     #[cfg(test)]
     pub(crate) fn from_borrowed(
@@ -140,14 +374,12 @@ impl<'src> SourceTreeWindow<'src> {
         source: u32,
         absolute_start: usize,
     ) -> Option<Self> {
-        let payload = SourcePayload::borrowed(bytes, range.clone(), source, absolute_start)?;
-        let len = range.end - range.start;
-        if len == 0 {
+        let (payload, shape) = SourcePayload::borrowed(bytes, range, source, absolute_start)?;
+        if shape.len == 0 {
             return Some(Self::empty());
         }
         Some(Self::from_root(Some(Arc::new(SourceNode {
-            len,
-            height: 0,
+            shape,
             payload: Some(payload),
         }))))
     }
@@ -157,8 +389,7 @@ impl<'src> SourceTreeWindow<'src> {
             return Self::empty();
         }
         Self::from_root(Some(Arc::new(SourceNode {
-            len: value.len(),
-            height: 0,
+            shape: verified_score_store::source_leaf_shape(value.len()),
             payload: Some(SourcePayload::Frozen(value)),
         })))
     }
@@ -182,6 +413,10 @@ impl<'src> SourceTreeWindow<'src> {
             (None, None) => true,
             _ => false,
         }
+    }
+
+    pub(crate) fn same_view(&self, other: &SourceTreeWindow<'_>) -> bool {
+        self.shares_root_with(other) && self.start == other.start && self.len == other.len
     }
 
     pub(crate) fn height(&self) -> usize {
@@ -221,44 +456,29 @@ impl<'src> SourceTreeWindow<'src> {
     }
 
     fn coalesce_original_leaf(&self, right: &Self, len: usize) -> Option<Self> {
-        let payload = match (
+        let (payload, shape) = match (
             self.root.as_ref()?.payload.as_ref()?,
             right.root.as_ref()?.payload.as_ref()?,
         ) {
-            (
-                SourcePayload::Borrowed {
-                    bytes,
-                    start,
-                    source,
-                    absolute_start,
-                    ..
-                },
-                SourcePayload::Borrowed {
-                    bytes: right_bytes,
-                    start: right_start,
-                    source: right_source,
-                    absolute_start: right_absolute_start,
-                    ..
-                },
-            ) => {
-                if !std::ptr::eq(*bytes, *right_bytes)
-                    || source != right_source
-                    || absolute_start != right_absolute_start
+            (SourcePayload::Borrowed(left_leaf), SourcePayload::Borrowed(right_leaf)) => {
+                if !std::ptr::eq(left_leaf.root_slice(), right_leaf.root_slice())
+                    || left_leaf.source() != right_leaf.source()
+                    || left_leaf.absolute_start() != right_leaf.absolute_start()
                 {
                     return None;
                 }
-                let start = start.checked_add(self.start)?;
-                if start.checked_add(self.len)? != right_start.checked_add(right.start)? {
+                let start = left_leaf.start().checked_add(self.start)?;
+                if start.checked_add(self.len)? != right_leaf.start().checked_add(right.start)? {
                     return None;
                 }
                 if len == 0 {
                     return Some(self.clone());
                 }
                 SourcePayload::borrowed(
-                    bytes,
+                    left_leaf.root_slice(),
                     start..start.checked_add(len)?,
-                    *source,
-                    *absolute_start,
+                    left_leaf.source(),
+                    left_leaf.absolute_start(),
                 )?
             }
             (SourcePayload::Frozen(left_value), SourcePayload::Frozen(right_value)) => {
@@ -266,7 +486,10 @@ impl<'src> SourceTreeWindow<'src> {
                     left_value.subview(self.start..self.start.checked_add(self.len)?)?;
                 let right_value =
                     right_value.subview(right.start..right.start.checked_add(right.len)?)?;
-                SourcePayload::Frozen(left_value.try_coalesce(&right_value)?)
+                (
+                    SourcePayload::Frozen(left_value.try_coalesce(&right_value)?),
+                    verified_score_store::source_leaf_shape(len),
+                )
             }
             _ => return None,
         };
@@ -274,8 +497,7 @@ impl<'src> SourceTreeWindow<'src> {
             return Some(self.clone());
         }
         Some(Self::from_root(Some(Arc::new(SourceNode {
-            len,
-            height: 0,
+            shape,
             payload: Some(payload),
         }))))
     }
@@ -333,25 +555,33 @@ impl<'src> SourceTreeWindow<'src> {
         loop {
             match node.payload.as_ref()? {
                 SourcePayload::Branch2(children) => {
-                    if at < children[0].len {
-                        node = &children[0];
+                    let (child, local) = verified_score_store::source_branch2_descend(
+                        node.shape,
+                        children[0].shape,
+                        children[1].shape,
+                        at,
+                    )?;
+                    at = local;
+                    node = if child == 0 {
+                        &children[0]
                     } else {
-                        at -= children[0].len;
-                        node = &children[1];
-                    }
+                        &children[1]
+                    };
                 }
                 SourcePayload::Branch3(children) => {
-                    if at < children[0].len {
-                        node = &children[0];
-                    } else {
-                        at -= children[0].len;
-                        if at < children[1].len {
-                            node = &children[1];
-                        } else {
-                            at -= children[1].len;
-                            node = &children[2];
-                        }
-                    }
+                    let (child, local) = verified_score_store::source_branch3_descend(
+                        node.shape,
+                        children[0].shape,
+                        children[1].shape,
+                        children[2].shape,
+                        at,
+                    )?;
+                    at = local;
+                    node = match child {
+                        0 => &children[0],
+                        1 => &children[1],
+                        _ => &children[2],
+                    };
                 }
                 leaf => return Some((leaf, at)),
             }
@@ -361,9 +591,7 @@ impl<'src> SourceTreeWindow<'src> {
     pub(crate) fn byte_at(&self, offset: usize) -> Option<u8> {
         let (leaf, at) = self.leaf_at(offset)?;
         match leaf {
-            SourcePayload::Borrowed { bytes, start, .. } => {
-                bytes.get(start.checked_add(at)?).copied()
-            }
+            SourcePayload::Borrowed(value) => value.located_at(at).map(|located| located.0),
             SourcePayload::Frozen(value) => value.byte_at(at),
             _ => None,
         }
@@ -372,15 +600,9 @@ impl<'src> SourceTreeWindow<'src> {
     pub(crate) fn provenance_at(&self, offset: usize) -> Option<CanonicalByteProvenance> {
         let (leaf, at) = self.leaf_at(offset)?;
         match leaf {
-            SourcePayload::Borrowed {
-                start,
-                source,
-                absolute_start,
-                ..
-            } => Some(CanonicalByteProvenance::new(
-                *source,
-                absolute_start.checked_add(start.checked_add(at)?)?,
-            )),
+            SourcePayload::Borrowed(value) => value
+                .located_at(at)
+                .map(|located| CanonicalByteProvenance::new(located.1, located.2)),
             SourcePayload::Frozen(value) => value.provenance_at(at),
             _ => None,
         }
@@ -396,9 +618,9 @@ impl<'src> SourceTreeWindow<'src> {
         let (leaf, at) = self.leaf_at(range.start)?;
         let end = at.checked_add(range.end - range.start)?;
         match leaf {
-            SourcePayload::Borrowed {
-                bytes, start, len, ..
-            } if end <= *len => bytes.get(start.checked_add(at)?..start.checked_add(end)?),
+            SourcePayload::Borrowed(value) => {
+                value.selected_slice(at, end).map(|selected| selected.0)
+            }
             SourcePayload::Frozen(value) => value.contiguous_bytes(at..end),
             _ => None,
         }
@@ -514,18 +736,12 @@ enum ActiveLeaf<'src, M: CursorMode> {
 impl<'src, M: CursorMode> ActiveLeaf<'src, M> {
     fn new(payload: &SourcePayload<'src>, range: Range<usize>) -> Option<Self> {
         match payload {
-            SourcePayload::Borrowed {
-                bytes,
-                start,
-                source,
-                absolute_start,
-                ..
-            } => {
-                let selected = start.checked_add(range.start)?..start.checked_add(range.end)?;
+            SourcePayload::Borrowed(value) => {
+                let (bytes, absolute_start) = value.selected_slice(range.start, range.end)?;
                 Some(Self::Borrowed {
-                    bytes: bytes.get(selected.clone())?,
-                    source: *source,
-                    absolute_start: absolute_start.checked_add(selected.start)?,
+                    bytes,
+                    source: value.source(),
+                    absolute_start,
                     at: 0,
                 })
             }
@@ -716,12 +932,9 @@ impl Iterator for SourceTreeLocatedByteCursor<'_> {
 impl ExactSizeIterator for SourceTreeLocatedByteCursor<'_> {}
 
 fn node2<'src>(left: NodeRef<'src>, right: NodeRef<'src>) -> Option<NodeRef<'src>> {
-    if left.height != right.height {
-        return None;
-    }
+    let shape = verified_score_store::source_branch2_shape(left.shape, right.shape)?;
     Some(Arc::new(SourceNode {
-        len: left.len.checked_add(right.len)?,
-        height: left.height.checked_add(1)?,
+        shape,
         payload: Some(SourcePayload::Branch2([left, right])),
     }))
 }
@@ -731,12 +944,9 @@ fn node3<'src>(
     middle: NodeRef<'src>,
     last: NodeRef<'src>,
 ) -> Option<NodeRef<'src>> {
-    if first.height != middle.height || first.height != last.height {
-        return None;
-    }
+    let shape = verified_score_store::source_branch3_shape(first.shape, middle.shape, last.shape)?;
     Some(Arc::new(SourceNode {
-        len: first.len.checked_add(middle.len)?.checked_add(last.len)?,
-        height: first.height.checked_add(1)?,
+        shape,
         payload: Some(SourcePayload::Branch3([first, middle, last])),
     }))
 }
@@ -844,28 +1054,20 @@ fn leaf_window<'src>(node: &SourceNode<'src>, range: Range<usize>) -> Option<Nod
         return None;
     }
     let len = range.end - range.start;
-    let payload = match node.payload.as_ref()? {
-        SourcePayload::Borrowed {
-            bytes,
-            start,
-            source,
-            absolute_start,
-            ..
-        } => {
-            let start = start.checked_add(range.start)?;
-            SourcePayload::borrowed(
-                bytes,
-                start..start.checked_add(len)?,
-                *source,
-                *absolute_start,
-            )?
+    let (payload, shape) = match node.payload.as_ref()? {
+        SourcePayload::Borrowed(value) => {
+            let selected = value.subleaf(range.start, range.end)?;
+            let shape = selected.shape();
+            (SourcePayload::Borrowed(selected), shape)
         }
-        SourcePayload::Frozen(value) => SourcePayload::Frozen(value.subview(range)?),
+        SourcePayload::Frozen(value) => (
+            SourcePayload::Frozen(value.subview(range)?),
+            verified_score_store::source_leaf_shape(len),
+        ),
         _ => return None,
     };
     Some(Arc::new(SourceNode {
-        len,
-        height: 0,
+        shape,
         payload: Some(payload),
     }))
 }

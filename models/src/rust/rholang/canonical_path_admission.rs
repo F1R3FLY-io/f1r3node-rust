@@ -1491,7 +1491,6 @@ impl CanonicalPathStreamReducer {
         }
     }
 
-    #[cfg(test)]
     pub(crate) const fn consumed_len(&self) -> usize { self.consumed }
 
     #[cfg(test)]
@@ -1512,6 +1511,251 @@ impl CanonicalPathStreamReducer {
             states: 1,
             frames: self.machine.frames.len(),
             ..self.machine.stats
+        }
+    }
+
+    /// Test-only readout of the parser owned by the admission driver's stream
+    /// reducer. Frame IDs are normalized to reachable indices, as in the
+    /// topology reducer's independent source image. This inspects the actual
+    /// focused owner chain and indexed input; it does not retain copied bytes
+    /// or alter the production parser state.
+    #[cfg(test)]
+    pub(crate) fn parser_source_image(
+        &self,
+        input: &IndexedByteRegion<'_>,
+    ) -> CanonicalPathParserSourceImage {
+        fn intern(
+            frame: Option<FrameId>,
+            ids: &mut Vec<FrameId>,
+            indices: &mut std::collections::HashMap<usize, usize>,
+        ) {
+            if let Some(frame) = frame {
+                if !indices.contains_key(&frame.0) {
+                    indices.insert(frame.0, ids.len());
+                    ids.push(frame);
+                }
+            }
+        }
+
+        fn frame_index(
+            frame: Option<FrameId>,
+            indices: &std::collections::HashMap<usize, usize>,
+        ) -> Option<usize> {
+            frame.map(|frame| indices[&frame.0])
+        }
+
+        fn path_source(
+            path: &InnerPath,
+            indices: &std::collections::HashMap<usize, usize>,
+        ) -> CanonicalPathParserPathSource {
+            CanonicalPathParserPathSource {
+                escape_allowed: path.escape_allowed,
+                stack: frame_index(path.stack, indices),
+                status: match path.status {
+                    PathStatus::Open => CanonicalPathParserStatusSource::Open,
+                    PathStatus::SplitComplete => CanonicalPathParserStatusSource::SplitComplete,
+                    PathStatus::Dead(error) => CanonicalPathParserStatusSource::Dead(error),
+                },
+                completed_segments: path.completed_segments,
+                first_tag: path
+                    .first_tag
+                    .map(|(byte, source)| LocatedPathByte { byte, source }),
+                stable: path.stable,
+            }
+        }
+
+        fn varint_source(state: VarintState) -> CanonicalPathParserVarintSource {
+            CanonicalPathParserVarintSource {
+                value: state.value,
+                shift: state.shift,
+                bytes: state.bytes,
+            }
+        }
+
+        assert!(self.consumed <= input.len());
+        let mut ids = Vec::new();
+        let mut indices = std::collections::HashMap::new();
+        intern(self.current.stack, &mut ids, &mut indices);
+        for owner in &self.owners {
+            intern(owner.owner.stack, &mut ids, &mut indices);
+        }
+        let mut cursor = 0;
+        while let Some(id) = ids.get(cursor).copied() {
+            match &self.machine.frames.slots[id.0] {
+                Frame::Tag { next, .. }
+                | Frame::Varint { next, .. }
+                | Frame::Bytes { next, .. }
+                | Frame::Kids { next, .. }
+                | Frame::Obligation { next, .. } => intern(*next, &mut ids, &mut indices),
+                Frame::Region { phase, next, .. } => {
+                    intern(*next, &mut ids, &mut indices);
+                    if let RegionPhase::Path { path, .. } = phase {
+                        intern(path.stack, &mut ids, &mut indices);
+                    }
+                }
+            }
+            cursor += 1;
+        }
+        let frames = ids
+            .into_iter()
+            .map(|id| match &self.machine.frames.slots[id.0] {
+                Frame::Tag {
+                    escape_allowed,
+                    next,
+                } => CanonicalPathParserFrameSource::Tag {
+                    escape_allowed: *escape_allowed,
+                    next: frame_index(*next, &indices),
+                },
+                Frame::Varint { role, state, next } => {
+                    let role = match role {
+                        VarintRole::Scalar => CanonicalPathParserVarintRoleSource::Scalar,
+                        VarintRole::Scale => CanonicalPathParserVarintRoleSource::Scale,
+                        VarintRole::Bytes { utf8 } => {
+                            CanonicalPathParserVarintRoleSource::Bytes { utf8: *utf8 }
+                        }
+                        VarintRole::Count => CanonicalPathParserVarintRoleSource::Count,
+                        VarintRole::RegionLength => {
+                            CanonicalPathParserVarintRoleSource::RegionLength
+                        }
+                        VarintRole::ObligationLength { kind, tag_source } => {
+                            CanonicalPathParserVarintRoleSource::ObligationLength {
+                                kind: *kind,
+                                tag_source: *tag_source,
+                            }
+                        }
+                    };
+                    CanonicalPathParserFrameSource::Varint {
+                        role,
+                        state: varint_source(*state),
+                        next: frame_index(*next, &indices),
+                    }
+                }
+                Frame::Bytes {
+                    remaining,
+                    utf8,
+                    next,
+                } => CanonicalPathParserFrameSource::Bytes {
+                    remaining: *remaining,
+                    utf8: utf8.map(|state| CanonicalPathParserUtf8Source {
+                        remaining: state.remaining,
+                        next_min: state.next_min,
+                        next_max: state.next_max,
+                    }),
+                    next: frame_index(*next, &indices),
+                },
+                Frame::Kids { remaining, next } => CanonicalPathParserFrameSource::Kids {
+                    remaining: *remaining,
+                    next: frame_index(*next, &indices),
+                },
+                Frame::Region {
+                    remaining,
+                    previous,
+                    phase,
+                    next,
+                } => CanonicalPathParserFrameSource::Region {
+                    remaining: *remaining,
+                    previous: previous.map(|span| {
+                        input
+                            .subview(span)
+                            .expect("stream parser previous span stays in indexed input")
+                            .located_bytes()
+                            .map(|located| LocatedPathByte {
+                                byte: located.byte,
+                                source: CanonicalPathSource::from_provenance(located.provenance),
+                            })
+                            .collect()
+                    }),
+                    phase: match phase {
+                        RegionPhase::PathLength(state) => {
+                            CanonicalPathParserRegionPhaseSource::PathLength(varint_source(*state))
+                        }
+                        RegionPhase::Path {
+                            declared_len,
+                            remaining,
+                            start_depth,
+                            path,
+                        } => CanonicalPathParserRegionPhaseSource::Path {
+                            declared_len: *declared_len,
+                            remaining: *remaining,
+                            start_depth: *start_depth,
+                            path: path_source(path, &indices),
+                        },
+                    },
+                    next: frame_index(*next, &indices),
+                },
+                Frame::Obligation {
+                    obligation,
+                    status,
+                    payload_start,
+                    next,
+                } => CanonicalPathParserFrameSource::Obligation {
+                    obligation: *obligation,
+                    status: match status {
+                        ObligationStatus::Payload => {
+                            CanonicalPathParserObligationStatusSource::Payload
+                        }
+                        ObligationStatus::Countdown { remaining } => {
+                            CanonicalPathParserObligationStatusSource::Countdown {
+                                remaining: *remaining,
+                            }
+                        }
+                        ObligationStatus::AwaitingResolution { payload_end } => {
+                            CanonicalPathParserObligationStatusSource::AwaitingResolution {
+                                payload_end: *payload_end,
+                            }
+                        }
+                    },
+                    payload_start: *payload_start,
+                    next: frame_index(*next, &indices),
+                },
+            })
+            .collect();
+        let owner_chain = self
+            .owners
+            .iter()
+            .enumerate()
+            .map(|(id, owner)| CanonicalPathParserOwnerSource {
+                id,
+                owner: path_source(&owner.owner, &indices),
+                parent: id.checked_sub(1),
+                region_end: owner.region_end,
+                path_end: owner.path_end,
+                all_boundary_end: owner.all_boundary.end,
+                all_boundary_owner: owner.all_boundary.owner,
+                path_boundary_end: owner.path_boundary.end,
+                path_boundary_owner: owner.path_boundary.owner,
+                outermost: 0,
+            })
+            .collect();
+        let root = self
+            .owners
+            .first()
+            .map_or(&self.current, |owner| &owner.owner);
+        CanonicalPathParserSourceImage {
+            next_obligation: self.machine.next_obligation,
+            stamp: self.graph_stamp,
+            path_bytes: input
+                .located_bytes()
+                .take(self.consumed)
+                .map(|located| LocatedPathByte {
+                    byte: located.byte,
+                    source: CanonicalPathSource::from_provenance(located.provenance),
+                })
+                .collect(),
+            focused: path_source(&self.current, &indices),
+            root: path_source(root, &indices),
+            owner_chain,
+            frames,
+            fault: None,
+            root_gate: CanonicalPathBatchGateSource {
+                dead: matches!(root.status, PathStatus::Dead(_)),
+                stack_empty: root.stack.is_none(),
+                split_complete: root.status == PathStatus::SplitComplete,
+                completed_segments: root.completed_segments,
+                first_is_list: root.first_tag.is_some_and(|(tag, _)| tag == ELIST),
+                stable: root.stable,
+                escape_allowed: root.escape_allowed,
+            },
         }
     }
 
@@ -3134,6 +3378,378 @@ struct CanonicalPathRestoreRun {
     first_depth: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CanonicalPathBatchRestoreShape {
+    state_id: usize,
+    latest_len: usize,
+    first_depth: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathBatchSourceShape {
+    pub(crate) state_id: usize,
+    pub(crate) depth: usize,
+    restore_len: usize,
+    top: Option<CanonicalPathBatchRestoreShape>,
+    prior: Option<CanonicalPathBatchRestoreShape>,
+    root_left: bool,
+    source_present: bool,
+}
+
+/// Exact source facts for one retained reducer handle. This is a read-only
+/// extraction; the production batch guard continues to use the constant-size
+/// `CanonicalPathBatchSourceShape` and does not traverse provenance history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathBatchHandleSource {
+    pub(crate) state_id: usize,
+    pub(crate) depth: usize,
+    pub(crate) last_source: Option<CanonicalPathSource>,
+    pub(crate) stamp: usize,
+    pub(crate) open: bool,
+    pub(crate) fault_free: bool,
+    pub(crate) gate: CanonicalPathBatchGateSource,
+    pub(crate) owner_boundary_end: Option<u128>,
+    pub(crate) pending: Option<CanonicalPathBatchPendingSource>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathBatchGateSource {
+    pub(crate) dead: bool,
+    pub(crate) stack_empty: bool,
+    pub(crate) split_complete: bool,
+    pub(crate) completed_segments: u64,
+    pub(crate) first_is_list: bool,
+    pub(crate) stable: bool,
+    pub(crate) escape_allowed: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CanonicalPathParserStatusSource {
+    Open,
+    SplitComplete,
+    Dead(CanonicalPathAdmissionError),
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathParserPathSource {
+    pub(crate) escape_allowed: bool,
+    pub(crate) stack: Option<usize>,
+    pub(crate) status: CanonicalPathParserStatusSource,
+    pub(crate) completed_segments: u64,
+    pub(crate) first_tag: Option<LocatedPathByte>,
+    pub(crate) stable: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CanonicalPathParserVarintRoleSource {
+    Scalar,
+    Scale,
+    Bytes {
+        utf8: bool,
+    },
+    Count,
+    RegionLength,
+    ObligationLength {
+        kind: CanonicalPathObligationKind,
+        tag_source: CanonicalPathSource,
+    },
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathParserVarintSource {
+    pub(crate) value: u64,
+    pub(crate) shift: u32,
+    pub(crate) bytes: u8,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathParserUtf8Source {
+    pub(crate) remaining: u8,
+    pub(crate) next_min: u8,
+    pub(crate) next_max: u8,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CanonicalPathParserRegionPhaseSource {
+    PathLength(CanonicalPathParserVarintSource),
+    Path {
+        declared_len: u64,
+        remaining: u64,
+        start_depth: usize,
+        path: CanonicalPathParserPathSource,
+    },
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CanonicalPathParserObligationStatusSource {
+    Payload,
+    #[cfg(test)]
+    Countdown {
+        remaining: u64,
+    },
+    AwaitingResolution {
+        payload_end: CanonicalPathSource,
+    },
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CanonicalPathParserFrameSource {
+    Tag {
+        escape_allowed: bool,
+        next: Option<usize>,
+    },
+    Varint {
+        role: CanonicalPathParserVarintRoleSource,
+        state: CanonicalPathParserVarintSource,
+        next: Option<usize>,
+    },
+    Bytes {
+        remaining: u64,
+        utf8: Option<CanonicalPathParserUtf8Source>,
+        next: Option<usize>,
+    },
+    Kids {
+        remaining: u64,
+        next: Option<usize>,
+    },
+    Region {
+        remaining: u64,
+        previous: Option<Vec<LocatedPathByte>>,
+        phase: CanonicalPathParserRegionPhaseSource,
+        next: Option<usize>,
+    },
+    Obligation {
+        obligation: CanonicalPathObligation,
+        status: CanonicalPathParserObligationStatusSource,
+        payload_start: usize,
+        next: Option<usize>,
+    },
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathParserOwnerSource {
+    pub(crate) id: usize,
+    pub(crate) owner: CanonicalPathParserPathSource,
+    pub(crate) parent: Option<usize>,
+    pub(crate) region_end: u128,
+    pub(crate) path_end: u128,
+    pub(crate) all_boundary_end: u128,
+    pub(crate) all_boundary_owner: usize,
+    pub(crate) path_boundary_end: u128,
+    pub(crate) path_boundary_owner: usize,
+    pub(crate) outermost: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathParserSourceImage {
+    pub(crate) next_obligation: u64,
+    pub(crate) stamp: usize,
+    pub(crate) path_bytes: Vec<LocatedPathByte>,
+    pub(crate) focused: CanonicalPathParserPathSource,
+    pub(crate) root: CanonicalPathParserPathSource,
+    pub(crate) owner_chain: Vec<CanonicalPathParserOwnerSource>,
+    pub(crate) frames: Vec<CanonicalPathParserFrameSource>,
+    pub(crate) fault: Option<CanonicalPathAdmissionError>,
+    pub(crate) root_gate: CanonicalPathBatchGateSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathBatchPendingSource {
+    pub(crate) obligation: CanonicalPathObligation,
+    pub(crate) payload_start: usize,
+    pub(crate) payload_end_exclusive: u128,
+    pub(crate) remaining: u64,
+    pub(crate) awaiting_resolution: bool,
+    /// Available only once the final payload byte has been consumed. During
+    /// Payload, `CanonicalPathBatchHandleSource::last_source` is the current
+    /// physical anchor; it need not equal the eventual payload-end anchor.
+    pub(crate) payload_end_source: Option<CanonicalPathSource>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathBatchRestoreSource {
+    pub(crate) first_depth: usize,
+    pub(crate) latest: CanonicalPathBatchHandleSource,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathBatchExactSourceObservation {
+    pub(crate) current: CanonicalPathBatchHandleSource,
+    pub(crate) restore_len: usize,
+    pub(crate) top: Option<CanonicalPathBatchRestoreSource>,
+    pub(crate) root_left: bool,
+    pub(crate) source_present: bool,
+    pub(crate) edges: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalPathBatchForwardCapacitySource {
+    pub(crate) current: CanonicalPathBatchHandleSource,
+    pub(crate) available: usize,
+    pub(crate) capacity: usize,
+    pub(crate) root_left: bool,
+    pub(crate) source_present: bool,
+    pub(crate) edges_before: usize,
+    pub(crate) state_fault_none: bool,
+    pub(crate) owner_root_open: bool,
+    pub(crate) top_is_payload: bool,
+    pub(crate) top_payload_remaining: Option<u64>,
+    pub(crate) test_bulk_operations: Option<usize>,
+    pub(crate) test_bulk_bytes: Option<usize>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CanonicalPathBatchHandleImage {
+    source: CanonicalPathBatchHandleSource,
+    located: Vec<CanonicalLocatedByte>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CanonicalPathBatchRestoreImage {
+    first_depth: usize,
+    latest: CanonicalPathBatchHandleImage,
+    /// Logical scalar predecessors represented by this one compressed run.
+    predecessors: Vec<CanonicalPathBatchHandleImage>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CanonicalPathBatchExactSourceImage {
+    current: CanonicalPathBatchHandleImage,
+    restore: Vec<CanonicalPathBatchRestoreImage>,
+}
+
+impl CanonicalPathBatchSourceShape {
+    pub(crate) fn matches_scalar_edge(self, after: Self) -> bool {
+        if self.root_left {
+            return false;
+        }
+        let Some(depth) = self.depth.checked_add(1) else {
+            return false;
+        };
+        let coalesced = self.top.is_some_and(|run| run.state_id == self.state_id);
+        let Some(restore_len) = self.restore_len.checked_add(usize::from(!coalesced)) else {
+            return false;
+        };
+        after.depth == depth
+            && after.restore_len == restore_len
+            && after.top
+                == Some(CanonicalPathBatchRestoreShape {
+                    state_id: self.state_id,
+                    latest_len: self.depth,
+                    first_depth: if coalesced {
+                        self.top.unwrap().first_depth
+                    } else {
+                        self.depth
+                    },
+                })
+            && after.prior == if coalesced { self.prior } else { self.top }
+            && after.root_left == self.root_left
+            && after.source_present == self.source_present
+    }
+
+    pub(crate) fn matches_scalar_leave(self, after: Self) -> bool {
+        if self.root_left {
+            return false;
+        }
+        if self.top.is_some() {
+            self.matches_unwind(after, 1)
+        } else {
+            let expected = Self {
+                root_left: true,
+                ..self
+            };
+            after == expected
+        }
+    }
+
+    pub(crate) fn matches_forward(self, after: Self, width: usize) -> bool {
+        if width == 0 || self.root_left || !self.source_present {
+            return false;
+        }
+        let Some(depth) = self.depth.checked_add(width) else {
+            return false;
+        };
+        let coalesced = self.top.is_some_and(|run| run.state_id == self.state_id);
+        let Some(expected_len) = self.restore_len.checked_add(usize::from(!coalesced)) else {
+            return false;
+        };
+        let expected_top = CanonicalPathBatchRestoreShape {
+            state_id: self.state_id,
+            latest_len: depth - 1,
+            first_depth: if coalesced {
+                self.top.unwrap().first_depth
+            } else {
+                self.depth
+            },
+        };
+        after.state_id == self.state_id
+            && after.depth == depth
+            && after.restore_len == expected_len
+            && after.top == Some(expected_top)
+            && after.prior == if coalesced { self.prior } else { self.top }
+            && after.root_left == self.root_left
+            && after.source_present == self.source_present
+    }
+
+    pub(crate) fn matches_unwind(self, after: Self, width: usize) -> bool {
+        let Some(run) = self.top else {
+            return false;
+        };
+        let Some(run_width) = run
+            .latest_len
+            .checked_sub(run.first_depth)
+            .and_then(|n| n.checked_add(1))
+        else {
+            return false;
+        };
+        if width == 0
+            || self.root_left
+            || width > run_width
+            || run.latest_len.checked_add(1) != Some(self.depth)
+        {
+            return false;
+        }
+        let Some(depth) = self.depth.checked_sub(width) else {
+            return false;
+        };
+        let partial = width < run_width;
+        let Some(restore_len) = self.restore_len.checked_sub(usize::from(!partial)) else {
+            return false;
+        };
+        after.state_id == run.state_id
+            && after.depth == depth
+            && after.restore_len == restore_len
+            && after.top
+                == if partial {
+                    Some(CanonicalPathBatchRestoreShape {
+                        state_id: run.state_id,
+                        latest_len: run.latest_len - width,
+                        first_depth: run.first_depth,
+                    })
+                } else {
+                    self.prior
+                }
+            && (!partial || after.prior == self.prior)
+            && after.root_left == self.root_left
+            && after.source_present == self.source_present
+    }
+}
+
 pub(crate) struct CanonicalPathTopologyAdmission<'src> {
     reducer: CanonicalPathReducer,
     arena: CanonicalBytesArena<'src>,
@@ -3141,6 +3757,148 @@ pub(crate) struct CanonicalPathTopologyAdmission<'src> {
     restore: Vec<CanonicalPathRestoreRun>,
     root_left: bool,
     source: Option<(CanonicalSourceSlot, usize)>,
+    source_binding: Option<CanonicalPathRegisteredSource<'src>>,
+}
+
+#[derive(Clone)]
+struct CanonicalPathRegisteredSource<'src> {
+    slot: CanonicalSourceSlot,
+    len: usize,
+    original_view: SourceTreeWindow<'src>,
+    registered_view: SourceTreeWindow<'src>,
+}
+
+pub(crate) struct CanonicalPathForwardReceipt<'src> {
+    source: CanonicalPathRegisteredSource<'src>,
+    range: std::ops::Range<usize>,
+    before_shape: CanonicalPathBatchSourceShape,
+    after_shape: CanonicalPathBatchSourceShape,
+    before: CanonicalPathBatchHandleSource,
+    previous: CanonicalPathReducerHandle,
+    current: CanonicalPathReducerHandle,
+    latest: CanonicalPathReducerHandle,
+    edges_before: usize,
+}
+
+impl CanonicalPathForwardReceipt<'_> {
+    pub(crate) fn matches_batch(
+        &self,
+        path: &CanonicalPathTopologyAdmission<'_>,
+        view: &SourceTreeWindow<'_>,
+        range: std::ops::Range<usize>,
+        before_shape: CanonicalPathBatchSourceShape,
+        after_shape: CanonicalPathBatchSourceShape,
+        last_source: CanonicalPathSource,
+    ) -> bool {
+        let Some(registered) = path.source_binding.as_ref() else {
+            return false;
+        };
+        let Some(width) = self
+            .range
+            .end
+            .checked_sub(self.range.start)
+            .filter(|width| *width > 0)
+        else {
+            return false;
+        };
+        let Ok(width_u64) = u64::try_from(width) else {
+            return false;
+        };
+        let Some(last_index) = self.range.end.checked_sub(1) else {
+            return false;
+        };
+        let Some(before_pending) = self.before.pending else {
+            return false;
+        };
+        let after = path.batch_current_source();
+        let Some(after_top) = path.batch_top_restore_source() else {
+            return false;
+        };
+        let Some(after_pending) = after.pending else {
+            return false;
+        };
+        let Some(latest_pending) = after_top.latest.pending else {
+            return false;
+        };
+        let expected_last = self
+            .source
+            .registered_view
+            .provenance_at(last_index)
+            .map(CanonicalPathSource::from_provenance);
+        let expected_latest = if width == 1 {
+            self.before.last_source
+        } else {
+            last_index.checked_sub(1).and_then(|index| {
+                self.source
+                    .registered_view
+                    .provenance_at(index)
+                    .map(CanonicalPathSource::from_provenance)
+            })
+        };
+        self.source.slot == registered.slot
+            && self.source.len == registered.len
+            && path.source == Some((self.source.slot, self.source.len))
+            && self
+                .source
+                .original_view
+                .same_view(&registered.original_view)
+            && self
+                .source
+                .registered_view
+                .same_view(&registered.registered_view)
+            && self.source.original_view.same_view(view)
+            && self.range == range
+            && self.range.start < self.range.end
+            && self.range.end <= self.source.len
+            && self.before_shape == before_shape
+            && self.after_shape == after_shape
+            && self.before_shape.matches_forward(self.after_shape, width)
+            && self.previous.state == self.current.state
+            && self.previous.state == self.latest.state
+            && self.previous.bytes.len() == self.before.depth
+            && self.current.bytes.len() == after.depth
+            && self.latest.bytes.len().checked_add(1) == Some(after.depth)
+            && self.current == path.current
+            && path.restore.last().is_some_and(|run| {
+                run.latest == self.latest && run.first_depth == after_top.first_depth
+            })
+            && self.before.state_id == after.state_id
+            && self.before.state_id == after_top.latest.state_id
+            && self.before.depth.checked_add(width) == Some(after.depth)
+            && (self.before.depth == 0 || self.before.last_source.is_some())
+            && self.before.stamp.checked_add(width) == Some(after.stamp)
+            && self.before.stamp.checked_add(width - 1) == Some(after_top.latest.stamp)
+            && after_top.latest.depth.checked_add(1) == Some(after.depth)
+            && after.last_source == expected_last
+            && after.last_source == Some(last_source)
+            && (width == 1 || expected_latest.is_some())
+            && after_top.latest.last_source == expected_latest
+            && after.gate == self.before.gate
+            && after_top.latest.gate == self.before.gate
+            && after.owner_boundary_end == self.before.owner_boundary_end
+            && after_top.latest.owner_boundary_end == self.before.owner_boundary_end
+            && self.before.open
+            && after.open
+            && after_top.latest.open
+            && self.before.fault_free
+            && after.fault_free
+            && after_top.latest.fault_free
+            && !before_pending.awaiting_resolution
+            && !after_pending.awaiting_resolution
+            && !latest_pending.awaiting_resolution
+            && before_pending.remaining > width_u64
+            && after_pending.obligation == before_pending.obligation
+            && after_pending.payload_start == before_pending.payload_start
+            && after_pending.payload_end_exclusive == before_pending.payload_end_exclusive
+            && after_pending.remaining == before_pending.remaining - width_u64
+            && after_pending.payload_end_source == before_pending.payload_end_source
+            && latest_pending.obligation == before_pending.obligation
+            && latest_pending.payload_start == before_pending.payload_start
+            && latest_pending.payload_end_exclusive == before_pending.payload_end_exclusive
+            && latest_pending.remaining == before_pending.remaining - (width_u64 - 1)
+            && latest_pending.payload_end_source == before_pending.payload_end_source
+            && self.edges_before.checked_add(width) == Some(path.reducer.machine.stats.edges)
+    }
 }
 
 impl Default for CanonicalPathTopologyAdmission<'_> {
@@ -3159,6 +3917,7 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
             restore: Vec::new(),
             root_left: false,
             source: None,
+            source_binding: None,
         }
     }
 
@@ -3168,8 +3927,17 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
         let mut topology = Self::new();
         if let Some(source) = source {
             let len = source.len();
-            let slot = topology.arena.register_source(source)?;
+            let registered_view = source
+                .trimmed_subview(0..len)
+                .ok_or(CanonicalBytesArenaError::LengthOverflow)?;
+            let slot = topology.arena.register_source(registered_view.clone())?;
             topology.source = Some((slot, len));
+            topology.source_binding = Some(CanonicalPathRegisteredSource {
+                slot,
+                len,
+                original_view: source,
+                registered_view,
+            });
         }
         Ok(topology)
     }
@@ -3193,15 +3961,24 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
             .map_or(0, |(_, width)| width)
     }
 
+    #[cfg(test)]
     pub(crate) fn try_forward_source(
         &mut self,
         range: std::ops::Range<usize>,
     ) -> Result<bool, CanonicalBytesArenaError> {
+        self.try_forward_source_with_receipt(range)
+            .map(|receipt| receipt.is_some())
+    }
+
+    pub(crate) fn try_forward_source_with_receipt(
+        &mut self,
+        range: std::ops::Range<usize>,
+    ) -> Result<Option<CanonicalPathForwardReceipt<'src>>, CanonicalBytesArenaError> {
         if self.root_left {
-            return Ok(false);
+            return Ok(None);
         }
         let Some((source, len)) = self.source else {
-            return Ok(false);
+            return Ok(None);
         };
         if range.start > range.end || range.end > len {
             return Err(CanonicalBytesArenaError::SliceOutsideSequence {
@@ -3212,8 +3989,16 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
         }
         let width = range.end - range.start;
         if width == 0 || self.forward_capacity(width) != width {
-            return Ok(false);
+            return Ok(None);
         }
+        let source_binding = self
+            .source_binding
+            .as_ref()
+            .expect("a registered source retains its view")
+            .clone();
+        let before_shape = self.batch_source_shape();
+        let before = self.batch_current_source();
+        let edges_before = self.reducer.machine.stats.edges;
         let previous = self.current;
         let coalesce = self
             .restore
@@ -3224,7 +4009,9 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
                 .try_reserve(1)
                 .map_err(|_| CanonicalBytesArenaError::LengthOverflow)?;
         }
-        let bytes = self.arena.append_source(previous.bytes, source, range)?;
+        let bytes = self
+            .arena
+            .append_source(previous.bytes, source, range.clone())?;
         let latest = if width == 1 {
             previous
         } else {
@@ -3263,7 +4050,18 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
             self.reducer.machine.stats.bulk_operations += 1;
             self.reducer.machine.stats.bulk_bytes += width;
         }
-        Ok(true)
+        let after_shape = self.batch_source_shape();
+        Ok(Some(CanonicalPathForwardReceipt {
+            source: source_binding,
+            range,
+            before_shape,
+            after_shape,
+            before,
+            previous,
+            current: self.current,
+            latest,
+            edges_before,
+        }))
     }
 
     pub(crate) fn reverse_capacity(&self, available: usize) -> usize {
@@ -3276,6 +4074,542 @@ impl<'src> CanonicalPathTopologyAdmission<'src> {
             .map_or(0, |last_offset| {
                 available.min(last_offset.saturating_add(1))
             })
+    }
+
+    pub(crate) fn batch_source_shape(&self) -> CanonicalPathBatchSourceShape {
+        let shape = |run: &CanonicalPathRestoreRun| CanonicalPathBatchRestoreShape {
+            state_id: run.latest.state.0,
+            latest_len: run.latest.bytes.len(),
+            first_depth: run.first_depth,
+        };
+        let len = self.restore.len();
+        CanonicalPathBatchSourceShape {
+            state_id: self.current.state.0,
+            depth: self.current.bytes.len(),
+            restore_len: len,
+            top: self.restore.last().map(shape),
+            prior: len
+                .checked_sub(2)
+                .and_then(|at| self.restore.get(at))
+                .map(shape),
+            root_left: self.root_left,
+            source_present: self.source.is_some(),
+        }
+    }
+
+    /// Exact handle projection, including the last byte's actual source
+    /// anchor after arbitrary prefix restoration. The arena lookup follows
+    /// descriptor ancestry without allocating or materializing the path.
+    pub(crate) fn batch_handle_source(
+        &self,
+        handle: CanonicalPathReducerHandle,
+    ) -> CanonicalPathBatchHandleSource {
+        let state = self.reducer.state(handle);
+        let fault_free = self.reducer.dead_error(&state).is_none()
+            && !matches!(state.current.status, PathStatus::Dead(_));
+        let pending = if fault_free {
+            match self.reducer.machine.active_obligation_frame(&state.current) {
+                Some(Frame::Obligation {
+                    obligation,
+                    status,
+                    payload_start,
+                    ..
+                }) => {
+                    let progress = self
+                        .reducer
+                        .machine
+                        .active_obligation_in(&state.current, state.stamp)
+                        .expect("the selected active obligation has a valid payload stamp");
+                    Some(CanonicalPathBatchPendingSource {
+                        obligation: *obligation,
+                        payload_start: *payload_start,
+                        payload_end_exclusive: *payload_start as u128
+                            + u128::from(obligation.payload_len),
+                        remaining: progress.remaining,
+                        awaiting_resolution: progress.awaiting_resolution,
+                        payload_end_source: match status {
+                            ObligationStatus::AwaitingResolution { payload_end } => {
+                                Some(*payload_end)
+                            }
+                            _ => None,
+                        },
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        CanonicalPathBatchHandleSource {
+            state_id: handle.state.0,
+            depth: handle.bytes.len(),
+            last_source: self
+                .arena
+                .last_provenance(handle.bytes)
+                .map(CanonicalPathSource::from_provenance),
+            stamp: state.stamp,
+            open: state.current.status == PathStatus::Open,
+            fault_free,
+            gate: CanonicalPathBatchGateSource {
+                dead: !fault_free,
+                stack_empty: state.current.stack.is_none(),
+                split_complete: state.current.status == PathStatus::SplitComplete,
+                completed_segments: state.current.completed_segments,
+                first_is_list: state.current.first_tag.is_some_and(|(tag, _)| tag == ELIST),
+                stable: state.current.stable,
+                escape_allowed: state.current.escape_allowed,
+            },
+            owner_boundary_end: state
+                .owners
+                .map(|root| self.reducer.owners.entries[root.0].all_boundary.end),
+            pending,
+        }
+    }
+
+    pub(crate) fn batch_current_source(&self) -> CanonicalPathBatchHandleSource {
+        self.batch_handle_source(self.current)
+    }
+
+    /// The gate of the root path selected by `CanonicalPathReducer::value`.
+    /// A focused region may have a different `state.current` gate. This is a
+    /// constant-size, read-only observation of the selected root path.
+    pub(crate) fn value_root_gate_source(&self) -> CanonicalPathBatchGateSource {
+        let state = self.reducer.state(self.current);
+        let root = self.reducer.root_path(&state);
+        CanonicalPathBatchGateSource {
+            dead: self.reducer.dead_error(&state).is_some(),
+            stack_empty: root.stack.is_none(),
+            split_complete: root.status == PathStatus::SplitComplete,
+            completed_segments: root.completed_segments,
+            first_is_list: root.first_tag.is_some_and(|(tag, _)| tag == ELIST),
+            stable: root.stable,
+            escape_allowed: root.escape_allowed,
+        }
+    }
+
+    pub(crate) fn value_root_stability_source(&self) -> bool {
+        self.value_root_gate_source().stable
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parser_source_image(&self) -> CanonicalPathParserSourceImage {
+        self.parser_source_image_for(self.current)
+    }
+
+    /// Read-only parser projection for an exact saved reducer handle. This is
+    /// used by source audits of historical restore checkpoints, not by the
+    /// admission hot path.
+    #[cfg(test)]
+    pub(crate) fn parser_source_image_for(
+        &self,
+        handle: CanonicalPathReducerHandle,
+    ) -> CanonicalPathParserSourceImage {
+        fn intern(
+            frame: Option<FrameId>,
+            ids: &mut Vec<FrameId>,
+            indices: &mut std::collections::HashMap<usize, usize>,
+        ) {
+            if let Some(frame) = frame {
+                if !indices.contains_key(&frame.0) {
+                    indices.insert(frame.0, ids.len());
+                    ids.push(frame);
+                }
+            }
+        }
+
+        fn frame_index(
+            frame: Option<FrameId>,
+            indices: &std::collections::HashMap<usize, usize>,
+        ) -> Option<usize> {
+            frame.map(|frame| indices[&frame.0])
+        }
+
+        fn path_source(
+            path: &InnerPath,
+            indices: &std::collections::HashMap<usize, usize>,
+        ) -> CanonicalPathParserPathSource {
+            CanonicalPathParserPathSource {
+                escape_allowed: path.escape_allowed,
+                stack: frame_index(path.stack, indices),
+                status: match path.status {
+                    PathStatus::Open => CanonicalPathParserStatusSource::Open,
+                    PathStatus::SplitComplete => CanonicalPathParserStatusSource::SplitComplete,
+                    PathStatus::Dead(error) => CanonicalPathParserStatusSource::Dead(error),
+                },
+                completed_segments: path.completed_segments,
+                first_tag: path
+                    .first_tag
+                    .map(|(byte, source)| LocatedPathByte { byte, source }),
+                stable: path.stable,
+            }
+        }
+
+        fn varint_source(state: VarintState) -> CanonicalPathParserVarintSource {
+            CanonicalPathParserVarintSource {
+                value: state.value,
+                shift: state.shift,
+                bytes: state.bytes,
+            }
+        }
+
+        let state = self.reducer.state(handle);
+        let mut owner_ids = Vec::new();
+        let mut owner = state.owners;
+        while let Some(id) = owner {
+            owner_ids.push(id);
+            owner = self.reducer.owners.entries[id.0].parent;
+        }
+        owner_ids.reverse();
+        let mut ids = Vec::new();
+        let mut indices = std::collections::HashMap::new();
+        intern(state.current.stack, &mut ids, &mut indices);
+        for id in &owner_ids {
+            intern(
+                self.reducer.owners.entries[id.0].owner.stack,
+                &mut ids,
+                &mut indices,
+            );
+        }
+        let mut cursor = 0;
+        while let Some(id) = ids.get(cursor).copied() {
+            match &self.reducer.machine.frames.slots[id.0] {
+                Frame::Tag { next, .. }
+                | Frame::Varint { next, .. }
+                | Frame::Bytes { next, .. }
+                | Frame::Kids { next, .. }
+                | Frame::Obligation { next, .. } => intern(*next, &mut ids, &mut indices),
+                Frame::Region { phase, next, .. } => {
+                    intern(*next, &mut ids, &mut indices);
+                    if let RegionPhase::Path { path, .. } = phase {
+                        intern(path.stack, &mut ids, &mut indices);
+                    }
+                }
+            }
+            cursor += 1;
+        }
+        let frames = ids
+            .into_iter()
+            .map(|id| match &self.reducer.machine.frames.slots[id.0] {
+                Frame::Tag {
+                    escape_allowed,
+                    next,
+                } => CanonicalPathParserFrameSource::Tag {
+                    escape_allowed: *escape_allowed,
+                    next: frame_index(*next, &indices),
+                },
+                Frame::Varint { role, state, next } => {
+                    let role = match role {
+                        VarintRole::Scalar => CanonicalPathParserVarintRoleSource::Scalar,
+                        VarintRole::Scale => CanonicalPathParserVarintRoleSource::Scale,
+                        VarintRole::Bytes { utf8 } => {
+                            CanonicalPathParserVarintRoleSource::Bytes { utf8: *utf8 }
+                        }
+                        VarintRole::Count => CanonicalPathParserVarintRoleSource::Count,
+                        VarintRole::RegionLength => {
+                            CanonicalPathParserVarintRoleSource::RegionLength
+                        }
+                        VarintRole::ObligationLength { kind, tag_source } => {
+                            CanonicalPathParserVarintRoleSource::ObligationLength {
+                                kind: *kind,
+                                tag_source: *tag_source,
+                            }
+                        }
+                    };
+                    CanonicalPathParserFrameSource::Varint {
+                        role,
+                        state: varint_source(*state),
+                        next: frame_index(*next, &indices),
+                    }
+                }
+                Frame::Bytes {
+                    remaining,
+                    utf8,
+                    next,
+                } => CanonicalPathParserFrameSource::Bytes {
+                    remaining: *remaining,
+                    utf8: utf8.map(|state| CanonicalPathParserUtf8Source {
+                        remaining: state.remaining,
+                        next_min: state.next_min,
+                        next_max: state.next_max,
+                    }),
+                    next: frame_index(*next, &indices),
+                },
+                Frame::Kids { remaining, next } => CanonicalPathParserFrameSource::Kids {
+                    remaining: *remaining,
+                    next: frame_index(*next, &indices),
+                },
+                Frame::Region {
+                    remaining,
+                    previous,
+                    phase,
+                    next,
+                } => CanonicalPathParserFrameSource::Region {
+                    remaining: *remaining,
+                    previous: previous.map(|span| {
+                        self.arena
+                            .located_bytes(span)
+                            .map(|located| LocatedPathByte {
+                                byte: located.byte,
+                                source: CanonicalPathSource::from_provenance(located.provenance),
+                            })
+                            .collect()
+                    }),
+                    phase: match phase {
+                        RegionPhase::PathLength(state) => {
+                            CanonicalPathParserRegionPhaseSource::PathLength(varint_source(*state))
+                        }
+                        RegionPhase::Path {
+                            declared_len,
+                            remaining,
+                            start_depth,
+                            path,
+                        } => CanonicalPathParserRegionPhaseSource::Path {
+                            declared_len: *declared_len,
+                            remaining: *remaining,
+                            start_depth: *start_depth,
+                            path: path_source(path, &indices),
+                        },
+                    },
+                    next: frame_index(*next, &indices),
+                },
+                Frame::Obligation {
+                    obligation,
+                    status,
+                    payload_start,
+                    next,
+                } => CanonicalPathParserFrameSource::Obligation {
+                    obligation: *obligation,
+                    status: match status {
+                        ObligationStatus::Payload => {
+                            CanonicalPathParserObligationStatusSource::Payload
+                        }
+                        #[cfg(test)]
+                        ObligationStatus::Countdown { remaining } => {
+                            CanonicalPathParserObligationStatusSource::Countdown {
+                                remaining: *remaining,
+                            }
+                        }
+                        ObligationStatus::AwaitingResolution { payload_end } => {
+                            CanonicalPathParserObligationStatusSource::AwaitingResolution {
+                                payload_end: *payload_end,
+                            }
+                        }
+                    },
+                    payload_start: *payload_start,
+                    next: frame_index(*next, &indices),
+                },
+            })
+            .collect();
+        let owner_chain = owner_ids
+            .into_iter()
+            .map(|id| {
+                let owner = &self.reducer.owners.entries[id.0];
+                CanonicalPathParserOwnerSource {
+                    id: id.0,
+                    owner: path_source(&owner.owner, &indices),
+                    parent: owner.parent.map(|id| id.0),
+                    region_end: owner.region_end,
+                    path_end: owner.path_end,
+                    all_boundary_end: owner.all_boundary.end,
+                    all_boundary_owner: owner.all_boundary.owner.0,
+                    path_boundary_end: owner.path_boundary.end,
+                    path_boundary_owner: owner.path_boundary.owner.0,
+                    outermost: owner.outermost.0,
+                }
+            })
+            .collect();
+        CanonicalPathParserSourceImage {
+            next_obligation: self.reducer.machine.next_obligation,
+            stamp: state.stamp,
+            path_bytes: self
+                .arena
+                .located_bytes(handle.bytes)
+                .map(|located| LocatedPathByte {
+                    byte: located.byte,
+                    source: CanonicalPathSource::from_provenance(located.provenance),
+                })
+                .collect(),
+            focused: path_source(&state.current, &indices),
+            root: path_source(self.reducer.root_path(&state), &indices),
+            owner_chain,
+            frames,
+            fault: state.fault,
+            root_gate: {
+                let root = self.reducer.root_path(&state);
+                CanonicalPathBatchGateSource {
+                    dead: self.reducer.dead_error(&state).is_some(),
+                    stack_empty: root.stack.is_none(),
+                    split_complete: root.status == PathStatus::SplitComplete,
+                    completed_segments: root.completed_segments,
+                    first_is_list: root.first_tag.is_some_and(|(tag, _)| tag == ELIST),
+                    stable: root.stable,
+                    escape_allowed: root.escape_allowed,
+                }
+            },
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn batch_forward_capacity_source(
+        &self,
+        available: usize,
+    ) -> CanonicalPathBatchForwardCapacitySource {
+        let state = self.reducer.state(self.current);
+        let (top_is_payload, top_payload_remaining) =
+            state.current.stack.map_or((false, None), |top| {
+                match &self.reducer.machine.frames.slots[top.0] {
+                    Frame::Obligation {
+                        obligation,
+                        status: ObligationStatus::Payload,
+                        payload_start,
+                        ..
+                    } => (
+                        true,
+                        ObligationStatus::Payload.remaining(
+                            obligation.payload_len,
+                            *payload_start,
+                            state.stamp,
+                        ),
+                    ),
+                    _ => (false, None),
+                }
+            });
+        #[cfg(test)]
+        let (test_bulk_operations, test_bulk_bytes) = (
+            Some(self.reducer.machine.stats.bulk_operations),
+            Some(self.reducer.machine.stats.bulk_bytes),
+        );
+        #[cfg(not(test))]
+        let (test_bulk_operations, test_bulk_bytes) = (None, None);
+        CanonicalPathBatchForwardCapacitySource {
+            current: self.batch_current_source(),
+            available,
+            capacity: self.forward_capacity(available),
+            root_left: self.root_left,
+            source_present: self.source.is_some(),
+            edges_before: self.reducer.machine.stats.edges,
+            state_fault_none: state.fault.is_none(),
+            owner_root_open: self.reducer.root_path(&state).status == PathStatus::Open,
+            top_is_payload,
+            top_payload_remaining,
+            test_bulk_operations,
+            test_bulk_bytes,
+        }
+    }
+
+    pub(crate) fn batch_top_restore_source(&self) -> Option<CanonicalPathBatchRestoreSource> {
+        self.restore
+            .last()
+            .map(|run| CanonicalPathBatchRestoreSource {
+                first_depth: run.first_depth,
+                latest: self.batch_handle_source(run.latest),
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn batch_restore_predecessor_source(
+        &self,
+        run_index: usize,
+        depth: usize,
+    ) -> Option<CanonicalPathBatchHandleSource> {
+        let run = self.restore.get(run_index)?;
+        if depth < run.first_depth || depth > run.latest.bytes.len() {
+            return None;
+        }
+        let bytes = self.arena.slice(run.latest.bytes, 0..depth).ok()?;
+        Some(self.batch_handle_source(CanonicalPathReducerHandle {
+            state: run.latest.state,
+            bytes,
+        }))
+    }
+
+    /// The parser frame/continuation image selected by the same historical
+    /// handle and prefix as `batch_restore_predecessor_source`.
+    #[cfg(test)]
+    pub(crate) fn batch_restore_predecessor_parser_source(
+        &self,
+        run_index: usize,
+        depth: usize,
+    ) -> Option<CanonicalPathParserSourceImage> {
+        let run = self.restore.get(run_index)?;
+        if depth < run.first_depth || depth > run.latest.bytes.len() {
+            return None;
+        }
+        let bytes = self.arena.slice(run.latest.bytes, 0..depth).ok()?;
+        Some(self.parser_source_image_for(CanonicalPathReducerHandle {
+            state: run.latest.state,
+            bytes,
+        }))
+    }
+
+    /// On-demand exact projection for a batch audit. It does not participate
+    /// in Forward/Unwind admission, whose guard remains constant-size.
+    #[cfg(test)]
+    pub(crate) fn batch_exact_source_observation(
+        &self,
+    ) -> CanonicalPathBatchExactSourceObservation {
+        CanonicalPathBatchExactSourceObservation {
+            current: self.batch_current_source(),
+            restore_len: self.restore.len(),
+            top: self.batch_top_restore_source(),
+            root_left: self.root_left,
+            source_present: self.source.is_some(),
+            edges: self.reducer.machine.stats.edges,
+        }
+    }
+
+    #[cfg(test)]
+    fn batch_handle_image(
+        &self,
+        handle: CanonicalPathReducerHandle,
+    ) -> CanonicalPathBatchHandleImage {
+        let source = self.batch_handle_source(handle);
+        let located = self.arena.located_bytes(handle.bytes).collect::<Vec<_>>();
+        assert_eq!(
+            source.last_source,
+            located
+                .last()
+                .map(|byte| CanonicalPathSource::from_provenance(byte.provenance)),
+        );
+        CanonicalPathBatchHandleImage { source, located }
+    }
+
+    #[cfg(test)]
+    fn batch_exact_source_image(&self) -> CanonicalPathBatchExactSourceImage {
+        let restore = self
+            .restore
+            .iter()
+            .enumerate()
+            .map(|(run_index, run)| {
+                let latest = self.batch_handle_image(run.latest);
+                let predecessors = (run.first_depth..=run.latest.bytes.len())
+                    .map(|depth| {
+                        let bytes = self
+                            .arena
+                            .slice(run.latest.bytes, 0..depth)
+                            .expect("compressed restore depth stays in the retained prefix");
+                        let image = self.batch_handle_image(CanonicalPathReducerHandle {
+                            state: run.latest.state,
+                            bytes,
+                        });
+                        assert_eq!(
+                            Some(image.source),
+                            self.batch_restore_predecessor_source(run_index, depth),
+                        );
+                        image
+                    })
+                    .collect();
+                CanonicalPathBatchRestoreImage {
+                    first_depth: run.first_depth,
+                    latest,
+                    predecessors,
+                }
+            })
+            .collect();
+        CanonicalPathBatchExactSourceImage {
+            current: self.batch_handle_image(self.current),
+            restore,
+        }
     }
 
     #[cfg(test)]
@@ -3487,7 +4821,13 @@ mod byte_policy_tests;
 mod opaque_interior_tests;
 
 #[cfg(test)]
+#[path = "rpb3_canonical_path_parser_source_properties.rs"]
+mod rpb3_canonical_path_parser_source_properties;
+
+#[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::rust::canonical_path;
 
@@ -3501,6 +4841,294 @@ mod tests {
                 return bytes;
             }
             bytes.push(group | 0x80);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn compressed_forward_unwind_expands_to_scalar_source_predecessors(
+            first in 1usize..8,
+            second in 1usize..8,
+            fragment in 1usize..5,
+            salt in any::<u8>(),
+            partial_seed in any::<usize>(),
+        ) {
+            let width = first + second;
+            let payload_len = width + 2;
+            let mut bytes = vec![ESCAPE, payload_len as u8];
+            bytes.extend((0..payload_len).map(|at| salt.wrapping_add(at as u8)));
+            let mut source = SourceTreeWindow::empty();
+            for (part, chunk) in bytes.chunks(fragment).enumerate() {
+                let leaf = SourceTreeWindow::from_borrowed(
+                    chunk,
+                    11 + (part % 4) as u32,
+                    100 + part * 31,
+                ).unwrap();
+                source = source.concat(&leaf).unwrap();
+            }
+            let located = |at: usize| LocatedPathByte {
+                byte: bytes[at],
+                source: CanonicalPathSource::from_provenance(
+                    source.provenance_at(at).unwrap(),
+                ),
+            };
+            let mut batch = CanonicalPathTopologyAdmission::new_with_source(
+                Some(source.clone()),
+            ).unwrap();
+            let mut scalar = CanonicalPathTopologyAdmission::new_with_source(
+                Some(source.clone()),
+            ).unwrap();
+            for at in 0..2 {
+                batch.edge(located(at)).unwrap();
+                scalar.edge(located(at)).unwrap();
+            }
+            let initial = batch.batch_exact_source_image();
+            prop_assert_eq!(&initial, &scalar.batch_exact_source_image());
+            let pending = initial.current.source.pending.unwrap();
+            prop_assert_eq!(pending.obligation.kind, CanonicalPathObligationKind::RawParEscape);
+            prop_assert_eq!(pending.payload_start, 2);
+            prop_assert_eq!(pending.payload_end_exclusive, (2 + payload_len) as u128);
+            prop_assert_eq!(pending.remaining, payload_len as u64);
+            prop_assert_eq!(pending.payload_end_source, None);
+
+            let mut scalar_steps = vec![initial];
+            let mut scalar_predecessors = Vec::new();
+            for at in 2..2 + width {
+                scalar_predecessors.push(scalar.batch_handle_image(scalar.current));
+                scalar.edge(located(at)).unwrap();
+                scalar_steps.push(scalar.batch_exact_source_image());
+            }
+            let before_first = batch.batch_source_shape();
+            let first_capacity = batch.batch_forward_capacity_source(first);
+            prop_assert_eq!(first_capacity.available, first);
+            prop_assert_eq!(first_capacity.capacity, first);
+            prop_assert!(first_capacity.top_is_payload);
+            prop_assert!(first_capacity.current.open && first_capacity.current.fault_free);
+            prop_assert_eq!(first_capacity.current.depth, first_capacity.current.stamp);
+            prop_assert!(!first_capacity.root_left && first_capacity.source_present);
+            prop_assert_eq!(first_capacity.edges_before, 2);
+            prop_assert!(first_capacity.current.pending.unwrap().remaining > first as u64);
+            let first_receipt = batch
+                .try_forward_source_with_receipt(2..2 + first)
+                .unwrap()
+                .unwrap();
+            let after_first = batch.batch_source_shape();
+            prop_assert!(before_first.matches_forward(after_first, first));
+            prop_assert_eq!(after_first.restore_len, before_first.restore_len + 1);
+            prop_assert!(first_receipt.matches_batch(
+                &batch,
+                &source,
+                2..2 + first,
+                before_first,
+                after_first,
+                located(2 + first - 1).source,
+            ));
+            let foreign = SourceTreeWindow::from_borrowed(&bytes, 99, 777).unwrap();
+            prop_assert!(!first_receipt.matches_batch(
+                &batch,
+                &foreign,
+                2..2 + first,
+                before_first,
+                after_first,
+                located(2 + first - 1).source,
+            ));
+            prop_assert_eq!(batch.batch_exact_source_image(), scalar_steps[first].clone());
+
+            let before_second = batch.batch_source_shape();
+            let second_capacity = batch.batch_forward_capacity_source(second);
+            prop_assert_eq!(second_capacity.available, second);
+            prop_assert_eq!(second_capacity.capacity, second);
+            prop_assert!(second_capacity.top_is_payload);
+            prop_assert_eq!(second_capacity.current.depth, second_capacity.current.stamp);
+            prop_assert_eq!(second_capacity.edges_before, 2 + first);
+            prop_assert!(second_capacity.current.pending.unwrap().remaining > second as u64);
+            let second_receipt = batch
+                .try_forward_source_with_receipt(2 + first..2 + width)
+                .unwrap()
+                .unwrap();
+            let after_second = batch.batch_source_shape();
+            prop_assert!(before_second.matches_forward(after_second, second));
+            prop_assert_eq!(after_second.restore_len, before_second.restore_len);
+            prop_assert!(second_receipt.matches_batch(
+                &batch,
+                &source,
+                2 + first..2 + width,
+                before_second,
+                after_second,
+                located(2 + width - 1).source,
+            ));
+            let forward = batch.batch_exact_source_image();
+            prop_assert_eq!(forward.clone(), scalar_steps[width].clone());
+            let exact = batch.batch_exact_source_observation();
+            prop_assert_eq!(exact.current, forward.current.source);
+            prop_assert_eq!(exact.restore_len, forward.restore.len());
+            prop_assert_eq!(exact.edges, 2 + width);
+            prop_assert!(!exact.root_left && exact.source_present);
+            prop_assert_eq!(batch.batch_current_source(), forward.current.source);
+            prop_assert_eq!(
+                exact.top.unwrap().latest,
+                forward.restore.last().unwrap().latest.source,
+            );
+            prop_assert_eq!(forward.restore.last().unwrap().first_depth, 2);
+            prop_assert_eq!(
+                forward.restore.last().unwrap().predecessors.as_slice(),
+                scalar_predecessors.as_slice(),
+            );
+            prop_assert_eq!(
+                forward.current.source.last_source,
+                Some(located(2 + width - 1).source),
+            );
+            let forward_pending = forward.current.source.pending.unwrap();
+            prop_assert_eq!(forward_pending.payload_start, 2);
+            prop_assert_eq!(forward_pending.payload_end_exclusive, (2 + payload_len) as u128);
+            prop_assert_eq!(forward_pending.remaining, (payload_len - width) as u64);
+            prop_assert!(!forward_pending.awaiting_resolution);
+            prop_assert_eq!(forward_pending.payload_end_source, None);
+
+            let partial = 1 + partial_seed % (width - 1);
+            let before_partial = batch.batch_source_shape();
+            prop_assert!(batch.try_leave_run(partial).is_some());
+            prop_assert!(before_partial.matches_unwind(batch.batch_source_shape(), partial));
+            for _ in 0..partial {
+                scalar.leave(CanonicalPathSource::new(0)).unwrap();
+            }
+            let after_partial = batch.batch_exact_source_image();
+            prop_assert_eq!(after_partial.clone(), scalar.batch_exact_source_image());
+            prop_assert_eq!(
+                after_partial.restore.last().unwrap().predecessors.as_slice(),
+                &scalar_predecessors[..width - partial],
+            );
+            prop_assert_eq!(
+                after_partial.current.source.last_source,
+                Some(located(2 + width - partial - 1).source),
+            );
+
+            let remaining = width - partial;
+            let before_full = batch.batch_source_shape();
+            prop_assert!(batch.try_leave_run(remaining).is_some());
+            prop_assert!(before_full.matches_unwind(batch.batch_source_shape(), remaining));
+            for _ in 0..remaining {
+                scalar.leave(CanonicalPathSource::new(0)).unwrap();
+            }
+            prop_assert_eq!(batch.batch_exact_source_image(), scalar.batch_exact_source_image());
+            prop_assert_eq!(batch.batch_exact_source_image(), scalar_steps[0].clone());
+        }
+
+        #[test]
+        fn non_obligation_and_resolved_changed_state_unwind_preserve_exact_sources(
+            source_id in 1u32..1000,
+            first_offset in 0usize..100_000,
+            gap in 1usize..1000,
+            truth in any::<bool>(),
+        ) {
+            let tag_source = CanonicalPathSource::in_source(source_id, first_offset);
+            let second_source = CanonicalPathSource::in_source(
+                source_id + 1,
+                first_offset + gap,
+            );
+            let tag = if truth { GBOOL_TRUE } else { GBOOL_FALSE };
+
+            let mut direct = CanonicalPathTopologyAdmission::new();
+            let initial = direct.batch_exact_source_image();
+            direct.edge(LocatedPathByte { byte: tag, source: tag_source }).unwrap();
+            let before = direct.batch_exact_source_observation();
+            prop_assert!(before.current.pending.is_none());
+            prop_assert_ne!(before.current.state_id, before.top.unwrap().latest.state_id);
+            prop_assert_eq!(before.current.last_source, Some(tag_source));
+            let shape = direct.batch_source_shape();
+            prop_assert!(direct.try_leave_run(1).is_some());
+            prop_assert!(shape.matches_unwind(direct.batch_source_shape(), 1));
+            prop_assert_eq!(direct.batch_exact_source_image(), initial);
+
+            let mut resolved = CanonicalPathTopologyAdmission::new();
+            let mut scalar = CanonicalPathTopologyAdmission::new();
+            for path in [&mut resolved, &mut scalar] {
+                path.edge(LocatedPathByte { byte: ESCAPE, source: tag_source }).unwrap();
+                path.edge(LocatedPathByte { byte: 0, source: second_source }).unwrap();
+                let obligation = path.active_obligation().unwrap();
+                prop_assert!(obligation.awaiting_resolution);
+                path.resolve_obligation(
+                    obligation.obligation.id,
+                    CanonicalPathObligationResolution::RawPar {
+                        canonical_path_stable: false,
+                    },
+                ).unwrap();
+            }
+            let before = resolved.batch_exact_source_observation();
+            prop_assert!(before.current.pending.is_none());
+            prop_assert_ne!(before.current.state_id, before.top.unwrap().latest.state_id);
+            prop_assert_eq!(before.current.last_source, Some(second_source));
+            prop_assert_eq!(before.top.unwrap().latest.last_source, Some(tag_source));
+            let shape = resolved.batch_source_shape();
+            prop_assert!(resolved.try_leave_run(1).is_some());
+            prop_assert!(shape.matches_unwind(resolved.batch_source_shape(), 1));
+            scalar.leave(second_source).unwrap();
+            prop_assert_eq!(resolved.batch_exact_source_image(), scalar.batch_exact_source_image());
+            prop_assert_eq!(resolved.batch_current_source().last_source, Some(tag_source));
+            prop_assert!(resolved.batch_current_source().pending.is_none());
+        }
+
+        #[test]
+        fn nested_owner_forward_capacity_preserves_scalar_sources(
+            width in 1usize..8,
+            suffix in 2usize..8,
+            fragment in 1usize..5,
+            salt in any::<u8>(),
+        ) {
+            let payload_len = width + suffix;
+            let path_len = 2 + payload_len;
+            let mut bytes = vec![
+                EPATHMAP,
+                (1 + path_len) as u8,
+                path_len as u8,
+                EPATHMAP_MAP,
+                payload_len as u8,
+            ];
+            bytes.extend((0..payload_len).map(|at| salt.wrapping_add(at as u8)));
+            let mut source = SourceTreeWindow::empty();
+            for (part, chunk) in bytes.chunks(fragment).enumerate() {
+                let leaf = SourceTreeWindow::from_borrowed(
+                    chunk,
+                    29 + (part % 3) as u32,
+                    200 + part * 17,
+                ).unwrap();
+                source = source.concat(&leaf).unwrap();
+            }
+            let located = |at: usize| LocatedPathByte {
+                byte: bytes[at],
+                source: CanonicalPathSource::from_provenance(
+                    source.provenance_at(at).unwrap(),
+                ),
+            };
+            let mut batch = CanonicalPathTopologyAdmission::new_with_source(
+                Some(source.clone()),
+            ).unwrap();
+            let mut scalar = CanonicalPathTopologyAdmission::new_with_source(
+                Some(source.clone()),
+            ).unwrap();
+            for at in 0..5 {
+                batch.edge(located(at)).unwrap();
+                scalar.edge(located(at)).unwrap();
+            }
+
+            let state = batch.reducer.state(batch.current);
+            let owner = state.owners.expect("nested region captured an owner");
+            let root = batch.reducer.owners.entries[owner.0].outermost;
+            prop_assert_eq!(batch.reducer.owners.entries[root.0].owner.status, PathStatus::Open);
+            let capacity = batch.batch_forward_capacity_source(width);
+            prop_assert_eq!(capacity.capacity, width, "capacity source: {:?}", capacity);
+            prop_assert!(capacity.current.open && capacity.current.fault_free);
+            prop_assert!(capacity.state_fault_none && capacity.owner_root_open);
+            prop_assert_eq!(capacity.top_payload_remaining, Some(payload_len as u64));
+            prop_assert!(capacity.current.pending.is_some());
+            prop_assert_eq!(capacity.current.owner_boundary_end, Some(bytes.len() as u128));
+            prop_assert!(batch.try_forward_source(5..5 + width).unwrap());
+            for at in 5..5 + width {
+                scalar.edge(located(at)).unwrap();
+            }
+            prop_assert_eq!(batch.batch_exact_source_image(), scalar.batch_exact_source_image());
         }
     }
 
@@ -3980,11 +5608,16 @@ mod tests {
                 canonical_path_stable: false,
             })
             .unwrap();
+        let root_gate = admission.value_root_gate_source();
+        assert!(!root_gate.dead && root_gate.stack_empty);
+        let root_stable = admission.value_root_stability_source();
+        assert_eq!(root_gate.stable, root_stable);
+        assert!(!root_stable);
         let summary = admission
             .value(true, CanonicalPathSource::new(4))
             .unwrap()
             .unwrap();
-        assert!(!summary.canonical_path_stable);
+        assert_eq!(summary.canonical_path_stable, root_stable);
 
         let mut alias = CanonicalPathTopologyAdmission::new();
         alias.edge(LocatedPathByte::new(ESCAPE, 10)).unwrap();
@@ -4043,6 +5676,7 @@ mod tests {
             }
         }
         let obligation = obligation.expect("nested EPM suspension is visible to the driver");
+        assert!(admission.reducer.state(admission.current).owners.is_some());
         admission
             .resolve_obligation(
                 obligation.id,
@@ -4052,10 +5686,16 @@ mod tests {
                 },
             )
             .unwrap();
-        assert!(admission
+        let root_gate = admission.value_root_gate_source();
+        assert!(!root_gate.dead && root_gate.stack_empty);
+        let root_stable = admission.value_root_stability_source();
+        assert_eq!(root_gate.stable, root_stable);
+        assert!(root_stable);
+        let summary = admission
             .value(true, CanonicalPathSource::new(5))
             .unwrap()
-            .is_ok());
+            .unwrap();
+        assert_eq!(summary.canonical_path_stable, root_stable);
 
         let mut wrong_mode = CanonicalPathTopologyAdmission::new();
         wrong_mode

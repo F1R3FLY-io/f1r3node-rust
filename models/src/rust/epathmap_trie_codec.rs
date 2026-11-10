@@ -15,14 +15,18 @@ use pathmap::zipper::{
 };
 use pathmap::PathMap;
 use prost::bytes::Bytes;
-#[cfg(test)]
-use rspace_plus_plus::rspace::pathmap_codec::CompactTrie;
 use rspace_plus_plus::rspace::pathmap_codec::{
-    CanonicalCompactTrieCursor, CanonicalCompactTrieIndexedTopologyCursor,
+    CanonicalCompactTrieActiveLineWorkSource, CanonicalCompactTrieCursor,
+    CanonicalCompactTrieCursorSourcePosition, CanonicalCompactTrieCursorSourceStage,
+    CanonicalCompactTrieIndexedTopologyCursor, CanonicalCompactTrieLineCommit,
     CanonicalCompactTrieLineDirection, CanonicalCompactTrieLineSpan,
     CanonicalCompactTriePreparedLineSpan, CanonicalCompactTrieTopologyCursor,
     CanonicalCompactTrieTopologyEvent, CanonicalCompactTrieValueSummary, CompactTrieError,
     CompactTrieTopologyEvent,
+};
+#[cfg(test)]
+use rspace_plus_plus::rspace::pathmap_codec::{
+    CanonicalCompactTrieValidatedPlanSource, CompactTrie,
 };
 use rspace_plus_plus::rspace::pathmap_mutation::{
     remove_value_preserving_path, retire_pathmap, BarrierProvider, DisposeValue,
@@ -714,9 +718,9 @@ fn parse_indexed_canonical_snapshot_prefix<'a>(
 pub(crate) enum IndexedCanonicalEpm1TopologyEvent<'a> {
     Value {
         has_value: bool,
-        #[cfg(test)]
         value_body_range: Option<Range<usize>>,
         value_body: Option<IndexedByteRegion<'a>>,
+        source_offset: usize,
         provenance: CanonicalByteProvenance,
     },
     Edge {
@@ -728,6 +732,13 @@ pub(crate) enum IndexedCanonicalEpm1TopologyEvent<'a> {
     },
 }
 
+/// One actual cursor call and its on-demand source receipt. The Map receipt
+/// cannot be paired with an event or prestate supplied by the caller.
+pub(crate) struct IndexedCanonicalEpm1TopologySourceEvent<'a> {
+    pub(crate) event: IndexedCanonicalEpm1TopologyEvent<'a>,
+    pub(crate) map_value_receipt: Option<IndexedCanonicalEpm1MapValueSourceReceipt>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct IndexedCanonicalEpm1TopologyStats {
     pub(crate) prefix_bytes_read: usize,
@@ -737,6 +748,76 @@ pub(crate) struct IndexedCanonicalEpm1TopologyStats {
     pub(crate) topology_events: usize,
     pub(crate) value_records: usize,
     pub(crate) terminal_checks: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IndexedCanonicalEpm1TerminalSourceImage {
+    pub(crate) mode: EPathMapMode,
+    pub(crate) declared_value_count: usize,
+    pub(crate) map_values_seen: usize,
+    pub(crate) event_index: usize,
+    pub(crate) value_table_offset: usize,
+    pub(crate) snapshot_len: usize,
+    pub(crate) terminal_checks: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IndexedCanonicalEpm1ActiveSourceImage {
+    pub(crate) mode: EPathMapMode,
+    pub(crate) declared_value_count: usize,
+    pub(crate) map_values_seen: usize,
+    pub(crate) event_index: usize,
+    pub(crate) value_table_offset: usize,
+    pub(crate) snapshot_len: usize,
+}
+
+/// One successful Map Value event, assembled from pre/post cursor observations
+/// and its transient event. Every range is relative to the EPM1 snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IndexedCanonicalEpm1MapValueSourceReceipt {
+    pub(crate) act_before: CanonicalCompactTrieCursorSourcePosition,
+    pub(crate) act_after: Option<CanonicalCompactTrieCursorSourcePosition>,
+    pub(crate) act_source_offset: usize,
+    pub(crate) act_source: CanonicalByteProvenance,
+    pub(crate) event_index_before: usize,
+    pub(crate) event_index_after: usize,
+    pub(crate) map_values_seen_before: usize,
+    pub(crate) map_values_seen_after: usize,
+    pub(crate) pre_value_table_offset: usize,
+    pub(crate) length_prefix_start: usize,
+    pub(crate) length_prefix_end: usize,
+    pub(crate) body_len: usize,
+    pub(crate) body_range: CanonicalByteRange,
+    pub(crate) post_value_table_offset: usize,
+    pub(crate) snapshot_len: usize,
+}
+
+fn map_value_act_successor_position(
+    before: CanonicalCompactTrieCursorSourcePosition,
+) -> Option<CanonicalCompactTrieCursorSourcePosition> {
+    match before.stage {
+        CanonicalCompactTrieCursorSourceStage::Value
+            if before.line_start.is_none() && before.line_end.is_none() =>
+        {
+            Some(CanonicalCompactTrieCursorSourcePosition {
+                stage: CanonicalCompactTrieCursorSourceStage::Children,
+                ..before
+            })
+        }
+        CanonicalCompactTrieCursorSourceStage::LineValue => {
+            let line_len = before.line_end?.checked_sub(before.line_start?)?;
+            let line_index = before.line_index.checked_add(1)?;
+            if line_index != line_len {
+                return None;
+            }
+            Some(CanonicalCompactTrieCursorSourcePosition {
+                line_index,
+                stage: CanonicalCompactTrieCursorSourceStage::Children,
+                ..before
+            })
+        }
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -815,10 +896,10 @@ impl<'cursor, 'src> IndexedCanonicalEpm1LineSpan<'cursor, 'src> {
 impl IndexedCanonicalEpm1PreparedLineSpan<'_, '_> {
     pub(crate) fn source_range(&self) -> Range<usize> { self.inner.source_range() }
 
-    pub(crate) fn commit(self) -> CanonicalByteProvenance {
-        self.inner.commit();
+    pub(crate) fn commit(self) -> (CanonicalByteProvenance, CanonicalCompactTrieLineCommit) {
+        let publication = self.inner.commit();
         *self.topology_events = self.next_events;
-        self.last_source
+        (self.last_source, publication)
     }
 }
 
@@ -946,6 +1027,158 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
         }
     }
 
+    pub(crate) fn topology_source_position(
+        &self,
+    ) -> Option<CanonicalCompactTrieCursorSourcePosition> {
+        self.trie.as_ref()?.source_position()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn validated_act_plan_source(
+        &self,
+    ) -> Option<CanonicalCompactTrieValidatedPlanSource<'_, IndexedByteRegion<'a>>> {
+        Some(self.trie.as_ref()?.validated_plan_source())
+    }
+
+    fn map_value_source_receipt(
+        &self,
+        before: IndexedCanonicalEpm1ActiveSourceImage,
+        act_before: CanonicalCompactTrieCursorSourcePosition,
+        event: &IndexedCanonicalEpm1TopologyEvent<'a>,
+    ) -> Option<IndexedCanonicalEpm1MapValueSourceReceipt> {
+        let IndexedCanonicalEpm1TopologyEvent::Value {
+            has_value: true,
+            value_body_range: Some(range),
+            value_body: Some(body),
+            source_offset,
+            provenance,
+        } = event
+        else {
+            return None;
+        };
+        let after = self.active_source_image()?;
+        if before.mode != EPathMapMode::Map
+            || after.mode != before.mode
+            || after.declared_value_count != before.declared_value_count
+            || after.snapshot_len != before.snapshot_len
+            || before.event_index.checked_add(1)? != after.event_index
+            || before.map_values_seen.checked_add(1)? != after.map_values_seen
+            || before.value_table_offset >= range.start
+            || range.start > range.end
+            || range.end != after.value_table_offset
+            || range.end > after.snapshot_len
+            || !matches!(
+                act_before.stage,
+                CanonicalCompactTrieCursorSourceStage::Value
+                    | CanonicalCompactTrieCursorSourceStage::LineValue
+            )
+            || (act_before.stage == CanonicalCompactTrieCursorSourceStage::Value
+                && act_before.node_id != *source_offset)
+        {
+            return None;
+        }
+        let relative_start = range.start.checked_sub(self.value_table_start)?;
+        let relative_end = range.end.checked_sub(self.value_table_start)?;
+        let selected_body = self.value_table.subview(CanonicalByteRange {
+            start: relative_start,
+            end: relative_end,
+        })?;
+        // `next_event` already obtained `provenance` from this ACT source offset.
+        // Re-reading its indexed position here would duplicate a source lookup.
+        if !body.same_view(&selected_body)
+            || self.topology_source_position()
+                != Some(map_value_act_successor_position(act_before)?)
+        {
+            return None;
+        }
+        Some(IndexedCanonicalEpm1MapValueSourceReceipt {
+            act_before,
+            act_after: self.topology_source_position(),
+            act_source_offset: *source_offset,
+            act_source: *provenance,
+            event_index_before: before.event_index,
+            event_index_after: after.event_index,
+            map_values_seen_before: before.map_values_seen,
+            map_values_seen_after: after.map_values_seen,
+            pre_value_table_offset: before.value_table_offset,
+            length_prefix_start: before.value_table_offset,
+            length_prefix_end: range.start,
+            body_len: range.len(),
+            body_range: CanonicalByteRange {
+                start: range.start,
+                end: range.end,
+            },
+            post_value_table_offset: after.value_table_offset,
+            snapshot_len: after.snapshot_len,
+        })
+    }
+
+    pub(crate) fn active_line_work_source(
+        &self,
+    ) -> Option<CanonicalCompactTrieActiveLineWorkSource> {
+        if !matches!(self.terminal, IndexedCanonicalEpm1Terminal::Active)
+            || self.mode == EPathMapMode::Empty
+        {
+            return None;
+        }
+        self.trie
+            .as_ref()?
+            .active_line_work_source(self.topology_events)
+    }
+
+    pub(crate) fn active_source_image(&self) -> Option<IndexedCanonicalEpm1ActiveSourceImage> {
+        if !matches!(self.terminal, IndexedCanonicalEpm1Terminal::Active)
+            || self.terminal_checks != 0
+            || self.value_records > self.value_count
+        {
+            return None;
+        }
+        let value_table_offset = self
+            .value_table_start
+            .checked_add(self.value_reader.offset())?;
+        let snapshot_len = self.value_table_start.checked_add(self.value_table.len())?;
+        if value_table_offset > snapshot_len {
+            return None;
+        }
+        Some(IndexedCanonicalEpm1ActiveSourceImage {
+            mode: self.mode,
+            declared_value_count: self.value_count,
+            map_values_seen: self.value_records,
+            event_index: self.topology_events,
+            value_table_offset,
+            snapshot_len,
+        })
+    }
+
+    pub(crate) fn terminal_source_image(&self) -> Option<IndexedCanonicalEpm1TerminalSourceImage> {
+        if !matches!(self.terminal, IndexedCanonicalEpm1Terminal::Done)
+            || self.terminal_checks != 1
+            || !self.value_reader.is_empty()
+            || (self.mode == EPathMapMode::Map
+                && (self.length != self.value_count || self.value_records != self.length))
+            || (self.mode != EPathMapMode::Map
+                && (self.value_records != 0 || self.value_count != 0))
+        {
+            return None;
+        }
+        let value_table_offset = self
+            .value_table_start
+            .checked_add(self.value_reader.offset())?;
+        let snapshot_len = self.value_table_start.checked_add(self.value_table.len())?;
+        if value_table_offset != snapshot_len {
+            return None;
+        }
+        Some(IndexedCanonicalEpm1TerminalSourceImage {
+            mode: self.mode,
+            declared_value_count: self.value_count,
+            map_values_seen: self.value_records,
+            event_index: self.topology_events,
+            value_table_offset,
+            snapshot_len,
+            terminal_checks: self.terminal_checks,
+        })
+    }
+
     fn latch_error<T>(&mut self, error: TrieCodecError) -> Result<T, TrieCodecError> {
         self.terminal = IndexedCanonicalEpm1Terminal::Failed(error.clone());
         Err(error)
@@ -981,6 +1214,51 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
         Ok(None)
     }
 
+    /// Capture the ACT/value-table prestate, make exactly one indexed cursor
+    /// call, then bind its returned Map body to the resulting source image.
+    /// The receipt is transient and does not enlarge the cursor's hot state.
+    pub(crate) fn next_event_with_source(
+        &mut self,
+    ) -> Result<Option<IndexedCanonicalEpm1TopologySourceEvent<'a>>, TrieCodecError> {
+        let before = self.active_source_image();
+        let act_before = self.topology_source_position();
+        let Some(event) = self.next_event()? else {
+            return Ok(None);
+        };
+        let map_value_receipt = match &event {
+            IndexedCanonicalEpm1TopologyEvent::Value {
+                has_value: true,
+                provenance,
+                ..
+            } if self.mode == EPathMapMode::Map => match (before, act_before) {
+                (Some(before), Some(act_before)) => {
+                    match self.map_value_source_receipt(before, act_before, &event) {
+                        Some(receipt) => Some(receipt),
+                        None => {
+                            return self.latch_error(TrieCodecError::located(
+                                "EPM1 Map value lacks an exact indexed source receipt",
+                                *provenance,
+                                *provenance,
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return self.latch_error(TrieCodecError::located(
+                        "EPM1 Map value has no active ACT prestate",
+                        *provenance,
+                        *provenance,
+                    ));
+                }
+            },
+            _ => None,
+        };
+        Ok(Some(IndexedCanonicalEpm1TopologySourceEvent {
+            event,
+            map_value_receipt,
+        }))
+    }
+
     pub(crate) fn next_event(
         &mut self,
     ) -> Result<Option<IndexedCanonicalEpm1TopologyEvent<'a>>, TrieCodecError> {
@@ -994,9 +1272,9 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
             let event = match self.empty_state {
                 0 => IndexedCanonicalEpm1TopologyEvent::Value {
                     has_value: false,
-                    #[cfg(test)]
                     value_body_range: None,
                     value_body: None,
+                    source_offset: 5,
                     provenance: self.empty_provenance,
                 },
                 1 => IndexedCanonicalEpm1TopologyEvent::Leave {
@@ -1042,7 +1320,7 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                 source_offset,
             } => {
                 let provenance = event_provenance(source_offset);
-                let (_value_body_range, value_body) =
+                let (value_body_range, value_body) =
                     if self.mode == EPathMapMode::Map && value.is_some() {
                         let marker = value.expect("the map value branch checked presence");
                         if marker != 0 {
@@ -1122,9 +1400,9 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                     };
                 IndexedCanonicalEpm1TopologyEvent::Value {
                     has_value: value.is_some(),
-                    #[cfg(test)]
-                    value_body_range: _value_body_range,
+                    value_body_range,
                     value_body,
+                    source_offset,
                     provenance,
                 }
             }
@@ -1195,6 +1473,7 @@ impl OwnedCanonicalEpm1TopologyCursor {
                 value_body_range,
                 value_body: _,
                 provenance,
+                ..
             } => {
                 let value_body = value_body_range
                     .as_ref()
@@ -3606,9 +3885,15 @@ mod tests {
             assert_eq!(indexed.length(), owned.length());
 
             loop {
+                let indexed_observed = indexed
+                    .next_event_with_source()
+                    .expect("validated frozen event and source receipt");
+                let map_receipt = indexed_observed
+                    .as_ref()
+                    .and_then(|observed| observed.map_value_receipt);
                 match (
                     owned.next_event(),
-                    indexed.next_event().expect("validated frozen event"),
+                    indexed_observed.map(|observed| observed.event),
                 ) {
                     (
                         Some(OwnedCanonicalEpm1TopologyEvent::Value {
@@ -3622,6 +3907,7 @@ mod tests {
                             value_body_range,
                             value_body,
                             provenance,
+                            ..
                         }),
                     ) => {
                         assert_eq!(has_value, owned_has_value);
@@ -3630,6 +3916,10 @@ mod tests {
                         assert_eq!(provenance.offset, BASE + source_offset);
                         match (value_body, owned_body, value_body_range) {
                             (Some(indexed_body), Some(owned_body), Some(range)) => {
+                                let receipt = map_receipt
+                                    .expect("each indexed Map body has one source receipt");
+                                assert_eq!(receipt.body_range.start..receipt.body_range.end, range);
+                                assert_eq!(receipt.act_source, provenance);
                                 assert!(indexed_body.content_eq(
                                     &IndexedByteRegion::from_protobuf_region(
                                         ProtobufRegion::copy_from_slice(owned_body.as_ref()),
@@ -3640,7 +3930,7 @@ mod tests {
                                 assert_eq!(body_start.source, SOURCE);
                                 assert_eq!(body_start.offset, BASE + range.start);
                             }
-                            (None, None, None) => {}
+                            (None, None, None) => assert!(map_receipt.is_none()),
                             _ => panic!("indexed and owned value bodies differ"),
                         }
                     }

@@ -45,6 +45,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+verified-score-store = { path = "../formal/verified_score_store" }
 crypto = { path = "../crypto" }
 rspace_plus_plus = { path = "../rspace++" }
 shared = { path = "../shared" }
@@ -189,6 +190,26 @@ path = "tests/cost_region_bincode.rs"
 [[test]]
 name = "cost_token_stack_admission"
 path = "tests/cost_token_stack_admission.rs"
+
+[[test]]
+name = "rpb3_descriptor_projection"
+path = "tests/rpb3_descriptor_projection.rs"
+
+[[test]]
+name = "rpb3_auxiliary_typed_source_bridge"
+path = "tests/rpb3_auxiliary_typed_source_bridge.rs"
+
+[[test]]
+name = "rpb3_epm1_independent_oracle"
+path = "tests/rpb3_epm1_independent_oracle.rs"
+
+[[test]]
+name = "rpb3_new_map_source_order"
+path = "tests/rpb3_new_map_source_order.rs"
+
+[[test]]
+name = "rpb3_new_uri_order_boundary"
+path = "tests/rpb3_new_uri_order_boundary.rs"
 
 [[test]]
 name = "par_bag"

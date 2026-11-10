@@ -3440,6 +3440,7 @@ dependencies = [
  "typed-arena",
  "utoipa",
  "uuid",
+ "verified-score-store",
 ]
 
 [[package]]

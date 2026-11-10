@@ -4,6 +4,8 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::rust::rholang::canonical_bytes_arena::{CanonicalBytesArena, CanonicalLocatedByte};
+use crate::rust::rholang::indexed_protobuf::IndexedByteRegion;
+use crate::rust::rholang::protobuf_cursor::CanonicalByteRange;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct SourcePhysicalInventory {
@@ -24,7 +26,8 @@ impl SourcePhysicalInventory {
             }
             self.node_storage_bytes += std::mem::size_of_val(node.as_ref());
             match node.payload.as_ref().unwrap() {
-                SourcePayload::Borrowed { bytes, .. } => {
+                SourcePayload::Borrowed(value) => {
+                    let bytes = value.root_slice();
                     self.borrowed_slices
                         .insert((bytes.as_ptr() as usize, bytes.len()));
                 }
@@ -81,20 +84,17 @@ fn assert_shape(source: &SourceTreeWindow<'_>) -> usize {
         }
         assert!(node.len > 0);
         match node.payload.as_ref().unwrap() {
-            SourcePayload::Borrowed {
-                bytes,
-                start,
-                len,
-                absolute_start,
-                ..
-            } => {
+            SourcePayload::Borrowed(value) => {
                 assert_eq!(node.height, 0);
-                assert_eq!(node.len, *len);
-                assert!(start.checked_add(*len).unwrap() <= bytes.len());
-                assert!(absolute_start
-                    .checked_add(*start)
+                assert_eq!(node.len, value.len());
+                assert!(
+                    value.start().checked_add(value.len()).unwrap() <= value.root_slice().len()
+                );
+                assert!(value
+                    .absolute_start()
+                    .checked_add(value.start())
                     .unwrap()
-                    .checked_add(*len - 1)
+                    .checked_add(value.len() - 1)
                     .is_some());
             }
             SourcePayload::Frozen(bytes) => {
@@ -152,6 +152,206 @@ fn property_config() -> ProptestConfig {
             )),
         )),
         ..ProptestConfig::default()
+    }
+}
+
+proptest! {
+    #![proptest_config(property_config())]
+
+    #[test]
+    fn retained_view_identity_follows_operation_lineage_and_checked_ranges(
+        bytes in prop::collection::vec(any::<u8>(), 1..33),
+        first in any::<u8>(),
+        second in any::<u8>(),
+        split in any::<u8>(),
+    ) {
+        let length = bytes.len();
+        let a = usize::from(first) % (length + 1);
+        let b = usize::from(second) % (length + 1);
+        let (start, end) = (a.min(b), a.max(b));
+        let cut = usize::from(split) % (length + 1);
+        let root = borrowed(&bytes, 7, 400);
+        let independent = borrowed(&bytes, 7, 400);
+        let left = root.subview(0..cut).unwrap();
+        let right = root.subview(cut..length).unwrap();
+        let joined = left.try_coalesce(&right).unwrap();
+        let independent_right = independent.subview(cut..length).unwrap();
+        let independently_joined = left.try_coalesce(&independent_right).unwrap();
+        let composed = root.concat(&independent).unwrap();
+        let composed_again = root.concat(&independent).unwrap();
+
+        let cases = vec![
+            (root.clone(), 0usize, 0usize, length),
+            (root.subview(start..end).unwrap(), 0, start, end - start),
+            (root.subview(start..end).unwrap(), 0, start, end - start),
+            (left, 0, 0, cut),
+            (right, 0, cut, length - cut),
+            (joined, 0, 0, length),
+            (independent.clone(), 1, 0, length),
+            (independent.subview(start..end).unwrap(), 1, start, end - start),
+            (independently_joined, 2, 0, length),
+            (composed.clone(), 3, 0, length * 2),
+            (composed.subview(start..end).unwrap(), 3, start, end - start),
+            (composed_again, 4, 0, length * 2),
+        ];
+        for (index, (actual, lineage, offset, width)) in cases.iter().enumerate() {
+            prop_assert_eq!(actual.start, *offset);
+            prop_assert_eq!(actual.len(), *width);
+            for (other, other_lineage, other_offset, other_width) in &cases[index..] {
+                let expected = lineage == other_lineage
+                    && offset == other_offset
+                    && width == other_width;
+                prop_assert_eq!(actual.same_view(other), expected);
+                prop_assert_eq!(other.same_view(actual), expected);
+            }
+        }
+        prop_assert_eq!(observations(&root), observations(&independent));
+        prop_assert!(!root.same_view(&independent));
+
+        let mut arena = CanonicalBytesArena::new();
+        let mut handle = arena.empty();
+        for (offset, byte) in bytes.iter().copied().enumerate() {
+            handle = arena.append(
+                handle,
+                CanonicalLocatedByte::new(
+                    byte,
+                    CanonicalByteProvenance::new(7, 400 + offset),
+                ),
+            ).unwrap();
+        }
+        let frozen = arena.freeze(handle);
+        let frozen_clone = frozen.clone();
+        prop_assert!(frozen.same_view(&frozen_clone));
+        let first_frozen_root = SourceTreeWindow::from_frozen(frozen);
+        let second_frozen_root = SourceTreeWindow::from_frozen(frozen_clone);
+        prop_assert_eq!(observations(&first_frozen_root), observations(&second_frozen_root));
+        prop_assert!(!first_frozen_root.same_view(&second_frozen_root));
+        prop_assert!(first_frozen_root.same_view(&first_frozen_root.clone()));
+    }
+
+    #[test]
+    fn indexed_composed_identity_retains_root_and_outer_range_layers(
+        bytes in prop::collection::vec(any::<u8>(), 1..33),
+        first in any::<u8>(),
+        second in any::<u8>(),
+        source in any::<u32>(),
+        base in 0usize..100_000,
+    ) {
+        let length = bytes.len();
+        let a = usize::from(first) % (length + 1);
+        let b = usize::from(second) % (length + 1);
+        let (start, end) = (a.min(b), a.max(b));
+        let root = borrowed(&bytes, source, base);
+        let root_end = CanonicalByteProvenance::new(source, base + length);
+        let indexed = IndexedByteRegion::from_source(root, root_end);
+        let range = CanonicalByteRange { start, end };
+        let direct = indexed.subview(range).unwrap();
+        let natural_end = direct.end_position().physical;
+        let normalized = indexed.subview_with_end(range, natural_end).unwrap();
+        let direct_bytes = direct.located_bytes().collect::<Vec<_>>();
+        let normalized_bytes = normalized.located_bytes().collect::<Vec<_>>();
+        prop_assert_eq!(direct_bytes, normalized_bytes);
+        prop_assert_eq!(direct.end_position(), normalized.end_position());
+        prop_assert!(direct.source_window().unwrap().same_view(&normalized.source_window().unwrap()));
+        prop_assert_eq!(direct.same_view(&normalized), start == 0 && end == length);
+        prop_assert!(direct.same_view(&direct.clone()));
+        prop_assert!(normalized.same_view(&normalized.clone()));
+
+        let changed_end = CanonicalByteProvenance::new(source ^ 1, natural_end.offset);
+        let changed = indexed.subview_with_end(range, changed_end).unwrap();
+        prop_assert_eq!(changed.located_bytes().collect::<Vec<_>>(), direct.located_bytes().collect::<Vec<_>>());
+        prop_assert_eq!(changed.end_position().physical, changed_end);
+        prop_assert!(!direct.same_view(&changed));
+        prop_assert!(!normalized.same_view(&changed));
+    }
+
+    #[test]
+    fn projected_mixed_shared_dag_matches_live_bytes_origins_and_explicit_ends(
+        chunks in prop::collection::vec(prop::collection::vec(any::<u8>(), 1..9), 2..9),
+        first_cut in any::<u8>(),
+        second_cut in any::<u8>(),
+        split_seed in any::<u8>(),
+        range_start in any::<u8>(),
+        range_end in any::<u8>(),
+        end_offset in 0usize..100_000,
+    ) {
+        let mut mixed = SourceTreeWindow::empty();
+        for (index, chunk) in chunks.iter().enumerate() {
+            let piece = if index % 2 == 0 {
+                borrowed(chunk, index as u32 + 1, index * 101)
+            } else {
+                let mut arena = CanonicalBytesArena::new();
+                let mut handle = arena.empty();
+                for (at, byte) in chunk.iter().copied().enumerate() {
+                    let origin = CanonicalByteProvenance::new(
+                        500 + index as u32 + (at % 3) as u32,
+                        10_000 + index * 100 + at * 7,
+                    );
+                    handle = arena.append(handle, CanonicalLocatedByte::new(byte, origin)).unwrap();
+                }
+                SourceTreeWindow::from_frozen(arena.freeze(handle))
+            };
+            mixed = mixed.concat(&piece).unwrap();
+        }
+        let shared = mixed.concat(&mixed).unwrap();
+        match shared.root.as_ref().unwrap().payload.as_ref() {
+            Some(SourcePayload::Branch2([left, right])) => {
+                prop_assert!(Arc::ptr_eq(left, right));
+            }
+            _ => prop_assert!(false, "the doubled root must share its child Arc"),
+        }
+
+        let a = usize::from(first_cut) % (shared.len() + 1);
+        let b = usize::from(second_cut) % (shared.len() + 1);
+        let selected = shared.subview(a.min(b)..a.max(b)).unwrap();
+        let cut = usize::from(split_seed) % (selected.len() + 1);
+        let (left, right) = selected.split(cut).unwrap();
+        let rejoined = left.concat(&right).unwrap();
+        let projection = SourceDagProjection::capture(
+            &shared,
+            &[mixed.clone(), selected.clone(), left.clone(), right.clone(), rejoined.clone()],
+        );
+        let windows = [
+            (&shared, projection.root),
+            (&mixed, projection.pending[0]),
+            (&selected, projection.pending[1]),
+            (&left, projection.pending[2]),
+            (&right, projection.pending[3]),
+            (&rejoined, projection.pending[4]),
+        ];
+        for (actual, image) in windows {
+            assert_shape(actual);
+            let expected = projection.window_located_bytes(image);
+            prop_assert_eq!(actual.located_bytes().collect::<Vec<_>>(), expected.clone());
+            for (at, entry) in expected.iter().enumerate() {
+                prop_assert_eq!(actual.byte_at(at), Some(entry.byte));
+                prop_assert_eq!(actual.provenance_at(at), Some(entry.provenance));
+            }
+            prop_assert_eq!(actual.byte_at(expected.len()), None);
+            prop_assert_eq!(actual.provenance_at(expected.len()), None);
+
+            let root_end = CanonicalByteProvenance::new(30_000, end_offset);
+            let indexed = IndexedByteRegion::from_source(actual.clone(), root_end);
+            for (at, entry) in expected.iter().enumerate() {
+                prop_assert_eq!(indexed.byte_at(at), Some(entry.byte));
+                prop_assert_eq!(indexed.position_at(at).unwrap().physical, entry.provenance);
+            }
+            prop_assert_eq!(indexed.position_at(expected.len()).unwrap().physical, root_end);
+
+            let x = usize::from(range_start) % (expected.len() + 1);
+            let y = usize::from(range_end) % (expected.len() + 1);
+            let (start, end) = (x.min(y), x.max(y));
+            let range = CanonicalByteRange { start, end };
+            let subview = indexed.subview(range).unwrap();
+            let natural_end = expected.get(end).map_or(root_end, |entry| entry.provenance);
+            prop_assert_eq!(subview.position_at(end - start).unwrap().physical, natural_end);
+            prop_assert_eq!(subview.located_bytes().collect::<Vec<_>>(), expected[start..end].to_vec());
+
+            let explicit_end = CanonicalByteProvenance::new(40_000, end_offset);
+            let overridden = indexed.subview_with_end(range, explicit_end).unwrap();
+            prop_assert_eq!(overridden.position_at(end - start).unwrap().physical, explicit_end);
+            prop_assert_eq!(overridden.located_bytes().collect::<Vec<_>>(), expected[start..end].to_vec());
+        }
     }
 }
 
@@ -432,6 +632,179 @@ fn coalescing_requires_original_owner_and_exact_adjacency() {
 proptest! {
     #![proptest_config(property_config())]
     #[test]
+    fn borrowed_leaf_located_lookup_uses_one_checked_slot(
+        bytes in prop::collection::vec(any::<u8>(), 1..65),
+        source in any::<u32>(),
+        start_sample in any::<u16>(),
+        end_sample in any::<u16>(),
+    ) {
+        let start = usize::from(start_sample) % bytes.len();
+        let end = start + 1 + usize::from(end_sample) % (bytes.len() - start);
+        let len = end - start;
+        for absolute_start in [0, usize::MAX - (end - 1)] {
+            let shape = verified_score_store::source_borrowed_leaf_shape(
+                &bytes, start, end, absolute_start,
+            ).unwrap();
+            prop_assert_eq!(shape.len, len);
+            prop_assert_eq!(shape.height, 0);
+            let window = SourceTreeWindow::from_borrowed_range(
+                &bytes, start..end, source, absolute_start,
+            ).unwrap();
+            prop_assert_eq!(window.len(), shape.len);
+            let SourcePayload::Borrowed(leaf) = window.root.as_ref().unwrap().payload.as_ref().unwrap()
+            else {
+                unreachable!()
+            };
+            prop_assert_eq!(leaf.shape(), shape);
+            prop_assert_eq!(leaf.root_slice().as_ptr(), bytes.as_ptr());
+            prop_assert_eq!(leaf.root_slice().len(), bytes.len());
+            for from in [0, len / 2, len - 1, len] {
+                for to in [from, len] {
+                    let anchor = absolute_start.checked_add(start + from);
+                    let selected = leaf.selected_slice(from, to);
+                    let child = leaf.subleaf(from, to);
+                    prop_assert_eq!(selected.is_some(), anchor.is_some());
+                    prop_assert_eq!(child.is_some(), anchor.is_some());
+                    if let (Some((selected_bytes, selected_anchor)), Some(child)) = (selected, child) {
+                        prop_assert_eq!(selected_bytes, &bytes[start + from..start + to]);
+                        prop_assert_eq!(selected_anchor, anchor.unwrap());
+                        prop_assert_eq!(child.root_slice().as_ptr(), bytes.as_ptr());
+                        prop_assert_eq!(child.root_slice().len(), bytes.len());
+                        prop_assert_eq!(child.len(), to - from);
+                        prop_assert_eq!(child.start(), start + from);
+                        prop_assert_eq!(child.source(), source);
+                    }
+                }
+            }
+            prop_assert!(leaf.selected_slice(1, 0).is_none());
+            prop_assert!(leaf.subleaf(1, 0).is_none());
+            prop_assert!(leaf.selected_slice(0, len + 1).is_none());
+            prop_assert!(leaf.subleaf(0, len + 1).is_none());
+            for at in 0..len {
+                let expected_offset = absolute_start + start + at;
+                let expected = (bytes[start + at], source, expected_offset);
+                prop_assert_eq!(
+                    verified_score_store::source_borrowed_located_at(
+                        &bytes, start, len, source, absolute_start, at,
+                    ),
+                    Some(expected),
+                );
+                prop_assert_eq!(leaf.located_at(at), Some(expected));
+                prop_assert_eq!(window.byte_at(at), Some(expected.0));
+                prop_assert_eq!(
+                    window.provenance_at(at),
+                    Some(CanonicalByteProvenance::new(expected.1, expected.2)),
+                );
+            }
+            prop_assert!(verified_score_store::source_borrowed_located_at(
+                &bytes, start, len, source, absolute_start, len,
+            ).is_none());
+            prop_assert!(leaf.located_at(len).is_none());
+            prop_assert!(window.byte_at(len).is_none());
+            prop_assert!(window.provenance_at(len).is_none());
+        }
+        if end > 1 {
+            let overflow_start = usize::MAX - (end - 2);
+            prop_assert!(verified_score_store::source_borrowed_leaf_shape(
+                &bytes, start, end, overflow_start,
+            ).is_none());
+            prop_assert!(SourceBorrowedLeaf::new(
+                &bytes, start, end, source, overflow_start,
+            ).is_none());
+            prop_assert!(SourceTreeWindow::from_borrowed_range(
+                &bytes, start..end, source, overflow_start,
+            ).is_none());
+            prop_assert!(verified_score_store::source_borrowed_located_at(
+                &bytes, start, len, source, overflow_start, len - 1,
+            ).is_none());
+        }
+        prop_assert!(verified_score_store::source_borrowed_leaf_shape(
+            &bytes, end, start, 0,
+        ).is_none());
+        prop_assert!(verified_score_store::source_borrowed_leaf_shape(
+            &bytes, start, bytes.len() + 1, 0,
+        ).is_none());
+    }
+}
+
+proptest! {
+    #![proptest_config(property_config())]
+    #[test]
+    fn verified_source_shapes_route_every_boundary_and_reject_mismatch(
+        first_len in 1usize..1025,
+        middle_len in 1usize..1025,
+        last_len in 1usize..1025,
+        height in 0u8..u8::MAX,
+        sampled in any::<u16>(),
+    ) {
+        let first = SourceNodeShape { len: first_len, height };
+        let middle = SourceNodeShape { len: middle_len, height };
+        let last = SourceNodeShape { len: last_len, height };
+        let parent2 = verified_score_store::source_branch2_shape(first, middle).unwrap();
+        let total2 = first_len + middle_len;
+        prop_assert_eq!(parent2.len, total2);
+        prop_assert_eq!(parent2.height, height + 1);
+        for at in [0, first_len - 1, first_len, total2 - 1, usize::from(sampled) % total2] {
+            let (child, local) = verified_score_store::source_branch2_descend(
+                parent2, first, middle, at,
+            ).unwrap();
+            let (expected_child, expected_local) = if at < first_len {
+                (0, at)
+            } else {
+                (1, at - first_len)
+            };
+            prop_assert_eq!((child, local), (expected_child, expected_local));
+        }
+        prop_assert!(verified_score_store::source_branch2_descend(
+            parent2, first, middle, total2,
+        ).is_none());
+
+        let parent3 = verified_score_store::source_branch3_shape(first, middle, last).unwrap();
+        let total3 = total2 + last_len;
+        prop_assert_eq!(parent3.len, total3);
+        prop_assert_eq!(parent3.height, height + 1);
+        for at in [
+            0, first_len - 1, first_len, total2 - 1, total2, total3 - 1,
+            usize::from(sampled) % total3,
+        ] {
+            let (child, local) = verified_score_store::source_branch3_descend(
+                parent3, first, middle, last, at,
+            ).unwrap();
+            let (expected_child, expected_local) = if at < first_len {
+                (0, at)
+            } else if at < total2 {
+                (1, at - first_len)
+            } else {
+                (2, at - total2)
+            };
+            prop_assert_eq!((child, local), (expected_child, expected_local));
+        }
+        prop_assert!(verified_score_store::source_branch3_descend(
+            parent3, first, middle, last, total3,
+        ).is_none());
+
+        let wrong_len = SourceNodeShape { len: total2 + 1, ..parent2 };
+        let wrong_height = SourceNodeShape { height, ..parent2 };
+        prop_assert!(verified_score_store::source_branch2_descend(
+            wrong_len, first, middle, 0,
+        ).is_none());
+        prop_assert!(verified_score_store::source_branch2_descend(
+            wrong_height, first, middle, 0,
+        ).is_none());
+        let mismatched_child = SourceNodeShape { height: height + 1, ..middle };
+        let overflowing_child = SourceNodeShape { len: usize::MAX, ..first };
+        prop_assert!(verified_score_store::source_branch2_shape(
+            first, mismatched_child,
+        ).is_none());
+        prop_assert!(verified_score_store::source_branch2_shape(
+            overflowing_child, middle,
+        ).is_none());
+    }
+}
+
+proptest! {
+    #![proptest_config(property_config())]
+    #[test]
     fn original_leaf_borrowed_rejoins_every_cut_without_a_branch(bytes in prop::collection::vec(any::<u8>(), 2..65)) {
         let root = borrowed(&bytes, 37, 101);
         for cut in 0..=bytes.len() {
@@ -636,16 +1009,12 @@ fn selected_borrowed_range_preserves_identity_without_validating_unused_tail() {
         joined.contiguous_bytes(0..2).unwrap().as_ptr(),
         bytes.as_ptr()
     );
-    let SourcePayload::Borrowed {
-        bytes: original,
-        start,
-        ..
-    } = tail.root.as_ref().unwrap().payload.as_ref().unwrap()
+    let SourcePayload::Borrowed(value) = tail.root.as_ref().unwrap().payload.as_ref().unwrap()
     else {
         unreachable!()
     };
-    assert!(std::ptr::eq(*original, &bytes[..]));
-    assert_eq!(*start, 1);
+    assert!(std::ptr::eq(value.root_slice(), &bytes[..]));
+    assert_eq!(value.start(), 1);
     assert!(SourceTreeWindow::from_borrowed_range(&bytes, 0..0, 31, usize::MAX).is_some());
     assert!(SourceTreeWindow::from_borrowed_range(&bytes, 1..1, 31, usize::MAX).is_none());
     for range in [2..1, 0..5, 5..5, usize::MAX..usize::MAX, 0..usize::MAX] {
@@ -936,7 +1305,7 @@ fn maximally_shared_ternary_teardown_keeps_combined_frontier_bounded() {
                 pending.extend(children.iter().cloned());
                 high_water = high_water.max(pending.len());
             }
-            SourcePayload::Borrowed { .. } => {}
+            SourcePayload::Borrowed(_) => {}
             _ => panic!("unexpected ternary fixture node"),
         }
     }

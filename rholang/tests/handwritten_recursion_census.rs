@@ -696,18 +696,41 @@ const RECURSION_DISPOSITIONS: &[ComponentDisposition] = &[
         disposition: Disposition::Measured("RhoPathCursor::next is an explicit Vec<RhoPathStep> machine; the textual self-loop is BTreeMap::Iter::next, and the cursor gate drives depth and width 20,000"),
     },
     ComponentDisposition {
+        label: "models.rholang.protobuf_admission.before",
+        members: members![
+            ("models/src/rust/rholang/protobuf_admission.rs", "before", 3),
+            ("models/src/rust/rholang/protobuf_admission.rs", "before", 4),
+            ("models/src/rust/rholang/protobuf_admission.rs", "before", 5),
+        ],
+        disposition: Disposition::NotATermDepthCycle("summary-source constructors delegate down an acyclic type chain: CompleteParentSource::before calls FrameSummarySource::before and ParSummarySource::before, FrameSummarySource::before calls the SemanticSummarySource, MapSummarySource and EPathMapSummarySource constructors, and SemanticSummarySource::before calls ParSummarySource::before; each copies constant-size shallow source views, and no constructor calls back up the chain"),
+    },
+    ComponentDisposition {
         label: "models.rholang.protobuf_admission.frame_accept",
         members: members![
             ("models/src/rust/rholang/protobuf_admission.rs", "accept", 4),
         ],
         disposition: Disposition::NotATermDepthCycle("Frame::accept dispatches to distinct MessageFrame, MapFrame, EPathMapFrame, and CanonicalPathFrame accept methods; the receiver-erased self-edge does not occur at runtime"),
     },
+    // Retired 2026-10-17: production frame dispatch moved to `Frame::step_into`, which calls
+    // the distinct `message_step_into`, `map_frame_step_into`, `epathmap_frame_step_into` and
+    // `canonical_path_frame_step_into` functions. `Frame::step` survives only as a
+    // `#[cfg(test)]` wrapper over `step_into`, and the census excludes `cfg(test)` items, so
+    // the receiver-erased `step` self-edge is no longer derived.
+    // ComponentDisposition {
+    //     label: "models.rholang.protobuf_admission.frame_step",
+    //     members: members![
+    //         ("models/src/rust/rholang/protobuf_admission.rs", "step", 1),
+    //     ],
+    //     disposition: Disposition::NotATermDepthCycle("Frame::step dispatches to distinct per-variant step functions and CanonicalPathFrame::step; the receiver-erased self-edge does not occur at runtime"),
+    // },
     ComponentDisposition {
-        label: "models.rholang.protobuf_admission.frame_step",
+        label: "models.rholang.protobuf_admission.matches-same_optional_par_summary",
         members: members![
-            ("models/src/rust/rholang/protobuf_admission.rs", "step", 1),
+            ("models/src/rust/rholang/protobuf_admission.rs", "matches", 1),
+            ("models/src/rust/rholang/protobuf_admission.rs", "matches", 3),
+            ("models/src/rust/rholang/protobuf_admission.rs", "same_optional_par_summary", 0),
         ],
-        disposition: Disposition::NotATermDepthCycle("Frame::step dispatches to distinct per-variant step functions and CanonicalPathFrame::step; the receiver-erased self-edge does not occur at runtime"),
+        disposition: Disposition::NotATermDepthCycle("MapSummarySource::matches and SemanticSummarySource::matches (directly, and for key-value pairs through same_optional_par_summary) delegate to ParSummarySource::matches, a flat field and shallow-view comparison; the receiver-erased matches edges never re-enter MapSummarySource or SemanticSummarySource"),
     },
     ComponentDisposition {
         label: "models.rholang.protobuf_schema.epathmap_try_encode_certified_egress",

@@ -97,11 +97,8 @@ fn assert_view(
 
 fn assert_same_root(left: &IndexedByteRegion<'_>, right: &IndexedByteRegion<'_>) {
     match (&left.backing, &right.backing) {
-        (
-            IndexedByteBacking::Borrowed { bytes: left, .. },
-            IndexedByteBacking::Borrowed { bytes: right, .. },
-        ) => {
-            assert!(std::ptr::eq(*left, *right));
+        (IndexedByteBacking::Borrowed(left), IndexedByteBacking::Borrowed(right)) => {
+            assert!(std::ptr::eq(left.root_slice(), right.root_slice()));
         }
         (
             IndexedByteBacking::Frozen { root: left, .. },
@@ -388,18 +385,9 @@ fn invalid_ranges_and_overflow_refuse_without_changing_inputs() {
     let right = overflow.subview(range(1, 4)).unwrap();
     assert!(left.try_coalesce(&right).is_none());
     assert!(overflow.subview(range(2, 3)).is_none());
-    let malformed = IndexedByteRegion {
-        backing: IndexedByteBacking::Borrowed {
-            bytes: &bytes,
-            start: 1,
-            len: usize::MAX,
-            source: 7,
-            absolute_start: 81,
-            end_source: None,
-            end_offset: 0,
-        },
-    };
-    assert!(malformed.try_coalesce(&borrowed).is_none());
+    let invalid = BorrowedIndexedWindow::new(&bytes, 7, 81).rewindow(usize::MAX, None, 0);
+    assert!(invalid.is_none());
+    assert_eq!(located(&borrowed).len(), bytes.len());
 }
 
 #[test]

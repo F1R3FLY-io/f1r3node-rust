@@ -847,7 +847,7 @@
       "checker": "scripts/check-epathmap-core-obligations.py",
       "family": "epathmap_core",
       "manifest": "formal/epathmap_core_obligations.generated.json",
-      "manifest_sha256": "ed8c68757a7c6ad7771cbef9d9b4c6b0f8ee542e11a0c1913f462e4899d14319",
+      "manifest_sha256": "c02fe1d82feac45db6dcde9016507c0c46205ffbf79ccd8c99092087e557b340",
       "obligations": {
         "boundary": "Concrete witnesses exercise selected EPathMap operations and EPM1 map snapshot round trips. The generic PDA and Verus worklist equivalence obligations are proof-only; no direct executable refinement of arbitrary finite trees is claimed.",
         "delegated_epm1_positional_tla": {
@@ -1731,7 +1731,7 @@
         ],
         "scope": "EPathMap algebra, EPM1 core framing, and generic stack-safe PDA",
         "source_sha256": {
-          "formal/epm1_positional_obligations.generated.json": "16a72fd8112bf70731be1ee14ecf8dbc14b0f992d66438e02f1b4712830e26f1",
+          "formal/epm1_positional_obligations.generated.json": "3408800959f515f483af0050c715f0d32c16e99b503a0fac4889cc1d1f96e1f2",
           "formal/rocq/stack_safe_pda/theories/EPM1.v": "7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41",
           "formal/rocq/stack_safe_pda/theories/EPathMap.v": "d9bdce288155a9b5c6d57fec35bd9145c6896c6812654d38a447d5f976cc3794",
           "formal/rocq/stack_safe_pda/theories/StackSafePDA.v": "f4f1f04ce2fa4b100e3d7f2657a89658a9bce11fd6023888e694268db7509b58",
@@ -1739,9 +1739,9 @@
           "formal/tlaplus/stack_safe_pda/PDAEquivalence.cfg": "efa8bbad0b869ea2c14e865120c8cbd4c2060e4b75d0b0549f11645accfb4889",
           "formal/tlaplus/stack_safe_pda/PDAEquivalence.tla": "1b010477e0dde9d836b70183c425a9929d47fb70b5caadc3fa54a7e13e1ae173",
           "formal/verus/epathmap_canonical_worklist.rs": "2bfc8da59684812bc6488f0121d31832d7fddcab6019cc86d3b9182978e9ddfb",
-          "models/Cargo.toml": "48572d3ba4d9846a6e771989ef0cad6b7712fc928a3a3ef819617d8aad894d23",
+          "models/Cargo.toml": "d37cc25e2883d71ed970e2a12d73924223f3a948db969109e29769a8c81f5bdb",
           "models/tests/epathmap_algebra.rs": "977bcb70f275bb7362e85d90f48619af0c8b3bbf6f19ba4ba05f2d5e3ada5cb4",
-          "models/tests/epathmap_epm1_snapshot.rs": "5066167eeb3d240dacc7e873590a28bfa7cc5efe6ae9c943f78be52c0957c561"
+          "models/tests/epathmap_epm1_snapshot.rs": "4de60d1b8e36083394a2ed87de0556ccbe5e35917178530d0770aaa8fef4fad2"
         },
         "tlc": {
           "causal_mutants": [],
@@ -1822,7 +1822,7 @@
       "checker": "scripts/check-epm1-positional-obligations.py",
       "family": "epm1_positional",
       "manifest": "formal/epm1_positional_obligations.generated.json",
-      "manifest_sha256": "16a72fd8112bf70731be1ee14ecf8dbc14b0f992d66438e02f1b4712830e26f1",
+      "manifest_sha256": "3408800959f515f483af0050c715f0d32c16e99b503a0fac4889cc1d1f96e1f2",
       "obligations": {
         "causal_mutants": [
           {
@@ -1976,9 +1976,9 @@
           "formal/tlaplus/stack_safe_pda/Epm1PositionalSkipEndpointMutant.cfg": "0a8c7b89f239be5ee137f9cd6d259c880d60e9d3a99d770289853fc220af2f7a",
           "formal/tlaplus/stack_safe_pda/Epm1PositionalWrongEndpointMutant.cfg": "02b1ecc394cdf5504a4b039774590ec4b780bfae8dd12ef7f1b4c67378c4af33",
           "formal/verus/epm1_positional_association.rs": "72130ff0aae6160e68594fe804a15d219d4bf18b9aa7e38d6c24cadb7ecb374c",
-          "models/src/rust/epathmap_trie_codec.rs": "e263b201c4568727a2d7bcef9a6432d524e8a597dddcd96e01bee94d66479974",
+          "models/src/rust/epathmap_trie_codec.rs": "5e8b61d68ef7ac07c5a8a28fbcbed4faf51330052dca9b39a6bf458e219033d5",
           "models/src/rust/mod.rs": "9da24730ef273c25720e873e2b0287379d3d94c802aba26bf437cbecc1eb07d2",
-          "models/tests/formal_equivalence_manifest.rs": "e183ebd730ee385549c395731c478328d52ce84df3ab215d754be7f326a7e78b"
+          "models/tests/formal_equivalence_manifest.rs": "8db70bdb0f162b99d0af326c4cd0042b31bfd76b179521eed058d5b90563ad01"
         },
         "tla_invariants": [
           {
@@ -2825,7 +2825,7 @@
       "checker": "scripts/check-parbag-egress-obligations.py",
       "family": "parbag_egress",
       "manifest": "formal/parbag_egress_obligations.generated.json",
-      "manifest_sha256": "8018da67e9d8910b48c5a6e22d26f23b6767e1518225e07bfc1e8112d6b77011",
+      "manifest_sha256": "b47acd731679fac03204adad081cdff69cb7c419a0e33be47a62d835258b922e",
       "obligations": {
         "bincode_formal_boundary": "The canonical-egress Verus source models fixed bincode framing and preflight arithmetic; this registry has no separate formal model of the general-purpose bincode encoder.",
         "boundary": "Concrete witnesses exercise selected production bytes and slot order. The canonical-egress Verus source covers bincode envelope and length arithmetic, while full encoder byte equivalence and publication remain proof-only here.",
@@ -4232,7 +4232,7 @@
           "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressMutant.cfg": "88f76d0f24068dc757898b080cb294d019ed164801fb8c3c048837f9c9ad0a3d",
           "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressValidationMutant.cfg": "c8295658de039605037e58c0c25f1e5fab030d1fe2e0e230fdf3dbddee32126b",
           "formal/verus/rspace_canonical_egress.rs": "92897d041c846ba513d875ea0b1c986ab0841880779107ab3abade4b1bc6c997",
-          "models/Cargo.toml": "48572d3ba4d9846a6e771989ef0cad6b7712fc928a3a3ef819617d8aad894d23",
+          "models/Cargo.toml": "d37cc25e2883d71ed970e2a12d73924223f3a948db969109e29769a8c81f5bdb",
           "models/tests/par_protobuf_stack_safety.rs": "991d21786b1e463da13a1c6d84b7edcbc83d92f90c9c4bde7bcfc105de65bb35",
           "models/tests/protobuf_encoder_space.rs": "29484d06eee89826cdacbdb716cd5e888c9c961e661e3afdac93d513e6eb7fe0"
         },

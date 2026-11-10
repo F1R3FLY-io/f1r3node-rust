@@ -603,6 +603,45 @@ struct ValidatedTopologyRecord {
     flags: u8,
 }
 
+/// Read-only scalar image of one record produced by ACT admission. Offsets
+/// refer to the indexed ACT view owned by the cursor, not to a copied arena.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalCompactTrieValidatedRecordSource {
+    pub node_id: usize,
+    pub value: u64,
+    pub value_source_offset: usize,
+    pub line_start: usize,
+    pub line_len: usize,
+    pub incoming_source_offset: usize,
+    pub child_count: u16,
+    pub incoming_byte: u8,
+    pub flags: u8,
+}
+
+impl From<&ValidatedTopologyRecord> for CanonicalCompactTrieValidatedRecordSource {
+    fn from(record: &ValidatedTopologyRecord) -> Self {
+        Self {
+            node_id: record.node_id,
+            value: record.value,
+            value_source_offset: record.value_source_offset,
+            line_start: record.line_start,
+            line_len: record.line_len,
+            incoming_source_offset: record.incoming_source_offset,
+            child_count: record.child_count,
+            incoming_byte: record.incoming_byte,
+            flags: record.flags,
+        }
+    }
+}
+
+impl CanonicalCompactTrieValidatedRecordSource {
+    pub const fn has_value(self) -> bool { self.flags & ValidatedTopologyRecord::HAS_VALUE != 0 }
+
+    pub const fn has_incoming(self) -> bool {
+        self.flags & ValidatedTopologyRecord::HAS_INCOMING != 0
+    }
+}
+
 impl ValidatedTopologyRecord {
     const HAS_VALUE: u8 = 1;
     const HAS_INCOMING: u8 = 2;
@@ -695,10 +734,63 @@ const fn new_act_work_counters() -> ActWorkCounters { ActWorkCounters }
 
 struct ValidatedActPlan {
     empty: bool,
+    topology_event_count: usize,
     records: Box<[ValidatedTopologyRecord]>,
     value_summary: CanonicalCompactTrieValueSummary,
+    #[cfg(test)]
+    audit_finish_node_ids: Vec<usize>,
+    #[cfg(test)]
+    audit_line_hashes: HashMap<usize, u64>,
     #[cfg(any(test, feature = "act-codec-instrumentation"))]
     counters: CanonicalCompactTrieWorkCounters,
+}
+
+/// A borrowed image of the accepted ACT plan and the exact indexed view it
+/// was validated against. Access reads existing records; it adds no retained
+/// cursor state and does not parse the indexed bytes again.
+pub struct CanonicalCompactTrieValidatedPlanSource<'a, S> {
+    plan: &'a ValidatedActPlan,
+    indexed: &'a S,
+}
+
+impl<S> CanonicalCompactTrieValidatedPlanSource<'_, S> {
+    pub fn indexed_source(&self) -> &S { self.indexed }
+
+    pub fn is_empty(&self) -> bool { self.plan.empty }
+
+    pub fn record_count(&self) -> usize { self.plan.records.len() }
+
+    /// Exact scalar event count, checked when this plan was validated.
+    pub fn topology_event_count(&self) -> usize { self.plan.topology_event_count }
+
+    pub fn value_summary(&self) -> CanonicalCompactTrieValueSummary { self.plan.value_summary }
+
+    pub fn record(&self, index: usize) -> Option<CanonicalCompactTrieValidatedRecordSource> {
+        self.plan.records.get(index).map(Into::into)
+    }
+}
+
+/// Each record emits Value and Leave; each non-root record also has one
+/// incoming Edge. Every compressed-line byte emits Edge, Value, and Leave.
+#[inline]
+fn checked_add_topology_record_events(
+    count: usize,
+    line_len: usize,
+    has_incoming: bool,
+) -> Option<usize> {
+    let record_events = line_len
+        .checked_mul(3)?
+        .checked_add(if has_incoming { 3 } else { 2 })?;
+    count.checked_add(record_events)
+}
+
+fn checked_topology_event_count(records: &[ValidatedTopologyRecord]) -> Option<usize> {
+    let (root, descendants) = records.split_first()?;
+    let mut count = checked_add_topology_record_events(0, root.line_len, false)?;
+    for record in descendants {
+        count = checked_add_topology_record_events(count, record.line_len, true)?;
+    }
+    Some(count)
 }
 
 pub struct CanonicalCompactTrieEndpoint<'a> {
@@ -977,6 +1069,78 @@ pub enum CanonicalCompactTrieLineDirection {
     Unwind,
 }
 
+/// The active validated-plan position, without copying the plan or cursor
+/// stack. A `None` position means the topology cursor has emitted its final
+/// event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CanonicalCompactTrieCursorSourcePosition {
+    pub record: usize,
+    pub node_id: usize,
+    pub next_record: usize,
+    pub stack_depth: usize,
+    pub remaining_children: usize,
+    pub stage: CanonicalCompactTrieCursorSourceStage,
+    pub line_start: Option<usize>,
+    pub line_end: Option<usize>,
+    pub line_index: usize,
+    pub leave_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanonicalCompactTrieCursorSourceStage {
+    Value,
+    LineEdge,
+    LineValue,
+    Children,
+    Leave,
+}
+
+/// The active line's remaining plan-work prefix at the enclosing cursor's
+/// event index. `event_index` comes from the enclosing event cursor; this ACT
+/// cursor does not maintain a second global event counter. The source offsets
+/// are relative to its owned indexed byte view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalCompactTrieActiveLineWorkSource {
+    pub position: CanonicalCompactTrieCursorSourcePosition,
+    pub event_index: usize,
+    pub direction: CanonicalCompactTrieLineDirection,
+    /// The full offered line suffix, including bytes beyond event headroom.
+    pub source_range: Range<usize>,
+    /// Full suffix event count, when representable in `usize`.
+    pub remaining_work_events: Option<usize>,
+    /// Largest prefix whose event count can be added to `event_index`.
+    pub admissible_source_width: usize,
+    pub admissible_work_events: usize,
+}
+
+impl CanonicalCompactTrieActiveLineWorkSource {
+    pub fn first_source_offset(&self) -> usize {
+        match self.direction {
+            CanonicalCompactTrieLineDirection::Forward => self.source_range.start,
+            CanonicalCompactTrieLineDirection::Unwind => self.source_range.end - 1,
+        }
+    }
+
+    pub fn last_source_offset(&self) -> usize {
+        match self.direction {
+            CanonicalCompactTrieLineDirection::Forward => self.source_range.end - 1,
+            CanonicalCompactTrieLineDirection::Unwind => self.source_range.start,
+        }
+    }
+}
+
+impl CanonicalCompactTrieCursorSourceStage {
+    fn from_internal(stage: DirectTopologyStage) -> Self {
+        match stage {
+            DirectTopologyStage::Value => Self::Value,
+            DirectTopologyStage::LineEdge => Self::LineEdge,
+            DirectTopologyStage::LineValue => Self::LineValue,
+            DirectTopologyStage::Children => Self::Children,
+            DirectTopologyStage::Leave => Self::Leave,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct CanonicalCompactTrieLineCommit {
     source_range: Range<usize>,
@@ -995,6 +1159,63 @@ impl CanonicalCompactTrieLineCommit {
         match self.direction {
             CanonicalCompactTrieLineDirection::Forward => self.source_range.end - 1,
             CanonicalCompactTrieLineDirection::Unwind => self.source_range.start,
+        }
+    }
+
+    /// Check the exact validated-plan positions covered by this publication.
+    /// Forward emits Edge, Value(None) at each offset in ascending order;
+    /// Unwind emits Leave at each offset in descending order. Both stop before
+    /// the line's final Value or the record's final Leave, respectively.
+    pub fn matches_scalar_schedule(
+        &self,
+        before: CanonicalCompactTrieCursorSourcePosition,
+        after: CanonicalCompactTrieCursorSourcePosition,
+    ) -> bool {
+        let Some(line_start) = before.line_start else {
+            return false;
+        };
+        let Some(line_end) = before.line_end else {
+            return false;
+        };
+        let width = self.source_range.len();
+        if width == 0 ||
+            before.record != after.record ||
+            before.node_id != after.node_id ||
+            before.next_record != after.next_record ||
+            before.stack_depth != after.stack_depth ||
+            before.remaining_children != after.remaining_children ||
+            before.line_start != after.line_start ||
+            before.line_end != after.line_end ||
+            self.source_range.start < line_start ||
+            self.source_range.end > line_end
+        {
+            return false;
+        }
+        match self.direction {
+            CanonicalCompactTrieLineDirection::Forward => {
+                before.stage == CanonicalCompactTrieCursorSourceStage::LineEdge &&
+                    after.stage == CanonicalCompactTrieCursorSourceStage::LineEdge &&
+                    line_start.checked_add(before.line_index) == Some(self.source_range.start) &&
+                    line_end
+                        .checked_sub(1)
+                        .is_some_and(|end| self.source_range.end <= end) &&
+                    before.line_index.checked_add(width) == Some(after.line_index) &&
+                    before.leave_index == after.leave_index &&
+                    width.checked_mul(2) == Some(self.expanded_events)
+            }
+            CanonicalCompactTrieLineDirection::Unwind => {
+                matches!(
+                    before.stage,
+                    CanonicalCompactTrieCursorSourceStage::Leave |
+                        CanonicalCompactTrieCursorSourceStage::Children
+                ) && (before.stage != CanonicalCompactTrieCursorSourceStage::Children ||
+                    before.remaining_children == 0) &&
+                    after.stage == CanonicalCompactTrieCursorSourceStage::Leave &&
+                    line_end.checked_sub(before.leave_index) == Some(self.source_range.end) &&
+                    before.leave_index.checked_add(width) == Some(after.leave_index) &&
+                    before.line_index == after.line_index &&
+                    self.expanded_events == width
+            }
         }
     }
 }
@@ -1093,6 +1314,83 @@ where S: IndexedByteSource
     pub fn is_empty(&self) -> bool { self.state.is_empty() }
 
     pub fn source(&self) -> &S { &self.source }
+
+    pub fn validated_plan_source(&self) -> CanonicalCompactTrieValidatedPlanSource<'_, S> {
+        CanonicalCompactTrieValidatedPlanSource {
+            plan: &self.state.plan,
+            indexed: &self.source,
+        }
+    }
+
+    pub fn source_position(&self) -> Option<CanonicalCompactTrieCursorSourcePosition> {
+        let frame = self.state.stack.last()?;
+        let record = &self.state.plan.records[frame.record];
+        let line = record.line_suffix();
+        Some(CanonicalCompactTrieCursorSourcePosition {
+            record: frame.record,
+            node_id: record.node_id,
+            next_record: self.state.next_record,
+            stack_depth: self.state.stack.len(),
+            remaining_children: frame.remaining_children,
+            stage: CanonicalCompactTrieCursorSourceStage::from_internal(frame.stage),
+            line_start: line.as_ref().map(|range| range.start),
+            line_end: line.as_ref().map(|range| range.end),
+            line_index: frame.line_index,
+            leave_index: frame.leave_index,
+        })
+    }
+
+    /// Observe the plan record and the emitted prefix still available for a
+    /// line batch. This reads only the active frame and its validated record;
+    /// it does not copy the plan, traverse source bytes, or advance the cursor.
+    pub fn active_line_work_source(
+        &self,
+        event_index: usize,
+    ) -> Option<CanonicalCompactTrieActiveLineWorkSource> {
+        let position = self.source_position()?;
+        let line_start = position.line_start?;
+        let line_end = position.line_end?;
+        let (source_range, direction) = match position.stage {
+            CanonicalCompactTrieCursorSourceStage::LineEdge => (
+                line_start.checked_add(position.line_index)?..line_end.checked_sub(1)?,
+                CanonicalCompactTrieLineDirection::Forward,
+            ),
+            CanonicalCompactTrieCursorSourceStage::Leave => (
+                line_start..line_end.checked_sub(position.leave_index)?,
+                CanonicalCompactTrieLineDirection::Unwind,
+            ),
+            CanonicalCompactTrieCursorSourceStage::Children if position.remaining_children == 0 => {
+                (
+                    line_start..line_end.checked_sub(position.leave_index)?,
+                    CanonicalCompactTrieLineDirection::Unwind,
+                )
+            }
+            _ => return None,
+        };
+        if source_range.is_empty() {
+            return None;
+        }
+        let (remaining_work_events, admissible_source_width, admissible_work_events) =
+            match direction {
+                CanonicalCompactTrieLineDirection::Forward => {
+                    let width = source_range.len().min((usize::MAX - event_index) / 2);
+                    (source_range.len().checked_mul(2), width, width * 2)
+                }
+                CanonicalCompactTrieLineDirection::Unwind => {
+                    let width = source_range.len().min(usize::MAX - event_index);
+                    (Some(source_range.len()), width, width)
+                }
+            };
+        Some(CanonicalCompactTrieActiveLineWorkSource {
+            position,
+            event_index,
+            direction,
+            source_range,
+            remaining_work_events,
+            admissible_source_width,
+            admissible_work_events,
+        })
+    }
 
     pub fn rewind(&mut self) { self.state.rewind(); }
 
@@ -1815,8 +2113,50 @@ where S: IndexedByteSource + ?Sized {
     let mut branch_edges = Vec::new();
     let root_branch_checkpoint = branch_edges.len();
     let root = direct_semantic_node(bytes, root_id, &mut branch_edges, &mut counters)?;
+    let plan = validate_direct_canonical_act_from_root(
+        bytes,
+        source_len,
+        root_id,
+        root,
+        root_branch_checkpoint,
+        branch_edges,
+        counters,
+    )?;
+    #[cfg(any(test, feature = "act-codec-instrumentation"))]
+    let mut plan = plan;
+    #[cfg(any(test, feature = "act-codec-instrumentation"))]
+    {
+        let access = counted.tally();
+        plan.counters.validation_source_byte_reads = access.byte_reads;
+        plan.counters.validation_source_copy_bytes = access.copy_bytes;
+        plan.counters.validation_source_contiguous_bytes = access.contiguous_bytes;
+        plan.counters.validation_source_equality_bytes = access.equality_bytes;
+    }
+    Ok(plan)
+}
+
+// Keep the root decoder off the traversal/producer replay frame. Debug builds
+// otherwise reserve both frames at once on admission's 64 KiB worker stack.
+fn validate_direct_canonical_act_from_root<S>(
+    bytes: &S,
+    source_len: usize,
+    root_id: usize,
+    root: DirectSemanticNode,
+    root_branch_checkpoint: usize,
+    mut branch_edges: Vec<DirectBranchByte>,
+    mut counters: ActWorkCounters,
+) -> Result<ValidatedActPlan, CompactTrieError>
+where
+    S: IndexedByteSource + ?Sized,
+{
     let empty = root.line.is_none() && root.value.is_none() && root.children.len() == 0;
     let root_len = root.encoded_len;
+    let mut topology_event_count = checked_add_topology_record_events(
+        0,
+        root.line.as_ref().map_or(0, |line| line.suffix.len()),
+        false,
+    )
+    .ok_or_else(|| CompactTrieError::new("ACTree03 topology event count overflows usize"))?;
     let mut seen = vec![0u8; source_len.div_ceil(8)];
     #[cfg(any(test, feature = "act-codec-instrumentation"))]
     {
@@ -1848,6 +2188,8 @@ where S: IndexedByteSource + ?Sized {
     let mut canonical_position = ACT_HEADER_LEN;
     let mut canonical_lines = DirectCanonicalLineReplay::new(bytes);
     let mut canonical_error = None;
+    #[cfg(test)]
+    let mut audit_finish_node_ids = Vec::new();
 
     while let Some(frame) = frames.last_mut() {
         if frame.next_child < frame.node.children.len() {
@@ -1872,6 +2214,14 @@ where S: IndexedByteSource + ?Sized {
                 .direct_children_encoded_len
                 .checked_add(child.encoded_len)
                 .ok_or_else(|| CompactTrieError::new("ACTree03 position overflow"))?;
+            topology_event_count = checked_add_topology_record_events(
+                topology_event_count,
+                child.line.as_ref().map_or(0, |line| line.suffix.len()),
+                true,
+            )
+            .ok_or_else(|| {
+                CompactTrieError::new("ACTree03 topology event count overflows usize")
+            })?;
             register_direct_semantic_node(&mut seen, &child)?;
             observe_topology_value(&mut value_summary, &child);
             #[cfg(any(test, feature = "act-codec-instrumentation"))]
@@ -1917,6 +2267,8 @@ where S: IndexedByteSource + ?Sized {
         }
 
         let frame = frames.pop().expect("a checked replay frame exists");
+        #[cfg(test)]
+        audit_finish_node_ids.push(frame.node.id);
         branch_edges.truncate(frame.branch_checkpoint);
         if canonical_error.is_none() {
             canonical_error = validate_direct_producer_node(
@@ -1963,15 +2315,13 @@ where S: IndexedByteSource + ?Sized {
         ));
     }
     debug_assert!(branch_edges.is_empty());
+    debug_assert_eq!(checked_topology_event_count(&records), Some(topology_event_count));
     drop(branch_edges);
+    #[cfg(test)]
+    let audit_line_hashes = std::mem::take(&mut canonical_lines.hash_by_line);
     drop(canonical_lines);
     #[cfg(any(test, feature = "act-codec-instrumentation"))]
     {
-        let access = counted.tally();
-        counters.validation_source_byte_reads = access.byte_reads;
-        counters.validation_source_copy_bytes = access.copy_bytes;
-        counters.validation_source_contiguous_bytes = access.contiguous_bytes;
-        counters.validation_source_equality_bytes = access.equality_bytes;
         counters.plan_records = records.len();
         counters.plan_record_bytes = size_of::<ValidatedTopologyRecord>();
         counters.validated_topology_state_bytes = size_of::<ValidatedCompactTrieTopologyState>();
@@ -1987,8 +2337,13 @@ where S: IndexedByteSource + ?Sized {
 
     Ok(ValidatedActPlan {
         empty,
+        topology_event_count,
         records: records.into_boxed_slice(),
         value_summary,
+        #[cfg(test)]
+        audit_finish_node_ids,
+        #[cfg(test)]
+        audit_line_hashes,
         #[cfg(any(test, feature = "act-codec-instrumentation"))]
         counters,
     })
@@ -2914,6 +3269,10 @@ mod validated_plan_tests;
 
 #[cfg(test)]
 mod indexed_direct_tests {
+    use pathmap::PathMap;
+    use pathmap::arena_compact::ArenaCompactTree;
+    use proptest::prelude::*;
+
     use super::*;
 
     struct FragmentedSource {
@@ -2941,6 +3300,16 @@ mod indexed_direct_tests {
                 starts,
                 len: bytes.len(),
             }
+        }
+
+        // A test-only physical address with a gap between every chunk. The
+        // codec emits logical offsets; its caller maps them to provenance.
+        fn physical_anchor(&self, index: usize) -> Option<(usize, usize)> {
+            if index >= self.len {
+                return None;
+            }
+            let chunk = self.starts.partition_point(|start| *start <= index) - 1;
+            Some((chunk, index - self.starts[chunk]))
         }
     }
 
@@ -2975,6 +3344,687 @@ mod indexed_direct_tests {
     }
 
     #[test]
+    fn indexed_batch_position_selects_exact_next_scalar_line_events() {
+        let bytes = canonical_line_image(b"abcde", 7);
+        let mut batched = CanonicalCompactTrieIndexedTopologyCursor::from_source(
+            AsRefIndexedByteSource::new(bytes.as_slice()),
+        )
+        .unwrap();
+        let mut scalar = CanonicalCompactTrieIndexedTopologyCursor::from_source(
+            AsRefIndexedByteSource::new(bytes.as_slice()),
+        )
+        .unwrap();
+        let mut forward = 0;
+        let mut unwind = 0;
+        loop {
+            let before = batched.source_position();
+            if let Some(span) = batched.line_span() {
+                let width = span.source_range().len().min(2);
+                let prepared = span.prepare(width).unwrap();
+                let publication = prepared.commit();
+                let after = batched.source_position().unwrap();
+                let before = before.unwrap();
+                assert!(publication.matches_scalar_schedule(before, after));
+                let mut changed = after;
+                match publication.direction() {
+                    CanonicalCompactTrieLineDirection::Forward => {
+                        forward += 1;
+                        changed.line_index += 1;
+                        assert!(!publication.matches_scalar_schedule(before, changed));
+                        for offset in publication.source_range() {
+                            assert_eq!(
+                                scalar.next_event().unwrap(),
+                                Some(CanonicalCompactTrieTopologyEvent::Edge {
+                                    byte: bytes[offset],
+                                    source_offset: offset,
+                                }),
+                            );
+                            assert_eq!(
+                                scalar.next_event().unwrap(),
+                                Some(CanonicalCompactTrieTopologyEvent::Value {
+                                    value: None,
+                                    source_offset: offset,
+                                }),
+                            );
+                        }
+                    }
+                    CanonicalCompactTrieLineDirection::Unwind => {
+                        unwind += 1;
+                        changed.leave_index += 1;
+                        assert!(!publication.matches_scalar_schedule(before, changed));
+                        for offset in publication.source_range().rev() {
+                            assert_eq!(
+                                scalar.next_event().unwrap(),
+                                Some(CanonicalCompactTrieTopologyEvent::Leave {
+                                    source_offset: offset,
+                                }),
+                            );
+                        }
+                    }
+                }
+                assert_eq!(batched.source_position(), scalar.source_position());
+            } else {
+                let next = batched.next_event().unwrap();
+                assert_eq!(next, scalar.next_event().unwrap());
+                assert_eq!(batched.source_position(), scalar.source_position());
+                if next.is_none() {
+                    break;
+                }
+            }
+        }
+        assert!(forward > 1);
+        assert!(unwind > 1);
+    }
+
+    #[test]
+    fn active_line_work_observes_partial_event_headroom_in_both_directions() {
+        let bytes = canonical_line_image(b"abcdef", 7);
+        let mut cursor = CanonicalCompactTrieIndexedTopologyCursor::from_source(
+            AsRefIndexedByteSource::new(bytes.as_slice()),
+        )
+        .unwrap();
+        assert!(matches!(
+            cursor.next_event().unwrap(),
+            Some(CanonicalCompactTrieTopologyEvent::Value { .. })
+        ));
+
+        let forward = cursor.active_line_work_source(usize::MAX - 3).unwrap();
+        assert_eq!(forward.direction, CanonicalCompactTrieLineDirection::Forward);
+        assert_eq!(forward.source_range.len(), 5);
+        assert_eq!(forward.remaining_work_events, Some(10));
+        assert_eq!(forward.admissible_source_width, 1);
+        assert_eq!(forward.admissible_work_events, 2);
+        assert_eq!(cursor.line_span().unwrap().source_range(), forward.source_range);
+        assert_eq!(
+            cursor
+                .line_span()
+                .unwrap()
+                .prepare(1)
+                .unwrap()
+                .expanded_events(),
+            2
+        );
+        assert!(
+            cursor
+                .active_line_work_source(usize::MAX)
+                .is_some_and(|work| {
+                    work.source_range == forward.source_range && work.admissible_source_width == 0
+                })
+        );
+        let before_forward = cursor.source_position().unwrap();
+        let committed_forward = cursor.line_span().unwrap().prepare(1).unwrap().commit();
+        assert_eq!(
+            (usize::MAX - 3).checked_add(committed_forward.expanded_events()),
+            Some(usize::MAX - 1),
+        );
+        assert!((usize::MAX - 3).checked_add(4).is_none());
+        assert!(
+            committed_forward
+                .matches_scalar_schedule(before_forward, cursor.source_position().unwrap())
+        );
+
+        loop {
+            if cursor
+                .active_line_work_source(0)
+                .is_some_and(|work| work.direction == CanonicalCompactTrieLineDirection::Unwind)
+            {
+                break;
+            }
+            assert!(cursor.next_event().unwrap().is_some());
+        }
+        let unwind = cursor.active_line_work_source(usize::MAX - 2).unwrap();
+        assert_eq!(unwind.direction, CanonicalCompactTrieLineDirection::Unwind);
+        assert_eq!(unwind.source_range.len(), 6);
+        assert_eq!(unwind.remaining_work_events, Some(6));
+        assert_eq!(unwind.admissible_source_width, 2);
+        assert_eq!(unwind.admissible_work_events, 2);
+        assert_eq!(cursor.line_span().unwrap().source_range(), unwind.source_range);
+        assert_eq!(
+            cursor
+                .line_span()
+                .unwrap()
+                .prepare(2)
+                .unwrap()
+                .expanded_events(),
+            2
+        );
+        assert!(
+            cursor
+                .active_line_work_source(usize::MAX)
+                .is_some_and(|work| {
+                    work.source_range == unwind.source_range && work.admissible_source_width == 0
+                })
+        );
+        let before_unwind = cursor.source_position().unwrap();
+        let committed_unwind = cursor.line_span().unwrap().prepare(2).unwrap().commit();
+        assert_eq!(
+            (usize::MAX - 2).checked_add(committed_unwind.expanded_events()),
+            Some(usize::MAX),
+        );
+        assert!((usize::MAX - 2).checked_add(3).is_none());
+        assert!(
+            committed_unwind
+                .matches_scalar_schedule(before_unwind, cursor.source_position().unwrap())
+        );
+    }
+
+    // Recover the offerable line-work prefix from a completed scalar trace.
+    // Forward's final pair is excluded by the scalar transition out of
+    // LineEdge; Unwind stops when the next Leave is outside the line suffix.
+    fn scalar_trace_line_work(
+        events: &[CanonicalCompactTrieTopologyEvent],
+        boundaries: &[Option<CanonicalCompactTrieCursorSourcePosition>],
+        event_index: usize,
+    ) -> Option<(CanonicalCompactTrieLineDirection, Vec<usize>)> {
+        let position = boundaries.get(event_index).copied().flatten()?;
+        let line_start = position.line_start?;
+        let line_end = position.line_end?;
+        let mut offsets = Vec::new();
+        let direction = match position.stage {
+            CanonicalCompactTrieCursorSourceStage::LineEdge => {
+                let mut at = event_index;
+                while let (
+                    Some(CanonicalCompactTrieTopologyEvent::Edge {
+                        source_offset: edge,
+                        ..
+                    }),
+                    Some(CanonicalCompactTrieTopologyEvent::Value {
+                        value: None,
+                        source_offset: value,
+                    }),
+                    Some(Some(after)),
+                ) = (events.get(at), events.get(at + 1), boundaries.get(at + 2))
+                {
+                    if edge != value ||
+                        *edge < line_start ||
+                        *edge >= line_end ||
+                        after.record != position.record ||
+                        after.stage != CanonicalCompactTrieCursorSourceStage::LineEdge
+                    {
+                        break;
+                    }
+                    offsets.push(*edge);
+                    at += 2;
+                }
+                CanonicalCompactTrieLineDirection::Forward
+            }
+            CanonicalCompactTrieCursorSourceStage::Leave |
+            CanonicalCompactTrieCursorSourceStage::Children
+                if position.stage != CanonicalCompactTrieCursorSourceStage::Children ||
+                    position.remaining_children == 0 =>
+            {
+                let mut at = event_index;
+                while let (
+                    Some(CanonicalCompactTrieTopologyEvent::Leave { source_offset }),
+                    Some(Some(after)),
+                ) = (events.get(at), boundaries.get(at + 1))
+                {
+                    if *source_offset < line_start ||
+                        *source_offset >= line_end ||
+                        after.record != position.record ||
+                        after.stage != CanonicalCompactTrieCursorSourceStage::Leave
+                    {
+                        break;
+                    }
+                    offsets.push(*source_offset);
+                    at += 1;
+                }
+                CanonicalCompactTrieLineDirection::Unwind
+            }
+            _ => return None,
+        };
+        (!offsets.is_empty()).then_some((direction, offsets))
+    }
+
+    fn check_generated_line_publications(bytes: &[u8], fragment_seed: u64, schedule: u8) {
+        let (plan_events, plan_boundaries) = {
+            let mut cursor = CanonicalCompactTrieIndexedTopologyCursor::from_source(
+                AsRefIndexedByteSource::new(bytes),
+            )
+            .unwrap();
+            let mut events = Vec::new();
+            let mut boundaries = Vec::new();
+            loop {
+                boundaries.push(cursor.source_position());
+                let Some(event) = cursor.next_event().unwrap() else {
+                    break;
+                };
+                events.push(event);
+            }
+            (events, boundaries)
+        };
+        let anchor_oracle = FragmentedSource::new(bytes, fragment_seed);
+        let mut batched = CanonicalCompactTrieIndexedTopologyCursor::from_source(
+            FragmentedSource::new(bytes, fragment_seed),
+        )
+        .unwrap();
+        let mut scalar = CanonicalCompactTrieIndexedTopologyCursor::from_source(
+            FragmentedSource::new(bytes, fragment_seed),
+        )
+        .unwrap();
+        let mut event_index = 0usize;
+        let mut forward = 0;
+        let mut unwind = 0;
+        let mut branched_line = false;
+        let mut cross_chunk = false;
+        loop {
+            let before = batched.source_position();
+            assert_eq!(before, plan_boundaries[event_index]);
+            assert_eq!(before, scalar.source_position());
+            if let Some(before) = before {
+                let record = &batched.state.plan.records[before.record];
+                assert_eq!(before.node_id, record.node_id);
+                assert_eq!(before.line_start, record.line_suffix().map(|line| line.start));
+                assert_eq!(before.line_end, record.line_suffix().map(|line| line.end));
+            }
+            let work_source = batched.active_line_work_source(event_index);
+            let scalar_work = scalar_trace_line_work(&plan_events, &plan_boundaries, event_index);
+            assert_eq!(work_source.is_some(), scalar_work.is_some());
+            if let Some(work) = &work_source {
+                let (oracle_direction, oracle_offsets) = scalar_work.as_ref().unwrap();
+                assert_eq!(Some(work.position), before);
+                assert_eq!(work.event_index, event_index);
+                assert_eq!(&work.direction, oracle_direction);
+                let remaining_work_events = work.remaining_work_events.unwrap();
+                assert_eq!(work.admissible_source_width, work.source_range.len());
+                assert_eq!(work.admissible_work_events, remaining_work_events);
+                let expected_event_count = match *oracle_direction {
+                    CanonicalCompactTrieLineDirection::Forward => oracle_offsets.len() * 2,
+                    CanonicalCompactTrieLineDirection::Unwind => oracle_offsets.len(),
+                };
+                assert_eq!(remaining_work_events, expected_event_count);
+                let first_offset = *oracle_offsets.first().unwrap();
+                let last_offset = *oracle_offsets.last().unwrap();
+                assert_eq!(work.first_source_offset(), first_offset);
+                assert_eq!(work.last_source_offset(), last_offset);
+                assert_eq!(
+                    work.source_range,
+                    *oracle_offsets.iter().min().unwrap()..
+                        *oracle_offsets.iter().max().unwrap() + 1,
+                );
+                let record = &batched.state.plan.records[work.position.record];
+                let line = record.line_suffix().unwrap();
+                assert!(line.start <= work.source_range.start);
+                assert!(work.source_range.end <= line.end);
+                assert!(event_index + remaining_work_events < plan_events.len());
+                assert_eq!(
+                    batched.source().physical_anchor(work.first_source_offset()),
+                    anchor_oracle.physical_anchor(first_offset),
+                );
+                assert_eq!(
+                    batched.source().physical_anchor(work.last_source_offset()),
+                    anchor_oracle.physical_anchor(last_offset),
+                );
+                for step in 0..remaining_work_events {
+                    let offset = match *oracle_direction {
+                        CanonicalCompactTrieLineDirection::Forward => oracle_offsets[step / 2],
+                        CanonicalCompactTrieLineDirection::Unwind => oracle_offsets[step],
+                    };
+                    let expected = match work.direction {
+                        CanonicalCompactTrieLineDirection::Forward if step % 2 == 0 => {
+                            CanonicalCompactTrieTopologyEvent::Edge {
+                                byte: bytes[offset],
+                                source_offset: offset,
+                            }
+                        }
+                        CanonicalCompactTrieLineDirection::Forward => {
+                            CanonicalCompactTrieTopologyEvent::Value {
+                                value: None,
+                                source_offset: offset,
+                            }
+                        }
+                        CanonicalCompactTrieLineDirection::Unwind => {
+                            CanonicalCompactTrieTopologyEvent::Leave {
+                                source_offset: offset,
+                            }
+                        }
+                    };
+                    assert_eq!(plan_events[event_index + step], expected);
+                    assert_eq!(
+                        batched.source().physical_anchor(offset),
+                        anchor_oracle.physical_anchor(offset),
+                    );
+                }
+            }
+            if let Some(span) = batched.line_span() {
+                let work = work_source.unwrap();
+                let (_, oracle_offsets) = scalar_work.unwrap();
+                assert_eq!(span.source_range(), work.source_range);
+                assert_eq!(span.direction(), work.direction);
+                let offered = span.source_range();
+                let direction = span.direction();
+                let width = match schedule {
+                    0 => 1,
+                    1 => offered.len(),
+                    _ => {
+                        1 + (event_index.wrapping_mul(17) ^ fragment_seed as usize) % offered.len()
+                    }
+                };
+                let accepted_offsets = &oracle_offsets[..width];
+                let expected_range = *accepted_offsets.iter().min().unwrap()..
+                    *accepted_offsets.iter().max().unwrap() + 1;
+                let expected_last_anchor = anchor_oracle
+                    .physical_anchor(*accepted_offsets.last().unwrap())
+                    .unwrap();
+                let prepared = span.prepare(width).unwrap();
+                assert_eq!(prepared.source_range(), expected_range);
+                assert_eq!(
+                    prepared
+                        .source()
+                        .physical_anchor(prepared.last_source_offset()),
+                    Some(expected_last_anchor),
+                );
+                let publication = prepared.commit();
+                let after = batched.source_position().unwrap();
+                let next_event_index = event_index + publication.expanded_events();
+                assert_eq!(Some(after), plan_boundaries[next_event_index]);
+                assert!(publication.matches_scalar_schedule(before.unwrap(), after));
+                assert_eq!(after.record, before.unwrap().record);
+                assert_eq!(after.stack_depth, before.unwrap().stack_depth);
+                branched_line |= before.unwrap().stack_depth > 1;
+                let range = publication.source_range();
+                assert_eq!(range, expected_range);
+                assert_eq!(publication.last_source_offset(), *accepted_offsets.last().unwrap());
+                cross_chunk |= batched.source().physical_anchor(range.start).unwrap().0 !=
+                    anchor_oracle.physical_anchor(range.end - 1).unwrap().0;
+                let mut final_scalar_anchor = None;
+                match direction {
+                    CanonicalCompactTrieLineDirection::Forward => {
+                        forward += 1;
+                        assert_eq!(publication.expanded_events(), width * 2);
+                        for offset in range {
+                            let edge = scalar.next_event().unwrap().unwrap();
+                            assert_eq!(edge, CanonicalCompactTrieTopologyEvent::Edge {
+                                byte: bytes[offset],
+                                source_offset: offset,
+                            });
+                            let value = scalar.next_event().unwrap().unwrap();
+                            assert_eq!(value, CanonicalCompactTrieTopologyEvent::Value {
+                                value: None,
+                                source_offset: offset,
+                            });
+                            final_scalar_anchor = scalar.source().physical_anchor(offset);
+                        }
+                    }
+                    CanonicalCompactTrieLineDirection::Unwind => {
+                        unwind += 1;
+                        assert_eq!(publication.expanded_events(), width);
+                        for offset in range.rev() {
+                            let leave = scalar.next_event().unwrap().unwrap();
+                            assert_eq!(leave, CanonicalCompactTrieTopologyEvent::Leave {
+                                source_offset: offset,
+                            });
+                            final_scalar_anchor = scalar.source().physical_anchor(offset);
+                        }
+                    }
+                }
+                assert_eq!(Some(expected_last_anchor), final_scalar_anchor);
+                assert_eq!(
+                    batched
+                        .source()
+                        .physical_anchor(publication.last_source_offset()),
+                    final_scalar_anchor,
+                );
+                event_index = next_event_index;
+                assert_eq!(batched.source_position(), scalar.source_position());
+            } else {
+                assert!(work_source.is_none());
+                let event = batched.next_event().unwrap();
+                assert_eq!(event, plan_events.get(event_index).copied());
+                assert_eq!(event, scalar.next_event().unwrap());
+                if event.is_none() {
+                    break;
+                }
+                event_index += 1;
+                assert_eq!(batched.source_position(), plan_boundaries[event_index]);
+                assert_eq!(batched.source_position(), scalar.source_position());
+            }
+        }
+        assert!(forward > 0 && unwind > 0);
+        assert!(branched_line);
+        if schedule == 1 {
+            assert!(cross_chunk);
+        }
+        assert_eq!(event_index, plan_events.len());
+        assert!(event_index > forward + unwind);
+    }
+
+    // Decode only the fields retained by a validated record, directly from
+    // the contiguous wire image. This oracle does not call the admission
+    // parser or inspect its validation frames.
+    fn independently_decode_record(
+        bytes: &[u8],
+        node_id: usize,
+    ) -> (Option<u64>, usize, usize, usize, usize, Option<usize>) {
+        fn varint(bytes: &[u8], at: &mut usize) -> u64 {
+            let first = bytes[*at];
+            *at += 1;
+            if first <= 247 {
+                return u64::from(first);
+            }
+            let width = usize::from(first - 247);
+            assert!((1..=8).contains(&width));
+            let mut raw = [0u8; 8];
+            raw[..width].copy_from_slice(&bytes[*at..*at + width]);
+            *at += width;
+            u64::from_le_bytes(raw)
+        }
+
+        fn branch_children(bytes: &[u8], at: &mut usize, head: u8) -> usize {
+            let marker = usize::from(head & 0x3f);
+            if marker == 0 {
+                return 0;
+            }
+            let _first_child_distance = varint(bytes, at);
+            if marker < 32 {
+                *at += marker;
+                marker
+            } else {
+                let count = bytes[*at..*at + 32]
+                    .iter()
+                    .map(|byte| byte.count_ones() as usize)
+                    .sum();
+                *at += 32;
+                count
+            }
+        }
+
+        let head = bytes[node_id];
+        let mut at = node_id + 1;
+        let node_value = (head & 0x40 != 0).then(|| varint(bytes, &mut at));
+        if head & 0x80 == 0 {
+            let children = branch_children(bytes, &mut at, head);
+            return (node_value, node_id, 0, 0, children, None);
+        }
+        let wrapper_id =
+            (head & 1 != 0).then(|| node_id - usize::try_from(varint(bytes, &mut at)).unwrap());
+        let line_id = node_id - usize::try_from(varint(bytes, &mut at)).unwrap();
+        let mut line_at = line_id;
+        let line_len = usize::try_from(varint(bytes, &mut line_at)).unwrap();
+        let (value, value_source_offset, children) = match wrapper_id {
+            None => (node_value, node_id, 0),
+            Some(wrapper_id) => {
+                let wrapper_head = bytes[wrapper_id];
+                let mut wrapper_at = wrapper_id + 1;
+                let value = (wrapper_head & 0x40 != 0).then(|| varint(bytes, &mut wrapper_at));
+                let children = branch_children(bytes, &mut wrapper_at, wrapper_head);
+                (value, wrapper_id, children)
+            }
+        };
+        (value, value_source_offset, line_at, line_len, children, Some(line_id))
+    }
+
+    fn check_generated_validated_plan_source(bytes: &[u8], fragment_seed: u64) {
+        let fragmented = FragmentedSource::new(bytes, fragment_seed);
+        let mut cursor =
+            CanonicalCompactTrieIndexedTopologyCursor::from_source(fragmented).unwrap();
+        let source = cursor.validated_plan_source();
+        let records = (0..source.record_count())
+            .map(|index| source.record(index).unwrap())
+            .collect::<Vec<_>>();
+        assert!(!source.is_empty());
+        assert!(!records.is_empty());
+        assert_eq!(
+            source.value_summary().value_count(),
+            records.iter().filter(|record| record.has_value()).count()
+        );
+        let mut value_ordinal = 0usize;
+        let mut first_nonzero = None;
+        let mut first_nonsequential = None;
+        for record in &records {
+            if record.has_value() {
+                if record.value != 0 {
+                    first_nonzero.get_or_insert((record.value_source_offset, record.value));
+                }
+                if record.value != value_ordinal as u64 {
+                    first_nonsequential.get_or_insert((
+                        record.value_source_offset,
+                        record.value,
+                        value_ordinal as u64,
+                    ));
+                }
+                value_ordinal += 1;
+            }
+        }
+        assert_eq!(source.value_summary().value_count(), value_ordinal);
+        assert_eq!(source.value_summary().first_nonzero(), first_nonzero);
+        assert_eq!(source.value_summary().first_nonsequential(), first_nonsequential);
+        assert_eq!(records[0].has_incoming(), false);
+        assert!(source.record(records.len()).is_none());
+
+        // Child counts and preorder alone determine the postorder used by the
+        // producer replay. Compute it independently of the validator's frames.
+        let mut open = Vec::<(usize, usize)>::new();
+        let mut expected_finish = Vec::with_capacity(records.len());
+        for (index, record) in records.iter().enumerate() {
+            if index != 0 {
+                while open.last().is_some_and(|(_, remaining)| *remaining == 0) {
+                    let (finished, _) = open.pop().unwrap();
+                    expected_finish.push(records[finished].node_id);
+                }
+                let (_, remaining) = open.last_mut().expect("every child has a preorder parent");
+                *remaining -= 1;
+                assert!(record.has_incoming());
+            }
+            open.push((index, usize::from(record.child_count)));
+        }
+        while let Some((finished, remaining)) = open.pop() {
+            assert_eq!(remaining, 0);
+            expected_finish.push(records[finished].node_id);
+        }
+        assert_eq!(expected_finish, cursor.state.plan.audit_finish_node_ids);
+        assert_eq!(expected_finish.last(), Some(&records[0].node_id));
+
+        // The validation-local GX hash is the hash of the bytes named by the
+        // admitted record, also when its indexed image is fragmented.
+        let mut lines = 0;
+        let mut independently_counted_events = 0usize;
+        for (index, record) in records.into_iter().enumerate() {
+            assert!(record.node_id < bytes.len() - 8);
+            assert_eq!(record.flags & !3, 0);
+            let (value, value_source_offset, line_start, line_len, children, line_id) =
+                independently_decode_record(bytes, record.node_id);
+            assert_eq!(value.is_some(), record.has_value());
+            assert_eq!(value.unwrap_or_default(), record.value);
+            assert_eq!(value_source_offset, record.value_source_offset);
+            assert_eq!(line_start, record.line_start);
+            assert_eq!(line_len, record.line_len);
+            assert_eq!(children, usize::from(record.child_count));
+            independently_counted_events += 3 * line_len + if index == 0 { 2 } else { 3 };
+            if let Some(line_id) = line_id {
+                lines += 1;
+                let suffix = line_start..line_start + line_len;
+                let used = cursor.state.plan.audit_line_hashes[&line_id];
+                assert_eq!(used, canonical_line_hash(&bytes[suffix.clone()]));
+                assert_eq!(used, indexed_canonical_line_hash(cursor.source(), suffix).unwrap());
+            }
+        }
+        assert!(lines >= 2);
+        assert_eq!(source.topology_event_count(), independently_counted_events);
+        let mut scalar_events = 0usize;
+        while cursor.next_event().unwrap().is_some() {
+            scalar_events += 1;
+        }
+        assert_eq!(scalar_events, independently_counted_events);
+    }
+
+    #[test]
+    fn validated_event_count_rejects_checked_arithmetic_overflow() {
+        assert_eq!(checked_add_topology_record_events(0, 0, false), Some(2));
+        assert_eq!(checked_add_topology_record_events(0, 0, true), Some(3));
+        assert_eq!(checked_add_topology_record_events(usize::MAX - 2, 0, false), Some(usize::MAX));
+        assert_eq!(checked_add_topology_record_events(usize::MAX - 1, 0, false), None);
+        assert_eq!(checked_add_topology_record_events(0, usize::MAX / 3 + 1, false), None);
+    }
+
+    #[test]
+    fn validated_event_count_matches_empty_set_and_map_act_traces() {
+        let empty = PathMap::<u64>::new();
+        let mut set = PathMap::new();
+        set.set_val_at(b"alpha/a".to_vec(), 0u64);
+        set.set_val_at(b"alpha/b".to_vec(), 0u64);
+        let mut map = PathMap::new();
+        map.set_val_at(b"alpha/a".to_vec(), 0u64);
+        map.set_val_at(b"alpha/b".to_vec(), 1u64);
+        let encoded = [
+            ArenaCompactTree::from_zipper(empty.read_zipper(), |value| *value)
+                .get_data()
+                .to_vec(),
+            ArenaCompactTree::from_zipper(set.read_zipper(), |value| *value)
+                .get_data()
+                .to_vec(),
+            ArenaCompactTree::from_zipper(map.read_zipper(), |value| *value)
+                .get_data()
+                .to_vec(),
+        ];
+        for (index, bytes) in encoded.iter().enumerate() {
+            let source = AsRefIndexedByteSource::new(bytes.as_slice());
+            let mut cursor =
+                CanonicalCompactTrieIndexedTopologyCursor::from_source(source).unwrap();
+            assert_eq!(cursor.validated_plan_source().is_empty(), index == 0);
+            let expected = cursor.validated_plan_source().topology_event_count();
+            let mut actual = 0usize;
+            while cursor.next_event().unwrap().is_some() {
+                actual += 1;
+            }
+            assert_eq!(actual, expected);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn generated_branched_line_publications_match_scalar_events_and_anchors(
+            operations in proptest::collection::vec((
+                proptest::collection::vec(any::<u8>(), 1..25), any::<u64>(),
+            ), 0..12),
+            fragment_seed in any::<u64>(),
+        ) {
+            let mut map = PathMap::new();
+            map.set_val_at(b"alpha/long/shared/first/leaf".to_vec(), 1u64);
+            map.set_val_at(b"alpha/long/shared/second/leaf".to_vec(), 2u64);
+            map.set_val_at(b"beta/another/long/branch/leaf".to_vec(), 3u64);
+            map.set_val_at(
+                b"gamma/a/very/long/unique/compressed/suffix/that/crosses/pages".to_vec(),
+                4u64,
+            );
+            for (path, value) in operations {
+                let mut generated_path = b"random/".to_vec();
+                generated_path.extend(path);
+                map.set_val_at(generated_path, value);
+            }
+            let bytes = ArenaCompactTree::from_zipper(map.read_zipper(), |value| *value)
+                .get_data()
+                .to_vec();
+            check_generated_validated_plan_source(&bytes, fragment_seed);
+            for schedule in 0..3 {
+                check_generated_line_publications(&bytes, fragment_seed, schedule);
+            }
+        }
+    }
+
+    #[test]
     fn indexed_line_hash_matches_contiguous_gxhash_at_boundaries_and_random_lengths() {
         let mut state = 0x9e37_79b9_7f4a_7c15u64;
         let mut payload = vec![0u8; 4099];
@@ -3003,6 +4053,72 @@ mod indexed_direct_tests {
                 canonical_line_hash(&payload[start..end]),
                 "gxhash mismatch at length {len}",
             );
+        }
+    }
+
+    #[test]
+    fn validated_plan_exposes_exact_finish_order_and_replay_hashes() {
+        let mut map = PathMap::new();
+        map.set_val_at(b"alpha/shared/a".to_vec(), 0u64);
+        map.set_val_at(b"beta/shared/b".to_vec(), 0u64);
+        map.set_val_at(b"gamma/shared/c".to_vec(), 0u64);
+        let bytes = ArenaCompactTree::from_zipper(map.read_zipper(), |value| *value)
+            .get_data()
+            .to_vec();
+        let contiguous = AsRefIndexedByteSource::new(bytes.as_slice());
+        let fragmented = FragmentedSource::new(&bytes, 0xd131_0ba6_98df_b5ac);
+        let contiguous_plan = validate_direct_canonical_act(&contiguous).unwrap();
+        let fragmented_plan = validate_direct_canonical_act(&fragmented).unwrap();
+        let record_projection = |plan: &ValidatedActPlan| {
+            plan.records
+                .iter()
+                .map(|record| {
+                    (
+                        record.node_id,
+                        record.value,
+                        record.value_source_offset,
+                        record.line_start,
+                        record.line_len,
+                        record.incoming_source_offset,
+                        record.child_count,
+                        record.incoming_byte,
+                        record.flags,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(record_projection(&fragmented_plan), record_projection(&contiguous_plan));
+        assert_eq!(fragmented_plan.audit_finish_node_ids, contiguous_plan.audit_finish_node_ids);
+        assert_eq!(fragmented_plan.audit_line_hashes, contiguous_plan.audit_line_hashes);
+        assert_eq!(fragmented_plan.audit_finish_node_ids.len(), fragmented_plan.records.len());
+        assert!(fragmented_plan.records.len() >= 4);
+        assert_eq!(
+            fragmented_plan.audit_finish_node_ids.last(),
+            Some(&fragmented_plan.records[0].node_id)
+        );
+        let record_ids = fragmented_plan
+            .records
+            .iter()
+            .map(|record| record.node_id)
+            .collect::<std::collections::HashSet<_>>();
+        let finish_ids = fragmented_plan
+            .audit_finish_node_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(record_ids, finish_ids);
+        assert!(fragmented_plan.audit_line_hashes.len() >= 2);
+        for record in fragmented_plan.records.iter() {
+            let mut edges = Vec::new();
+            let mut counters = new_act_work_counters();
+            let semantic =
+                direct_semantic_node(&fragmented, record.node_id, &mut edges, &mut counters)
+                    .unwrap();
+            if let Some(line) = semantic.line {
+                let used = fragmented_plan.audit_line_hashes[&line.encoded.start];
+                assert_eq!(used, canonical_line_hash(&bytes[line.suffix.clone()]));
+                assert_eq!(used, indexed_canonical_line_hash(&fragmented, line.suffix).unwrap());
+            }
         }
     }
 

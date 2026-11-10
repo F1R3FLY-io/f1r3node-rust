@@ -19,20 +19,9 @@ fn populated(bytes: &[u8]) -> (CanonicalBytesArena, CanonicalBytesHandle) {
 
 fn assert_shared(parent: &IndexedByteRegion<'_>, child: &IndexedByteRegion<'_>, start: usize) {
     match (&parent.backing, &child.backing) {
-        (
-            IndexedByteBacking::Borrowed {
-                bytes: parent,
-                start: parent_start,
-                ..
-            },
-            IndexedByteBacking::Borrowed {
-                bytes: child,
-                start: child_start,
-                ..
-            },
-        ) => {
-            assert!(std::ptr::eq(*parent, *child));
-            assert_eq!(*child_start, parent_start + start);
+        (IndexedByteBacking::Borrowed(parent), IndexedByteBacking::Borrowed(child)) => {
+            assert!(std::ptr::eq(parent.root_slice(), child.root_slice()));
+            assert_eq!(child.start(), parent.start() + start);
         }
         (
             IndexedByteBacking::Contiguous { bytes: parent, .. },

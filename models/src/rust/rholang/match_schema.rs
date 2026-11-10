@@ -503,4 +503,140 @@ mod protobuf_resolution_tests {
             Err(WireProgramLookupError::OutsideRegistry)
         );
     }
+
+    #[test]
+    fn every_generated_wire_tag_resolves_to_its_exact_slot_and_payload() {
+        let mut slot_count = 0;
+        let mut arm_count = 0;
+        let mut tag_count = 0;
+
+        for (index, (name, resident)) in RHO_MATCH_REGISTRY.iter().enumerate() {
+            assert_eq!(usize::from(resident.type_id), index + 1);
+            let program = wire_program_by_type_id(resident.type_id)
+                .expect("every registered type has a wire program");
+            assert_eq!(program.type_name, *name);
+            if *name == "Par" {
+                assert!(std::ptr::eq(program, &PAR_PROTOBUF_REGION_PROGRAM));
+                assert!(!std::ptr::eq(program, *resident));
+            } else {
+                assert!(std::ptr::eq(program, *resident));
+            }
+            assert_eq!(program.fields.len(), program.protobuf_fields.len());
+
+            let mut tags = std::collections::BTreeSet::new();
+            let mut previous_min_tag = 0;
+            for (slot, (field, protobuf)) in program
+                .fields
+                .iter()
+                .zip(program.protobuf_fields)
+                .enumerate()
+            {
+                assert_eq!(field.tag, protobuf.tag, "{} slot {slot}", program.type_name);
+                if program.type_name == "EPathMap" && field.tag == 9 {
+                    assert_eq!(field.name, "entries");
+                    assert_eq!(protobuf.name, "trie_snapshot");
+                } else {
+                    assert_eq!(
+                        field.name, protobuf.name,
+                        "{} slot {slot}",
+                        program.type_name
+                    );
+                }
+                assert!(
+                    field.tag > previous_min_tag,
+                    "{} slot {slot}",
+                    program.type_name
+                );
+                previous_min_tag = field.tag;
+                slot_count += 1;
+
+                match field.kind {
+                    RhoMatchFieldKind::Oneof(variants) => {
+                        assert_eq!(protobuf.kind, ProtobufKind::Oneof);
+                        assert!(!variants.is_empty());
+                        assert_eq!(field.tag, variants.iter().map(|arm| arm.tag).min().unwrap());
+                        for arm in variants {
+                            assert!(arm.tag > 0 && arm.tag <= 0x1fff_ffff);
+                            assert!(
+                                tags.insert(arm.tag),
+                                "{} tag {} collides",
+                                program.type_name,
+                                arm.tag
+                            );
+                            let resolved = resolve_protobuf_field(program, arm.tag)
+                                .expect("declared oneof arm resolves");
+                            assert_eq!(resolved.slot(), slot);
+                            assert!(std::ptr::eq(resolved.field(), field));
+                            assert_eq!(resolved.protobuf_kind(), arm.protobuf_kind);
+                            assert!(resolved.protobuf_kind().wire_type().is_some());
+                            assert!(!resolved.repeated());
+                            assert!(matches!(
+                                resolved.payload(),
+                                ResolvedProtobufPayload::Oneof(actual)
+                                    if std::ptr::eq(actual, arm)
+                            ));
+                            if let RhoMatchPayloadKind::Message(child_id) = arm.payload {
+                                assert_eq!(arm.protobuf_kind, ProtobufKind::Message);
+                                assert!(wire_program_by_type_id(child_id).is_ok());
+                            }
+                            arm_count += 1;
+                        }
+                    }
+                    kind => {
+                        assert!(protobuf.tag > 0 && protobuf.tag <= 0x1fff_ffff);
+                        assert!(
+                            tags.insert(protobuf.tag),
+                            "{} tag {} collides",
+                            program.type_name,
+                            protobuf.tag
+                        );
+                        let resolved = resolve_protobuf_field(program, protobuf.tag)
+                            .expect("declared field resolves");
+                        assert_eq!(resolved.slot(), slot);
+                        assert!(std::ptr::eq(resolved.field(), field));
+                        assert_eq!(resolved.protobuf_kind(), protobuf.kind);
+                        assert_eq!(
+                            resolved.payload(),
+                            ResolvedProtobufPayload::Declared(protobuf.kind)
+                        );
+                        assert_eq!(
+                            resolved.repeated(),
+                            matches!(
+                                kind,
+                                RhoMatchFieldKind::StringSequence
+                                    | RhoMatchFieldKind::BytesSequence
+                                    | RhoMatchFieldKind::MessageSequence(_)
+                                    | RhoMatchFieldKind::StringMessageMap(_)
+                            )
+                        );
+                        match kind {
+                            RhoMatchFieldKind::OptionalMessage(child_id)
+                            | RhoMatchFieldKind::MessageSequence(child_id)
+                            | RhoMatchFieldKind::StringMessageMap(child_id) => {
+                                assert!(wire_program_by_type_id(child_id).is_ok());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            let largest_tag = tags.last().copied().unwrap_or(0);
+            for tag in 0..=largest_tag + 1 {
+                assert_eq!(
+                    resolve_protobuf_field(program, tag).is_some(),
+                    tags.contains(&tag),
+                    "{} tag {tag}",
+                    program.type_name
+                );
+            }
+            assert!(resolve_protobuf_field(program, u32::MAX).is_none());
+            tag_count += tags.len();
+        }
+
+        assert_eq!(RHO_MATCH_REGISTRY.len(), 64);
+        assert_eq!(slot_count, 165);
+        assert_eq!(arm_count, 58);
+        assert_eq!(tag_count, 217);
+    }
 }

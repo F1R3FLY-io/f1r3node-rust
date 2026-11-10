@@ -4265,6 +4265,68 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         );
     }
 
+    let admission_properties =
+        read_repository_file("models/src/rust/rholang/protobuf_admission.rs");
+    for marker in [
+        "generated_discontinuous_empty_send_child_source_anchors_and_pop",
+        "generated_discontinuous_new_map_value_source_anchors_and_pop",
+        "generated_fragmented_epathmap_receipt_and_frame_source_anchors",
+        "generated_emap_interleaved_incomplete_pairs_preserve_source_order",
+        "generated_emap_identity_strips_only_outer_locally_free",
+        "generated_par_canonical_field_scanner_and_identity",
+        "generated_discontinuous_emap_key_trace_preserves_physical_anchors",
+    ] {
+        assert!(
+            admission_properties.contains(marker),
+            "RPB3 source-anchor property is missing `{marker}`"
+        );
+    }
+    assert!(admission_properties.contains("rpb3_score_branch_properties.rs"));
+    assert!(admission_properties.contains("rpb3_source_reference_integration_properties.rs"));
+    let source_reference_properties = read_repository_file(
+        "models/src/rust/rholang/rpb3_source_reference_integration_properties.rs",
+    );
+    assert!(source_reference_properties
+        .contains("fn generated_mixed_new_root_close_preserves_nested_pathmap_and_source_order("));
+    let score_branch_properties =
+        read_repository_file("models/tests/support/rpb3_score_branch_properties.rs");
+    for marker in [
+        "raw_par_source_branch_preserves_occurrences_and_semantic_flag",
+        "connective_source_branches_select_exact_nested_scores",
+        "unforgeable_source_branches_bind_bytes_and_constructor",
+        "generated_wire_rejects_ambiguous_oneof_and_descending_par_occurrences",
+        "ordered_sequence_source_branch_preserves_remainder_and_order",
+        "canonical_set_source_branch_preserves_order_identity_and_score",
+        "complete_emethod_source_branch_preserves_target_arguments_and_name",
+        "complete_ezipper_source_reuses_authoritative_snapshot",
+        "fragmented_ezipper_route_preserves_physical_source_anchors",
+        "generated_component_complete_and_incomplete_finishes_match_authoritative_keys",
+    ] {
+        assert!(
+            score_branch_properties.contains(marker),
+            "RPB3 score-branch property is missing `{marker}`"
+        );
+    }
+    let ezipper_refinement = read_repository_file("formal/verus/rpb3_ezipper_source_refinement.rs");
+    for marker in [
+        "ezipper_absent_modeled_pop_is_source_bound",
+        "ezipper_modeled_complete_route_is_reachable",
+        "ezipper_receipt_uses_indexed_snapshot",
+        "ezipper_missing_pathmap_has_no_complete_score",
+        "ezipper_scored_constructor_transcript_exact",
+        "ezipper_complete_route_preserves_source_and_score",
+    ] {
+        assert!(
+            ezipper_refinement.contains(marker),
+            "RPB3 EZipper source refinement is missing `{marker}`"
+        );
+    }
+    let admission_runner = read_repository_file("scripts/check-rpb3-admission-cursor-verus.sh");
+    assert!(admission_runner.contains("rpb3_ezipper_source_refinement.rs"));
+    assert!(admission_runner.contains("concrete_empty_set_map_parent_pop_is_reachable"));
+    assert!(admission_runner.contains("concrete_empty_eset_expr_tag22_is_source_derived"));
+    assert!(admission_runner.contains("concrete_empty_emap_expr_tag23_is_source_derived"));
+
     let coq_project = read_repository_file("formal/rocq/stack_safe_pda/_CoqProject");
     assert!(coq_project.contains("theories/RPB3Admission.v"));
     assert!(coq_project.contains("theories/RPB3DescriptorProjectionData.v"));
@@ -4385,15 +4447,89 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         "StackSafePDA.RPB3DescriptorLaws",
         "StackSafePDA.RPB3WireCursor",
         "StackSafePDA.RPB3SemanticReducer",
-        "rpb3_run_tests 22 --lib protobuf_admission::tests",
+        "rpb3_run_tests 75 --lib protobuf_admission::tests",
+        "rpb3_run_tests 8 --lib rpb3_auxiliary_score_properties::",
+        "rpb3_run_tests 1 --lib standalone_canonical_path_event_projection_uses_generated_par_body",
+        "rpb3_run_tests 5 --test cost_token_stack_admission",
+        "rpb3_run_tests 1 --lib emap_pair_identity_order_and_finish_source_property",
+        "rpb3_run_tests 1 --lib every_wire_type_id_resolves_to_its_expected_semantic_kind",
+        "rpb3_run_tests 1 --lib generated_wire_fields_preserve_progress_payloads_and_physical_positions",
+        "rpb3_run_tests 1 --lib generated_nonminimal_truncated_and_overflow_varints_keep_exact_failure_positions",
+        "rpb3_run_tests 1 --lib empty_child_payload_uses_the_backing_end_anchor",
+        "rpb3_run_tests 1 --lib generated_child_subviews_preserve_discontinuous_source_anchors",
+        "rpb3_run_tests 1 --lib generated_score_appends_match_independent_source_entries_and_bytes",
+        "rpb3_run_tests 1 --lib generated_reservation_failures_preserve_entries_bytes_and_next_handle",
+        "rpb3_run_tests 1 --lib generated_region_reservation_denial_and_retry_preserve_source_and_bytes",
+        "rpb3_run_tests 1 --lib generated_atom_length_overflow_matches_wide_arithmetic",
+        "rpb3_run_tests 1 --lib generated_node_length_overflow_matches_wide_arithmetic",
+        "rpb3_run_tests 14 --test rpb3_descriptor_projection",
+        "rpb3_run_tests 2 --test rpb3_new_map_source_order",
+        "rpb3_run_tests 1 --test rpb3_new_uri_order_boundary",
+        "rpb3_run_tests 3 --test rpb3_auxiliary_typed_source_bridge",
+        "rpb3_run_tests 1 --test rpb3_epm1_independent_oracle",
+        "rpb3_run_tests 1 --lib every_generated_wire_tag_resolves_to_its_exact_slot_and_payload",
         "production_component_admission_is_differentially_equivalent_for_all_ten_families",
         "rpb3_run_tests 3 --test par_bag admitted_",
+        "rpb3_run_tests 3 --lib rpb3_source_reference_integration_properties",
     ] {
         assert!(
             runner.contains(marker),
             "RPB3 formal runner is missing `{marker}`"
         );
     }
+    let descriptor_projection_tests =
+        read_repository_file("models/tests/rpb3_descriptor_projection.rs");
+    assert!(descriptor_projection_tests.contains("fn projection_matches_live_registry()"));
+    assert!(descriptor_projection_tests.contains("fn verus_projection_matches_live_registry()"));
+    assert!(descriptor_projection_tests
+        .contains("fn generated_par_score_contract_matches_live_families("));
+    assert!(descriptor_projection_tests
+        .contains("fn absent_connective_source_has_integer_zero_score()"));
+    assert!(descriptor_projection_tests
+        .contains("fn absent_unforgeable_source_has_constructor_zero_score()"));
+    assert!(descriptor_projection_tests
+        .contains("fn generated_unforgeable_scores_match_nested_source_and_reject_mutants("));
+    assert!(descriptor_projection_tests
+        .contains("fn generated_receive_bind_score_matches_nested_source_and_rejects_mutants("));
+    assert!(descriptor_projection_tests
+        .contains("fn generated_match_case_score_matches_nested_source_and_rejects_mutants("));
+    assert!(descriptor_projection_tests
+        .contains("fn generated_receive_bind_child_shapes_and_types_refuse_claimed_score("));
+    assert!(descriptor_projection_tests
+        .contains("fn generated_match_case_child_shapes_and_types_refuse_claimed_score("));
+    assert!(descriptor_projection_tests
+        .contains("fn generated_locally_free_default_condition_and_guard_refuse_claimed_scores("));
+    assert!(descriptor_projection_tests.contains(
+        "fn generated_receive_and_match_case_signed_pbint32_scores_reject_unsigned_aliases("
+    ));
+    assert!(descriptor_projection_tests.contains(
+        "fn generated_connective_scalar_score_matches_source_bytes_and_rejects_mutants("
+    ));
+    assert!(descriptor_projection_tests
+        .contains("fn generated_connective_not_uses_nested_par_source_score_and_rejects_mutants("));
+    let new_map_order_tests = read_repository_file("models/tests/rpb3_new_map_source_order.rs");
+    assert!(new_map_order_tests
+        .contains("fn strict_new_map_order_covers_values_duplicates_and_nested_maps()"));
+    assert!(
+        new_map_order_tests.contains("fn generated_new_map_order_matches_byte_native_admission(")
+    );
+    let auxiliary_typed_tests =
+        read_repository_file("models/tests/rpb3_auxiliary_typed_source_bridge.rs");
+    assert!(auxiliary_typed_tests
+        .contains("fn generated_empty_pathmap_source_agrees_with_typed_decode_and_admission("));
+    assert!(auxiliary_typed_tests.contains(
+        "fn generated_nonempty_pathmap_set_and_map_source_agree_with_typed_values_and_admission("
+    ));
+    assert!(auxiliary_typed_tests.contains(
+        "fn generated_present_string_map_values_match_typed_source_score_and_admission("
+    ));
+    let epm1_oracle_tests = read_repository_file("models/tests/rpb3_epm1_independent_oracle.rs");
+    assert!(epm1_oracle_tests
+        .contains("fn generated_nonempty_set_and_map_match_independent_epm1_topology_and_values("));
+    let auxiliary_score_tests =
+        read_repository_file("models/tests/support/rpb3_auxiliary_score_properties.rs");
+    assert!(auxiliary_score_tests
+        .contains("fn generated_send_message_complete_extracts_the_actual_score_arena("));
     assert!(has_runner_command(&runner, &[
         "rocq_compile_with_closed_count",
         "theories/RPB3Admission.v",
@@ -4534,6 +4670,120 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         "StackSafePDA.RPB3AdmissionMutants",
         "StackSafePDA.RPB3SourceIndexedTerminationWitnesses",
     ],));
+    let cursor_runner = read_repository_file("scripts/check-rpb3-admission-cursor-verus.sh");
+    for marker in [
+        "check-rpb3-score-branch-inventory.py",
+        "canonical_score_bytes.rs",
+        "indexed_protobuf.rs",
+        "protobuf_schema.rs",
+        "opaque_escape_final_parser_byte_transition",
+        "opaque_escape_final_loop_edge_witness",
+        "boolean_root_checked_eof_completion_witness",
+        "verification results:: 22 verified, 0 errors",
+        "cargo verus verify",
+        "formal/verified_score_store/Cargo.toml",
+        "formal/verified_score_store/src/lib.rs",
+        "verification results:: 185 verified, 0 errors",
+    ] {
+        assert!(
+            cursor_runner.contains(marker),
+            "RPB3 admission cursor gate is missing `{marker}`"
+        );
+    }
+    let verified_store = read_repository_file("formal/verified_score_store/src/lib.rs");
+    for marker in [
+        "impl<'a, B> View for ScoreStore<'a, B>",
+        "pub fn source_entry_at",
+        "pub fn frozen_single_leaf_at",
+        "pub fn append_integer",
+        "pub fn append_node",
+        "final(self)@ == old(self)@.push",
+    ] {
+        assert!(verified_store.contains(marker));
+    }
+    assert!(!verified_store.contains("external_body"));
+    assert!(!verified_store.contains("assume("));
+    let frozen_production =
+        read_repository_file("models/src/rust/rholang/canonical_bytes_arena.rs");
+    assert!(frozen_production.contains("verified_score_store::frozen_single_leaf_at("));
+}
+
+#[test]
+fn rpb3_observation_map_binds_all_original_witnesses_to_current_counted_runner() {
+    let map = read_repository_file("formal/rocq/stack_safe_pda/README.md");
+    let admission = read_repository_file("models/src/rust/rholang/protobuf_admission.rs");
+    let production = read_repository_file("models/src/rust/par_bag.rs");
+    let composition = read_repository_file("models/tests/par_bag.rs");
+    let expected_witnesses_per_row = [1, 2, 3, 2, 2, 3, 3, 2, 2, 2, 1, 1, 1, 1];
+    let mut semantic_witnesses = 0;
+    for (index, expected_count) in expected_witnesses_per_row.into_iter().enumerate() {
+        let id = index + 1;
+        let prefix = format!("| RPO-{id:02} |");
+        let rows: Vec<_> = map
+            .lines()
+            .filter(|line| line.starts_with(&prefix))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "{prefix} must have exactly one observation-map row"
+        );
+        let witness_cell = rows[0].split('|').nth(2).expect("RPO witness cell");
+        let witnesses: Vec<_> = witness_cell.split('`').skip(1).step_by(2).collect();
+        assert_eq!(
+            witnesses.len(),
+            expected_count,
+            "{prefix} witness count changed"
+        );
+        let source = match id {
+            1..=10 => &admission,
+            11 => &production,
+            _ => &composition,
+        };
+        for witness in witnesses {
+            assert!(
+                source.contains(&format!("fn {witness}(")),
+                "{prefix} witness `{witness}` is absent from its executable source"
+            );
+        }
+        if id <= 10 {
+            semantic_witnesses += expected_count;
+        }
+    }
+    assert_eq!(semantic_witnesses, 22);
+
+    for (count, expected) in [
+        ("GENERATED_SCHEMA_TEST_MESSAGE_COUNT", 62),
+        ("GENERATED_SCHEMA_TEST_EXTERN_COUNT", 2),
+        ("GENERATED_SCHEMA_TEST_ONEOF_COUNT", 6),
+        ("GENERATED_SCHEMA_TEST_ONEOF_ARM_COUNT", 58),
+    ] {
+        assert!(
+            admission.contains(&format!("assert_eq!({count}, {expected});")),
+            "current generated schema census is not asserted for {count}"
+        );
+    }
+    assert!(production.contains("const PAR_COMPONENT_FAMILY_COUNT: usize = 10;"));
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "75",
+        "--lib",
+        "protobuf_admission::tests"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "1",
+        "--lib",
+        "production_component_admission_is_differentially_equivalent_for_all_ten_families"
+    ]));
+    assert!(has_runner_command(&runner, &[
+        "rpb3_run_tests",
+        "3",
+        "--test",
+        "par_bag",
+        "admitted_"
+    ]));
 }
 
 #[test]

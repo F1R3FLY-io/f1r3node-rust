@@ -82,6 +82,10 @@ fn with_epm_transport<T>(scalar: bool, action: impl FnOnce() -> T) -> (T, EpmBat
     (result, EPM_BATCHES.with(|cell| cell.get().unwrap()))
 }
 
+pub(super) fn with_epm_transport_mode<T>(scalar: bool, action: impl FnOnce() -> T) -> T {
+    with_epm_transport(scalar, action).0
+}
+
 fn expr(value: ExprInstance) -> Par {
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(value),
@@ -89,6 +93,48 @@ fn expr(value: ExprInstance) -> Par {
 }
 
 fn integer(value: i64) -> Par { expr(ExprInstance::GInt(value)) }
+
+fn admit_detached_path_child<'src>(
+    request: FrameRequest<'src>,
+) -> Result<FrameSummary<'src>, CanonicalProtobufAdmissionError> {
+    let (region, owner, field) = match request {
+        FrameRequest::EPathMap {
+            region,
+            owner,
+            field,
+        } => (region, owner, field),
+        request @ FrameRequest::Message { .. } => {
+            return drive_admission(request, 0).map(|(summary, _, _)| summary);
+        }
+        _ => panic!("detached path child has an unexpected frame kind"),
+    };
+    let mut stats = CanonicalProtobufAdmissionStats::default();
+    let mut stack = vec![EPathMapFrame::from_epm1_region(owner, field, region)?];
+    loop {
+        let action = epathmap_step(stack.last_mut().unwrap(), &mut stats)?;
+        match action {
+            FrameAction::Continue => {}
+            FrameAction::Push(FrameRequest::EPathMap {
+                region,
+                owner,
+                field,
+            }) => stack.push(EPathMapFrame::from_epm1_region(owner, field, region)?),
+            FrameAction::Push(request @ FrameRequest::Message { .. }) => {
+                let (summary, _, _) = drive_admission(request, 0)?;
+                stack.last_mut().unwrap().accept(summary, &mut stats)?;
+            }
+            FrameAction::Push(_) => panic!("EPathMap child pushed an unexpected frame kind"),
+            FrameAction::Complete(summary) => {
+                stack.pop();
+                if let Some(parent) = stack.last_mut() {
+                    parent.accept(summary, &mut stats)?;
+                } else {
+                    return Ok(summary);
+                }
+            }
+        }
+    }
+}
 
 #[test]
 fn deferred_request_transport_is_smaller_than_frames() {
@@ -190,7 +236,31 @@ fn deferred_request_variants_publish_exactly_once() {
         FrameRequest::CanonicalPath(input),
     ];
     for (index, request) in requests.into_iter().enumerate() {
-        push_admission_frame(&mut frames, request, &mut stats).unwrap();
+        let before_len = frames.len();
+        let before_capacity = frames.capacity();
+        let request_kind = request.request_kind();
+        let observed = push_admission_frame(&mut frames, request, &mut stats).unwrap();
+        assert_eq!(observed.request_kind, request_kind);
+        assert_eq!(observed.before_len, before_len);
+        assert_eq!(observed.before_capacity, before_capacity);
+        assert_eq!(observed.after_len, frames.len());
+        assert_eq!(observed.after_capacity, frames.capacity());
+        assert_eq!(observed.frame_variant_bytes, std::mem::size_of::<Frame>());
+        assert_eq!(
+            observed.stats_frame_variant_bytes,
+            stats.frame_variant_bytes
+        );
+        assert_eq!(
+            observed.used_bytes,
+            frames.len() * observed.frame_variant_bytes
+        );
+        assert_eq!(
+            observed.reserved_bytes,
+            frames.capacity() * observed.frame_variant_bytes
+        );
+        assert_eq!(observed.after_len, observed.before_len + 1);
+        assert!(observed.after_capacity >= observed.before_capacity);
+        assert!(observed.after_capacity >= observed.after_len);
         assert_eq!(frames.len(), index + 1);
         assert_eq!(stats.messages, 1);
         assert_eq!(stats.map_entries, usize::from(index >= 1));
@@ -277,9 +347,13 @@ proptest! {
             let direct = EPathMapFrame::from_epm1_region(&PAR_PROTOBUF_REGION_PROGRAM, 7, input.clone());
             let mut frames = Vec::new();
             let mut constructor_stats = CanonicalProtobufAdmissionStats::default();
-            let deferred = FrameRequest::EPathMap {
-                region: input, owner: &PAR_PROTOBUF_REGION_PROGRAM, field: 7,
-            }.push_into(&mut frames, &mut constructor_stats);
+            let deferred = push_admission_frame(
+                &mut frames,
+                FrameRequest::EPathMap {
+                    region: input, owner: &PAR_PROTOBUF_REGION_PROGRAM, field: 7,
+                },
+                &mut constructor_stats,
+            ).map(|_| ());
             match (direct, deferred) {
                 (Err(expected), Err(actual)) => {
                     prop_assert_eq!(actual, expected);
@@ -1757,6 +1831,94 @@ fn raw_par_child_and_nested_epm_share_one_driver() {
 }
 
 #[test]
+fn branching_nested_epm_resolves_every_obligation_and_validates_every_map_value() {
+    use crate::rust::epathmap_trie_codec::{
+        self, inspect_canonical_snapshot_value_regions, EPathMapRepr,
+    };
+    use crate::rust::rholang::protobuf_decoder;
+
+    let corrupt_value = |snapshot: &mut [u8], index: usize| {
+        let regions = inspect_canonical_snapshot_value_regions(snapshot).unwrap();
+        let body = &regions.value_bodies[index];
+        assert!(!body.is_empty());
+        snapshot[body.start] = 0;
+    };
+    let build = |corrupt: Option<(usize, usize)>| {
+        let mut keys = Vec::new();
+        for branch in 0..3 {
+            let leaf = EPathMap::new_map(
+                [(integer(branch + 1), integer(branch + 101))],
+                Vec::new(),
+                false,
+                None,
+            );
+            let mut leaf_snapshot = leaf.trie_snapshot().to_vec();
+            if corrupt == Some((0, branch as usize)) {
+                corrupt_value(&mut leaf_snapshot, 0);
+            }
+            let mut middle = pathmap::PathMap::new();
+            middle.insert(&payload(0x10, &leaf_snapshot), integer(branch + 201));
+            let mut middle_snapshot = epathmap_trie_codec::encode(&EPathMapRepr::Map(middle));
+            if corrupt == Some((1, branch as usize)) {
+                corrupt_value(&mut middle_snapshot, 0);
+            }
+            keys.push(payload(0x10, &middle_snapshot));
+        }
+        let mut bytes = joint_epm_fixture(true, keys.iter().cloned());
+        if let Some((2, index)) = corrupt {
+            let start = bytes.windows(4).position(|part| part == b"EPM1").unwrap();
+            let regions = inspect_canonical_snapshot_value_regions(&bytes[start..]).unwrap();
+            assert_eq!(regions.value_bodies.len(), 3);
+            bytes[start + regions.value_bodies[index].start] = 0;
+        }
+        (bytes, keys)
+    };
+
+    let (bytes, keys) = build(None);
+    assert!(keys.iter().all(|key| validate_canonical_path(key).is_ok()));
+    let typed = protobuf_decoder::decode_par(bytes.as_slice()).unwrap();
+    assert_eq!(protobuf_encoder::encode_to_vec(&typed), bytes);
+    let mut expected_score = Vec::new();
+    typed
+        .components()
+        .append_par_score_key(false, &mut expected_score);
+    for input in [
+        IndexedByteRegion::from_borrowed(&bytes, 7, 101),
+        fragmented(&bytes),
+        composed_joint_input(&bytes),
+    ] {
+        let (result, _) = assert_joint_epm_transport(input);
+        let admitted = result.unwrap();
+        assert_eq!(admitted.score_bytes(), Some(expected_score.as_slice()));
+        assert_eq!(admitted.stats().epathmaps, 7);
+        assert_eq!(admitted.stats().canonical_path_obligations, 6);
+        assert_eq!(admitted.stats().canonical_path_resolutions, 6);
+        assert!(admitted.stats().max_frames >= 5);
+        assert_eq!(admitted.stats().typed_decodes, 0);
+    }
+
+    for layer in 0..3 {
+        for branch in 0..3 {
+            let (bad, keys) = build(Some((layer, branch)));
+            assert_eq!(
+                keys.iter()
+                    .filter(|key| validate_canonical_path(key).is_err())
+                    .count(),
+                usize::from(layer < 2)
+            );
+            assert!(protobuf_decoder::decode_par(bad.as_slice()).is_err());
+            for input in [
+                IndexedByteRegion::from_borrowed(&bad, 7, 101),
+                fragmented(&bad),
+            ] {
+                let (result, _) = assert_joint_epm_transport(input);
+                assert!(result.is_err(), "layer={layer} branch={branch}");
+            }
+        }
+    }
+}
+
+#[test]
 fn a_previous_obligation_id_cannot_resolve_the_next_child() {
     let key = [0x0f, 0, 0x0f, 0, 0];
     let mut frame = CanonicalPathFrame::new(IndexedByteRegion::from_borrowed(&key, 0, 0));
@@ -1822,7 +1984,7 @@ fn standalone_children_share_borrowed_payloads_and_survive_parent_drop() {
             region.end_position().physical,
             CanonicalByteProvenance::new(31, 101 + consumed - 1)
         );
-        drive_admission(child, 0).unwrap();
+        admit_detached_path_child(child).unwrap();
     }
 }
 
@@ -1983,9 +2145,7 @@ fn opaque_payload_cursor_resource_matrix_preserves_completion() {
                 };
                 let mut children = Vec::new();
                 let mut constructor_stats = CanonicalProtobufAdmissionStats::default();
-                request
-                    .push_into(&mut children, &mut constructor_stats)
-                    .unwrap();
+                push_admission_frame(&mut children, request, &mut constructor_stats).unwrap();
                 assert_eq!(children.len(), 1);
                 assert_eq!(constructor_stats.epathmaps, 1);
                 let Frame::EPathMap(child) = &children[0] else {
@@ -2237,8 +2397,8 @@ fn focused_owner_duplicate_refusal_follows_nested_completion_and_pending_resolut
                             &mut CanonicalProtobufAdmissionStats::default(),
                         )
                         .unwrap();
-                        let (summary, _, _) = drive_admission(child, 0).unwrap();
-                        let resolution = waiting.resolution(summary).unwrap();
+                        let summary = admit_detached_path_child(child).unwrap();
+                        let resolution = waiting.resolution(&summary).unwrap();
                         reducer
                             .resolve_obligation(&input, completed.obligation.id, resolution)
                             .unwrap();
@@ -2323,7 +2483,7 @@ fn ordinary_region_work_matrix_tracks_all_owner_walks() {
                                 break summary;
                             }
                             FrameAction::Push(child) => {
-                                let (summary, _, _) = drive_admission(child, 0).unwrap();
+                                let summary = admit_detached_path_child(child).unwrap();
                                 parent.accept(summary, &mut stats).unwrap();
                             }
                             _ => panic!("expected one canonical-key result"),

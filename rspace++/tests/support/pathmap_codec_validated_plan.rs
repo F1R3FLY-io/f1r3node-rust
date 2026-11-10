@@ -1021,8 +1021,11 @@ mod checked_line_transport {
             state: ValidatedCompactTrieTopologyState {
                 plan: ValidatedActPlan {
                     empty: cursor.state.plan.empty,
+                    topology_event_count: cursor.state.plan.topology_event_count,
                     records: cursor.state.plan.records.clone(),
                     value_summary: cursor.state.plan.value_summary,
+                    audit_finish_node_ids: cursor.state.plan.audit_finish_node_ids.clone(),
+                    audit_line_hashes: cursor.state.plan.audit_line_hashes.clone(),
                     counters: cursor.state.plan.counters,
                 },
                 next_record: cursor.state.next_record,

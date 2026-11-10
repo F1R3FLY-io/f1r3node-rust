@@ -38,6 +38,7 @@ pub(crate) struct ArenaPhysicalInventory {
     pub(crate) descriptor_capacity: usize,
     pub(crate) cache_slots: usize,
     pub(crate) cache_capacity: usize,
+    pub(crate) weak_cache_entries: usize,
     pub(crate) cached_roots: usize,
     pub(crate) registry_roots: usize,
     pub(crate) completion_roots: usize,
@@ -51,12 +52,19 @@ impl CanonicalBytesArena<'_> {
         &self,
         completions: &[SourceTreeWindow<'_>],
     ) -> ArenaPhysicalInventory {
+        let live_cache_roots = self
+            .source_cache
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.root.upgrade())
+            .collect::<Vec<_>>();
         let mut inventory = ArenaPhysicalInventory {
             descriptor_slots: self.backend.nodes.len(),
             descriptor_capacity: self.backend.nodes.capacity(),
             cache_slots: self.source_cache.len(),
             cache_capacity: self.source_cache.capacity(),
-            cached_roots: self.source_cache.iter().flatten().count(),
+            weak_cache_entries: self.source_cache.iter().flatten().count(),
+            cached_roots: live_cache_roots.len(),
             registry_roots: self.backend.sources.len(),
             completion_roots: completions.len(),
             generated_payload_cells: self.stats.payload_slots,
@@ -78,7 +86,7 @@ impl CanonicalBytesArena<'_> {
             .backend
             .sources
             .iter()
-            .chain(self.source_cache.iter().flatten())
+            .chain(&live_cache_roots)
             .chain(completions)
         {
             inventory.shared.observe(source);
@@ -163,12 +171,14 @@ fn retained_prefix_physical_inventory_records_geometric_metadata_growth() {
         }
         let inventory = arena.physical_inventory(&completions);
         let cache_only = arena.physical_inventory(&[]);
-        assert_eq!(cache_only.shared, inventory.shared);
+        assert!(cache_only.shared.nodes.is_subset(&inventory.shared.nodes));
+        assert!(cache_only.weak_cache_entries <= cache_only.cache_slots);
+        assert!(cache_only.cached_roots <= cache_only.weak_cache_entries);
         assert_eq!(cache_only.completion_roots, 0);
         let mut final_only = SourcePhysicalInventory::default();
         final_only.observe(completions.last().unwrap());
         assert_eq!(inventory.descriptor_slots, width * 2);
-        assert_eq!(inventory.cached_roots, width * 2);
+        assert!(inventory.cached_roots <= inventory.weak_cache_entries);
         assert_eq!(inventory.registry_roots, 1);
         assert_eq!(inventory.generated_payload_cells, width);
         assert_eq!(inventory.shared.byte_pages.len(), width);
@@ -197,8 +207,120 @@ fn retained_prefix_physical_inventory_records_geometric_metadata_growth() {
         let mut surviving = SourcePhysicalInventory::default();
         surviving.observe(&final_root);
         assert_eq!(surviving, final_only);
-        assert!(surviving.nodes.len() < cache_only.shared.nodes.len());
+        assert!(surviving.nodes.len() < inventory.shared.nodes.len());
     }
+}
+
+#[test]
+fn released_pre_carry_forks_do_not_amplify_cache_only_source_nodes() {
+    const CARRY_PREDECESSORS: [usize; 4] = [2, 8, 26, 80];
+
+    fn measure(forks_per_boundary: usize) -> (usize, usize, usize, usize) {
+        let input = [11u8, 22, 33];
+        let external = SourceTreeWindow::from_borrowed(&input, 17, 700).unwrap();
+        let mut arena = CanonicalBytesArena::new();
+        let source = arena.register_source(external.clone()).unwrap();
+        let mut trunk = arena.empty();
+        let mut expected = Vec::new();
+
+        for width in 1..=*CARRY_PREDECESSORS.last().unwrap() {
+            trunk = arena.append_source(trunk, source, 0..1).unwrap();
+            expected.push(CanonicalLocatedByte::new(
+                11,
+                CanonicalByteProvenance::new(17, 700),
+            ));
+            if !CARRY_PREDECESSORS.contains(&width) {
+                continue;
+            }
+
+            let mut historical = Vec::new();
+            for fork_index in 0..forks_per_boundary {
+                let source_offset = 1 + fork_index % 2;
+                let fork = arena
+                    .append_source(trunk, source, source_offset..source_offset + 1)
+                    .unwrap();
+                let mut oracle = expected.clone();
+                oracle.push(CanonicalLocatedByte::new(
+                    input[source_offset],
+                    CanonicalByteProvenance::new(17, 700 + source_offset),
+                ));
+                let completion = arena.retained_source_window(fork).unwrap();
+                assert_eq!(arena.located_bytes(fork).collect::<Vec<_>>(), oracle);
+                assert_eq!(completion.located_bytes().collect::<Vec<_>>(), oracle);
+                historical.push((fork, completion, oracle));
+            }
+            let during = arena.physical_inventory(
+                &historical
+                    .iter()
+                    .map(|(_, root, _)| root.clone())
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(during.completion_roots, forks_per_boundary);
+            for (handle, root, oracle) in &historical {
+                assert_eq!(arena.located_bytes(*handle).collect::<Vec<_>>(), *oracle);
+                assert_eq!(root.located_bytes().collect::<Vec<_>>(), *oracle);
+            }
+            drop(historical);
+        }
+
+        let final_root = arena.retained_source_window(trunk).unwrap();
+        assert_eq!(arena.located_bytes(trunk).collect::<Vec<_>>(), expected);
+        assert_eq!(final_root.located_bytes().collect::<Vec<_>>(), expected);
+
+        let mut live = SourcePhysicalInventory::default();
+        live.observe(&external);
+        live.observe(&final_root);
+        let cache_only = arena.physical_inventory(&[]);
+        assert_eq!(cache_only.registry_roots, 1);
+        assert_eq!(cache_only.completion_roots, 0);
+        assert_eq!(cache_only.generated_payload_cells, 0);
+        assert_eq!(cache_only.shared.borrowed_slices, live.borrowed_slices);
+        assert_eq!(cache_only.shared.frozen_indexes, live.frozen_indexes);
+        assert_eq!(cache_only.shared.byte_pages, live.byte_pages);
+        assert_eq!(cache_only.shared.provenance_pages, live.provenance_pages);
+        assert!(live.nodes.is_subset(&cache_only.shared.nodes));
+        let cache_only_nodes = cache_only.shared.nodes.difference(&live.nodes).count();
+        let cache_only_bytes = cache_only
+            .shared
+            .node_storage_bytes
+            .checked_sub(live.node_storage_bytes)
+            .unwrap();
+        let counts = (
+            live.nodes.len(),
+            cache_only.shared.nodes.len(),
+            cache_only_nodes,
+            cache_only_bytes,
+        );
+        drop(arena);
+        assert_eq!(final_root.located_bytes().collect::<Vec<_>>(), expected);
+        assert_eq!(external.located_bytes().collect::<Vec<_>>(), [
+            CanonicalLocatedByte::new(11, CanonicalByteProvenance::new(17, 700)),
+            CanonicalLocatedByte::new(22, CanonicalByteProvenance::new(17, 701)),
+            CanonicalLocatedByte::new(33, CanonicalByteProvenance::new(17, 702)),
+        ]);
+        counts
+    }
+
+    let light = measure(2);
+    let heavy = measure(12);
+    println!(
+        "pre_carry_fork_storage light_live={} light_cached={} light_extra={} light_extra_bytes={} heavy_live={} heavy_cached={} heavy_extra={} heavy_extra_bytes={}",
+        light.0, light.1, light.2, light.3, heavy.0, heavy.1, heavy.2, heavy.3
+    );
+    assert_eq!(
+        light.0, heavy.0,
+        "the final and external roots must be identical"
+    );
+    assert_eq!(light.2, 0, "light fork workload retained cache-only nodes");
+    assert_eq!(heavy.2, 0, "heavy fork workload retained cache-only nodes");
+    assert_eq!(
+        light.3, 0,
+        "light fork workload retained cache-only node bytes"
+    );
+    assert_eq!(
+        heavy.3, 0,
+        "heavy fork workload retained cache-only node bytes"
+    );
 }
 
 fn located(index: usize) -> CanonicalLocatedByte {
@@ -460,6 +582,152 @@ fn direct_owned_segment_exports_match_independent_legacy_freezer() {
     check::<256>();
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+    #[test]
+    fn production_single_leaf_slots_preserve_generated_bytes_and_origins(
+        input in prop::collection::vec((any::<u8>(), any::<u32>(), any::<usize>()), 1..193),
+        first in any::<u16>(),
+        second in any::<u16>(),
+        inner in any::<u16>(),
+    ) {
+        let mut arena = PageBackedArena::<DEFAULT_PAGE_BYTES>::new();
+        let mut handle = arena.empty();
+        for &(byte, source, offset) in &input {
+            handle = arena.append(
+                handle,
+                CanonicalLocatedByte::new(byte, CanonicalByteProvenance::new(source, offset)),
+            ).unwrap();
+        }
+        let mut segments = Vec::new();
+        for (index, node) in arena.nodes.iter().enumerate() {
+            let SequenceNodeKind::Segment { previous, used, .. } = node.kind else {
+                continue;
+            };
+            segments.push((
+                arena.freeze_owned_segment(SequenceNodeId(index)),
+                previous.map_or(0, |span| span.len),
+                used,
+            ));
+        }
+        let _extension = arena.append(
+            handle,
+            CanonicalLocatedByte::new(0, CanonicalByteProvenance::new(0, 0)),
+        ).unwrap();
+        drop(arena);
+
+        for (segment, start, used) in segments {
+            let FrozenRange::One(view) = segment.range() else {
+                panic!("production segment must retain a verified one-leaf range")
+            };
+            prop_assert_eq!(view.start(), 0);
+            prop_assert_eq!(view.len(), used);
+            prop_assert_eq!(view.data_len(), used);
+            prop_assert_eq!(view.page_start(), segment.data.leaves[0].page_start);
+            let page = &segment.data.pages[0];
+            let bound = view.bind(
+                page.bytes.bytes.as_slice(),
+                page.provenance.values.as_slice(),
+            ).unwrap();
+            for offset in 0..used {
+                let (byte, source, physical) = input[start + offset];
+                let expected = CanonicalLocatedByte::new(
+                    byte, CanonicalByteProvenance::new(source, physical),
+                );
+                prop_assert_eq!(bound.at(offset).map(|(byte, provenance)| {
+                    CanonicalLocatedByte::new(byte, *provenance)
+                }), Some(expected));
+                prop_assert_eq!(segment.single_leaf_at(offset), Some(expected));
+                prop_assert_eq!(segment.byte_at(offset), Some(expected.byte));
+                prop_assert_eq!(segment.provenance_at(offset), Some(expected.provenance));
+            }
+            let a = usize::from(first) % (used + 1);
+            let b = usize::from(second) % (used + 1);
+            let (lo, hi) = (a.min(b), a.max(b));
+            let expected_slice = input[start + lo..start + hi]
+                .iter()
+                .map(|(byte, _, _)| *byte)
+                .collect::<Vec<_>>();
+            prop_assert_eq!(bound.selected_slice(lo, hi), Some(expected_slice.as_slice()));
+            let selected = segment.subview(lo..hi).unwrap();
+            let inner_start = usize::from(inner) % (selected.len() + 1);
+            let nested = selected.subview(inner_start..selected.len()).unwrap();
+            let FrozenRange::One(nested_view) = nested.range() else {
+                panic!("production subview must retain a verified one-leaf range")
+            };
+            prop_assert_eq!(nested_view.start(), lo + inner_start);
+            prop_assert_eq!(nested_view.len(), hi - lo - inner_start);
+            prop_assert_eq!(
+                nested.contiguous_bytes(0..nested.len()),
+                Some(&expected_slice[inner_start..]),
+            );
+            for offset in 0..nested.len() {
+                let (byte, source, physical) = input[start + lo + inner_start + offset];
+                let expected = CanonicalLocatedByte::new(
+                    byte, CanonicalByteProvenance::new(source, physical),
+                );
+                prop_assert_eq!(nested.single_leaf_at(offset), Some(expected));
+                prop_assert_eq!(nested.byte_at(offset), Some(expected.byte));
+                prop_assert_eq!(nested.provenance_at(offset), Some(expected.provenance));
+            }
+            let cut = usize::from(first) % (used + 1);
+            let frozen = FrozenCanonicalBytes {
+                inner: segment.clone(),
+            };
+            let expected_located = input[start..start + used]
+                .iter()
+                .map(|(byte, source, physical)| {
+                    CanonicalLocatedByte::new(
+                        *byte,
+                        CanonicalByteProvenance::new(*source, *physical),
+                    )
+                })
+                .collect::<Vec<_>>();
+            prop_assert_eq!(frozen.located_bytes().collect::<Vec<_>>(), expected_located.clone());
+            let mut cursor = frozen.located_bytes();
+            cursor.fast_forward(cut);
+            prop_assert_eq!(cursor.len(), used - cut);
+            prop_assert_eq!(cursor.collect::<Vec<_>>(), expected_located[cut..].to_vec());
+            let left = frozen.subview(0..cut).unwrap();
+            let right = frozen.subview(cut..used).unwrap();
+            let joined = left.try_coalesce(&right).unwrap();
+            let FrozenRange::One(joined_view) = joined.inner.range() else {
+                panic!("production coalescing must retain a verified one-leaf range")
+            };
+            prop_assert_eq!(joined_view.start(), 0);
+            prop_assert_eq!(joined_view.len(), used);
+            let expected_all = input[start..start + used]
+                .iter()
+                .map(|(byte, _, _)| *byte)
+                .collect::<Vec<_>>();
+            let mut byte_cursor = frozen.bytes();
+            prop_assert_eq!(byte_cursor.chunk(), Some(expected_all.as_slice()));
+            byte_cursor.fast_forward(cut);
+            prop_assert_eq!(
+                byte_cursor.chunk(),
+                (cut < used).then_some(&expected_all[cut..]),
+            );
+            prop_assert_eq!(byte_cursor.collect::<Vec<_>>(), expected_all[cut..].to_vec());
+            prop_assert_eq!(joined.contiguous_bytes(0..used), Some(expected_all.as_slice()));
+            let mut copied = vec![0; used];
+            prop_assert!(frozen.copy_exact(0, &mut copied));
+            prop_assert_eq!(copied, expected_all.clone());
+            prop_assert!(frozen.content_eq(&joined));
+            prop_assert_eq!(joined.located_bytes().collect::<Vec<_>>(), expected_located);
+            prop_assert!(joined.shares_backing_with(&frozen));
+            prop_assert_eq!(joined.len(), segment.len());
+            for offset in 0..used {
+                prop_assert_eq!(joined.byte_at(offset), segment.byte_at(offset));
+                prop_assert_eq!(joined.provenance_at(offset), segment.provenance_at(offset));
+            }
+            prop_assert_eq!(segment.byte_at(used), None);
+            prop_assert_eq!(segment.provenance_at(used), None);
+            prop_assert_eq!(nested.byte_at(nested.len()), None);
+            prop_assert_eq!(nested.provenance_at(nested.len()), None);
+        }
+    }
+}
+
 #[test]
 fn mixed_source_descriptors_export_and_drop_on_an_unchanged_small_stack() {
     std::thread::Builder::new()
@@ -490,17 +758,16 @@ fn mixed_source_descriptors_export_and_drop_on_an_unchanged_small_stack() {
 }
 
 #[test]
-fn retained_cache_exports_every_range_without_rebuilding_segment_indexes() {
+fn retained_root_exports_every_range_and_releases_cache_only_ownership() {
     let mut arena = CanonicalBytesArena::new();
     let empty = arena.empty();
     let handle = append_range(&mut arena, empty, 0..193);
     let oracle = (0..193).map(located).collect::<Vec<_>>();
     let full = arena.retained_source_window(handle).unwrap();
     assert_eq!(full.located_bytes().collect::<Vec<_>>(), oracle);
-    let qualified = arena.stats();
-    assert_eq!(qualified.source_cache_nodes, qualified.segments);
-    assert_eq!(qualified.source_segment_exports, qualified.segments);
-    assert_eq!(qualified.byte_pages, 4);
+    let payload_slots = arena.stats().payload_slots;
+    let page_count = arena.stats().byte_pages;
+    assert_eq!(page_count, 193_usize.div_ceil(DEFAULT_PAGE_BYTES));
     for start in 0..=193 {
         for end in start..=193 {
             let slice = arena.slice(handle, start..end).unwrap();
@@ -511,14 +778,19 @@ fn retained_cache_exports_every_range_without_rebuilding_segment_indexes() {
             );
         }
     }
-    let finished = arena.stats();
-    assert_eq!(finished.source_cache_nodes, qualified.source_cache_nodes);
-    assert_eq!(
-        finished.source_segment_exports,
-        qualified.source_segment_exports
-    );
-    assert_eq!(finished.byte_pages, qualified.byte_pages);
-    assert!(finished.source_cache_hits > 0);
+    assert_eq!(full.located_bytes().collect::<Vec<_>>(), oracle);
+    assert_eq!(arena.stats().payload_slots, payload_slots);
+    assert_eq!(arena.stats().byte_pages, page_count);
+    let active = arena.physical_inventory(&[full.clone()]);
+    assert_eq!(active.sealed_generated_byte_pages, page_count);
+    assert_eq!(active.sealed_generated_provenance_pages, page_count);
+    drop(full);
+    let released = arena.physical_inventory(&[]);
+    assert_eq!(released.sealed_generated_byte_pages, 0);
+    assert_eq!(released.sealed_generated_provenance_pages, 0);
+    assert!(released.shared.nodes.is_empty());
+    assert!(released.shared.frozen_indexes.is_empty());
+    assert_eq!(arena.located_bytes(handle).collect::<Vec<_>>(), oracle);
 }
 
 #[test]
@@ -620,29 +892,21 @@ fn trimmed_cache_export_retains_only_intersecting_generated_pages() {
 }
 
 #[test]
-fn old_cache_hits_do_not_allocate_slots_after_unrelated_growth() {
+fn dropped_export_reuses_page_and_preserves_old_handle_after_unrelated_growth() {
     let mut arena = CanonicalBytesArena::new();
     let empty = arena.empty();
     let original = append_range(&mut arena, empty, 0..12);
     drop(arena.retained_source_window(original).unwrap());
-    let id = original.sequence.unwrap().root.0;
-    let count = arena.source_cache.len();
-    let capacity = arena.source_cache.capacity();
-    let qualified = arena.stats();
+    assert_eq!(Arc::strong_count(&arena.backend.byte_pages[0]), 1);
+    assert_eq!(Arc::strong_count(&arena.backend.provenance_pages[0]), 1);
+    let pages_before = arena.stats().byte_pages;
     let extended = arena.append(original, located(12)).unwrap();
-    assert_ne!(
-        extended.sequence.unwrap().root,
-        original.sequence.unwrap().root
-    );
+    assert_eq!(arena.stats().byte_pages, pages_before);
     for index in 20..200 {
         arena.append(empty, located(index)).unwrap();
     }
-    assert!(arena.backend.nodes.len() > count);
-    assert_eq!(arena.backend.nodes[id].len, 12);
-    let SequenceNodeKind::Segment { used, .. } = arena.backend.nodes[id].kind else {
-        unreachable!()
-    };
-    assert_eq!(used, 12);
+    let payload_slots = arena.stats().payload_slots;
+    let page_count = arena.stats().byte_pages;
     assert_eq!(
         arena
             .retained_source_window(original)
@@ -651,16 +915,137 @@ fn old_cache_hits_do_not_allocate_slots_after_unrelated_growth() {
             .collect::<Vec<_>>(),
         (0..12).map(located).collect::<Vec<_>>()
     );
-    assert_eq!(arena.source_cache.len(), count);
-    assert_eq!(arena.source_cache.capacity(), capacity);
     assert_eq!(
-        arena.stats().source_cache_nodes,
-        qualified.source_cache_nodes
+        arena
+            .retained_source_window(extended)
+            .unwrap()
+            .located_bytes()
+            .collect::<Vec<_>>(),
+        (0..13).map(located).collect::<Vec<_>>()
     );
     assert_eq!(
-        arena.stats().source_segment_exports,
-        qualified.source_segment_exports
+        arena.located_bytes(original).collect::<Vec<_>>(),
+        (0..12).map(located).collect::<Vec<_>>()
     );
+    assert_eq!(
+        arena.located_bytes(extended).collect::<Vec<_>>(),
+        (0..13).map(located).collect::<Vec<_>>()
+    );
+    assert_eq!(arena.stats().payload_slots, payload_slots);
+    assert_eq!(arena.stats().byte_pages, page_count);
+    let released = arena.physical_inventory(&[]);
+    assert_eq!(released.sealed_generated_byte_pages, 0);
+    assert_eq!(released.sealed_generated_provenance_pages, 0);
+}
+
+#[test]
+fn weak_source_cache_borrowed_subrange_and_page_aliasing_is_safe_under_miri() {
+    let input = [4_u8, 5, 6, 7, 8];
+    let source = SourceTreeWindow::from_borrowed(&input, 19, 300).unwrap();
+    let mut arena = CanonicalBytesArena::new();
+    let slot = arena.register_source(source).unwrap();
+    let borrowed = arena.append_source(arena.empty(), slot, 1..4).unwrap();
+    drop(arena.retained_source_window(borrowed).unwrap());
+
+    let first = arena.append(borrowed, located(8)).unwrap();
+    drop(arena.retained_source_window(first).unwrap());
+    assert_eq!(Arc::strong_count(&arena.backend.byte_pages[0]), 1);
+    assert_eq!(Arc::strong_count(&arena.backend.provenance_pages[0]), 1);
+
+    let second = arena.append(first, located(9)).unwrap();
+    assert_eq!(arena.stats().byte_pages, 1);
+    let old = arena.retained_source_window(first).unwrap();
+    let current = arena.retained_source_window(second).unwrap();
+    drop(arena);
+
+    let mut expected = vec![
+        CanonicalLocatedByte::new(5, CanonicalByteProvenance::new(19, 301)),
+        CanonicalLocatedByte::new(6, CanonicalByteProvenance::new(19, 302)),
+        CanonicalLocatedByte::new(7, CanonicalByteProvenance::new(19, 303)),
+        located(8),
+    ];
+    assert_eq!(old.located_bytes().collect::<Vec<_>>(), expected);
+    expected.push(located(9));
+    assert_eq!(current.located_bytes().collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn repeated_export_drop_append_one_byte_reuses_generated_pages() {
+    let report = std::env::var_os("CANONICAL_SOURCE_CACHE_REPORT").is_some();
+    let length = std::env::var("CANONICAL_SOURCE_CACHE_LEN")
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .expect("CANONICAL_SOURCE_CACHE_LEN must be usize")
+        })
+        .unwrap_or(DEFAULT_PAGE_BYTES * 4 + 1);
+    assert!(length > 0, "CANONICAL_SOURCE_CACHE_LEN must be positive");
+    let mut arena = CanonicalBytesArena::new();
+    let mut handle = arena.empty();
+    let mut oracle = Vec::with_capacity(length);
+    let started = std::time::Instant::now();
+    for index in 0..length {
+        let value = located(index);
+        handle = arena.append(handle, value).unwrap();
+        oracle.push(value);
+        let view = arena.retained_source_window(handle).unwrap();
+        assert_eq!(view.len(), oracle.len());
+        assert_eq!(view.byte_at(index), Some(value.byte));
+        assert_eq!(view.provenance_at(index), Some(value.provenance));
+        if !report || index + 1 == length {
+            assert_eq!(view.located_bytes().collect::<Vec<_>>(), oracle);
+        }
+        drop(view);
+        if !report {
+            let expected_pages = oracle.len().div_ceil(DEFAULT_PAGE_BYTES);
+            assert_eq!(
+                arena.stats().byte_pages,
+                expected_pages,
+                "a dropped export sealed a generated byte page at width {}",
+                oracle.len()
+            );
+            assert_eq!(arena.stats().provenance_pages, expected_pages);
+            assert_eq!(
+                Arc::strong_count(arena.backend.byte_pages.last().unwrap()),
+                1
+            );
+            assert_eq!(
+                Arc::strong_count(arena.backend.provenance_pages.last().unwrap()),
+                1
+            );
+        }
+    }
+    let elapsed_ns = started.elapsed().as_nanos();
+    let inventory = arena.physical_inventory(&[]);
+    assert_eq!(inventory.sealed_generated_byte_pages, 0);
+    assert_eq!(inventory.sealed_generated_provenance_pages, 0);
+    assert!(inventory.shared.nodes.is_empty());
+    assert!(inventory.shared.frozen_indexes.is_empty());
+    assert_eq!(arena.located_bytes(handle).collect::<Vec<_>>(), oracle);
+    assert_eq!(arena.stats().payload_slots, length);
+    assert_eq!(
+        arena.stats().byte_pages,
+        length.div_ceil(DEFAULT_PAGE_BYTES)
+    );
+    if report {
+        println!("SOURCE_CACHE_HEADER\tlength\tpage_capacity\tpayload_cells\tbyte_pages\tprovenance_pages\tsealed_byte_pages\tsealed_provenance_pages\tretained_source_nodes\tweak_cache_entries\tbuilt_source_nodes\tsegment_exports\tcache_hits\telapsed_ns");
+        println!(
+            "SOURCE_CACHE_ROW\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            length,
+            DEFAULT_PAGE_BYTES,
+            inventory.generated_payload_cells,
+            arena.stats().byte_pages,
+            arena.stats().provenance_pages,
+            inventory.sealed_generated_byte_pages,
+            inventory.sealed_generated_provenance_pages,
+            inventory.shared.nodes.len(),
+            inventory.weak_cache_entries,
+            arena.stats().source_cache_nodes,
+            arena.stats().source_segment_exports,
+            arena.stats().source_cache_hits,
+            elapsed_ns,
+        );
+    }
 }
 
 proptest! {
@@ -716,6 +1101,39 @@ proptest! {
             prop_assert_eq!(selected.located_bytes().collect::<Vec<_>>(), expected);
         }
     }
+}
+
+#[test]
+fn historical_root_survives_bounded_cache_collision_and_arena_drop() {
+    const LEN: usize = DEFAULT_PAGE_BYTES * 257 + 1;
+    let mut arena = CanonicalBytesArena::new();
+    let empty = arena.empty();
+    let old = append_range(&mut arena, empty, 0..1);
+    let latest = append_range(&mut arena, old, 1..LEN);
+    let first = arena.retained_source_window(latest).unwrap();
+    let historical = arena.retained_source_window(old).unwrap();
+    assert_eq!(historical.located_bytes().collect::<Vec<_>>(), vec![
+        located(0)
+    ]);
+    drop(first);
+    drop(historical);
+    assert_eq!(
+        Arc::strong_count(arena.backend.byte_pages.last().unwrap()),
+        1
+    );
+    assert_eq!(
+        Arc::strong_count(arena.backend.provenance_pages.last().unwrap()),
+        1
+    );
+
+    let latest = arena.retained_source_window(latest).unwrap();
+    let old = arena.retained_source_window(old).unwrap();
+    drop(arena);
+    assert_eq!(old.located_bytes().collect::<Vec<_>>(), vec![located(0)]);
+    assert_eq!(
+        latest.located_bytes().collect::<Vec<_>>(),
+        (0..LEN).map(located).collect::<Vec<_>>()
+    );
 }
 
 #[test]

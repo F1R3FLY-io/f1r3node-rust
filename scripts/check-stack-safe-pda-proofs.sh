@@ -704,12 +704,12 @@ epathmap_import_runtime() {
   rpb3_run_tests 5 --release -j4 --lib singleton_epathmap
   rpb3_run_tests 1 --release -j4 --lib \
     owned_canonical_epathmap_component_is_infallible_from_every_admission_lane
-  rpb3_run_tests 37 --release -j4 --lib standalone_path_admission
-  rpb3_run_tests 37 -j4 --lib standalone_path_admission
-  rpb3_run_tests 26 --release -j4 --lib canonical_source_tree
-  rpb3_run_tests 26 -j4 --lib canonical_source_tree
-  rpb3_run_tests 33 --release -j4 --lib canonical_bytes_arena
-  rpb3_run_tests 33 -j4 --lib canonical_bytes_arena
+  rpb3_run_tests 38 --release -j4 --lib standalone_path_admission
+  rpb3_run_tests 38 -j4 --lib standalone_path_admission
+  rpb3_run_tests 32 --release -j4 --lib canonical_source_tree
+  rpb3_run_tests 32 -j4 --lib canonical_source_tree
+  rpb3_run_tests 40 --release -j4 --lib canonical_bytes_arena
+  rpb3_run_tests 40 -j4 --lib canonical_bytes_arena
   rpb3_run_tests 8 --release -j4 --lib opaque_interior_tests
   rpb3_run_tests 3 --release -j4 --lib opaque_canonical_segment_import_properties::
   rpb3_run_tests 3 -j4 --lib opaque_canonical_segment_import_properties::
@@ -1988,19 +1988,54 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/accounting_demand.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/channel_image_cursor.rs"
-tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
-  "$repo_root/formal/verus/rpb3_admission_cursor.rs"
+test -f "$repo_root/formal/verus/rpb3_admission_cursor.rs"
+"$repo_root/scripts/check-rpb3-admission-cursor-verus.sh"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/rspace_canonical_egress.rs"
 incremental_ledger_trial_verus
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/streaming_codec_pda.rs"
 
-# The generated-table differential is the executable production binding for
-# the RPB3 Rocq/Verus boundary.  Keep it under the same cgroup envelope so a
-# green formal run cannot silently omit the Rust oracle comparison.
 pushd "$repo_root" >/dev/null
-rpb3_run_tests 22 --lib protobuf_admission::tests
+rpb3_run_tests 14 --test rpb3_descriptor_projection
+rpb3_run_tests 2 --test rpb3_new_map_source_order
+rpb3_run_tests 1 --test rpb3_new_uri_order_boundary
+rpb3_run_tests 3 --test rpb3_auxiliary_typed_source_bridge
+rpb3_run_tests 1 --test rpb3_epm1_independent_oracle
+rpb3_run_tests 1 --lib every_generated_wire_tag_resolves_to_its_exact_slot_and_payload
+rpb3_run_tests 75 --lib protobuf_admission::tests
+rpb3_run_tests 2 --lib protobuf_admission::rpb3_staged_admission_properties
+rpb3_run_tests 8 --lib rpb3_auxiliary_score_properties::
+rpb3_run_tests 1 --lib canonical_path_step_rejects_divergent_cursor_and_reducer_prefixes
+rpb3_run_tests 5 --lib rpb3_generic_message_field_source_properties
+rpb3_run_tests 1 --lib standalone_canonical_path_event_projection_uses_generated_par_body
+rpb3_run_tests 1 --lib indexed_topology_cursor_matches_owned_events_on_contiguous_and_frozen_sources
+rpb3_run_tests 16 --lib rpb3_canonical_path_parser_source_properties
+rpb3_run_tests 1 --lib generated_send_replays_source_fields_accepts_eof_and_score_delta
+rpb3_run_tests 1 --lib direct_raw_par_escape_completes_through_child_return
+rpb3_run_tests 1 --lib dead_stream_parser_snapshot_distinguishes_consumed_from_graph_stamp
+rpb3_run_tests 1 --lib generated_scalar_epathmap_source_shapes_and_obligations_follow_act
+rpb3_run_tests 1 --lib generated_fragmented_map_values_push_exact_wire_subviews
+rpb3_run_tests 2 --lib rpb3_map_push_receipt_source_properties
+rpb3_run_tests 3 --lib rpb3_par_source_summary_properties
+rpb3_run_tests 3 --lib rpb3_scalar_source_properties
+rpb3_run_tests 3 --lib rpb3_source_reference_integration_properties
+rpb3_run_tests 1 --lib rpb3_map_push_fresh_child_properties
+rpb3_run_tests 1 --lib rpb3_map_push_live_child_projection_properties
+rspace_preparation_run_tests 1 --lib generated_branched_line_publications_match_scalar_events_and_anchors
+rspace_preparation_run_tests 1 --lib validated_plan_exposes_exact_finish_order_and_replay_hashes
+rpb3_run_tests 5 --test cost_token_stack_admission
+rpb3_run_tests 1 --lib emap_pair_identity_order_and_finish_source_property
+rpb3_run_tests 1 --lib every_wire_type_id_resolves_to_its_expected_semantic_kind
+rpb3_run_tests 1 --lib generated_wire_fields_preserve_progress_payloads_and_physical_positions
+rpb3_run_tests 1 --lib generated_nonminimal_truncated_and_overflow_varints_keep_exact_failure_positions
+rpb3_run_tests 1 --lib empty_child_payload_uses_the_backing_end_anchor
+rpb3_run_tests 1 --lib generated_child_subviews_preserve_discontinuous_source_anchors
+rpb3_run_tests 1 --lib generated_score_appends_match_independent_source_entries_and_bytes
+rpb3_run_tests 1 --lib generated_reservation_failures_preserve_entries_bytes_and_next_handle
+rpb3_run_tests 1 --lib generated_region_reservation_denial_and_retry_preserve_source_and_bytes
+rpb3_run_tests 1 --lib generated_atom_length_overflow_matches_wide_arithmetic
+rpb3_run_tests 1 --lib generated_node_length_overflow_matches_wide_arithmetic
 epathmap_import_runtime
 rpb3_run_tests 1 --lib \
   production_component_admission_is_differentially_equivalent_for_all_ten_families

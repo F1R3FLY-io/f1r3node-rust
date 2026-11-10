@@ -16,6 +16,9 @@ use proptest::prelude::*;
 use prost::encoding::{encode_key, encode_varint, WireType};
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::pathmap_codec::{
+    CanonicalCompactTrieTopologyCursor, CanonicalCompactTrieTopologyEvent,
+};
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 fn gint(value: i64) -> Par {
@@ -600,6 +603,65 @@ fn map_snapshot_preserves_values_across_compact_line_branch_and_dense_shapes() {
     let decoded: EPathMap = bincode::deserialize(&bincode)
         .expect("the bincode reader must decode the same compact map snapshot");
     assert_eq!(decoded.trie_snapshot(), &snapshot);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn every_set_and_map_act_marker_is_zero_and_nonzero_mutations_are_rejected(
+        suffix in proptest::collection::vec(any::<u8>(), 1..13),
+        leaves in 2usize..8,
+    ) {
+        let suffix = hex::encode(suffix);
+        let keys = (0..leaves)
+            .map(|index| gstring(&format!("{}{suffix}", char::from(b'a' + index as u8))))
+            .collect::<Vec<_>>();
+
+        for map_mode in [false, true] {
+            let map = if map_mode {
+                EPathMap::new_map(
+                    keys.iter().cloned().enumerate().map(|(index, key)| (key, gint(index as i64))),
+                    Vec::new(), false, None,
+                )
+            } else {
+                EPathMap::from_set_iter(keys.iter().cloned(), Vec::new(), false, None)
+            };
+            let snapshot = map.trie_snapshot().to_vec();
+            prop_assert!(models::rust::epathmap_trie_codec::decode(&snapshot).is_ok());
+
+            let mut at = 6usize;
+            let arena_len = read_varint(&snapshot, &mut at);
+            let arena_start = at;
+            let arena_end = arena_start + arena_len;
+            let mut cursor = CanonicalCompactTrieTopologyCursor::new(
+                &snapshot[arena_start..arena_end]
+            ).unwrap();
+            let mut markers = Vec::new();
+            while let Some(event) = cursor.next_event() {
+                if let CanonicalCompactTrieTopologyEvent::Value {
+                    value: Some(marker), source_offset,
+                } = event {
+                    prop_assert_eq!(marker, 0);
+                    prop_assert_eq!(snapshot[arena_start + source_offset + 1], 0);
+                    markers.push(source_offset);
+                }
+            }
+            prop_assert_eq!(markers.len(), leaves);
+
+            for source_offset in markers {
+                let mut mutant = snapshot.clone();
+                mutant[arena_start + source_offset + 1] = 1;
+                prop_assert!(
+                    CanonicalCompactTrieTopologyCursor::new(
+                        &mutant[arena_start..arena_end]
+                    ).is_ok()
+                );
+                let error = models::rust::epathmap_trie_codec::decode(&mutant)
+                    .err().expect("nonzero Set and Map ACT markers must fail");
+                prop_assert!(error.to_string().contains("ACTree value marker"));
+            }
+        }
+    }
 }
 
 #[test]
