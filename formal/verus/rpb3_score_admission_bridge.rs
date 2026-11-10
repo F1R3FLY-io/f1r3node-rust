@@ -14317,6 +14317,759 @@ pub fn root_first_difference(
     )
 }
 
+pub enum BridgeVarCase {
+    Absent,
+    Bound { level: i32 },
+    Free { level: i32 },
+    Wildcard,
+}
+
+pub open spec fn bridge_var_case(
+    top: admission::AdmissionFrameState,
+) -> Option<BridgeVarCase> {
+    if top.family != admission::AdmissionFamily::Other
+        || top.frame_kind != 1
+        || top.program_type_id != 6
+        || top.waiting_id.is_some()
+        || top.cursor != top.region_end
+        || top.score_handle.is_some()
+    {
+        None
+    } else if !top.seen.contains(0) {
+        if top.returns.len() == 0 && top.scalar_occurrences.len() == 0
+            && !top.scalar_slots.contains(0)
+        {
+            Some(BridgeVarCase::Absent)
+        } else {
+            None
+        }
+    } else if top.scalar_slots.contains(0) {
+        if top.returns.len() != 0 || top.scalar_occurrences.len() != 1 {
+            None
+        } else {
+            let occurrence = top.scalar_occurrences[0];
+            if occurrence.slot != 0 || occurrence.scalar_kind != 3
+                || occurrence.varint_value > u32::MAX as u64
+            {
+                None
+            } else if occurrence.tag == 1 {
+                Some(BridgeVarCase::Bound {
+                    level: bridge_sint32_value(occurrence.varint_value),
+                })
+            } else if occurrence.tag == 2 {
+                Some(BridgeVarCase::Free {
+                    level: bridge_sint32_value(occurrence.varint_value),
+                })
+            } else {
+                None
+            }
+        }
+    } else if top.scalar_occurrences.len() == 0
+        && top.returns.len() == 1
+        && top.returns[0].slot == 0
+        && top.returns[0].tag == 3
+        && top.returns[0].kind == admission::AdmissionReturnedKind::Unit
+    {
+        Some(BridgeVarCase::Wildcard)
+    } else {
+        None
+    }
+}
+
+pub proof fn bridge_var_instance_descriptor_rows_pinned(
+    field: admission::IndexedCanonicalFieldModel, slot: usize, repeated: bool,
+    scalar_kind: u8,
+)
+    ensures
+        (field.number == 1 || field.number == 2) ==> (
+            admission::admission_scalar_descriptor_valid(6, field, slot, repeated, scalar_kind)
+                == (slot == 0 && !repeated && scalar_kind == 3 && field.wire == 0
+                    && field.decoded_varint <= u32::MAX as u64)
+        ),
+        field.number == 3 ==> !admission::admission_scalar_descriptor_valid(
+            6, field, slot, repeated, scalar_kind,
+        ),
+{
+}
+
+pub open spec fn bridge_var_level_score_step(
+    before: ScoreAdmissionBridge, constructor: i32, level: i32,
+) -> Option<(ScoreAdmissionBridge, usize)> {
+    match bridge_append_unattached(before, score::ScoreNode::Integer(level as i64)) {
+        None => None,
+        Some((after_level, level_handle)) => match bridge_constructor_step(
+            after_level, constructor, seq![level_handle],
+        ) {
+            None => None,
+            Some((next, _, score_handle)) => Some((next, score_handle)),
+        },
+    }
+}
+
+pub open spec fn bridge_var_score_step(
+    before: ScoreAdmissionBridge,
+) -> Option<(ScoreAdmissionBridge, usize)> {
+    if before.admission.frames.len() == 0 {
+        None
+    } else {
+        let top = before.admission.frames.last();
+        match bridge_var_case(top) {
+            None => None,
+            Some(BridgeVarCase::Absent) => match bridge_append_unattached(
+                before, score::ScoreNode::Integer(0i64),
+            ) {
+                None => None,
+                Some((after_leaf, leaf_handle)) =>
+                    match admission::admission_attach_score_step(
+                        after_leaf.admission, leaf_handle, top.body_id,
+                    ) {
+                        None => None,
+                        Some(admission) => Some((ScoreAdmissionBridge {
+                            admission, transcript: after_leaf.transcript,
+                        }, leaf_handle)),
+                    },
+            },
+            Some(BridgeVarCase::Bound { level }) =>
+                bridge_var_level_score_step(before, 50i32, level),
+            Some(BridgeVarCase::Free { level }) =>
+                bridge_var_level_score_step(before, 51i32, level),
+            Some(BridgeVarCase::Wildcard) => match bridge_constructor_step(
+                before, 52i32, Seq::empty(),
+            ) {
+                None => None,
+                Some((next, _, score_handle)) => Some((next, score_handle)),
+            },
+        }
+    }
+}
+
+pub open spec fn bridge_transcript_suffix_kinds(
+    transcript: score::ScoreArena, base: int,
+) -> Seq<score::ScoreNode> {
+    transcript.entries.subrange(base, transcript.entries.len() as int)
+        .map_values(|entry: score::ScoreEntry| entry.kind)
+}
+
+pub open spec fn production_score_constructor_nodes(
+    constructor: i32, children: Seq<usize>, constructor_handle: usize,
+) -> Seq<score::ScoreNode> {
+    seq![
+        score::ScoreNode::Integer(constructor as i64),
+        score::ScoreNode::Node(seq![constructor_handle] + children),
+    ]
+}
+
+pub open spec fn production_var_score_nodes(
+    var_case: BridgeVarCase, base: usize,
+) -> Seq<score::ScoreNode> {
+    match var_case {
+        BridgeVarCase::Absent => seq![score::ScoreNode::Integer(0i64)],
+        BridgeVarCase::Bound { level } => seq![score::ScoreNode::Integer(level as i64)]
+            + production_score_constructor_nodes(50i32, seq![base], (base + 1) as usize),
+        BridgeVarCase::Free { level } => seq![score::ScoreNode::Integer(level as i64)]
+            + production_score_constructor_nodes(51i32, seq![base], (base + 1) as usize),
+        BridgeVarCase::Wildcard => production_score_constructor_nodes(
+            52i32, Seq::empty(), base,
+        ),
+    }
+}
+
+pub proof fn bridge_var_level_score_step_exact(
+    before: ScoreAdmissionBridge, constructor: i32, level: i32,
+)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+    ensures match bridge_var_level_score_step(before, constructor, level) {
+        None => true,
+        Some((next, score_handle)) => {
+            let base = before.transcript.entries.len() as int;
+            let handle_base = before.transcript.entries.len() as usize;
+            &&& bridge_well_formed(next)
+            &&& admission::admission_state_wf(next.admission)
+            &&& bridge_score_step_shape(before, next)
+            &&& next.admission.frames.last().score_handle == Some(score_handle)
+            &&& score_handle as int == base + 2
+            &&& next.transcript.entries.len() == base + 3
+            &&& next.admission.arena[score_handle as int].body_id
+                == before.admission.frames.last().body_id
+            &&& next.admission.arena[score_handle as int].semantic
+                == admission::admission_family_complete(before.admission.frames.last())
+            &&& next.admission.root_end == before.admission.root_end
+            &&& next.admission.next_obligation_id == before.admission.next_obligation_id
+            &&& bridge_transcript_suffix_kinds(next.transcript, base)
+                == seq![score::ScoreNode::Integer(level as i64)]
+                    + production_score_constructor_nodes(
+                        constructor, seq![handle_base], (handle_base + 1) as usize,
+                    )
+        },
+    },
+{
+    let level_kind = score::ScoreNode::Integer(level as i64);
+    bridge_append_unattached_exact(before, level_kind);
+    bridge_append_unattached_preserves_admission_wf(before, level_kind);
+    bridge_append_unattached_shape(before, level_kind);
+    if let Some((after_level, level_handle)) = bridge_append_unattached(before, level_kind) {
+        let children = seq![level_handle];
+        bridge_constructor_exact(after_level, constructor, children);
+        bridge_constructor_shape(after_level, constructor, children);
+        if let Some((next, constructor_handle, score_handle)) = bridge_constructor_step(
+            after_level, constructor, children,
+        ) {
+            bridge_score_step_shape_transitive(before, after_level, next);
+            let base = before.transcript.entries.len() as int;
+            let handle_base = before.transcript.entries.len() as usize;
+            let constructor_kind = score::ScoreNode::Integer(constructor as i64);
+            bridge_append_unattached_exact(after_level, constructor_kind);
+            let (after_constructor, appended_constructor) = bridge_append_unattached(
+                after_level, constructor_kind,
+            ).unwrap();
+            let node_kind = score::ScoreNode::Node(seq![appended_constructor] + children);
+            bridge_append_unattached_exact(after_constructor, node_kind);
+            let (after_node, appended_node) = bridge_append_unattached(
+                after_constructor, node_kind,
+            ).unwrap();
+            assert(appended_constructor == constructor_handle);
+            assert(appended_node == score_handle);
+            assert(next.transcript == after_node.transcript);
+            assert(level_handle as int == base);
+            assert(constructor_handle as int == base + 1);
+            assert(score_handle as int == base + 2);
+            assert(after_node.transcript.entries.len() == base + 3);
+            assert(after_constructor.transcript.entries[base]
+                == after_level.transcript.entries[base]);
+            assert(after_node.transcript.entries[base]
+                == after_constructor.transcript.entries[base]);
+            assert(after_node.transcript.entries[base + 1]
+                == after_constructor.transcript.entries[base + 1]);
+            let suffix = bridge_transcript_suffix_kinds(next.transcript, base);
+            assert(suffix.len() == 3);
+            assert(suffix[0] == level_kind);
+            assert(suffix[1] == constructor_kind);
+            assert(suffix[2] == node_kind);
+            assert(seq![appended_constructor] + children
+                =~= seq![(handle_base + 1) as usize] + seq![handle_base]);
+            assert(suffix =~= seq![level_kind] + production_score_constructor_nodes(
+                constructor, seq![handle_base], (handle_base + 1) as usize,
+            ));
+        }
+    }
+}
+
+pub proof fn bridge_var_score_step_exact(before: ScoreAdmissionBridge)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+    ensures match bridge_var_score_step(before) {
+        None => true,
+        Some((next, score_handle)) => {
+            &&& bridge_well_formed(next)
+            &&& admission::admission_state_wf(next.admission)
+            &&& bridge_score_step_shape(before, next)
+            &&& next.admission.frames.last().score_handle == Some(score_handle)
+            &&& (score_handle as int) < next.admission.arena.len()
+            &&& next.admission.arena[score_handle as int].semantic
+            &&& next.admission.arena[score_handle as int].body_id
+                == before.admission.frames.last().body_id
+            &&& next.admission.arena[score_handle as int].transcript_bytes
+                == next.transcript.entries[score_handle as int].transcript
+            &&& next.admission.root_end == before.admission.root_end
+            &&& next.admission.next_obligation_id == before.admission.next_obligation_id
+        },
+    },
+{
+    if before.admission.frames.len() > 0 {
+        let top = before.admission.frames.last();
+        match bridge_var_case(top) {
+            Some(BridgeVarCase::Absent) => {
+                let kind = score::ScoreNode::Integer(0i64);
+                bridge_append_unattached_exact(before, kind);
+                bridge_append_unattached_preserves_admission_wf(before, kind);
+                bridge_append_unattached_shape(before, kind);
+                if let Some((after_leaf, leaf_handle)) = bridge_append_unattached(before, kind) {
+                    admission::admission_attach_score_preserves_wf(
+                        after_leaf.admission, leaf_handle, top.body_id,
+                    );
+                    bridge_attach_score_shape(after_leaf, leaf_handle, top.body_id);
+                    if let Some(admission) = admission::admission_attach_score_step(
+                        after_leaf.admission, leaf_handle, top.body_id,
+                    ) {
+                        let next = ScoreAdmissionBridge {
+                            admission, transcript: after_leaf.transcript,
+                        };
+                        bridge_score_step_shape_transitive(before, after_leaf, next);
+                        assert(admission::admission_family_complete(top));
+                        assert(bridge_well_formed(next));
+                    }
+                }
+            },
+            Some(BridgeVarCase::Bound { level }) => {
+                bridge_var_level_score_step_exact(before, 50i32, level);
+                assert(admission::admission_family_complete(top));
+            },
+            Some(BridgeVarCase::Free { level }) => {
+                bridge_var_level_score_step_exact(before, 51i32, level);
+                assert(admission::admission_family_complete(top));
+            },
+            Some(BridgeVarCase::Wildcard) => {
+                bridge_constructor_exact(before, 52i32, Seq::empty());
+                bridge_constructor_shape(before, 52i32, Seq::empty());
+                assert(admission::admission_family_complete(top));
+            },
+            None => {},
+        }
+    }
+}
+
+pub proof fn bridge_var_score_step_is_production_var_score(before: ScoreAdmissionBridge)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+    ensures match bridge_var_score_step(before) {
+        None => true,
+        Some((next, score_handle)) => match bridge_var_case(before.admission.frames.last()) {
+            None => false,
+            Some(var_case) => {
+                let base = before.transcript.entries.len() as int;
+                let nodes = production_var_score_nodes(var_case, base as usize);
+                &&& next.transcript.entries.len() == base + nodes.len()
+                &&& next.transcript.entries.take(base) == before.transcript.entries
+                &&& bridge_transcript_suffix_kinds(next.transcript, base) == nodes
+                &&& score_handle as int == base + nodes.len() - 1
+                &&& next.admission.frames.last().score_handle == Some(score_handle)
+            },
+        },
+    },
+{
+    bridge_var_score_step_exact(before);
+    if before.admission.frames.len() > 0 {
+        let top = before.admission.frames.last();
+        let base = before.transcript.entries.len() as int;
+        let handle_base = before.transcript.entries.len() as usize;
+        match bridge_var_case(top) {
+            Some(BridgeVarCase::Absent) => {
+                let kind = score::ScoreNode::Integer(0i64);
+                bridge_append_unattached_exact(before, kind);
+                if let Some((after_leaf, leaf_handle)) = bridge_append_unattached(before, kind) {
+                    assert(leaf_handle as int == base);
+                    assert(after_leaf.transcript.entries.len() == base + 1);
+                    let suffix = bridge_transcript_suffix_kinds(after_leaf.transcript, base);
+                    assert(suffix[0] == kind);
+                    assert(suffix =~= production_var_score_nodes(
+                        BridgeVarCase::Absent, handle_base,
+                    ));
+                }
+            },
+            Some(BridgeVarCase::Bound { level }) => {
+                bridge_var_level_score_step_exact(before, 50i32, level);
+            },
+            Some(BridgeVarCase::Free { level }) => {
+                bridge_var_level_score_step_exact(before, 51i32, level);
+            },
+            Some(BridgeVarCase::Wildcard) => {
+                bridge_constructor_exact(before, 52i32, Seq::empty());
+                if let Some((next, constructor_handle, score_handle)) = bridge_constructor_step(
+                    before, 52i32, Seq::empty(),
+                ) {
+                    let constructor_kind = score::ScoreNode::Integer(52i64);
+                    bridge_append_unattached_exact(before, constructor_kind);
+                    let (after_constructor, appended_constructor) = bridge_append_unattached(
+                        before, constructor_kind,
+                    ).unwrap();
+                    let node_kind = score::ScoreNode::Node(
+                        seq![appended_constructor] + Seq::<usize>::empty(),
+                    );
+                    bridge_append_unattached_exact(after_constructor, node_kind);
+                    let (after_node, appended_node) = bridge_append_unattached(
+                        after_constructor, node_kind,
+                    ).unwrap();
+                    assert(appended_constructor == constructor_handle);
+                    assert(appended_node == score_handle);
+                    assert(next.transcript == after_node.transcript);
+                    assert(constructor_handle as int == base);
+                    assert(after_node.transcript.entries.len() == base + 2);
+                    assert(after_node.transcript.entries[base]
+                        == after_constructor.transcript.entries[base]);
+                    let suffix = bridge_transcript_suffix_kinds(next.transcript, base);
+                    assert(suffix[0] == constructor_kind);
+                    assert(suffix[1] == node_kind);
+                    assert(seq![appended_constructor] + Seq::<usize>::empty()
+                        =~= seq![handle_base] + Seq::<usize>::empty());
+                    assert(suffix =~= production_var_score_nodes(
+                        BridgeVarCase::Wildcard, handle_base,
+                    ));
+                }
+            },
+            None => {},
+        }
+    }
+}
+
+pub proof fn bridge_var_frame_required_slots_generated(
+    frame: admission::AdmissionFrameState,
+)
+    requires
+        frame.program_type_id == 6,
+        frame.slot_count == 1,
+        frame.required == Set::<int>::empty(),
+    ensures admission::admission_required_slots_generated(frame),
+{
+    assert forall|tag: u32| !admission::admission_required_descriptor_slot(6, tag, 0) by {}
+    assert forall|slot: int| 0 <= slot < frame.slot_count as int implies
+        frame.required.contains(slot) == (exists|tag: u32|
+            admission::admission_required_descriptor_slot(
+                frame.program_type_id, tag, slot,
+            )) by {
+        assert(slot == 0);
+        assert(!frame.required.contains(slot));
+    }
+}
+
+pub proof fn bridge_var_level_score_step_succeeds_from_empty(
+    before: ScoreAdmissionBridge, constructor: i32, level: i32,
+)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+        before.transcript == score::empty_arena(),
+        bridge_var_case(before.admission.frames.last()).is_some(),
+        admission::admission_slots_complete(before.admission.frames.last()),
+        before.admission.frames.last().nested_started
+            == before.admission.frames.last().nested_resolved,
+    ensures bridge_var_level_score_step(before, constructor, level).is_some(),
+{
+    let top = before.admission.frames.last();
+    let level_kind = score::ScoreNode::Integer(level as i64);
+    score::integer_transcript_exact(level as i64);
+    assert(bridge_append_unattached(before, level_kind).is_some());
+    bridge_append_unattached_exact(before, level_kind);
+    bridge_append_unattached_preserves_admission_wf(before, level_kind);
+    let (after_level, level_handle) = bridge_append_unattached(before, level_kind).unwrap();
+    let constructor_kind = score::ScoreNode::Integer(constructor as i64);
+    score::integer_transcript_exact(constructor as i64);
+    assert(bridge_append_unattached(after_level, constructor_kind).is_some());
+    bridge_append_unattached_exact(after_level, constructor_kind);
+    bridge_append_unattached_preserves_admission_wf(after_level, constructor_kind);
+    let (after_constructor, constructor_handle) = bridge_append_unattached(
+        after_level, constructor_kind,
+    ).unwrap();
+    assert(level_handle == 0usize);
+    assert(constructor_handle == 1usize);
+    let entries = after_constructor.transcript.entries;
+    assert(entries.len() == 2);
+    assert(entries[0] == after_level.transcript.entries[0]);
+    assert(entries[0].encoded_len == 10);
+    assert(entries[1].encoded_len == 10);
+    let children = seq![constructor_handle] + seq![level_handle];
+    assert(children =~= seq![1usize, 0usize]);
+    assert(score::child_handles_valid(entries, children));
+    assert forall|i: int| 0 <= i < entries.len()
+        implies entries[i].encoded_len as int == entries[i].transcript.len() by {
+        assert(score::entry_well_formed(entries, i));
+    }
+    score::node_transcript_exact(entries, children);
+    assert(children.drop_first() =~= seq![0usize]);
+    assert(seq![0usize].drop_first() =~= Seq::<usize>::empty());
+    assert(score::children_encoded_len(entries, Seq::<usize>::empty()) == 0);
+    assert(score::children_encoded_len(entries, seq![0usize]) == 10);
+    assert(score::children_encoded_len(entries, children) == 20);
+    let node_kind = score::ScoreNode::Node(children);
+    assert(bridge_append_unattached(after_constructor, node_kind).is_some());
+    bridge_append_unattached_exact(after_constructor, node_kind);
+    let (after_node, node_handle) = bridge_append_unattached(
+        after_constructor, node_kind,
+    ).unwrap();
+    assert(after_node.admission.frames == before.admission.frames);
+    assert(admission::admission_family_complete(top));
+    assert(admission::admission_attach_score_step(
+        after_node.admission, node_handle, top.body_id,
+    ).is_some());
+    assert(bridge_constructor_step(after_level, constructor, seq![level_handle]).is_some());
+}
+
+pub open spec fn bridge_var_witness_frame(
+    source_bytes: Seq<u8>, seen: Set<int>, scalar_slots: Set<int>,
+    scalar_occurrences: Seq<admission::AdmissionScalarOccurrence>,
+    returns: Seq<admission::AdmissionReturnedSummary>,
+) -> admission::AdmissionFrameState {
+    admission::AdmissionFrameState {
+        physical_source: 0,
+        physical_start: 0,
+        program_type_id: 6,
+        region_start: 0,
+        region_end: source_bytes.len() as usize,
+        source_bytes,
+        cursor: source_bytes.len() as usize,
+        slot_count: 1,
+        last_slot: if seen.contains(0) { Some(0usize) } else { None },
+        seen,
+        required: Set::empty(),
+        scalar_slots,
+        scalar_occurrences,
+        returns,
+        family: admission::AdmissionFamily::Other,
+        waiting_id: None,
+        waiting_kind: 0,
+        waiting_slot: None,
+        waiting_tag: None,
+        return_id: None,
+        frame_kind: 1,
+        body_id: 0,
+        score_handle: None,
+        nested_started: 0,
+        nested_resolved: 0,
+    }
+}
+
+pub open spec fn bridge_var_witness_scalar(
+    tag: u32, varint_value: u64,
+) -> admission::AdmissionScalarOccurrence {
+    admission::AdmissionScalarOccurrence {
+        slot: 0,
+        tag,
+        scalar_kind: 3,
+        varint_value,
+        physical_source: 0,
+        physical_start: 1,
+        bytes: seq![varint_value as u8],
+    }
+}
+
+pub open spec fn bridge_var_witness_wildcard_return() -> admission::AdmissionReturnedSummary {
+    admission::AdmissionReturnedSummary {
+        slot: 0,
+        tag: 3,
+        body_id: 1,
+        body_bytes: Seq::empty(),
+        score_handle: None,
+        score_origin_body_id: None,
+        kind: admission::AdmissionReturnedKind::Unit,
+    }
+}
+
+pub proof fn bridge_var_score_absent_witness()
+    ensures {
+        let before = bridge_initial(bridge_var_witness_frame(
+            Seq::empty(), Set::empty(), Set::empty(), Seq::empty(), Seq::empty(),
+        ));
+        &&& bridge_well_formed(before)
+        &&& admission::admission_state_wf(before.admission)
+        &&& bridge_var_case(before.admission.frames.last()) == Some(BridgeVarCase::Absent)
+        &&& match bridge_var_score_step(before) {
+            None => false,
+            Some((next, score_handle)) => {
+                &&& score_handle == 0usize
+                &&& bridge_transcript_suffix_kinds(next.transcript, 0)
+                    == seq![score::ScoreNode::Integer(0i64)]
+                &&& next.admission.frames.last().score_handle == Some(0usize)
+            },
+        }
+    },
+{
+    let frame = bridge_var_witness_frame(
+        Seq::empty(), Set::empty(), Set::empty(), Seq::empty(), Seq::empty(),
+    );
+    let before = bridge_initial(frame);
+    bridge_initial_exact(frame);
+    bridge_var_frame_required_slots_generated(frame);
+    assert(admission::admission_frame_wf(frame));
+    assert(before.admission.frames.last() == frame);
+    assert(admission::admission_state_wf(before.admission));
+    assert(bridge_var_case(frame) == Some(BridgeVarCase::Absent));
+    let kind = score::ScoreNode::Integer(0i64);
+    score::integer_transcript_exact(0i64);
+    assert(bridge_append_unattached(before, kind).is_some());
+    bridge_append_unattached_exact(before, kind);
+    let (after_leaf, leaf_handle) = bridge_append_unattached(before, kind).unwrap();
+    assert(leaf_handle == 0usize);
+    assert(after_leaf.admission.frames == before.admission.frames);
+    assert(admission::admission_slots_complete(frame));
+    assert(admission::admission_attach_score_step(
+        after_leaf.admission, leaf_handle, 0,
+    ).is_some());
+    assert(bridge_var_score_step(before).is_some());
+    bridge_var_score_step_is_production_var_score(before);
+}
+
+pub proof fn bridge_var_score_bound_zero_witness()
+    ensures {
+        let before = bridge_initial(bridge_var_witness_frame(
+            seq![0x08u8, 0x00u8], Set::empty().insert(0), Set::empty().insert(0),
+            seq![bridge_var_witness_scalar(1, 0)], Seq::empty(),
+        ));
+        &&& bridge_well_formed(before)
+        &&& admission::admission_state_wf(before.admission)
+        &&& bridge_var_case(before.admission.frames.last())
+            == Some(BridgeVarCase::Bound { level: 0i32 })
+        &&& match bridge_var_score_step(before) {
+            None => false,
+            Some((next, score_handle)) => {
+                &&& score_handle == 2usize
+                &&& bridge_transcript_suffix_kinds(next.transcript, 0) == seq![
+                    score::ScoreNode::Integer(0i64),
+                    score::ScoreNode::Integer(50i64),
+                    score::ScoreNode::Node(seq![1usize, 0usize]),
+                ]
+                &&& next.admission.frames.last().score_handle == Some(2usize)
+            },
+        }
+    },
+{
+    let frame = bridge_var_witness_frame(
+        seq![0x08u8, 0x00u8], Set::empty().insert(0), Set::empty().insert(0),
+        seq![bridge_var_witness_scalar(1, 0)], Seq::empty(),
+    );
+    let before = bridge_initial(frame);
+    bridge_initial_exact(frame);
+    bridge_var_frame_required_slots_generated(frame);
+    assert(admission::admission_frame_wf(frame));
+    assert(before.admission.frames.last() == frame);
+    assert(admission::admission_state_wf(before.admission));
+    assert(((0u64 as u32) >> 1) == 0u32) by (bit_vector);
+    assert(((0u64 as u32) & 1) == 0u32) by (bit_vector);
+    assert(bridge_sint32_value(0) == 0i32);
+    assert(bridge_var_case(frame) == Some(BridgeVarCase::Bound { level: 0i32 }));
+    assert(admission::admission_slots_complete(frame));
+    bridge_var_level_score_step_succeeds_from_empty(before, 50i32, 0i32);
+    assert(bridge_var_score_step(before).is_some());
+    bridge_var_score_step_is_production_var_score(before);
+    assert(seq![1usize] + seq![0usize] =~= seq![1usize, 0usize]);
+    assert(production_var_score_nodes(BridgeVarCase::Bound { level: 0i32 }, 0usize)
+        =~= seq![
+            score::ScoreNode::Integer(0i64),
+            score::ScoreNode::Integer(50i64),
+            score::ScoreNode::Node(seq![1usize, 0usize]),
+        ]);
+}
+
+pub proof fn bridge_var_score_free_minus_one_witness()
+    ensures {
+        let before = bridge_initial(bridge_var_witness_frame(
+            seq![0x10u8, 0x01u8], Set::empty().insert(0), Set::empty().insert(0),
+            seq![bridge_var_witness_scalar(2, 1)], Seq::empty(),
+        ));
+        &&& bridge_well_formed(before)
+        &&& admission::admission_state_wf(before.admission)
+        &&& bridge_var_case(before.admission.frames.last())
+            == Some(BridgeVarCase::Free { level: -1i32 })
+        &&& match bridge_var_score_step(before) {
+            None => false,
+            Some((next, score_handle)) => {
+                &&& score_handle == 2usize
+                &&& bridge_transcript_suffix_kinds(next.transcript, 0) == seq![
+                    score::ScoreNode::Integer(-1i64),
+                    score::ScoreNode::Integer(51i64),
+                    score::ScoreNode::Node(seq![1usize, 0usize]),
+                ]
+                &&& next.admission.frames.last().score_handle == Some(2usize)
+            },
+        }
+    },
+{
+    let frame = bridge_var_witness_frame(
+        seq![0x10u8, 0x01u8], Set::empty().insert(0), Set::empty().insert(0),
+        seq![bridge_var_witness_scalar(2, 1)], Seq::empty(),
+    );
+    let before = bridge_initial(frame);
+    bridge_initial_exact(frame);
+    bridge_var_frame_required_slots_generated(frame);
+    assert(admission::admission_frame_wf(frame));
+    assert(before.admission.frames.last() == frame);
+    assert(admission::admission_state_wf(before.admission));
+    assert(((1u64 as u32) >> 1) == 0u32) by (bit_vector);
+    assert(((1u64 as u32) & 1) == 1u32) by (bit_vector);
+    assert(bridge_sint32_value(1) == -1i32);
+    assert(bridge_var_case(frame) == Some(BridgeVarCase::Free { level: -1i32 }));
+    assert(admission::admission_slots_complete(frame));
+    bridge_var_level_score_step_succeeds_from_empty(before, 51i32, -1i32);
+    assert(bridge_var_score_step(before).is_some());
+    bridge_var_score_step_is_production_var_score(before);
+    assert(seq![1usize] + seq![0usize] =~= seq![1usize, 0usize]);
+    assert(production_var_score_nodes(BridgeVarCase::Free { level: -1i32 }, 0usize)
+        =~= seq![
+            score::ScoreNode::Integer(-1i64),
+            score::ScoreNode::Integer(51i64),
+            score::ScoreNode::Node(seq![1usize, 0usize]),
+        ]);
+}
+
+pub proof fn bridge_var_score_wildcard_witness()
+    ensures {
+        let before = bridge_initial(bridge_var_witness_frame(
+            seq![0x1au8, 0x00u8], Set::empty().insert(0), Set::empty(),
+            Seq::empty(), seq![bridge_var_witness_wildcard_return()],
+        ));
+        &&& bridge_well_formed(before)
+        &&& admission::admission_state_wf(before.admission)
+        &&& bridge_var_case(before.admission.frames.last()) == Some(BridgeVarCase::Wildcard)
+        &&& match bridge_var_score_step(before) {
+            None => false,
+            Some((next, score_handle)) => {
+                &&& score_handle == 1usize
+                &&& bridge_transcript_suffix_kinds(next.transcript, 0) == seq![
+                    score::ScoreNode::Integer(52i64),
+                    score::ScoreNode::Node(seq![0usize]),
+                ]
+                &&& next.admission.frames.last().score_handle == Some(1usize)
+            },
+        }
+    },
+{
+    let frame = bridge_var_witness_frame(
+        seq![0x1au8, 0x00u8], Set::empty().insert(0), Set::empty(),
+        Seq::empty(), seq![bridge_var_witness_wildcard_return()],
+    );
+    let before = bridge_initial(frame);
+    bridge_initial_exact(frame);
+    bridge_var_frame_required_slots_generated(frame);
+    assert(admission::admission_frame_wf(frame));
+    assert(before.admission.frames.last() == frame);
+    assert(admission::admission_state_wf(before.admission));
+    assert(bridge_var_case(frame) == Some(BridgeVarCase::Wildcard));
+    let constructor_kind = score::ScoreNode::Integer(52i64);
+    score::integer_transcript_exact(52i64);
+    assert(bridge_append_unattached(before, constructor_kind).is_some());
+    bridge_append_unattached_exact(before, constructor_kind);
+    let (after_constructor, constructor_handle) = bridge_append_unattached(
+        before, constructor_kind,
+    ).unwrap();
+    assert(constructor_handle == 0usize);
+    let entries = after_constructor.transcript.entries;
+    assert(entries.len() == 1);
+    assert(entries[0].encoded_len == 10);
+    let children = seq![constructor_handle] + Seq::<usize>::empty();
+    assert(children =~= seq![0usize]);
+    assert(score::child_handles_valid(entries, children));
+    assert forall|i: int| 0 <= i < entries.len()
+        implies entries[i].encoded_len as int == entries[i].transcript.len() by {
+        assert(score::entry_well_formed(entries, i));
+    }
+    score::node_transcript_exact(entries, children);
+    assert(children.drop_first() =~= Seq::<usize>::empty());
+    assert(score::children_encoded_len(entries, Seq::<usize>::empty()) == 0);
+    assert(score::children_encoded_len(entries, children) == 10);
+    let node_kind = score::ScoreNode::Node(children);
+    assert(bridge_append_unattached(after_constructor, node_kind).is_some());
+    bridge_append_unattached_exact(after_constructor, node_kind);
+    let (after_node, node_handle) = bridge_append_unattached(
+        after_constructor, node_kind,
+    ).unwrap();
+    assert(after_node.admission.frames == before.admission.frames);
+    assert(admission::admission_slots_complete(frame));
+    assert(admission::admission_attach_score_step(
+        after_node.admission, node_handle, 0,
+    ).is_some());
+    assert(bridge_constructor_step(before, 52i32, Seq::empty()).is_some());
+    assert(bridge_var_score_step(before).is_some());
+    bridge_var_score_step_is_production_var_score(before);
+    assert(seq![0usize] + Seq::<usize>::empty() =~= seq![0usize]);
+    assert(production_var_score_nodes(BridgeVarCase::Wildcard, 0usize)
+        =~= seq![
+            score::ScoreNode::Integer(52i64),
+            score::ScoreNode::Node(seq![0usize]),
+        ]);
+}
+
 }
 
 fn main() {}

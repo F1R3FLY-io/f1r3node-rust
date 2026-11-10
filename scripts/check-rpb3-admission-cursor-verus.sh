@@ -1536,6 +1536,16 @@ proofs_rpb3_score_admission_bridge=(
   bridge_cost_token_stack_root_claim_exact
   bridge_source_checked_root_has_exact_claim
   bridge_root_exact
+  bridge_var_instance_descriptor_rows_pinned
+  bridge_var_level_score_step_exact
+  bridge_var_score_step_exact
+  bridge_var_score_step_is_production_var_score
+  bridge_var_frame_required_slots_generated
+  bridge_var_level_score_step_succeeds_from_empty
+  bridge_var_score_absent_witness
+  bridge_var_score_bound_zero_witness
+  bridge_var_score_free_minus_one_witness
+  bridge_var_score_wildcard_witness
 )
 proofs_rpb3_score_arena_source_refinement=(
   runtime_children_len_projects
