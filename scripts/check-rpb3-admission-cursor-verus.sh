@@ -86,6 +86,7 @@ source_files=(
   "$model_dir/rpb3_epm_loop_observation_bridge.rs"
   "$model_dir/rpb3_integrated_source_trace_composition.rs"
   "$model_dir/rpb3_integrated_dispatcher.rs"
+  "$model_dir/rpb3_plain_parser_source_refinement.rs"
   "$model_dir/rpb3_epm_obligation_return_live.rs"
   "$model_dir/rpb3_epm_parser_escape_invariant.rs"
   "$model_dir/rpb3_epm_obligation_return_source.rs"
@@ -1821,6 +1822,51 @@ proofs_rpb3_integrated_dispatcher=(
   act_forward_witness_forward_source
   act_forward_witness_is_integrated_step
 )
+proofs_rpb3_plain_parser_source_refinement=(
+  forward_payload_root_projection
+  forward_payload_without_bytes_is_identity
+  forward_capacity_narrows_to_shorter_width
+  forward_capacity_step_feeds_reusable_byte
+  forward_payload_prefix_matches_byte_run
+  forward_payload_equals_plain_byte_run
+  unready_obligation_requests_no_child
+  forward_virtual_step_is_scalar_payload_edge
+  forward_virtual_step_meets_payload_edge_clauses
+  forward_virtual_suffix_is_scalar_payload_edges
+  payload_checkpoint_parser_is_plain_byte_prefix
+  fresh_forward_run_starts_at_pre_batch_path
+  fresh_forward_run_ends_at_published_path
+  fresh_forward_batch_is_scalar_payload_edges
+  coalesced_forward_batch_is_scalar_payload_edges
+  forward_virtual_path_projection
+  forward_virtual_path_template_swap
+  payload_run_unwind_selects_scalar_prefix
+  fresh_forward_then_unwind_restores_scalar_prefix
+  saved_image_matches_restored_parser_iff
+  counter_reread_preserves_parser_source_match
+  rebased_saved_image_matches_forward_payload
+  payload_run_rebased_images_match_checkpoints
+  edge_return_is_scalar_edge_path_step
+  leave_return_selects_scalar_leave_path
+  scalar_edge_then_leave_restores_checkpoint
+  edge_return_then_leave_return_round_trip
+  scalar_edge_checkpoint_has_saved_image
+  canonical_skip_virtual_step_is_internal_edge
+  canonical_skip_virtual_prefix_is_wf
+  canonical_skip_virtual_suffix_scans_to_end
+  canonical_bulk_skip_is_scalar_edge_scan
+  opaque_and_owner_parser_witness
+  opaque_payload_run_is_wf
+  epm_forward_path_witness
+  saved_handle_image_witness
+  plain_tag_edge_round_trip_witness
+  canonical_internal_edge_advances_slot_counts
+  opaque_bulk_event_premises_hold
+  canonical_skip_virtual_slot_count
+  canonical_opaque_bulk_skip_witness
+  dropped_byte_or_field_claims_are_refuted
+  payload_edge_agreements_are_necessary
+)
 gated_modules=(
   rpb3_act_source_product_integration
   rpb3_admission_cursor
@@ -1897,6 +1943,7 @@ gated_modules=(
   rpb3_map_push_selected_subview_extraction
   rpb3_message_driver_source_integration
   rpb3_path_parser_refinement
+  rpb3_plain_parser_source_refinement
   rpb3_runtime_frame_source_refinement
   rpb3_scalar_continue_source_refinement
   rpb3_score_admission_bridge
@@ -4027,6 +4074,39 @@ if ! rg -q '^verification results:: 26 verified, 0 errors' "$epm_frame_path_inva
   echo "rpb3-admission-cursor: EPathMap frame path invariant module did not verify" >&2
   exit 1
 fi
+for proof in "${proofs_rpb3_plain_parser_source_refinement[@]}"; do
+  proof_log="$evidence_dir/plain-parser-source-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_plain_parser_source_refinement --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: plain parser source $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: plain parser source $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+plain_parser_source_log="$evidence_dir/rpb3_plain_parser_source_refinement.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_plain_parser_source_refinement \
+  "$integrated_source" >"$plain_parser_source_log" 2>&1; then
+  cat "$plain_parser_source_log"
+  echo "rpb3-admission-cursor: plain parser source module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 45 verified, 0 errors' "$plain_parser_source_log"; then
+  cat "$plain_parser_source_log"
+  echo "rpb3-admission-cursor: plain parser source module did not verify" >&2
+  exit 1
+fi
+sha256sum "$plain_parser_source_log"
 for proof in "${integrated_witness_proofs[@]}"; do
   proof_log="$evidence_dir/integrated-$proof.log"
   if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
