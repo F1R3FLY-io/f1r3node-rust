@@ -698,7 +698,7 @@
         ],
         "responses": {
           "415": {"description": "Unsupported content type (invalid_request_body)", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
-          "422": {"description": "Invalid JSON field type or value (invalid_request_body), or execution failure", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
+          "422": {"description": "Invalid JSON field type or value, including deploy parameter names and values (invalid_request_body), or execution failure", "schema": {"$ref": "#/definitions/ApiErrorResponse"}},
           "200": {
             "description": "Success: request was correctly formatted and signed. Note that this does not indicate successful execution.\nUse the signature as deployId in /deploy/ to find the hash of the block in which this deploy was attempted and then GET /block/{hash} to find `DeployInfo` such as `systemDeployError`, `errored` and `cost`.\n",
             "schema": {
@@ -706,7 +706,7 @@
             }
           },
           "400": {
-            "description": "Malformed JSON (invalid_request_body), invalid deploy amount, parameters, public key, algorithm, or signature (illegal_argument), or invalid term (rholang_bad_term)",
+            "description": "Malformed JSON (invalid_request_body), invalid deploy amount after decoding, public key, algorithm, or signature (illegal_argument), or invalid term (rholang_bad_term)",
             "schema": {"$ref": "#/definitions/ApiErrorResponse"},
             "examples": {
               "application/json": {"error": "illegal_argument", "message": "Invalid signature or public key"}

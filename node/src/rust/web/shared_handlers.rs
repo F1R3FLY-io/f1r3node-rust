@@ -494,10 +494,10 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed JSON (`invalid_request_body`) or invalid deploy amount, parameters, public key, algorithm, signature, or term (`illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 400, description = "Malformed JSON (`invalid_request_body`) or invalid deploy amount after decoding, public key, algorithm, signature, or term (`illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
         (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
-        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value, including deploy parameter names and values (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
     ),
