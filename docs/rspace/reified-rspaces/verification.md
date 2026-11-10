@@ -7864,7 +7864,7 @@ The phase has eleven steps, and this section records each step when it lands:
 5. S5 and S6: the documents and the diagrams.
 6. S4: the FIPS clause matrix and its checker.
 7. S8: the benchmarks and `performance.md`.
-8. S9 to S11: the claims gate, the tracker notes and the full gate set. Changed by decision 131: the final verification of the epic runs the full gate set. The leaf `rrs-final-claims-audit` is the claims gate, and pgmcp holds the tracker notes. Changed by [decision 137](decision-register.md#decision-137): the full gate set runs on a development host, and the leaves close at claimed_done.
+8. S9 to S11: the claims gate, the tracker notes and the full gate set. Changed by decision 131: the final verification of the epic runs the full gate set. The leaf `rrs-final-claims-audit` is the claims gate, and pgmcp holds the tracker notes. Changed by [decision 137](decision-register.md#decision-137): the full gate set runs on a development host, and the leaves close at claimed_done. Section 35.9 records the full gate set.
 
 ### 35.1 Step S1: the aggregate gate
 
@@ -8846,6 +8846,131 @@ In both jobs, the three values after each harness equal the values before it, an
 No test failed because of a time limit.
 Each of the 54 test logs of the second job holds the line `finished in` of its suite.
 The slowest suite took 78.6 s, in `vectordb-mutants.py`.
+
+### 35.9 Step S11: the full gate set
+
+Step S11 runs the full gate set of the campaign once, on a development host ([decision 137](decision-register.md#decision-137)).
+The gate set checks the frozen candidate, which is the Rust code of commit `cf4bcb410`.
+The later commits change only documents and the script of step S3, so their Rust code equals the frozen candidate.
+Phase P11 holds the same gates: the full gates, the pin of the parser revision and the gate of the unchanged fixtures.
+A leaf of the campaign closes at the tracker status claimed_done when each of its requirements and checks has passed.
+The closure report in the tracker repeats the results of this section.
+
+The gate set runs in this order:
+
+1. The legs of the aggregate gate, the release tests of each crate, step S3, the mutant harnesses and the FIPS matrix.
+2. The pin of the parser revision and `cargo deny`.
+3. Phase P12, only after the user signals that F1r3lang is ready ([decision 65](decision-register.md#decision-65)). The user has not given that signal, so P12 does not run.
+4. The terminal verification: the two tests of [I-14](decision-register.md#i-14) and an empty `git diff HEAD -- casper/src`.
+5. The check of each result against the frozen candidate (section 35.9.1), the roll-up of the leaves, the cleanup and the closure report.
+
+Nine jobs ran the gate set, and Table 257 names them.
+Regression 1 ran before the fix batch of commit `cf4bcb410`.
+Regression 2 ran eight crates again after the batch, so only the three other crates count from regression 1.
+
+*Table 257. The jobs of the full gate set.*
+
+| Job | Start | Tree at the start | What the job ran |
+|---|---|---|---|
+| Regression 1 | 2026-11-09 17:10 | `30dbcea11` with uncommitted changes | The release tests and the doc tests of each crate |
+| Regression 2 | 2026-11-09 19:34 | `30dbcea11` with the fix batch | The release tests and the doc tests of eight crates, clippy, and three runs of the `reified_*` suites |
+| Repin | 2026-11-09 22:05 | The tree of regression 2 with two test fixes | The pin of the parser revision and `cargo deny` |
+| Fix check | 2026-11-09 22:48 | The tree of `cf4bcb410` before its commit | `cargo fmt`, clippy, the two fixed tests, 200 more runs of one test, and three runs of the `reified_*` suites |
+| Gate job | 2026-11-09 23:10 | `cf4bcb410` with no change | The legs of the aggregate gate without `checkers`, two mutant harnesses and the live ChromaDB tests |
+| Chain | 2026-11-10 09:43 | `cf4bcb410` with two changed documents | Five mutant harnesses, then step S3 |
+| Checkers | 2026-11-10 11:35 | The documents of section 35.8 | The `checkers` leg |
+| Benchmarks | 2026-11-10 11:38 | `dde077f81` with no change | The timed run of both benches |
+| Terminal | 2026-11-10 12:20 | `dde077f81` with no change | The two tests of I-14, the diff of `casper/src` and `cargo deny` |
+
+*Table 258. The gates of step S11.*
+
+| Gate | Job | Result |
+|---|---|---|
+| The legs of the aggregate gate without `checkers` (Table 228) | Gate job | `reified-rspaces ALL: PASS=19 FAIL=0 SKIP=0` in 20,133 s. The 19 checks are 6 tools and 13 legs. `proofs` gives `PASS=122`, `tla` gives `PASS=806`, and the numeric receipt gives `PASS=182`. The three Z3 scripts, Sage and both benches pass. The examples pass 71 tests, loom 9 tests, and the `chromadb` build 121 and 17 tests. |
+| The `checkers` leg | Checkers | `reified-rspaces ALL: PASS=50 FAIL=0 SKIP=0` in 94 s (Table 255). The closure report gives one more run on the final documents. |
+| The live ChromaDB tests of `chroma-live.sh` | Gate job | 3 passed, 0 failed |
+| The release tests of each crate | Regressions 1 and 2 | Table 259 |
+| The doc tests of each crate | Regressions 1 and 2 | 3 passed, 0 failed, 2 ignored |
+| `cargo fmt --all -- --check` | Fix check | No finding |
+| `cargo clippy` with `-D warnings` on `rholang`, on `rspace_plus_plus` and on the workspace | Fix check | No finding |
+| The `reified_*` suites, three runs | Fix check | Each run: 60 test binaries, 1,025 passed, 0 failed, 1 ignored |
+| Step S3 through the node command line | Chain | 70 of 70 examples pass, and the control fails as required (Table 255) |
+| The mutant harnesses | Gate job and chain | Each of the 66 mutants fails tests (Table 256) |
+| The FIPS matrix checker | Checkers | 57 rows and 1,065 checks, no failure |
+| The pin of the parser revision | Repin | `Cargo.toml` names revision `6548aec` of `rholang-rs`, and the `[patch]` section is gone. The lock changes only the sources of three parser packages. The checkout of the revision equals the tested parser in 661 of 661 files. |
+| `cargo deny check bans licenses sources` | Terminal | `bans ok, licenses ok, sources ok` |
+| `cargo deny check advisories` | Terminal | 15 errors in six packages: `crypto-bigint` 0.5.5, `pulldown-cmark` 0.13.4, `zip` 0.6.6 and 3.0.0, `zstd-safe` 5.0.2 and `zstd-sys` 2.0.16. The base lock `702496775` holds each package at the same version. The campaign does not fix the faults of other owners ([decision 70](decision-register.md#decision-70)), so this result is a record. |
+| The two tests of I-14 | Terminal | 2 passed, 0 failed. The two constants at `HEAD` are those of merge 2 ([decision 112](decision-register.md#decision-112)). |
+| `git diff HEAD -- casper/src` | Terminal | Empty |
+| The timed run of the benchmarks of step S8 | Benchmarks | The run timed 155 cases with 10 samples each. Each of the 154 contract cases fits, and its phlo equals contract v2. [performance.md](performance.md) gives the results. |
+| Phase P12 | None | Not run, because the user has not signalled that F1r3lang is ready |
+
+The release tests run under `cargo nextest` in release mode.
+The nextest profile of the repository filters no test, so a skipped test is a test with the attribute `#[ignore]`.
+Table 259 gives the counts of each crate, and the two notes under it explain the two failed tests.
+
+*Table 259. The release tests of each crate.*
+
+| Crate | Job | Run | Passed | Failed | Skipped |
+|---|---|---|---|---|---|
+| `rholang` | Regression 2 | 5,410 | 5,409 | 1 (note 1) | 79 |
+| `casper` | Regression 2 | 2,200 | 2,199 | 1 (note 2) | 11 |
+| `rspace_plus_plus` | Regression 2 | 838 | 838 | 0 | 7 |
+| `models` | Regression 2 | 550 | 550 | 0 | 1 |
+| `node` | Regression 2 | 455 | 455 | 0 | 1 |
+| `comm` | Regression 2 | 410 | 410 | 0 | 0 |
+| `block-storage` | Regression 2 | 242 | 242 | 0 | 0 |
+| `rho-pure-eval` | Regression 2 | 40 | 40 | 0 | 0 |
+| `shared` | Regression 1 | 161 | 161 | 0 | 0 |
+| `crypto` | Regression 1 | 134 | 134 | 0 | 0 |
+| `graphz` | Regression 1 | 48 | 48 | 0 | 0 |
+
+1. `reified_rehydrate::reified_factory_theory_argument` expected the record 1 at the head of a queue. The creation of the queue runs `a!(1)` and `a!(2)` as parallel tasks, and racing sends take their places in arrival order ([decision 93](decision-register.md#decision-93)). So the head is 1 or 2, and 200 runs before the fix gave only these two values. The test now accepts either value, and the old assertion stays as a comment. The fix check ran the test once, then 100 runs pinned to one CPU and 100 runs without a pin, with no failure.
+2. `genesis::contracts::block_data_contract_spec` failed because its genesis build took more than its limit of 30 s. The build took 50.6 s under the load of the full suite. Alone, the test passed three times out of three, in 8.1 s, 7.9 s and 8.3 s. The test and its limit are equal to the base `702496775`, so the campaign does not change them ([decision 70](decision-register.md#decision-70)).
+
+#### 35.9.1 The check of each result against the frozen candidate
+
+A result holds for the frozen candidate when the job ran on the Rust code of `cf4bcb410`.
+A changed document does not change a result of the Rust code.
+So the check compares the Rust code, the Cargo files and the inputs of each gate.
+Most jobs record their tree at the start: the commit of `HEAD`, the SHA-256 of `git status --porcelain` and the SHA-256 of `git diff HEAD`.
+The guard of section 35.8.3 records the same three values.
+
+The check follows this algorithm:
+
+```text
+check(job):
+    if diff(job) is empty and HEAD(job) is cf4bcb410 or dde077f81:
+        EQUAL                                  -- dde077f81 changes no Rust file
+    else if HEAD(job) is cf4bcb410:
+        T := cf4bcb410 with the saved copies of the files that changed before the job
+        require sha256(git diff cf4bcb410 T) = the recorded sha256 of diff(job)
+        EQUAL when T changes no Rust file, no Cargo file and no input of a gate
+    else:                                      -- an older HEAD, or no record
+        L := the tracked files whose modification time is after the start of the job
+        EQUAL for the inputs of the job that are not in L
+        each file of L needs its own reason    -- a later fix, the pin, or a restore of a harness
+```
+
+The last branch assumes that no tool changed a tracked file and kept its old modification time.
+The tracked tree at `dde077f81` has no change, so a file that is not in L held its current content during the job.
+A file that left the index after the start of a job has no modification time to check.
+Only four Python scripts left the index after merge 2, they stay on the disk, and no Rust test reads them.
+Table 260 gives the result of each job.
+
+*Table 260. The tree of each job and the frozen candidate.*
+
+| Job | Tree record | Relation to the frozen candidate |
+|---|---|---|
+| Regression 1 | `30dbcea11` with a changed tree | No file of `crypto`, `shared`, `graphz` or the root Cargo files changed after the start. `crypto` depends only on `shared`, and `shared` and `graphz` depend on no crate of the workspace. So their results hold. |
+| Regression 2 | `30dbcea11` with a changed tree | After the start, two test files changed, for note 1 and for one lint fix. The pin changed the Cargo files. The fix check covers both test files, and the repin covers the pin. The other later changes are documents and formal files, and no Rust test of these crates reads them. |
+| Repin | The diff of the lock | Three source lines change, and the parser files are equal. |
+| Fix check | None | No tracked file changed between its start and the commit of `cf4bcb410` at 23:09. From the commit to the first harness of the gate job, only the script of step S3 changed, and it was not tracked then. That harness saw `cf4bcb410` with no change, so the fix check ran on the frozen candidate. |
+| Gate job | `cf4bcb410` with no change | Equal |
+| Chain | `cf4bcb410` with a changed tree | A tree built from `cf4bcb410` and the saved copies of `decision-register.md` and `verification.md` gives the recorded SHA-256 of the diff. So only these two documents had changed. |
+| Checkers | None | Its documents changed after the job. The final run of the closure report checks the final documents. |
+| Benchmarks | `dde077f81` with no change | Equal |
+| Terminal | `dde077f81` with no change | Equal |
 
 ## References
 
