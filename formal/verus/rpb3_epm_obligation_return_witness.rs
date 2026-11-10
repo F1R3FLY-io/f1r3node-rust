@@ -1,6 +1,9 @@
-//! A concrete raw-Par return into an EPathMap obligation over the live product.
+//! Concrete returns into EPathMap obligations over the live product: W-i
+//! returns a raw-Par child into a RawParEscape obligation, and W-ii returns a
+//! nested EPathMap child into a NestedEpm1 obligation and kills the parent's
+//! path.
 //!
-//! The admission stack has four frames: the outer Expr frame and the
+//! In W-i the admission stack has four frames: the outer Expr frame and the
 //! program-31 frame of `product_epm_modeled_empty_nested_source`, the
 //! EPathMap frame EP, and the raw-Par child C. EP is that source's modeled
 //! empty EPathMap frame, now waiting (waiting_id 2, waiting_kind 1) on the
@@ -35,6 +38,39 @@
 //! `epm_raw_par_witness_product_wf_from_parts`,
 //! `epm_raw_par_witness_live_wf_from_parts`), which do the case analysis on
 //! variables; the concrete proofs only supply their premises.
+//!
+//! W-ii has the same outer Expr and program-31 frames, and its EP is again the
+//! modeled empty EPathMap frame; its child C is that EPathMap frame too (kind
+//! 3), with return id 2. EP waits (waiting_id 2, waiting_kind 3) on the child
+//! that resolves a NestedEpm1 obligation, with one nested child started and
+//! none resolved. Its path holds the tag 0x10, the payload length 0x08 and the
+//! eight bytes of the modeled empty snapshot, the EPM1 header with magic "EPM1"
+//! and version 1; the pending obligation 0 has that payload and awaits
+//! resolution, and the parser's only frame is that obligation. C's snapshot is
+//! those eight bytes: its mode is Empty, and its cursor has taken both events
+//! of an Empty frame, so its End is next. Neither EP nor C has a wire reader
+//! or a cursor.
+//!
+//! `epm_nested_dead_witness_before` is the live state before the return, and
+//! `epm_nested_dead_witness_returned` pops C. The return performs C's End, as
+//! `epathmap_terminal_step` ends the child before `finish_other_complete` runs
+//! `process_admission_completion`: the derived summary is
+//! `Epm1 { mode: Empty, entries_stable: true }`, and the End event comes from
+//! the End facts of `product_epm_modeled_empty_nested_source_accepts`
+//! (`epm_nested_dead_witness_child_ends`). EP's parser resolves the obligation
+//! with `NestedEpm1 { is_map: false, entries_stable: true }`; C is not a Map,
+//! so `resolve_leaf_obligation` kills the path (NestedEpmNotMap): the resolved
+//! parser is dead with the obligation frame still on its stack, the gate is
+//! dead, and EP no longer waits and has resolved its nested child.
+//! `epm_nested_dead_witness_is_step` shows that the two states are a
+//! `live_runtime_epm_nested_return_step`, and
+//! `epm_nested_dead_witness_is_integrated_step` lifts that step to an
+//! `EpmNestedReturn` step of the integrated dispatcher. W-ii is built like
+//! W-i: its products and live states are opaque with shape lemmas, its
+//! well-formedness proofs go through
+//! `epm_nested_dead_witness_product_from_parts` and
+//! `epm_nested_dead_witness_live_from_parts`, and its return stack goes
+//! through `epm_nested_dead_witness_stack_from_parts`.
 
 use vstd::prelude::*;
 
@@ -43,6 +79,7 @@ use crate::{
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
     rpb3_epm_nested_source_refinement as nested,
     rpb3_epm_obligation_return_live as obligation_return,
+    rpb3_epm_obligation_return_source as return_source,
     rpb3_epm_source_accept_refinement as source_accept, rpb3_integrated_dispatcher as dispatcher,
     rpb3_map_frame_refinement as map, rpb3_path_parser_refinement as parser,
     rpb3_runtime_frame_source_refinement as runtime, rpb3_score_admission_bridge as score_bridge,
@@ -1753,6 +1790,1131 @@ pub proof fn epm_raw_par_witness_is_integrated_step()
     dispatcher::integrated_epm_raw_par_return_is_integrated_step(
         epm_raw_par_witness_scored(),
         epm_raw_par_witness_returned(),
+    );
+}
+
+/// The anchor of EP's path byte 0x10, the NestedEpm1 tag.
+pub open spec fn epm_nested_dead_witness_tag_anchor() -> epm::SourceAnchor {
+    epm::SourceAnchor { source: 0, offset: 7 }
+}
+
+/// The anchor of EP's last path byte, the last byte of the nested payload.
+/// `consume_obligation_byte` records it as the obligation's payload end.
+pub open spec fn epm_nested_dead_witness_payload_end() -> epm::SourceAnchor {
+    epm::SourceAnchor { source: 0, offset: 16 }
+}
+
+/// EP's path bytes: the NestedEpm1 tag 0x10, the payload length 0x08, and the
+/// eight bytes of the modeled empty snapshot.
+pub open spec fn epm_nested_dead_witness_path_bytes() -> Seq<u8> {
+    seq![0x10u8, 0x08u8] + integrated::product_epm_modeled_empty_snapshot_bytes()
+}
+
+/// The anchors of EP's ten path bytes in source 0: the tag at offset 7, the
+/// payload length at offset 8, and the payload at offsets 9 to 16.
+pub open spec fn epm_nested_dead_witness_positions() -> Seq<epm::SourceAnchor> {
+    Seq::new(10, |i: int| epm::SourceAnchor { source: 0, offset: (7 + i) as usize })
+}
+
+/// EP's parser before the return: an open root path whose first tag is 0x10
+/// and whose only frame is the NestedEpm1 obligation 0, which awaits
+/// resolution after its eight payload bytes.
+pub open spec fn epm_nested_dead_witness_parser() -> parser::ParserImage {
+    parser::ParserImage {
+        focus: parser::ParserPath {
+            status: parser::ParserStatus::Open,
+            completed_segments: 0,
+            first_tag: Some((0x10u8, parser::ParserSource { source: 0, offset: 7 })),
+            stable: true,
+            escape_allowed: true,
+            stack: seq![parser::ParserFrame::Obligation {
+                id: 0,
+                kind: parser::ParserObligationKind::NestedEpm1,
+                payload_len: 8,
+                tag_source: parser::ParserSource { source: 0, offset: 7 },
+                payload_start: 2,
+                status: parser::ParserObligationStatus::AwaitingResolution {
+                    payload_end: parser::ParserSource { source: 0, offset: 16 },
+                },
+            }],
+        },
+        owners: Seq::empty(),
+        next_obligation: 1,
+        stamp: 10,
+        fault: false,
+    }
+}
+
+/// EP's parser after the obligation resolves with a child that is not a Map:
+/// the focused root path is dead, and its stack keeps the obligation frame.
+pub open spec fn epm_nested_dead_witness_resolved_parser() -> parser::ParserImage {
+    let before = epm_nested_dead_witness_parser();
+    parser::ParserImage {
+        focus: parser::ParserPath { status: parser::ParserStatus::Dead, ..before.focus },
+        ..before
+    }
+}
+
+/// EP's path: the ten bytes with the pending obligation 0 ready for
+/// resolution, and the gate that is the image of the parser.
+pub open spec fn epm_nested_dead_witness_path() -> epm::PathTopology {
+    epm::PathTopology {
+        next_obligation: 1,
+        pending: Some(epm::PathObligation {
+            id: 0,
+            kind: epm::PathObligationKind::NestedEpm1,
+            payload_len: 8,
+            tag_source: epm_nested_dead_witness_tag_anchor(),
+            payload_start: 2,
+            payload_end: epm_nested_dead_witness_payload_end(),
+            awaiting_resolution: true,
+        }),
+        root_left: false,
+        restore: Seq::empty(),
+        path_bytes: epm_nested_dead_witness_path_bytes(),
+        path_positions: epm_nested_dead_witness_positions(),
+        gate: epm::PathGate {
+            dead: false,
+            stack_empty: false,
+            split_complete: false,
+            completed_segments: 0,
+            first_is_list: false,
+            stable: true,
+            escape_allowed: true,
+        },
+        parser: epm_nested_dead_witness_parser(),
+    }
+}
+
+/// EP's path after the return: no pending obligation, the dead parser, and
+/// its gate, which is dead.
+pub open spec fn epm_nested_dead_witness_resolved_path() -> epm::PathTopology {
+    let before = epm_nested_dead_witness_path();
+    epm::PathTopology {
+        pending: None,
+        gate: epm::PathGate { dead: true, ..before.gate },
+        parser: epm_nested_dead_witness_resolved_parser(),
+        ..before
+    }
+}
+
+/// EP's EPathMap frame: the modeled empty snapshot frame of
+/// `product_epm_modeled_empty_source` with EP's path, waiting on the
+/// obligation 0 for the child with return id 2.
+pub open spec fn epm_nested_dead_witness_parent_epm() -> epm::EpmFrame {
+    epm::EpmFrame {
+        path: epm_nested_dead_witness_path(),
+        wait: Some(epm::EpmWait::Obligation {
+            id: 0,
+            kind: epm::PathObligationKind::NestedEpm1,
+            return_id: 2,
+        }),
+        ..integrated::product_epm_modeled_empty_source().epm
+    }
+}
+
+/// EP's EPathMap frame after the return: the resolved path and no wait.
+pub open spec fn epm_nested_dead_witness_resolved_epm() -> epm::EpmFrame {
+    epm::EpmFrame {
+        path: epm_nested_dead_witness_resolved_path(),
+        wait: None,
+        ..epm_nested_dead_witness_parent_epm()
+    }
+}
+
+/// C's EPathMap frame: the modeled empty snapshot frame itself. Its mode is
+/// Empty, its path has left the root, and its cursor has taken both events of
+/// an Empty frame, so its next event is the End.
+pub open spec fn epm_nested_dead_witness_child_epm() -> epm::EpmFrame {
+    integrated::product_epm_modeled_empty_source().epm
+}
+
+/// EP's admission frame: the EPathMap frame of the nested modeled source,
+/// waiting on the kind-3 child with return id 2, with one nested child
+/// started and none resolved.
+pub open spec fn epm_nested_dead_witness_parent_frame() -> admission::AdmissionFrameState {
+    admission::AdmissionFrameState {
+        waiting_id: Some(2),
+        waiting_kind: 3,
+        nested_started: 1,
+        ..integrated::product_epm_modeled_empty_nested_source().admission.frames[2]
+    }
+}
+
+/// C's admission frame: the modeled EPathMap frame (kind 3, program 0) over
+/// the eight snapshot bytes, at the end of its region, with return id 2, body
+/// id 3 and no score.
+pub open spec fn epm_nested_dead_witness_child_frame() -> admission::AdmissionFrameState {
+    admission::AdmissionFrameState {
+        return_id: Some(2),
+        body_id: 3,
+        ..integrated::product_epm_modeled_empty_nested_source().admission.frames[2]
+    }
+}
+
+/// The admission state before the return, [outer Expr, program 31, EP, C]: no
+/// score, no completed frame, and the obligation ids 0 to 2 allocated.
+pub open spec fn epm_nested_dead_witness_admission() -> admission::AdmissionState {
+    let frames = integrated::product_epm_modeled_empty_nested_source().admission.frames;
+    admission::AdmissionState {
+        frames: seq![
+            frames[0],
+            frames[1],
+            epm_nested_dead_witness_parent_frame(),
+            epm_nested_dead_witness_child_frame(),
+        ],
+        arena: Seq::empty(),
+        root_end: 8,
+        pushed: 4,
+        completed: 0,
+        next_obligation_id: 3,
+    }
+}
+
+/// The admission state after C returns: C is popped, EP becomes
+/// `epm_parent_resolved`, and one more frame is completed.
+pub open spec fn epm_nested_dead_witness_returned_admission() -> admission::AdmissionState {
+    let before = epm_nested_dead_witness_admission();
+    admission::AdmissionState {
+        frames: before.frames.subrange(0, 3).update(2, epm::epm_parent_resolved(before.frames[2])),
+        completed: (before.completed as int + 1) as usize,
+        ..before
+    }
+}
+
+/// The bridge before the return: the admission state and an empty transcript.
+pub open spec fn epm_nested_dead_witness_bridge() -> score_bridge::ScoreAdmissionBridge {
+    score_bridge::ScoreAdmissionBridge {
+        admission: epm_nested_dead_witness_admission(),
+        transcript: score::empty_arena(),
+    }
+}
+
+/// The indexed regions of the four frames: C's region is its snapshot.
+pub open spec fn epm_nested_dead_witness_regions() -> Seq<epm::IndexedRegionImage> {
+    integrated::product_epm_modeled_empty_nested_source().indexed_regions.push(
+        epm_nested_dead_witness_child_epm().snapshot,
+    )
+}
+
+/// The product before the return: EP and C are its EPathMap frames, and it
+/// holds no receipt.
+#[verifier::opaque]
+pub open spec fn epm_nested_dead_witness_product() -> ProductScoreState {
+    let bridge = epm_nested_dead_witness_bridge();
+    ProductScoreState {
+        bridge,
+        map: map::IntegratedAdmissionState {
+            admission: bridge.admission,
+            map_frames: seq![None, None, None, None],
+            transcript: bridge.transcript,
+        },
+        epm_frames: seq![
+            None,
+            None,
+            Some(epm_nested_dead_witness_parent_epm()),
+            Some(epm_nested_dead_witness_child_epm()),
+        ],
+        indexed_regions: epm_nested_dead_witness_regions(),
+        accepted_epm_sources: seq![None, None, None, None],
+    }
+}
+
+/// The product after C returns into EP.
+#[verifier::opaque]
+pub open spec fn epm_nested_dead_witness_returned_product() -> ProductScoreState {
+    let before = epm_nested_dead_witness_product();
+    let admission = epm_nested_dead_witness_returned_admission();
+    let provisional = ProductScoreState {
+        bridge: score_bridge::ScoreAdmissionBridge {
+            admission,
+            transcript: before.bridge.transcript,
+        },
+        map: map::IntegratedAdmissionState {
+            admission,
+            map_frames: before.map.map_frames.drop_last(),
+            transcript: before.map.transcript,
+        },
+        epm_frames: before.epm_frames.drop_last().update(
+            2,
+            Some(epm_nested_dead_witness_resolved_epm()),
+        ),
+        indexed_regions: before.indexed_regions.drop_last(),
+        accepted_epm_sources: before.accepted_epm_sources,
+    };
+    ProductScoreState {
+        accepted_epm_sources: integrated::product_epm_receipts_carried(before, provisional),
+        ..provisional
+    }
+}
+
+/// The live state before the return. The outer and program-31 frames keep
+/// the owner cursor of the nested live witness; EP and C are EPathMap frames
+/// without a wire reader or a cursor.
+#[verifier::opaque]
+pub open spec fn epm_nested_dead_witness_before() -> LiveRuntimeProductState {
+    let product = epm_nested_dead_witness_product();
+    let cursor = integrated::live_epm_modeled_empty_runtime_cursor();
+    let reader = wire::wire_runtime_cursor_project(cursor).unwrap();
+    LiveRuntimeProductState {
+        source: LiveSourceProductState {
+            product,
+            runtime: runtime::RuntimeFrameImage {
+                score: product.bridge,
+                capacity: 4,
+                frame_bytes: 1,
+                max_frames: 4,
+                max_storage_bytes: 4,
+                max_capacity_bytes: 4,
+            },
+            arena: arena::RuntimeScoreArena { entries: Seq::empty() },
+            wire: seq![Some(reader), Some(reader), None, None],
+        },
+        cursors: seq![Some(cursor), Some(cursor), None, None],
+    }
+}
+
+/// The live state after C returns: the runtime follows the new admission
+/// state, the arena is kept, and C's empty wire and cursor entries are
+/// dropped.
+#[verifier::opaque]
+pub open spec fn epm_nested_dead_witness_returned() -> LiveRuntimeProductState {
+    let before = epm_nested_dead_witness_before();
+    let product = epm_nested_dead_witness_returned_product();
+    LiveRuntimeProductState {
+        source: LiveSourceProductState {
+            product,
+            runtime: runtime::runtime_after_admission_step(
+                before.source.runtime,
+                product.bridge.admission,
+            ),
+            arena: before.source.arena,
+            wire: before.source.wire.drop_last(),
+        },
+        cursors: before.cursors.drop_last(),
+    }
+}
+
+/// EP over the product before the return, as `product_linked_parent` selects
+/// it.
+pub open spec fn epm_nested_dead_witness_prior() -> epm::LinkedEpmState {
+    epm::LinkedEpmState {
+        epm: epm_nested_dead_witness_parent_epm(),
+        admission: epm_nested_dead_witness_admission(),
+        indexed_regions: epm_nested_dead_witness_regions(),
+    }
+}
+
+/// The resolved EP over the returned product, as `product_linked_top` selects
+/// it.
+pub open spec fn epm_nested_dead_witness_next() -> epm::LinkedEpmState {
+    epm::LinkedEpmState {
+        epm: epm_nested_dead_witness_resolved_epm(),
+        admission: epm_nested_dead_witness_returned_admission(),
+        indexed_regions: epm_nested_dead_witness_regions().drop_last(),
+    }
+}
+
+/// The admission facts of EP and C. EP is a well-formed EPathMap frame
+/// (kind 3, no returns) contained in the program-31 frame, waiting on a kind-3
+/// child with one nested child started and none resolved, and
+/// `epm_parent_resolved` resolves that child. C is a well-formed and
+/// admissible EPathMap frame without returns, at the end of its region, that
+/// waits on nothing, has no nested child in flight, and agrees with the
+/// `Other` summary of an unscored EPathMap child.
+pub proof fn epm_nested_dead_witness_frame_facts()
+    ensures
+        ({
+            let frames = integrated::product_epm_modeled_empty_nested_source().admission.frames;
+            let parent = epm_nested_dead_witness_parent_frame();
+            let child = epm_nested_dead_witness_child_frame();
+            &&& admission::admission_frame_wf(parent)
+            &&& admission::admission_child_physical_contained(frames[1], parent)
+            &&& parent.frame_kind == 3
+            &&& parent.returns.len() == 0
+            &&& parent.waiting_kind == 3
+            &&& parent.nested_resolved == 0
+            &&& epm::epm_parent_resolved(parent).nested_resolved == 1
+            &&& admission::admission_frame_wf(child)
+            &&& admission::admission_family_admissible(child)
+            &&& admission::admission_child_summary_agrees(
+                child,
+                admission::AdmissionReturnedKind::Other,
+                Seq::<admission::AdmissionScoreBinding>::empty(),
+            )
+            &&& child.frame_kind == 3
+            &&& child.returns.len() == 0
+            &&& child.cursor == child.region_end
+            &&& child.waiting_id.is_none()
+            &&& child.nested_started == child.nested_resolved
+        }),
+{
+    epm_raw_par_witness_nested_frames();
+}
+
+/// The admission state before the return is well-formed.
+pub proof fn epm_nested_dead_witness_frames_wf()
+    ensures
+        admission::admission_state_wf(epm_nested_dead_witness_admission()),
+{
+    epm_raw_par_witness_nested_frames();
+    epm_nested_dead_witness_frame_facts();
+    let state = epm_nested_dead_witness_admission();
+    assert forall|index: int| 0 <= index < state.frames.len()
+        implies admission::admission_frame_wf(state.frames[index]) by {
+        assert(index == 0 || index == 1 || index == 2 || index == 3);
+    }
+    assert forall|index: int|
+        1 <= index < state.frames.len()
+            && (state.frames[index - 1].frame_kind == 1
+                || state.frames[index - 1].frame_kind == 2)
+        implies #[trigger] admission::admission_child_physical_contained(
+            state.frames[index - 1],
+            state.frames[index],
+        ) by {
+        assert(index == 1 || index == 2);
+    }
+    assert(admission::admission_state_wf(state));
+}
+
+/// The indexed regions are linked to the frames before the return: EP and C
+/// keep the bytes and the source anchors of the modeled EPathMap frame, and
+/// C's region is the modeled snapshot, as is EP's.
+pub proof fn epm_nested_dead_witness_linked_sources()
+    ensures
+        epm::linked_indexed_sources(epm_nested_dead_witness_prior()),
+{
+    epm_raw_par_witness_nested_frames();
+    let source = integrated::product_epm_modeled_empty_nested_source();
+    let prior = epm_nested_dead_witness_prior();
+    let regions = epm_nested_dead_witness_regions();
+    assert(regions[3] == source.indexed_regions[2]);
+    assert forall|i: int| 0 <= i < 3 implies {
+        &&& epm::indexed_image_wf(source.indexed_regions[i])
+        &&& source.indexed_regions[i].bytes == source.admission.frames[i].source_bytes
+        &&& epm::indexed_position_at(source.indexed_regions[i], 0).source
+            == source.admission.frames[i].physical_source
+        &&& epm::indexed_position_at(source.indexed_regions[i], 0).offset
+            == source.admission.frames[i].physical_start
+    } by {}
+    assert forall|i: int| 0 <= i < 4 implies {
+        &&& epm::indexed_image_wf(prior.indexed_regions[i])
+        &&& prior.indexed_regions[i].bytes == prior.admission.frames[i].source_bytes
+        &&& epm::indexed_position_at(prior.indexed_regions[i], 0).source
+            == prior.admission.frames[i].physical_source
+        &&& epm::indexed_position_at(prior.indexed_regions[i], 0).offset
+            == prior.admission.frames[i].physical_start
+    } by {
+        assert(i == 0 || i == 1 || i == 2 || i == 3);
+    }
+    assert(epm::linked_indexed_sources(prior));
+}
+
+/// The returned admission state is well-formed, and the regions left after
+/// the pop are linked to its frames: `epm_parent_resolved_pop_wf` over EP
+/// before the return.
+pub proof fn epm_nested_dead_witness_popped_wf()
+    ensures
+        admission::admission_state_wf(epm_nested_dead_witness_returned_admission()),
+        epm::linked_indexed_sources(epm_nested_dead_witness_next()),
+{
+    epm_nested_dead_witness_frames_wf();
+    epm_nested_dead_witness_linked_sources();
+    let prior = epm_nested_dead_witness_prior();
+    let next = epm_nested_dead_witness_next();
+    assert(prior.admission.frames.len() == 4);
+    return_source::epm_parent_resolved_pop_wf(prior, next);
+}
+
+/// The admission states of the witness are well-formed: the state
+/// [outer Expr, program 31, EP, C] before the return, and the state after C
+/// returns into EP.
+pub proof fn epm_nested_dead_witness_admission_is_wf()
+    ensures
+        admission::admission_state_wf(epm_nested_dead_witness_admission()),
+        admission::admission_state_wf(epm_nested_dead_witness_returned_admission()),
+{
+    epm_nested_dead_witness_frames_wf();
+    epm_nested_dead_witness_popped_wf();
+}
+
+/// An EPathMap frame without an ACT plan keeps `frame_layout_wf` when only
+/// its path and its wait change and the new path has one position per byte:
+/// the layout reads the path only through that count.
+pub proof fn epm_nested_dead_witness_layout_carried(base: epm::EpmFrame, frame: epm::EpmFrame)
+    requires
+        epm::frame_layout_wf(base),
+        base.cursor.act_plan.is_none(),
+        base.cursor.validated_plan.is_none(),
+        frame == (epm::EpmFrame { path: frame.path, wait: frame.wait, ..base }),
+        frame.path.path_bytes.len() == frame.path.path_positions.len(),
+    ensures
+        epm::frame_layout_wf(frame),
+{
+}
+
+/// EP's EPathMap frame, before and after the return, and C's have the layout
+/// of the modeled empty snapshot frame; EP's snapshot is EP's indexed region,
+/// and C's is C's.
+pub proof fn epm_nested_dead_witness_layouts()
+    ensures
+        epm::frame_layout_wf(epm_nested_dead_witness_parent_epm()),
+        epm::frame_layout_wf(epm_nested_dead_witness_resolved_epm()),
+        epm::frame_layout_wf(epm_nested_dead_witness_child_epm()),
+        epm_nested_dead_witness_parent_epm().snapshot == epm_nested_dead_witness_regions()[2],
+        epm_nested_dead_witness_resolved_epm().snapshot == epm_nested_dead_witness_regions()[2],
+        epm_nested_dead_witness_child_epm().snapshot == epm_nested_dead_witness_regions()[3],
+{
+    integrated::product_epm_modeled_empty_source_accepts();
+    epm_raw_par_witness_nested_frames();
+    let base = epm_nested_dead_witness_child_epm();
+    assert(epm_nested_dead_witness_path_bytes().len() == 10);
+    epm_nested_dead_witness_layout_carried(base, epm_nested_dead_witness_parent_epm());
+    epm_nested_dead_witness_layout_carried(base, epm_nested_dead_witness_resolved_epm());
+}
+
+/// C's End. The modeled nested source accepts its EPathMap frame, so that
+/// frame completes with its End (`epm_source_end`), and the End arm of
+/// `event_step` does not read the admission id
+/// (`epm_end_admission_id_irrelevant`): C completes with the End event at
+/// the next obligation id 3 of the state before the return, into
+/// `nested_end_frame`, whose cursor is done. C has no ACT plan, so its layout
+/// makes it Empty, and its entries are stable.
+pub proof fn epm_nested_dead_witness_child_ends()
+    ensures
+        ({
+            let child = epm_nested_dead_witness_child_epm();
+            let finished = nested::nested_end_frame(child);
+            &&& child.mode == epm::EpmMode::Empty
+            &&& child.entries_stable
+            &&& epm::event_step(
+                child,
+                finished,
+                epm::EpmEvent::End,
+                3,
+                epm::EpmAction::Complete { mode: epm::EpmMode::Empty, entries_stable: true },
+            )
+            &&& finished.cursor.done
+        }),
+{
+    integrated::product_epm_modeled_empty_nested_source_accepts();
+    integrated::product_epm_modeled_empty_source_accepts();
+    epm_raw_par_witness_nested_frames();
+    let source = integrated::product_epm_modeled_empty_nested_source();
+    let child = epm_nested_dead_witness_child_epm();
+    let finished = nested::nested_end_frame(child);
+    let action = epm::EpmAction::Complete { mode: epm::EpmMode::Empty, entries_stable: true };
+    assert(child.cursor.act_plan.is_none() && child.cursor.validated_plan.is_none());
+    assert(child.mode == epm::EpmMode::Empty);
+    assert(source_accept::epm_source_end(source, source_accept::epm_end_linked(source)));
+    assert(source_accept::epm_end_frame(child) == finished);
+    assert(epm::event_step(
+        child,
+        finished,
+        epm::EpmEvent::End,
+        source.admission.next_obligation_id,
+        action,
+    ));
+    return_source::epm_end_admission_id_irrelevant(
+        child,
+        finished,
+        action,
+        source.admission.next_obligation_id,
+        3,
+    );
+}
+
+/// The bridge before the return is well-formed: its arena and its transcript
+/// are empty.
+pub proof fn epm_nested_dead_witness_bridge_wf()
+    ensures
+        score_bridge::bridge_well_formed(epm_nested_dead_witness_bridge()),
+{
+    score::empty_arena_well_formed();
+}
+
+/// The product before the return in explicit form.
+pub proof fn epm_nested_dead_witness_product_shape()
+    ensures
+        epm_nested_dead_witness_product() == (ProductScoreState {
+            bridge: epm_nested_dead_witness_bridge(),
+            map: map::IntegratedAdmissionState {
+                admission: epm_nested_dead_witness_admission(),
+                map_frames: seq![None, None, None, None],
+                transcript: score::empty_arena(),
+            },
+            epm_frames: seq![
+                None,
+                None,
+                Some(epm_nested_dead_witness_parent_epm()),
+                Some(epm_nested_dead_witness_child_epm()),
+            ],
+            indexed_regions: epm_nested_dead_witness_regions(),
+            accepted_epm_sources: seq![None, None, None, None],
+        }),
+{
+    reveal(epm_nested_dead_witness_product);
+}
+
+/// A product over four frames whose EPathMap frames are the third and the
+/// fourth and which holds no receipt is well-formed when its bridge and its
+/// map are, its regions are linked to its frames, and each EPathMap frame's
+/// layout is well-formed over its region.
+pub proof fn epm_nested_dead_witness_product_from_parts(
+    product: ProductScoreState,
+    parent: epm::LinkedEpmState,
+    child: epm::EpmFrame,
+)
+    requires
+        score_bridge::bridge_well_formed(product.bridge),
+        map::integrated_admission_wf(product.map),
+        product.map.admission == product.bridge.admission,
+        product.map.transcript == product.bridge.transcript,
+        product.bridge.admission.frames.len() == 4,
+        epm::linked_indexed_sources(parent),
+        parent.admission == product.bridge.admission,
+        parent.indexed_regions == product.indexed_regions,
+        product.epm_frames == seq![None, None, Some(parent.epm), Some(child)],
+        product.accepted_epm_sources == seq![None, None, None, None],
+        product.bridge.admission.frames[2].frame_kind == 3,
+        product.bridge.admission.frames[3].frame_kind == 3,
+        parent.epm.snapshot == product.indexed_regions[2],
+        child.snapshot == product.indexed_regions[3],
+        epm::frame_layout_wf(parent.epm),
+        epm::frame_layout_wf(child),
+    ensures
+        integrated::product_score_wf(product),
+{
+    let frames = product.bridge.admission.frames;
+    let regions = product.indexed_regions;
+    assert forall|i: int| 0 <= i < product.accepted_epm_sources.len()
+        implies match #[trigger] product.accepted_epm_sources[i] {
+            None => true,
+            Some(source) => integrated::product_epm_source_receipt_matches(
+                frames[i],
+                regions[i],
+                source,
+            ),
+        } by {
+        assert(i == 0 || i == 1 || i == 2 || i == 3);
+    }
+    assert(integrated::product_epm_source_receipts_wf(product));
+    assert forall|i: int| 0 <= i < regions.len() implies {
+        &&& epm::indexed_image_wf(regions[i])
+        &&& frames[i].source_bytes == regions[i].bytes
+        &&& frames[i].physical_start == integrated::product_indexed_start_anchor(regions[i]).offset
+        &&& frames[i].physical_source == integrated::product_indexed_start_anchor(regions[i]).source
+    } by {
+        assert(epm::indexed_position_at(regions[i], 0)
+            == integrated::product_indexed_start_anchor(regions[i]));
+    }
+    assert(integrated::product_frame_source_anchors_match(product));
+    assert forall|i: int| 0 <= i < product.epm_frames.len() implies {
+        &&& epm::indexed_image_wf(regions[i])
+        &&& regions[i].bytes == frames[i].source_bytes
+        &&& match product.epm_frames[i] {
+            None => true,
+            Some(frame) => {
+                &&& frames[i].frame_kind == 3
+                &&& frame.snapshot == regions[i]
+                &&& epm::frame_layout_wf(frame)
+            },
+        }
+    } by {
+        assert(i == 0 || i == 1 || i == 2 || i == 3);
+    }
+    assert(integrated::product_score_wf(product));
+}
+
+/// The product before the return is well-formed.
+pub proof fn epm_nested_dead_witness_product_is_wf()
+    ensures
+        integrated::product_score_wf(epm_nested_dead_witness_product()),
+{
+    epm_nested_dead_witness_product_shape();
+    epm_raw_par_witness_nested_frames();
+    epm_nested_dead_witness_frame_facts();
+    epm_nested_dead_witness_frames_wf();
+    epm_nested_dead_witness_bridge_wf();
+    epm_nested_dead_witness_layouts();
+    epm_nested_dead_witness_linked_sources();
+    let product = epm_nested_dead_witness_product();
+    epm_raw_par_witness_map_wf_from_parts(product.map);
+    epm_nested_dead_witness_product_from_parts(
+        product,
+        epm_nested_dead_witness_prior(),
+        epm_nested_dead_witness_child_epm(),
+    );
+}
+
+/// The live state before the return in explicit form.
+pub proof fn epm_nested_dead_witness_before_shape()
+    ensures
+        ({
+            let state = epm_nested_dead_witness_before();
+            let product = epm_nested_dead_witness_product();
+            let cursor = integrated::live_epm_modeled_empty_runtime_cursor();
+            let reader = wire::wire_runtime_cursor_project(cursor).unwrap();
+            &&& state.source.product == product
+            &&& state.source.runtime == runtime::RuntimeFrameImage {
+                score: product.bridge,
+                capacity: 4,
+                frame_bytes: 1,
+                max_frames: 4,
+                max_storage_bytes: 4,
+                max_capacity_bytes: 4,
+            }
+            &&& state.source.arena == arena::RuntimeScoreArena { entries: Seq::empty() }
+            &&& state.source.wire == seq![Some(reader), Some(reader), None, None]
+            &&& state.cursors == seq![Some(cursor), Some(cursor), None, None]
+        }),
+{
+    reveal(epm_nested_dead_witness_before);
+}
+
+/// A live state over four frames is well-formed when its product, its
+/// runtime image and its arena are, the outer two frames share one owner
+/// cursor and reader, and the third and the fourth frames are EPathMap frames
+/// without either.
+pub proof fn epm_nested_dead_witness_live_from_parts(
+    state: LiveRuntimeProductState,
+    cursor: wire::WireRuntimeCursorImage,
+    reader: wire::WireSourceState,
+)
+    requires
+        integrated::product_score_wf(state.source.product),
+        runtime::runtime_frame_image_wf(state.source.runtime),
+        state.source.runtime.score == state.source.product.bridge,
+        arena::runtime_projects_score(
+            state.source.arena,
+            state.source.product.bridge.transcript,
+        ),
+        state.source.product.bridge.admission.frames.len() == 4,
+        state.source.wire == seq![Some(reader), Some(reader), None, None],
+        state.cursors == seq![Some(cursor), Some(cursor), None, None],
+        epm_raw_par_witness_cursor_ready(cursor, reader),
+        integrated::product_wire_indexed_source_agrees(
+            cursor,
+            state.source.product.indexed_regions[0],
+        ),
+        integrated::product_wire_indexed_source_agrees(
+            cursor,
+            state.source.product.indexed_regions[1],
+        ),
+        epm_raw_par_witness_reader_at(reader, state.source.product.bridge.admission.frames[0]),
+        epm_raw_par_witness_reader_at(reader, state.source.product.bridge.admission.frames[1]),
+        state.source.product.bridge.admission.frames[2].frame_kind == 3,
+        state.source.product.bridge.admission.frames[3].frame_kind == 3,
+    ensures
+        integrated::live_runtime_product_wf(state),
+{
+    let frames = state.source.product.bridge.admission.frames;
+    assert forall|i: int| 0 <= i < state.source.wire.len() implies {
+        let frame = frames[i];
+        match #[trigger] state.source.wire[i] {
+            None => frame.frame_kind == 3 || frame.frame_kind == 4,
+            Some(present) => {
+                &&& (frame.frame_kind == 1 || frame.frame_kind == 2)
+                &&& wire::wire_cursor_shape(present.cursor)
+                &&& present.cursor.region_start == frame.region_start
+                &&& present.cursor.region_end == frame.region_end
+                &&& present.cursor.next == frame.cursor
+                &&& present.cursor.source_bytes == frame.source_bytes
+                &&& present.terminal_error.is_none()
+            },
+        }
+    } by {
+        assert(i == 0 || i == 1 || i == 2 || i == 3);
+    }
+    assert(integrated::live_source_product_wf(state.source));
+    assert forall|i: int| 0 <= i < state.cursors.len()
+        implies match #[trigger] state.cursors[i] {
+            None => true,
+            Some(present) => integrated::product_wire_indexed_source_agrees(
+                present,
+                state.source.product.indexed_regions[i],
+            ),
+        } by {
+        assert(i == 0 || i == 1 || i == 2 || i == 3);
+    }
+    assert forall|i: int| 0 <= i < state.cursors.len() implies {
+        match (#[trigger] state.cursors[i], state.source.wire[i]) {
+            (None, None) => true,
+            (Some(present), Some(projected)) => {
+                &&& wire::wire_runtime_derive_cursor(present).is_some()
+                &&& wire::wire_concrete_cursor_wf(
+                    wire::wire_runtime_derive_cursor(present).unwrap(),
+                )
+                &&& wire::wire_runtime_cursor_project(present) == Some(projected)
+            },
+            _ => false,
+        }
+    } by {
+        assert(i == 0 || i == 1 || i == 2 || i == 3);
+    }
+    assert(integrated::live_runtime_product_wf(state));
+}
+
+/// The live state before the return is well-formed.
+pub proof fn epm_nested_dead_witness_state_is_wf()
+    ensures
+        integrated::live_runtime_product_wf(epm_nested_dead_witness_before()),
+{
+    epm_nested_dead_witness_before_shape();
+    epm_nested_dead_witness_product_shape();
+    epm_nested_dead_witness_product_is_wf();
+    epm_nested_dead_witness_frames_wf();
+    epm_nested_dead_witness_bridge_wf();
+    epm_raw_par_witness_nested_frames();
+    epm_nested_dead_witness_frame_facts();
+    epm_raw_par_witness_owner_ready();
+    epm_raw_par_witness_owner_agrees();
+    score::empty_arena_well_formed();
+    let state = epm_nested_dead_witness_before();
+    let cursor = integrated::live_epm_modeled_empty_runtime_cursor();
+    assert(runtime::runtime_frame_image_wf(state.source.runtime));
+    assert(arena::runtime_projects_score(
+        state.source.arena,
+        state.source.product.bridge.transcript,
+    ));
+    epm_nested_dead_witness_live_from_parts(
+        state,
+        cursor,
+        wire::wire_runtime_cursor_project(cursor).unwrap(),
+    );
+}
+
+/// The returned product in terms of the product before the return, its
+/// carried receipts, and the linked state of the resolved EP.
+pub proof fn epm_nested_dead_witness_returned_shape()
+    ensures
+        ({
+            let before = epm_nested_dead_witness_product();
+            let returned = epm_nested_dead_witness_returned_product();
+            &&& returned == (ProductScoreState {
+                bridge: score_bridge::ScoreAdmissionBridge {
+                    admission: epm_nested_dead_witness_returned_admission(),
+                    transcript: before.bridge.transcript,
+                },
+                map: map::IntegratedAdmissionState {
+                    admission: epm_nested_dead_witness_returned_admission(),
+                    map_frames: before.map.map_frames.drop_last(),
+                    transcript: before.map.transcript,
+                },
+                epm_frames: before.epm_frames.drop_last().update(
+                    2,
+                    Some(epm_nested_dead_witness_resolved_epm()),
+                ),
+                indexed_regions: before.indexed_regions.drop_last(),
+                accepted_epm_sources: seq![None, None, None],
+            })
+            &&& returned.epm_frames == seq![
+                None,
+                None,
+                Some(epm_nested_dead_witness_resolved_epm()),
+            ]
+            &&& integrated::product_epm_receipts_carried(before, returned)
+                == seq![None, None, None]
+            &&& integrated::product_linked_top(returned) == Some(epm_nested_dead_witness_next())
+        }),
+{
+    reveal(epm_nested_dead_witness_returned_product);
+    epm_nested_dead_witness_product_shape();
+    let before = epm_nested_dead_witness_product();
+    let returned = epm_nested_dead_witness_returned_product();
+    assert(before.epm_frames.drop_last().update(2, Some(epm_nested_dead_witness_resolved_epm()))
+        =~= seq![None, None, Some(epm_nested_dead_witness_resolved_epm())]);
+    assert(returned.accepted_epm_sources =~= seq![None, None, None]);
+    assert(integrated::product_epm_receipts_carried(before, returned)
+        =~= seq![None, None, None]);
+}
+
+/// EP's obligation resolves with `NestedEpm1 { is_map: false, entries_stable:
+/// true }`: C is an Empty EPathMap, not a Map, so the reducer rejects it, and
+/// `resolve_parser_obligation` kills the focused path, as
+/// `resolve_leaf_obligation` does with NestedEpmNotMap. The resolved parser is
+/// dead with the obligation frame still on its stack, its root gate is dead,
+/// EP's gates are the images of its parsers and the resolved one is dead, the
+/// returned product holds the resolved frame, and EP's admission frame has
+/// resolved its nested child.
+pub proof fn epm_nested_dead_witness_resolves_dead()
+    ensures
+        ({
+            let before = epm_nested_dead_witness_parser();
+            let resolved = epm_nested_dead_witness_resolved_parser();
+            &&& parser::resolve_parser_obligation(
+                before,
+                0,
+                parser::ParserResolution::NestedEpm1 { is_map: false, entries_stable: true },
+            ) == resolved
+            &&& epm::child_reducer_dead(
+                epm::PathObligationKind::NestedEpm1,
+                epm::ChildSummary::Epm1 { mode: epm::EpmMode::Empty, entries_stable: true },
+            )
+            &&& resolved.focus.status == parser::ParserStatus::Dead
+            &&& resolved.focus.stack == before.focus.stack
+            &&& parser::parser_root_gate(resolved).dead
+            &&& epm_nested_dead_witness_resolved_path().gate.dead
+            &&& epm::parser_gate_matches(epm_nested_dead_witness_path().gate, before)
+            &&& epm::parser_gate_matches(epm_nested_dead_witness_resolved_path().gate, resolved)
+            &&& epm::epm_parent_resolved(epm_nested_dead_witness_parent_frame()).nested_resolved
+                == 1
+            &&& epm_nested_dead_witness_returned_product().epm_frames[2]
+                == Some(epm_nested_dead_witness_resolved_epm())
+        }),
+{
+    epm_nested_dead_witness_returned_shape();
+    epm_nested_dead_witness_frame_facts();
+    let before = epm_nested_dead_witness_parser();
+    assert(parser::resolve_parser_obligation(
+        before,
+        0,
+        parser::ParserResolution::NestedEpm1 { is_map: false, entries_stable: true },
+    ) == epm_nested_dead_witness_resolved_parser());
+}
+
+/// EP passes production's fatal pre-checks for its NestedEpm1 obligation (its
+/// path is alive before the return), accepts C's
+/// `Epm1 { mode: Empty, entries_stable: true }` as the resolved frame, and the
+/// source resolution of the return exists.
+pub proof fn epm_nested_dead_witness_parent_accepts()
+    ensures
+        obligation_return::epm_obligation_before_accept(
+            epm_nested_dead_witness_parent_epm(),
+            epm::PathObligationKind::NestedEpm1,
+        ),
+        epm::accept_child(
+            epm_nested_dead_witness_parent_epm(),
+            epm_nested_dead_witness_resolved_epm(),
+            Some(2),
+            epm::ChildSummary::Epm1 { mode: epm::EpmMode::Empty, entries_stable: true },
+        ),
+        nested::source_epm_resolution(
+            epm_nested_dead_witness_parent_epm().wait,
+            epm::ChildSummary::Epm1 { mode: epm::EpmMode::Empty, entries_stable: true },
+        ).is_some(),
+{
+    epm_nested_dead_witness_resolves_dead();
+    assert(epm_nested_dead_witness_path_bytes().len() == 10);
+}
+
+/// EPathMap frames [none, none, the parent's frame, a child's frame] over
+/// four admission frames are a return stack over the parent when the regions
+/// are linked to the admission frames and both EPathMap frames are admission
+/// frames of kind 3 with a well-formed layout over their regions.
+pub proof fn epm_nested_dead_witness_stack_from_parts(
+    prior: epm::LinkedEpmState,
+    frames: Seq<Option<epm::EpmFrame>>,
+    child: epm::EpmFrame,
+)
+    requires
+        epm::linked_indexed_sources(prior),
+        prior.admission.frames.len() == 4,
+        frames == seq![None, None, Some(prior.epm), Some(child)],
+        prior.admission.frames[2].frame_kind == 3,
+        prior.admission.frames[3].frame_kind == 3,
+        prior.epm.snapshot == prior.indexed_regions[2],
+        child.snapshot == prior.indexed_regions[3],
+        epm::frame_layout_wf(prior.epm),
+        epm::frame_layout_wf(child),
+    ensures
+        nested::epm_return_stack_source(prior, frames),
+{
+    assert forall|i: int| 0 <= i < frames.len()
+        implies match #[trigger] frames[i] {
+            None => true,
+            Some(frame) => prior.admission.frames[i].frame_kind == 3
+                && frame.snapshot == prior.indexed_regions[i]
+                && epm::frame_layout_wf(frame),
+        } by {
+        assert(i == 0 || i == 1 || i == 2 || i == 3);
+    }
+}
+
+/// The EPathMap frames of the product before the return are a return stack
+/// over EP: the regions are linked, EP sits under the top frame, and EP and C
+/// are admission frames of kind 3 with a well-formed layout over their
+/// regions. The two kinds come from the frames' definitions, not from
+/// `epm_nested_dead_witness_frame_facts`: the containment that lemma ensures
+/// equates the modeled source's bytes with a subrange of themselves, and next
+/// to the byte reads of `frame_layout_wf` that equation lets the solver index
+/// the subrange without end.
+pub proof fn epm_nested_dead_witness_stack_source()
+    ensures
+        nested::epm_return_stack_source(
+            epm_nested_dead_witness_prior(),
+            epm_nested_dead_witness_product().epm_frames,
+        ),
+{
+    epm_nested_dead_witness_product_shape();
+    epm_nested_dead_witness_linked_sources();
+    epm_nested_dead_witness_layouts();
+    epm_nested_dead_witness_stack_from_parts(
+        epm_nested_dead_witness_prior(),
+        epm_nested_dead_witness_product().epm_frames,
+        epm_nested_dead_witness_child_epm(),
+    );
+}
+
+/// The return derived from the product before the return. C is an EPathMap
+/// child, so the summary is its `Epm1 { mode: Empty, entries_stable: true }`,
+/// the admission summary is `Other`, and the nested frames are C and C's End
+/// frame.
+pub proof fn epm_nested_dead_witness_derived_summary()
+    ensures
+        integrated::product_linked_parent(epm_nested_dead_witness_product()) == Some(
+            epm_nested_dead_witness_prior(),
+        ),
+        obligation_return::epm_obligation_derived(epm_nested_dead_witness_product()) == Some(
+            nested::DerivedEpmReturn {
+                summary: epm::ChildSummary::Epm1 {
+                    mode: epm::EpmMode::Empty,
+                    entries_stable: true,
+                },
+                admission_summary: admission::AdmissionReturnedKind::Other,
+                nested_before: Some(epm_nested_dead_witness_child_epm()),
+                nested_after: Some(nested::nested_end_frame(epm_nested_dead_witness_child_epm())),
+            },
+        ),
+{
+    epm_nested_dead_witness_product_shape();
+    epm_nested_dead_witness_stack_source();
+    epm_nested_dead_witness_frame_facts();
+    epm_nested_dead_witness_child_ends();
+    let product = epm_nested_dead_witness_product();
+    assert(integrated::product_linked_parent(product) == Some(epm_nested_dead_witness_prior()));
+}
+
+/// EP is the linked parent of the product before the return and passes the
+/// fatal pre-checks for a NestedEpm1 return.
+pub proof fn epm_nested_dead_witness_parent_ready()
+    ensures
+        obligation_return::epm_obligation_parent_ready(
+            epm_nested_dead_witness_product(),
+            epm::PathObligationKind::NestedEpm1,
+        ),
+{
+    epm_nested_dead_witness_derived_summary();
+    epm_nested_dead_witness_parent_accepts();
+}
+
+/// C returns into EP: the linked return of the event model holds for EP over
+/// the product before the return and the resolved EP over the returned
+/// product, with the derived summaries, C before its End and C's End frame.
+pub proof fn epm_nested_dead_witness_linked_return()
+    ensures
+        epm::linked_epm_child_return(
+            epm_nested_dead_witness_prior(),
+            epm_nested_dead_witness_next(),
+            epm::ChildSummary::Epm1 { mode: epm::EpmMode::Empty, entries_stable: true },
+            admission::AdmissionReturnedKind::Other,
+            Some(epm_nested_dead_witness_child_epm()),
+            Some(nested::nested_end_frame(epm_nested_dead_witness_child_epm())),
+        ),
+{
+    epm_nested_dead_witness_frames_wf();
+    epm_nested_dead_witness_popped_wf();
+    epm_nested_dead_witness_linked_sources();
+    epm_nested_dead_witness_layouts();
+    epm_nested_dead_witness_parent_accepts();
+    epm_nested_dead_witness_frame_facts();
+    epm_nested_dead_witness_child_ends();
+}
+
+/// The source return of C into EP: the derived return exists, EP's wait has
+/// a resolution for its summary, and the linked return holds.
+pub proof fn epm_nested_dead_witness_source_return()
+    ensures
+        nested::source_linked_epm_child_return(
+            epm_nested_dead_witness_prior(),
+            epm_nested_dead_witness_next(),
+            epm_nested_dead_witness_product().epm_frames,
+        ),
+{
+    epm_nested_dead_witness_derived_summary();
+    epm_nested_dead_witness_parent_accepts();
+    epm_nested_dead_witness_linked_return();
+}
+
+/// The products before and after the return are a
+/// `product_epm_child_return_step` with the derived summaries and C's End
+/// frame.
+pub proof fn epm_nested_dead_witness_product_return()
+    ensures
+        integrated::product_epm_child_return_step(
+            epm_nested_dead_witness_product(),
+            epm_nested_dead_witness_returned_product(),
+            epm::ChildSummary::Epm1 { mode: epm::EpmMode::Empty, entries_stable: true },
+            admission::AdmissionReturnedKind::Other,
+            Some(nested::nested_end_frame(epm_nested_dead_witness_child_epm())),
+        ),
+{
+    reveal(integrated::product_epm_source_child_binding);
+    epm_nested_dead_witness_product_shape();
+    epm_nested_dead_witness_returned_shape();
+    epm_nested_dead_witness_derived_summary();
+    epm_nested_dead_witness_source_return();
+    epm_nested_dead_witness_linked_return();
+}
+
+/// The returned live state holds the returned product and is the pop of the
+/// live state before the return.
+pub proof fn epm_nested_dead_witness_returned_pop()
+    ensures
+        epm_nested_dead_witness_returned().source.product
+            == epm_nested_dead_witness_returned_product(),
+        obligation_return::epm_obligation_return_pop(
+            epm_nested_dead_witness_before(),
+            epm_nested_dead_witness_returned(),
+        ),
+{
+    reveal(epm_nested_dead_witness_returned);
+}
+
+/// The live states before and after the return are a
+/// `live_runtime_epm_nested_return_step`: C is an EPathMap child (kind 3) on a
+/// well-formed state, EP is ready for the NestedEpm1 obligation, the derived
+/// return carries C's End frame, the product returns C into EP with the
+/// derived summaries, and the live images are popped.
+pub proof fn epm_nested_dead_witness_is_step()
+    ensures
+        obligation_return::live_runtime_epm_nested_return_step(
+            epm_nested_dead_witness_before(),
+            epm_nested_dead_witness_returned(),
+        ),
+{
+    reveal(obligation_return::live_runtime_epm_nested_return_step);
+    epm_nested_dead_witness_state_is_wf();
+    epm_nested_dead_witness_before_shape();
+    epm_nested_dead_witness_product_shape();
+    epm_nested_dead_witness_frame_facts();
+    epm_nested_dead_witness_parent_ready();
+    epm_nested_dead_witness_derived_summary();
+    epm_nested_dead_witness_product_return();
+    epm_nested_dead_witness_returned_pop();
+}
+
+/// The witness is an `EpmNestedReturn` step of the integrated dispatcher, by
+/// the dispatcher's lift of `live_runtime_epm_nested_return_step`, and both of
+/// its states are well-formed integrated states.
+pub proof fn epm_nested_dead_witness_is_integrated_step()
+    ensures
+        dispatcher::integrated_wf(
+            dispatcher::IntegratedState::Active { product: epm_nested_dead_witness_before() },
+        ),
+        dispatcher::integrated_step(
+            dispatcher::IntegratedState::Active { product: epm_nested_dead_witness_before() },
+            dispatcher::IntegratedState::Active { product: epm_nested_dead_witness_returned() },
+            dispatcher::IntegratedAction::EpmNestedReturn,
+        ),
+        dispatcher::integrated_wf(
+            dispatcher::IntegratedState::Active { product: epm_nested_dead_witness_returned() },
+        ),
+{
+    epm_nested_dead_witness_is_step();
+    dispatcher::integrated_epm_nested_return_is_integrated_step(
+        epm_nested_dead_witness_before(),
+        epm_nested_dead_witness_returned(),
     );
 }
 
