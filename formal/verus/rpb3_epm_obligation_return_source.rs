@@ -30,7 +30,8 @@
 //!   path, with no Region owner. Reachable parser states must supply them.
 //!
 //! Production's `canonical_path_resolutions` counter is not part of the live
-//! product, so its overflow check is not modeled here.
+//! product. The checked accept below models its overflow check for nested
+//! returns; for raw-Par returns it is not modeled here.
 //!
 //! A NestedEpm1 EPathMap child ends and returns into its EPathMap parent in
 //! one driver iteration. `epathmap_terminal_step` ends the child: it runs the
@@ -62,6 +63,22 @@
 //! the observation gives Live EpmEnd and the nested return the same after-frame
 //! and the same `Complete` action, so one source extraction of the End serves
 //! both actions.
+//!
+//! Production's accept of a nested return resolves the awaited obligation with
+//! `resolve_obligation` and then increments `canonical_path_resolutions` with
+//! `checked_add(1)`, which fails with SizeOverflow after the reducer call has
+//! been applied. `rpb3_epm_nested_accept_checked_stats_refinement` models that
+//! accept on a source-shaped prestate, and `epm_nested_accept_source_of` builds
+//! it from the nested return's prestate: the parent's EPathMap and admission
+//! frames, the child's EPathMap frame before and after its End, the child's
+//! admission frame, the child's snapshot as the retained child view, the next
+//! obligation id, any counter value, and a reducer call that is applied exactly
+//! when the parent passes `epm_obligation_before_accept`.
+//! `epm_nested_return_checked_accept_agrees` shows that this accept agrees with
+//! every nested return: it resolves the awaited obligation with the mode and
+//! entries stability of the step's parser resolution, counts one more
+//! resolution below `usize::MAX`, and at `usize::MAX` reports the overflow after
+//! the reducer call with the counter unchanged.
 
 use vstd::prelude::*;
 
@@ -69,6 +86,7 @@ use crate as integrated;
 use crate::{
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
     rpb3_epathmap_terminal_source_observation as terminal,
+    rpb3_epm_nested_accept_checked_stats_refinement as nested_accept,
     rpb3_epm_nested_source_refinement as nested,
     rpb3_epm_obligation_return_live as obligation_return, rpb3_map_frame_refinement as map,
     rpb3_path_parser_refinement as parser, rpb3_runtime_frame_source_refinement as runtime,
@@ -936,6 +954,144 @@ pub proof fn epm_nested_return_terminal_agrees(
             ) by {
         assert(integrated::product_linked_top(end_before.source.product).unwrap().epm
             == child_epm);
+    }
+}
+
+/// The source of production's checked nested accept at the prestate of a
+/// nested return, with `resolutions_before` as the value of
+/// `canonical_path_resolutions`. The parent is the EPathMap frame under the
+/// child, with the admission frame under the top one; the child is the top
+/// EPathMap frame before its End and `nested_end_frame` of it after, with the
+/// top admission frame; the retained child view is the child's snapshot; and
+/// the reducer call is applied exactly when the parent passes
+/// `epm_obligation_before_accept` for a NestedEpm1 wait.
+pub open spec fn epm_nested_accept_source_of(
+    before: LiveRuntimeProductState,
+    resolutions_before: usize,
+) -> nested_accept::NestedEpmAcceptSource {
+    let product = before.source.product;
+    let frames = product.bridge.admission.frames;
+    let parent = product.epm_frames[product.epm_frames.len() - 2].unwrap();
+    let child = product.epm_frames.last().unwrap();
+    nested_accept::NestedEpmAcceptSource {
+        parent,
+        parent_admission: frames[frames.len() - 2],
+        child_before_end: child,
+        child_after_end: nested::nested_end_frame(child),
+        child_admission: frames.last(),
+        retained_child: child.snapshot,
+        next_obligation_id: product.bridge.admission.next_obligation_id,
+        resolutions_before,
+        reducer_call: if obligation_return::epm_obligation_before_accept(
+            parent, epm::PathObligationKind::NestedEpm1,
+        ) {
+            nested_accept::NestedReducerCallResult::Applied
+        } else {
+            nested_accept::NestedReducerCallResult::Failed
+        },
+    }
+}
+
+/// Every nested return agrees with production's checked accept. On the source
+/// that `epm_nested_accept_source_of` builds from the step's prestate, for any
+/// counter value `resolutions_before`, `nested_epm_accept_from_source` takes
+/// the awaited obligation's id and the mode and entries stability of the
+/// step's summary, which give the step's parser resolution of the parent.
+/// Below `usize::MAX` the outcome is `Resolved` with one more resolution; at
+/// `usize::MAX` it is `OverflowAfterReducerApplied` with the counter unchanged.
+pub proof fn epm_nested_return_checked_accept_agrees(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    resolutions_before: usize,
+)
+    requires obligation_return::live_runtime_epm_nested_return_step(before, after),
+    ensures
+        ({
+            let product = before.source.product;
+            let parent = product.epm_frames[product.epm_frames.len() - 2].unwrap();
+            let outcome = nested_accept::nested_epm_accept_from_source(
+                epm_nested_accept_source_of(before, resolutions_before),
+            );
+            match (
+                parent.wait,
+                obligation_return::epm_obligation_derived(product).unwrap().summary,
+            ) {
+                (
+                    Some(epm::EpmWait::Obligation { id, .. }),
+                    epm::ChildSummary::Epm1 { mode, entries_stable },
+                ) => {
+                    &&& after.source.product.epm_frames.last().unwrap().path.parser
+                        == parser::resolve_parser_obligation(
+                            parent.path.parser,
+                            id,
+                            parser::ParserResolution::NestedEpm1 {
+                                is_map: mode == epm::EpmMode::Map,
+                                entries_stable,
+                            },
+                        )
+                    &&& (resolutions_before < usize::MAX ==> outcome == Some(
+                        nested_accept::NestedEpmAcceptOutcome::Resolved {
+                            id,
+                            mode,
+                            entries_stable,
+                            resolutions_after: (resolutions_before + 1) as usize,
+                        },
+                    ))
+                    &&& (resolutions_before == usize::MAX ==> outcome == Some(
+                        nested_accept::NestedEpmAcceptOutcome::OverflowAfterReducerApplied {
+                            id,
+                            mode,
+                            entries_stable,
+                            resolutions_after: resolutions_before,
+                        },
+                    ))
+                },
+                _ => false,
+            }
+        }),
+{
+    reveal(obligation_return::live_runtime_epm_nested_return_step);
+    let product = before.source.product;
+    let product_after = after.source.product;
+    let prior = integrated::product_linked_parent(product).unwrap();
+    let next = integrated::product_linked_top(product_after).unwrap();
+    let derived = obligation_return::epm_obligation_derived(product).unwrap();
+    let frames = product.bridge.admission.frames;
+    let parent = product.epm_frames[product.epm_frames.len() - 2].unwrap();
+    let child_epm = product.epm_frames.last().unwrap();
+    let parent_admission = frames[frames.len() - 2];
+    let child = frames.last();
+    let source = epm_nested_accept_source_of(before, resolutions_before);
+    assert(prior.epm == parent);
+    assert(derived.summary == epm::ChildSummary::Epm1 {
+        mode: child_epm.mode,
+        entries_stable: child_epm.entries_stable,
+    });
+    assert(derived.nested_after == Some(nested::nested_end_frame(child_epm)));
+    assert(epm::linked_epm_child_return(
+        prior, next, derived.summary, derived.admission_summary,
+        product.epm_frames.last(), derived.nested_after,
+    ));
+    if let Some(epm::EpmWait::Obligation { id, kind, return_id }) = parent.wait {
+        assert(kind == epm::PathObligationKind::NestedEpm1);
+        assert(child.return_id == Some(return_id));
+        assert(epm::event_step(
+            child_epm, nested::nested_end_frame(child_epm), epm::EpmEvent::End,
+            product.bridge.admission.next_obligation_id,
+            epm::EpmAction::Complete {
+                mode: child_epm.mode,
+                entries_stable: child_epm.entries_stable,
+            },
+        ));
+        assert(child_epm.snapshot == product.indexed_regions.last());
+        assert(parent.snapshot == product.indexed_regions[product.indexed_regions.len() - 2]);
+        assert(epm::frame_layout_wf(parent));
+        assert(parent_admission.source_bytes == parent.snapshot.bytes);
+        assert(child.source_bytes == child_epm.snapshot.bytes);
+        assert(child.score_handle.is_none());
+        assert(nested_accept::nested_epm_accept_source_ready(source));
+        assert(source.reducer_call == nested_accept::NestedReducerCallResult::Applied);
+        assert(product_after.epm_frames.last() == Some(next.epm));
     }
 }
 
