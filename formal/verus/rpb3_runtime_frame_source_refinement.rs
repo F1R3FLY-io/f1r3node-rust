@@ -2338,7 +2338,9 @@ pub open spec fn source_noscore_message_finish_ready(
         let parent = before.score.admission.frames[
             before.score.admission.frames.len() - 2
         ];
-        match admission::concrete_derived_summary(parent, child) {
+        match admission::concrete_derived_summary_with_arena(
+            parent, child, before.score.admission.arena,
+        ) {
             None => false,
             Some(kind) => !admission::admission_summary_has_score(kind),
         }
@@ -2752,7 +2754,9 @@ pub open spec fn source_message_finish_route(
                         let parent = after_finish.admission.frames[
                             after_finish.admission.frames.len() - 2
                         ];
-                        match admission::concrete_derived_summary(parent, child) {
+                        match admission::concrete_derived_summary_with_arena(
+                            parent, child, after_finish.admission.arena,
+                        ) {
                             None => None,
                             Some(kind) => Some(SourceMessageFinishRoute::Child { kind, image }),
                         }
@@ -4882,6 +4886,462 @@ pub proof fn runtime_noscore_emap_incomplete_modeled_witness()
     assert(runtime_pre_pop_child_accept(before).is_some());
     runtime_noscore_emap_ezipper_eof_is_complete_image(before);
     runtime_noscore_child_eof_is_checked(before);
+}
+
+pub open spec fn runtime_noscore_expr_structural_tag(tag: u32) -> bool {
+    tag == 5 || tag == 6 || tag == 20 || tag == 21 || tag == 24 || tag == 32 || tag == 33
+        || (7 <= tag && tag <= 18) || (27 <= tag && tag <= 31)
+}
+
+pub proof fn runtime_noscore_structural_summary_selected(
+    before: RuntimeFrameImage, kind: admission::AdmissionReturnedKind,
+)
+    requires
+        runtime_frame_image_wf(before),
+        before.score.admission.frames.len() > 1,
+        before.score.admission.frames.last().frame_kind == 1,
+        before.score.admission.frames.last().waiting_id.is_none(),
+        before.score.admission.frames.last().cursor
+            == before.score.admission.frames.last().region_end,
+        before.score.admission.frames.last().score_handle.is_none(),
+        before.score.admission.frames[before.score.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Expr,
+        before.score.admission.frames[before.score.admission.frames.len() - 2]
+            .program_type_id == 24,
+        before.score.admission.frames[before.score.admission.frames.len() - 2].waiting_slot
+            == Some(0usize),
+        match before.score.admission.frames[before.score.admission.frames.len() - 2]
+            .waiting_tag {
+            Some(tag) => runtime_noscore_expr_structural_tag(tag),
+            None => false,
+        },
+        admission::concrete_derived_summary(
+            before.score.admission.frames[before.score.admission.frames.len() - 2],
+            before.score.admission.frames.last(),
+        ) == Some(kind),
+        admission::admission_expr_structural_payload(
+            before.score.admission.frames[before.score.admission.frames.len() - 2],
+            before.score.admission.frames.last(),
+        ) == Some(kind),
+        !admission::admission_summary_has_score(kind),
+    ensures runtime_noscore_child_kind(before) == Some(kind),
+{
+    let child = before.score.admission.frames.last();
+    let parent = before.score.admission.frames[before.score.admission.frames.len() - 2];
+    let tag = parent.waiting_tag.unwrap();
+    if tag == 33 {
+        assert(child.program_type_id == 32);
+    } else if tag == 24 {
+        assert(child.program_type_id == 33);
+    } else if tag == 5 || tag == 6 {
+        assert(36 <= child.program_type_id && child.program_type_id <= 37);
+    } else {
+        assert((7 <= tag && tag <= 18) || (27 <= tag && tag <= 31)
+            || tag == 20 || tag == 21 || tag == 32);
+        if (7 <= tag && tag <= 18) || (27 <= tag && tag <= 31) {
+            assert(38 <= child.program_type_id && child.program_type_id <= 54);
+            assert(bridge::bridge_expr_structural_constructor(child.program_type_id).is_some());
+            assert(bridge::bridge_expr_structural_constructor(child.program_type_id).unwrap().1);
+        }
+    }
+}
+
+pub proof fn runtime_noscore_family_summary_selected(
+    before: RuntimeFrameImage, kind: admission::AdmissionReturnedKind,
+)
+    requires
+        runtime_frame_image_wf(before),
+        before.score.admission.frames.len() > 1,
+        before.score.admission.frames.last().frame_kind == 1,
+        before.score.admission.frames.last().waiting_id.is_none(),
+        before.score.admission.frames.last().cursor
+            == before.score.admission.frames.last().region_end,
+        before.score.admission.frames.last().score_handle.is_none(),
+        admission::admission_frame_wf(before.score.admission.frames.last()),
+        before.score.admission.frames[before.score.admission.frames.len() - 2].frame_kind == 1,
+        before.score.admission.frames[before.score.admission.frames.len() - 2]
+            .program_type_id != 1,
+        before.score.admission.frames.last().program_type_id != 1,
+        !(before.score.admission.frames[before.score.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Other
+            && before.score.admission.frames[before.score.admission.frames.len() - 2]
+                .program_type_id == 32
+            && before.score.admission.frames[before.score.admission.frames.len() - 2]
+                .waiting_slot == Some(0usize)
+            && before.score.admission.frames[before.score.admission.frames.len() - 2]
+                .waiting_tag == Some(1u32)),
+        !(before.score.admission.frames[before.score.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Expr
+            && before.score.admission.frames[before.score.admission.frames.len() - 2]
+                .waiting_slot == Some(0usize)
+            && match before.score.admission.frames[before.score.admission.frames.len() - 2]
+                .waiting_tag {
+                Some(tag) => runtime_noscore_expr_structural_tag(tag),
+                None => false,
+            }),
+        before.score.admission.frames[before.score.admission.frames.len() - 2].family
+            == admission::AdmissionFamily::Expr
+            ==> before.score.admission.frames[before.score.admission.frames.len() - 2]
+                .program_type_id == 24
+                && before.score.admission.frames[before.score.admission.frames.len() - 2]
+                    .waiting_slot == Some(0usize),
+        admission::concrete_derived_summary(
+            before.score.admission.frames[before.score.admission.frames.len() - 2],
+            before.score.admission.frames.last(),
+        ) == Some(kind),
+        admission::admission_child_summary_agrees(
+            before.score.admission.frames.last(), kind, before.score.admission.arena,
+        ),
+        !admission::admission_summary_has_score(kind),
+    ensures runtime_noscore_child_kind(before) == Some(kind),
+{
+    let child = before.score.admission.frames.last();
+    let parent = before.score.admission.frames[before.score.admission.frames.len() - 2];
+    assert(admission::concrete_derived_summary(parent, child) == match child.family {
+        admission::AdmissionFamily::ReceiveBindFrame => Some(
+            admission::AdmissionReturnedKind::ReceiveBind {
+                source_present: admission::admission_returned_par(child, 1),
+            }),
+        admission::AdmissionFamily::MatchCaseFrame => Some(
+            admission::AdmissionReturnedKind::MatchCase {
+                required_present: admission::admission_returned_par(child, 0)
+                    && admission::admission_returned_par(child, 1),
+                canonical_fixed_point: !admission::admission_returned_default_par(child, 3),
+            }),
+        admission::AdmissionFamily::CostSignatureFrame
+        | admission::AdmissionFamily::CostRegionFrame =>
+            Some(admission::AdmissionReturnedKind::CostScore),
+        admission::AdmissionFamily::BigRationalFrame =>
+            match admission::admission_big_rational_fields(child) {
+                Some((numerator, denominator)) => Some(
+                    admission::AdmissionReturnedKind::BigRational { numerator, denominator }),
+                None => None,
+            },
+        admission::AdmissionFamily::FixedPointFrame =>
+            match admission::admission_fixed_point_fields(child) {
+                Some((unscaled, scale)) => Some(
+                    admission::AdmissionReturnedKind::FixedPoint { unscaled, scale }),
+                None => None,
+            },
+        admission::AdmissionFamily::EVarFrame if parent.family
+            == admission::AdmissionFamily::Expr && parent.waiting_tag == Some(19u32) => Some(
+            admission::AdmissionReturnedKind::ExprPayload {
+                score_present: admission::admission_returned_var(child, 0),
+                canonical_fixed_point: true,
+                canonical_path_stable: false,
+            }),
+        admission::AdmissionFamily::Other if child.frame_kind == 1
+            && child.program_type_id == 34
+            && parent.family == admission::AdmissionFamily::Other
+            && parent.program_type_id == 30
+            && parent.waiting_slot == Some(0usize)
+            && parent.waiting_tag == Some(1u32) =>
+            match admission::admission_key_value_pair_fields(child) {
+                Some((key, value_par)) => Some(
+                    admission::AdmissionReturnedKind::KeyValuePair { key, value_par }),
+                None => None,
+            },
+        admission::AdmissionFamily::Other if admission::admission_opaque_child_edge(
+            parent, child,
+        ) => Some(admission::AdmissionReturnedKind::Other),
+        admission::AdmissionFamily::Other if child.frame_kind == 2
+            && parent.family == admission::AdmissionFamily::New
+            && parent.waiting_slot == Some(3usize)
+            && parent.waiting_tag == Some(4u32)
+            && admission::admission_map_summary_complete(child) => Some(
+            admission::AdmissionReturnedKind::Map {
+                key_bytes: admission::admission_map_key_bytes(child),
+                value_score_handle: admission::admission_map_value_score_handle(child),
+            }),
+        admission::AdmissionFamily::Other if child.frame_kind == 1 =>
+            match child.program_type_id {
+                6 => Some(admission::AdmissionReturnedKind::VarScore),
+                7 | 64 => Some(admission::AdmissionReturnedKind::Unit),
+                10 | 11 => Some(admission::AdmissionReturnedKind::CostScore),
+                56 => match admission::admission_var_ref_fields(child) {
+                    Some((index, depth)) => Some(
+                        admission::AdmissionReturnedKind::VarRef { index, depth }),
+                    None => None,
+                },
+                57 => match admission::admission_connective_body_handles(child) {
+                    Some(par_handles) => Some(
+                        admission::AdmissionReturnedKind::ConnectiveBody { par_handles }),
+                    None => None,
+                },
+                61 | 62 | 63 => match admission::admission_bytes_leaf_payload(child) {
+                    Some(value) => Some(admission::AdmissionReturnedKind::Bytes { value }),
+                    None => None,
+                },
+                _ => None,
+            },
+        _ => None,
+    });
+    if child.family == admission::AdmissionFamily::Other
+        && admission::admission_opaque_child_edge(parent, child)
+        && !(child.program_type_id == 34
+            && parent.family == admission::AdmissionFamily::Other
+            && parent.program_type_id == 30
+            && parent.waiting_slot == Some(0usize)
+            && parent.waiting_tag == Some(1u32))
+    {
+        assert(child.program_type_id == 3 || child.program_type_id == 14
+            || child.program_type_id == 17);
+    }
+}
+
+pub proof fn runtime_noscore_child_kind_reads_pushed_summary(before: RuntimeFrameImage)
+    requires
+        runtime_frame_image_wf(before),
+        before.score.admission.frames.len() > 1,
+        before.score.admission.frames.last().frame_kind == 1,
+        runtime_pre_pop_child_accept(before).is_some(),
+    ensures
+        admission::concrete_derived_summary_with_arena(
+            before.score.admission.frames[before.score.admission.frames.len() - 2],
+            before.score.admission.frames.last(),
+            before.score.admission.arena,
+        ).is_some(),
+        runtime_noscore_child_kind(before) == if admission::admission_summary_has_score(
+            admission::concrete_derived_summary_with_arena(
+                before.score.admission.frames[before.score.admission.frames.len() - 2],
+                before.score.admission.frames.last(),
+                before.score.admission.arena,
+            ).unwrap(),
+        ) {
+            None
+        } else {
+            admission::concrete_derived_summary_with_arena(
+                before.score.admission.frames[before.score.admission.frames.len() - 2],
+                before.score.admission.frames.last(),
+                before.score.admission.arena,
+            )
+        },
+{
+    reveal(runtime_pre_pop_child_accept);
+    let state = before.score.admission;
+    let child = state.frames[state.frames.len() - 1];
+    let parent = state.frames[state.frames.len() - 2];
+    let arena = state.arena;
+    assert(admission::admission_state_wf(state));
+    assert(admission::admission_frame_wf(child));
+    assert(admission::admission_frame_wf(parent));
+    assert(admission::concrete_message_complete_child(state).is_some());
+    let kind = admission::concrete_derived_summary_with_arena(parent, child, arena).unwrap();
+    assert(admission::admission_complete_child_step(
+        state, child.return_id.unwrap(), child.frame_kind, kind,
+    ).is_some());
+    if parent.family == admission::AdmissionFamily::Expr
+        && parent.waiting_slot == Some(0usize)
+        && (parent.waiting_tag == Some(22u32) || parent.waiting_tag == Some(23u32))
+        && parent.program_type_id == 24
+    {
+        assert(admission::concrete_derived_summary_with_arena(parent, child, arena)
+            == admission::admission_expr_structural_payload_with_arena(parent, child, arena));
+        if !(child.family == admission::AdmissionFamily::Other && child.frame_kind == 1
+            && (child.program_type_id == 29 || child.program_type_id == 30))
+        {
+            assert(admission::admission_expr_structural_payload(parent, child).is_none());
+        } else if child.program_type_id == 29 {
+            if parent.waiting_tag == Some(23u32) {
+                assert(admission::admission_expr_structural_payload(parent, child).is_none());
+            }
+            assert(admission::concrete_derived_summary(parent, child).is_none());
+        } else if parent.waiting_tag == Some(22u32) {
+            assert(admission::admission_expr_structural_payload(parent, child).is_none());
+        } else {
+            assert(admission::concrete_derived_summary(parent, child).is_none());
+        }
+    } else {
+        assert(admission::concrete_derived_summary_with_arena(parent, child, arena)
+            == admission::concrete_derived_summary(parent, child));
+        if parent.family == admission::AdmissionFamily::Expr {
+            assert(parent.program_type_id == 24);
+            assert(parent.waiting_slot == Some(0usize));
+        }
+        if !admission::admission_summary_has_score(kind) {
+            assert(child.score_handle.is_none());
+            assert(parent.program_type_id != 1);
+            assert(!(child.frame_kind == 1 && child.program_type_id == 1));
+            assert(!(parent.family == admission::AdmissionFamily::Other
+                && parent.program_type_id == 32
+                && parent.waiting_slot == Some(0usize)
+                && parent.waiting_tag == Some(1u32)));
+            if parent.family == admission::AdmissionFamily::Expr
+                && parent.waiting_slot == Some(0usize)
+                && match parent.waiting_tag {
+                    Some(tag) => runtime_noscore_expr_structural_tag(tag),
+                    None => false,
+                }
+            {
+                assert(admission::concrete_derived_summary(parent, child)
+                    == admission::admission_expr_structural_payload(parent, child));
+                runtime_noscore_structural_summary_selected(before, kind);
+            } else {
+                runtime_noscore_family_summary_selected(before, kind);
+            }
+        }
+    }
+}
+
+pub proof fn source_noscore_route_agrees_with_runtime(
+    before: RuntimeFrameImage, result: SourceMessageFinishResult,
+)
+    requires source_message_finish_bridge(before, result) == Some(before.score),
+    ensures
+        source_noscore_message_eof_child_accept(before, result)
+            == runtime_noscore_child_eof_accept(before),
+{
+    reveal(source_noscore_message_finish_ready);
+    if runtime_frame_image_wf(before)
+        && before.score.admission.frames.len() > 1
+        && before.score.admission.frames.last().frame_kind == 1
+        && runtime_pre_pop_child_accept(before).is_some()
+    {
+        runtime_noscore_child_kind_reads_pushed_summary(before);
+    }
+}
+
+pub proof fn runtime_emap_ezipper_source_steps_quiet(before: bridge::ScoreAdmissionBridge)
+    requires
+        before.admission.frames.len() > 0,
+        before.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.admission.frames.last().frame_kind == 1,
+        before.admission.frames.last().program_type_id == 30
+            || before.admission.frames.last().program_type_id == 32,
+        bridge::bridge_emap_finish_step(before).is_none(),
+    ensures
+        forall|after: bridge::ScoreAdmissionBridge|
+            !bridge::bridge_score_source_step(before, after),
+{
+    assert(bridge::bridge_raw_par_step(before).is_none());
+    assert(bridge::bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge::bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge::bridge_cost_bound_step(before).is_none());
+    assert(bridge::bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge::bridge_cost_signature_step(before).is_none());
+    assert(bridge::bridge_cost_region_step(before).is_none());
+    assert(bridge::bridge_cost_token_stack_step(before).is_none());
+    assert(bridge::bridge_bundle_step(before).is_none());
+    assert(bridge::bridge_if_step(before).is_none());
+    assert(bridge::bridge_send_step(before).is_none());
+    assert(bridge::bridge_match_step(before).is_none());
+    assert(bridge::bridge_absent_specialized_constructor_step(before).is_none());
+    assert(bridge::bridge_absent_connective_step(before).is_none());
+    assert(bridge::bridge_receive_bind_step(before).is_none());
+    assert(bridge::bridge_match_case_step(before).is_none());
+    assert(bridge::bridge_bool_oneof_step(before).is_none());
+    assert(bridge::bridge_expr_atom_step(before).is_none());
+    assert(bridge::bridge_expr_numeric_step(before).is_none());
+    assert(bridge::bridge_expr_big_rational_step(before).is_none());
+    assert(bridge::bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge::bridge_sys_auth_token_step(before).is_none());
+    assert(bridge::bridge_new_empty_collections_step(before).is_none());
+    assert(bridge::bridge_new_one_injection_step(before).is_none());
+    assert(bridge::bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge::bridge_new_one_uri_step(before).is_none());
+    assert(bridge::bridge_new_collections_step(before).is_none());
+    assert(bridge::bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge::bridge_expr_structural_constructor(
+        before.admission.frames.last().program_type_id,
+    ).is_none());
+    assert(bridge::bridge_expr_structural_step(before).is_none());
+    assert(bridge::bridge_evar_step(before).is_none());
+    assert(bridge::bridge_ordered_sequence_step(before).is_none());
+    assert(bridge::bridge_emethod_step(before).is_none());
+    assert(bridge::bridge_connective_not_step(before).is_none());
+    assert(bridge::bridge_connective_varref_step(before).is_none());
+    assert(bridge::bridge_connective_collection_step(before).is_none());
+    assert(bridge::bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge::bridge_receive_present_condition_step(before).is_none());
+    assert(bridge::bridge_receive_absent_condition_step(before).is_none());
+    assert(bridge::bridge_nonsemantic_step(before).is_none());
+}
+
+pub open spec fn source_unchanged_finish_result(
+    before: RuntimeFrameImage,
+) -> SourceMessageFinishResult {
+    SourceMessageFinishResult {
+        updated_top: before.score.admission.frames.last(),
+        score_arena: before.score.admission.arena,
+        transcript: before.score.transcript,
+    }
+}
+
+pub proof fn source_noscore_emap_incomplete_route_witness()
+    ensures
+        source_message_finish_bridge(
+            runtime_noscore_emap_incomplete_before(),
+            source_unchanged_finish_result(runtime_noscore_emap_incomplete_before()),
+        ) == Some(runtime_noscore_emap_incomplete_before().score),
+        runtime_pre_pop_child_accept(runtime_noscore_emap_incomplete_before()).is_some(),
+        source_noscore_message_eof_child_accept(
+            runtime_noscore_emap_incomplete_before(),
+            source_unchanged_finish_result(runtime_noscore_emap_incomplete_before()),
+        ) == runtime_pre_pop_child_accept(runtime_noscore_emap_incomplete_before()),
+        source_message_finish_route(
+            runtime_noscore_emap_incomplete_before(),
+            source_unchanged_finish_result(runtime_noscore_emap_incomplete_before()),
+        ) == Some(SourceMessageFinishRoute::Child {
+            kind: runtime_noscore_absent_expr_payload(),
+            image: runtime_pre_pop_child_accept(runtime_noscore_emap_incomplete_before()).unwrap(),
+        }),
+{
+    let before = runtime_noscore_emap_incomplete_before();
+    let result = source_unchanged_finish_result(before);
+    let state = before.score.admission;
+    let kind = runtime_noscore_absent_expr_payload();
+    runtime_noscore_emap_incomplete_modeled_witness();
+    assert(runtime_noscore_child_eof_accept(before).is_some());
+    assert(runtime_pre_pop_child_accept(before).is_some());
+    runtime_noscore_child_kind_reads_pushed_summary(before);
+    assert(admission::concrete_derived_summary_with_arena(
+        state.frames[state.frames.len() - 2], state.frames.last(), state.arena,
+    ) == Some(kind));
+    assert(state.frames.update(state.frames.len() - 1, state.frames.last()) =~= state.frames);
+    assert(source_message_finish_bridge(before, result) == Some(before.score));
+    reveal(source_noscore_message_finish_ready);
+    assert(source_noscore_message_finish_ready(before, result));
+    runtime_noscore_emap_ezipper_selected_quiet(before);
+    runtime_emap_ezipper_source_steps_quiet(before.score);
+    runtime_score_source_edge_exact(before.score, before.score);
+    reveal(source_message_finish_ready);
+    assert(!source_message_finish_ready(before, result));
+    assert(source_message_eof_child_accept(before, result).is_none());
+}
+
+pub proof fn source_message_finish_route_reads_complete_summary(
+    before: RuntimeFrameImage,
+    result: SourceMessageFinishResult,
+    after_finish: bridge::ScoreAdmissionBridge,
+    image: RuntimeFrameImage,
+    popped: admission::AdmissionState,
+    summary: admission::AdmissionReturnedKind,
+)
+    requires
+        source_message_finish_bridge(before, result) == Some(after_finish),
+        before.score.admission.frames.len() > 1,
+        after_finish.admission.frames.len() > 1,
+        Some(image) == match source_message_eof_child_accept(before, result) {
+            Some(accepted) => Some(accepted),
+            None => source_noscore_message_eof_child_accept(before, result),
+        },
+        admission::concrete_message_driver_step(
+            after_finish.admission, admission::ConcreteFrameActionModel::Complete,
+        ) == Some(admission::ConcreteFrameOutcomeModel::ParentAccepted { state: popped }),
+        popped.frames.last().returns.last().kind == summary,
+    ensures
+        source_message_finish_route(before, result)
+            == Some(SourceMessageFinishRoute::Child { kind: summary, image }),
+{
+    let state = after_finish.admission;
+    let child = state.frames.last();
+    let parent = state.frames[state.frames.len() - 2];
+    let pushed = admission::concrete_derived_summary_with_arena(parent, child, state.arena);
+    assert(pushed.is_some());
+    assert(admission::admission_complete_child_step(
+        state, child.return_id.unwrap(), child.frame_kind, pushed.unwrap(),
+    ) == Some(popped));
+    assert(popped.frames.last().returns.last().kind == pushed.unwrap());
 }
 
 pub proof fn runtime_epm_root_modeled_witness()

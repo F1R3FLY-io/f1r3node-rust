@@ -1331,6 +1331,13 @@ proofs_rpb3_runtime_frame_source_refinement=(
   runtime_noscore_leaf_image_wf
   runtime_noscore_ezipper_absent_modeled_witness
   runtime_noscore_emap_incomplete_modeled_witness
+  runtime_noscore_structural_summary_selected
+  runtime_noscore_family_summary_selected
+  runtime_noscore_child_kind_reads_pushed_summary
+  source_noscore_route_agrees_with_runtime
+  runtime_emap_ezipper_source_steps_quiet
+  source_noscore_emap_incomplete_route_witness
+  source_message_finish_route_reads_complete_summary
 )
 proofs_rpb3_score_admission_bridge=(
   bridge_certified_interval_entries_exact
