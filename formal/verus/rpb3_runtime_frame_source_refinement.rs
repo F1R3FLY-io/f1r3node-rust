@@ -955,6 +955,85 @@ pub open spec fn runtime_noscore_opaque_before() -> RuntimeFrameImage {
     }
 }
 
+pub open spec fn runtime_noscore_witness_program(program: u16) -> bool {
+    program == 24 || program == 26 || program == 30 || program == 32 || program == 55
+        || program == 56 || program == 57 || program == 60 || program == 61 || program == 64
+}
+
+pub open spec fn runtime_noscore_leaf_before(
+    parent_family: admission::AdmissionFamily, field_tag: u32,
+    child_family: admission::AdmissionFamily, child_program: u16, child_slots: usize,
+) -> RuntimeFrameImage {
+    let state = admission::admission_fabricated_child_state(
+        parent_family, 0, child_family, field_tag,
+    );
+    let child = admission::AdmissionFrameState {
+        program_type_id: child_program,
+        slot_count: child_slots,
+        ..state.frames[1]
+    };
+    RuntimeFrameImage {
+        score: bridge::ScoreAdmissionBridge {
+            admission: admission::AdmissionState {
+                frames: state.frames.update(1, child),
+                ..state
+            },
+            transcript: score::empty_arena(),
+        },
+        capacity: 2,
+        frame_bytes: 1,
+        max_frames: 2,
+        max_storage_bytes: 2,
+        max_capacity_bytes: 2,
+    }
+}
+
+pub open spec fn runtime_noscore_absent_expr_payload() -> admission::AdmissionReturnedKind {
+    admission::AdmissionReturnedKind::ExprPayload {
+        score_present: false, canonical_fixed_point: true, canonical_path_stable: false,
+    }
+}
+
+pub open spec fn runtime_noscore_ezipper_absent_before() -> RuntimeFrameImage {
+    runtime_noscore_leaf_before(
+        admission::AdmissionFamily::Expr, 33, admission::AdmissionFamily::Other, 32, 6,
+    )
+}
+
+pub open spec fn runtime_noscore_emap_absent_pair() -> admission::AdmissionReturnedSummary {
+    admission::AdmissionReturnedSummary {
+        slot: 0,
+        tag: 1,
+        body_id: 9,
+        body_bytes: Seq::empty(),
+        score_handle: None,
+        score_origin_body_id: None,
+        kind: admission::AdmissionReturnedKind::KeyValuePair { key: None, value_par: None },
+    }
+}
+
+pub open spec fn runtime_noscore_emap_incomplete_before() -> RuntimeFrameImage {
+    let leaf = runtime_noscore_leaf_before(
+        admission::AdmissionFamily::Expr, 23, admission::AdmissionFamily::Other, 30, 4,
+    );
+    let child = admission::AdmissionFrameState {
+        last_slot: Some(0usize),
+        seen: Set::empty().insert(0int),
+        returns: Seq::empty().push(runtime_noscore_emap_absent_pair()),
+        ..leaf.score.admission.frames[1]
+    };
+    RuntimeFrameImage {
+        score: bridge::ScoreAdmissionBridge {
+            admission: admission::AdmissionState {
+                frames: leaf.score.admission.frames.update(1, child),
+                ..leaf.score.admission
+            },
+            ..leaf.score
+        },
+        ..leaf
+    }
+}
+
 pub open spec fn runtime_epm_root_before() -> RuntimeFrameImage {
     let snapshot = admission::AdmissionReturnedSummary {
         slot: 3,
@@ -2380,6 +2459,14 @@ pub open spec fn runtime_noscore_child_kind(
                         && !admission::admission_returned_par(child, 1)))
             {
                 Some(kind)
+            } else if program_type_id == 32
+                && parent.family == admission::AdmissionFamily::Expr
+                && parent.program_type_id == 24
+                && parent.waiting_slot == Some(0)
+                && parent.waiting_tag == Some(33)
+                && admission::admission_expr_structural_payload(parent, child) == Some(kind)
+            {
+                Some(kind)
             } else { None },
             (
                 admission::AdmissionFamily::Other, 34,
@@ -2403,6 +2490,21 @@ pub open spec fn runtime_noscore_child_kind(
             ) => if admission::admission_opaque_child_edge(parent, child) {
                 Some(kind)
             } else { None },
+            (admission::AdmissionFamily::Other, 30, _) => match
+                admission::concrete_derived_summary_with_arena(
+                    parent, child, before.score.admission.arena,
+                ) {
+                Some(kind @ admission::AdmissionReturnedKind::ExprPayload {
+                    score_present: false, ..
+                }) => if parent.family == admission::AdmissionFamily::Expr
+                    && parent.program_type_id == 24
+                    && parent.waiting_slot == Some(0)
+                    && parent.waiting_tag == Some(23)
+                {
+                    Some(kind)
+                } else { None },
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -2418,6 +2520,136 @@ pub open spec fn runtime_noscore_child_eof_accept(
     }
 }
 
+pub proof fn runtime_emap_ezipper_score_groups_quiet(before: bridge::ScoreAdmissionBridge)
+    requires
+        before.admission.frames.len() > 0,
+        before.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.admission.frames.last().frame_kind == 1,
+        before.admission.frames.last().program_type_id == 30
+            || before.admission.frames.last().program_type_id == 32,
+        bridge::bridge_emap_finish_step(before).is_none(),
+    ensures
+        bridge::bridge_score_finish_selection_group_1(
+            before, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selection_group_2(
+            before, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selection_group_3(
+            before, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selection_group_4(
+            before, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selection_group_5(
+            before, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selected(before).is_none(),
+{
+    let empty = bridge::BridgeScoreFinishSelection::NoCandidate;
+    assert(bridge::bridge_score_finish_selection_group_1(before, empty) == empty) by {
+        assert(bridge::bridge_raw_par_step(before).is_none());
+        assert(bridge::bridge_cost_atom_absent_step(before).is_none());
+        assert(bridge::bridge_cost_atom_bytes_step(before).is_none());
+        assert(bridge::bridge_cost_bound_step(before).is_none());
+        assert(bridge::bridge_cost_atom_bound_forward_step(before).is_none());
+        assert(bridge::bridge_cost_signature_step(before).is_none());
+        assert(bridge::bridge_cost_region_step(before).is_none());
+        assert(bridge::bridge_cost_token_stack_step(before).is_none());
+        reveal(bridge::bridge_score_finish_selection_group_1);
+    }
+    assert(bridge::bridge_score_finish_selection_group_2(before, empty) == empty) by {
+        assert(bridge::bridge_bundle_step(before).is_none());
+        assert(bridge::bridge_if_step(before).is_none());
+        assert(bridge::bridge_send_step(before).is_none());
+        assert(bridge::bridge_match_step(before).is_none());
+        assert(bridge::bridge_absent_specialized_constructor_step(before).is_none());
+        assert(bridge::bridge_absent_connective_step(before).is_none());
+        assert(bridge::bridge_receive_bind_step(before).is_none());
+        assert(bridge::bridge_match_case_step(before).is_none());
+        reveal(bridge::bridge_score_finish_selection_group_2);
+    }
+    assert(bridge::bridge_score_finish_selection_group_3(before, empty) == empty) by {
+        assert(bridge::bridge_bool_oneof_step(before).is_none());
+        assert(bridge::bridge_expr_atom_step(before).is_none());
+        assert(bridge::bridge_expr_numeric_step(before).is_none());
+        assert(bridge::bridge_expr_big_rational_step(before).is_none());
+        assert(bridge::bridge_expr_fixed_point_step(before).is_none());
+        assert(bridge::bridge_sys_auth_token_step(before).is_none());
+        assert(bridge::bridge_new_empty_collections_step(before).is_none());
+        assert(bridge::bridge_new_one_injection_step(before).is_none());
+        reveal(bridge::bridge_score_finish_selection_group_3);
+    }
+    assert(bridge::bridge_score_finish_selection_group_4(before, empty) == empty) by {
+        assert(bridge::bridge_new_one_absent_injection_step(before).is_none());
+        assert(bridge::bridge_new_one_uri_step(before).is_none());
+        assert(bridge::bridge_new_collections_step(before).is_none());
+        assert(bridge::bridge_expr_payload_forward_step(before).is_none());
+        assert(bridge::bridge_expr_structural_constructor(
+            before.admission.frames.last().program_type_id,
+        ).is_none());
+        assert(bridge::bridge_expr_structural_step(before).is_none());
+        assert(bridge::bridge_evar_step(before).is_none());
+        assert(bridge::bridge_ordered_sequence_step(before).is_none());
+        assert(bridge::bridge_emethod_step(before).is_none());
+        reveal(bridge::bridge_score_finish_selection_group_4);
+    }
+    assert(bridge::bridge_score_finish_selection_group_5(before, empty) == empty) by {
+        assert(bridge::bridge_connective_not_step(before).is_none());
+        assert(bridge::bridge_connective_varref_step(before).is_none());
+        assert(bridge::bridge_connective_collection_step(before).is_none());
+        assert(bridge::bridge_unforgeable_bytes_step(before).is_none());
+        assert(bridge::bridge_receive_present_condition_step(before).is_none());
+        assert(bridge::bridge_receive_absent_condition_step(before).is_none());
+        assert(bridge::bridge_nonsemantic_step(before).is_none());
+        reveal(bridge::bridge_score_finish_selection_group_5);
+    }
+    reveal(bridge::bridge_score_finish_selected);
+}
+
+pub proof fn runtime_noscore_emap_ezipper_selected_quiet(before: RuntimeFrameImage)
+    requires
+        runtime_noscore_child_kind(before).is_some(),
+        before.score.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.score.admission.frames.last().program_type_id == 30
+            || before.score.admission.frames.last().program_type_id == 32,
+    ensures
+        bridge::bridge_emap_finish_step(before.score).is_none(),
+        bridge::bridge_score_finish_selection_group_1(
+            before.score, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selection_group_2(
+            before.score, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selection_group_3(
+            before.score, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selection_group_4(
+            before.score, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selection_group_5(
+            before.score, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selected(before.score).is_none(),
+{
+    let child = before.score.admission.frames.last();
+    let parent = before.score.admission.frames[before.score.admission.frames.len() - 2];
+    let arena = before.score.admission.arena;
+    if child.program_type_id == 30 {
+        assert(parent.family == admission::AdmissionFamily::Expr);
+        assert(parent.program_type_id == 24);
+        assert(parent.waiting_slot == Some(0usize));
+        assert(parent.waiting_tag == Some(23u32));
+        assert(admission::concrete_derived_summary_with_arena(parent, child, arena)
+            == admission::admission_expr_structural_payload_with_arena(parent, child, arena));
+        assert(admission::admission_emap_source_summary(child, arena).is_some());
+        assert(!admission::admission_emap_source_summary(child, arena).unwrap().0);
+        bridge::bridge_emap_finish_source_complete_and_incomplete(before.score);
+    }
+    assert(bridge::bridge_emap_finish_step(before.score).is_none());
+    runtime_emap_ezipper_score_groups_quiet(before.score);
+}
+
 pub proof fn runtime_noscore_child_selector_excluded(before: RuntimeFrameImage)
     ensures runtime_noscore_child_kind(before).is_some()
         ==> bridge::bridge_score_finish_selected(before.score).is_none(),
@@ -2431,6 +2663,11 @@ pub proof fn runtime_noscore_child_selector_excluded(before: RuntimeFrameImage)
             bridge::bridge_expr_structural_missing_par_finish_selected_none(before.score);
         } else if bridge::bridge_structural_no_score_child_frame(before.score) {
             bridge::bridge_structural_no_score_child_finish_selected_none(before.score);
+        } else if before.score.admission.frames.last().family == admission::AdmissionFamily::Other
+            && (before.score.admission.frames.last().program_type_id == 30
+                || before.score.admission.frames.last().program_type_id == 32)
+        {
+            runtime_noscore_emap_ezipper_selected_quiet(before);
         } else {
             let child = before.score.admission.frames.last();
             if child.family == admission::AdmissionFamily::Other {
@@ -3371,11 +3608,51 @@ pub proof fn runtime_noscore_child_eof_is_checked(before: RuntimeFrameImage)
             ) == Some(admission::ConcreteFrameOutcomeModel::ParentAccepted {
                 state: after.score.admission,
             }));
-            assert(admission::concrete_derived_summary(
-                before.score.admission.frames[before.score.admission.frames.len() - 2],
-                before.score.admission.frames.last(),
-            ) == Some(kind));
+            if before.score.admission.frames.last().family == admission::AdmissionFamily::Other
+                && before.score.admission.frames.last().program_type_id == 30
+            {
+                assert(admission::concrete_derived_summary_with_arena(
+                    before.score.admission.frames[before.score.admission.frames.len() - 2],
+                    before.score.admission.frames.last(),
+                    before.score.admission.arena,
+                ) == Some(kind));
+            } else {
+                assert(admission::concrete_derived_summary(
+                    before.score.admission.frames[before.score.admission.frames.len() - 2],
+                    before.score.admission.frames.last(),
+                ) == Some(kind));
+            }
         }
+    }
+}
+
+pub proof fn runtime_noscore_emap_ezipper_eof_is_complete_image(before: RuntimeFrameImage)
+    requires
+        runtime_noscore_child_kind(before).is_some(),
+        before.score.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.score.admission.frames.last().program_type_id == 30
+            || before.score.admission.frames.last().program_type_id == 32,
+        runtime_pre_pop_child_accept(before).is_some(),
+    ensures
+        runtime_noscore_child_kind(before) == admission::concrete_derived_summary_with_arena(
+            before.score.admission.frames[before.score.admission.frames.len() - 2],
+            before.score.admission.frames.last(),
+            before.score.admission.arena,
+        ),
+        bridge::bridge_score_finish_selected(before.score).is_none(),
+        runtime_message_driver_step(before, RuntimeMessageEvent::Eof)
+            == Some(RuntimeMessageOutcome::ParentAccepted {
+                image: runtime_pre_pop_child_accept(before).unwrap(),
+            }),
+{
+    runtime_noscore_emap_ezipper_selected_quiet(before);
+    let child = before.score.admission.frames.last();
+    let parent = before.score.admission.frames[before.score.admission.frames.len() - 2];
+    if child.program_type_id == 32 {
+        assert(parent.waiting_tag == Some(33u32));
+        assert(admission::concrete_derived_summary_with_arena(
+            parent, child, before.score.admission.arena,
+        ) == admission::concrete_derived_summary(parent, child));
     }
 }
 
@@ -4430,6 +4707,181 @@ pub proof fn runtime_noscore_opaque_modeled_witness()
     ).is_some());
     reveal(runtime_pre_pop_child_accept);
     assert(runtime_noscore_child_eof_accept(before).is_some());
+}
+
+pub proof fn runtime_noscore_witness_required_slots(frame: admission::AdmissionFrameState)
+    requires
+        frame.required == Set::<int>::empty(),
+        runtime_noscore_witness_program(frame.program_type_id),
+    ensures admission::admission_required_slots_generated(frame),
+{
+    let program_type_id = frame.program_type_id;
+    assert forall|tag: u32|
+        #[trigger] admission::admission_descriptor_not_pathmap(program_type_id, tag) by {
+    }
+    assert forall|slot: int| 0 <= slot < frame.slot_count as int
+        implies frame.required.contains(slot)
+            == (exists|tag: u32| admission::admission_required_descriptor_slot(
+                frame.program_type_id, tag, slot,
+            )) by {
+        assert forall|tag: u32|
+            !#[trigger] admission::admission_required_descriptor_slot(
+                program_type_id, tag, slot,
+            ) by {
+            assert(admission::admission_descriptor_not_pathmap(program_type_id, tag));
+        }
+    }
+}
+
+pub proof fn runtime_noscore_leaf_image_wf(
+    parent_family: admission::AdmissionFamily, field_tag: u32,
+    child_family: admission::AdmissionFamily, child_program: u16, child_slots: usize,
+)
+    requires
+        admission::admission_frame_wf(runtime_noscore_leaf_before(
+            parent_family, field_tag, child_family, child_program, child_slots,
+        ).score.admission.frames[0]),
+        admission::admission_frame_wf(runtime_noscore_leaf_before(
+            parent_family, field_tag, child_family, child_program, child_slots,
+        ).score.admission.frames[1]),
+    ensures
+        runtime_frame_image_wf(runtime_noscore_leaf_before(
+            parent_family, field_tag, child_family, child_program, child_slots,
+        )),
+{
+    let before = runtime_noscore_leaf_before(
+        parent_family, field_tag, child_family, child_program, child_slots,
+    );
+    let state = before.score.admission;
+    let parent = state.frames[0];
+    let child = state.frames[1];
+    assert(parent.source_bytes.subrange(0, 0) == Seq::<u8>::empty());
+    assert(admission::admission_child_physical_contained(parent, child));
+    assert(admission::admission_state_wf(state));
+    score::empty_arena_well_formed();
+    assert(bridge::bridge_well_formed(before.score));
+}
+
+pub proof fn runtime_noscore_ezipper_absent_modeled_witness()
+    ensures
+        runtime_frame_image_wf(runtime_noscore_ezipper_absent_before()),
+        runtime_noscore_child_kind(runtime_noscore_ezipper_absent_before())
+            == Some(runtime_noscore_absent_expr_payload()),
+        bridge::bridge_score_finish_selected(
+            runtime_noscore_ezipper_absent_before().score,
+        ).is_none(),
+        runtime_message_driver_step(
+            runtime_noscore_ezipper_absent_before(), RuntimeMessageEvent::Eof,
+        ) == Some(RuntimeMessageOutcome::ParentAccepted {
+            image: runtime_pre_pop_child_accept(runtime_noscore_ezipper_absent_before()).unwrap(),
+        }),
+        match runtime_message_driver_step(
+            runtime_noscore_ezipper_absent_before(), RuntimeMessageEvent::Eof,
+        ) {
+            Some(RuntimeMessageOutcome::ParentAccepted { image }) => {
+                &&& image.score.admission.frames.len() == 1
+                &&& image.score.admission.completed == 1
+                &&& image.score.admission.arena.len() == 0
+                &&& image.score.admission.frames[0].returns.last().kind
+                    == runtime_noscore_absent_expr_payload()
+            },
+            _ => false,
+        },
+{
+    let before = runtime_noscore_ezipper_absent_before();
+    let state = before.score.admission;
+    let parent = state.frames[0];
+    let child = state.frames[1];
+    let kind = runtime_noscore_absent_expr_payload();
+    runtime_noscore_witness_required_slots(parent);
+    runtime_noscore_witness_required_slots(child);
+    assert(admission::admission_frame_wf(parent));
+    assert(admission::admission_frame_wf(child));
+    runtime_noscore_leaf_image_wf(
+        admission::AdmissionFamily::Expr, 33, admission::AdmissionFamily::Other, 32, 6,
+    );
+    assert(admission::admission_ezipper_expr_payload(child) == Some(kind));
+    assert(admission::concrete_derived_summary(parent, child) == Some(kind));
+    assert(admission::concrete_derived_summary_with_arena(parent, child, state.arena)
+        == Some(kind));
+    assert(runtime_noscore_child_kind(before) == Some(kind));
+    reveal(runtime_pre_pop_child_accept);
+    assert(admission::admission_complete_child_step(state, 0, 1, kind).is_some());
+    assert(runtime_pre_pop_child_accept(before).is_some());
+    runtime_noscore_emap_ezipper_eof_is_complete_image(before);
+    runtime_noscore_child_eof_is_checked(before);
+}
+
+pub proof fn runtime_noscore_emap_incomplete_modeled_witness()
+    ensures
+        runtime_frame_image_wf(runtime_noscore_emap_incomplete_before()),
+        admission::concrete_derived_summary(
+            runtime_noscore_emap_incomplete_before().score.admission.frames[0],
+            runtime_noscore_emap_incomplete_before().score.admission.frames[1],
+        ).is_none(),
+        runtime_noscore_child_kind(runtime_noscore_emap_incomplete_before())
+            == Some(runtime_noscore_absent_expr_payload()),
+        bridge::bridge_score_finish_selected(
+            runtime_noscore_emap_incomplete_before().score,
+        ).is_none(),
+        runtime_message_driver_step(
+            runtime_noscore_emap_incomplete_before(), RuntimeMessageEvent::Eof,
+        ) == Some(RuntimeMessageOutcome::ParentAccepted {
+            image: runtime_pre_pop_child_accept(runtime_noscore_emap_incomplete_before()).unwrap(),
+        }),
+        match runtime_message_driver_step(
+            runtime_noscore_emap_incomplete_before(), RuntimeMessageEvent::Eof,
+        ) {
+            Some(RuntimeMessageOutcome::ParentAccepted { image }) => {
+                &&& image.score.admission.frames.len() == 1
+                &&& image.score.admission.completed == 1
+                &&& image.score.admission.arena.len() == 0
+                &&& image.score.admission.frames[0].returns.last().kind
+                    == runtime_noscore_absent_expr_payload()
+            },
+            _ => false,
+        },
+{
+    let before = runtime_noscore_emap_incomplete_before();
+    let state = before.score.admission;
+    let parent = state.frames[0];
+    let child = state.frames[1];
+    let pair = runtime_noscore_emap_absent_pair();
+    runtime_noscore_witness_required_slots(parent);
+    runtime_noscore_witness_required_slots(child);
+    assert(child.returns[0] == pair);
+    assert(admission::admission_frame_wf(parent));
+    assert(admission::admission_frame_wf(child));
+    assert(parent.source_bytes.subrange(0, 0) == Seq::<u8>::empty());
+    assert(admission::admission_child_physical_contained(parent, child));
+    assert(admission::admission_state_wf(state));
+    score::empty_arena_well_formed();
+    assert(bridge::bridge_well_formed(before.score));
+    assert(runtime_frame_image_wf(before));
+    let image = admission::AdmissionEMapPairImage {
+        key: None, value_par: None, body_bytes: Seq::empty(),
+    };
+    assert(admission::admission_emap_pair_from_return(pair, state.arena) == Some(image));
+    assert(child.returns.drop_first() =~= Seq::<admission::AdmissionReturnedSummary>::empty());
+    assert(admission::admission_emap_pairs_from_returns(
+        Seq::<admission::AdmissionReturnedSummary>::empty(), state.arena,
+    ) == Some(Seq::<admission::AdmissionEMapPairImage>::empty()));
+    assert(seq![image] + Seq::<admission::AdmissionEMapPairImage>::empty() =~= seq![image]);
+    assert(admission::admission_emap_pairs_from_returns(child.returns, state.arena)
+        == Some(seq![image]));
+    assert(!admission::admission_emap_complete(seq![image]));
+    assert(admission::admission_emap_source_fixed_point(seq![image], state.arena));
+    assert(admission::admission_emap_source_summary(child, state.arena) == Some((false, true)));
+    let kind = runtime_noscore_absent_expr_payload();
+    assert(admission::concrete_derived_summary_with_arena(parent, child, state.arena)
+        == Some(kind));
+    assert(admission::concrete_derived_summary(parent, child).is_none());
+    assert(runtime_noscore_child_kind(before) == Some(kind));
+    reveal(runtime_pre_pop_child_accept);
+    assert(admission::admission_complete_child_step(state, 0, 1, kind).is_some());
+    assert(runtime_pre_pop_child_accept(before).is_some());
+    runtime_noscore_emap_ezipper_eof_is_complete_image(before);
+    runtime_noscore_child_eof_is_checked(before);
 }
 
 pub proof fn runtime_epm_root_modeled_witness()

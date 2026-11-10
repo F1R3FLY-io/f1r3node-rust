@@ -1324,6 +1324,13 @@ proofs_rpb3_runtime_frame_source_refinement=(
   runtime_noscore_opaque_modeled_witness
   runtime_epm_root_modeled_witness
   runtime_epm_child_modeled_witness
+  runtime_emap_ezipper_score_groups_quiet
+  runtime_noscore_emap_ezipper_selected_quiet
+  runtime_noscore_emap_ezipper_eof_is_complete_image
+  runtime_noscore_witness_required_slots
+  runtime_noscore_leaf_image_wf
+  runtime_noscore_ezipper_absent_modeled_witness
+  runtime_noscore_emap_incomplete_modeled_witness
 )
 proofs_rpb3_score_admission_bridge=(
   bridge_certified_interval_entries_exact
@@ -2378,6 +2385,8 @@ for proof in runtime_noscore_key_value_pair_modeled_witness \
   runtime_noscore_opaque_modeled_witness \
   runtime_noscore_expr_structural_modeled_witness \
   runtime_noscore_emethod_modeled_witness \
+  runtime_noscore_ezipper_absent_modeled_witness \
+  runtime_noscore_emap_incomplete_modeled_witness \
   runtime_push_indexed_checked_storage \
   source_checked_frame_request_push_indexed_refines \
   runtime_epm_source_score_finish_is_checked \
