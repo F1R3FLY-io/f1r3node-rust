@@ -87,6 +87,7 @@ source_files=(
   "$model_dir/rpb3_integrated_source_trace_composition.rs"
   "$model_dir/rpb3_integrated_dispatcher.rs"
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
+  "$model_dir/rpb3_epm_obligation_return_witness.rs"
   "$model_dir/rpb3_plain_parser_source_refinement.rs"
   "$model_dir/rpb3_epm_obligation_return_live.rs"
   "$model_dir/rpb3_epm_parser_escape_invariant.rs"
@@ -1018,6 +1019,51 @@ proofs_rpb3_epm_obligation_return_source=(
   epm_nested_return_terminal_agrees
   epm_nested_return_checked_accept_agrees
   epm_raw_par_return_checked_accept_agrees
+)
+proofs_rpb3_epm_obligation_return_witness=(
+  epm_raw_par_witness_nested_frames
+  epm_raw_par_witness_parent_frame_wf
+  epm_raw_par_witness_child_frame_wf
+  epm_raw_par_witness_frames_wf
+  epm_raw_par_witness_unscored_bridge_wf
+  epm_raw_par_witness_append_entry
+  epm_raw_par_witness_ordered_handles
+  epm_raw_par_witness_score_entries
+  epm_raw_par_witness_score_step
+  epm_raw_par_witness_scored_bridge_wf
+  epm_raw_par_witness_scored_shape
+  epm_raw_par_witness_popped_frames_wf
+  epm_raw_par_witness_admission_is_wf
+  epm_raw_par_witness_parent_layout
+  epm_raw_par_witness_returned_shape
+  epm_raw_par_witness_resolves_root
+  epm_raw_par_witness_parent_accepts
+  epm_raw_par_witness_child_cursor_ends
+  epm_raw_par_witness_owner_ready
+  epm_raw_par_witness_owner_agrees
+  epm_raw_par_witness_linked_sources
+  epm_raw_par_witness_map_wf_from_parts
+  epm_raw_par_witness_product_wf_from_parts
+  epm_raw_par_witness_unscored_product_wf
+  epm_raw_par_witness_scored_product_wf
+  epm_raw_par_witness_product_is_wf
+  epm_raw_par_witness_unscored_live_shape
+  epm_raw_par_witness_scored_live_shape
+  epm_raw_par_witness_returned_pop
+  epm_raw_par_witness_live_wf_from_parts
+  epm_raw_par_witness_unscored_state_wf
+  epm_raw_par_witness_scored_state_wf
+  epm_raw_par_witness_state_is_wf
+  epm_raw_par_witness_stack_source
+  epm_raw_par_witness_child_summary
+  epm_raw_par_witness_derived_summary
+  epm_raw_par_witness_parent_ready
+  epm_raw_par_witness_linked_return
+  epm_raw_par_witness_source_return
+  epm_raw_par_witness_product_return
+  epm_raw_par_witness_child_cursor_last
+  epm_raw_par_witness_is_step
+  epm_raw_par_witness_is_integrated_step
 )
 proofs_rpb3_epm_parser_escape_invariant=(
   parser_escape_wf_initial
@@ -1985,6 +2031,7 @@ gated_modules=(
   rpb3_epm_nested_source_refinement
   rpb3_epm_obligation_return_live
   rpb3_epm_obligation_return_source
+  rpb3_epm_obligation_return_witness
   rpb3_epm_parser_escape_invariant
   rpb3_epm_path_invariant_integrated
   rpb3_epm_push_live_action_refinement
@@ -4223,6 +4270,39 @@ fi
 if ! rg -q '^verification results:: 19 verified, 0 errors' "$epm_path_invariant_integrated_log"; then
   cat "$epm_path_invariant_integrated_log"
   echo "rpb3-admission-cursor: EPathMap path invariant integrated module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_epm_obligation_return_witness[@]}"; do
+  proof_log="$evidence_dir/epm-obligation-return-witness-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_epm_obligation_return_witness --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap obligation return witness $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap obligation return witness $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+epm_obligation_return_witness_log="$evidence_dir/epm-obligation-return-witness-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_epm_obligation_return_witness \
+  "$integrated_source" \
+  >"$epm_obligation_return_witness_log" 2>&1; then
+  cat "$epm_obligation_return_witness_log"
+  echo "rpb3-admission-cursor: EPathMap obligation return witness module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 43 verified, 0 errors' "$epm_obligation_return_witness_log"; then
+  cat "$epm_obligation_return_witness_log"
+  echo "rpb3-admission-cursor: EPathMap obligation return witness module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do
