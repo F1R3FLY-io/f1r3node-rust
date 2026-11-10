@@ -37,6 +37,7 @@ mod locks;
 mod ops_consume;
 mod ops_install;
 mod ops_produce;
+pub(crate) mod ops_sweep;
 mod setup;
 #[cfg(test)]
 mod tests;

@@ -170,6 +170,10 @@ impl ChargingRSpace {
 
             async fn clear(&self) -> Result<(), RSpaceError> { self.space.clear().await }
 
+            async fn sweep_channels(&self, trapped_channels: Vec<Par>) -> Result<(), RSpaceError> {
+                self.space.sweep_channels(trapped_channels).await
+            }
+
             async fn get_root(&self) -> Blake2b256Hash { self.space.get_root().await }
 
             async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {

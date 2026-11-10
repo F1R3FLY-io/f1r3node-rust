@@ -170,6 +170,23 @@ pub trait ISpace<
      */
     async fn clear(&self) -> Result<(), RSpaceError>;
 
+    /// Delete every hot-store entry keyed on a channel in
+    /// `trapped_channels`:
+    ///
+    /// - single-channel data rows keyed on a trapped channel are drained;
+    /// - continuations whose channel list contains any trapped channel are
+    ///   drained, and their sibling join registrations on every channel in the
+    ///   list are pruned;
+    /// - join index entries keyed on a trapped channel are pruned.
+    ///
+    /// Default is a no-op. `RSpace` and `ReplayRSpace` override with the
+    /// real sweep. Deletions flow through the normal hot-store delete path
+    /// and land in the radix trie on the next `create_checkpoint`.
+    async fn sweep_channels(&self, _trapped_channels: Vec<C>) -> Result<(), RSpaceError>
+    where C: 'async_trait {
+        Ok(())
+    }
+
     /// Return current history root hash without creating a checkpoint.
     async fn get_root(&self) -> Blake2b256Hash;
 

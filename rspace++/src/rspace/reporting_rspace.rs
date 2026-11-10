@@ -374,6 +374,11 @@ where
 
     async fn clear(&self) -> Result<(), RSpaceError> { self.replay_rspace.clear().await }
 
+    async fn sweep_channels(&self, trapped_channels: Vec<C>) -> Result<(), RSpaceError>
+    where C: 'async_trait {
+        self.replay_rspace.sweep_channels(trapped_channels).await
+    }
+
     async fn get_root(&self) -> Blake2b256Hash { self.replay_rspace.get_root().await }
 
     async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
