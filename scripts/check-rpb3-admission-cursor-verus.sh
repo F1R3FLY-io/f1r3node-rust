@@ -1725,6 +1725,8 @@ proofs_rpb3_integrated_dispatcher=(
   live_runtime_continue_is_message_top
   live_runtime_continue_indexed_is_message_top
   integrated_live_step_establishes_kind_guard
+  integrated_epm_raw_par_return_is_integrated_step
+  integrated_epm_nested_return_is_integrated_step
   integrated_trace_wf
   integrated_trace_wf_append
   live_root_completion_is_exact

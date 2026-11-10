@@ -1,15 +1,18 @@
 //! One dispatcher relation over the integrated live admission product.
 //!
-//! `integrated_step` keeps three action families exclusive through its action
+//! `integrated_step` keeps four action families exclusive through its action
 //! constructor and through guards keyed on the top frame kind: Live product
 //! actions (Message, Map, and scalar EPathMap frames), CanonicalPath driver
-//! actions (kind-4 frames and the pre-pop child of a kind-4 parent), and ACT
-//! Forward and Unwind batches (a kind-3 top frame). No integrated action
-//! carries a successor state. `integrated_step_is_function` proves that a
-//! fixed `(before, action)` selects at most one successor. The observed steps
-//! of `MessagePush` and `MapValuePush` are plain-or-indexed disjunctions whose
-//! sides have different successors, so the action names the side it takes in
-//! an explicit route.
+//! actions (kind-4 frames and the pre-pop child of a kind-4 parent), ACT
+//! Forward and Unwind batches (a kind-3 top frame), and the EPathMap obligation
+//! returns, keyed on the returning child's kind: a raw-Par Message child (a
+//! kind-1 top frame) or a NestedEpm1 EPathMap child (a kind-3 top frame)
+//! returns into its EPathMap parent. Their relations are in
+//! `rpb3_epm_obligation_return_live`. No integrated action carries a successor
+//! state. `integrated_step_is_function` proves that a fixed `(before, action)`
+//! selects at most one successor. The observed steps of `MessagePush` and
+//! `MapValuePush` are plain-or-indexed disjunctions whose sides have different
+//! successors, so the action names the side it takes in an explicit route.
 
 use vstd::prelude::*;
 
@@ -22,6 +25,7 @@ use crate::{
     rpb3_epathmap_terminal_source_observation as epm_terminal,
     rpb3_epm_active_line_work_source as active, rpb3_epm_batch_cursor_composition as batch,
     rpb3_epm_batch_cursor_source_extraction as act_source,
+    rpb3_epm_obligation_return_live as obligation_return,
     rpb3_epm_push_live_action_refinement as push_live,
     rpb3_epm_push_source_action_refinement as push_source,
     rpb3_epm_push_transport_source_refinement as transport,
@@ -77,6 +81,17 @@ pub enum IntegratedAction {
         width: usize,
         unwind_facts: restore::UnwindCapacityFacts,
     },
+    /// A raw-Par child (kind 1, program 1) at its End returns into its EPathMap
+    /// parent waiting on a RawParEscape obligation: `finish_message_complete`
+    /// runs `process_admission_completion` and the obligation arm of the
+    /// EPathMap frame's `accept`. The relation is
+    /// `live_runtime_epm_raw_par_return_step`.
+    EpmRawParReturn,
+    /// A NestedEpm1 EPathMap child ends and returns into its EPathMap parent
+    /// waiting on a NestedEpm1 obligation in one driver iteration:
+    /// `finish_other_complete` runs the same `process_admission_completion`.
+    /// The relation is `live_runtime_epm_nested_return_step`.
+    EpmNestedReturn,
 }
 
 /// A completed root has no live post-frame. Its image names the state that
@@ -151,8 +166,11 @@ pub open spec fn integrated_live_required_top_kind(action: LiveRuntimeProductAct
     }
 }
 
-/// The top frame kind an integrated action is keyed on. `ChildReturn` has none:
-/// its guard reads the CanonicalPath parent under the child that just finished.
+/// The top frame kind an integrated action is keyed on. The EPathMap obligation
+/// returns are keyed on the returning child's kind: kind 1 for the raw-Par
+/// Message child and kind 3 for the NestedEpm1 EPathMap child. `ChildReturn`
+/// has none: its guard reads the CanonicalPath parent under the child that just
+/// finished.
 pub open spec fn integrated_action_required_top_kind(action: IntegratedAction) -> Option<u8> {
     match action {
         IntegratedAction::Live { live_action: live, .. } =>
@@ -162,12 +180,16 @@ pub open spec fn integrated_action_required_top_kind(action: IntegratedAction) -
             _ => Some(4u8),
         },
         IntegratedAction::ActForward { .. } | IntegratedAction::ActUnwind { .. } => Some(3u8),
+        IntegratedAction::EpmRawParReturn => Some(1u8),
+        IntegratedAction::EpmNestedReturn => Some(3u8),
     }
 }
 
 /// The guard keyed on the top frame kind. Each action family runs only on its
 /// frames: Live on Message/Map/EPathMap tops (per action), CanonicalPath on a
-/// kind-4 top or the pre-pop child of a kind-4 parent, and ACT on a kind-3 top.
+/// kind-4 top or the pre-pop child of a kind-4 parent, ACT on a kind-3 top, and
+/// the EPathMap obligation returns on the returning child: a kind-1 top for
+/// `EpmRawParReturn` and a kind-3 top for `EpmNestedReturn`.
 pub open spec fn integrated_kind_guard(
     before: LiveRuntimeProductState, action: IntegratedAction,
 ) -> bool {
@@ -498,6 +520,16 @@ pub open spec fn integrated_step(
                     &&& after == IntegratedState::Active {
                         product: integrated_act_unwind_after(product, run, prefix, width),
                     }
+                },
+                IntegratedAction::EpmRawParReturn => match after {
+                    IntegratedState::Active { product: next } =>
+                        obligation_return::live_runtime_epm_raw_par_return_step(product, next),
+                    IntegratedState::Accepted { .. } => false,
+                },
+                IntegratedAction::EpmNestedReturn => match after {
+                    IntegratedState::Active { product: next } =>
+                        obligation_return::live_runtime_epm_nested_return_step(product, next),
+                    IntegratedState::Accepted { .. } => false,
                 },
             }
         },
@@ -1609,6 +1641,24 @@ pub proof fn integrated_step_is_function(
                     }
                 },
             },
+            IntegratedAction::EpmRawParReturn => match (left, right) {
+                (
+                    IntegratedState::Active { product: next_left },
+                    IntegratedState::Active { product: next_right },
+                ) => obligation_return::live_runtime_epm_raw_par_return_is_functional(
+                    product, next_left, next_right,
+                ),
+                _ => {},
+            },
+            IntegratedAction::EpmNestedReturn => match (left, right) {
+                (
+                    IntegratedState::Active { product: next_left },
+                    IntegratedState::Active { product: next_right },
+                ) => obligation_return::live_runtime_epm_nested_return_is_functional(
+                    product, next_left, next_right,
+                ),
+                _ => {},
+            },
             IntegratedAction::CanonicalPath { .. }
             | IntegratedAction::ActForward { .. }
             | IntegratedAction::ActUnwind { .. } => {},
@@ -2050,6 +2100,16 @@ pub proof fn integrated_step_preserves_wf(
                     run, prefix, start, width, facts, width,
                 );
             },
+            IntegratedAction::EpmRawParReturn => {
+                if let IntegratedState::Active { product: next } = after {
+                    obligation_return::live_runtime_epm_raw_par_return_preserves_wf(product, next);
+                }
+            },
+            IntegratedAction::EpmNestedReturn => {
+                if let IntegratedState::Active { product: next } = after {
+                    obligation_return::live_runtime_epm_nested_return_preserves_wf(product, next);
+                }
+            },
         },
     }
 }
@@ -2346,6 +2406,50 @@ pub proof fn integrated_live_step_establishes_kind_guard(
     }
 }
 
+/// The raw-Par obligation return lifts to the dispatcher: a
+/// `live_runtime_epm_raw_par_return_step` runs on a well-formed state whose top
+/// frame is the returning kind-1 child, so it is an `EpmRawParReturn`
+/// integrated step, and its successor is well-formed.
+pub proof fn integrated_epm_raw_par_return_is_integrated_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires obligation_return::live_runtime_epm_raw_par_return_step(before, after),
+    ensures
+        integrated_wf(IntegratedState::Active { product: before }),
+        integrated_step(
+            IntegratedState::Active { product: before },
+            IntegratedState::Active { product: after },
+            IntegratedAction::EpmRawParReturn,
+        ),
+        integrated_wf(IntegratedState::Active { product: after }),
+{
+    obligation_return::live_runtime_epm_raw_par_return_top_kind(before, after);
+    obligation_return::live_runtime_epm_raw_par_return_preserves_wf(before, after);
+}
+
+/// The nested obligation return lifts to the dispatcher: a
+/// `live_runtime_epm_nested_return_step` runs on a well-formed state whose top
+/// frame is the returning kind-3 child, so it is an `EpmNestedReturn`
+/// integrated step, and its successor is well-formed.
+pub proof fn integrated_epm_nested_return_is_integrated_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires obligation_return::live_runtime_epm_nested_return_step(before, after),
+    ensures
+        integrated_wf(IntegratedState::Active { product: before }),
+        integrated_step(
+            IntegratedState::Active { product: before },
+            IntegratedState::Active { product: after },
+            IntegratedAction::EpmNestedReturn,
+        ),
+        integrated_wf(IntegratedState::Active { product: after }),
+{
+    obligation_return::live_runtime_epm_nested_return_top_kind(before, after);
+    obligation_return::live_runtime_epm_nested_return_preserves_wf(before, after);
+}
+
 // ---------------------------------------------------------------------------
 // A10: traces
 // ---------------------------------------------------------------------------
@@ -2537,7 +2641,8 @@ pub proof fn integrated_accept_refines_root(
                 IntegratedAction::CanonicalPath { driver_before, driver_action: path } => {
                     path_driver::canonical_path_driver_product_active_sync(driver_before, path);
                 },
-                IntegratedAction::ActForward { .. } | IntegratedAction::ActUnwind { .. } => {},
+                IntegratedAction::ActForward { .. } | IntegratedAction::ActUnwind { .. }
+                | IntegratedAction::EpmRawParReturn | IntegratedAction::EpmNestedReturn => {},
             }
         },
     }
