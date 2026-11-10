@@ -46,6 +46,7 @@ mod integration_t_invalid_transaction_block_exception;
 mod integration_t_slash_auth_storage_error;
 mod integration_t_neglected_invalid_block;
 mod integration_t_valid_no_record;
+mod late_equivocation_liveness;
 mod loom_t_9_2_atomic_record;
 mod loom_t_9_2_n_threads_3;
 mod loom_t_9_2_n_threads_4;
