@@ -84,6 +84,7 @@ source_files=(
   "$model_dir/rpb3_epm_loop_observation_bridge.rs"
   "$model_dir/rpb3_integrated_source_trace_composition.rs"
   "$model_dir/rpb3_integrated_dispatcher.rs"
+  "$model_dir/rpb3_epm_obligation_return_live.rs"
   "$model_dir/rpb3_epathmap_terminal_nested_return_composition.rs"
   "$model_dir/rpb3_canonical_path_eof_owner_obligation_refinement.rs"
   "$model_dir/rpb3_integrated_admission.rs"
@@ -933,6 +934,21 @@ proofs_rpb3_epm_nested_source_refinement=(
   source_epm_map_value_return_pop_shape
   program31_score_append_has_source_transcript
 )
+proofs_rpb3_epm_obligation_return_live=(
+  epm_child_return_pop_shape
+  product_epm_obligation_return_is_functional
+  product_epm_obligation_return_preserves_ancestor_prefix
+  live_source_epm_obligation_return_preserves_wf
+  live_runtime_epm_obligation_return_preserves_wf
+  live_epm_obligation_return_has_effects
+  live_runtime_epm_raw_par_return_top_kind
+  live_runtime_epm_raw_par_return_is_functional
+  live_runtime_epm_raw_par_return_preserves_wf
+  live_runtime_epm_raw_par_return_has_effects
+  epm_raw_par_return_resolution_shape
+  epm_raw_par_return_preflight_agrees
+  epm_raw_par_return_excludes_child_steps
+)
 proofs_rpb3_epm_push_live_action_refinement=(
   epm_push_live_action_is_checked
   epm_push_live_action_dispatches
@@ -1774,6 +1790,7 @@ gated_modules=(
   rpb3_epm_loop_observation_bridge
   rpb3_epm_nested_accept_checked_stats_refinement
   rpb3_epm_nested_source_refinement
+  rpb3_epm_obligation_return_live
   rpb3_epm_push_live_action_refinement
   rpb3_epm_push_source_action_refinement
   rpb3_epm_push_transport_source_refinement
@@ -3812,6 +3829,39 @@ for proof in "${proofs_rpb3_integrated_dispatcher[@]}"; do
   fi
   sha256sum "$proof_log"
 done
+for proof in "${proofs_rpb3_epm_obligation_return_live[@]}"; do
+  proof_log="$evidence_dir/epm-obligation-return-live-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_epm_obligation_return_live --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap obligation return live $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap obligation return live $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+epm_obligation_return_live_log="$evidence_dir/epm-obligation-return-live-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_epm_obligation_return_live \
+  "$integrated_source" \
+  >"$epm_obligation_return_live_log" 2>&1; then
+  cat "$epm_obligation_return_live_log"
+  echo "rpb3-admission-cursor: EPathMap obligation return live module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 13 verified, 0 errors' "$epm_obligation_return_live_log"; then
+  cat "$epm_obligation_return_live_log"
+  echo "rpb3-admission-cursor: EPathMap obligation return live module did not verify" >&2
+  exit 1
+fi
 for proof in "${integrated_witness_proofs[@]}"; do
   proof_log="$evidence_dir/integrated-$proof.log"
   if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
