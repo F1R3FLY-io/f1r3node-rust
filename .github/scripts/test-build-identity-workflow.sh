@@ -30,7 +30,21 @@ REQUESTED_BUILD_ID=v0.4.46-ci-selected GITHUB_OUTPUT="$TMP/explicit" bash -euo p
 grep -Fxq 'build_id=v0.4.46-ci-selected' "$TMP/explicit" || fail 'The selected CI identity changed.'
 
 REQUESTED_BUILD_ID= GITHUB_OUTPUT="$TMP/fallback" bash -euo pipefail "$TMP/resolve.sh"
-grep -Fxq "build_id=$(git describe --tags --always)" "$TMP/fallback" || fail 'The Git fallback differs from the source checkout.'
+grep -Fxq "build_id=$(git describe --tags --always --exclude '*/*')" "$TMP/fallback" || fail 'The Git fallback differs from the source checkout.'
+
+mkdir -p "$TMP/tagged/node"
+printf 'version = "0.0.1"\n' >"$TMP/tagged/node/Cargo.toml"
+(
+	cd "$TMP/tagged"
+	git init -q
+	git -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m first
+	git tag v0.0.1
+	git -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m second
+	git tag ca/v0.0.2
+	REQUESTED_BUILD_ID= GITHUB_OUTPUT="$TMP/slash" bash -euo pipefail "$TMP/resolve.sh"
+	grep -Fxq "build_id=$(git describe --tags --always --exclude '*/*')" "$TMP/slash" || fail 'The Git fallback used a tag with a slash.'
+	grep -Fq 'build_id=v0.0.1-1-g' "$TMP/slash" || fail 'The Git fallback did not describe from the nearest tag without a slash.'
+)
 
 for invalid in unknown '   ' $'build\ncargo=value' $'build\tvalue'; do
 	if REQUESTED_BUILD_ID="$invalid" GITHUB_OUTPUT="$TMP/invalid" bash -euo pipefail "$TMP/resolve.sh" >"$TMP/invalid.log" 2>&1; then

@@ -59,7 +59,7 @@ fn main() {
     let build_id = build_identity::resolve_build_id(explicit.as_deref(), || {
         Command::new("git")
             .current_dir(&manifest_dir)
-            .args(["describe", "--tags", "--always"])
+            .args(["describe", "--tags", "--always", "--exclude", "*/*"])
             .output()
     })
     .unwrap_or_else(|error| panic!("{error}"));

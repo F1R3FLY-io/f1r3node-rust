@@ -11,12 +11,6 @@ The node must report its [build identity](../Glossary.md#build-identity) through
 [Issue #428](https://github.com/F1R3FLY-io/f1r3node-rust/issues/428) reports empty parentheses in `/api/status` on development images.
 The image publication job knows the build identity, but the binary does not receive it.
 
-## Baseline
-
-The review baseline is merge commit `a4ad96fd318e5cb6660cf73a0f03b306bf04f086` in [PR #810](https://github.com/F1R3FLY-io/f1r3node-rust/pull/810).
-Its merge base with `dev` is `f9340ed6115c5d7101c7edddc4a4400abc5881e5`.
-These references identify fixed snapshots rather than the current branch tips.
-
 ## Cause
 
 The [Dockerfile](../../node/Dockerfile) copies source directories without `.git`.
@@ -43,7 +37,7 @@ Keep the HTTP and protobuf schemas unchanged.
 Select the identity in this order:
 
 1. Use a nonempty `F1R3NODE_BUILD_ID` value after trimming surrounding whitespace.
-2. Otherwise, run `git describe --tags --always` in the source checkout.
+2. Otherwise, run `git describe --tags --always --exclude '*/*'` in the source checkout. Tags that contain a slash are not image versions.
 3. If Git fails or returns no valid identity, use `unknown`.
 
 After trimming surrounding whitespace, reject an explicit identity that contains control characters.
@@ -77,7 +71,7 @@ No controlled comparison of documentation-only commits has been completed.
 For a manual image build with a known identity, use:
 
 ```bash
-docker build -f node/Dockerfile --build-arg VERSION="$(git describe --tags --always)" -t f1r3fly-rust:local .
+docker build -f node/Dockerfile --build-arg VERSION="$(git describe --tags --always --exclude '*/*')" -t f1r3fly-rust:local .
 ```
 
 A manual build without `VERSION` uses `unknown` because the build context does not include Git metadata.
@@ -117,44 +111,13 @@ Later canary or stable tags retain the original build identity when they reuse a
 | Publication | The embedded identity uses the same source value as the immutable image tag. |
 | Fork or explicit target | The identity describes the selected source checkout. |
 
-## Validation
-
-The following checks passed:
-
-- Fourteen Rust regression tests in [build_identity.rs](../../node/tests/build_identity.rs), compiled directly with `rustc --test`.
-- `cargo check --locked -p node --tests` after the review changes.
-- Clippy for the new identity module and regression tests, with `-D warnings`.
-- Rust formatting checks for the changed Rust files.
-- [Workflow behavior tests](../../.github/scripts/test-build-identity-workflow.sh) for selected identities, invalid inputs, and inconsistent node output.
-- `.github/scripts/check-workflow-invariants.sh`.
-- `.github/scripts/check-dockerfile-workspace.sh`.
-- `.github/scripts/test-image-publish-tags.sh`.
-- Actionlint `1.7.12` for both changed workflows, with external ShellCheck and pyflakes disabled.
-- `git diff --check` and relative document link checks.
-
-An isolated Cargo package compiled copies of the actual build script, identity module, and version module.
-Repeated builds with the same target directory changed the output from identity A to identity B.
-Without an explicit identity or Git repository, the package returned `F1r3node Rust 0.4.46 (unknown)`.
-After the review changes, the package refreshed its identity after branch, tag, and packed-ref changes.
-A remote-ref change did not rebuild the package.
-
-At the review baseline, `cargo check --locked -p node --tests` passed.
-[CI run 39772729981](https://github.com/F1R3FLY-io/f1r3node-rust/actions/runs/39772729981) passed both native Docker builds and all three smoke tests.
-The node test and coverage jobs also passed.
-Both integration gates failed because OCI rejected runner creation at its daily resource creation limit.
-The integration test matrices did not run.
-
-The review changes require a new CI run, including the new image identity checks on both architectures.
-The `implemented` status describes the code changes and does not mean that all CI gates passed.
-
 ## Scope
 
 The fix adds no dependencies and changes no consensus rules, shard state, or API schema.
 It preserves publication and promotion of tested binaries.
 It also preserves the literal Docker version label used by the [promotion script](../../.github/scripts/promote-release.sh) and [release script](../../scripts/release.sh).
 
-The draft pull request targets `dev` and uses `Refs #428`.
-Close the issue after promotion to `master` and confirmation on a published image.
+Close issue #428 after promotion to `master` and confirmation on a published image.
 
 ## Build References
 
