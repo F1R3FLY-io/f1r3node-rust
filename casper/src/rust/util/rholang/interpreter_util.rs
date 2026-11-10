@@ -1145,7 +1145,6 @@ pub async fn compute_parents_post_state(
             Ok(MergedPreState {
                 state,
                 rejected_user: Vec::new(),
-                rejected_slashes: Vec::new(),
                 applied_from_scope: HashSet::new(),
                 merge_base: None,
             })
@@ -1188,7 +1187,6 @@ pub async fn compute_parents_post_state(
                     return Ok(MergedPreState {
                         state,
                         rejected_user: Vec::new(),
-                        rejected_slashes: Vec::new(),
                         applied_from_scope: HashSet::new(),
                         merge_base: None,
                     });
@@ -1263,7 +1261,6 @@ pub async fn compute_parents_post_state(
                             return Ok(MergedPreState {
                                 state,
                                 rejected_user: Vec::new(),
-                                rejected_slashes: Vec::new(),
                                 applied_from_scope: HashSet::new(),
                                 merge_base: Some(candidate.block_hash.clone()),
                             });
@@ -1301,10 +1298,9 @@ pub async fn compute_parents_post_state(
                     .record(cache_lookup_elapsed.as_secs_f64());
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.cache",
-                    "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
+                    "compute_parents_post_state cache hit: parents={}, rejected_deploys={}",
                     cache_key.sorted_parent_hashes.len(),
-                    cached.rejected_user.len(),
-                    cached.rejected_slashes.len()
+                    cached.rejected_user.len()
                 );
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.timing",
@@ -1319,7 +1315,6 @@ pub async fn compute_parents_post_state(
                     path = "cache_hit",
                     post_state = %hex::encode(&cached.state[..8.min(cached.state.len())]),
                     n_rejected = cached.rejected_user.len(),
-                    n_rejected_slash = cached.rejected_slashes.len(),
                     // The FLOOR line carries this on a miss; without it here the
                     // block's state parent goes unrecorded.
                     base = cached.merge_base.as_ref().map(|hash| hex::encode(&hash[..8.min(hash.len())])),
@@ -1902,8 +1897,7 @@ pub async fn compute_parents_post_state(
                 .record(merge_elapsed.as_secs_f64());
             let post_merge_started = std::time::Instant::now();
 
-            let (state, mut rejected_user_records, rejected_slash_pairs, applied_user_sigs) =
-                merger_result;
+            let (state, mut rejected_user_records, applied_user_sigs) = merger_result;
             // The tripwire runs on the PRE-suppression records: suppression
             // drops a record whose identical copy is visible elsewhere in
             // scope, but the drop it testifies to still happened in THIS
@@ -1945,11 +1939,10 @@ pub async fn compute_parents_post_state(
                 step = "compute_parents_post_state.MERGE_POST",
                 new_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]),
                 n_rejected_user = rejected_user_records.len(),
-                n_rejected_slash = rejected_slash_pairs.len(),
                 merge_ms,
                 "merge.cpps: dag_merger::merge returned"
             );
-            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_records.len(), n_rejected_slash = rejected_slash_pairs.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_records.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
 
             // Populate the rejected-deploy buffer from the records' (sig,
             // carrier) naming. Looking up the `Signed<DeployData>` from the
@@ -2089,72 +2082,10 @@ pub async fn compute_parents_post_state(
                 }
             }
 
-            // Recover rejected-slash metadata by reading each source block's
-            // system_deploys once. The block creator uses these to dedup
-            // slashes into the merge block's body; without this the slash
-            // effect would be lost to cost-optimal rejection.
-            let rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash> =
-                if rejected_slash_pairs.is_empty() {
-                    Vec::new()
-                } else {
-                    let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
-                    for (sig, src_block) in &rejected_slash_pairs {
-                        by_block
-                            .entry(src_block.clone())
-                            .or_default()
-                            .push(sig.clone());
-                    }
-                    let mut out = Vec::new();
-                    for (src_block, _sigs) in by_block {
-                        match block_store.get(&src_block) {
-                            Ok(Some(block)) => {
-                                for psd in &block.body.system_deploys {
-                                    if let models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Succeeded {
-                                    system_deploy:
-                                        models::rust::casper::protocol::casper_message::SystemDeployData::Slash {
-                                            invalid_block_hash,
-                                            issuer_public_key,
-                                            target_activation_epoch: _,
-                                        },
-                                    ..
-                                } = psd
-                                {
-                                    out.push(
-                                        crate::rust::merging::rejected_slash::RejectedSlash {
-                                            invalid_block_hash: invalid_block_hash.clone(),
-                                            issuer_public_key: issuer_public_key.clone(),
-                                            source_block_hash: src_block.clone(),
-                                        },
-                                    );
-                                }
-                                }
-                            }
-                            Ok(None) => {
-                                tracing::warn!(
-                                    "RejectedSlash extract: source block {} not in store",
-                                    PrettyPrinter::build_string_bytes(&src_block)
-                                );
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    "RejectedSlash extract: failed to load {}: {}",
-                                    PrettyPrinter::build_string_bytes(&src_block),
-                                    err
-                                );
-                            }
-                        }
-                    }
-                    // `by_block` iteration order is non-deterministic;
-                    // `sorted_for_body` makes the cached list a function of
-                    // the merge inputs alone.
-                    crate::rust::merging::rejected_slash::sorted_for_body(out)
-                };
-
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
             let merged = MergedPreState {
                 state: computed_state.clone(),
                 rejected_user: rejected_user_records,
-                rejected_slashes,
                 applied_from_scope: applied_user_sigs,
                 merge_base: Some(scope_anchor_hash.clone()),
             };
@@ -2166,7 +2097,6 @@ pub async fn compute_parents_post_state(
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
                 n_rejected = merged.rejected_user.len(),
-                n_rejected_slash = merged.rejected_slashes.len(),
                 n_applied = merged.applied_from_scope.len(),
                 applied = %named_sigs(&merged.applied_from_scope),
                 "merge.cpps: cache put merged parents-post-state"
@@ -2177,7 +2107,7 @@ pub async fn compute_parents_post_state(
                 .record(post_merge_elapsed.as_secs_f64());
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
-                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, prior_rejection_counts_ms={}, merge_ms={}, post_merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
+                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, prior_rejection_counts_ms={}, merge_ms={}, post_merge_ms={}, visible_blocks={}, rejected_deploys={}, total_ms={}",
                 parents.len(),
                 cache_lookup_ms,
                 collect_ancestors_ms,
@@ -2188,7 +2118,6 @@ pub async fn compute_parents_post_state(
                 post_merge_elapsed.as_millis(),
                 visible_blocks_len,
                 merged.rejected_user.len(),
-                merged.rejected_slashes.len(),
                 total_started.elapsed().as_millis()
             );
             tracing::debug!(
@@ -2197,7 +2126,6 @@ pub async fn compute_parents_post_state(
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
                 n_rejected = merged.rejected_user.len(),
-                n_rejected_slash = merged.rejected_slashes.len(),
                 "merge.cpps: exit compute_parents_post_state"
             );
             Ok(merged)
