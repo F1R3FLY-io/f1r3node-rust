@@ -85,6 +85,7 @@ source_files=(
   "$model_dir/rpb3_integrated_source_trace_composition.rs"
   "$model_dir/rpb3_integrated_dispatcher.rs"
   "$model_dir/rpb3_epm_obligation_return_live.rs"
+  "$model_dir/rpb3_epm_parser_escape_invariant.rs"
   "$model_dir/rpb3_epathmap_terminal_nested_return_composition.rs"
   "$model_dir/rpb3_canonical_path_eof_owner_obligation_refinement.rs"
   "$model_dir/rpb3_integrated_admission.rs"
@@ -957,6 +958,15 @@ proofs_rpb3_epm_obligation_return_live=(
   epm_end_then_nested_return_is_impossible
   epm_nested_return_excludes_finish_accept
 )
+proofs_rpb3_epm_parser_escape_invariant=(
+  parser_escape_wf_initial
+  parser_escape_bubble_keeps_path
+  parser_escape_settle_keeps_image
+  parser_escape_wf_feed_byte
+  parser_escape_wf_resolve
+  parser_escape_wf_restore
+  parser_escape_raw_par_top_is_root
+)
 proofs_rpb3_epm_push_live_action_refinement=(
   epm_push_live_action_is_checked
   epm_push_live_action_dispatches
@@ -1801,6 +1811,7 @@ gated_modules=(
   rpb3_epm_nested_accept_checked_stats_refinement
   rpb3_epm_nested_source_refinement
   rpb3_epm_obligation_return_live
+  rpb3_epm_parser_escape_invariant
   rpb3_epm_push_live_action_refinement
   rpb3_epm_push_source_action_refinement
   rpb3_epm_push_transport_source_refinement
@@ -3870,6 +3881,39 @@ fi
 if ! rg -q '^verification results:: 21 verified, 0 errors' "$epm_obligation_return_live_log"; then
   cat "$epm_obligation_return_live_log"
   echo "rpb3-admission-cursor: EPathMap obligation return live module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_epm_parser_escape_invariant[@]}"; do
+  proof_log="$evidence_dir/epm-parser-escape-invariant-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_epm_parser_escape_invariant --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap parser escape invariant $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap parser escape invariant $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+epm_parser_escape_invariant_log="$evidence_dir/epm-parser-escape-invariant-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_epm_parser_escape_invariant \
+  "$integrated_source" \
+  >"$epm_parser_escape_invariant_log" 2>&1; then
+  cat "$epm_parser_escape_invariant_log"
+  echo "rpb3-admission-cursor: EPathMap parser escape invariant module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 7 verified, 0 errors' "$epm_parser_escape_invariant_log"; then
+  cat "$epm_parser_escape_invariant_log"
+  echo "rpb3-admission-cursor: EPathMap parser escape invariant module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do
