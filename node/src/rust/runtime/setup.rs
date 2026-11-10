@@ -397,6 +397,29 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
     };
 
+    // This node's chain identity, as far as storage knows it. A node that
+    // restarts on existing data has its genesis already, so the guard against
+    // peers of a previous chain is live from the first message rather than
+    // only once Casper reaches the running state. A fresh node gets nothing
+    // here and learns its identity during bootstrap.
+    {
+        let conf = rp_conf_cell
+            .read()
+            .map_err(|e| CasperError::RuntimeError(format!("Failed to read RPConf: {}", e)))?;
+        match block_dag_storage.genesis_hash()? {
+            Some(genesis) => {
+                conf.chain_id.set_once(genesis.clone()).map_err(|e| {
+                    CasperError::RuntimeError(format!("Failed to publish chain identity: {}", e))
+                })?;
+                info!(
+                    genesis = %models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(&genesis),
+                    "Chain identity seeded from storage"
+                );
+            }
+            None => info!("Chain identity not known yet; it is learned during bootstrap"),
+        }
+    }
+
     // Repeat-deploy carrier-index watermark (same pattern as the LFB
     // migration above): the height since which every insert records carriers,
     // which gates the fast path's absence proofs. An empty database gets none
@@ -1028,7 +1051,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         transfer_unforgeable.clone(),
         conf.protocol_server.network_id.clone(),
         conf.casper.shard_name.clone(),
-        conf.casper.min_phlo_price,
+        conf.casper.min_phlo_price.clone(),
         conf.casper.genesis_block_data.native_token_name.clone(),
         conf.casper.genesis_block_data.native_token_symbol.clone(),
         conf.casper.genesis_block_data.native_token_decimals,
@@ -1189,7 +1212,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.dev_mode,
             conf.protocol_server.network_id.clone(),
             conf.casper.shard_name.clone(),
-            conf.casper.min_phlo_price,
+            conf.casper.min_phlo_price.clone(),
             conf.casper.genesis_block_data.native_token_name.clone(),
             conf.casper.genesis_block_data.native_token_symbol.clone(),
             conf.casper.genesis_block_data.native_token_decimals,
@@ -1429,7 +1452,7 @@ fn build_deploy_transfers(
                 .map(|t| TransferEvent {
                     from_addr: t.from_addr,
                     to_addr: t.to_addr,
-                    amount: t.amount,
+                    amount: t.amount_raw,
                     success: t.success,
                 })
                 .collect(),
@@ -1451,11 +1474,11 @@ mod tests {
         assert!(!block_report_prewarm_enabled(false, false));
     }
 
-    fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
+    fn transfer(from: &str, to: &str, amount: impl ToString) -> TransferInfo {
         TransferInfo {
             from_addr: from.to_string(),
             to_addr: to.to_string(),
-            amount,
+            amount_raw: amount.to_string(),
             success: true,
             fail_reason: String::new(),
         }
@@ -1473,7 +1496,7 @@ mod tests {
         let entry = &out[0];
         assert_eq!(entry.deploy_id, "deploy_with");
         assert_eq!(entry.transfers.len(), 1);
-        assert_eq!(entry.transfers[0].amount, 10);
+        assert_eq!(entry.transfers[0].amount, "10");
     }
 
     #[test]
@@ -1502,8 +1525,24 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].transfers.len(), 2);
-        assert_eq!(out[0].transfers[0].amount, 1);
-        assert_eq!(out[0].transfers[1].amount, 2);
+        assert_eq!(out[0].transfers[0].amount, "1");
+        assert_eq!(out[0].transfers[1].amount, "2");
+    }
+
+    #[test]
+    fn websocket_transfers_carry_exact_amounts() {
+        let above_uint256 = (num_bigint::BigInt::from(1u8) << 256usize).to_string();
+        for amount in ["0", "-5", "10000000000000000000", above_uint256.as_str()] {
+            let mut transfer = transfer("sender", "recipient", amount);
+            transfer.success = false;
+            let out = build_deploy_transfers(std::collections::HashMap::from([(
+                "deploy".to_string(),
+                vec![transfer],
+            )]));
+            let json = serde_json::to_value(&out[0].transfers[0]).unwrap();
+            assert_eq!(json["amount"], amount);
+            assert_eq!(json["success"], false);
+        }
     }
 
     // ---------- register_consensus_bundle_roots_core ----------

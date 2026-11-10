@@ -36,7 +36,12 @@ pub async fn read_on_chain_token_metadata(
     post_state_hash: &StateHash,
 ) -> Result<(String, String, u32), CasperError> {
     let (result, _cost) = runtime_manager
-        .play_exploratory_deploy(TOKEN_METADATA_QUERY.to_string(), post_state_hash, None)
+        .play_exploratory_deploy(
+            TOKEN_METADATA_QUERY.to_string(),
+            post_state_hash,
+            None,
+            Vec::new(),
+        )
         .await?;
 
     // The contract's "all" method returns a single tuple `(name, symbol, decimals)`
@@ -126,7 +131,7 @@ pub async fn read_on_chain_fault_tolerance_threshold_ppm(
 pub async fn read_on_chain_consensus_parameters(
     runtime_manager: &RuntimeManager,
     post_state_hash: &StateHash,
-) -> Result<(i32, i64, i64), CasperError> {
+) -> Result<(i32, i64, shared::rust::token_amount::TokenAmount), CasperError> {
     runtime_manager
         .get_consensus_parameters(post_state_hash)
         .await?

@@ -1,11 +1,13 @@
+use std::collections::VecDeque;
+
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches,
-    EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus,
-    EPlusPlus, ETuple, EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
-    VarRef,
+    Bundle, Connective, ConnectiveBody, EAnd, EApp, EDiv, EEq, EGt, EGte, ELambda, EList, ELt,
+    ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
+    EPercentPercent, EPi, EPlus, EPlusPlus, ETuple, EVar, Expr, If, Match, MatchCase, New, Par,
+    Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map::ParMap;
@@ -22,14 +24,15 @@ use models::rust::rholang::sorter::send_sort_matcher::SendSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
+use models::rust::utils::union;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::accounting::_cost;
 use super::accounting::costs::Cost;
 use super::env::Env;
 use super::errors::InterpreterError;
+use super::matcher::has_locally_free::HasLocallyFree;
 use super::unwrap_option_safe;
-use super::util::{prepend_connective, prepend_expr};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/Substitute.scala
 pub trait SubstituteTrait<A> {
@@ -192,17 +195,26 @@ impl Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
-        exprs.into_iter().try_fold(Par::default(), |par, expr| {
+        let mut par = Par::default();
+        let mut acc_exprs: VecDeque<Expr> = VecDeque::with_capacity(exprs.len());
+
+        for expr in exprs {
             match unwrap_option_safe(expr.expr_instance)? {
                 ExprInstance::EVarBody(e) => match self.maybe_substitute_evar(e, depth, env)? {
-                    Either::Left(e) => Ok(prepend_expr(
-                        par,
-                        Expr {
+                    Either::Left(e) => {
+                        let e = Expr {
                             expr_instance: Some(ExprInstance::EVarBody(e)),
-                        },
-                        depth,
-                    )),
-                    Either::Right(substituted) => Ok(concatenate_pars(substituted, par)),
+                        };
+                        par.locally_free =
+                            union(std::mem::take(&mut par.locally_free), e.locally_free(depth));
+                        par.connective_used |= e.connective_used();
+                        acc_exprs.push_front(e);
+                    }
+                    Either::Right(substituted) => {
+                        par.exprs = acc_exprs.into_iter().collect();
+                        par = concatenate_pars(substituted, par);
+                        acc_exprs = std::mem::take(&mut par.exprs).into();
+                    }
                 },
                 instance => {
                     let substituted = self.substitute_no_sort(
@@ -212,10 +224,17 @@ impl Substitute {
                         depth,
                         env,
                     )?;
-                    Ok(prepend_expr(par, substituted, depth))
+                    par.locally_free = union(
+                        std::mem::take(&mut par.locally_free),
+                        substituted.locally_free(depth),
+                    );
+                    par.connective_used |= substituted.connective_used();
+                    acc_exprs.push_front(substituted);
                 }
             }
-        })
+        }
+        par.exprs = acc_exprs.into_iter().collect();
+        Ok(par)
     }
 
     fn sub_conn(
@@ -224,51 +243,90 @@ impl Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Par, InterpreterError> {
-        let prepend = |par, instance| {
-            prepend_connective(
-                par,
-                Connective {
+        let mut par = Par::default();
+        let mut acc_conns: VecDeque<Connective> = VecDeque::with_capacity(conns.len());
+
+        let prepend =
+            |par: &mut Par, acc_conns: &mut VecDeque<Connective>, instance: ConnectiveInstance| {
+                let c = Connective {
                     connective_instance: Some(instance),
-                },
-                depth,
-            )
-        };
-        conns
-            .into_iter()
-            .try_fold(Par::default(), |par, conn| match conn.connective_instance {
+                };
+                par.locally_free = c.locally_free(depth);
+                par.connective_used |= c.connective_used();
+                acc_conns.push_front(c);
+            };
+
+        for conn in conns {
+            match conn.connective_instance {
                 Some(ConnectiveInstance::VarRefBody(v)) => {
                     match self.maybe_substitute_var_ref(v, depth, env)? {
-                        Either::Left(v) => Ok(prepend(par, ConnectiveInstance::VarRefBody(v))),
-                        Either::Right(new_par) => Ok(concatenate_pars(new_par, par)),
+                        Either::Left(v) => {
+                            prepend(&mut par, &mut acc_conns, ConnectiveInstance::VarRefBody(v));
+                        }
+                        Either::Right(new_par) => {
+                            par.connectives = acc_conns.into_iter().collect();
+                            par = concatenate_pars(new_par, par);
+                            acc_conns = std::mem::take(&mut par.connectives).into();
+                        }
                     }
                 }
                 Some(ConnectiveInstance::ConnAndBody(ConnectiveBody { ps })) => {
                     let ps = self.substitute_all_no_sort(ps, depth, env)?;
-                    Ok(prepend(
-                        par,
+                    prepend(
+                        &mut par,
+                        &mut acc_conns,
                         ConnectiveInstance::ConnAndBody(ConnectiveBody { ps }),
-                    ))
+                    );
                 }
                 Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps })) => {
                     let ps = self.substitute_all_no_sort(ps, depth, env)?;
-                    Ok(prepend(
-                        par,
+                    prepend(
+                        &mut par,
+                        &mut acc_conns,
                         ConnectiveInstance::ConnOrBody(ConnectiveBody { ps }),
-                    ))
+                    );
                 }
                 Some(ConnectiveInstance::ConnNotBody(p)) => {
                     let p = self.substitute_no_sort(p, depth, env)?;
-                    Ok(prepend(par, ConnectiveInstance::ConnNotBody(p)))
+                    prepend(&mut par, &mut acc_conns, ConnectiveInstance::ConnNotBody(p));
                 }
                 Some(
                     instance @ (ConnectiveInstance::ConnBool(_)
                     | ConnectiveInstance::ConnInt(_)
                     | ConnectiveInstance::ConnString(_)
                     | ConnectiveInstance::ConnUri(_)
-                    | ConnectiveInstance::ConnByteArray(_)),
-                ) => Ok(prepend(par, instance)),
-                None => Ok(par),
-            })
+                    | ConnectiveInstance::ConnByteArray(_)
+                    | ConnectiveInstance::ConnType(_)
+                    | ConnectiveInstance::ConnInt32(_)
+                    | ConnectiveInstance::ConnUint64(_)
+                    | ConnectiveInstance::ConnUint32(_)
+                    | ConnectiveInstance::ConnUint16(_)
+                    | ConnectiveInstance::ConnUint8(_)
+                    | ConnectiveInstance::ConnFloat64(_)
+                    | ConnectiveInstance::ConnFloat32(_)
+                    | ConnectiveInstance::ConnBigInt(_)
+                    | ConnectiveInstance::ConnBigRat(_)),
+                ) => {
+                    prepend(&mut par, &mut acc_conns, instance);
+                }
+                Some(ConnectiveInstance::ConnFixedPointBody(body)) => {
+                    let scale = body
+                        .scale
+                        .map(|p| self.substitute_no_sort(p, depth, env))
+                        .transpose()?;
+                    prepend(
+                        &mut par,
+                        &mut acc_conns,
+                        ConnectiveInstance::ConnFixedPointBody(
+                            models::rhoapi::ConnFixedPointBody { scale },
+                        ),
+                    );
+                }
+                None => {}
+            }
+        }
+        par.connectives = acc_conns.into_iter().collect();
+        Ok(par)
     }
 
     fn substitute_all<A>(
@@ -880,6 +938,68 @@ impl SubstituteTrait<Expr> for Substitute {
                 })
             }
 
+            ExprInstance::ELambdaBody(ELambda {
+                bind_count,
+                body,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_body =
+                    self.substitute(unwrap_option_safe(body)?, depth, &env.shift(bind_count))?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
+                        bind_count,
+                        body: Some(sub_body),
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::EAppBody(EApp {
+                fun,
+                args,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_fun = self.substitute(unwrap_option_safe(fun)?, depth, env)?;
+                let sub_args = self.substitute_all(args, depth, env)?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EAppBody(EApp {
+                        fun: Some(sub_fun),
+                        args: sub_args,
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::EPiBody(EPi {
+                bind_count,
+                param_types,
+                codomain,
+                locally_free,
+                connective_used,
+            }) => {
+                // Param types sit in the outer scope (same env); the
+                // codomain sits under `bind_count` new binders.
+                let sub_param_types = self.substitute_all(param_types, depth, env)?;
+                let sub_codomain =
+                    self.substitute(unwrap_option_safe(codomain)?, depth, &env.shift(bind_count))?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EPiBody(EPi {
+                        bind_count,
+                        param_types: sub_param_types,
+                        codomain: Some(sub_codomain),
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
             instance => Ok(Expr {
                 expr_instance: Some(instance),
             }),
@@ -1208,6 +1328,72 @@ impl SubstituteTrait<Expr> for Substitute {
                         method_name,
                         target: Some(sub_target),
                         arguments: sub_arguments,
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::ELambdaBody(ELambda {
+                bind_count,
+                body,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_body = self.substitute_no_sort(
+                    unwrap_option_safe(body)?,
+                    depth,
+                    &env.shift(bind_count),
+                )?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
+                        bind_count,
+                        body: Some(sub_body),
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::EAppBody(EApp {
+                fun,
+                args,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_fun = self.substitute_no_sort(unwrap_option_safe(fun)?, depth, env)?;
+                let sub_args = self.substitute_all_no_sort(args, depth, env)?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EAppBody(EApp {
+                        fun: Some(sub_fun),
+                        args: sub_args,
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::EPiBody(EPi {
+                bind_count,
+                param_types,
+                codomain,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_param_types = self.substitute_all_no_sort(param_types, depth, env)?;
+                let sub_codomain = self.substitute_no_sort(
+                    unwrap_option_safe(codomain)?,
+                    depth,
+                    &env.shift(bind_count),
+                )?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EPiBody(EPi {
+                        bind_count,
+                        param_types: sub_param_types,
+                        codomain: Some(sub_codomain),
                         locally_free: set_bits_until(locally_free, env.shift),
                         connective_used,
                     })),

@@ -12,6 +12,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use tracing::{debug, info, warn};
 
+use crate::rust::engine::peer_scoring::{PeerScores, Strike, StrikeOutcome, IGNORE_TTL_MS};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_REQUESTS_RECOVERY_METRIC,
@@ -20,7 +21,8 @@ use crate::rust::metrics_constants::{
     BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC,
     BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC, BLOCK_RETRIEVER_METRICS_SOURCE,
     BLOCK_RETRIEVER_PEERS_TOTAL_SIZE_METRIC, BLOCK_RETRIEVER_REQUESTED_BLOCKS_SIZE_METRIC,
-    BLOCK_RETRIEVER_WAITING_LIST_TOTAL_SIZE_METRIC,
+    BLOCK_RETRIEVER_WAITING_LIST_TOTAL_SIZE_METRIC, PEER_SCORING_DROPPED_MESSAGES_METRIC,
+    PEER_SCORING_IGNORED_PEERS_METRIC, PEER_SCORING_STRIKES_METRIC,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,7 +114,7 @@ pub fn total_unresolved_rerequest_span_ms() -> u64 {
         .sum()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     requested_blocks: RequestedBlocks,
     dependency_recovery_last_request: Arc<Mutex<HashMap<BlockHash, u64>>>,
@@ -122,9 +124,29 @@ pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     retry_attempts_by_hash: Arc<Mutex<HashMap<BlockHash, u32>>>,
     local_backpressure_credits: Arc<Mutex<HashSet<BlockHash>>>,
     retry_budget_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
+    peer_scores: Arc<PeerScores>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
     conf: RPConf,
+}
+
+impl<T: TransportLayer + Send + Sync> Clone for BlockRetriever<T> {
+    fn clone(&self) -> Self {
+        Self {
+            requested_blocks: self.requested_blocks.clone(),
+            dependency_recovery_last_request: self.dependency_recovery_last_request.clone(),
+            broadcast_retry_last_request: self.broadcast_retry_last_request.clone(),
+            peer_requery_last_request: self.peer_requery_last_request.clone(),
+            peer_requery_attempts_by_hash: self.peer_requery_attempts_by_hash.clone(),
+            retry_attempts_by_hash: self.retry_attempts_by_hash.clone(),
+            local_backpressure_credits: self.local_backpressure_credits.clone(),
+            retry_budget_quarantine_until: self.retry_budget_quarantine_until.clone(),
+            peer_scores: self.peer_scores.clone(),
+            transport: self.transport.clone(),
+            connections_cell: self.connections_cell.clone(),
+            conf: self.conf.clone(),
+        }
+    }
 }
 
 impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
@@ -133,7 +155,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     const PEER_REQUERY_COOLDOWN_MS: u64 = 500;
     const BROADCAST_ONLY_COOLDOWN_MS: u64 = 500;
     const MIN_REREQUEST_INTERVAL_MS: u64 = UNRESOLVED_REREQUEST_ANCHOR_MS;
-    const DEPENDENCY_RECOVERY_COOLDOWN_MS: u64 = 500;
+    pub(crate) const DEPENDENCY_RECOVERY_COOLDOWN_MS: u64 = 500;
     const STALE_REQUEST_LIFETIME_MULTIPLIER: u64 = 6;
     const KNOWN_PEER_REQUERY_SOFT_LIMIT: u32 = 8;
     const RETRY_BUDGET_QUARANTINE_MS: u64 = 10_000;
@@ -512,6 +534,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             retry_attempts_by_hash: Arc::new(Mutex::new(HashMap::new())),
             local_backpressure_credits: Arc::new(Mutex::new(HashSet::new())),
             retry_budget_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
+            peer_scores: Arc::new(PeerScores::new()),
             transport,
             connections_cell,
             conf,
@@ -654,6 +677,71 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             .get(hash)
             .map(|s| s.requested_as_dependency)
             .unwrap_or(false))
+    }
+
+    pub fn note_block_source(&self, hash: &BlockHash, peer: &PeerNode) -> Result<(), CasperError> {
+        if !self.was_requested_as_dependency(hash)? {
+            self.peer_scores.note_unsolicited(hash, peer);
+        }
+        Ok(())
+    }
+
+    pub fn forget_block_source(&self, hash: &BlockHash) { self.peer_scores.forget(hash); }
+
+    pub fn strike_block_source(&self, hash: &BlockHash, strike: Strike) {
+        let now = Self::current_millis();
+        let outcome = self.peer_scores.strike(hash, now);
+        self.record_strike(outcome, hash, strike, now);
+    }
+
+    pub fn strike_peer(&self, peer: &PeerNode, hash: &BlockHash, strike: Strike) {
+        let now = Self::current_millis();
+        let outcome = self.peer_scores.strike_peer(peer, now);
+        self.record_strike(outcome, hash, strike, now);
+    }
+
+    fn record_strike(&self, outcome: StrikeOutcome, hash: &BlockHash, strike: Strike, now: u64) {
+        match outcome {
+            StrikeOutcome::NoSource => {}
+            StrikeOutcome::Counted(peer) => {
+                metrics::counter!(PEER_SCORING_STRIKES_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "reason" => strike.label())
+                    .increment(1);
+                debug!(
+                    "Peer {} pushed block {} with outcome {}.",
+                    peer,
+                    PrettyPrinter::build_string_bytes(hash),
+                    strike.label()
+                );
+            }
+            StrikeOutcome::Ignored(peer) => {
+                metrics::counter!(PEER_SCORING_STRIKES_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "reason" => strike.label())
+                    .increment(1);
+                metrics::gauge!(PEER_SCORING_IGNORED_PEERS_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE)
+                    .set(self.peer_scores.ignored_peers(now) as f64);
+                warn!(
+                    "Ignoring block traffic from peer {} for {} min: too many invalid unsolicited blocks (last {} with outcome {}).",
+                    peer,
+                    IGNORE_TTL_MS / 60_000,
+                    PrettyPrinter::build_string_bytes(hash),
+                    strike.label()
+                );
+            }
+        }
+    }
+
+    pub fn should_ignore_peer(&self, peer: &PeerNode) -> bool {
+        let ignored = self.peer_scores.is_ignored(peer, Self::current_millis());
+        if ignored {
+            metrics::counter!(PEER_SCORING_DROPPED_MESSAGES_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE)
+                .increment(1);
+        }
+        ignored
+    }
+
+    pub fn awaits_block(&self, hash: &BlockHash) -> bool {
+        self.requested_blocks
+            .lock()
+            .is_ok_and(|state| state.get(hash).is_some_and(|request| !request.received))
     }
 
     /// Helper method to add a source peer to an existing request
@@ -1150,6 +1238,13 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     /// Force dependency recovery by reopening request state and rebroadcasting HasBlockRequest.
     /// This is used when the processor detects buffered dependency deadlocks.
     pub async fn recover_dependency(&self, hash: BlockHash) -> Result<(), CasperError> {
+        self.try_recover_dependency(hash).await.map(|_| ())
+    }
+
+    pub(crate) async fn try_recover_dependency(
+        &self,
+        hash: BlockHash,
+    ) -> Result<bool, CasperError> {
         let now = Self::current_millis();
 
         if self.is_retry_budget_quarantined(&hash, now)? {
@@ -1158,7 +1253,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 PrettyPrinter::build_string_bytes(&hash),
                 Self::RETRY_BUDGET_QUARANTINE_MS
             );
-            return Ok(());
+            return Ok(false);
         }
 
         if self.has_exceeded_retry_budget(&hash)? {
@@ -1181,7 +1276,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     Self::RETRY_BUDGET_QUARANTINE_MS
                 );
             }
-            return Ok(());
+            return Ok(false);
         }
 
         let dependency_recovery_rerequest_cooldown_ms = Self::DEPENDENCY_RECOVERY_COOLDOWN_MS;
@@ -1200,7 +1295,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         PrettyPrinter::build_string_bytes(&hash),
                         dependency_recovery_rerequest_cooldown_ms
                     );
-                    return Ok(());
+                    return Ok(false);
                 }
             }
 
@@ -1252,7 +1347,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         );
         self.update_aux_tracking_metrics()?;
 
-        Ok(())
+        Ok(true)
     }
 
     /// Helper method to try re-requesting a block from the next peer in waiting list

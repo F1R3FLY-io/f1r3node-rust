@@ -8,6 +8,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::dag::buffer_dag_transition::purge_buffered_blocks_without_body;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
@@ -90,8 +91,27 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+    discard_corrupt_pendant, mark_in_flight, BlockQueueItem, CheckedBlock, InFlightBlocks,
+    InFlightMark, QueuedBlock, MAX_BLOCKS_IN_PROCESSING,
 };
+
+pub(crate) fn ensure_compatible_approved_block(
+    approved_block: &ApprovedBlock,
+) -> Result<(), CasperError> {
+    let block = &approved_block.candidate.block;
+    if matches!(
+        crate::rust::validate::Validate::block_hash(block),
+        rspace_plus_plus::rspace::history::Either::Left(_)
+    ) {
+        return Err(CasperError::RuntimeError(format!(
+            "The stored approved block {} does not match its block hash under this build. \
+             An incompatible build created the data directory. Stop all nodes, remove their \
+             data directories, and start a new network from a new genesis.",
+            PrettyPrinter::build_string_bytes(&block.block_hash)
+        )));
+    }
+    Ok(())
+}
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
@@ -190,11 +210,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             deploy_play_budget_is_derived: conf.deploy_play_budget.is_zero(),
             heartbeat_check_interval: conf.heartbeat_conf.check_interval,
             casper_version: crate::rust::casper::CASPER_PROTOCOL_VERSION,
-            bond_minimum: conf.genesis_block_data.bond_minimum,
-            bond_maximum: conf.genesis_block_data.bond_maximum,
+            bond_minimum: conf.genesis_block_data.bond_minimum.clone(),
+            bond_maximum: conf.genesis_block_data.bond_maximum.clone(),
             epoch_length: conf.genesis_block_data.epoch_length,
             quarantine_length: conf.genesis_block_data.quarantine_length,
-            min_phlo_price: conf.min_phlo_price,
+            min_phlo_price: conf.min_phlo_price.clone(),
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
@@ -268,6 +288,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             blocks_in_processing: &Arc<InFlightBlocks>,
             block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
         ) -> Result<(), CasperError> {
+            let purged = purge_buffered_blocks_without_body(casper_buffer_storage, block_store)?;
+            if purged > 0 {
+                tracing::warn!(
+                    "Purged {} CasperBuffer entries whose block body is not stored.",
+                    purged
+                );
+            }
             let pendants = casper_buffer_storage.get_pendants();
 
             // Filter pendants to only those that exist in BlockStore
@@ -339,6 +366,33 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                         continue;
                     }
 
+                    let verification_block = block.clone();
+                    let block = match tokio::task::spawn_blocking(move || {
+                        CheckedBlock::verify(verification_block)
+                    })
+                    .await
+                    .map_err(|error| {
+                        CasperError::RuntimeError(format!(
+                            "Stored pendant verification task failed: {error}"
+                        ))
+                    })? {
+                        Ok(verified) => verified,
+                        Err(_) => {
+                            tracing::warn!(
+                                "Pendant {} does not match its hash or signature. Skipped.",
+                                PrettyPrinter::build_string_bytes(&hash)
+                            );
+                            discard_corrupt_pendant(
+                                &block,
+                                block_store,
+                                casper_buffer_storage,
+                                block_retriever,
+                            )
+                            .await?;
+                            continue;
+                        }
+                    };
+
                     // Send block to processing queue for validation and addition to DAG
                     let block_hash = block.block_hash.clone();
                     let guard = match mark_in_flight(blocks_in_processing, block_hash.clone()) {
@@ -362,7 +416,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                         }
                     };
                     block_processing_queue_tx
-                        .send((casper.clone(), block, guard))
+                        .send((casper.clone(), QueuedBlock::Network(block), guard))
                         .await
                         .map_err(|e| {
                             CasperError::Other(format!("Failed to send block to queue: {}", e))
@@ -633,15 +687,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             timestamp,
             vaults,
             bonds,
-            self.conf.genesis_block_data.bond_minimum,
-            self.conf.genesis_block_data.bond_maximum,
+            self.conf.genesis_block_data.bond_minimum.clone(),
+            self.conf.genesis_block_data.bond_maximum.clone(),
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
             self.casper_shard_conf.fault_tolerance_threshold_ppm,
             self.casper_shard_conf.max_parent_depth,
             self.casper_shard_conf.deploy_lifespan,
-            self.casper_shard_conf.min_phlo_price,
+            self.casper_shard_conf.min_phlo_price.clone(),
             self.conf.genesis_ceremony.required_signatures,
             self.conf
                 .genesis_block_data
@@ -724,8 +778,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         tracing::info!(
             bonds_file = %self.conf.genesis_block_data.bonds_file,
             wallets_file = %self.conf.genesis_block_data.wallets_file,
-            bond_minimum = self.conf.genesis_block_data.bond_minimum,
-            bond_maximum = self.conf.genesis_block_data.bond_maximum,
+            bond_minimum = %self.conf.genesis_block_data.bond_minimum,
+            bond_maximum = %self.conf.genesis_block_data.bond_maximum,
             epoch_length = self.conf.genesis_block_data.epoch_length,
             quarantine_length = self.conf.genesis_block_data.quarantine_length,
             number_of_active_validators = self.conf.genesis_block_data.number_of_active_validators,
@@ -744,15 +798,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.bonds_file.clone(),
             self.conf.genesis_ceremony.autogen_shard_size,
             self.conf.genesis_block_data.wallets_file.clone(),
-            self.conf.genesis_block_data.bond_minimum,
-            self.conf.genesis_block_data.bond_maximum,
+            self.conf.genesis_block_data.bond_minimum.clone(),
+            self.conf.genesis_block_data.bond_maximum.clone(),
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
             self.casper_shard_conf.fault_tolerance_threshold_ppm,
             self.casper_shard_conf.max_parent_depth,
             self.casper_shard_conf.deploy_lifespan,
-            self.casper_shard_conf.min_phlo_price,
+            self.casper_shard_conf.min_phlo_price.clone(),
             self.casper_shard_conf.shard_name.clone(),
             self.conf.genesis_block_data.deploy_timestamp,
             self.conf.genesis_ceremony.required_signatures,
@@ -902,6 +956,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunch for CasperL
 
         let (msg, action_result) = match approved_block_opt {
             Some(approved_block) => {
+                ensure_compatible_approved_block(&approved_block)?;
                 let msg = "Approved block found, reconnecting to existing network";
                 let action_result = self
                     .connect_to_existing_network(approved_block, self.disable_state_exporter)

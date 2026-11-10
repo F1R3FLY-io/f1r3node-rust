@@ -74,7 +74,7 @@ fn create_sender_and_validator() -> (String, Bytes, Bond) {
     let sender = Bytes::from(sender);
     let bonds_validator = Bond {
         validator: sender.clone(),
-        stake: 1,
+        stake: 1.into(),
     };
     (sender_string.to_string(), sender, bonds_validator)
 }

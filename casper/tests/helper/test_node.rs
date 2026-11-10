@@ -8,7 +8,8 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, CheckedBlock, InFlightBlocks,
+    IntegrityFailure, StoreVerdict,
 };
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -21,6 +22,7 @@ use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::safety_oracle::CliqueOracleImpl;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -191,7 +193,7 @@ impl TestNode {
     ///
     /// This method:
     /// 1. Checks if block is of interest
-    /// 2. Checks if well-formed and stores
+    /// 2. Stores (CheckedBlock::check has already checked format, signature, and hash)
     /// 3. Checks dependencies
     /// 4. Validates with effects
     pub async fn process_block_through_pipe(
@@ -199,25 +201,44 @@ impl TestNode {
         block_processor: &BlockProcessor<TransportLayerTestImpl>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
+        let checked = match CheckedBlock::check(block.clone(), BLOCK_PROCESSOR_METRICS_SOURCE) {
+            Ok(checked) => checked,
+            Err((_, IntegrityFailure::Malformed)) => {
+                return Ok(Either::Left(BlockStatus::invalid_format()))
+            }
+            Err((_, IntegrityFailure::HashMismatch)) => {
+                return Ok(Either::Left(BlockStatus::invalid_block_hash()))
+            }
+        };
+
         // Check if block is of interest
-        let verdict = block_processor.check_if_of_interest(casper.clone(), &block)?;
+        let verdict = block_processor.check_if_of_interest(casper.clone(), &checked)?;
 
         if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
-        // Check if well-formed and store
-        let is_well_formed = block_processor
-            .check_if_well_formed_and_store(&block)
-            .await?;
+        let Some(store_mode) = block_processor
+            .check_sender_authorization(&checked)?
+            .store_mode()
+        else {
+            return Ok(Either::Left(BlockStatus::invalid_sender()));
+        };
 
-        if !is_well_formed {
-            return Ok(Either::Left(BlockStatus::invalid_format()));
+        // Store
+        match block_processor.store(&checked, store_mode).await? {
+            StoreVerdict::Stored => {}
+            StoreVerdict::PendingRefused(refusal) => {
+                block_processor
+                    .release_refused_pending(&block, refusal)
+                    .await?;
+                return Ok(Either::Left(BlockStatus::missing_blocks()));
+            }
         }
 
         // Check dependencies
         let dependencies_ready = block_processor
-            .check_dependencies_with_effects(casper.clone(), &block)
+            .check_dependencies_with_effects(casper.clone(), &checked)
             .await?;
 
         if !dependencies_ready {
@@ -226,7 +247,7 @@ impl TestNode {
 
         // Validate with effects
         block_processor
-            .validate_with_effects(casper.clone(), &block, None)
+            .validate_with_effects(casper.clone(), &checked, None)
             .await
     }
 
@@ -1181,12 +1202,12 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
-            casper_version: 1,
-            bond_minimum: 0,
-            bond_maximum: i64::MAX,
+            casper_version: genesis.header.version,
+            bond_minimum: 0.into(),
+            bond_maximum: (i64::MAX as u64).into(),
             epoch_length: 10000,
             quarantine_length: 20000,
-            min_phlo_price: 1,
+            min_phlo_price: (1).into(),
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled

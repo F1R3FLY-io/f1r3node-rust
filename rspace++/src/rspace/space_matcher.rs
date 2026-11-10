@@ -161,9 +161,7 @@ where
                 if !matcher.check_commit(&cont.continuation, &matched_data) {
                     // Guard rejected: roll back and try the next
                     // waiting continuation, just like a spatial miss.
-                    for (ch, original) in rollback {
-                        channel_to_index_data.insert(ch, original);
-                    }
+                    restore(&mut channel_to_index_data, rollback);
                     continue;
                 }
                 metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_SUCCESS_METRIC, "source" => RSPACE_METRICS_SOURCE)
@@ -178,11 +176,101 @@ where
                 });
             }
 
-            // Restore only the channels that were actually mutated
-            for (ch, original) in rollback {
-                channel_to_index_data.insert(ch, original);
-            }
+            restore(&mut channel_to_index_data, rollback);
         }
         None
+    }
+}
+
+/// Undoes speculative matches newest first, so a channel matched more than
+/// once ends at the state it had before the first match.
+fn restore<C: std::hash::Hash + Eq, D>(
+    channel_to_index_data: &mut HashMap<C, Vec<D>>,
+    rollback: Vec<(C, Vec<D>)>,
+) {
+    for (channel, original) in rollback.into_iter().rev() {
+        channel_to_index_data.insert(channel, original);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeSet, HashMap};
+    use std::sync::Arc;
+
+    use serde::{Deserialize, Serialize};
+
+    use super::SpaceMatcher;
+    use crate::rspace::internal::{Datum, WaitingContinuation};
+    use crate::rspace::r#match::Match;
+    use crate::rspace::rspace::RSpace;
+    use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    use crate::rspace::trace::event::Consume;
+
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    enum Pattern {
+        #[default]
+        Any,
+        Exactly(String),
+    }
+
+    struct PatternMatch;
+
+    impl Match<Pattern, String, String> for PatternMatch {
+        fn get(&self, pattern: &Pattern, a: &String) -> Option<String> {
+            match pattern {
+                Pattern::Any => Some(a.clone()),
+                Pattern::Exactly(expected) => (expected == a).then(|| a.clone()),
+            }
+        }
+    }
+
+    fn continuation(
+        channels: &[String],
+        patterns: Vec<Pattern>,
+        body: &str,
+    ) -> Arc<WaitingContinuation<Pattern, String>> {
+        let body = body.to_string();
+        Arc::new(WaitingContinuation {
+            source: Consume::create(&channels.to_vec(), &patterns, &body, false),
+            patterns,
+            continuation: body,
+            persist: false,
+            peeks: BTreeSet::new(),
+        })
+    }
+
+    fn datum(channel: &str, value: &str) -> Arc<Datum<String>> {
+        Arc::new(Datum::create(&channel.to_string(), value.to_string(), false))
+    }
+
+    #[tokio::test]
+    async fn a_candidate_that_fails_after_matching_one_channel_twice_leaves_its_data_for_the_next()
+    {
+        let mut kvm = InMemoryStoreManager::new();
+        let space: RSpace<String, Pattern, String, String> =
+            RSpace::create(kvm.r_space_stores().await.unwrap(), Arc::new(Box::new(PatternMatch)))
+                .unwrap();
+        let matcher: Box<dyn Match<Pattern, String, String>> = Box::new(PatternMatch);
+
+        let channels = vec!["a".to_string(), "a".to_string(), "b".to_string()];
+        let first = Pattern::Exactly("1".to_string());
+        let second = Pattern::Exactly("2".to_string());
+        let candidates = vec![
+            (continuation(&channels, vec![Pattern::Any, Pattern::Any, first], "first"), 0),
+            (continuation(&channels, vec![Pattern::Any, Pattern::Any, second], "second"), 1),
+        ];
+        let data = HashMap::from([
+            ("a".to_string(), vec![(datum("a", "x"), 0), (datum("a", "y"), 1)]),
+            ("b".to_string(), vec![(datum("b", "2"), 0)]),
+        ]);
+
+        let matched = space.extract_first_match(&matcher, channels, candidates, data);
+
+        assert_eq!(
+            matched.map(|candidate| candidate.continuation.continuation),
+            Some("second".to_string())
+        );
     }
 }

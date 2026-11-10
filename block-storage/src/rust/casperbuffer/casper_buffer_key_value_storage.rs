@@ -232,6 +232,15 @@ impl CasperBufferKeyValueStorage {
             .collect()
     }
 
+    pub fn buffered_block_hashes(&self) -> Vec<BlockHashSerde> {
+        let _guard = self.read_guard();
+        let dag = self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        dag.child_to_parent_adjacency_list.keys().cloned().collect()
+    }
+
     pub fn put_pendant(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let _guard = self.write_guard();
         self.put_pendant_unlocked(block)
@@ -247,6 +256,42 @@ impl CasperBufferKeyValueStorage {
     pub fn remove(&self, hash: BlockHashSerde) -> Result<(), KvStoreError> {
         let _guard = self.write_guard();
         self.remove_unlocked(hash)
+    }
+
+    pub fn discard_copy_preserving_dependents(
+        &self,
+        hash: BlockHashSerde,
+    ) -> Result<bool, KvStoreError> {
+        let _guard = self.write_guard();
+        let needed = self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .parent_to_child_adjacency_list
+            .get(&hash)
+            .is_some_and(|children| !children.is_empty());
+        if !needed {
+            self.remove_unlocked(hash)?;
+            return Ok(false);
+        }
+        self.parents_store.delete(vec![hash.clone()])?;
+        let mut dag = self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(parents) = dag.child_to_parent_adjacency_list.remove(&hash) {
+            for parent in parents {
+                if let Some(children) = dag.parent_to_child_adjacency_list.get_mut(&parent) {
+                    children.remove(&hash);
+                    if children.is_empty() {
+                        dag.parent_to_child_adjacency_list.remove(&parent);
+                    }
+                }
+            }
+        }
+        dag.dependency_free.insert(hash.clone());
+        self.block_dependencies.remove(&hash);
+        Ok(true)
     }
 
     pub fn get_parents(&self, block_hash: &BlockHashSerde) -> Option<HashSet<BlockHashSerde>> {
@@ -559,6 +604,42 @@ mod tests {
 
     fn create_block_hash(data: &[u8]) -> BlockHashSerde {
         BlockHashSerde(Bytes::copy_from_slice(data))
+    }
+
+    #[tokio::test]
+    async fn discard_copy_preserves_children_and_drops_untrusted_parent_links(
+    ) -> Result<(), KvStoreError> {
+        let mut stores = InMemoryStoreManager::new();
+        let buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut stores).await?;
+        let old_parent = create_block_hash(b"old-parent");
+        let missing = create_block_hash(b"missing");
+        let child = create_block_hash(b"child");
+        buffer.add_relation(old_parent.clone(), missing.clone())?;
+        buffer.add_relation(missing.clone(), child.clone())?;
+        buffer.cache_block_dependencies(missing.clone(), vec![old_parent.0.clone()]);
+
+        assert!(buffer.discard_copy_preserving_dependents(missing.clone())?);
+        assert_eq!(buffer.get_parents(&missing), None);
+        assert_eq!(buffer.get_children(&old_parent), None);
+        assert_eq!(
+            buffer.get_parents(&child),
+            Some(HashSet::from([missing.clone()]))
+        );
+        assert!(!buffer.is_pendant(&child));
+        assert!(!buffer.contains(&missing));
+        assert!(buffer.requested_as_dependency(&missing));
+        assert!(!buffer.block_dependencies.contains_key(&missing));
+
+        let restored = CasperBufferKeyValueStorage::new_from_kvm(&mut stores).await?;
+        assert_eq!(restored.get_parents(&missing), None);
+        assert_eq!(
+            restored.get_parents(&child),
+            Some(HashSet::from([missing.clone()]))
+        );
+        assert!(!restored.is_pendant(&child));
+        restored.remove(missing)?;
+        assert!(restored.is_pendant(&child));
+        Ok(())
     }
 
     #[tokio::test]

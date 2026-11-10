@@ -27,6 +27,7 @@ use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
@@ -57,7 +58,7 @@ fn mk_snapshot(
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
-    bonds_map.insert(validator.clone(), 100);
+    bonds_map.insert(validator.clone(), 100.into());
     snapshot.on_chain_state = OnChainCasperState {
         shard_conf,
         bonds_map,
@@ -209,11 +210,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -221,7 +222,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -230,7 +231,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
@@ -447,11 +448,11 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -459,7 +460,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -473,9 +474,9 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
                     &construct_deploy::DEFAULT_PUB,
                 )
                 .expect("Failed to create default deployer vault address"),
-            initial_balance: 9_000_000,
+            initial_balance: 9_000_000.into(),
         }],
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
@@ -525,7 +526,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     let side_deploy = construct_deploy::source_deploy_now_full(
         r#"@"secondary-parent-fast-path"!!(1)"#.to_string(),
         None,
-        Some(1),
+        Some((1).into()),
         Some(construct_deploy::DEFAULT_SEC.clone()),
         None,
         Some(shard_name.clone()),
@@ -710,11 +711,11 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -722,7 +723,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -731,7 +732,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
@@ -873,6 +874,208 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
 }
 
+const BLOCK_INDEX_CACHE_BOUND: usize = RuntimeManager::MAX_BLOCK_INDEX_CACHE_ENTRIES;
+
+#[test]
+fn merging_keeps_the_block_index_cache_within_its_bound() {
+    let handle = std::thread::Builder::new()
+        .name("block-index-cache-bound".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build Tokio runtime")
+                .block_on(run_block_index_cache_bound_test());
+        })
+        .expect("Failed to spawn test thread");
+    handle.join().expect("Test thread panicked");
+}
+
+async fn run_block_index_cache_bound_test() {
+    let secp = Secp256k1;
+    let (_validator_sk, validator_pk) = secp.new_key_pair();
+    let validator: Bytes = validator_pk.bytes.clone();
+    let shard_name = "test-shard".to_string();
+
+    let mut kvm = InMemoryStoreManager::new();
+    let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+        .await
+        .expect("Failed to create block store");
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+        .await
+        .expect("Failed to create DAG storage");
+    let rspace_store = kvm
+        .r_space_stores()
+        .await
+        .expect("Failed to get rspace stores");
+    let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
+        .await
+        .expect("Failed to create mergeable store");
+    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+        rspace_store,
+        mergeable_store,
+        Genesis::default_mergeable_tags_arc(),
+        ExternalServices::noop(),
+    );
+
+    let genesis = Genesis {
+        shard_id: shard_name.clone(),
+        timestamp: 0,
+        block_number: 0,
+        proof_of_stake: ProofOfStake {
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
+            validators: vec![GenesisValidator {
+                pk: validator_pk.clone(),
+                stake: 100.into(),
+            }],
+            epoch_length: 1000,
+            quarantine_length: 50000,
+            number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: (0).into(),
+            pos_multi_sig_public_keys: vec![
+                "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
+                "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
+                "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
+            ],
+            pos_multi_sig_quorum: 2,
+        },
+        vaults: Vec::new(),
+        supply: (i64::MAX as u64).into(),
+        version: 1,
+        native_token_name: "F1R3CAP".to_string(),
+        native_token_symbol: "F1R3".to_string(),
+        native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
+    };
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+        .await
+        .expect("Failed to create genesis block");
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("Failed to store genesis block");
+    dag_storage
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .expect("Failed to insert genesis in DAG");
+
+    let mut siblings = Vec::new();
+    for seq in 1..=(BLOCK_INDEX_CACHE_BOUND as i32 + 12) {
+        let raw = build_empty_block(
+            1,
+            seq,
+            validator.clone(),
+            vec![genesis_block.block_hash.clone()],
+            proto_util::post_state_hash(&genesis_block),
+            genesis_block.body.state.bonds.clone(),
+            shard_name.clone(),
+        );
+        siblings.push(
+            step_block(
+                &mut block_store,
+                &dag_storage,
+                &mut runtime_manager,
+                &raw,
+                validator.clone(),
+                shard_name.clone(),
+                genesis_block.block_hash.clone(),
+            )
+            .await
+            .expect("Failed to step a sibling"),
+        );
+    }
+
+    let snapshot = mk_snapshot(
+        dag_storage
+            .get_representation()
+            .expect("dag representation"),
+        validator,
+        shard_name,
+        genesis_block.block_hash.clone(),
+    );
+    compute_parents_post_state(
+        &block_store,
+        siblings,
+        &snapshot,
+        &runtime_manager,
+        &std::collections::BTreeMap::new(),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to merge the siblings");
+
+    assert!(
+        runtime_manager.block_index_cache.len() <= BLOCK_INDEX_CACHE_BOUND,
+        "merging left {} block indexes cached, past the bound of {}",
+        runtime_manager.block_index_cache.len(),
+        BLOCK_INDEX_CACHE_BOUND
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_indexing_keeps_the_block_index_cache_within_its_bound() {
+    let mut kvm = InMemoryStoreManager::new();
+    let rspace_store = kvm
+        .r_space_stores()
+        .await
+        .expect("Failed to get rspace stores");
+    let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
+        .await
+        .expect("Failed to create mergeable store");
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
+        rspace_store,
+        mergeable_store,
+        Genesis::default_mergeable_tags_arc(),
+        ExternalServices::noop(),
+    );
+
+    let state = Blake2b256Hash::new(b"state");
+    let threads = 16;
+    let blocks_per_thread = 2 * BLOCK_INDEX_CACHE_BOUND;
+    let start = std::sync::Barrier::new(threads);
+    std::thread::scope(|scope| {
+        for thread in 0..threads {
+            let runtime_manager = &runtime_manager;
+            let state = &state;
+            let start = &start;
+            scope.spawn(move || {
+                start.wait();
+                for block_number in 0..blocks_per_thread {
+                    let block_hash =
+                        Bytes::from(format!("block-{thread}-{block_number}").into_bytes());
+                    runtime_manager
+                        .get_or_compute_block_index(
+                            &block_hash,
+                            block_number as i64,
+                            &Vec::new(),
+                            &Vec::new(),
+                            state,
+                            state,
+                            &Vec::new(),
+                        )
+                        .expect("Failed to compute a block index");
+                }
+            });
+        }
+    });
+
+    assert!(
+        runtime_manager.block_index_cache.len() <= BLOCK_INDEX_CACHE_BOUND,
+        "concurrent indexing left {} block indexes cached, past the bound of {}",
+        runtime_manager.block_index_cache.len(),
+        BLOCK_INDEX_CACHE_BOUND
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Merge scope test: visible_blocks should not include blocks below the LCA
 // ---------------------------------------------------------------------------
@@ -947,12 +1150,12 @@ async fn run_visible_blocks_scope_test() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![
-                GenesisValidator { pk: v1_pk.clone(), stake: 100 },
-                GenesisValidator { pk: v2_pk.clone(), stake: 100 },
-                GenesisValidator { pk: v3_pk.clone(), stake: 100 },
+                GenesisValidator { pk: v1_pk.clone(), stake: 100.into() },
+                GenesisValidator { pk: v2_pk.clone(), stake: 100.into() },
+                GenesisValidator { pk: v3_pk.clone(), stake: 100.into() },
             ],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -960,7 +1163,7 @@ async fn run_visible_blocks_scope_test() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -969,7 +1172,7 @@ async fn run_visible_blocks_scope_test() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),

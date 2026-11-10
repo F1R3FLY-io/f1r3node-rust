@@ -1,0 +1,18 @@
+# Build artifacts
+target/
+**/target/
+
+# Local VM/editor
+.direnv/
+.idea/
+.vscode/
+
+# Git
+.git/
+
+# Logs
+*.log
+
+# Dev-only scripts
+startnode
+startrepl

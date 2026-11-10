@@ -676,10 +676,11 @@ where
                     .expect("consume replay index lock");
                 index.get(&consume_ref.hash).map(|by_produce| {
                     let mut out: Vec<COMM> = Vec::new();
+                    let mut seen: HashSet<&COMM> = HashSet::new();
                     for hash in &present_produce_hashes {
                         if let Some(comms) = by_produce.get(hash) {
                             for comm in comms {
-                                if !out.contains(comm) {
+                                if seen.insert(comm) {
                                     out.push(comm.clone());
                                 }
                             }

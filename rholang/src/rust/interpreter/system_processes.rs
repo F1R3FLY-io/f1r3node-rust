@@ -32,7 +32,6 @@ use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
-use super::rho_runtime::RhoISpace;
 use super::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
     RhoSysAuthToken, RhoUri,
@@ -452,6 +451,15 @@ impl FixedChannels {
     /// without tripping `eval_new`'s "No value set for URN" check,
     /// even before the real handler landed.
     pub fn fs_remove_dir() -> Par { byte_name(58) }
+
+    /// `rho:io:fs:native:1.0.0/mkdir` — directory creation.
+    /// Signature `(root, rel, mode: Int, parents: Bool, cmode)`.
+    /// `parents = true` mirrors Node.js `fs.mkdir(..., {recursive:
+    /// true})`: EEXIST on a directory is success, intermediate
+    /// parents are created automatically.  `parents = false`:
+    /// EEXIST is `FSERR_EXISTS`, missing parent is
+    /// `FSERR_NOT_FOUND`.  Verifying mutation; constant cost.
+    pub fn fs_mkdir() -> Par { byte_name(41) }
 }
 
 pub struct BodyRefs;
@@ -589,6 +597,10 @@ impl BodyRefs {
     /// 5.142 (URN swap from stub to `FsProcesses::fs_remove_dir`).
     /// See `FixedChannels::fs_remove_dir` above.
     pub const FS_REMOVE_DIR: i64 = 58;
+
+    /// `rho:io:fs:native:1.0.0/mkdir` body-ref.  Uses the free slot
+    /// at 41 (previously a gap between FS_OPEN=40 and FS_READ=42).
+    pub const FS_MKDIR: i64 = 41;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -639,12 +651,12 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::FS_ENTRIES_STREAM_OPEN,
         BodyRefs::FS_ENTRIES_STREAM_NEXT,
         BodyRefs::FS_ENTRIES_STREAM_CLOSE,
+        BodyRefs::FS_MKDIR,
     ])
 }
 
 #[derive(Clone)]
 pub struct ProcessContext {
-    pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
@@ -659,7 +671,6 @@ pub struct ProcessContext {
 
 impl ProcessContext {
     pub fn create(
-        space: RhoISpace,
         dispatcher: RhoDispatch,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
@@ -671,7 +682,6 @@ impl ProcessContext {
         chromadb_service: SharedChromaDBService,
     ) -> Self {
         ProcessContext {
-            space: space.clone(),
             dispatcher: dispatcher.clone(),
             block_data: block_data.clone(),
             invalid_blocks,
@@ -679,7 +689,6 @@ impl ProcessContext {
             urn_map: urn_map.clone(),
             system_processes: SystemProcesses::create(
                 dispatcher,
-                space,
                 block_data,
                 deploy_data,
                 urn_map,
@@ -836,7 +845,6 @@ impl DeployData {
 #[derive(Clone)]
 pub struct SystemProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
     /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
@@ -854,7 +862,6 @@ pub struct SystemProcesses {
 impl SystemProcesses {
     fn create(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
         urn_map: Arc<HashMap<String, Par>>,
@@ -865,7 +872,6 @@ impl SystemProcesses {
     ) -> Self {
         SystemProcesses {
             dispatcher,
-            space,
             block_data,
             deploy_data,
             urn_map,
@@ -879,7 +885,6 @@ impl SystemProcesses {
 
     fn is_contract_call(&self) -> ContractCall {
         ContractCall {
-            space: self.space.clone(),
             dispatcher: self.dispatcher.clone(),
         }
     }
@@ -2605,8 +2610,9 @@ mod body_refs_fs_tests {
             ("FS_WRITE", BodyRefs::FS_WRITE),
             ("FS_WRITE_AT", BodyRefs::FS_WRITE_AT),
             ("FS_REMOVE_DIR", BodyRefs::FS_REMOVE_DIR),
+            ("FS_MKDIR", BodyRefs::FS_MKDIR),
         ];
-        const EXPECTED_FS_BODY_REF_COUNT: usize = 28;
+        const EXPECTED_FS_BODY_REF_COUNT: usize = 29;
         assert_eq!(
             ENUMERATED_FS_BODY_REFS.len(),
             EXPECTED_FS_BODY_REF_COUNT,

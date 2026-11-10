@@ -6,12 +6,14 @@ use casper_soak::{
     array, artifact, encoded, exclusive, hash, number, parse, regular, text, MAX_BYTES,
 };
 use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::rp::protocol_helper;
 use comm::rust::transport::grpc_transport_client::GrpcTransportClient;
 use comm::rust::transport::transport_layer::TransportLayer;
 use eyre::{ensure, Result};
 use models::casper::BlockMessageProto;
 use models::routing::{Packet, Protocol};
+use prost::bytes::Bytes;
 use prost::Message;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
@@ -19,10 +21,28 @@ use tokio::sync::Mutex;
 pub struct Prepared {
     peer: PeerNode,
     network: String,
+    chain_id: ChainIdCell,
     certificate: String,
     key: String,
     timeout: Duration,
     packets: Vec<(Protocol, Value)>,
+}
+
+/// The target network's chain identity: its genesis block hash in lowercase
+/// hexadecimal. A node that knows its chain refuses a block from a sender that
+/// names no chain, so a fixture for such a node must name it. Without the
+/// field, the driver names no chain.
+fn chain_id(config: &Value) -> Result<ChainIdCell> {
+    let Some(value) = config.get("chain_id") else {
+        return Ok(ChainIdCell::unknown());
+    };
+    casper_soak::manifest::hex(value, 64)?;
+    let digits = text(value)?.as_bytes();
+    let genesis = digits
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair)?, 16).map_err(Into::into))
+        .collect::<Result<Vec<u8>>>()?;
+    Ok(ChainIdCell::known(Bytes::from(genesis)))
 }
 
 pub fn prepare(request: &Value) -> Result<Prepared> {
@@ -56,6 +76,7 @@ pub fn prepare(request: &Value) -> Result<Prepared> {
         !network.is_empty() && network.len() <= 256,
         "The network identifier is invalid."
     );
+    let chain_id = chain_id(config)?;
     let timeout = number(&config["timeout_ms"])?;
     ensure!(
         (1..=30_000).contains(&timeout),
@@ -95,7 +116,7 @@ pub fn prepare(request: &Value) -> Result<Prepared> {
             "The block hash length differs."
         );
         let receipt = json!({"artifact":reference,"block_hash":block.block_hash.iter().map(|b|format!("{b:02x}")).collect::<String>()});
-        let packet = protocol_helper::packet(&local, network, Packet {
+        let packet = protocol_helper::packet(&local, network, chain_id.to_wire(), Packet {
             type_id: "BlockMessage".to_owned(),
             content: content.into(),
         });
@@ -120,6 +141,7 @@ pub fn prepare(request: &Value) -> Result<Prepared> {
     Ok(Prepared {
         peer,
         network: network.to_owned(),
+        chain_id,
         certificate,
         key,
         timeout: Duration::from_millis(timeout),
@@ -141,6 +163,7 @@ pub async fn execute(bytes: &[u8], output: &Path) -> Result<Value> {
     let prepared = prepare(&request)?;
     let client = GrpcTransportClient::new(
         prepared.network,
+        prepared.chain_id,
         prepared.certificate,
         prepared.key,
         (2 * MAX_BYTES) as i32,

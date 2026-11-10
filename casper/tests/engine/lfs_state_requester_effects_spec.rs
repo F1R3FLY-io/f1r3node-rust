@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use casper::rust::engine::lfs_tuple_space_requester::{
-    self, StatePartPath, TupleSpaceRequesterOps, PAGE_SIZE, ST,
+    self, StatePartPath, StoreItems, TupleSpaceRequesterOps, ValidChunk, PAGE_SIZE, ST,
 };
 use casper::rust::errors::CasperError;
 use models::rust::block_implicits::get_random_block;
@@ -251,15 +251,14 @@ impl TupleSpaceRequesterOps for MockTupleSpaceRequesterOps {
         Ok(())
     }
 
-    fn validate_tuple_space_items(
+    async fn validate_tuple_space_items(
         &self,
-        history_items: &[(Blake2b256Hash, Vec<u8>)],
-        data_items: &[(Blake2b256Hash, Vec<u8>)],
+        history_items: StoreItems,
+        data_items: StoreItems,
         start_path: StatePartPath,
-        page_size: i32,
-        skip: i32,
+        _last_path: StatePartPath,
         _get_from_history: Arc<dyn RSpaceImporter>,
-    ) -> Result<(), CasperError> {
+    ) -> Result<ValidChunk, CasperError> {
         // Convert to test format and delegate to MockRSpaceImporter
         let history_bytes: Vec<(Blake2b256Hash, Bytes)> = history_items
             .iter()
@@ -275,9 +274,14 @@ impl TupleSpaceRequesterOps for MockTupleSpaceRequesterOps {
             history_bytes,
             data_bytes,
             start_path,
-            page_size,
-            skip,
-        )
+            PAGE_SIZE,
+            0,
+        )?;
+        Ok(ValidChunk {
+            history_items,
+            data_items,
+            complete: false,
+        })
     }
 }
 

@@ -85,7 +85,7 @@ The expected result should be like
   "shardId": "root",
   "peers": 1,
   "nodes": 3,
-  "minPhloPrice": 1,
+  "minPhloPrice": "1",
   "nativeTokenName": "F1R3CAP",
   "nativeTokenSymbol": "F1R3",
   "nativeTokenDecimals": 8
