@@ -10,6 +10,14 @@ soak against the full system-contract corpus. See
 [Limitations](#limitations-and-known-incomplete) for the specific
 interaction that forced this gating.
 
+The H1 invariant is machine-checked against bounded Rholang programs in
+`formal/tlaplus/scope_trapped_gc/` — the post-fix TLC run is clean over
+835 distinct states (depth-2 term universe), and two registered negative
+controls (`payload_leak` and `body_mention`) exhibit exactly the
+invariants the strict Rust classifier rules out. The universal, axiom-
+free proof is the Phase 2 Rocq mechanization tracked in
+`docs/rholang/garbage-collection-formalization-plan.md`.
+
 ## Context
 
 A Rholang name `N` is a **garbage name** when no future process can send on `N`
