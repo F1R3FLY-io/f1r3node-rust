@@ -13,8 +13,8 @@ const METRICS_SOURCE: &str = "discovery.kademlia";
 
 /// Handle incoming ping requests
 ///
-/// This function increments the "handle.ping" counter and updates the last seen
-/// timestamp for the peer in the Kademlia store.
+/// This function increments the "handle.ping" counter and records the peer's
+/// contact in the Kademlia store.
 pub async fn handle_ping<T>(
     peer: PeerNode,
     store: Arc<KademliaStore<T>>,
@@ -25,15 +25,15 @@ where
 {
     metrics::counter!("handle_ping", "source" => METRICS_SOURCE).increment(1);
 
-    store.update_last_seen(&peer).await?;
+    store.record_contact(&peer).await?;
 
     Ok(())
 }
 
 /// Handle incoming lookup requests
 ///
-/// This function increments the "handle.lookup" counter, updates the last seen
-/// timestamp for the peer, and performs a lookup in the Kademlia store.
+/// This function increments the "handle.lookup" counter, records the peer's
+/// contact, and performs a lookup in the Kademlia store.
 pub async fn handle_lookup<T>(
     peer: PeerNode,
     id: Vec<u8>,
@@ -45,7 +45,7 @@ where
 {
     metrics::counter!("handle_lookup", "source" => METRICS_SOURCE).increment(1);
 
-    store.update_last_seen(&peer).await?;
+    store.record_contact(&peer).await?;
 
     let id_bytes = Bytes::from(id);
     store.lookup(&id_bytes)
