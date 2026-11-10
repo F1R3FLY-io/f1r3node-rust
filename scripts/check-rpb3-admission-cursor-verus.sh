@@ -1555,6 +1555,15 @@ proofs_rpb3_score_admission_bridge=(
   bridge_epathmap_frame_required_slots_generated
   bridge_epathmap_witness_owner_wf
   bridge_epathmap_owner_score_modeled_witness
+  bridge_ezipper_connective_used_descriptor_pinned
+  bridge_epathmap_owner_score_snapshot_readback
+  bridge_ezipper_score_step_exact
+  bridge_ezipper_score_step_is_production
+  bridge_ezipper_frame_required_slots_generated
+  bridge_ezipper_witness_before_wf
+  bridge_ezipper_witness_owner_scores
+  bridge_ezipper_witness_child_completes
+  bridge_ezipper_score_after_owner_witness
 )
 proofs_rpb3_score_arena_source_refinement=(
   runtime_children_len_projects
