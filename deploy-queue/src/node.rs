@@ -3,6 +3,7 @@ use std::time::Duration;
 use models::rust::deploy_request::DeployRequest;
 use reqwest::{StatusCode, Url};
 use serde::Deserialize;
+use shared::rust::token_amount::TokenAmount;
 
 /// A request to the node that takes longer than this has failed; the queue
 /// retries it.
@@ -22,7 +23,7 @@ pub enum NodeError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShardValues {
     pub shard_id: String,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     pub deploy_lifespan: i64,
     pub max_user_deploys_per_block: u32,
     pub max_parent_depth: i32,
@@ -41,7 +42,7 @@ pub struct NodeStatus {
     #[serde(rename = "shardId")]
     pub shard_id: String,
     #[serde(rename = "minPhloPrice")]
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     #[serde(rename = "lastFinalizedBlockNumber")]
     pub last_finalized_block_number: i64,
     #[serde(rename = "latestBlockNumber")]
@@ -78,7 +79,7 @@ impl NodeStatus {
         Ok(Some(ChainSnapshot {
             shard: ShardValues {
                 shard_id: self.shard_id.clone(),
-                min_phlo_price: self.min_phlo_price,
+                min_phlo_price: self.min_phlo_price.clone(),
                 deploy_lifespan,
                 max_user_deploys_per_block,
                 max_parent_depth,
@@ -299,7 +300,7 @@ mod tests {
     #[test]
     fn a_status_without_pacing_values_is_not_a_chain_yet() {
         let status: NodeStatus = serde_json::from_str(
-            r#"{"shardId":"root","minPhloPrice":1,"lastFinalizedBlockNumber":-1,
+            r#"{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":-1,
                 "latestBlockNumber":null,"deployLifespan":null,
                 "maxUserDeploysPerBlock":null,"maxParentDepth":null}"#,
         )
@@ -307,7 +308,7 @@ mod tests {
         assert_eq!(status.chain(), Ok(None));
 
         let status: NodeStatus = serde_json::from_str(
-            r#"{"shardId":"root","minPhloPrice":1,"lastFinalizedBlockNumber":40,
+            r#"{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":40,
                 "latestBlockNumber":43,"deployLifespan":300,
                 "maxUserDeploysPerBlock":4,"maxParentDepth":25}"#,
         )

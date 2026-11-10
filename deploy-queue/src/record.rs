@@ -137,7 +137,7 @@ mod tests {
             DeployData {
                 term: "Nil".to_string(),
                 time_stamp: 3,
-                phlo_price: 1,
+                phlo_price: 1.into(),
                 phlo_limit: 1000,
                 valid_after_block_number: 9,
                 shard_id: "root".to_string(),

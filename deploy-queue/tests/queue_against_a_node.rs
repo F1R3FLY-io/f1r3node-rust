@@ -72,7 +72,7 @@ impl FakeNode {
 fn status_body(tip: i64, lfb: i64) -> Value {
     json!({
         "shardId": "root",
-        "minPhloPrice": 1,
+        "minPhloPrice": "1",
         "lastFinalizedBlockNumber": lfb,
         "latestBlockNumber": tip,
         "deployLifespan": 50,
@@ -168,7 +168,7 @@ fn deploy(valid_after: i64, shard_id: &str, seed: u8) -> Signed<DeployData> {
         DeployData {
             term: "new x in { x!(1) }".to_string(),
             time_stamp: i64::from(seed),
-            phlo_price: 1,
+            phlo_price: 1.into(),
             phlo_limit: 100_000,
             valid_after_block_number: valid_after,
             shard_id: shard_id.to_string(),
@@ -187,7 +187,7 @@ fn numbered_deploy(valid_after: i64, number: i64) -> Signed<DeployData> {
         DeployData {
             term: "new x in { x!(1) }".to_string(),
             time_stamp: number,
-            phlo_price: 1,
+            phlo_price: 1.into(),
             phlo_limit: 100_000,
             valid_after_block_number: valid_after,
             shard_id: "root".to_string(),
