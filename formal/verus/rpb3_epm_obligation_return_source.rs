@@ -1,5 +1,5 @@
-//! EPathMap raw-Par obligation returns are enabled wherever production's
-//! accept succeeds.
+//! EPathMap obligation returns are enabled wherever production's accept
+//! succeeds.
 //!
 //! `live_runtime_epm_raw_par_return_step` adds production's fatal pre-checks
 //! to the linked child return as guards. This module shows that the guards are
@@ -31,12 +31,44 @@
 //!
 //! Production's `canonical_path_resolutions` counter is not part of the live
 //! product, so its overflow check is not modeled here.
+//!
+//! A NestedEpm1 EPathMap child ends and returns into its EPathMap parent in
+//! one driver iteration. `epathmap_terminal_step` ends the child: it runs the
+//! path's `finish`, commits the read, traversed and event counters through
+//! checked adds, and returns the child's own mode and entries stability. The
+//! child's `step_into` returns OtherComplete, `finish_other_complete` runs
+//! `process_admission_completion`, and `PathObligationWait::resolution` turns
+//! the child's summary into `NestedEpm1 { mode, entries_stable }`.
+//! `resolve_leaf_obligation` bubbles a stable Map and kills the path for any
+//! other child (NestedEpmNotMap, NestedEpmNotStable), and returns Ok in all
+//! three cases. `live_runtime_epm_nested_return_step` performs the child's End
+//! itself, so its prestate holds the child before its End.
+//!
+//! `epm_nested_return_enabled` shows that this step exists wherever
+//! `epm_nested_return_source_ready` holds and `epm_terminal_complete_from_source`
+//! accepts the production End observation of the child. The observation
+//! supplies the End event: `epm_terminal_source_success_is_exact` proves it with
+//! admission id 0 on `epm_terminal_end_frame`, which is `nested_end_frame`, and
+//! the End arm of `event_step` does not read the admission id. So
+//! `epm_nested_return_source_ready` lists the before-side conjuncts of the
+//! return without the End (`epm_nested_child_return_ready`), and the parent is
+//! resolved with the observed mode and entries stability. The observation is
+//! accepted only when the terminal counters do not overflow, so production's
+//! checked stats are part of the premise.
+//!
+//! Live EpmEnd ends an EPathMap child whose parent accepts it in a later step,
+//! as a CanonicalPath parent (kind 4) does, and it takes the observation as its
+//! argument. `epm_nested_return_terminal_agrees` shows that on one child frame
+//! the observation gives Live EpmEnd and the nested return the same after-frame
+//! and the same `Complete` action, so one source extraction of the End serves
+//! both actions.
 
 use vstd::prelude::*;
 
 use crate as integrated;
 use crate::{
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
+    rpb3_epathmap_terminal_source_observation as terminal,
     rpb3_epm_nested_source_refinement as nested,
     rpb3_epm_obligation_return_live as obligation_return, rpb3_map_frame_refinement as map,
     rpb3_path_parser_refinement as parser, rpb3_runtime_frame_source_refinement as runtime,
@@ -580,6 +612,330 @@ pub proof fn epm_raw_par_return_enabled(before: LiveRuntimeProductState)
                 before, after, other,
             );
         }
+    }
+}
+
+/// The before-side conjuncts of `linked_epm_child_return` for a nested return,
+/// without the child's End: the conjuncts of `epm_child_return_ready` for a
+/// derived `Epm1` return, with its End event and its done cursor left out. The
+/// production End observation supplies those (`epm_nested_return_enabled`).
+pub open spec fn epm_nested_child_return_ready(
+    prior: epm::LinkedEpmState,
+    frames: Seq<Option<epm::EpmFrame>>,
+) -> bool {
+    match nested::source_derived_epm_return(prior, frames) {
+        Some(derived) => {
+            let count = prior.admission.frames.len();
+            let parent = prior.admission.frames[count - 2];
+            let child = prior.admission.frames.last();
+            &&& admission::admission_state_wf(prior.admission)
+            &&& prior.admission.completed < usize::MAX
+            &&& prior.epm.snapshot == prior.indexed_regions[prior.indexed_regions.len() - 2]
+            &&& parent.frame_kind == 3
+            &&& child.cursor == child.region_end
+            &&& child.waiting_id.is_none()
+            &&& child.nested_started == child.nested_resolved
+            &&& admission::admission_frame_wf(child)
+            &&& admission::admission_family_admissible(child)
+            &&& admission::admission_child_summary_agrees(
+                child, derived.admission_summary, prior.admission.arena,
+            )
+            &&& match (
+                derived.summary, derived.admission_summary,
+                derived.nested_before, derived.nested_after,
+            ) {
+                (
+                    epm::ChildSummary::Epm1 { .. },
+                    admission::AdmissionReturnedKind::Other,
+                    Some(child_before),
+                    Some(_),
+                ) => {
+                    &&& child.frame_kind == 3
+                    &&& child_before.snapshot == prior.indexed_regions.last()
+                },
+                _ => false,
+            }
+            &&& match child.return_id {
+                Some(return_id) => {
+                    &&& parent.waiting_id == Some(return_id)
+                    &&& parent.waiting_kind == child.frame_kind
+                    &&& (child.frame_kind != 3 || parent.nested_resolved < u64::MAX)
+                    &&& match prior.epm.wait {
+                        Some(epm::EpmWait::Obligation { id, kind, return_id: expected_id }) => {
+                            &&& expected_id == return_id
+                            &&& epm::valid_child_resolution(kind, derived.summary)
+                            &&& match prior.epm.path.pending {
+                                Some(obligation) => {
+                                    &&& obligation.id == id
+                                    &&& obligation.kind == kind
+                                    &&& epm::obligation_ready(prior.epm.path)
+                                },
+                                None => false,
+                            }
+                            &&& epm::parser_gate_matches(
+                                prior.epm.path.gate, prior.epm.path.parser,
+                            )
+                        },
+                        _ => false,
+                    }
+                },
+                None => false,
+            }
+        },
+        None => false,
+    }
+}
+
+/// A prestate at which production ends a NestedEpm1 EPathMap child and accepts
+/// its return, apart from the child's End: the live state is well formed with
+/// the child's cursor above its parent's, the top frame is the returning
+/// EPathMap child (kind 3) with its EPathMap entry, the parent passes
+/// production's pre-checks for a NestedEpm1 wait, the derived return is ready
+/// without the End, and the parent's parser meets `epm_obligation_parser_ready`.
+/// The End comes from the production observation that
+/// `epm_nested_return_enabled` takes.
+pub open spec fn epm_nested_return_source_ready(before: LiveRuntimeProductState) -> bool {
+    let product = before.source.product;
+    &&& integrated::live_runtime_product_wf(before)
+    &&& before.cursors.len() > 1
+    &&& product.bridge.admission.frames.last().frame_kind == 3
+    &&& product.epm_frames.last().is_some()
+    &&& obligation_return::epm_obligation_parent_ready(
+        product, epm::PathObligationKind::NestedEpm1,
+    )
+    &&& match (
+        integrated::product_linked_parent(product),
+        obligation_return::epm_obligation_derived(product),
+    ) {
+        (Some(prior), Some(derived)) => {
+            &&& epm_nested_child_return_ready(prior, product.epm_frames)
+            &&& epm_obligation_parser_ready(
+                prior.epm, epm::PathObligationKind::NestedEpm1, derived.summary,
+            )
+        },
+        _ => false,
+    }
+}
+
+/// The terminal observation's End frame is the nested return's End frame:
+/// `epm_terminal_end_frame` and `nested_end_frame` both set the cursor's done
+/// flag and keep every other field, field for field.
+pub proof fn epm_terminal_end_frame_is_nested_end_frame(frame: epm::EpmFrame)
+    ensures terminal::epm_terminal_end_frame(frame) == nested::nested_end_frame(frame),
+{
+}
+
+/// The End arm of `event_step` does not read the admission id: an End event
+/// holds with one admission id exactly when it holds with any other.
+/// `epm_terminal_source_success_is_exact` proves the terminal End with id 0, and
+/// the nested return needs it with the admission state's next obligation id.
+pub proof fn epm_end_admission_id_irrelevant(
+    before: epm::EpmFrame,
+    after: epm::EpmFrame,
+    action: epm::EpmAction,
+    admission_id: u64,
+    other_id: u64,
+)
+    ensures
+        epm::event_step(before, after, epm::EpmEvent::End, admission_id, action)
+            == epm::event_step(before, after, epm::EpmEvent::End, other_id, action),
+{
+}
+
+/// Wherever production ends a NestedEpm1 EPathMap child and accepts its
+/// return, the nested return exists. From `epm_nested_return_source_ready` and
+/// a production End observation of the child that
+/// `epm_terminal_complete_from_source` accepts, the step holds at the state
+/// that `epm_obligation_return_live_after` builds around the parent resolved
+/// with the observed mode and entries stability, and every nested return from
+/// the prestate reaches that state. The observation supplies the child's End
+/// event, which completes `epm_child_return_ready`.
+pub proof fn epm_nested_return_enabled(
+    before: LiveRuntimeProductState,
+    observed: terminal::EpmTerminalSourceObservation,
+)
+    requires
+        epm_nested_return_source_ready(before),
+        terminal::epm_terminal_complete_from_source(
+            before.source.product.epm_frames.last().unwrap(), observed,
+        ).is_some(),
+    ensures
+        ({
+            let product = before.source.product;
+            let prior = integrated::product_linked_parent(product).unwrap();
+            match prior.epm.wait {
+                Some(epm::EpmWait::Obligation { id, .. }) => {
+                    let after = epm_obligation_return_live_after(
+                        before,
+                        epm_obligation_resolved_frame(
+                            prior.epm, id,
+                            parser::ParserResolution::NestedEpm1 {
+                                is_map: observed.mode == epm::EpmMode::Map,
+                                entries_stable: observed.entries_stable,
+                            },
+                        ),
+                    );
+                    &&& obligation_return::epm_obligation_derived(product).unwrap().summary
+                        == epm::ChildSummary::Epm1 {
+                            mode: observed.mode,
+                            entries_stable: observed.entries_stable,
+                        }
+                    &&& epm_child_return_ready(prior, product.epm_frames)
+                    &&& obligation_return::live_runtime_epm_nested_return_step(before, after)
+                    &&& forall|other: LiveRuntimeProductState|
+                        #[trigger] obligation_return::live_runtime_epm_nested_return_step(
+                            before, other,
+                        ) ==> other == after
+                },
+                _ => false,
+            }
+        }),
+{
+    let product = before.source.product;
+    let prior = integrated::product_linked_parent(product).unwrap();
+    let derived = obligation_return::epm_obligation_derived(product).unwrap();
+    let child_epm = product.epm_frames.last().unwrap();
+    let parent = prior.epm;
+    if let Some(epm::EpmWait::Obligation { id, kind, return_id: expected_id }) = parent.wait {
+        let next_id = product.bridge.admission.next_obligation_id;
+        terminal::epm_terminal_source_success_is_exact(child_epm, observed);
+        let complete = terminal::epm_terminal_complete_from_source(
+            child_epm, observed,
+        ).unwrap();
+        epm_terminal_end_frame_is_nested_end_frame(child_epm);
+        epm_end_admission_id_irrelevant(
+            child_epm, complete.after, complete.action, 0, next_id,
+        );
+        let finished = nested::nested_end_frame(child_epm);
+        let end_action = epm::EpmAction::Complete {
+            mode: child_epm.mode,
+            entries_stable: child_epm.entries_stable,
+        };
+        assert(complete.after == finished);
+        assert(complete.action == end_action);
+        assert(epm::event_step(child_epm, finished, epm::EpmEvent::End, next_id, end_action));
+        assert(derived.summary == epm::ChildSummary::Epm1 {
+            mode: child_epm.mode,
+            entries_stable: child_epm.entries_stable,
+        });
+        assert(derived.nested_before == Some(child_epm));
+        assert(derived.nested_after == Some(finished));
+        assert(epm_child_return_ready(prior, product.epm_frames));
+        assert(kind == epm::PathObligationKind::NestedEpm1);
+        let resolution = epm::parser_resolution(derived.summary);
+        assert(resolution == parser::ParserResolution::NestedEpm1 {
+            is_map: observed.mode == epm::EpmMode::Map,
+            entries_stable: observed.entries_stable,
+        });
+        let resolved = epm_obligation_resolved_frame(parent, id, resolution);
+        let after = epm_obligation_return_live_after(before, resolved);
+        let product_after = after.source.product;
+        let next = integrated::product_linked_top(product_after).unwrap();
+        let child = product.bridge.admission.frames.last();
+        assert(child.return_id == Some(expected_id));
+        let parser_after = parser::resolve_parser_obligation(parent.path.parser, id, resolution);
+        epm_gate_image_matches(parser_after);
+        if epm::child_reducer_dead(kind, derived.summary) {
+            epm_resolution_dead_settles(parent.path.parser, id, kind, derived.summary);
+        }
+        assert(epm::accept_child(parent, resolved, Some(expected_id), derived.summary));
+        assert(next.epm == resolved);
+        epm_parent_resolved_pop_wf(prior, next);
+        assert(epm::linked_epm_child_return(
+            prior, next, derived.summary, derived.admission_summary,
+            derived.nested_before, derived.nested_after,
+        ));
+        assert(integrated::product_epm_source_child_binding(
+            product, prior, next, derived.summary, derived.admission_summary,
+            derived.nested_after,
+        )) by {
+            reveal(integrated::product_epm_source_child_binding);
+        }
+        assert(integrated::product_epm_child_return_step(
+            product, product_after, derived.summary, derived.admission_summary,
+            derived.nested_after,
+        ));
+        assert(obligation_return::epm_obligation_return_pop(before, after));
+        assert(obligation_return::live_runtime_epm_nested_return_step(before, after)) by {
+            reveal(obligation_return::live_runtime_epm_nested_return_step);
+        }
+        assert forall|other: LiveRuntimeProductState|
+            #[trigger] obligation_return::live_runtime_epm_nested_return_step(before, other)
+            implies other == after by {
+            obligation_return::live_runtime_epm_nested_return_is_functional(
+                before, after, other,
+            );
+        }
+    }
+}
+
+/// Live EpmEnd and the nested return consume the same End observation of the
+/// child. Live EpmEnd ends an EPathMap child whose parent accepts it in a later
+/// step, as a CanonicalPath parent (kind 4) does; the nested return ends the
+/// child of an EPathMap parent (kind 3) inside the return. On the child's
+/// frame, an observation that `epm_terminal_complete_from_source` accepts fixes
+/// one after-frame and one action: they are the nested return's End frame and
+/// the `Complete` action of its derived summary, and every Live EpmEnd step
+/// that takes the observation on the same frame leaves that after-frame on top
+/// and completes the frame with that action.
+pub proof fn epm_nested_return_terminal_agrees(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    observed: terminal::EpmTerminalSourceObservation,
+)
+    requires
+        obligation_return::live_runtime_epm_nested_return_step(before, after),
+        terminal::epm_terminal_complete_from_source(
+            before.source.product.epm_frames.last().unwrap(), observed,
+        ).is_some(),
+    ensures
+        ({
+            let product = before.source.product;
+            let child_epm = product.epm_frames.last().unwrap();
+            let complete = terminal::epm_terminal_complete_from_source(
+                child_epm, observed,
+            ).unwrap();
+            let derived = obligation_return::epm_obligation_derived(product).unwrap();
+            &&& derived.nested_before == Some(child_epm)
+            &&& derived.nested_after == Some(complete.after)
+            &&& derived.summary == epm::ChildSummary::Epm1 {
+                mode: observed.mode,
+                entries_stable: observed.entries_stable,
+            }
+            &&& complete.action == epm::EpmAction::Complete {
+                mode: observed.mode,
+                entries_stable: observed.entries_stable,
+            }
+            &&& forall|end_before: LiveRuntimeProductState, end_after: LiveRuntimeProductState|
+                end_before.source.product.epm_frames.last() == Some(child_epm)
+                    && #[trigger] integrated::live_runtime_product_epm_end_source_step(
+                        end_before, end_after, observed,
+                    )
+                    ==> end_after.source.product.epm_frames.last() == derived.nested_after
+                    && integrated::product_epm_complete_step(
+                        end_before.source.product, end_after.source.product, complete.action,
+                    )
+        }),
+{
+    reveal(obligation_return::live_runtime_epm_nested_return_step);
+    let product = before.source.product;
+    let child_epm = product.epm_frames.last().unwrap();
+    let complete = terminal::epm_terminal_complete_from_source(child_epm, observed).unwrap();
+    let derived = obligation_return::epm_obligation_derived(product).unwrap();
+    epm_terminal_end_frame_is_nested_end_frame(child_epm);
+    assert(derived.nested_before == Some(child_epm));
+    assert(derived.nested_after == Some(complete.after));
+    assert forall|end_before: LiveRuntimeProductState, end_after: LiveRuntimeProductState|
+        end_before.source.product.epm_frames.last() == Some(child_epm)
+            && #[trigger] integrated::live_runtime_product_epm_end_source_step(
+                end_before, end_after, observed,
+            )
+        implies end_after.source.product.epm_frames.last() == derived.nested_after
+            && integrated::product_epm_complete_step(
+                end_before.source.product, end_after.source.product, complete.action,
+            ) by {
+        assert(integrated::product_linked_top(end_before.source.product).unwrap().epm
+            == child_epm);
     }
 }
 

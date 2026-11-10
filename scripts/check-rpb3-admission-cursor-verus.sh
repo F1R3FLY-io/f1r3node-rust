@@ -994,6 +994,10 @@ proofs_rpb3_epm_obligation_return_source=(
   epm_resolution_dead_settles
   epm_parent_resolved_pop_wf
   epm_raw_par_return_enabled
+  epm_terminal_end_frame_is_nested_end_frame
+  epm_end_admission_id_irrelevant
+  epm_nested_return_enabled
+  epm_nested_return_terminal_agrees
 )
 proofs_rpb3_epm_parser_escape_invariant=(
   parser_escape_wf_initial
@@ -3983,7 +3987,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: EPathMap obligation return source module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 5 verified, 0 errors' "$epm_obligation_return_source_log"; then
+if ! rg -q '^verification results:: 9 verified, 0 errors' "$epm_obligation_return_source_log"; then
   cat "$epm_obligation_return_source_log"
   echo "rpb3-admission-cursor: EPathMap obligation return source module did not verify" >&2
   exit 1
