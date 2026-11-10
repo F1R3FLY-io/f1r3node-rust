@@ -28,7 +28,7 @@ mod tests {
             DeployData {
                 term: term.to_string(),
                 time_stamp: 1,
-                phlo_price: 1,
+                phlo_price: 1.into(),
                 phlo_limit: 1000,
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
