@@ -248,7 +248,10 @@ async fn watch(mut socket: WebSocket, engine: EngineHandle, sigs: Vec<Sig>) {
 
 /// Relays the node's event stream, so clients that follow `/ws/events` keep
 /// working against the queue.
-async fn events_proxy_handler(State(state): State<HttpState>, upgrade: WebSocketUpgrade) -> Response {
+async fn events_proxy_handler(
+    State(state): State<HttpState>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
     let url = state.node.ws_events_url();
     upgrade.on_upgrade(move |client| relay_events(client, url))
 }
@@ -345,7 +348,9 @@ async fn proxy(node: &NodeHttp, request: Request) -> Response {
                 *headers = forwardable(answer.headers());
             }
             response
-                .body(Body::from_stream(answer.bytes_stream().map_err(std::io::Error::other)))
+                .body(Body::from_stream(
+                    answer.bytes_stream().map_err(std::io::Error::other),
+                ))
                 .unwrap_or_else(|e| {
                     error_response(
                         StatusCode::BAD_GATEWAY,
