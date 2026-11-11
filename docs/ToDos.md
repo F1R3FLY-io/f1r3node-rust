@@ -228,7 +228,7 @@ tasks:
     review_requested_at: 2026-10-20
     review_type: human
     progress: "Local provenance, protected-head, tag, routing, and workflow invariant tests pass. ShellCheck passes. Hosted validation remains pending."
-    notes: "Review follow-up for issues #791 and PR #792. Preserve the accepted ca-soaked label risk."
+    notes: "Review follow-up for issues #791 and PR #792. The 2026-11-10 policy correction removes the pre-merge canary soak requirement."
     acceptance:
       - "Tests accept the release source and repeated clean base merges."
       - "Tests reject foreign sources, edited merge trees, single-parent additions, forks, and invalid metadata."

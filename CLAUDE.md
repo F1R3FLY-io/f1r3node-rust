@@ -212,6 +212,7 @@ Both settings take effect at the next session start.
 
 ### Continuous Integration and Deployment
 - Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-release`. Do not merge a pull request by hand. The `mergify-only` ruleset blocks a manual merge, also for organization admins.
+- Merges into `ca-canary` use the existing CI and review rules without a pre-merge soak requirement.
 - A push to a pull request runs only the GitHub-hosted checks: static checks, script tests, and unit tests.
 - The heavy Integration Pipeline runs on OCI runners for these events:
   - a pull request with the `ci-heavy` label

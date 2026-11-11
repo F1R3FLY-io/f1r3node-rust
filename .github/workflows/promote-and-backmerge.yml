@@ -21,8 +21,7 @@ run-name: ${{ inputs.operation == 'backmerge' && 'Back-merge master into dev' ||
 #   ca-sync    dev -> ca-canary, as `just ca-sync` does. It runs
 #              open-backmerge-pr.sh with BACKMERGE_SOURCE=dev and
 #              BACKMERGE_TARGET=ca-canary, which creates a temporary
-#              ca/sync-dev-* branch at the origin/dev commit. The sync is a
-#              ca/ item, so it needs the ca-soak soak like any other item.
+#              ca/sync-dev-* branch at the origin/dev commit.
 #              A pull request with head dev is closed by the protected head
 #              guard.
 #
