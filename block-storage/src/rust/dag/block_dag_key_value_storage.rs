@@ -513,25 +513,6 @@ impl KeyValueDagRepresentation {
             .filter(|metadata| metadata.sender == *validator))
     }
 
-    pub fn scan_invalid_page(
-        &self,
-        after: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<HistoryPage<BlockMetadata>, KvStoreError> {
-        let page = self.scan_membership_page(after, limit)?;
-        let mut rows = Vec::new();
-        for hash in page.rows {
-            let metadata = self.lookup_unsafe(&hash)?;
-            if metadata.invalid {
-                rows.push(metadata);
-            }
-        }
-        Ok(HistoryPage {
-            rows,
-            next: page.next,
-        })
-    }
-
     pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
 
     /// Cached justification-derived floor of a block, if already computed.

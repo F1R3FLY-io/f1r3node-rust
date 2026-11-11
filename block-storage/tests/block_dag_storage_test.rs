@@ -22,21 +22,6 @@ use tokio::runtime::Runtime;
 
 fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
-fn collect_invalid(
-    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
-) -> imbl::HashSet<BlockMetadata> {
-    let mut result = imbl::HashSet::new();
-    let mut after = None;
-    loop {
-        let page = dag.scan_invalid_page(after.as_deref(), 1024).unwrap();
-        result.extend(page.rows);
-        after = page.next;
-        if after.is_none() {
-            return result;
-        }
-    }
-}
-
 fn genesis_block() -> BlockMessage {
     get_random_block(
         Some(0),
@@ -564,7 +549,7 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
       }
 
       let dag = dag_storage.get_representation().expect("dag representation");
-      let invalid_blocks = collect_invalid(&dag);
+      let invalid_blocks = dag.invalid_blocks();
       let invalid_blocks_set: HashSet<_> = invalid_blocks.iter().cloned().collect();
       assert_eq!(invalid_blocks_set, block_elements.into_iter().map(|b| BlockMetadata::from_block(&b, true, None, None)).collect::<HashSet<_>>());
     });
@@ -2141,7 +2126,8 @@ async fn invalid_insert_populates_the_invalid_blocks_map() {
         .unwrap();
 
     let dag = dag_storage.get_representation().unwrap();
-    let invalid_map: HashMap<_, _> = collect_invalid(&dag)
+    let invalid_map: HashMap<_, _> = dag
+        .invalid_blocks()
         .into_iter()
         .map(|metadata| (metadata.block_hash, metadata.sender))
         .collect();
