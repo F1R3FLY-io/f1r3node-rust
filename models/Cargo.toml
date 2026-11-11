@@ -212,6 +212,10 @@ name = "rpb3_new_uri_order_boundary"
 path = "tests/rpb3_new_uri_order_boundary.rs"
 
 [[test]]
+name = "rpb3_publication_acceptance"
+path = "tests/rpb3_publication_acceptance.rs"
+
+[[test]]
 name = "par_bag"
 path = "tests/par_bag.rs"
 
@@ -391,6 +395,7 @@ harness = false
 [dev-dependencies]
 blake2 = "0.10.6"
 proc-macro2 = "1"
+tokio = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

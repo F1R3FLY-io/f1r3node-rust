@@ -3433,6 +3433,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
+ "tokio",
  "tonic 0.14.6",
  "tonic-prost",
  "tonic-prost-build",
