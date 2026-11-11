@@ -88,6 +88,7 @@ source_files=(
   "$model_dir/rpb3_integrated_dispatcher.rs"
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
+  "$model_dir/rpb3_score_finish_groups.rs"
   "$model_dir/rpb3_no_score_child_eof_coverage.rs"
   "$model_dir/rpb3_plain_parser_source_refinement.rs"
   "$model_dir/rpb3_epm_obligation_return_live.rs"
@@ -1860,6 +1861,105 @@ proofs_rpb3_score_cursor_refinement=(
   first_difference_loop_exact
   score_handle_first_difference_exact
 )
+proofs_rpb3_score_finish_groups=(
+  finish_eof_prestate_top_wf
+  finish_routes_raw_par
+  finish_routes_cost_atom_absent
+  finish_routes_cost_atom_bytes
+  finish_routes_cost_bound
+  finish_routes_cost_atom_bound_forward
+  finish_routes_cost_signature
+  finish_routes_cost_region
+  finish_routes_cost_token_stack
+  finish_routes_bundle
+  finish_routes_if
+  finish_routes_send
+  finish_routes_match_component
+  finish_routes_absent_specialized
+  finish_routes_absent_connective
+  finish_routes_receive_bind
+  finish_routes_match_case
+  finish_routes_bool_oneof
+  finish_routes_expr_atom
+  finish_routes_expr_numeric
+  finish_routes_expr_big_rational
+  finish_routes_expr_fixed_point
+  finish_routes_sys_auth_token
+  finish_routes_new_empty_collections
+  finish_routes_new_one_injection
+  finish_routes_new_one_absent_injection
+  finish_routes_new_one_uri
+  finish_routes_new_collections
+  finish_routes_expr_payload_forward
+  finish_routes_expr_structural
+  finish_routes_evar
+  finish_routes_ordered_sequence
+  finish_routes_emethod
+  finish_routes_emap_finish
+  finish_routes_connective_not
+  finish_routes_connective_varref
+  finish_routes_connective_collection
+  finish_routes_unforgeable_bytes
+  finish_routes_receive_present_condition
+  finish_routes_receive_absent_condition
+  finish_routes_nonsemantic
+  finish_routes_var
+  finish_routes_epathmap_owner
+  finish_routes_ezipper
+  finish_group_1_body
+  finish_group_2_body
+  finish_group_3_body
+  finish_group_4_body
+  finish_group_5_body
+  finish_group_6_body
+  finish_group_1_folds
+  finish_group_2_folds
+  finish_group_3_folds
+  finish_group_4_folds
+  finish_group_5_folds
+  finish_group_6_folds
+  finish_group_1_sources
+  finish_group_2_sources
+  finish_group_3_sources
+  finish_group_4_sources
+  finish_group_5_sources
+  finish_group_6_sources
+  finish_source_step_by_group
+  finish_source_step_routes
+  finish_group_1_covers
+  finish_group_2_covers
+  finish_group_3_covers
+  finish_group_4_covers
+  finish_group_5_covers
+  finish_group_6_covers
+  finish_group_1_disjoint
+  finish_group_2_disjoint
+  finish_group_3_disjoint
+  finish_group_4_disjoint
+  finish_group_5_disjoint
+  finish_group_6_disjoint
+  finish_classes_partition
+  finish_uncovered_shape
+  finish_coverage_counterexample
+  finish_witness_prestate
+  finish_witness_leaf_fires
+  finish_witness_cost_token_stack_fires
+  finish_witness_absent_specialized_fires
+  finish_witness_sys_auth_token_fires
+  finish_witness_ordered_sequence_fires
+  finish_witness_nonsemantic_fires
+  finish_witness_var_fires
+  finish_witness_owner_fires
+  finish_witness_ezipper_fires
+  finish_nonvacuous_class_1
+  finish_nonvacuous_class_2
+  finish_nonvacuous_class_3
+  finish_nonvacuous_class_4
+  finish_nonvacuous_class_5
+  finish_nonvacuous_class_6_var
+  finish_nonvacuous_class_6_owner
+  finish_nonvacuous_class_6_ezipper
+)
 proofs_rpb3_score_transcript=(
   empty_arena_well_formed
   empty_append_certificate
@@ -2220,6 +2320,7 @@ gated_modules=(
   rpb3_score_admission_bridge
   rpb3_score_arena_source_refinement
   rpb3_score_cursor_refinement
+  rpb3_score_finish_groups
   rpb3_score_transcript
   rpb3_source_observation
   rpb3_staged_admission_refinement
@@ -4486,6 +4587,39 @@ fi
 if ! rg -q '^verification results:: 46 verified, 0 errors' "$no_score_child_eof_coverage_log"; then
   cat "$no_score_child_eof_coverage_log"
   echo "rpb3-admission-cursor: no-score child EOF coverage module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_score_finish_groups[@]}"; do
+  proof_log="$evidence_dir/score-finish-groups-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_score_finish_groups --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: score-finish groups $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: score-finish groups $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+score_finish_groups_log="$evidence_dir/score-finish-groups-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_score_finish_groups \
+  "$integrated_source" \
+  >"$score_finish_groups_log" 2>&1; then
+  cat "$score_finish_groups_log"
+  echo "rpb3-admission-cursor: score-finish groups module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 97 verified, 0 errors' "$score_finish_groups_log"; then
+  cat "$score_finish_groups_log"
+  echo "rpb3-admission-cursor: score-finish groups module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do

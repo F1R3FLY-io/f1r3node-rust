@@ -102,6 +102,8 @@ mod rpb3_epm_obligation_return_witness;
 mod rpb3_plain_parser_source_refinement;
 #[cfg(rpb3_live_push)]
 mod rpb3_no_score_child_eof_coverage;
+#[cfg(rpb3_live_push)]
+mod rpb3_score_finish_groups;
 
 use {
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
