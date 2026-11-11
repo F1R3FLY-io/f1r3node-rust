@@ -25,12 +25,9 @@ const GC_SLOTS: DagGcSlots = DagGcSlots {
 
 #[derive(Clone, Default)]
 pub(crate) struct DagProgress {
-    pub ready: bool,
-    pub cursor: Option<Vec<u8>>,
     pub sequence: u64,
     pub max_height: Option<i64>,
     pub lfb: Option<(BlockHash, i64)>,
-    pub genesis_candidate: Option<BlockHash>,
     pub total: u64,
     pub edge_rows: u64,
 }
@@ -38,16 +35,11 @@ pub(crate) struct DagProgress {
 impl Serialize for DagProgress {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         (
-            self.ready,
-            &self.cursor,
             self.sequence,
             self.max_height,
             self.lfb
                 .as_ref()
                 .map(|(hash, height)| (BlockHashSerde(hash.clone()), *height)),
-            self.genesis_candidate
-                .as_ref()
-                .map(|hash| BlockHashSerde(hash.clone())),
             self.total,
             self.edge_rows,
         )
@@ -57,25 +49,12 @@ impl Serialize for DagProgress {
 
 impl<'de> Deserialize<'de> for DagProgress {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        type Wire = (
-            bool,
-            Option<Vec<u8>>,
-            u64,
-            Option<i64>,
-            Option<(BlockHashSerde, i64)>,
-            Option<BlockHashSerde>,
-            u64,
-            u64,
-        );
-        let (ready, cursor, sequence, max_height, lfb, genesis_candidate, total, edge_rows) =
-            Wire::deserialize(deserializer)?;
+        type Wire = (u64, Option<i64>, Option<(BlockHashSerde, i64)>, u64, u64);
+        let (sequence, max_height, lfb, total, edge_rows) = Wire::deserialize(deserializer)?;
         Ok(Self {
-            ready,
-            cursor,
             sequence,
             max_height,
             lfb: lfb.map(|(hash, height)| (hash.0, height)),
-            genesis_candidate: genesis_candidate.map(|hash| hash.0),
             total,
             edge_rows,
         })
@@ -132,109 +111,70 @@ impl DagPersistence {
     }
 
     pub fn recover(&self) -> Result<DagProgress, KvStoreError> {
-        loop {
-            let progress = self.group.transaction(|tx| {
-                let mut progress = Self::progress_in(tx)?;
-                if progress.ready {
-                    return Ok(progress);
-                }
-                let page = tx.scan_page(METADATA, None, None, progress.cursor.as_deref(), 1024)?;
-                for (key, bytes) in page.rows {
-                    let hash: BlockHashSerde = decode(&key)?;
-                    let metadata: BlockMetadata = decode(&bytes)?;
-                    if hash.0 != metadata.block_hash || hash.0.len() != 32 {
-                        return Err(KvStoreError::InvalidArgument(format!(
-                            "invalid legacy metadata key {}",
-                            hex::encode(key)
-                        )));
-                    }
-                    self.history.index_block(tx, &metadata, 0)?;
-                    if !metadata.invalid {
-                        progress.max_height =
-                            Some(progress.max_height.map_or(metadata.block_number, |height| {
-                                height.max(metadata.block_number)
-                            }));
-                        if metadata.block_number == 0
-                            && progress
-                                .genesis_candidate
-                                .as_ref()
-                                .is_none_or(|old| metadata.block_hash < *old)
-                        {
-                            progress.genesis_candidate = Some(metadata.block_hash.clone());
-                        }
-                    }
-                    if metadata.directly_finalized
-                        && progress.lfb.as_ref().is_none_or(|(hash, height)| {
-                            metadata.block_number > *height
-                                || (metadata.block_number == *height && metadata.block_hash < *hash)
-                        })
-                    {
-                        progress.lfb = Some((metadata.block_hash.clone(), metadata.block_number));
-                    }
-                    progress.total = progress.total.checked_add(1).ok_or_else(|| {
-                        KvStoreError::InvalidArgument("DAG block count overflow".into())
-                    })?;
-                }
-                progress.cursor = page.next;
-                progress.edge_rows = tx.len(6)?;
-                if progress.cursor.is_none() {
-                    if let Some(hash) = &progress.genesis_candidate {
-                        Self::genesis_in(tx, hash)?;
-                    }
-                    progress.ready = true;
-                }
-                tx.put(STATE, PROGRESS.to_vec(), encode(&progress)?)?;
-                Ok(progress)
-            })?;
-            if progress.ready {
-                if self.group.len(6)? != progress.edge_rows {
-                    return Err(KvStoreError::InvalidArgument(
-                        "DAG children index cardinality disagrees with committed edge count".into(),
-                    ));
-                }
-                for (slot, name) in [
-                    (METADATA, "block-metadata"),
-                    (4, "dag-membership-v1"),
-                    (5, "dag-height-v1"),
-                ] {
-                    if self.group.len(slot)? != progress.total {
-                        return Err(KvStoreError::InvalidArgument(format!("DAG table {name} cardinality disagrees with committed publication count {}", progress.total)));
-                    }
-                }
-                if let Some((hash, height)) = &progress.lfb {
-                    if progress.max_height.is_none_or(|maximum| maximum < *height) {
-                        return Err(KvStoreError::InvalidArgument(
-                            "persisted DAG maximum valid height is missing or below LFB height"
-                                .into(),
-                        ));
-                    }
-                    let member = self
-                        .history
-                        .membership(hash, progress.sequence)?
-                        .ok_or_else(|| {
-                            KvStoreError::KeyNotFound("persisted DAG LFB membership missing".into())
-                        })?;
-                    let metadata: BlockMetadata = self
-                        .group
-                        .get(METADATA, &encode(&BlockHashSerde(hash.clone()))?)?
-                        .map(|bytes| decode(&bytes))
-                        .transpose()?
-                        .ok_or_else(|| {
-                            KvStoreError::KeyNotFound("persisted DAG LFB metadata missing".into())
-                        })?;
-                    if member.height != *height
-                        || !member.matches(hash, &metadata)
-                        || metadata.invalid
-                        || !metadata.directly_finalized
-                    {
-                        return Err(KvStoreError::InvalidArgument(
-                            "persisted DAG LFB disagrees with metadata".into(),
-                        ));
-                    }
-                }
-                return Ok(progress);
+        let stored = self
+            .group
+            .get(STATE, PROGRESS)?
+            .map(|bytes| decode::<DagProgress>(&bytes))
+            .transpose()?;
+        let progress = match stored {
+            Some(progress) => progress,
+            None if self.group.len(METADATA)? == 0 => return Ok(DagProgress::default()),
+            None => {
+                return Err(KvStoreError::InvalidArgument(
+                    "block metadata was written without the DAG history indexes; wipe the \
+                     node's data directory"
+                        .into(),
+                ))
+            }
+        };
+        if self.group.len(6)? != progress.edge_rows {
+            return Err(KvStoreError::InvalidArgument(
+                "DAG children index cardinality disagrees with committed edge count".into(),
+            ));
+        }
+        for (slot, name) in [
+            (METADATA, "block-metadata"),
+            (4, "dag-membership-v1"),
+            (5, "dag-height-v1"),
+        ] {
+            if self.group.len(slot)? != progress.total {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "DAG table {name} cardinality disagrees with committed publication count {}",
+                    progress.total
+                )));
             }
         }
+        if let Some((hash, height)) = &progress.lfb {
+            if progress.max_height.is_none_or(|maximum| maximum < *height) {
+                return Err(KvStoreError::InvalidArgument(
+                    "persisted DAG maximum valid height is missing or below LFB height".into(),
+                ));
+            }
+            let member = self
+                .history
+                .membership(hash, progress.sequence)?
+                .ok_or_else(|| {
+                    KvStoreError::KeyNotFound("persisted DAG LFB membership missing".into())
+                })?;
+            let metadata: BlockMetadata = self
+                .group
+                .get(METADATA, &encode(&BlockHashSerde(hash.clone()))?)?
+                .map(|bytes| decode(&bytes))
+                .transpose()?
+                .ok_or_else(|| {
+                    KvStoreError::KeyNotFound("persisted DAG LFB metadata missing".into())
+                })?;
+            if member.height != *height
+                || !member.matches(hash, &metadata)
+                || metadata.invalid
+                || !metadata.directly_finalized
+            {
+                return Err(KvStoreError::InvalidArgument(
+                    "persisted DAG LFB disagrees with metadata".into(),
+                ));
+            }
+        }
+        Ok(progress)
     }
 
     pub fn publish(
@@ -245,11 +185,6 @@ impl DagPersistence {
     ) -> Result<(BlockMetadata, DagProgress, bool), KvStoreError> {
         self.group.transaction(|tx| {
             let mut progress = Self::progress_in(tx)?;
-            if !progress.ready {
-                return Err(KvStoreError::InvalidArgument(
-                    "DAG migration is incomplete".into(),
-                ));
-            }
             let existing = self.history.membership_in(tx, &metadata.block_hash)?;
             let expected_hash = metadata.block_hash.clone();
             let key = encode(&BlockHashSerde(metadata.block_hash.clone()))?;

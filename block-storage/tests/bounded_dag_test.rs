@@ -127,14 +127,15 @@ async fn eviction_preserves_historical_queries_and_captured_views() {
 }
 
 #[tokio::test]
-async fn legacy_migration_and_restart_rebuild_only_the_hot_window() {
+async fn restart_rebuilds_only_the_hot_window() {
     let directory = tempfile::tempdir().unwrap();
     let mut chain = Vec::new();
     {
         let mut manager = lmdb_manager(directory.path());
-        let raw = manager.store("block-metadata".into()).await.unwrap();
-        let typed = KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(raw);
-        for height in 0..1030 {
+        let storage = BlockDagKeyValueStorage::new_with_hot_window(manager.as_mut(), 2)
+            .await
+            .unwrap();
+        for height in 0..30 {
             let item = block(
                 height,
                 chain
@@ -142,12 +143,7 @@ async fn legacy_migration_and_restart_rebuild_only_the_hot_window() {
                     .map(|b: &BlockMessage| vec![b.block_hash.clone()])
                     .unwrap_or_default(),
             );
-            let mut metadata = BlockMetadata::from_block(&item, false, None, None);
-            metadata.finalized = true;
-            metadata.directly_finalized = height == 1029;
-            typed
-                .put_one(BlockHashSerde(item.block_hash.clone()), metadata)
-                .unwrap();
+            storage.insert(&item, InsertMode::Approved).unwrap();
             chain.push(item);
         }
     }
@@ -158,7 +154,7 @@ async fn legacy_migration_and_restart_rebuild_only_the_hot_window() {
             .unwrap();
         let view = storage.get_representation().unwrap();
         assert_eq!(view.resident_counts().blocks, 3);
-        assert_eq!(view.latest_block_number(), 1030);
+        assert_eq!(view.latest_block_number(), 30);
         assert_eq!(
             view.last_finalized_block(),
             chain.last().unwrap().block_hash
@@ -181,6 +177,30 @@ async fn legacy_migration_and_restart_rebuild_only_the_hot_window() {
             .contains(&chain[1].block_hash));
         assert_eq!(view.topo_sort(0, None).unwrap().len(), chain.len());
         assert_eq!(view.resident_counts().blocks, 3);
+    }
+}
+
+#[tokio::test]
+async fn metadata_without_the_history_indexes_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    {
+        let mut manager = lmdb_manager(directory.path());
+        let raw = manager.store("block-metadata".into()).await.unwrap();
+        let genesis = block(0, vec![]);
+        let mut metadata = BlockMetadata::from_block(&genesis, false, None, None);
+        metadata.finalized = true;
+        metadata.directly_finalized = true;
+        KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(raw)
+            .put_one(BlockHashSerde(genesis.block_hash.clone()), metadata)
+            .unwrap();
+    }
+    let mut manager = lmdb_manager(directory.path());
+    match BlockDagKeyValueStorage::new_with_hot_window(manager.as_mut(), 2).await {
+        Err(KvStoreError::InvalidArgument(message)) => {
+            assert!(message.contains("wipe"), "{message}")
+        }
+        Err(other) => panic!("expected a wipe instruction, got {other:?}"),
+        Ok(_) => panic!("a store written without the history indexes must not open"),
     }
 }
 

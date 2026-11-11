@@ -2470,19 +2470,13 @@ fn missing_block(block_hash: &BlockHash, method: &'static str) -> KvStoreError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use models::rust::block_hash::BlockHashSerde;
-    use models::rust::block_metadata::BlockMetadata;
-    use models::rust::casper::protocol::casper_message::Justification;
-    use prost::bytes::Bytes;
-    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
     use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
         Db, LmdbDirStoreManager, LmdbEnvConfig,
     };
-    use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 
     use super::*;
 
@@ -2505,38 +2499,6 @@ mod tests {
         "dag-gc-retry-v1",
     ];
 
-    fn hash(i: u32) -> Bytes {
-        let mut bytes = vec![1u8; 32];
-        bytes[..4].copy_from_slice(&i.to_be_bytes());
-        Bytes::from(bytes)
-    }
-
-    fn validator(v: u8) -> Bytes { Bytes::from(vec![v; 65]) }
-
-    fn finalized_metadata(i: u32) -> BlockMetadata {
-        BlockMetadata {
-            block_hash: hash(i),
-            parents: if i == 0 { vec![] } else { vec![hash(i - 1)] },
-            sender: validator((i % 3) as u8 + 10),
-            justifications: (0..3u8)
-                .map(|v| Justification {
-                    validator: validator(v + 10),
-                    latest_block_hash: hash(i.saturating_sub(1)),
-                })
-                .collect(),
-            weight_map: (0..3u8)
-                .map(|v| (validator(v + 10), 1_000_000u64.into()))
-                .collect::<BTreeMap<_, _>>(),
-            block_number: i as i64,
-            sequence_number: (i / 3) as i32,
-            invalid: false,
-            directly_finalized: false,
-            finalized: true,
-            fault_tolerance_value: 0.0,
-            merge_base: Bytes::new(),
-        }
-    }
-
     #[test]
     fn ft_propagation_scan_hands_off_its_worker() {
         let dir = tempfile::tempdir().unwrap();
@@ -2557,17 +2519,31 @@ mod tests {
             .unwrap();
         let storage = runtime.block_on(async {
             let mut kvm = LmdbDirStoreManager::new(dir.path().to_path_buf(), mapping);
-            let metadata = KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(
-                kvm.store("block-metadata".to_string()).await.unwrap(),
-            );
-            metadata
-                .put(
-                    (0..20_000)
-                        .map(|i| (BlockHashSerde(hash(i)), finalized_metadata(i)))
-                        .collect(),
-                )
+            let storage = BlockDagKeyValueStorage::new_with_hot_window(&mut kvm, i64::MAX / 2)
+                .await
                 .unwrap();
-            Arc::new(BlockDagKeyValueStorage::new(&mut kvm).await.unwrap())
+            let mut parent: Option<BlockHash> = None;
+            for height in 0..20_000i64 {
+                let block = models::rust::block_implicits::get_random_block(
+                    Some(height),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(parent.iter().cloned().collect()),
+                    Some(vec![]),
+                    None,
+                    None,
+                    Some(vec![]),
+                    None,
+                    None,
+                );
+                storage.insert(&block, InsertMode::Approved).unwrap();
+                parent = Some(block.block_hash);
+            }
+            Arc::new(storage)
         });
 
         let (scan, largest_gap) = runtime.block_on(async move {
