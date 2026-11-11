@@ -650,7 +650,7 @@ mod tests {
                 None
             },
             system_deploy_error: if is_full { Some(String::new()) } else { None },
-            phlo_price: if is_full { Some(10) } else { None },
+            phlo_price: if is_full { Some(10.to_string()) } else { None },
             phlo_limit: if is_full { Some(100000) } else { None },
             sig_algorithm: if is_full {
                 Some("secp256k1".to_string())
@@ -743,7 +743,7 @@ mod tests {
                 Some(pk) if !pk.is_empty() => vec![PendingDeployJson {
                     term: "for (x <- ch) { return!(x) }".to_string(),
                     timestamp: 1770028092477,
-                    phlo_price: 1,
+                    phlo_price: (1).to_string(),
                     phlo_limit: 100_000,
                     valid_after_block_number: 0,
                     shard_id: String::new(),
@@ -757,7 +757,7 @@ mod tests {
                     PendingDeployJson {
                         term: "Nil".to_string(),
                         timestamp: 1770028092477,
-                        phlo_price: 1,
+                        phlo_price: (1).to_string(),
                         phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
@@ -770,7 +770,7 @@ mod tests {
                     PendingDeployJson {
                         term: "@0!(42)".to_string(),
                         timestamp: 1770028092478,
-                        phlo_price: 1,
+                        phlo_price: (1).to_string(),
                         phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
@@ -908,11 +908,11 @@ mod tests {
         assert_eq!(
             json["parameters"],
             serde_json::json!([
-                {"name": "amount", "value": {"type": "int", "value": 42}}
+                {"name": "amount", "value": {"type": "int", "value": "42"}}
             ])
         );
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
+        assert_eq!(json["phloPrice"], "10");
         assert!(json.get("phloLimit").is_some());
         assert!(json.get("sigAlgorithm").is_some());
         assert!(json.get("transfers").is_some());
@@ -992,6 +992,7 @@ mod tests {
         assert_eq!(json["deploys"][0]["deployer"], "0487def456");
         assert_eq!(json["deploys"][1]["deployer"], "0499abc789");
         assert_eq!(json["deploys"][0]["sigAlgorithm"], "secp256k1");
+        assert_eq!(json["deploys"][0]["phloPrice"], "1");
         for deploy in json["deploys"].as_array().unwrap() {
             assert!(deploy.get("parameters").is_none());
         }
@@ -1081,12 +1082,22 @@ mod router_tests {
     }
 
     fn light_block() -> LightBlockInfoSerde {
-        LightBlockInfoSerde::from(models::casper::LightBlockInfo::default())
+        LightBlockInfoSerde::from(models::casper::LightBlockInfo {
+            bonds: vec![models::casper::BondInfo {
+                validator: "validator".to_string(),
+                stake: shared::rust::token_amount::TokenAmount::max().to_string(),
+            }],
+            ..Default::default()
+        })
     }
 
     fn rho_data_response() -> RhoDataResponse {
         RhoDataResponse {
-            expr: vec![RhoExpr::ExprInt { data: 11 }],
+            expr: vec![RhoExpr::ExprInt { data: 11 }, RhoExpr::ExprList {
+                data: vec![RhoExpr::ExprInt { data: i64::MIN }, RhoExpr::ExprUint64 {
+                    data: u64::MAX,
+                }],
+            }],
             block: light_block(),
             cost: 7,
         }
@@ -1115,7 +1126,7 @@ mod router_tests {
                 shard_id: "root".to_string(),
                 peers: 1,
                 nodes: 2,
-                min_phlo_price: 1,
+                min_phlo_price: shared::rust::token_amount::TokenAmount::max().to_string(),
                 peer_list: vec![],
                 native_token_name: "F1R3".to_string(),
                 native_token_symbol: "F1R3".to_string(),
@@ -1220,7 +1231,7 @@ mod router_tests {
             }
             Ok(BalanceResponse {
                 address,
-                balance: "1000".to_string(),
+                balance: "10000000000000000000".to_string(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1245,9 +1256,9 @@ mod router_tests {
             Ok(ValidatorsResponse {
                 validators: vec![ValidatorInfo {
                     public_key: "vk".to_string(),
-                    stake: 10,
+                    stake: shared::rust::token_amount::TokenAmount::max(),
                 }],
-                total_stake: 10,
+                total_stake: shared::rust::token_amount::TokenAmount::max().into_bigint(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1298,7 +1309,7 @@ mod router_tests {
             Ok(ValidatorStatusResponse {
                 public_key: pubkey,
                 is_bonded: true,
-                stake: Some(10),
+                stake: Some(shared::rust::token_amount::TokenAmount::max()),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1398,6 +1409,10 @@ mod router_tests {
         let (status, json) = get_response("/status").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["networkId"], "testnet");
+        assert_eq!(
+            json["minPhloPrice"],
+            shared::rust::token_amount::TokenAmount::max().to_string()
+        );
         assert_eq!(json["shardId"], "root");
         assert_eq!(json["isReady"], true);
         assert_eq!(json["lastFinalizedBlockNumber"], 5);
@@ -1427,6 +1442,7 @@ mod router_tests {
         let validator = |byte: u8| hex::encode(vec![byte; models::rust::validator::LENGTH]);
         let bucket = &json["localView"]["buckets"][0];
         assert_eq!(bucket["validator"], validator(2));
+        assert_eq!(bucket["capacity"], "1000");
         assert_eq!(bucket["level"], "30000000000000000000");
         assert_eq!(bucket["threshold"], "300000000");
         assert_eq!(bucket["drained"], true);
@@ -1441,10 +1457,10 @@ mod router_tests {
 
         let finalized = &json["finalizedState"];
         assert_eq!(finalized["blockNumber"], 40);
-        assert_eq!(finalized["withdrawers"][0]["stake"], 300);
+        assert_eq!(finalized["withdrawers"][0]["stake"], "300");
         assert_eq!(
             finalized["claims"][0]["terms"],
-            serde_json::json!({ "kind": "rejoin", "topup": 20, "graceEnd": 60 })
+            serde_json::json!({ "kind": "rejoin", "topup": "20", "graceEnd": 60 })
         );
         assert_eq!(finalized["claims"][0]["family"], "rejoin");
         assert_eq!(
@@ -1454,7 +1470,7 @@ mod router_tests {
         assert_eq!(
             finalized["freezes"][0]["intervals"],
             serde_json::json!([
-                { "from": 10, "fromSequence": 4, "rejoinedAt": 20, "topup": 5 },
+                { "from": 10, "fromSequence": 4, "rejoinedAt": 20, "topup": "5" },
                 { "from": 30, "fromSequence": 9, "rejoinedAt": null, "topup": null }
             ])
         );
@@ -1518,7 +1534,7 @@ mod router_tests {
             "data": {
                 "term": "Nil",
                 "timestamp": 1,
-                "phloPrice": 1,
+                "phloPrice": "1",
                 "phloLimit": 100,
                 "validAfterBlockNumber": 0,
                 "shardId": "root",
@@ -1564,6 +1580,19 @@ mod router_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["cost"], 7);
+        assert_eq!(json["expr"][0]["ExprInt"]["data"], "11");
+        assert_eq!(
+            json["expr"][1]["ExprList"]["data"][0]["ExprInt"]["data"],
+            "-9223372036854775808"
+        );
+        assert_eq!(
+            json["expr"][1]["ExprList"]["data"][1]["ExprUint64"]["data"],
+            "18446744073709551615"
+        );
+        assert_eq!(
+            json["block"]["bonds"][0]["stake"],
+            shared::rust::token_amount::TokenAmount::max().to_string()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1622,7 +1651,7 @@ mod router_tests {
     async fn query_routes_answer() {
         let (status, json) = get_response("/balance/wallet-address").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["balance"], "1000");
+        assert_eq!(json["balance"], "10000000000000000000");
 
         let (status, json) = get_response("/registry/rho:id:abc").await;
         assert_eq!(status, StatusCode::OK);
@@ -1630,11 +1659,17 @@ mod router_tests {
 
         let (status, json) = get_response("/validators").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["totalStake"], 10);
+        let max = shared::rust::token_amount::TokenAmount::max().to_string();
+        assert_eq!(json["totalStake"], max);
+        assert_eq!(json["validators"][0]["stake"], max);
 
         let (status, json) = get_response("/validator/04aa").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["isBonded"], true);
+        assert_eq!(
+            json["stake"],
+            shared::rust::token_amount::TokenAmount::max().to_string()
+        );
 
         let (status, json) = get_response("/epoch").await;
         assert_eq!(status, StatusCode::OK);
@@ -1642,7 +1677,7 @@ mod router_tests {
 
         let (status, json) = get_response("/epoch/rewards").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["rewards"]["ExprInt"]["data"], 3);
+        assert_eq!(json["rewards"]["ExprInt"]["data"], "3");
 
         let (status, json) = get_response("/bond-status/04aa").await;
         assert_eq!(status, StatusCode::OK);

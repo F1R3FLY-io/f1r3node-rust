@@ -59,7 +59,7 @@ async fn integration_t_invalid_parents() {
         "@0!(0)".to_string(),
         timestamp,
         Some(90_000),
-        Some(1),
+        Some((1).into()),
         None,
         Some(-1),
         Some(shard_id.clone()),

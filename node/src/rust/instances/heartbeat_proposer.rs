@@ -1324,11 +1324,11 @@ mod tests {
         parent.body.state.bonds = vec![
             models::rust::casper::protocol::casper_message::Bond {
                 validator: lowest.clone(),
-                stake: 1,
+                stake: 1.into(),
             },
             models::rust::casper::protocol::casper_message::Bond {
                 validator: me.public_key.bytes.clone(),
-                stake: 1,
+                stake: 1.into(),
             },
         ];
         let mut snapshot =

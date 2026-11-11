@@ -33,8 +33,8 @@ use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
 use super::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
-    RhoSysAuthToken, RhoUri,
+    RhoBigInt, RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber,
+    RhoString, RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
@@ -804,7 +804,8 @@ pub fn committee_of(map: &Par) -> Option<Vec<casper_message::Bond>> {
         .map_iter(|(validator, stake)| {
             Some(casper_message::Bond {
                 validator: RhoByteArray::unapply(validator)?.into(),
-                stake: RhoNumber::unapply(stake)?,
+                stake: shared::rust::token_amount::TokenAmount::new(RhoBigInt::unapply(stake)?)
+                    .ok()?,
             })
         })
         .into_iter()
@@ -1399,11 +1400,11 @@ impl SystemProcesses {
             .await
             .committee
             .iter()
-            .filter(|bond| bond.stake > 0)
+            .filter(|bond| !bond.stake.is_zero())
             .map(|bond| {
                 (
                     RhoByteArray::create_par(bond.validator.to_vec()),
-                    Par::default().with_exprs(vec![RhoNumber::create_expr(bond.stake)]),
+                    RhoBigInt::create_par(bond.stake.as_bigint()),
                 )
             })
             .collect();

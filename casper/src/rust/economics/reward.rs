@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::casper::protocol::casper_message::{Bond, Justification};
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use shared::rust::store::key_value_store::MissingBlockContext;
 
 use crate::rust::errors::CasperError;
@@ -40,13 +41,13 @@ pub struct ParentFact {
 }
 
 /// The block's committee, each validator once with its stake.
-pub type Committee = BTreeMap<Validator, i64>;
+pub type Committee = BTreeMap<Validator, BigInt>;
 
 /// `bonds` as a committee.
 pub fn committee_of(bonds: &[Bond]) -> Committee {
     bonds
         .iter()
-        .map(|bond| (bond.validator.clone(), bond.stake))
+        .map(|bond| (bond.validator.clone(), bond.stake.to_bigint()))
         .collect()
 }
 
@@ -146,28 +147,27 @@ pub fn compute_reward(
     parents: &[ParentFact],
     block_number: i64,
     params: &RewardParams,
-) -> u128 {
-    // Summed wider than a stake: two bonds at the largest permitted value
-    // already overflow `i64`.
-    let total: i128 = committee.values().map(|stake| *stake as i128).sum();
-    let members = committee.values().filter(|stake| **stake > 0).count() as u128;
+) -> BigInt {
+    let zero = BigInt::from(0);
+    let total: BigInt = committee.values().sum();
+    let members = committee.values().filter(|stake| **stake > zero).count();
     // A sender the committee does not seat has no stake to credit.
-    let Some(own_stake) = committee.get(sender).copied().filter(|stake| *stake > 0) else {
-        return 0;
+    let Some(own_stake) = committee.get(sender).filter(|stake| **stake > zero) else {
+        return zero;
     };
-    if total <= 0 || members == 0 {
-        return 0;
+    if total <= zero || members == 0 {
+        return zero;
     }
 
     let mut counted: HashSet<&Validator> = HashSet::new();
-    let mut fresh_stake: i128 = 0;
+    let mut fresh_stake = BigInt::from(0);
     for validator in fresh {
         if validator == sender {
             continue;
         }
         if let Some(stake) = committee.get(validator) {
-            if counted.insert(validator) {
-                fresh_stake += (*stake).max(0) as i128;
+            if counted.insert(validator) && *stake > zero {
+                fresh_stake += stake;
             }
         }
     }
@@ -177,15 +177,12 @@ pub fn compute_reward(
         recency_ppm = recency_ppm.saturating_add(PPM / (1 + gap));
     }
 
-    let breadth_ppm = (fresh_stake as u128 * PPM as u128 / total as u128) as u64;
+    let breadth_ppm = u64::try_from(fresh_stake * PPM / &total)
+        .expect("the fresh stake is part of the committee's total, so breadth is at most one");
     let factor_ppm = f_breadth(breadth_ppm, params.p_breadth) as u128
         * f_recency(recency_ppm, params.y_ref_ppm) as u128
         / PPM as u128;
-    factor_ppm
-        .saturating_mul(params.reward_rate_ppm as u128)
-        .saturating_mul(members)
-        .saturating_mul(own_stake as u128)
-        / PPM as u128
+    BigInt::from(factor_ppm) * params.reward_rate_ppm * members * own_stake / PPM
 }
 
 /// `1 − (1 − x)^p`, on the ppm scale. The power is taken by repeated
@@ -239,9 +236,11 @@ mod tests {
     fn bonds(stakes: &[(u8, i64)]) -> Committee {
         stakes
             .iter()
-            .map(|(byte, stake)| (validator(*byte), *stake))
+            .map(|(byte, stake)| (validator(*byte), BigInt::from(*stake)))
             .collect()
     }
+
+    fn zero() -> BigInt { BigInt::from(0) }
 
     fn parent(byte: u8, block_number: i64) -> ParentFact {
         ParentFact {
@@ -267,7 +266,7 @@ mod tests {
         let parents = [parent(3, 9)];
         let light = compute_reward(&committee, &validator(1), &fresh, &parents, 10, &params);
         let heavy = compute_reward(&committee, &validator(2), &fresh, &parents, 10, &params);
-        assert!(light > 0);
+        assert!(light > zero());
         assert_eq!(heavy, light * 10);
     }
 
@@ -315,7 +314,7 @@ mod tests {
                 10,
                 &at_rate(630)
             ),
-            590_625
+            BigInt::from(590_625)
         );
     }
 
@@ -328,9 +327,9 @@ mod tests {
         let parents = [parent(1, 9)];
         assert_eq!(
             compute_reward(&committee, &validator(1), &[], &parents, 10, &params),
-            0
+            zero()
         );
-        let mut previous = 0;
+        let mut previous = zero();
         for acknowledged in 2..=4u8 {
             let fresh: Vec<Validator> = (2..=acknowledged).map(validator).collect();
             let reward = compute_reward(&committee, &validator(1), &fresh, &parents, 10, &params);
@@ -404,7 +403,7 @@ mod tests {
         for sender in [validator(2), validator(9)] {
             assert_eq!(
                 compute_reward(&committee, &sender, &[validator(1)], &parents, 10, &params),
-                0
+                zero()
             );
         }
     }
@@ -415,7 +414,7 @@ mod tests {
     fn a_validator_listed_twice_is_one_member() {
         let bond = |byte: u8| Bond {
             validator: validator(byte),
-            stake: 250,
+            stake: 250.into(),
         };
         let parents = [parent(1, 9), parent(2, 9)];
         let fresh = [validator(2)];
@@ -582,12 +581,18 @@ mod tests {
         }
     }
 
-    /// Two bonds at the largest value genesis permits are credited exactly:
-    /// breadth 1/2 gives 0.75, recency saturates, and 630 ppm × 2 members
-    /// makes the reward 945 ppm of the stake per bond unit's `1 / PPM`.
+    /// Two bonds at the largest token amount are credited exactly: breadth 1/2
+    /// gives 0.75, recency saturates, and 630 ppm × 2 members makes the reward
+    /// 945 ppm of the stake per bond unit's `1 / PPM`.
     #[test]
     fn a_committee_of_the_largest_bonds_is_credited_exactly() {
-        let committee = bonds(&[(1, i64::MAX), (2, i64::MAX)]);
+        let largest = shared::rust::token_amount::TokenAmount::max().into_bigint();
+        let committee: Committee = [
+            (validator(1), largest.clone()),
+            (validator(2), largest.clone()),
+        ]
+        .into_iter()
+        .collect();
         let parents = [parent(1, 9), parent(2, 9)];
         assert_eq!(
             compute_reward(
@@ -598,7 +603,7 @@ mod tests {
                 10,
                 &at_rate(630)
             ),
-            945 * i64::MAX as u128
+            largest * 945
         );
     }
 
@@ -614,7 +619,7 @@ mod tests {
                 10,
                 &params
             ),
-            0
+            zero()
         );
     }
 }

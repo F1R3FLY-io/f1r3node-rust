@@ -210,7 +210,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
 
     fn normalized_initial_fault(
         &self,
-        weights: HashMap<Validator, u64>,
+        weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
         let equivocations = initial_fault::equivocations(
             &self

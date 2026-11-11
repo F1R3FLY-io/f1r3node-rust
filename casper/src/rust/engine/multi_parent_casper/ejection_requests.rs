@@ -14,6 +14,7 @@ use models::rust::validator::Validator;
 use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::token_amount::TokenAmount;
 
 use super::block_admission::admit_deploy;
 use super::types::MultiParentCasperImpl;
@@ -94,8 +95,8 @@ fn balance_of(reply: &[Par]) -> Result<BigInt, CasperError> {
 /// The phlo limit a deploy priced at `price` can carry from a vault holding
 /// `balance`. A vault holding more than the largest limit costs covers every
 /// limit.
-fn covered_limit(balance: &BigInt, price: i64) -> i64 {
-    i64::try_from(&(balance / BigInt::from(price))).unwrap_or(i64::MAX)
+fn covered_limit(balance: &BigInt, price: &TokenAmount) -> i64 {
+    i64::try_from(&(balance / price.as_bigint())).unwrap_or(i64::MAX)
 }
 
 impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
@@ -183,8 +184,12 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
             .await?;
         // The precharge refuses to move nothing, so no deploy runs at a price
         // of nothing.
-        let price = self.chain_parameters.min_phlo_price.max(1);
-        let phlo_limit = covered_limit(&balance_of(&reply)?, price);
+        let price = self
+            .chain_parameters
+            .min_phlo_price
+            .clone()
+            .max(TokenAmount::from(1));
+        let phlo_limit = covered_limit(&balance_of(&reply)?, &price);
         if phlo_limit <= 0 {
             tracing::debug!(
                 target: "f1r3fly.casper.economics",

@@ -122,8 +122,8 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(validator_0.clone(), 100);
-        bonds_map.insert(validator_1.clone(), 100);
+        bonds_map.insert(validator_0.clone(), 100.into());
+        bonds_map.insert(validator_1.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             chain: ChainParameters {

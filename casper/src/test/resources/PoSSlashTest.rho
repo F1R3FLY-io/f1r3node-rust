@@ -131,7 +131,7 @@ in {
                     atBlock!(12, *b12) |
                     deployerIdFor!(v.nth(1), *d1) |
                     for (_ <- b12 & @id1 <- d1) {
-                      @PoS!("rejoinFromEjection", id1, 50, *asked) |
+                      @PoS!("rejoinFromEjection", id1, 50n, *asked) |
                       failOnRefusal!(*asked, *rhoSpec, *ackCh) |
                       for (@(true, _) <- asked) {
                         slash!(v.nth(1), *slashed) |
@@ -207,7 +207,7 @@ in {
                                 rhoSpec!("assertMany",
                                   [
                                     (((true, Nil), "==", slashResult), "the slash succeeds"),
-                                    ((0, "==", left), "the quarantined bond is slashed"),
+                                    ((0n, "==", left), "the quarantined bond is slashed"),
                                     ((before - quarantined.toBigInt(), "==", after), "and leaves the PoS vault")
                                   ],
                                   *ackCh
@@ -254,7 +254,7 @@ in {
                       @PoS!("getEjectedValidators", *ejectedCh) |
                       deployerIdFor!(v.nth(3), *d3) |
                       for (@evidence <- evidenceCh & @ejected <- ejectedCh & @id3 <- d3) {
-                        @PoS!("rejoinFromEjection", id3, 50, *rejoin) |
+                        @PoS!("rejoinFromEjection", id3, 50n, *rejoin) |
                         for (@rejoinResult <- rejoin) {
                           rhoSpec!("assertMany",
                             [
@@ -293,7 +293,7 @@ in {
               for (@active <- activeCh & @bonds <- bondsCh) {
                 rhoSpec!("assertMany",
                   [
-                    ((0, "==", bonds.get(v.nth(1))), "the slashed key stays in the bonds at nothing"),
+                    ((0n, "==", bonds.get(v.nth(1))), "the slashed key stays in the bonds at nothing"),
                     ((false, "==", active.contains(v.nth(1))), "and holds no seat"),
                     ((false, "==", active.contains(v.nth(3))), "nor does the other slashed key"),
                     (active.contains(v.nth(0)), "a validator with stake keeps its seat")
@@ -317,7 +317,7 @@ in {
               rhoSpec!("assertMany",
                 [
                   (((true, Nil), "==", slashResult), "slashing a validator with nothing left succeeds"),
-                  ((0, "==", bonds.get(v.nth(1))), "and leaves it at nothing")
+                  ((0n, "==", bonds.get(v.nth(1))), "and leaves it at nothing")
                 ],
                 *ackCh
               )

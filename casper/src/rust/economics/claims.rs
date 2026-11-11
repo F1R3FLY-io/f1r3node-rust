@@ -13,6 +13,8 @@ use models::rust::casper::protocol::casper_message::{
     Bond, ClaimId, ClaimOutcome, ClaimResolution, OverflowTestimony,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
+use shared::rust::token_amount::TokenAmount;
 
 use super::bucket_view::Knowledge;
 use crate::rust::errors::CasperError;
@@ -98,18 +100,18 @@ impl ClaimBook {
 }
 
 /// What a claim asks for, beyond its target, by family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClaimTerms {
     Eject,
     /// `topup` is paid on success. A rejoin can pass only at a floor up to
     /// `grace_end`, so only votes in blocks up to it can count.
     Rejoin {
-        topup: i64,
+        topup: TokenAmount,
         grace_end: i64,
     },
-    /// `amount`, in bond units, is paid to the claimant on success.
+    /// `amount` is paid to the claimant on success.
     Overflow {
-        amount: i64,
+        amount: TokenAmount,
     },
 }
 
@@ -137,7 +139,7 @@ impl ClaimRecord {
     pub fn may_vote(&self, voter: &Validator) -> bool {
         self.electorate
             .iter()
-            .any(|bond| bond.validator == voter && bond.stake > 0)
+            .any(|bond| bond.validator == voter && !bond.stake.is_zero())
     }
 }
 
@@ -378,7 +380,7 @@ fn counted<'e>(
 ) -> impl Iterator<Item = &'e Bond> {
     electorate
         .iter()
-        .filter(move |bond| bond.stake > 0 && !slashed.contains(&bond.validator))
+        .filter(move |bond| !bond.stake.is_zero() && !slashed.contains(&bond.validator))
 }
 
 /// The outcome `vote_of` gives a claim with `electorate`: it passes when its
@@ -392,9 +394,9 @@ pub fn tally(
     seated: &HashSet<Validator>,
     vote_of: impl Fn(&Validator) -> Option<bool>,
 ) -> Option<ClaimOutcome> {
-    let (mut total, mut yea, mut nay) = (0i128, 0i128, 0i128);
+    let (mut total, mut yea, mut nay) = (BigInt::from(0), BigInt::from(0), BigInt::from(0));
     for bond in counted(electorate, slashed) {
-        let stake = bond.stake as i128;
+        let stake = bond.stake.as_bigint();
         match vote_of(&bond.validator) {
             Some(true) => yea += stake,
             Some(false) => nay += stake,
@@ -403,9 +405,9 @@ pub fn tally(
         }
         total += stake;
     }
-    if 3 * yea > 2 * total {
+    if yea * 3 > &total * 2 {
         Some(ClaimOutcome::Pass)
-    } else if 3 * nay > 2 * total {
+    } else if nay * 3 > total * 2 {
         Some(ClaimOutcome::Fail)
     } else {
         None
@@ -430,9 +432,9 @@ fn oldest_first(a: &&ClaimRecord, b: &&ClaimRecord) -> std::cmp::Ordering {
 /// What a nay on `record` must carry: for an overflow claim, the amount and
 /// what `floor` records of the claimant; for anything else, nothing.
 pub fn testimony(record: &ClaimRecord, yea: bool, floor: &FloorView) -> Option<OverflowTestimony> {
-    match record.terms {
+    match &record.terms {
         ClaimTerms::Overflow { amount } if !yea => Some(OverflowTestimony {
-            amount,
+            amount: amount.clone(),
             floor_number: floor.number,
             claimed_total: floor.knowledge.claimed_total(&record.claim.target),
             freezes: floor.knowledge.freezes_of(&record.claim.target).to_vec(),
@@ -483,12 +485,12 @@ impl FloorView {
             .bonds
             .iter()
             .chain(state.withdrawers.iter())
-            .filter(|bond| bond.stake == 0)
+            .filter(|bond| bond.stake.is_zero())
             .map(|bond| bond.validator.clone())
             .collect();
         let seated = state
             .committee()
-            .filter(|bond| bond.stake > 0)
+            .filter(|bond| !bond.stake.is_zero())
             .map(|bond| bond.validator.clone())
             .collect();
         Self {
@@ -520,7 +522,7 @@ mod tests {
             },
             electorate: Vec::new(),
             terms: ClaimTerms::Rejoin {
-                topup: 1,
+                topup: 1.into(),
                 grace_end,
             },
         }
@@ -537,7 +539,7 @@ mod tests {
                 ..rejoin.claim.clone()
             },
             electorate: Vec::new(),
-            terms: ClaimTerms::Overflow { amount: 1 },
+            terms: ClaimTerms::Overflow { amount: 1.into() },
         };
         let mut read_one_way = vec![&rejoin, &overflow];
         let mut read_the_other = vec![&overflow, &rejoin];
@@ -569,7 +571,7 @@ mod tests {
                 proposer: validator(1),
             },
             electorate: Vec::new(),
-            terms: ClaimTerms::Overflow { amount: 1 },
+            terms: ClaimTerms::Overflow { amount: 1.into() },
         };
         assert!(
             !record.is_open_at(11, 10),

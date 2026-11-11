@@ -591,11 +591,14 @@ impl RuntimeManager {
                 }
             }
         }
-        let seated: Vec<&Bond> = committee.iter().filter(|bond| bond.stake > 0).collect();
+        let seated: Vec<&Bond> = committee
+            .iter()
+            .filter(|bond| !bond.stake.is_zero())
+            .collect();
         bytes.extend_from_slice(&(seated.len() as u64).to_le_bytes());
         for bond in seated {
             push_len_prefixed(&mut bytes, &bond.validator);
-            bytes.extend_from_slice(&bond.stake.to_le_bytes());
+            bytes.extend_from_slice(&bond.stake.to_wire());
         }
         bytes.push(u8::from(is_genesis));
         Blake2b256::hash(bytes)
@@ -1276,15 +1279,14 @@ impl RuntimeManager {
     pub async fn slashable_stakes(
         &self,
         hash: &StateHash,
-    ) -> Result<HashMap<Validator, i64>, CasperError> {
+    ) -> Result<HashMap<Validator, BigInt>, CasperError> {
         let bonds = self.compute_bonds(hash).await?;
         let quarantined = self.quarantined_stakes(hash).await?;
-        let mut stakes: HashMap<Validator, i64> = HashMap::new();
+        let mut stakes: HashMap<Validator, BigInt> = HashMap::new();
         for bond in bonds.into_iter().chain(quarantined) {
-            let stake = stakes.entry(bond.validator).or_insert(0);
-            *stake = stake.saturating_add(bond.stake);
+            *stakes.entry(bond.validator).or_default() += bond.stake.into_bigint();
         }
-        stakes.retain(|_, stake| *stake > 0);
+        stakes.retain(|_, stake| *stake > BigInt::from(0));
         Ok(stakes)
     }
 
@@ -1965,13 +1967,13 @@ mod tests {
             event_list: Vec::new(),
             system_deploy: SystemDeployData::CloseBlockSystemDeployData,
         }];
-        let hash = |stake: i64| {
+        let hash = |stake: u64| {
             RuntimeManager::replay_payload_hash(
                 &[],
                 &close,
                 &[Bond {
                     validator: prost::bytes::Bytes::from_static(b"member"),
-                    stake,
+                    stake: stake.into(),
                 }],
                 false,
             )

@@ -372,11 +372,11 @@ impl TestFixture {
         let deploy_timestamp = 0i64;
 
         // Extract bonds from genesis validators for bap
-        let bonds: HashMap<PublicKey, i64> = genesis_params
+        let bonds: HashMap<PublicKey, shared::rust::token_amount::TokenAmount> = genesis_params
             .proof_of_stake
             .validators
             .iter()
-            .map(|v| (v.pk.clone(), v.stake))
+            .map(|v| (v.pk.clone(), v.stake.clone()))
             .collect();
 
         // Scala: val local: PeerNode = peerNode("src", 40400)
@@ -394,15 +394,15 @@ impl TestFixture {
             deploy_timestamp,
             genesis_params.vaults.clone(),
             bonds,
-            genesis_params.proof_of_stake.minimum_bond,
-            genesis_params.proof_of_stake.maximum_bond,
+            genesis_params.proof_of_stake.minimum_bond.clone(),
+            genesis_params.proof_of_stake.maximum_bond.clone(),
             genesis_params.proof_of_stake.epoch_length,
             genesis_params.proof_of_stake.quarantine_length,
             genesis_params.proof_of_stake.number_of_active_validators,
             genesis_params.proof_of_stake.fault_tolerance_threshold_ppm,
             genesis_params.proof_of_stake.max_parent_depth,
             genesis_params.proof_of_stake.deploy_lifespan,
-            genesis_params.proof_of_stake.min_phlo_price,
+            genesis_params.proof_of_stake.min_phlo_price.clone(),
             genesis_params.proof_of_stake.leaky_bucket(),
             required_sigs,
             genesis_params

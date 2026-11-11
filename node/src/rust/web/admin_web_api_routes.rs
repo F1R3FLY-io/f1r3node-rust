@@ -22,8 +22,9 @@ impl AdminWebApiRoutes {
         responses(
             (status = 200, description = "Propose result message (success block hash)", body = String),
             (status = 400, description = "Read-only node (`readonly_node_required`)", body = ApiErrorResponse),
-            (status = 409, description = "No new deploys to propose (`no_new_deploys`)", body = ApiErrorResponse),
+            (status = 409, description = "Propose refused in the current state (`no_new_deploys`, `validator_not_bonded`, `not_enough_new_blocks`, `too_far_ahead_of_finalized`)", body = ApiErrorResponse),
             (status = 500, description = "Node-side propose failure (`unknown_error`, `replay_failure`)", body = ApiErrorResponse),
+            (status = 503, description = "Propose refused until the node catches up (`history_incomplete`, `missing_block`)", body = ApiErrorResponse),
         ),
         tag = "AdminAPI"
     )]

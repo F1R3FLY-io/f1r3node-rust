@@ -187,7 +187,7 @@ async fn a_late_block_is_judged_the_same_after_its_claims_votes_are_pruned() {
         .state
         .bonds
         .iter()
-        .min_by_key(|bond| bond.stake)
+        .min_by_key(|bond| bond.stake.clone())
         .expect("bonds")
         .validator
         .clone();

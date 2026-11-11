@@ -179,6 +179,7 @@ async fn a_valid_block_can_be_numbered_below_a_block_its_proposer_accepted() {
             .find(|bond| bond.validator == *validator)
             .expect("bonded")
             .stake
+            .clone()
     };
     let mut nodes = TestNode::create_network(genesis.clone(), 2, Some(0.0), Some(1), None)
         .await

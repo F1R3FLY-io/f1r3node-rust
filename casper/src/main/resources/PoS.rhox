@@ -159,7 +159,7 @@ in {
         for (@(true, (coopMultiVault, coopMultiVaultAddr, coopVaultHd)) <<- coopVaultCh) {
           // Creates PoS System vault with sum of initial bonds.
           new bondSumCh in {
-            @ListOps!("fold", $$initialBonds$$.toList(), 0, *sumFromPair, *bondSumCh) |
+            @ListOps!("fold", $$initialBonds$$.toList(), 0n, *sumFromPair, *bondSumCh) |
             for (@bondSum <- bondSumCh) {
               @SystemVault!("createWithBalance", posDeployerVaultAddress, bondSum, *posDeployerVaultCh)|
               for (@(true, posDeployerVault)  <- posDeployerVaultCh) {
@@ -247,7 +247,7 @@ in {
               contract calTotalActiveBonds(returnCh) = {
                 new computeSum in {
                   for (@state <<- stateCh){
-                    @ListOps!("fold", state.get("allBonds").toList(), 0, *computeSum, *returnCh) |
+                    @ListOps!("fold", state.get("allBonds").toList(), 0n, *computeSum, *returnCh) |
                     contract computeSum(@(pk, bondAmount), @acc, resultCh) = {
                       if (state.get("activeValidators").contains(pk) and
                           not state.get("ejectedValidators").contains(pk)){
@@ -259,7 +259,6 @@ in {
                   }
                 }
               } |
-              // Money totals are BigInt: bonds are Int, rewards and the PoS vault balance are BigInt.
               contract accumulateSndNum(@(_, amount), @acc, resultCh) = {
                 resultCh!(acc + amount.toBigInt())
               } |
@@ -282,8 +281,8 @@ in {
                       // eligible stake left, nothing is distributed this epoch.
                       if (activeValidatorsSet.contains(pk) and
                           not ejectedValidators.contains(pk) and
-                          activeBonds / $$minimumBond$$ > 0){
-                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$).toBigInt() / (activeBonds / $$minimumBond$$).toBigInt()))
+                          activeBonds / $$minimumBond$$n > 0n){
+                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$n).toBigInt() / (activeBonds / $$minimumBond$$n).toBigInt()))
                       } else {
                         outCh!(acc.set(pk, 0n))
                       }
@@ -353,7 +352,7 @@ in {
                   "faultToleranceThresholdPpm": $$faultToleranceThresholdPpm$$,
                   "maxParentDepth"            : $$maxParentDepth$$,
                   "deployLifespan"            : $$deployLifespan$$,
-                  "minPhloPrice"              : $$minPhloPrice$$,
+                  "minPhloPrice"              : $$minPhloPrice$$n,
                   "epochLength"               : $$epochLength$$,
                   "quarantineLength"          : $$quarantineLength$$,
                   "lambdaBasePpm"             : $$lambdaBasePpm$$,
@@ -380,9 +379,9 @@ in {
                        @userPk          <- userCh) {
                     if (state.get("allBonds").contains(userPk)) {
                       resultCh!(state, (false, "Public key is already bonded."))
-                    } else if (not (amount matches Int)) {
-                      resultCh!(state, (false, "Bond amount must be an Int."))
-                    } else if (amount <= 0) {
+                    } else if (not (amount matches BigInt)) {
+                      resultCh!(state, (false, "Bond amount must be a BigInt."))
+                    } else if (amount <= 0n) {
                       // Bug #5 fix: explicit positive-stake assertion. The
                       // Rocq invariant `active_implies_bonded` (T-9.5,
                       // BugFixStakeZero.v:36) requires every active
@@ -393,9 +392,9 @@ in {
                       // of genesis configuration. See
                       // design/09-bug-fixes-and-rationale.md §9.6 (option a).
                       resultCh!(state, (false, "Bond amount must be positive."))
-                    } else if (amount < $$minimumBond$$) {
+                    } else if (amount < $$minimumBond$$n) {
                       resultCh!(state, (false, "Bond is less than minimum!"))
-                    } else if (amount > $$maximumBond$$) {
+                    } else if (amount > $$maximumBond$$n) {
                       resultCh!(state, (false, "Bond is greater than maximum!"))
                     } else {
                       // Transfers user's bond amount to the PoS vault.
@@ -480,7 +479,7 @@ in {
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
                         for (@(deployerId, initialPaymentAmount) <- currentDeployerData){
-                          if (refundAmount > 0) {
+                          if (refundAmount > 0n) {
                             new vaultAddressCh, transferCh in {
                               vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
                               for (@deployerVaultAddress <- vaultAddressCh) {
@@ -561,7 +560,7 @@ in {
                        @blockNumber, _, _ <- blockDataCh &
                        @committee         <- committeeCh) {
                     match state.get("withdrawers").get(userPk) {
-                      Nil => quarantinedCh!(0)
+                      Nil => quarantinedCh!(0n)
                       (quarantined, _) => quarantinedCh!(quarantined)
                     } |
                     @ListOps!("fold", committee.toList(), {}, *keepVoter, *electorateCh) |
@@ -573,13 +572,13 @@ in {
                       }
                     } |
                     for (@quarantined <- quarantinedCh & @electorate <- electorateCh) {
-                      if (not (amount matches Int)) {
-                        resultCh!(state, (false, "Claim amount must be an Int."))
-                      } else if (amount <= 0) {
+                      if (not (amount matches BigInt)) {
+                        resultCh!(state, (false, "Claim amount must be a BigInt."))
+                      } else if (amount <= 0n) {
                         resultCh!(state, (false, "Claim amount must be positive."))
-                      } else if (amount > $$maxOverflowPerClaim$$) {
+                      } else if (amount > $$maxOverflowPerClaim$$n) {
                         resultCh!(state, (false, "Claim amount exceeds the bound on one claim."))
-                      } else if (state.get("allBonds").getOrElse(userPk, 0) <= 0 and quarantined <= 0) {
+                      } else if (state.get("allBonds").getOrElse(userPk, 0n) <= 0n and quarantined <= 0n) {
                         resultCh!(state, (false, "Only a validator holding stake may claim overflow."))
                       } else if (state.get("overflowClaims").contains(userPk)) {
                         resultCh!(state, (false, "An overflow claim is already open for this validator."))
@@ -614,9 +613,9 @@ in {
                     match state.get("ejectedValidators").get(userPk) {
                       Nil => resultCh!(state, (false, "Only an ejected validator may rejoin."))
                       ejection => {
-                        if (not (topup matches Int)) {
-                          resultCh!(state, (false, "Topup must be an Int."))
-                        } else if (topup <= 0) {
+                        if (not (topup matches BigInt)) {
+                          resultCh!(state, (false, "Topup must be a BigInt."))
+                        } else if (topup <= 0n) {
                           resultCh!(state, (false, "Topup must be positive."))
                         } else if (blockNumber > ejection.get("graceEnd")) {
                           resultCh!(state, (false, "The grace of this ejection has ended."))
@@ -707,11 +706,11 @@ in {
               contract forfeitStake(@target, @current, retCh) = {
                 new stakeCh, transferredCh, bondsCh, withdrawersCh in {
                   match current.get("withdrawers").get(target) {
-                    Nil => stakeCh!(current.get("allBonds").getOrElse(target, 0))
-                    (quarantined, _) => stakeCh!(current.get("allBonds").getOrElse(target, 0) + quarantined)
+                    Nil => stakeCh!(current.get("allBonds").getOrElse(target, 0n))
+                    (quarantined, _) => stakeCh!(current.get("allBonds").getOrElse(target, 0n) + quarantined)
                   } |
                   for (@stake <- stakeCh) {
-                    if (stake > 0) {
+                    if (stake > 0n) {
                       @posVault!("transfer", coopMultiVaultAddr, stake, posAuthKey, *transferredCh)
                     } else {
                       transferredCh!((true, Nil))
@@ -720,13 +719,13 @@ in {
                       match transferred {
                         (true, _) => {
                           if (current.get("allBonds").contains(target)) {
-                            bondsCh!(current.get("allBonds").set(target, 0))
+                            bondsCh!(current.get("allBonds").set(target, 0n))
                           } else {
                             bondsCh!(current.get("allBonds"))
                           } |
                           match current.get("withdrawers").get(target) {
                             Nil => withdrawersCh!(current.get("withdrawers"))
-                            (_, quarantine) => withdrawersCh!(current.get("withdrawers").set(target, (0, quarantine)))
+                            (_, quarantine) => withdrawersCh!(current.get("withdrawers").set(target, (0n, quarantine)))
                           } |
                           for (@bonds <- bondsCh & @withdrawers <- withdrawersCh) {
                             retCh!(current
@@ -917,7 +916,7 @@ in {
                                                   .set("to", blockNumber)
                                                   .set("topup", current.get("pendingRejoins").get(target).get("topup")))))
                                             .set("heldTopups", current.get("heldTopups") +
-                                              current.get("pendingRejoins").get(target).get("topup").toBigInt())
+                                              current.get("pendingRejoins").get(target).get("topup"))
                                             .set("ejectedValidators", current.get("ejectedValidators").delete(target))
                                             .set("pendingRejoins", current.get("pendingRejoins").delete(target)))
                                         }
@@ -958,14 +957,14 @@ in {
                               @ListOps!("fold", current.get("withdrawers").toList(), 0n, *accumulateFstOfSndArg, *withdrawnCh) |
                               @ListOps!("fold", current.get("committedRewards").toList(), 0n, *accumulateSndNum, *committedCh) |
                               match current.get("withdrawers").get(target) {
-                                Nil => holdsCh!(current.get("allBonds").getOrElse(target, 0) > 0)
-                                (quarantined, _) => holdsCh!(current.get("allBonds").getOrElse(target, 0) > 0 or quarantined > 0)
+                                Nil => holdsCh!(current.get("allBonds").getOrElse(target, 0n) > 0n)
+                                (quarantined, _) => holdsCh!(current.get("allBonds").getOrElse(target, 0n) > 0n or quarantined > 0n)
                               } |
                               for (@balance <- balanceCh & @bonds <- bondsCh & @withdrawn <- withdrawnCh &
                                    @committed <- committedCh & @holds <- holdsCh) {
                                 match current.get("overflowClaims").get(target).get("amount") {
                                   amount => {
-                                    if (holds and amount.toBigInt() <= balance - bonds - withdrawn - committed) {
+                                    if (holds and amount <= balance - bonds - withdrawn - committed) {
                                       vaultAddressOps!("fromPublicKey", target, *addressCh) |
                                       for (@address <- addressCh) {
                                         @SystemVault!("findOrCreate", address, *createdCh) |
@@ -976,15 +975,15 @@ in {
                                       for (@paid <- paidCh) {
                                         match paid {
                                           (true, _) => {
-                                            if (current.get("heldTopups") > amount.toBigInt()) {
-                                              heldCh!(current.get("heldTopups") - amount.toBigInt())
+                                            if (current.get("heldTopups") > amount) {
+                                              heldCh!(current.get("heldTopups") - amount)
                                             } else {
                                               heldCh!(0n)
                                             } |
                                             for (@held <- heldCh) {
                                               retCh!(current
                                                 .set("claimedOverflow", current.get("claimedOverflow").set(target, {
-                                                  "total"   : current.get("claimedOverflow").getOrElse(target, {"total": 0}).get("total") + amount,
+                                                  "total"   : current.get("claimedOverflow").getOrElse(target, {"total": 0n}).get("total") + amount,
                                                   "payments": current.get("claimedOverflow").getOrElse(target, {"payments": {}}).get("payments").set(blockNumber, amount)
                                                 }))
                                                 .set("heldTopups", held)
@@ -1010,35 +1009,32 @@ in {
                           // burns a bond-scaled fee into
                           // the coop vault, taken from the bond, or from the
                           // quarantine for a claimant that has unbonded. The
-                          // fee rounds up, so a small bond still pays one, and
-                          // the stake is split at a million so the product
-                          // cannot overflow.
+                          // fee rounds up, so a small bond still pays one.
                           contract chargeFailedClaim(@target, @current, retCh) = {
                             new sourceCh, transferredCh in {
-                              if (current.get("allBonds").getOrElse(target, 0) > 0) {
+                              if (current.get("allBonds").getOrElse(target, 0n) > 0n) {
                                 sourceCh!(("allBonds", current.get("allBonds").get(target)))
                               } else {
                                 match current.get("withdrawers").get(target) {
-                                  Nil => sourceCh!(("none", 0))
+                                  Nil => sourceCh!(("none", 0n))
                                   (quarantined, _) => sourceCh!(("withdrawers", quarantined))
                                 }
                               } |
                               for (@(source, stake) <- sourceCh) {
-                                match stake / 1000000 * $$failedClaimFeePpm$$ +
-                                      (stake % 1000000 * $$failedClaimFeePpm$$ + 999999) / 1000000 {
+                                match (stake * $$failedClaimFeePpm$$n + 999999n) / 1000000n {
                                   fee => {
-                                    if (fee <= 0) {
+                                    if (fee <= 0n) {
                                       retCh!(current)
                                     } else {
                                       @posVault!("transfer", coopMultiVaultAddr, fee, posAuthKey, *transferredCh) |
                                       for (@transferred <- transferredCh) {
                                         match (transferred, source, current.get("withdrawers").get(target)) {
                                           ((true, _), "allBonds", _) => {
-                                            if (stake - fee > 0) {
+                                            if (stake - fee > 0n) {
                                               retCh!(current.set("allBonds", current.get("allBonds").set(target, stake - fee)))
                                             } else {
                                               retCh!(current
-                                                .set("allBonds", current.get("allBonds").set(target, 0))
+                                                .set("allBonds", current.get("allBonds").set(target, 0n))
                                                 .set("activeValidators", current.get("activeValidators").delete(target)))
                                             }
                                           }
@@ -1119,8 +1115,8 @@ in {
                                     toBeSlashed!(invalidBlocks.get(blockHash)) |
                                     for (@validator <- toBeSlashed) {
                                       match state.get("withdrawers").get(validator) {
-                                        Nil => stakeCh!(state.get("allBonds").getOrElse(validator, 0))
-                                        (quarantined, _) => stakeCh!(state.get("allBonds").getOrElse(validator, 0) + quarantined)
+                                        Nil => stakeCh!(state.get("allBonds").getOrElse(validator, 0n))
+                                        (quarantined, _) => stakeCh!(state.get("allBonds").getOrElse(validator, 0n) + quarantined)
                                       } |
                                       forfeitStake!(validator, state, *forfeitedCh) |
                                       for (@stake <- stakeCh & @forfeited <- forfeitedCh) {
@@ -1131,7 +1127,7 @@ in {
                                         // offender. With stake left, an
                                         // unchanged state means the transfer
                                         // failed.
-                                        if (stake > 0 and forfeited == state) {
+                                        if (stake > 0n and forfeited == state) {
                                           stateUpdateCh!(state, (false, "transfer failed"))
                                         } else {
                                           stateUpdateCh!(forfeited, (true, Nil))
@@ -1288,9 +1284,9 @@ in {
                                           Nil => entryCh!((updatedState.get("allBonds").get(pk), quantine))
                                           (held, heldUntil) => {
                                             if (heldUntil > quantine) {
-                                              entryCh!((held + updatedState.get("allBonds").getOrElse(pk, 0), heldUntil))
+                                              entryCh!((held + updatedState.get("allBonds").getOrElse(pk, 0n), heldUntil))
                                             } else {
-                                              entryCh!((held + updatedState.get("allBonds").getOrElse(pk, 0), quantine))
+                                              entryCh!((held + updatedState.get("allBonds").getOrElse(pk, 0n), quantine))
                                             }
                                           }
                                         } |
@@ -1475,7 +1471,7 @@ in {
       // A key with no stake, such as a slashed validator's, holds no seat.
       contract pickActiveValidators(@allBonds, returnCh) = {
         new staked, stakedCh, pksCh in {
-          contract staked(@(_, stake), retCh) = { retCh!(stake > 0) } |
+          contract staked(@(_, stake), retCh) = { retCh!(stake > 0n) } |
           @ListOps!("filter", allBonds, *staked, *stakedCh) |
           for (@stakedBonds <- stakedCh) {
             @ListOps!("map", stakedBonds, *fst, *pksCh) |

@@ -68,7 +68,7 @@ impl Clone for NoOpsCasperEffect {
             block_dag_storage: self.block_dag_storage.clone(),
             self_created_should_fail: self.self_created_should_fail,
             shard_conf: self.shard_conf.clone(),
-            chain: self.chain,
+            chain: self.chain.clone(),
         }
     }
 }
@@ -164,7 +164,7 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn normalized_initial_fault(
         &self,
-        _weights: HashMap<Validator, u64>,
+        _weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
         Ok(0.0)
     }

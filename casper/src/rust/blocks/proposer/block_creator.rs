@@ -23,10 +23,10 @@ use models::rust::casper::protocol::casper_message::{
     LeakyBucketVote,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::blocking::in_blocking;
 use tracing;
 
@@ -438,11 +438,6 @@ fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
     match err {
-        CasperError::HistoryError(HistoryError::MergeError(msg)) => {
-            msg.contains("single-value cell")
-                && msg.contains("would hold")
-                && msg.contains("after merge")
-        }
         CasperError::RuntimeError(msg) => {
             (msg.contains("number channel")
                 && msg.contains("holds")
@@ -1718,9 +1713,9 @@ async fn prepare_slashing_deploys(
         .on_chain_state
         .bonds_map
         .get(&self_id)
-        .copied()
-        .unwrap_or(0);
-    if proposer_bond <= 0 {
+        .cloned()
+        .unwrap_or_default();
+    if proposer_bond <= BigInt::from(0) {
         return Ok(Vec::new());
     }
     let Some(floor_ctx) = floor_ctx else {
@@ -1921,7 +1916,7 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
                 .on_chain_state
                 .bonds_map
                 .iter()
-                .filter(|(_, stake)| **stake > 0)
+                .filter(|(_, stake)| **stake > BigInt::from(0))
                 .map(|(validator, _)| validator.clone())
                 .collect()
         };
@@ -3159,7 +3154,7 @@ pub async fn create_with_progress(
         Some((_, bonds))
             if !bonds
                 .iter()
-                .any(|bond| bond.validator == local_validator && bond.stake > 0) =>
+                .any(|bond| bond.validator == local_validator && !bond.stake.is_zero()) =>
         {
             let (held, kept): (Vec<_>, Vec<_>) = user_deploys.into_iter().partition(|deploy| {
                 deploy.pk.bytes.as_ref() == local_validator.as_ref()
@@ -3684,6 +3679,7 @@ mod tests {
     use crypto::rust::public_key::PublicKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+    use rspace_plus_plus::rspace::errors::HistoryError;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -3970,7 +3966,7 @@ mod tests {
                 DeployData {
                     term: format!("@{}!(Nil)", time_stamp),
                     time_stamp,
-                    phlo_price: 1,
+                    phlo_price: (1).into(),
                     phlo_limit: 100_000,
                     valid_after_block_number,
                     shard_id: "test".to_string(),
@@ -5563,12 +5559,6 @@ mod tests {
 
     #[test]
     fn detects_retryable_single_value_batch_errors() {
-        let err = CasperError::HistoryError(HistoryError::MergeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        ));
-
-        assert!(is_retryable_single_value_batch_error(&err));
-
         let runtime = CasperError::RuntimeError(
             "number channel abc holds 2 values [0, 0]; IntegerAdd single-value invariant violated"
                 .to_string(),
@@ -5584,11 +5574,6 @@ mod tests {
             "MergeType mismatch on channel abc".to_string(),
         ));
         assert!(!is_retryable_single_value_batch_error(&other));
-
-        let unrelated_runtime = CasperError::RuntimeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        );
-        assert!(!is_retryable_single_value_batch_error(&unrelated_runtime));
     }
 
     #[test]

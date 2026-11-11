@@ -4,10 +4,13 @@
 
 use std::num::NonZeroU32;
 
+use num_bigint::BigInt;
+use shared::rust::token_amount::TokenAmount;
+
 use crate::rust::economics::bucket_view::LeakyBucketParams;
 use crate::rust::economics::reward::{RewardParams, PPM};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChainParameters {
     /// Parts per million in `[-1_000_000, 1_000_000]`; the finalized-floor
     /// oracle decides on this, never on a float.
@@ -15,7 +18,7 @@ pub struct ChainParameters {
     /// The parent-spread validity bound; `i32::MAX` disables the check.
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub leaky_bucket: LeakyBucketParams,
@@ -38,18 +41,17 @@ impl ChainParameters {
     /// * a zero leak never drains, a zero threshold never ejects, a zero
     ///   exponent makes every reward zero, and a zero recency reference
     ///   saturates the factor for every block.
-    pub fn checked(value: impl Fn(&str) -> Result<i64, String>) -> Result<Self, String> {
+    pub fn checked(value: impl Fn(&str) -> Result<BigInt, String>) -> Result<Self, String> {
         let in_range = |name: &str, low: i64, high: i64| -> Result<i64, String> {
             let found = value(name)?;
-            if (low..=high).contains(&found) {
-                Ok(found)
-            } else {
-                Err(format!("{name} out of range [{low}, {high}]: {found}"))
-            }
+            i64::try_from(&found)
+                .ok()
+                .filter(|found| (low..=high).contains(found))
+                .ok_or_else(|| format!("{name} out of range [{low}, {high}]: {found}"))
         };
         let positive = |name: &str, high: u32| -> Result<NonZeroU32, String> {
             let found = value(name)?;
-            u32::try_from(found)
+            u32::try_from(&found)
                 .ok()
                 .filter(|positive| *positive <= high)
                 .and_then(NonZeroU32::new)
@@ -66,7 +68,8 @@ impl ChainParameters {
             fault_tolerance_threshold_ppm: in_range("faultToleranceThresholdPpm", -ppm, ppm)?,
             max_parent_depth: basis.max_parent_depth,
             deploy_lifespan: basis.deploy_lifespan,
-            min_phlo_price: in_range("minPhloPrice", 0, i64::MAX)?,
+            min_phlo_price: TokenAmount::new(value("minPhloPrice")?)
+                .map_err(|error| format!("minPhloPrice {error}"))?,
             epoch_length: basis.epoch_length,
             quarantine_length: in_range("quarantineLength", 1, i32::MAX as i64)? as i32,
             leaky_bucket: LeakyBucketParams {
@@ -181,7 +184,7 @@ impl ChainParameters {
             fault_tolerance_threshold_ppm: 670_000,
             max_parent_depth: basis.max_parent_depth,
             deploy_lifespan: basis.deploy_lifespan,
-            min_phlo_price: 1,
+            min_phlo_price: 1.into(),
             epoch_length: basis.epoch_length,
             quarantine_length: 50_000,
             leaky_bucket: LeakyBucketParams {
@@ -248,8 +251,8 @@ mod tests {
     #[test]
     fn an_out_of_range_parameter_is_refused_by_name() {
         let error = ChainParameters::checked(|name| match name {
-            "maxParentDepth" => Ok(0),
-            _ => Ok(1),
+            "maxParentDepth" => Ok(0.into()),
+            _ => Ok(1.into()),
         })
         .expect_err("a zero parent depth has no parent-spread rule");
         assert!(error.contains("maxParentDepth out of range"), "{error}");

@@ -98,7 +98,7 @@ impl Fixture {
                 Some(vec![]),
                 Some(vec![Bond {
                     validator: validator.clone(),
-                    stake: 100,
+                    stake: 100.into(),
                 }]),
                 Some("root".to_string()),
                 None,
@@ -259,7 +259,10 @@ impl MultiParentCasper for AttachedCasper {
     async fn fetch_dependencies(&self) -> Result<(), CasperError> {
         panic!("observer invoked consensus")
     }
-    fn normalized_initial_fault(&self, _: HashMap<Validator, u64>) -> Result<f32, CasperError> {
+    fn normalized_initial_fault(
+        &self,
+        _: HashMap<Validator, num_bigint::BigInt>,
+    ) -> Result<f32, CasperError> {
         panic!("observer invoked consensus")
     }
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
@@ -1247,7 +1250,7 @@ fn bonded_block(
         .iter()
         .map(|(v, stake)| Bond {
             validator: Bytes::from(vec![*v; 65]),
-            stake: *stake,
+            stake: u64::try_from(*stake).expect("fixture stake").into(),
         })
         .collect();
     block
@@ -1698,15 +1701,19 @@ fn clique_matches_exhaustive_subsets_for_all_five_vertex_graphs() {
                 expected = expected.max(vertices.iter().map(|v| weights[v]).sum());
             }
         }
+        let weights = weights
+            .iter()
+            .map(|(key, value)| (*key, (*value).into()))
+            .collect();
         let meter = meter(work_limits());
         assert_eq!(
             Clique::find_maximum_clique_by_weight_metered(&meter, &edges, &weights).unwrap(),
-            expected,
+            expected.into(),
             "graph {graph}"
         );
         assert_eq!(
             Clique::find_maximum_clique_by_weight(&edges, &weights),
-            expected
+            expected.into()
         );
     }
 }
@@ -1734,6 +1741,10 @@ fn clique_stops_at_each_work_limit() {
         }),
     ] {
         let meter = meter(limits);
+        let weights = weights
+            .iter()
+            .map(|(key, value)| (*key, (*value).into()))
+            .collect();
         let error =
             Clique::find_maximum_clique_by_weight_metered(&meter, &edges, &weights).unwrap_err();
         assert!(error.to_string().contains(name), "{error}");
@@ -1872,11 +1883,11 @@ fn graph_block(
     block.body.state.bonds = vec![
         Bond {
             validator: Bytes::from(vec![7; 65]),
-            stake: 6,
+            stake: 6.into(),
         },
         Bond {
             validator: Bytes::from(vec![8; 65]),
-            stake: 4,
+            stake: 4.into(),
         },
     ];
     block.body.merge_base = Bytes::new();
@@ -1905,8 +1916,8 @@ async fn reference_detects_wrong_threshold_traversal_and_clique_controls() {
         .oracle(target, &captured.latest_messages, false)
         .unwrap();
     assert!(!expected.decision);
-    assert_eq!(expected.agreeing_stake, Some(6));
-    assert_eq!(expected.clique_weight, Some(6));
+    assert_eq!(expected.agreeing_stake, Some(6.into()));
+    assert_eq!(expected.clique_weight, Some(6.into()));
     let mut scratch = captured.scratch_view().unwrap();
     let measured = CliqueOracle::ft_witnessed_exact(
         target,
@@ -2259,7 +2270,7 @@ async fn request_without_display_preserves_legacy_fields() {
 fn update_display_metadata(
     fixture: &Fixture,
     update: impl FnOnce(&mut models::rust::block_metadata::BlockMetadata),
-) {
+) -> Result<(), shared::rust::store::key_value_store::KvStoreError> {
     use models::rust::block_hash::BlockHashSerde;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
     let hash = fixture.chain[1].block_hash.clone();
@@ -2276,33 +2287,34 @@ fn update_display_metadata(
         .position(|name| *name == "block-metadata")
         .unwrap();
     let store = KeyValueTypedStoreImpl::new(fixture.handles[position].clone());
-    store.put_one(BlockHashSerde(hash), metadata).unwrap();
+    store.put_one(BlockHashSerde(hash), metadata)
 }
 
 #[tokio::test]
-async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
-    use casper::rust::soak_observer::display::calculate;
-    let fixture = Fixture::new().await;
-    add_display_equivocation(&fixture, 7, 0);
-    add_display_equivocation(&fixture, 7, 1);
-    for weights in [
-        BTreeMap::from([(validator(7), -1), (validator(8), 1)]),
-        BTreeMap::from([(validator(7), -1)]),
-    ] {
-        update_display_metadata(&fixture, |m| m.weight_map = weights);
-        let before = fixture.stored();
-        let snapshot = display_capture(&fixture);
+async fn snapshot_and_scratch_view_preserve_uint256_stakes() {
+    let original = Fixture::new().await;
+    let mut chain = original.chain.clone();
+    let amount = shared::rust::token_amount::TokenAmount::max();
+    for block in &mut chain {
+        block.body.state.bonds[0].stake = amount.clone();
+    }
+    let fixture = Fixture::from_chain(chain).await;
+    let snapshot = display_capture(&fixture);
+    let scratch = snapshot.scratch_view().unwrap();
+    for block in &fixture.chain {
         assert_eq!(
-            calculate(
-                &snapshot,
-                &fixture.chain[1].block_hash,
-                Some(("original_oracle", 1f32.to_bits())),
-                &meter(work_limits())
-            )
-            .unwrap_err(),
-            "initial_fault_weight_overflow"
+            snapshot.blocks[&block.block_hash].metadata.weight_map[&validator(7)],
+            amount
         );
-        assert_eq!(before, fixture.stored());
+        assert_eq!(
+            scratch
+                .representation
+                .lookup(&block.block_hash)
+                .unwrap()
+                .unwrap()
+                .weight_map[&validator(7)],
+            amount
+        );
     }
 }
 
@@ -2316,12 +2328,13 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
     for (a, b, fault_bits) in [
         (0, 0, 0),
         (1, 2, 0x3f2a_aaab),
-        (16_777_217, 16_777_219, 0x3f7f_fffe),
-        (i64::MAX / 2, i64::MAX / 2, 0x3f80_0000),
+        (16_777_217, 16_777_219, 0x3f7f_ffff),
+        ((i64::MAX / 2) as u64, (i64::MAX / 2) as u64, 0x3f80_0000),
     ] {
         update_display_metadata(&fixture, |m| {
-            m.weight_map = BTreeMap::from([(validator(7), a), (validator(8), b)])
-        });
+            m.weight_map = BTreeMap::from([(validator(7), a.into()), (validator(8), b.into())])
+        })
+        .unwrap();
         let before = fixture.stored();
         let snapshot = display_capture(&fixture);
         for bits in [
@@ -2344,8 +2357,8 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
                 (f32::from_bits(bits) - f32::from_bits(fault_bits)).to_bits()
             );
             assert_eq!(inputs.initial_fault_bits, fault_bits);
-            assert_eq!(inputs.equivocating_weight, (2 * a as u64).to_string());
-            assert_eq!(inputs.total_weight, (a as u64 + b as u64).to_string());
+            assert_eq!(inputs.equivocating_weight, (2 * a).to_string());
+            assert_eq!(inputs.total_weight, (a + b).to_string());
             assert_eq!(inputs.matched_records, 2);
             assert_eq!(inputs.distinct_equivocators, 1);
         }
@@ -2429,7 +2442,8 @@ async fn display_metadata_flag_alone_uses_persisted_bits_without_an_original() {
     update_display_metadata(&fixture, |metadata| {
         metadata.finalized = true;
         metadata.fault_tolerance_value = 0.75;
-    });
+    })
+    .unwrap();
     let before = fixture.stored();
     let snapshot = display_capture(&fixture);
     let hash = &fixture.chain[1].block_hash;

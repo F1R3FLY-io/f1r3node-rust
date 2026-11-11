@@ -985,15 +985,15 @@ impl BlockDagKeyValueStorage {
 
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
+        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(block_metadata_kv_store);
-        let block_metadata_store = BlockMetadataStore::new(block_metadata_db);
+        let block_metadata_store = BlockMetadataStore::try_new(block_metadata_db)?;
 
         let latest_messages_kv_store = kvm.store("latest-messages".to_string()).await?;
         let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(latest_messages_kv_store);
 
-        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
         let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
 
@@ -1837,7 +1837,7 @@ mod tests {
                 })
                 .collect(),
             weight_map: (0..3u8)
-                .map(|v| (validator(v + 10), 1_000_000i64))
+                .map(|v| (validator(v + 10), 1_000_000u64.into()))
                 .collect::<BTreeMap<_, _>>(),
             block_number: i as i64,
             sequence_number: (i / 3) as i32,

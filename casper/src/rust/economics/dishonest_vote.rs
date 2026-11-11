@@ -16,8 +16,9 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{ClaimFamily, ClaimId, OverflowTestimony};
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 
-use super::reward::{compute_reward, fresh_in, ParentFact, RewardParams, PPM};
+use super::reward::{compute_reward, fresh_in, Committee, ParentFact, RewardParams, PPM};
 use crate::rust::errors::CasperError;
 
 /// One validator's nay, in one block, on one overflow claim.
@@ -39,7 +40,7 @@ fn spills(
     testimony: &OverflowTestimony,
     lowest: i64,
     reward: &RewardParams,
-) -> Result<Vec<(i64, u128)>, CasperError> {
+) -> Result<Vec<(i64, BigInt)>, CasperError> {
     let mut spills = Vec::new();
     let mut seen: HashSet<BlockHash> = HashSet::new();
     let mut pending = parents;
@@ -62,8 +63,7 @@ fn spills(
         let Some(stake) = block
             .weight_map
             .get(claimant)
-            .copied()
-            .filter(|stake| *stake > 0)
+            .filter(|stake| !stake.is_zero())
         else {
             continue;
         };
@@ -82,8 +82,13 @@ fn spills(
             block.block_number,
             reward.previous_reach,
         )?;
+        let committee: Committee = block
+            .weight_map
+            .iter()
+            .map(|(validator, stake)| (validator.clone(), stake.to_bigint()))
+            .collect();
         let earned = compute_reward(
-            &block.weight_map,
+            &committee,
             claimant,
             &fresh,
             &parents,
@@ -92,18 +97,18 @@ fn spills(
         );
         spills.push((
             block.block_number,
-            earned.saturating_sub(stake as u128 * PPM as u128),
+            (earned - stake.as_bigint() * PPM).max(BigInt::from(0)),
         ));
     }
     Ok(spills)
 }
 
-fn less_paid(spilled: u128, testimony: &OverflowTestimony) -> u128 {
-    spilled.saturating_sub(testimony.claimed_total.max(0) as u128 * PPM as u128)
+fn less_paid(spilled: BigInt, testimony: &OverflowTestimony) -> BigInt {
+    (spilled - testimony.claimed_total.as_bigint() * PPM).max(BigInt::from(0))
 }
 
-fn proves(testimony: &OverflowTestimony, provable: u128) -> bool {
-    (testimony.amount.max(0) as u128).saturating_mul(PPM as u128) <= provable
+fn proves(testimony: &OverflowTestimony, provable: &BigInt) -> bool {
+    testimony.amount.as_bigint() * PPM <= *provable
 }
 
 /// The overflow every honest view of `vote_block`'s ancestry holds for
@@ -117,7 +122,7 @@ pub fn provable_overflow(
     testimony: &OverflowTestimony,
     lowest: i64,
     reward: &RewardParams,
-) -> Result<u128, CasperError> {
+) -> Result<BigInt, CasperError> {
     provable_overflow_above(
         dag,
         dag.lookup_unsafe(vote_block)?.parents,
@@ -136,10 +141,11 @@ pub fn provable_overflow_above(
     testimony: &OverflowTestimony,
     lowest: i64,
     reward: &RewardParams,
-) -> Result<u128, CasperError> {
-    let spilled = spills(dag, parents, claimant, testimony, lowest, reward)?
+) -> Result<BigInt, CasperError> {
+    let spilled: BigInt = spills(dag, parents, claimant, testimony, lowest, reward)?
         .into_iter()
-        .fold(0u128, |sum, (_, spill)| sum.saturating_add(spill));
+        .map(|(_, spill)| spill)
+        .sum();
     Ok(less_paid(spilled, testimony))
 }
 
@@ -156,7 +162,7 @@ pub fn contradicts_own_ancestry(
 ) -> Result<bool, CasperError> {
     let lowest = lowest(testimony, testimony.floor_number, reach);
     let provable = provable_overflow_above(dag, parents, claimant, testimony, lowest, reward)?;
-    Ok(proves(testimony, provable))
+    Ok(proves(testimony, &provable))
 }
 
 /// Whether a judge at a floor numbered `floor_number` can count anything
@@ -238,7 +244,7 @@ pub fn proves_dishonesty(
         lowest(&testimony, floor_number, reach),
         reward,
     )?;
-    Ok(proves(&testimony, provable))
+    Ok(proves(&testimony, &provable))
 }
 
 /// An accusation's vote block as read once: its nay's testimony, and the
@@ -250,17 +256,18 @@ pub fn proves_dishonesty(
 struct Evidence {
     testimony: OverflowTestimony,
     from: i64,
-    spills: Vec<(i64, u128)>,
+    spills: Vec<(i64, BigInt)>,
 }
 
 impl Evidence {
     fn proves(&self, lowest: i64) -> bool {
-        let spilled = self
+        let spilled: BigInt = self
             .spills
             .iter()
             .filter(|(number, _)| *number >= lowest)
-            .fold(0u128, |sum, (_, spill)| sum.saturating_add(*spill));
-        proves(&self.testimony, less_paid(spilled, &self.testimony))
+            .map(|(_, spill)| spill)
+            .sum();
+        proves(&self.testimony, &less_paid(spilled, &self.testimony))
     }
 }
 

@@ -306,7 +306,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         async {
             Ok(Validate::phlo_price(
                 block,
-                this.chain_parameters.min_phlo_price,
+                &this.chain_parameters.min_phlo_price,
             ))
         },
     )

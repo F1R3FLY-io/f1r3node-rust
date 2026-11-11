@@ -13,6 +13,7 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::bytes::Bytes;
 use prost::Message;
+use shared::rust::token_amount::TokenAmount;
 use tracing::{info, warn};
 
 use crate::rust::errors::CasperError;
@@ -30,16 +31,16 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     validator_id: ValidatorIdentity,
     pub deploy_timestamp: i64,
     pub vaults: Vec<Vault>,
-    pub bonds_bytes: HashMap<Bytes, i64>, // helper map keyed by raw bytes
-    pub minimum_bond: i64,
-    pub maximum_bond: i64,
+    pub bonds_bytes: HashMap<Bytes, TokenAmount>, // helper map keyed by raw bytes
+    pub minimum_bond: TokenAmount,
+    pub maximum_bond: TokenAmount,
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     pub leaky_bucket: LeakyBucketGenesis,
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
@@ -77,16 +78,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         validator_id: ValidatorIdentity,
         deploy_timestamp: i64,
         vaults: Vec<Vault>,
-        bonds: HashMap<crypto::rust::public_key::PublicKey, i64>,
-        minimum_bond: i64,
-        maximum_bond: i64,
+        bonds: HashMap<crypto::rust::public_key::PublicKey, TokenAmount>,
+        minimum_bond: TokenAmount,
+        maximum_bond: TokenAmount,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
         max_parent_depth: i32,
         deploy_lifespan: i64,
-        min_phlo_price: i64,
+        min_phlo_price: TokenAmount,
         leaky_bucket: LeakyBucketGenesis,
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
@@ -112,9 +113,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             )));
         }
 
-        let bonds_bytes: HashMap<Bytes, i64> = bonds
+        let bonds_bytes: HashMap<Bytes, TokenAmount> = bonds
             .iter()
-            .map(|(pk, stake)| (pk.bytes.clone(), *stake))
+            .map(|(pk, stake)| (pk.bytes.clone(), stake.clone()))
             .collect();
 
         Ok(Self {
@@ -183,16 +184,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         required_sigs: i32,
         _deploy_timestamp: i64,
         vaults: &Vec<Vault>,
-        bonds: &HashMap<Bytes, i64>,
-        minimum_bond: i64,
-        maximum_bond: i64,
+        bonds: &HashMap<Bytes, TokenAmount>,
+        minimum_bond: TokenAmount,
+        maximum_bond: TokenAmount,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
         max_parent_depth: i32,
         deploy_lifespan: i64,
-        min_phlo_price: i64,
+        min_phlo_price: TokenAmount,
         leaky_bucket: LeakyBucketGenesis,
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
@@ -216,12 +217,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             return Err("Candidate must not contain system deploys.".to_string());
         }
 
-        let block_bonds: HashMap<Bytes, i64> = block
+        let block_bonds: HashMap<Bytes, TokenAmount> = block
             .body
             .state
             .bonds
             .iter()
-            .map(|b| (b.validator.clone(), b.stake))
+            .map(|b| (b.validator.clone(), b.stake.clone()))
             .collect();
 
         if &block_bonds != bonds {
@@ -233,7 +234,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .iter()
             .map(|(pk_bytes, stake)| Validator {
                 pk: crypto::rust::public_key::PublicKey::new(pk_bytes.clone()),
-                stake: *stake,
+                stake: stake.clone(),
             })
             .collect();
 
@@ -267,8 +268,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
 
         tracing::info!(
             shard_id = %shard_id,
-            pos_minimum_bond = pos_params.minimum_bond,
-            pos_maximum_bond = pos_params.maximum_bond,
+            pos_minimum_bond = %pos_params.minimum_bond,
+            pos_maximum_bond = %pos_params.maximum_bond,
             pos_epoch_length = pos_params.epoch_length,
             pos_quarantine_length = pos_params.quarantine_length,
             vault_count = vaults.len(),
@@ -298,7 +299,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             crate::rust::genesis::genesis::Genesis::default_blessed_terms(
                 &pos_params,
                 vaults,
-                i64::MAX,
+                (i64::MAX as u64).into(),
                 shard_id,
                 native_token_name,
                 native_token_symbol,
@@ -361,7 +362,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .await
             .map_err(|e| format!("{:?}", e))?;
 
-        let tuplespace_bonds_map: HashMap<Bytes, i64> = tuplespace_bonds
+        let tuplespace_bonds_map: HashMap<Bytes, TokenAmount> = tuplespace_bonds
             .into_iter()
             .map(|b| (b.validator, b.stake))
             .collect();
@@ -389,15 +390,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             self.deploy_timestamp,
             &self.vaults,
             &self.bonds_bytes,
-            self.minimum_bond,
-            self.maximum_bond,
+            self.minimum_bond.clone(),
+            self.maximum_bond.clone(),
             self.epoch_length,
             self.quarantine_length,
             self.number_of_active_validators,
             self.fault_tolerance_threshold_ppm,
             self.max_parent_depth,
             self.deploy_lifespan,
-            self.min_phlo_price,
+            self.min_phlo_price.clone(),
             self.leaky_bucket,
             shard_id,
             &self.pos_multi_sig_public_keys,

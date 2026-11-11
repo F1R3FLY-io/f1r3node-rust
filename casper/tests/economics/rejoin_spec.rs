@@ -6,7 +6,9 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, ClaimFamily, ClaimOutcome, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::token_amount::TokenAmount;
 
 use super::support::{admit_everywhere, identity, judge, propose};
 use crate::helper::test_node::TestNode;
@@ -52,7 +54,7 @@ async fn funded_network_with(
         .state
         .bonds
         .iter()
-        .min_by_key(|bond| bond.stake)
+        .min_by_key(|bond| bond.stake.clone())
         .expect("bonds")
         .validator
         .clone();
@@ -211,7 +213,7 @@ async fn call_pos(node: &mut TestNode, call: &str, shard_id: &str) -> BlockMessa
 async fn rejoin(nodes: &mut [TestNode], target: usize, topup: i64, shard_id: &str) {
     let requesting = call_pos(
         &mut nodes[target],
-        &format!(r#""rejoinFromEjection", *deployerId, {topup}"#),
+        &format!(r#""rejoinFromEjection", *deployerId, {topup}n"#),
         shard_id,
     )
     .await;
@@ -229,7 +231,7 @@ async fn a_rejoin_the_electorate_backs_reinstates_its_validator() {
 
     let requesting = call_pos(
         &mut nodes[target],
-        r#""rejoinFromEjection", *deployerId, 100"#,
+        r#""rejoinFromEjection", *deployerId, 100n"#,
         &shard_id,
     )
     .await;
@@ -272,7 +274,7 @@ async fn a_rejoin_the_electorate_backs_reinstates_its_validator() {
                 && intervals.iter().any(|interval| interval.rejoin
                     == Some(models::rust::casper::protocol::casper_message::Rejoin {
                         at: paid_at,
-                        topup: 100
+                        topup: 100.into()
                     }))),
         "the paid rejoin closes the freeze at its block"
     );
@@ -315,7 +317,7 @@ async fn a_backdated_block_from_an_ejected_validator_does_not_refill_its_bucket(
         .bonds_map
         .clone();
     let target = (0..nodes.len())
-        .find(|i| bonds[&identity(&nodes[*i])] == 5)
+        .find(|i| bonds[&identity(&nodes[*i])] == BigInt::from(5))
         .expect("a validator bonded at 5");
     let target_key: Validator = identity(&nodes[target]);
     let others: Vec<usize> = (0..nodes.len()).filter(|i| *i != target).collect();
@@ -326,7 +328,7 @@ async fn a_backdated_block_from_an_ejected_validator_does_not_refill_its_bucket(
             .proposal(&identity(node))
             .shortfall
             .get(&target_key)
-            .copied()
+            .cloned()
             .expect("the voter tracks the target")
     };
 
@@ -364,7 +366,7 @@ async fn a_backdated_block_from_an_ejected_validator_does_not_refill_its_bucket(
     }
     let before = shortfall_in(&nodes[voter]);
     assert!(
-        before > PPM_UNIT,
+        before > PPM_UNIT.into(),
         "the target is drained: shortfall {before}"
     );
     let backdated = propose(&mut nodes[target], &[], &[]).await;
@@ -406,7 +408,7 @@ async fn blocks_an_ejected_validator_proposes_during_grace_do_not_refill_its_buc
         .bonds_map
         .clone();
     let target = (0..nodes.len())
-        .find(|i| bonds[&identity(&nodes[*i])] == 5)
+        .find(|i| bonds[&identity(&nodes[*i])] == BigInt::from(5))
         .expect("a validator bonded at 5");
     let target_key: Validator = identity(&nodes[target]);
     let voter = (target + 1) % nodes.len();
@@ -453,7 +455,7 @@ async fn blocks_an_ejected_validator_proposes_during_grace_do_not_refill_its_buc
           new rl(`rho:registry:lookup`), poSCh, deployerId(`rho:system:deployerId`), ret in {
             rl!(`rho:system:pos`, *poSCh) |
             for (@(_, PoS) <- poSCh) {
-              @PoS!("rejoinFromEjection", *deployerId, 1, *ret)
+              @PoS!("rejoinFromEjection", *deployerId, 1n, *ret)
             }
           }
         "#
@@ -491,9 +493,11 @@ async fn blocks_an_ejected_validator_proposes_during_grace_do_not_refill_its_buc
         .proposal(&identity(&nodes[voter]))
         .shortfall
         .get(&target_key)
-        .copied();
+        .cloned();
     assert!(
-        shortfall.is_some_and(|s| s > PPM_UNIT),
+        shortfall
+            .as_ref()
+            .is_some_and(|s| *s > BigInt::from(PPM_UNIT)),
         "the voter sees more than one bond unit of shortfall: {shortfall:?}"
     );
     let resolving = propose_until(&mut nodes, None, |data| {
@@ -560,7 +564,7 @@ async fn an_ejected_validator_is_slashed_when_its_grace_ends() {
         state
             .bonds
             .iter()
-            .any(|bond| bond.validator == target_key && bond.stake == 0),
+            .any(|bond| bond.validator == target_key && bond.stake == 0.into()),
         "the validator's bond is slashed"
     );
 }
@@ -574,7 +578,7 @@ async fn a_nay_on_an_overflow_claim_records_what_its_floor_shows() {
     let claimant_key: Validator = identity(&nodes[claimant]);
     let requesting = call_pos(
         &mut nodes[claimant],
-        r#""claimOverflow", *deployerId, 10"#,
+        r#""claimOverflow", *deployerId, 10n"#,
         &shard_id,
     )
     .await;
@@ -597,9 +601,9 @@ async fn a_nay_on_an_overflow_claim_records_what_its_floor_shows() {
         nay.testimony,
         Some(
             models::rust::casper::protocol::casper_message::OverflowTestimony {
-                amount: 10,
+                amount: 10.into(),
                 floor_number: floor.number,
-                claimed_total: 0,
+                claimed_total: 0.into(),
                 freezes: Vec::new(),
             }
         )
@@ -623,7 +627,8 @@ async fn a_nay_on_an_overflow_claim_records_what_its_floor_shows() {
         (
             forge(nay.testimony.clone().map(|testimony| {
                 models::rust::casper::protocol::casper_message::OverflowTestimony {
-                    claimed_total: testimony.claimed_total + 1,
+                    claimed_total: TokenAmount::new(testimony.claimed_total.to_bigint() + 1)
+                        .expect("a token amount"),
                     ..testimony
                 }
             })),
@@ -650,7 +655,7 @@ async fn a_vote_changed_in_transit_is_refused() {
     let claimant_key: Validator = identity(&nodes[claimant]);
     let requesting = call_pos(
         &mut nodes[claimant],
-        r#""claimOverflow", *deployerId, 10"#,
+        r#""claimOverflow", *deployerId, 10n"#,
         &shard_id,
     )
     .await;
@@ -777,7 +782,7 @@ async fn a_nay_its_own_ancestry_contradicts_is_slashed_and_an_honest_one_is_not(
         let dag = node.block_dag_storage.get_representation().expect("dag");
         for validator in held.overflow.keys() {
             let testimony = models::rust::casper::protocol::casper_message::OverflowTestimony {
-                amount: 0,
+                amount: 0.into(),
                 floor_number: floor.number,
                 claimed_total: floor.knowledge.claimed_total(validator),
                 freezes: floor.knowledge.freezes_of(validator).to_vec(),
@@ -800,7 +805,7 @@ async fn a_nay_its_own_ancestry_contradicts_is_slashed_and_an_honest_one_is_not(
     }
     let requesting = call_pos(
         &mut nodes[claimant],
-        r#""claimOverflow", *deployerId, 10"#,
+        r#""claimOverflow", *deployerId, 10n"#,
         &shard_id,
     )
     .await;
@@ -820,7 +825,7 @@ async fn a_nay_its_own_ancestry_contradicts_is_slashed_and_an_honest_one_is_not(
           new rl(`rho:registry:lookup`), poSCh, deployerId(`rho:system:deployerId`), ret in {
             rl!(`rho:system:pos`, *poSCh) |
             for (@(_, PoS) <- poSCh) {
-              @PoS!("claimOverflow", *deployerId, 10, *ret)
+              @PoS!("claimOverflow", *deployerId, 10n, *ret)
             }
           }
         "#
@@ -1089,7 +1094,7 @@ async fn a_nay_its_own_ancestry_contradicts_is_slashed_and_an_honest_one_is_not(
         state
             .bonds
             .iter()
-            .any(|bond| bond.validator == liar_key && bond.stake == 0),
+            .any(|bond| bond.validator == liar_key && bond.stake == 0.into()),
         "the liar's bond is slashed"
     );
     assert!(
@@ -1120,7 +1125,7 @@ async fn a_view_short_of_its_ancestry_backs_what_the_ancestry_proves() {
     }
     let requesting = call_pos(
         &mut nodes[claimant],
-        r#""claimOverflow", *deployerId, 10"#,
+        r#""claimOverflow", *deployerId, 10n"#,
         &shard_id,
     )
     .await;
@@ -1180,7 +1185,7 @@ async fn a_proposer_does_not_sign_a_nay_over_ancestry_it_does_not_hold() {
     }
     let requesting = call_pos(
         &mut nodes[claimant],
-        r#""claimOverflow", *deployerId, 10"#,
+        r#""claimOverflow", *deployerId, 10n"#,
         &shard_id,
     )
     .await;
@@ -1237,6 +1242,7 @@ async fn evidence_against_two_voters_in_one_block_survives_a_merge() {
             .find(|bond| bond.validator == identity(node))
             .expect("bonded")
             .stake
+            .clone()
     };
     let mut others: Vec<usize> = (0..nodes.len()).filter(|i| *i != claimant).collect();
     others.sort_by_key(|i| stake_of(&nodes[*i]));
@@ -1251,7 +1257,7 @@ async fn evidence_against_two_voters_in_one_block_survives_a_merge() {
     }
     let requesting = call_pos(
         &mut nodes[claimant],
-        r#""claimOverflow", *deployerId, 10"#,
+        r#""claimOverflow", *deployerId, 10n"#,
         &shard_id,
     )
     .await;
@@ -1321,7 +1327,7 @@ async fn evidence_against_two_voters_in_one_block_survives_a_merge() {
             state
                 .bonds
                 .iter()
-                .any(|bond| bond.validator == *liar && bond.stake == 0),
+                .any(|bond| bond.validator == *liar && bond.stake == 0.into()),
             "both slashes survive the merge: {:?}",
             state.bonds
         );
@@ -1342,7 +1348,7 @@ async fn a_restarted_node_takes_off_a_payment_it_had_taken_off() {
     }
     let requesting = call_pos(
         &mut nodes[claimant],
-        r#""claimOverflow", *deployerId, 10"#,
+        r#""claimOverflow", *deployerId, 10n"#,
         &shard_id,
     )
     .await;
@@ -1366,7 +1372,7 @@ async fn a_restarted_node_takes_off_a_payment_it_had_taken_off() {
             .await
             .claimed
             .iter()
-            .any(|claimed| claimed.validator == claimant_key && claimed.total == 10)
+            .any(|claimed| claimed.validator == claimant_key && claimed.total == 10.into())
         {
             shown = true;
             break;
@@ -1426,7 +1432,7 @@ fn ejection_deploys(
 #[tokio::test]
 async fn paid_ejections_replay_on_every_node_and_survive_a_merge() {
     let (mut nodes, lightest, _) =
-        funded_network_with(|proof_of_stake| proof_of_stake.min_phlo_price = 1).await;
+        funded_network_with(|proof_of_stake| proof_of_stake.min_phlo_price = 1.into()).await;
     let stake_of = |node: &TestNode| {
         nodes[0]
             .casper
@@ -1438,6 +1444,7 @@ async fn paid_ejections_replay_on_every_node_and_survive_a_merge() {
             .find(|bond| bond.validator == identity(node))
             .expect("bonded")
             .stake
+            .clone()
     };
     let mut by_stake: Vec<usize> = (0..nodes.len()).collect();
     by_stake.sort_by_key(|i| stake_of(&nodes[*i]));
@@ -1463,7 +1470,8 @@ async fn paid_ejections_replay_on_every_node_and_survive_a_merge() {
         assert_eq!(requests.len(), 1, "one request at a time");
         assert_eq!(requests[0].deploy.pk.bytes, identity(&nodes[accuser]));
         assert_eq!(
-            requests[0].deploy.data.phlo_price, 1,
+            requests[0].deploy.data.phlo_price,
+            1.into(),
             "at the chain's minimum price"
         );
         assert!(
@@ -1508,24 +1516,24 @@ async fn paid_ejections_replay_on_every_node_and_survive_a_merge() {
 #[tokio::test]
 async fn a_vault_that_covers_one_opening_opens_a_claim() {
     let (mut nodes, accuser, _) =
-        funded_network_with(|proof_of_stake| proof_of_stake.min_phlo_price = 1).await;
+        funded_network_with(|proof_of_stake| proof_of_stake.min_phlo_price = 1.into()).await;
     let targets: Vec<Validator> = (0..nodes.len())
         .filter(|i| *i != accuser)
         .take(2)
         .map(|i| identity(&nodes[i]))
         .collect();
     let measuring = propose(&mut nodes[accuser], &targets[..1], &[]).await;
-    let cost = ejection_deploys(&measuring)[0].cost.cost as u128;
+    let cost = ejection_deploys(&measuring)[0].cost.cost;
 
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
-    parameters.2.proof_of_stake.min_phlo_price = 1;
+    parameters.2.proof_of_stake.min_phlo_price = 1.into();
     super::support::fund_validators(&mut parameters.2);
     let lightest = parameters
         .2
         .proof_of_stake
         .validators
         .iter()
-        .min_by_key(|validator| validator.stake)
+        .min_by_key(|validator| validator.stake.clone())
         .expect("validators")
         .pk
         .clone();
@@ -1534,7 +1542,7 @@ async fn a_vault_that_covers_one_opening_opens_a_claim() {
             .expect("vault");
     for funded in parameters.2.vaults.iter_mut() {
         if funded.vault_address == vault {
-            funded.initial_balance = cost * 3 / 2;
+            funded.initial_balance = (cost * 3 / 2).into();
         }
     }
     let genesis = GenesisBuilder::new()
@@ -1564,7 +1572,7 @@ async fn a_vault_that_covers_one_opening_opens_a_claim() {
 #[tokio::test]
 async fn a_validator_that_cannot_pay_requests_no_ejection() {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
-    parameters.2.proof_of_stake.min_phlo_price = 1;
+    parameters.2.proof_of_stake.min_phlo_price = 1.into();
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
         .await
@@ -1614,7 +1622,7 @@ async fn a_block_slashing_an_ejected_validator_as_its_grace_ends_is_built_and_va
     let (mut nodes, target, _) = funded_network_with(|proof_of_stake| {
         proof_of_stake.epoch_length = 10;
         for validator in proof_of_stake.validators.iter_mut() {
-            validator.stake = 100;
+            validator.stake = 100.into();
         }
     })
     .await;
@@ -1671,7 +1679,7 @@ async fn a_block_slashing_an_ejected_validator_as_its_grace_ends_is_built_and_va
         state
             .bonds
             .iter()
-            .any(|bond| bond.validator == target_key && bond.stake == 0),
+            .any(|bond| bond.validator == target_key && bond.stake == 0.into()),
         "the target is slashed"
     );
 }
@@ -1688,7 +1696,7 @@ async fn yeas_cast_late_in_a_claims_lifetime_still_count() {
     let claimant_key = identity(&nodes[claimant]);
     let requesting = call_pos(
         &mut nodes[claimant],
-        r#""claimOverflow", *deployerId, 1"#,
+        r#""claimOverflow", *deployerId, 1n"#,
         &shard_id,
     )
     .await;
@@ -1700,7 +1708,9 @@ async fn yeas_cast_late_in_a_claims_lifetime_still_count() {
         let key = claimant_key.clone();
         Arc::new(move |knowledge| {
             let mut decided = view.proposal_at(&own, knowledge);
-            decided.overflow.insert(key.clone(), u128::MAX / 4);
+            decided
+                .overflow
+                .insert(key.clone(), BigInt::from(u128::MAX / 4));
             decided
         })
     };
@@ -1715,11 +1725,12 @@ async fn yeas_cast_late_in_a_claims_lifetime_still_count() {
             .find(|bond| bond.validator == identity(node))
             .expect("bonded")
             .stake
+            .clone()
     };
     // The heaviest two of the rest cast the yeas that cross, in the
     // claim's last two blocks.
     let mut others: Vec<usize> = (0..nodes.len()).filter(|i| *i != claimant).collect();
-    others.sort_by_key(|i| -stake_of(&nodes[*i]));
+    others.sort_by_key(|i| std::cmp::Reverse(stake_of(&nodes[*i])));
     let late = [others[0], others[1]];
 
     let mut order: Vec<usize> = Vec::new();
@@ -1767,13 +1778,13 @@ async fn yeas_cast_late_in_a_claims_lifetime_still_count() {
     );
 }
 
-fn overflow_at(node: &TestNode, validator: &Validator) -> u128 {
+fn overflow_at(node: &TestNode, validator: &Validator) -> BigInt {
     node.casper
         .bucket_view()
         .proposal(&identity(node))
         .overflow
         .get(validator)
-        .copied()
+        .cloned()
         .expect("every node tracks the validator")
 }
 
@@ -1814,7 +1825,7 @@ async fn an_over_topped_rejoin_is_claimed_back() {
                 && r.claim.target == target_key && r.outcome == ClaimOutcome::Pass))
     })
     .await;
-    let claim = 10u128 * PPM as u128;
+    let claim = BigInt::from(10u128 * PPM as u128);
     propose_while(&mut nodes, None, |nodes| {
         nodes
             .iter()
@@ -1824,7 +1835,7 @@ async fn an_over_topped_rejoin_is_claimed_back() {
 
     let claiming = call_pos(
         &mut nodes[target],
-        r#""claimOverflow", *deployerId, 10"#,
+        r#""claimOverflow", *deployerId, 10n"#,
         &shard_id,
     )
     .await;
@@ -1845,7 +1856,7 @@ async fn an_over_topped_rejoin_is_claimed_back() {
         .state
         .bonds
         .iter()
-        .filter(|bond| bond.stake > 0 && !opened.ejected.contains(&bond.validator))
+        .filter(|bond| bond.stake > 0.into() && !opened.ejected.contains(&bond.validator))
         .cloned()
         .collect();
     committee.sort_by(|a, b| a.validator.cmp(&b.validator));
@@ -1865,7 +1876,7 @@ async fn an_over_topped_rejoin_is_claimed_back() {
         state
             .claimed
             .iter()
-            .any(|claimed| claimed.validator == target_key && claimed.total == 10),
+            .any(|claimed| claimed.validator == target_key && claimed.total == 10.into()),
         "the claim is paid"
     );
 
@@ -1911,7 +1922,7 @@ async fn a_proposer_outside_its_own_committee_holds_back_its_ejection_request() 
                 .on_chain_state
                 .bonds_map
                 .get(&leaving_key)
-                .is_some_and(|stake| *stake > 0),
+                .is_some_and(|stake| *stake > BigInt::from(0)),
             "the main parent dropped the validator before its own committee did"
         );
         let decision = nodes[leaving]
@@ -1924,7 +1935,7 @@ async fn a_proposer_outside_its_own_committee_holds_back_its_ejection_request() 
             .state
             .bonds
             .iter()
-            .any(|bond| bond.validator == leaving_key && bond.stake > 0);
+            .any(|bond| bond.validator == leaving_key && bond.stake > 0.into());
         if seated {
             continue;
         }
@@ -1968,14 +1979,17 @@ async fn a_backed_rejoin_passes_after_a_voter_leaves() {
         .clone();
     let leaver = (0..nodes.len())
         .filter(|i| *i != target)
-        .max_by_key(|i| bonds[&identity(&nodes[*i])])
+        .max_by_key(|i| bonds[&identity(&nodes[*i])].clone())
         .expect("a leaver");
     let leaver_key = identity(&nodes[leaver]);
     let voters: Vec<usize> = (0..nodes.len())
         .filter(|i| *i != target && *i != leaver)
         .collect();
-    let total: i64 = bonds.values().sum();
-    let remaining: i64 = voters.iter().map(|i| bonds[&identity(&nodes[*i])]).sum();
+    let total: BigInt = bonds.values().sum();
+    let remaining: BigInt = voters
+        .iter()
+        .map(|i| bonds[&identity(&nodes[*i])].clone())
+        .sum();
     assert!(
         3 * remaining <= 2 * total,
         "the remaining voters hold no more than two thirds of the electorate"
@@ -1996,7 +2010,7 @@ async fn a_backed_rejoin_passes_after_a_voter_leaves() {
             .state
             .bonds
             .iter()
-            .any(|bond| bond.validator == leaver_key && bond.stake > 0)
+            .any(|bond| bond.validator == leaver_key && bond.stake > 0.into())
         {
             left = true;
             break;
@@ -2006,7 +2020,7 @@ async fn a_backed_rejoin_passes_after_a_voter_leaves() {
 
     let requesting = call_pos(
         &mut nodes[target],
-        r#""rejoinFromEjection", *deployerId, 100"#,
+        r#""rejoinFromEjection", *deployerId, 100n"#,
         &shard_id,
     )
     .await;
@@ -2023,7 +2037,7 @@ async fn a_backed_rejoin_passes_after_a_voter_leaves() {
     assert!(
         electorate
             .iter()
-            .any(|bond| bond.validator == leaver_key && bond.stake > 0),
+            .any(|bond| bond.validator == leaver_key && bond.stake > 0.into()),
         "the leaver is in the rejoin's electorate"
     );
 
@@ -2117,9 +2131,9 @@ async fn provable_overflow_does_not_depend_on_which_twin_arrived_first() {
 
     let claimant_key = identity(&nodes[claimant]);
     let testimony = models::rust::casper::protocol::casper_message::OverflowTestimony {
-        amount: 0,
+        amount: 0.into(),
         floor_number: cited.body.state.block_number,
-        claimed_total: 0,
+        claimed_total: 0.into(),
         freezes: Vec::new(),
     };
     let reward = nodes[cited_only]
@@ -2151,7 +2165,7 @@ async fn provable_overflow_does_not_depend_on_which_twin_arrived_first() {
             provable(cited_first, vec![cited.block_hash.clone()]),
             provable(twin_first, vec![cited.block_hash.clone()]),
         ],
-        [honest, honest],
+        [honest.clone(), honest],
         "(cited twin first, other twin first) against a node holding only the cited twin"
     );
 }

@@ -25,7 +25,7 @@ pub struct AuthorityInputs {
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: shared::rust::token_amount::TokenAmount,
     pub approved_block_hash: String,
     pub approved_post_state_hash: String,
 }
@@ -59,7 +59,7 @@ impl CaptureEndpoint {
                 fault_tolerance_threshold_ppm: chain.fault_tolerance_threshold_ppm,
                 max_parent_depth: chain.max_parent_depth,
                 deploy_lifespan: chain.deploy_lifespan,
-                min_phlo_price: chain.min_phlo_price,
+                min_phlo_price: chain.min_phlo_price.clone(),
                 approved_block_hash: hex::encode(&approved.block_hash),
                 approved_post_state_hash: hex::encode(&approved.body.state.post_state_hash),
             },

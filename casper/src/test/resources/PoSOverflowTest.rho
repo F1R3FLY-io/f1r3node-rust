@@ -121,7 +121,7 @@ in {
           for (@charge <- charged) {
             match charge {
               (true, _) => {
-                @PoS!("refundDeploy", 0, sysAuthToken, *refunded) |
+                @PoS!("refundDeploy", 0n, sysAuthToken, *refunded) |
                 for (@refund <- refunded) { retCh!(refund) }
               }
               refusal => retCh!(refusal)
@@ -192,26 +192,26 @@ in {
           atBlock!(10, *b10) |
           for (_ <- b10) {
             request!(v.nth(0), "5", *notInt) |
-            request!(v.nth(0), 0, *zero) |
-            request!(v.nth(0), 11, *tooMuch) |
-            request!("99".hexToBytes(), 5, *unbonded) |
+            request!(v.nth(0), 0n, *zero) |
+            request!(v.nth(0), 11n, *tooMuch) |
+            request!("99".hexToBytes(), 5n, *unbonded) |
             for (@notIntResult <- notInt & @zeroResult <- zero & @tooMuchResult <- tooMuch &
                  @unbondedResult <- unbonded) {
-              request!(v.nth(0), 5, *first) |
+              request!(v.nth(0), 5n, *first) |
               for (@firstResult <- first) {
-                request!(v.nth(0), 3, *second) |
+                request!(v.nth(0), 3n, *second) |
                 for (@secondResult <- second) {
                   @PoS!("getOverflowClaims", *claimsCh) |
                   for (@claims <- claimsCh) {
                     rhoSpec!("assertMany",
                       [
-                        (((false, "Claim amount must be an Int."), "==", notIntResult), "an amount is an Int"),
+                        (((false, "Claim amount must be a BigInt."), "==", notIntResult), "an amount is a BigInt"),
                         (((false, "Claim amount must be positive."), "==", zeroResult), "an amount is positive"),
                         (((false, "Claim amount exceeds the bound on one claim."), "==", tooMuchResult), "an amount is at most ten minimum bonds"),
                         (((false, "Only a validator holding stake may claim overflow."), "==", unbondedResult), "a claimant holds stake"),
                         (((true, Nil), "==", firstResult), "a staked validator may claim"),
                         (((false, "An overflow claim is already open for this validator."), "==", secondResult), "one claim at a time"),
-                        ((5, "==", claims.get(v.nth(0)).get("amount")), "the claim records its amount")
+                        ((5n, "==", claims.get(v.nth(0)).get("amount")), "the claim records its amount")
                       ],
                       *ackCh
                     )
@@ -281,8 +281,8 @@ in {
         for (@v <<- validatorsCh) {
           atBlock!(20, *b20) |
           for (_ <- b20) {
-            request!(v.nth(0), 5, *asked) |
-            payFee!(100, *fee) |
+            request!(v.nth(0), 5n, *asked) |
+            payFee!(100n, *fee) |
             failOnRefusal!(*asked, *rhoSpec, *ackCh) |
             failOnRefusal!(*fee, *rhoSpec, *ackCh) |
             for (@(true, _) <- asked & @(true, _) <- fee) {
@@ -299,7 +299,7 @@ in {
                       [
                         (((true, Nil), "==", result), "the resolution succeeds"),
                         ((before - 5n, "==", after), "the amount leaves the PoS vault for the claimant"),
-                        (({"total": 5, "payments": {22: 5}}, "==", claimed.get(v.nth(0))), "the payment is recorded by its block, with the running total")
+                        (({"total": 5n, "payments": {22: 5n}}, "==", claimed.get(v.nth(0))), "the payment is recorded by its block, with the running total")
                       ],
                       *ackCh
                     )
@@ -317,7 +317,7 @@ in {
         for (@v <<- validatorsCh) {
           atBlock!(30, *b30) |
           for (_ <- b30) {
-            request!(v.nth(1), 5, *asked) |
+            request!(v.nth(1), 5n, *asked) |
             failOnRefusal!(*asked, *rhoSpec, *ackCh) |
             for (@(true, _) <- asked) {
               atBlock!(32, *b32) |
@@ -331,7 +331,7 @@ in {
                     rhoSpec!("assertMany",
                       [
                         (((true, Nil), "==", result), "the resolution succeeds"),
-                        ((before.get(v.nth(1)) / 2, "==", bonds.get(v.nth(1))), "half the bond is burned, rounded up")
+                        ((before.get(v.nth(1)) / 2n, "==", bonds.get(v.nth(1))), "half the bond is burned, rounded up")
                       ],
                       *ackCh
                     )
@@ -351,7 +351,7 @@ in {
         for (@v <<- validatorsCh) {
           atBlock!(40, *b40) |
           for (_ <- b40) {
-            request!(v.nth(2), 5, *asked) |
+            request!(v.nth(2), 5n, *asked) |
             failOnRefusal!(*asked, *rhoSpec, *ackCh) |
             for (@(true, _) <- asked) {
               atBlock!(1100, *b1100) |
@@ -372,7 +372,7 @@ in {
                             (((false, "A claim expiry names no claim whose deadline its floor has reached."), "==", earlyResult), "a floor inside the deadline cannot expire it, though the block is past it"),
                             (((true, Nil), "==", result), "a floor at the deadline expires it"),
                             ((false, "==", claims.contains(v.nth(2))), "the slot is cleared"),
-                            ((before.get(v.nth(2)) / 2, "==", bonds.get(v.nth(2))), "and half the bond is burned, rounded up")
+                            ((before.get(v.nth(2)) / 2n, "==", bonds.get(v.nth(2))), "and half the bond is burned, rounded up")
                           ],
                           *ackCh
                         )
@@ -406,7 +406,7 @@ in {
                   for (@(true, _) <- closed) {
                     atBlock!(2001, *b2001) |
                     for (_ <- b2001) {
-                      request!(v.nth(3), 5, *asked) |
+                      request!(v.nth(3), 5n, *asked) |
                       for (@askedResult <- asked) {
                         atBlock!(2003, *b2003) |
                         overflow!(v.nth(3), 2001, false, *failCh) |
@@ -422,7 +422,7 @@ in {
                                     [
                                       (((true, Nil), "==", askedResult), "a validator in quarantine may claim"),
                                       (((true, Nil), "==", result), "the resolution succeeds"),
-                                      ((held / 2, "==", left), "the fee comes out of the quarantined bond"),
+                                      ((held / 2n, "==", left), "the fee comes out of the quarantined bond"),
                                       ((quarantine, "==", quarantineAfter), "which stays in quarantine as long")
                                     ],
                                     *ackCh
@@ -463,10 +463,10 @@ in {
                 for (@(true, _) <- ejected) {
                   atBlock!(2102, *b2102) |
                   for (_ <- b2102) {
-                    request!(v.nth(1), 10, *asked) |
+                    request!(v.nth(1), 10n, *asked) |
                     deployerIdFor!(v.nth(1), *d1) |
                     for (@askedResult <- asked & @id1 <- d1) {
-                      @PoS!("rejoinFromEjection", id1, 50, *rejoinAsked) |
+                      @PoS!("rejoinFromEjection", id1, 50n, *rejoinAsked) |
                       failOnRefusal!(*rejoinAsked, *rhoSpec, *ackCh) |
                       for (@(true, _) <- rejoinAsked) {
                         atBlock!(2103, *b2103) |
@@ -517,7 +517,7 @@ in {
         for (@v <<- validatorsCh) {
           atBlock!(2200, *b2200) |
           for (_ <- b2200) {
-            request!(v.nth(0), 5, *asked) |
+            request!(v.nth(0), 5n, *asked) |
             failOnRefusal!(*asked, *rhoSpec, *ackCh) |
             for (@(true, _) <- asked) {
               computeHash!(v.nth(0), *hashCh) |
@@ -526,7 +526,7 @@ in {
                 setInvalidBlocks!({hash : v.nth(0)}, *invalidSet) |
                 for (_ <- invalidSet) {
                   @PoS!("slash", id0, hash, sysAuthToken, *slashed) |
-                  payFee!(100, *fee) |
+                  payFee!(100n, *fee) |
                   failOnRefusal!(*slashed, *rhoSpec, *ackCh) |
                   failOnRefusal!(*fee, *rhoSpec, *ackCh) |
                   for (@(true, _) <- slashed & @(true, _) <- fee) {
@@ -543,7 +543,7 @@ in {
                             [
                               (((true, Nil), "==", result), "the resolution succeeds"),
                               ((before, "==", after), "nothing is paid to a slashed claimant"),
-                              ((5, "==", claimed.get(v.nth(0)).get("total")), "and its total stands as it was"),
+                              ((5n, "==", claimed.get(v.nth(0)).get("total")), "and its total stands as it was"),
                               (({}, "==", claimed.get(v.nth(0)).get("payments")), "though the epoch close at 2000 dropped the payment at 22, a retention window of 1015 behind it")
                             ],
                             *ackCh
@@ -582,7 +582,7 @@ in {
                   atBlock!(3001, *b3001) |
                   deployerIdFor!(v.nth(2), *d2b) |
                   for (@first <- firstCh & _ <- b3001 & @id2b <- d2b) {
-                    @PoS!("bond", id2b, 7, *bonded) |
+                    @PoS!("bond", id2b, 7n, *bonded) |
                     failOnRefusal!(*bonded, *rhoSpec, *ackCh) |
                     for (@(true, _) <- bonded) {
                       atBlock!(3002, *b3002) |
@@ -602,8 +602,8 @@ in {
                                   ((firstHeld, firstEnd), (held, end)) => {
                                     rhoSpec!("assertMany",
                                       [
-                                        ((2, "==", firstHeld), "the first withdrawal quarantines 2"),
-                                        ((9, "==", held), "the second joins it, 2 and 7"),
+                                        ((2n, "==", firstHeld), "the first withdrawal quarantines 2"),
+                                        ((9n, "==", held), "the second joins it, 2 and 7"),
                                         ((true, "==", end > firstEnd), "held until the later end")
                                       ],
                                       *ackCh
@@ -632,7 +632,7 @@ in {
         for (@v <<- validatorsCh) {
           atBlock!(2300, *b2300) |
           for (_ <- b2300) {
-            request!(v.nth(1), 5, *asked) |
+            request!(v.nth(1), 5n, *asked) |
             failOnRefusal!(*asked, *rhoSpec, *ackCh) |
             for (@(true, _) <- asked) {
               @PoS!("getActiveValidators", *beforeCh) |
@@ -648,7 +648,7 @@ in {
                       [
                         (((true, Nil), "==", result), "the resolution succeeds"),
                         (before.contains(v.nth(1)), "the claimant held a seat"),
-                        ((0, "==", bonds.get(v.nth(1))), "the fee takes the whole bond"),
+                        ((0n, "==", bonds.get(v.nth(1))), "the fee takes the whole bond"),
                         ((false, "==", active.contains(v.nth(1))), "and the seat with it")
                       ],
                       *ackCh

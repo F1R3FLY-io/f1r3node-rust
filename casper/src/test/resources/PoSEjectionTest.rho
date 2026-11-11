@@ -666,10 +666,10 @@ in {
                         "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
                         "eeeeeeeeee").hexToBytes(), *payerCh) |
         for (@validators <- validatorsCh & @payer <- payerCh) {
-          @PoS!("chargeDeploy", payer, 1000, sysAuthToken, *chargeCh) |
+          @PoS!("chargeDeploy", payer, 1000n, sysAuthToken, *chargeCh) |
           failOnRefusal!(*chargeCh, *rhoSpec, *ackCh) |
           for (@(true, _) <- chargeCh) {
-            @PoS!("refundDeploy", 0, sysAuthToken, *refundCh) |
+            @PoS!("refundDeploy", 0n, sysAuthToken, *refundCh) |
             failOnRefusal!(*refundCh, *rhoSpec, *ackCh) |
             for (@(true, _) <- refundCh) {
               @PoS!("getCurrentEpochRewards", *rewardsCh) |
@@ -753,9 +753,9 @@ in {
           setBlockData!("blockNumber", 8100, *blockCh) |
           for (_ <- blockCh) {
             for (@order <<- stakeOrderCh) {
-              requestRejoin!(order.nth(3), 10, *notEjectedCh)
+              requestRejoin!(order.nth(3), 10n, *notEjectedCh)
             } |
-            requestRejoin!(validators.nth(1), 0, *zeroCh) |
+            requestRejoin!(validators.nth(1), 0n, *zeroCh) |
             for (@notEjected <- notEjectedCh & @zero <- zeroCh) {
               rhoSpec!("assertMany",
                 [
@@ -776,18 +776,18 @@ in {
         for (@validators <- validatorsCh) {
           setBlockData!("blockNumber", 8101, *firstBlockCh) |
           for (_ <- firstBlockCh) {
-            requestRejoin!(validators.nth(1), 5, *firstCh) |
+            requestRejoin!(validators.nth(1), 5n, *firstCh) |
             for (@first <- firstCh) {
               @PoS!("getPendingRejoins", *pendingCh) |
               for (@pending <- pendingCh) {
                 setBlockData!("blockNumber", 8102, *secondBlockCh) |
                 for (_ <- secondBlockCh) {
-                  requestRejoin!(validators.nth(1), 7, *secondCh) |
+                  requestRejoin!(validators.nth(1), 7n, *secondCh) |
                   for (@second <- secondCh) {
                     rhoSpec!("assertMany",
                       [
                         (((true, Nil), "==", first), "an ejected validator may ask to rejoin within its grace"),
-                        (({"proposer": validators.nth(1), "openedAt": 8101, "topup": 5}, "==", pending.get(validators.nth(1))), "the request records its block and topup"),
+                        (({"proposer": validators.nth(1), "openedAt": 8101, "topup": 5n}, "==", pending.get(validators.nth(1))), "the request records its block and topup"),
                         (((false, "A rejoin is already open for this validator."), "==", second), "one rejoin is open at a time")
                       ],
                       *ackCh
@@ -826,7 +826,7 @@ in {
                     ((before + 5n, "==", after), "the topup is paid into the PoS vault"),
                     ((false, "==", ejected.contains(validators.nth(1))), "the validator is reinstated"),
                     ((false, "==", pending.contains(validators.nth(1))), "the rejoin's slot is cleared"),
-                    (({6990: {"to": 8103, "topup": 5, "fromSequence": 7}}, "==", history.get(validators.nth(1))), "the freeze closes at the paying block, with the topup")
+                    (({6990: {"to": 8103, "topup": 5n, "fromSequence": 7}}, "==", history.get(validators.nth(1))), "the freeze closes at the paying block, with the topup")
                   ],
                   *ackCh
                 )
@@ -846,7 +846,7 @@ in {
         for (@validators <- validatorsCh) {
           setBlockData!("blockNumber", 8104, *openBlockCh) |
           for (_ <- openBlockCh) {
-            requestRejoin!(validators.nth(0), 1000000, *openedCh) |
+            requestRejoin!(validators.nth(0), 1000000n, *openedCh) |
             failOnRefusal!(*openedCh, *rhoSpec, *ackCh) |
             for (@(true, _) <- openedCh) {
               setBlockData!("blockNumber", 8105, *resolveBlockCh) |
@@ -905,7 +905,7 @@ in {
         for (@validators <- validatorsCh) {
           setBlockData!("blockNumber", 9001, *blockCh) |
           for (_ <- blockCh) {
-            requestRejoin!(validators.nth(0), 5, *resultCh) |
+            requestRejoin!(validators.nth(0), 5n, *resultCh) |
             for (@result <- resultCh) {
               rhoSpec!("assertMany",
                 [
@@ -959,8 +959,8 @@ in {
                             rhoSpec!("assertMany",
                               [
                                 (((true, Nil), "==", expired), "the expiries resolve"),
-                                ((0, "==", bonds.get(validators.nth(2))), "a bonded validator's stake is slashed"),
-                                ((0, "==", quarantinedStake), "so is a stake already in quarantine"),
+                                ((0n, "==", bonds.get(validators.nth(2))), "a bonded validator's stake is slashed"),
+                                ((0n, "==", quarantinedStake), "so is a stake already in quarantine"),
                                 ((false, "==", active.contains(validators.nth(2))), "the slashed validator leaves the active set"),
                                 ((false, "==", ejected.contains(validators.nth(0)) or ejected.contains(validators.nth(2))), "an expired ejection is closed"),
                                 ((false, "==", history.contains(validators.nth(0)) or history.contains(validators.nth(2))), "and the slashed validators' freezes are dropped")
@@ -995,7 +995,7 @@ in {
           setBlockData!("blockNumber", 9500, *openBlockCh) |
           deployerIdFor!(rejoined, *deployerIdCh) |
           for (_ <- openBlockCh & @deployerId <- deployerIdCh) {
-            setBlockData!("committee", {rejoined: 1, target: 1}, *committeeSetCh) |
+            setBlockData!("committee", {rejoined: 1n, target: 1n}, *committeeSetCh) |
             for (_ <- committeeSetCh) {
               @PoS!("ejectValidator", deployerId, target, *openedCh)
             } |
@@ -1057,7 +1057,7 @@ in {
                     [
                       (((false, "Invalid AuthToken"), "==", forged), "only the system may slash a voter"),
                       (((true, Nil), "==", first), "the system slashes"),
-                      ((0, "==", bonds.get(voter)), "the voter's bond goes"),
+                      ((0n, "==", bonds.get(voter)), "the voter's bond goes"),
                       ((false, "==", active.contains(voter)), "and so does its seat"),
                       ((false, "==", history.contains(voter)), "and its freezes"),
                       (((true, Nil), "==", second), "a second slash finds nothing left and still succeeds")

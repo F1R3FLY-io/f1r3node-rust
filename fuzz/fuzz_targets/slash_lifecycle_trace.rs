@@ -20,6 +20,7 @@ use casper::rust::slashing_authorization::{
 };
 use libfuzzer_sys::fuzz_target;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 
 mod support;
 
@@ -51,7 +52,11 @@ fuzz_target!(|input: Input| {
             )
         })
         .collect::<Vec<_>>();
-    let bonds: HashMap<Validator, i64> = bonds_list.iter().cloned().collect();
+    let slashable: HashMap<Validator, BigInt> = bonds_list
+        .iter()
+        .filter(|(_, stake)| *stake > 0)
+        .map(|(validator, stake)| (validator.clone(), BigInt::from(*stake)))
+        .collect();
 
     let mut held = Vec::new();
     for pair in input.pairs.iter().take(8) {
@@ -72,8 +77,9 @@ fuzz_target!(|input: Input| {
         });
     }
     let snapshot = support::snapshot(&held, 8, bonds_list);
-    let candidates = authorized_slash_candidates(&snapshot, &support::block_store(&held))
-        .expect("every held block is stored");
+    let candidates =
+        authorized_slash_candidates(&snapshot, &support::block_store(&held), &slashable)
+            .expect("every held block is stored");
 
     let proposer = validator(input.proposer);
     let carrier =
@@ -86,7 +92,7 @@ fuzz_target!(|input: Input| {
             .collect(),
     );
     assert!(
-        validate_received_slash_deploys(&all, &bonds, support::SHARD, &support::CHAIN).is_ok(),
+        validate_received_slash_deploys(&all, &slashable, support::SHARD, &support::CHAIN).is_ok(),
         "the receiver accepts the proposer's own candidates"
     );
 
@@ -96,7 +102,7 @@ fuzz_target!(|input: Input| {
             support::slash_deploy(first.evidence.clone(), &proposer),
         ]);
         assert!(
-            validate_received_slash_deploys(&twice, &bonds, support::SHARD, &support::CHAIN)
+            validate_received_slash_deploys(&twice, &slashable, support::SHARD, &support::CHAIN)
                 .is_err(),
             "a block slashing one offender twice is rejected"
         );

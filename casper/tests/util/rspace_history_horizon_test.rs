@@ -99,7 +99,7 @@ async fn returns_empty_when_max_parent_depth_is_unlimited() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 5, bonds, v0);
 
@@ -121,7 +121,7 @@ async fn includes_main_chain_ancestors_within_horizon() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
         // Chain of 6 blocks. block_numbers 1..5 (genesis at 1 in test fixture).
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 6, bonds, v0);
@@ -163,7 +163,7 @@ async fn excludes_blocks_outside_horizon() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
         // Chain of 10 blocks, block_numbers 1..9.
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 10, bonds, v0);
@@ -222,7 +222,7 @@ async fn returns_lfb_only_when_horizon_at_genesis() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
         // Just genesis + 1 child. LFB.height = 1. Horizon clamped to 0.
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 2, bonds, v0);
@@ -258,7 +258,7 @@ async fn ordered_by_descending_height() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 6, bonds, v0);
 
@@ -308,7 +308,7 @@ async fn pre_state_included_for_multi_parent_block() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         // Build two single-parent chain segments off genesis, then a
@@ -394,7 +394,7 @@ async fn single_parent_pre_state_dedupes_against_parent_post_state() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         // Single-parent chain: each non-genesis block's pre-state equals its
@@ -462,7 +462,7 @@ async fn horizon_roots_must_cover_every_block_the_replay_resets_to() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
         let chain = build_chain(&mut block_store, &mut block_dag_storage, 41, bonds, v0);
         let lfb = chain.last().unwrap().clone();

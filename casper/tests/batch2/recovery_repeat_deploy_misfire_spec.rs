@@ -67,7 +67,7 @@ fn mk_casper_snapshot(
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 0,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
             ..ChainParameters::shipped()

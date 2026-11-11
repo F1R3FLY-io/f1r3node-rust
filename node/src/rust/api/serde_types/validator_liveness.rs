@@ -1,6 +1,7 @@
 //! JSON form of a node's validator liveness report. Validators are hex
-//! public keys. Bucket levels, thresholds, overflow and shortfall are in
-//! millionths of a bond unit, as decimal strings, since they exceed 64 bits.
+//! public keys. Every amount is a decimal string, since it can exceed 64 bits.
+//! Bucket levels, thresholds, overflow and shortfall are in millionths of a
+//! bond unit; stakes, capacities, topups and payments are in bond units.
 
 use casper::rust::api::validator_liveness::ValidatorLiveness;
 use casper::rust::economics::claims::ClaimTerms;
@@ -50,7 +51,7 @@ pub struct LocalView {
 #[serde(rename_all = "camelCase")]
 pub struct Bucket {
     pub validator: String,
-    pub capacity: u64,
+    pub capacity: String,
     pub level: String,
     pub threshold: String,
     pub drained: bool,
@@ -58,7 +59,7 @@ pub struct Bucket {
     /// Everything credited, before payments are taken off.
     pub overflow: String,
     /// Bond units paid out of the overflow since this view began crediting.
-    pub paid: i64,
+    pub paid: String,
     pub ejected: bool,
 }
 
@@ -106,7 +107,7 @@ pub struct FinalizedState {
 #[serde(rename_all = "camelCase")]
 pub struct Stake {
     pub validator: String,
-    pub stake: i64,
+    pub stake: String,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -126,11 +127,11 @@ pub enum Terms {
     Eject,
     #[serde(rename_all = "camelCase")]
     Rejoin {
-        topup: i64,
+        topup: String,
         grace_end: i64,
     },
     Overflow {
-        amount: i64,
+        amount: String,
     },
 }
 
@@ -154,7 +155,7 @@ pub struct Freeze {
     pub from: i64,
     pub from_sequence: i64,
     pub rejoined_at: Option<i64>,
-    pub topup: Option<i64>,
+    pub topup: Option<String>,
 }
 
 /// A report with one of everything: a drained bucket, an open ejection
@@ -175,10 +176,11 @@ pub(crate) fn sample() -> ValidatorLiveness {
 
     let v = |byte: u8| Validator::from(vec![byte; models::rust::validator::LENGTH]);
     let params = LeakyBucketParams::shipped();
-    let bond = |byte: u8, stake: i64| Bond {
+    let bond = |byte: u8, stake: u64| Bond {
         validator: v(byte),
-        stake,
+        stake: stake.into(),
     };
+    let big = |value: u128| num_bigint::BigInt::from(value);
     ValidatorLiveness {
         params,
         local_view: ViewSnapshot {
@@ -188,13 +190,13 @@ pub(crate) fn sample() -> ValidatorLiveness {
             tip_committee: vec![v(1), v(2)],
             buckets: vec![BucketSnapshot {
                 validator: v(2),
-                capacity: 1_000,
-                level: 30_000_000_000_000_000_000,
-                threshold: 300_000_000,
+                capacity: big(1_000),
+                level: big(30_000_000_000_000_000_000),
+                threshold: big(300_000_000),
                 drained: true,
                 blocks_below_threshold: 61,
-                overflow: 0,
-                paid: 0,
+                overflow: big(0),
+                paid: big(0),
                 ejected: false,
             }],
             open_ejection_claims: vec![(v(2), 42)],
@@ -204,8 +206,8 @@ pub(crate) fn sample() -> ValidatorLiveness {
             params,
             ejection_offers: vec![v(2)],
             drained: HashSet::from([v(2)]),
-            shortfall: HashMap::from([(v(2), 970_000_000)]),
-            overflow: HashMap::from([(v(1), 5)]),
+            shortfall: HashMap::from([(v(2), big(970_000_000))]),
+            overflow: HashMap::from([(v(1), big(5))]),
             accusations: vec![],
         }),
         finalized_state: FinalizedLiveness {
@@ -224,7 +226,7 @@ pub(crate) fn sample() -> ValidatorLiveness {
                     },
                     electorate: vec![bond(1, 1_000), bond(2, 1_000)],
                     terms: ClaimTerms::Rejoin {
-                        topup: 20,
+                        topup: 20.into(),
                         grace_end: 60,
                     },
                 }],
@@ -233,7 +235,10 @@ pub(crate) fn sample() -> ValidatorLiveness {
                     FreezeInterval {
                         from: 10,
                         from_sequence: 4,
-                        rejoin: Some(Rejoin { at: 20, topup: 5 }),
+                        rejoin: Some(Rejoin {
+                            at: 20,
+                            topup: 5.into(),
+                        }),
                     },
                     FreezeInterval {
                         from: 30,
@@ -243,7 +248,7 @@ pub(crate) fn sample() -> ValidatorLiveness {
                 ])],
                 claimed: vec![Claimed {
                     validator: v(1),
-                    total: 7,
+                    total: 7.into(),
                     payments: vec![],
                 }],
             }),
@@ -265,7 +270,7 @@ fn stakes(bonds: &[Bond]) -> Vec<Stake> {
         .iter()
         .map(|bond| Stake {
             validator: key(&bond.validator),
-            stake: bond.stake,
+            stake: bond.stake.to_string(),
         })
         .collect();
     stakes.sort_by(|a, b| a.validator.cmp(&b.validator));
@@ -273,7 +278,7 @@ fn stakes(bonds: &[Bond]) -> Vec<Stake> {
 }
 
 fn amounts<'a>(
-    amounts: impl IntoIterator<Item = (&'a Validator, &'a u128)>,
+    amounts: impl IntoIterator<Item = (&'a Validator, &'a num_bigint::BigInt)>,
 ) -> Vec<ValidatorAmount> {
     let mut amounts: Vec<ValidatorAmount> = amounts
         .into_iter()
@@ -299,8 +304,11 @@ fn freeze(interval: &FreezeInterval) -> Freeze {
     Freeze {
         from: interval.from,
         from_sequence: interval.from_sequence,
-        rejoined_at: interval.rejoin.map(|rejoin| rejoin.at),
-        topup: interval.rejoin.map(|rejoin| rejoin.topup),
+        rejoined_at: interval.rejoin.as_ref().map(|rejoin| rejoin.at),
+        topup: interval
+            .rejoin
+            .as_ref()
+            .map(|rejoin| rejoin.topup.to_string()),
     }
 }
 
@@ -329,13 +337,13 @@ impl From<&ValidatorLiveness> for ValidatorLivenessResponse {
                     .iter()
                     .map(|bucket| Bucket {
                         validator: key(&bucket.validator),
-                        capacity: bucket.capacity,
+                        capacity: bucket.capacity.to_string(),
                         level: bucket.level.to_string(),
                         threshold: bucket.threshold.to_string(),
                         drained: bucket.drained,
                         blocks_below_threshold: bucket.blocks_below_threshold,
                         overflow: bucket.overflow.to_string(),
-                        paid: bucket.paid,
+                        paid: bucket.paid.to_string(),
                         ejected: bucket.ejected,
                     })
                     .collect(),
@@ -370,12 +378,15 @@ impl From<&ValidatorLiveness> for ValidatorLivenessResponse {
                         opened_at: record.claim.opened_at,
                         proposer: key(&record.claim.proposer),
                         electorate: stakes(&record.electorate),
-                        terms: match record.terms {
+                        terms: match &record.terms {
                             ClaimTerms::Eject => Terms::Eject,
-                            ClaimTerms::Rejoin { topup, grace_end } => {
-                                Terms::Rejoin { topup, grace_end }
-                            }
-                            ClaimTerms::Overflow { amount } => Terms::Overflow { amount },
+                            ClaimTerms::Rejoin { topup, grace_end } => Terms::Rejoin {
+                                topup: topup.to_string(),
+                                grace_end: *grace_end,
+                            },
+                            ClaimTerms::Overflow { amount } => Terms::Overflow {
+                                amount: amount.to_string(),
+                            },
                         },
                     })
                     .collect(),
@@ -401,7 +412,7 @@ impl From<&ValidatorLiveness> for ValidatorLivenessResponse {
                     .iter()
                     .map(|claimed| Stake {
                         validator: key(&claimed.validator),
-                        stake: claimed.total,
+                        stake: claimed.total.to_string(),
                     })
                     .collect(),
             },

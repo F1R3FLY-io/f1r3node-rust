@@ -42,7 +42,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::rho_type::{bytes_to_bigint, RhoNumber};
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
@@ -53,6 +53,7 @@ use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::chain_parameters::ChainParameters;
 use crate::rust::economics::claims::{ClaimBook, ClaimRecord, ClaimTerms};
@@ -120,15 +121,26 @@ impl FloorState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Claimed {
     pub validator: Validator,
-    pub total: i64,
+    pub total: TokenAmount,
     pub payments: Vec<Payment>,
 }
 
 /// One paid overflow claim: the block that paid it and the amount.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Payment {
     pub at: i64,
-    pub amount: i64,
+    pub amount: TokenAmount,
+}
+
+fn token_amount(par: Option<&Par>) -> Option<Result<TokenAmount, String>> {
+    match par.map(|par| par.exprs.as_slice()) {
+        Some(
+            [Expr {
+                expr_instance: Some(ExprInstance::GBigInt(bytes)),
+            }],
+        ) => Some(TokenAmount::new(bytes_to_bigint(bytes))),
+        _ => None,
+    }
 }
 
 /// The fields of one record in a PoS state map.
@@ -168,6 +180,32 @@ impl RecordMap {
                 "expected an integer or Nil {name}, got {other:?}"
             ))),
         }
+    }
+
+    fn amount(
+        &self,
+        name: &str,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<TokenAmount, CasperError> {
+        let field = self.field(name);
+        match token_amount(field.as_ref()) {
+            Some(amount) => amount.map_err(|error| bad(&format!("{name}: {error}"))),
+            None => Err(bad(&format!(
+                "expected a token amount {name}, got {field:?}"
+            ))),
+        }
+    }
+
+    fn optional_amount(
+        &self,
+        name: &str,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<Option<TokenAmount>, CasperError> {
+        let field = self.field(name);
+        if field.as_ref().is_some_and(|par| par.exprs.is_empty()) {
+            return Ok(None);
+        }
+        self.amount(name, bad).map(Some)
     }
 
     fn validator(
@@ -574,6 +612,10 @@ impl RuntimeOps {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
+        deploy
+            .data
+            .validate_amounts()
+            .map_err(CasperError::RuntimeError)?;
         let mut eval_collector_state = EvalCollector::new();
 
         let deploy_pk = deploy.pk.bytes.clone();
@@ -1159,7 +1201,7 @@ impl RuntimeOps {
             let data = DeployData {
                 term,
                 time_stamp: 0,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit,
                 valid_after_block_number: 0,
                 shard_id: String::new(),
@@ -1707,7 +1749,7 @@ impl RuntimeOps {
                 },
                 electorate: ejection.bonds("ejectionSnapshot", bad)?,
                 terms: ClaimTerms::Rejoin {
-                    topup: record.int("topup", bad)?,
+                    topup: record.amount("topup", bad)?,
                     grace_end: ejection.int("graceEnd", bad)?,
                 },
             });
@@ -1722,7 +1764,7 @@ impl RuntimeOps {
                 },
                 electorate: record.bonds("electorate", bad)?,
                 terms: ClaimTerms::Overflow {
-                    amount: record.int("amount", bad)?,
+                    amount: record.amount("amount", bad)?,
                 },
             });
         }
@@ -1748,21 +1790,16 @@ impl RuntimeOps {
                     ) => ParMapTypeMapper::emap_to_par_map(map.clone())
                         .ps
                         .map_iter(|(at, amount)| {
-                            match (at.exprs.as_slice(), amount.exprs.as_slice()) {
+                            match (at.exprs.as_slice(), token_amount(Some(amount))) {
                                 (
                                     [Expr {
                                         expr_instance: Some(ExprInstance::GInt(at)),
                                     }],
-                                    [Expr {
-                                        expr_instance: Some(ExprInstance::GInt(amount)),
-                                    }],
-                                ) => Ok(Payment {
-                                    at: *at,
-                                    amount: *amount,
-                                }),
-                                other => {
-                                    Err(bad(&format!("expected a payment by block, got {other:?}")))
-                                }
+                                    Some(Ok(amount)),
+                                ) => Ok(Payment { at: *at, amount }),
+                                (at, amount) => Err(bad(&format!(
+                                    "expected a payment by block, got {at:?} => {amount:?}"
+                                ))),
                             }
                         })
                         .into_iter()
@@ -1771,7 +1808,7 @@ impl RuntimeOps {
                 };
                 Ok(Claimed {
                     validator,
-                    total: record.int("total", bad)?,
+                    total: record.amount("total", bad)?,
                     payments,
                 })
             })
@@ -1813,7 +1850,7 @@ impl RuntimeOps {
                         };
                         let closing = (
                             record.optional_int("to", bad)?,
-                            record.optional_int("topup", bad)?,
+                            record.optional_amount("topup", bad)?,
                         );
                         let rejoin = match closing {
                             (Some(at), Some(topup)) => Some(Rejoin { at, topup }),
@@ -1897,7 +1934,7 @@ impl RuntimeOps {
             },
             other => return Err(bad(&format!("expected one result, got {}", other.len()))),
         };
-        let int = |name: &str| -> Result<i64, String> {
+        let number = |name: &str| -> Result<num_bigint::BigInt, String> {
             let key = Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::GString(name.to_string())),
             }]);
@@ -1906,11 +1943,16 @@ impl RuntimeOps {
                     [Expr {
                         expr_instance: Some(ExprInstance::GInt(value)),
                     }],
-                ) => Ok(*value),
-                other => Err(format!("{name} is not an integer: {other:?}")),
+                ) => Ok((*value).into()),
+                Some(
+                    [Expr {
+                        expr_instance: Some(ExprInstance::GBigInt(bytes)),
+                    }],
+                ) => Ok(bytes_to_bigint(bytes)),
+                other => Err(format!("{name} is not a number: {other:?}")),
             }
         };
-        ChainParameters::checked(int).map_err(|detail| bad(&detail))
+        ChainParameters::checked(number).map_err(|detail| bad(&detail))
     }
 
     fn chain_parameters_query_par() -> &'static Par {
@@ -2064,15 +2106,11 @@ impl RuntimeOps {
             };
             let stake = match entry.exprs.as_slice() {
                 [expr] => match expr.expr_instance.as_ref() {
-                    Some(ExprInstance::ETupleBody(tuple)) => {
-                        match tuple.ps.first().map(|p| p.exprs.as_slice()) {
-                            Some([stake]) => match stake.expr_instance.as_ref() {
-                                Some(ExprInstance::GInt(stake)) => *stake,
-                                _ => return Err(malformed("a stake is not an integer")),
-                            },
-                            _ => return Err(malformed("an entry has no stake")),
-                        }
-                    }
+                    Some(ExprInstance::ETupleBody(tuple)) => match token_amount(tuple.ps.first()) {
+                        Some(Ok(stake)) => stake,
+                        Some(Err(error)) => return Err(malformed(&error)),
+                        None => return Err(malformed("an entry has no token-amount stake")),
+                    },
                     _ => return Err(malformed("an entry is not a tuple")),
                 },
                 _ => return Err(malformed("an entry is not a single expression")),
@@ -2137,9 +2175,10 @@ impl RuntimeOps {
                 }?;
 
                 let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
-                    ExprInstance::GInt(g_int) => Ok(*g_int),
+                    ExprInstance::GBigInt(bytes) => TokenAmount::new(bytes_to_bigint(bytes))
+                        .map_err(|error| CasperError::RuntimeError(format!("stake: {error}"))),
                     _ => Err(CasperError::RuntimeError(
-                        "Expected GInt in stake data".to_string(),
+                        "Expected BigInt in stake data".to_string(),
                     )),
                 }?;
 
@@ -2182,14 +2221,13 @@ impl RuntimeOps {
 
             let stake_amount = match entry.exprs[0].expr_instance.as_ref() {
                 Some(ExprInstance::ETupleBody(tuple)) if !tuple.ps.is_empty() => {
-                    match tuple.ps[0]
-                        .exprs
-                        .first()
-                        .and_then(|e| e.expr_instance.as_ref())
-                    {
-                        Some(ExprInstance::GInt(g_int)) => Ok(*g_int),
-                        _ => Err(CasperError::RuntimeError(
-                            "Expected GInt bond in withdrawer pair".to_string(),
+                    match token_amount(tuple.ps.first()) {
+                        Some(Ok(stake)) => Ok(stake),
+                        Some(Err(error)) => Err(CasperError::RuntimeError(format!(
+                            "Withdrawer bond out of range: {error}"
+                        ))),
+                        None => Err(CasperError::RuntimeError(
+                            "Expected a BigInt bond in withdrawer pair".to_string(),
                         )),
                     }
                 }

@@ -53,7 +53,7 @@ fn run_spec(file: &'static str) {
                     genesis_parameters.2.vaults.push(Vault {
                         vault_address: VaultAddress::from_public_key(&payer)
                             .expect("vault address"),
-                        initial_balance: 10_000,
+                        initial_balance: 10_000.into(),
                     });
                     // Validators that can pay a rejoin's topup.
                     let validator_vaults: Vec<VaultAddress> = genesis_parameters
@@ -67,7 +67,7 @@ fn run_spec(file: &'static str) {
                         .collect();
                     for vault in genesis_parameters.2.vaults.iter_mut() {
                         if validator_vaults.contains(&vault.vault_address) {
-                            vault.initial_balance = 1_000;
+                            vault.initial_balance = 1_000.into();
                         }
                     }
 

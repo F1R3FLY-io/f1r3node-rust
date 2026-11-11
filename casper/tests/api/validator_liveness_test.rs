@@ -51,7 +51,7 @@ async fn a_liveness_report_shows_buckets_decision_and_finalized_state() {
         .iter()
         .find(|bucket| bucket.validator == silent)
         .expect("the silent member is tracked");
-    let full = silent_bucket.capacity as u128 * 1_000_000;
+    let full = &silent_bucket.capacity * 1_000_000u64;
     assert!(
         silent_bucket.level < full,
         "a member that never proposed has drained"

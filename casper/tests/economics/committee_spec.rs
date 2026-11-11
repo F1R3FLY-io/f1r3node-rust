@@ -4,13 +4,15 @@ use casper::rust::util::construct_deploy;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
+use rholang::rust::interpreter::rho_type::bytes_to_bigint;
+use shared::rust::token_amount::TokenAmount;
 
 use super::support::admit_everywhere;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 /// The validator-to-stake map a committee reply carries.
-fn stakes_of(reply: &Par) -> HashMap<Vec<u8>, i64> {
+fn stakes_of(reply: &Par) -> HashMap<Vec<u8>, TokenAmount> {
     let [models::rhoapi::Expr {
         expr_instance: Some(ExprInstance::EMapBody(map)),
     }] = reply.exprs.as_slice()
@@ -26,9 +28,12 @@ fn stakes_of(reply: &Par) -> HashMap<Vec<u8>, i64> {
                         expr_instance: Some(ExprInstance::GByteArray(validator)),
                     }],
                     [models::rhoapi::Expr {
-                        expr_instance: Some(ExprInstance::GInt(stake)),
+                        expr_instance: Some(ExprInstance::GBigInt(stake)),
                     }],
-                ) => (validator.clone(), *stake),
+                ) => (
+                    validator.clone(),
+                    TokenAmount::new(bytes_to_bigint(stake)).expect("a stake is a token amount"),
+                ),
                 other => panic!("a committee entry is a validator and its stake: {other:?}"),
             },
         )
@@ -89,13 +94,13 @@ async fn a_deploy_reads_its_blocks_committee_at_play_and_replay() {
     let [seen] = seen.as_slice() else {
         panic!("the probe recorded one committee: {seen:?}");
     };
-    let expected: HashMap<Vec<u8>, i64> = block
+    let expected: HashMap<Vec<u8>, TokenAmount> = block
         .body
         .state
         .bonds
         .iter()
-        .filter(|bond| bond.stake > 0)
-        .map(|bond| (bond.validator.to_vec(), bond.stake))
+        .filter(|bond| bond.stake > 0.into())
+        .map(|bond| (bond.validator.to_vec(), bond.stake.clone()))
         .collect();
     assert!(!expected.is_empty());
     assert_eq!(stakes_of(seen), expected, "the block's own bonds");

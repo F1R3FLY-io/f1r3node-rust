@@ -46,7 +46,7 @@ async fn an_idle_validator_is_ejected_and_slashed_by_the_committee_alone() {
         .state
         .bonds
         .iter()
-        .min_by_key(|bond| bond.stake)
+        .min_by_key(|bond| bond.stake.clone())
         .expect("bonds")
         .validator
         .clone();
@@ -64,7 +64,7 @@ async fn an_idle_validator_is_ejected_and_slashed_by_the_committee_alone() {
     // stays below it for the observation window, then the claim runs to its
     // deadline and the grace to its end, with an epoch to spare.
     let params = *nodes[0].casper.bucket_view().params();
-    let chain = nodes[0].casper.chain_parameters;
+    let chain = nodes[0].casper.chain_parameters.clone();
     let drain = (1_000_000 - params.theta_eject_ppm).div_ceil(params.lambda_ppm) as i64;
     let rounds = drain
         + params.eject_observation_blocks as i64
@@ -122,7 +122,7 @@ async fn an_idle_validator_is_ejected_and_slashed_by_the_committee_alone() {
         state
             .bonds
             .iter()
-            .any(|bond| bond.validator == idle_key && bond.stake == 0),
+            .any(|bond| bond.validator == idle_key && bond.stake == 0.into()),
         "the idle validator is slashed"
     );
     assert!(!state.ejected.contains(&idle_key));

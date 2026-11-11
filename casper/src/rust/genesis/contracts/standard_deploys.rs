@@ -129,7 +129,7 @@ fn to_deploy(
         time_stamp: timestamp,
         term: compiled_source.code,
         phlo_limit: i64::MAX, // Equivalent to accounting.MAX_VALUE in Scala
-        phlo_price: 0,
+        phlo_price: (0).into(),
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
@@ -306,11 +306,12 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
         pos.number_of_active_validators > 0,
         "active-validator cap must be positive"
     );
-    let max_overflow_per_claim = pos
-        .max_overflow_claim_minimum_bonds
-        .checked_mul(pos.minimum_bond)
-        .filter(|bound| *bound > 0)
-        .expect("the overflow claim bound must be a positive number of minimum bonds");
+    let max_overflow_per_claim = shared::rust::token_amount::TokenAmount::new(
+        pos.minimum_bond.to_bigint() * pos.max_overflow_claim_minimum_bonds,
+    )
+    .ok()
+    .filter(|bound| !bound.is_zero())
+    .expect("the overflow claim bound must be a positive number of minimum bonds");
     assert!(
         (0..=1_000_000).contains(&pos.failed_claim_fee_ppm),
         "the failed-claim fee must be in [0, 1000000] ppm of the bond"
@@ -390,7 +391,7 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
 
 pub fn vaults_generator(
     vaults: Vec<Vault>,
-    supply: i64,
+    supply: shared::rust::token_amount::TokenAmount,
     timestamp: i64,
     is_last_batch: bool,
     shard_id: &str,

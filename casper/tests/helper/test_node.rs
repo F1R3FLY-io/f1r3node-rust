@@ -1193,7 +1193,7 @@ impl TestNode {
             max_number_of_parents,
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
-            casper_version: 1,
+            casper_version: genesis.header.version,
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
@@ -1227,7 +1227,7 @@ impl TestNode {
             deploy_storage: deploy_storage.clone(),
             bucket_view: bucket_view.clone(),
             shard_conf,
-            chain: chain_parameters,
+            chain: chain_parameters.clone(),
         };
         let casper_impl = MultiParentCasperImpl {
             observer: finalization.observer.clone(),

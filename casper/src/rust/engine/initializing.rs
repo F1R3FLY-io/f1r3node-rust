@@ -2012,7 +2012,7 @@ mod tests {
                         post_state_hash: hash(b"post"),
                         bonds: vec![Bond {
                             validator: hash(b"validator"),
-                            stake: 7,
+                            stake: 7.into(),
                         }],
                         block_number: number,
                     },
@@ -2040,7 +2040,7 @@ mod tests {
         assert!(Validate::historical_block(&genesis));
 
         let mut forged = genesis.clone();
-        forged.body.state.bonds[0].stake = 1_000;
+        forged.body.state.bonds[0].stake = 1_000.into();
         assert!(!Validate::historical_block(&forged), "forged genesis");
 
         let mut renumbered = block_at(9);

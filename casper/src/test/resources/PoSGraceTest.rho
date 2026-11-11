@@ -226,7 +226,7 @@ in {
                     for (_ <- b1100) {
                       deployerIdFor!(v.nth(2), *d2b) |
                       for (@id2b <- d2b) {
-                        @PoS!("bond", id2b, 3, *bonded) |
+                        @PoS!("bond", id2b, 3n, *bonded) |
                         for (@bond <- bonded) {
                           @PoS!("getWithdrawers", *withdrawersCh) |
                           @PoS!("getBonds", *bondsCh) |
@@ -236,7 +236,7 @@ in {
                                 (withdrawers.contains(v.nth(0)), "the first is in quarantine"),
                                 (withdrawers.contains(v.nth(2)), "so is the third"),
                                 (((true, Nil), "==", bond), "the third bonds again"),
-                                ((3, "==", bonds.get(v.nth(2))), "with a new bond beside the one in quarantine")
+                                ((3n, "==", bonds.get(v.nth(2))), "with a new bond beside the one in quarantine")
                               ],
                               *ackCh
                             )
@@ -262,7 +262,7 @@ in {
           for (_ <- b1200) {
             deployerIdFor!(v.nth(3), *d3) |
             for (@id3 <- d3) {
-              @PoS!("rejoinFromEjection", id3, 50, *opened) |
+              @PoS!("rejoinFromEjection", id3, 50n, *opened) |
               failOnRefusal!(*opened, *rhoSpec, *ackCh) |
               for (@(true, _) <- opened) {
                 atBlock!(1201, *b1201) |
@@ -301,10 +301,10 @@ in {
                           "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
                           "eeeeeeeeee").hexToBytes(), *payerCh) |
           for (@payer <- payerCh) {
-            @PoS!("chargeDeploy", payer, 100, sysAuthToken, *charged) |
+            @PoS!("chargeDeploy", payer, 100n, sysAuthToken, *charged) |
             failOnRefusal!(*charged, *rhoSpec, *ackCh) |
             for (@(true, _) <- charged) {
-              @PoS!("refundDeploy", 0, sysAuthToken, *refunded) |
+              @PoS!("refundDeploy", 0n, sysAuthToken, *refunded) |
               failOnRefusal!(*refunded, *rhoSpec, *ackCh) |
               for (@(true, _) <- refunded) {
                 @PoS!("getCurrentEpochRewards", *beforeCh) |
@@ -343,7 +343,7 @@ in {
           for (_ <- b1999) {
             deployerIdFor!(v.nth(1), *d1) |
             for (@id1 <- d1) {
-              @PoS!("rejoinFromEjection", id1, 5, *opened) |
+              @PoS!("rejoinFromEjection", id1, 5n, *opened) |
               failOnRefusal!(*opened, *rhoSpec, *ackCh) |
               for (@(true, _) <- opened) {
                 atBlock!(2001, *b2001) |
@@ -387,7 +387,7 @@ in {
                     rhoSpec!("assertMany",
                       [
                         (((true, Nil), "==", result), "the expiries resolve"),
-                        ((before - after, "==", (q0 + q2 + 3).toBigInt()), "every bond held leaves the PoS vault")
+                        ((before - after, "==", q0 + q2 + 3n), "every bond held leaves the PoS vault")
                       ],
                       *ackCh
                     )

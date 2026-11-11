@@ -70,7 +70,7 @@ async fn decide_a_claim_at_depth(backed: bool, max_parent_depth: Option<i32>) ->
         .state
         .bonds
         .iter()
-        .min_by_key(|bond| bond.stake)
+        .min_by_key(|bond| bond.stake.clone())
         .expect("bonds")
         .validator
         .clone();

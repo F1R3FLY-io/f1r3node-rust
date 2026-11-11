@@ -33,7 +33,7 @@ pub fn fund_validators(genesis: &mut casper::rust::genesis::genesis::Genesis) {
             .collect();
     for vault in genesis.vaults.iter_mut() {
         if validator_vaults.contains(&vault.vault_address) {
-            vault.initial_balance = 1_000_000;
+            vault.initial_balance = 1_000_000.into();
         }
     }
 }

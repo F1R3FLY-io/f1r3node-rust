@@ -106,7 +106,7 @@ impl EquivocationDetector {
             }
             let bonded = post_state_bonds
                 .iter()
-                .any(|bond| bond.validator == equivocation.sender && bond.stake > 0);
+                .any(|bond| bond.validator == equivocation.sender && !bond.stake.is_zero());
             if bonded
                 && Self::is_equivocation_detectable(
                     dag,
@@ -780,12 +780,12 @@ mod tests {
         (dag, store, g, judged, v)
     }
 
-    fn neglect_verdict(both: bool, stake: Option<i64>) -> ValidBlockProcessing {
+    fn neglect_verdict(both: bool, stake: Option<u64>) -> ValidBlockProcessing {
         let (dag, store, genesis, judged, v) = neglect_case(both);
         let bonds: Vec<Bond> = stake
             .map(|stake| Bond {
                 validator: v,
-                stake,
+                stake: stake.into(),
             })
             .into_iter()
             .collect();

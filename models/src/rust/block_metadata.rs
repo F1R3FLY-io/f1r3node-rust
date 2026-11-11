@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 
 use prost::bytes::Bytes;
 use prost::Message;
+use shared::rust::token_amount::TokenAmount;
 
-use super::casper::protocol::casper_message::{BlockMessage, F1r3flyState, Justification};
-use crate::casper::{BlockMetadataInternal, BondProto};
+use super::casper::protocol::casper_message::{BlockMessage, Bond, F1r3flyState, Justification};
+use crate::casper::BlockMetadataInternal;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BlockMetadata {
@@ -18,8 +19,8 @@ pub struct BlockMetadata {
     #[serde(with = "shared::rust::serde_bytes")]
     pub sender: Bytes,
     pub justifications: Vec<Justification>,
-    #[serde(with = "shared::rust::serde_btreemap_bytes_i64")]
-    pub weight_map: BTreeMap<Bytes, i64>,
+    #[serde(with = "shared::rust::serde_btreemap_bytes")]
+    pub weight_map: BTreeMap<Bytes, TokenAmount>,
     pub block_number: i64,
     pub sequence_number: i32,
     /// The sender's other block at `sequence_number`, set when this block is
@@ -75,8 +76,8 @@ impl std::hash::Hash for BlockMetadata {
 }
 
 impl BlockMetadata {
-    pub fn from_proto(proto: BlockMetadataInternal) -> Self {
-        BlockMetadata {
+    pub fn from_proto(proto: BlockMetadataInternal) -> Result<Self, String> {
+        Ok(BlockMetadata {
             block_hash: proto.block_hash,
             parents: proto.parents,
             sender: proto.sender,
@@ -88,8 +89,11 @@ impl BlockMetadata {
             weight_map: proto
                 .bonds
                 .into_iter()
-                .map(|b| (b.validator.into(), b.stake))
-                .collect(),
+                .map(|b| {
+                    let bond = Bond::from_proto(b)?;
+                    Ok((bond.validator, bond.stake))
+                })
+                .collect::<Result<_, String>>()?,
             block_number: proto.block_num,
             sequence_number: proto.seq_num,
             equivocates: (!proto.equivocates.is_empty()).then_some(proto.equivocates),
@@ -97,7 +101,7 @@ impl BlockMetadata {
             finalized: proto.finalized,
             fault_tolerance_value: proto.fault_tolerance_value,
             merge_base: proto.merge_base,
-        }
+        })
     }
 
     pub fn to_proto(&self) -> BlockMetadataInternal {
@@ -109,9 +113,12 @@ impl BlockMetadata {
             bonds: self
                 .weight_map
                 .iter()
-                .map(|(v, s)| BondProto {
-                    validator: v.clone(),
-                    stake: *s,
+                .map(|(v, s)| {
+                    Bond {
+                        validator: v.clone(),
+                        stake: s.clone(),
+                    }
+                    .to_proto()
                 })
                 .collect(),
             block_num: self.block_number,
@@ -126,9 +133,8 @@ impl BlockMetadata {
 
     pub fn to_bytes(&self) -> Vec<u8> { self.to_proto().encode_to_vec() }
 
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let proto =
-            BlockMetadataInternal::decode(bytes).expect("Failed to decode BlockMetadataInternal");
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let proto = BlockMetadataInternal::decode(bytes).map_err(|error| error.to_string())?;
         Self::from_proto(proto)
     }
 
@@ -141,11 +147,11 @@ impl BlockMetadata {
         }
     }
 
-    fn weight_map(state: &F1r3flyState) -> BTreeMap<Bytes, i64> {
+    fn weight_map(state: &F1r3flyState) -> BTreeMap<Bytes, TokenAmount> {
         state
             .bonds
             .iter()
-            .map(|b| (b.validator.clone(), b.stake))
+            .map(|b| (b.validator.clone(), b.stake.clone()))
             .collect()
     }
 
@@ -197,8 +203,8 @@ mod tests {
                 latest_block_hash: Bytes::from_static(b"latest"),
             }],
             weight_map: BTreeMap::from([
-                (Bytes::from_static(b"v1"), 10),
-                (Bytes::from_static(b"v2"), 20),
+                (Bytes::from_static(b"v1"), 10.into()),
+                (Bytes::from_static(b"v2"), 20.into()),
             ]),
             block_number: 7,
             sequence_number: 3,
@@ -217,9 +223,25 @@ mod tests {
     }
 
     #[test]
+    fn bigint_metadata_round_trip_and_invalid_wire_errors() {
+        let mut metadata = sample();
+        metadata
+            .weight_map
+            .insert(Bytes::from_static(b"huge"), TokenAmount::max());
+        assert_eq!(
+            BlockMetadata::from_bytes(&metadata.to_bytes()).unwrap(),
+            metadata
+        );
+        let mut wire = metadata.to_proto();
+        wire.bonds[0].stake = Bytes::new();
+        assert!(BlockMetadata::from_proto(wire).is_err());
+        assert!(BlockMetadata::from_bytes(&[255]).is_err());
+    }
+
+    #[test]
     fn proto_round_trip_preserves_every_field() {
         let metadata = sample();
-        let round_tripped = BlockMetadata::from_proto(metadata.to_proto());
+        let round_tripped = BlockMetadata::from_proto(metadata.to_proto()).unwrap();
         assert_eq!(round_tripped, metadata);
         assert_eq!(
             round_tripped.fault_tolerance_value,
@@ -230,7 +252,7 @@ mod tests {
     #[test]
     fn bytes_round_trip_preserves_every_field() {
         let metadata = sample();
-        let round_tripped = BlockMetadata::from_bytes(&metadata.to_bytes());
+        let round_tripped = BlockMetadata::from_bytes(&metadata.to_bytes()).unwrap();
         assert_eq!(round_tripped, metadata);
         assert_eq!(
             round_tripped.fault_tolerance_value,
@@ -242,9 +264,13 @@ mod tests {
     fn to_proto_maps_weight_map_to_bonds() {
         let proto = sample().to_proto();
         let validators: Vec<&[u8]> = proto.bonds.iter().map(|b| b.validator.as_ref()).collect();
-        let stakes: Vec<i64> = proto.bonds.iter().map(|b| b.stake).collect();
+        let stakes: Vec<TokenAmount> = proto
+            .bonds
+            .iter()
+            .map(|b| TokenAmount::from_wire(&b.stake).unwrap())
+            .collect();
         assert_eq!(validators, vec![b"v1".as_ref(), b"v2".as_ref()]);
-        assert_eq!(stakes, vec![10, 20]);
+        assert_eq!(stakes, vec![10.into(), 20.into()]);
     }
 
     #[test]

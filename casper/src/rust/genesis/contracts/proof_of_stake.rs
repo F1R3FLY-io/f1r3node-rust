@@ -1,5 +1,7 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/contracts/ProofOfStake.scala
 
+use shared::rust::token_amount::TokenAmount;
+
 use super::validator::Validator;
 use crate::rust::chain_parameters::WindowBasis;
 
@@ -8,8 +10,8 @@ use crate::rust::chain_parameters::WindowBasis;
 // TODO: Remove hardcoded keys from standard deploys: https://rchain.atlassian.net/browse/RCHAIN-3321?atlOrigin=eyJpIjoiNDc0NjE4YzYxOTRkNDcyYjljZDdlOWMxYjE1NWUxNjIiLCJwIjoiaiJ9 - OLD
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ProofOfStake {
-    pub minimum_bond: i64,
-    pub maximum_bond: i64,
+    pub minimum_bond: TokenAmount,
+    pub maximum_bond: TokenAmount,
     pub validators: Vec<Validator>,
     pub epoch_length: i32,
     pub quarantine_length: i32,
@@ -17,7 +19,7 @@ pub struct ProofOfStake {
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     /// Reward rate per block, in ppm of the proposer's stake per committee
     /// member.
     pub reward_rate_ppm: i64,
@@ -107,21 +109,21 @@ impl ProofOfStake {
 
     /// The chain parameter this genesis writes under `name`, as the PoS
     /// contract's `getChainParameters` reports it back.
-    pub fn chain_parameter(&self, name: &str) -> Result<i64, String> {
+    pub fn chain_parameter(&self, name: &str) -> Result<num_bigint::BigInt, String> {
         Ok(match name {
-            "faultToleranceThresholdPpm" => self.fault_tolerance_threshold_ppm,
-            "maxParentDepth" => self.max_parent_depth as i64,
-            "deployLifespan" => self.deploy_lifespan,
-            "minPhloPrice" => self.min_phlo_price,
-            "epochLength" => self.epoch_length as i64,
-            "quarantineLength" => self.quarantine_length as i64,
-            "lambdaBasePpm" => self.lambda_base_ppm,
-            "thetaEjectPpm" => self.theta_eject_ppm,
-            "ejectObservationBlocks" => self.eject_observation_blocks,
-            "breadthExponent" => self.breadth_exponent,
-            "recencyReferencePpm" => self.recency_reference_ppm,
-            "voteListBound" => self.vote_list_bound,
-            "rewardRatePpm" => self.reward_rate_ppm,
+            "faultToleranceThresholdPpm" => self.fault_tolerance_threshold_ppm.into(),
+            "maxParentDepth" => self.max_parent_depth.into(),
+            "deployLifespan" => self.deploy_lifespan.into(),
+            "minPhloPrice" => self.min_phlo_price.to_bigint(),
+            "epochLength" => self.epoch_length.into(),
+            "quarantineLength" => self.quarantine_length.into(),
+            "lambdaBasePpm" => self.lambda_base_ppm.into(),
+            "thetaEjectPpm" => self.theta_eject_ppm.into(),
+            "ejectObservationBlocks" => self.eject_observation_blocks.into(),
+            "breadthExponent" => self.breadth_exponent.into(),
+            "recencyReferencePpm" => self.recency_reference_ppm.into(),
+            "voteListBound" => self.vote_list_bound.into(),
+            "rewardRatePpm" => self.reward_rate_ppm.into(),
             other => return Err(format!("genesis writes no chain parameter {other}")),
         })
     }
@@ -149,7 +151,7 @@ impl ProofOfStake {
             .iter()
             .map(|validator| {
                 let pk_string = hex::encode(validator.pk.bytes.clone());
-                format!(" \"{}\".hexToBytes() : {}", pk_string, validator.stake)
+                format!(" \"{}\".hexToBytes() : {}n", pk_string, validator.stake)
             })
             .collect::<Vec<String>>()
             .join(", ");

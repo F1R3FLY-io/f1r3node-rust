@@ -22,10 +22,13 @@ impl TestContext {
     async fn new() -> Self {
         // Note: validatorsNum not specified, so uses default = 4
         // But zip with List(10, 10, 10) means only first 3 validators get bonds
-        fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+        fn bonds_function(
+            validators: Vec<PublicKey>,
+        ) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
             validators
                 .into_iter()
-                .zip(vec![10i64, 10i64, 10i64])
+                .zip(vec![10u64, 10u64, 10u64])
+                .map(|(key, stake)| (key, stake.into()))
                 .collect()
         }
 

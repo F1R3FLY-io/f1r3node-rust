@@ -64,7 +64,7 @@ fn create_deploy(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0),
-        phlo_price: 1,
+        phlo_price: (1).into(),
         phlo_limit: 1000,
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
@@ -205,8 +205,8 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         ..CasperShardConf::new()
     };
 
-    let mut bonds_map: HashMap<ByteString, i64> = HashMap::new();
-    bonds_map.insert(validator_id.clone(), 100);
+    let mut bonds_map: HashMap<ByteString, num_bigint::BigInt> = HashMap::new();
+    bonds_map.insert(validator_id.clone(), 100.into());
 
     // Set maxSeqNums like Scala does: Map(validatorId -> 0)
     let mut max_seq_nums: HashMap<ByteString, u64> = HashMap::new();
@@ -218,7 +218,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 0,
             deploy_lifespan: DEPLOY_LIFESPAN,
-            min_phlo_price: 0,
+            min_phlo_price: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
             ..ChainParameters::shipped()

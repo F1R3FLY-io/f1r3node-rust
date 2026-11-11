@@ -109,7 +109,9 @@ fn bonds(stakes: &[(u8, i64)]) -> Vec<Bond> {
         .iter()
         .map(|(byte, stake)| Bond {
             validator: validator(*byte),
-            stake: *stake,
+            stake: u64::try_from(*stake)
+                .expect("test stakes are non-negative")
+                .into(),
         })
         .collect()
 }

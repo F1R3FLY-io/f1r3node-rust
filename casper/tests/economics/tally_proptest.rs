@@ -12,7 +12,7 @@ fn validator(index: usize) -> Validator { Validator::from(vec![index as u8; 33])
 
 #[derive(Clone, Copy, Debug)]
 struct Member {
-    stake: i64,
+    stake: u64,
     vote: Option<bool>,
     slashed: bool,
     seated: bool,
@@ -24,7 +24,7 @@ struct Member {
 fn electorate() -> impl Strategy<Value = Vec<Member>> {
     prop::collection::vec(
         (
-            prop_oneof![1i64..4, 1i64..1_000_000],
+            prop_oneof![1u64..4, 1u64..1_000_000],
             prop::option::of(any::<bool>()),
             any::<bool>(),
             any::<bool>(),
@@ -45,7 +45,7 @@ fn decide(members: &[Member]) -> Option<ClaimOutcome> {
         .enumerate()
         .map(|(index, member)| Bond {
             validator: validator(index),
-            stake: member.stake,
+            stake: member.stake.into(),
         })
         .collect();
     let with = |flag: fn(&Member) -> bool| -> HashSet<Validator> {

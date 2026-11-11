@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use models::rust::block_hash::BlockHash;
@@ -9,6 +9,8 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, ClaimFamily, ClaimId, FreezeInterval,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
+use shared::rust::token_amount::TokenAmount;
 
 use super::claims::{ClaimRecord, ClaimTerms};
 use super::dishonest_vote::{Accusation, PendingAccusation};
@@ -51,7 +53,7 @@ impl LeakyBucketParams {
 pub struct Knowledge {
     floor_number: i64,
     freezes: HashMap<Validator, Vec<FreezeInterval>>,
-    claimed_total: HashMap<Validator, i64>,
+    claimed_total: HashMap<Validator, TokenAmount>,
 }
 
 impl Knowledge {
@@ -63,7 +65,7 @@ impl Knowledge {
             claimed_total: floor
                 .claimed
                 .iter()
-                .map(|claimed| (claimed.validator.clone(), claimed.total))
+                .map(|claimed| (claimed.validator.clone(), claimed.total.clone()))
                 .collect(),
         }
     }
@@ -77,8 +79,11 @@ impl Knowledge {
     }
 
     /// A validator the state records no payment for has been paid nothing.
-    pub fn claimed_total(&self, validator: &Validator) -> i64 {
-        self.claimed_total.get(validator).copied().unwrap_or(0)
+    pub fn claimed_total(&self, validator: &Validator) -> TokenAmount {
+        self.claimed_total
+            .get(validator)
+            .cloned()
+            .unwrap_or_else(TokenAmount::zero)
     }
 
     fn is_ejected(&self, validator: &Validator) -> bool {
@@ -109,10 +114,11 @@ fn effective<'k>(
         .filter(|interval| {
             interval
                 .rejoin
+                .as_ref()
                 .is_some_and(|rejoin| rejoin.at.saturating_add(window) < knowledge.floor_number)
                 && !recorded.iter().any(|kept| kept.from == interval.from)
         })
-        .copied()
+        .cloned()
         .collect();
     if aged.is_empty() {
         return Cow::Borrowed(recorded);
@@ -123,16 +129,17 @@ fn effective<'k>(
     Cow::Owned(all)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct BucketEntry {
     /// In units of `1 / PPM` of a bond unit: the drain is a fraction of
     /// capacity and would round to nothing in whole bond units for any bond
     /// below `1 / lambda`, which is every bond the test genesis assigns.
-    level: u128,
+    level: BigInt,
     /// Same units as the level: everything credited, before any payment is
     /// taken off.
-    overflow: u128,
-    capacity: NonZeroU64,
+    overflow: BigInt,
+    /// Positive.
+    capacity: BigInt,
     /// Consecutive observations below the threshold, counted only while this
     /// validator is in the observed block's committee and not frozen, so a
     /// frozen bucket neither advances its window nor forgets it.
@@ -146,10 +153,10 @@ impl BucketEntry {
     /// validator that has just joined the committee has not yet had the
     /// chance to fail. Starting at zero would make every new member
     /// immediately ejectable.
-    fn full(capacity: NonZeroU64) -> Self {
+    fn full(capacity: BigInt) -> Self {
         Self {
-            level: Self::scaled(capacity),
-            overflow: 0,
+            level: Self::scaled(&capacity),
+            overflow: BigInt::from(0),
             capacity,
             blocks_below_threshold: 0,
             refilled_through: None,
@@ -159,52 +166,50 @@ impl BucketEntry {
     /// Starts at the ejection threshold, for a validator first seen while
     /// frozen: the ejection is the record that more than two thirds of its
     /// electorate held it below this level.
-    fn at_threshold(capacity: NonZeroU64, theta_eject_ppm: u64) -> Self {
+    fn at_threshold(capacity: BigInt, theta_eject_ppm: u64) -> Self {
         Self {
-            level: capacity.get() as u128 * theta_eject_ppm as u128,
+            level: &capacity * theta_eject_ppm,
             ..Self::full(capacity)
         }
     }
 
-    fn scaled(capacity: NonZeroU64) -> u128 { capacity.get() as u128 * PPM as u128 }
+    fn scaled(capacity: &BigInt) -> BigInt { capacity * PPM }
 
-    fn threshold(&self, theta_eject_ppm: u64) -> u128 {
-        self.capacity.get() as u128 * theta_eject_ppm as u128
-    }
+    fn threshold(&self, theta_eject_ppm: u64) -> BigInt { &self.capacity * theta_eject_ppm }
 
     fn decay(&mut self, lambda_ppm: u64) {
-        self.level = self
-            .level
-            .saturating_sub(self.capacity.get() as u128 * lambda_ppm as u128);
+        self.level -= &self.capacity * lambda_ppm;
+        if self.level < BigInt::from(0) {
+            self.level = BigInt::from(0);
+        }
     }
 
-    fn fill(&mut self, reward: u128) {
-        let headroom = Self::scaled(self.capacity).saturating_sub(self.level);
-        let into_level = reward.min(headroom);
+    fn fill(&mut self, reward: &BigInt) {
+        let headroom = (Self::scaled(&self.capacity) - &self.level).max(BigInt::from(0));
+        let into_level = reward.min(&headroom).clone();
+        self.overflow += reward - &into_level;
         self.level += into_level;
-        self.overflow = self.overflow.saturating_add(reward - into_level);
     }
 
     /// Holds the level's share of capacity fixed, so a bond change moves a
     /// validator neither towards nor away from its own threshold. Clamping
     /// instead would let a draining validator refill by unbonding.
-    fn reseat(&mut self, capacity: NonZeroU64) {
-        if capacity != self.capacity {
-            // Same floor as `level * new / old` without forming that product,
-            // which exceeds `u128` at the shipped `bond-maximum` of `i64::MAX`.
-            let (old, new) = (self.capacity.get() as u128, capacity.get() as u128);
-            self.level = (self.level / old) * new + (self.level % old) * new / old;
-            self.capacity = capacity;
+    fn reseat(&mut self, capacity: &BigInt) {
+        if *capacity != self.capacity {
+            self.level = &self.level * capacity / &self.capacity;
+            self.capacity = capacity.clone();
         }
     }
 
     /// A rejoin fills the bucket to capacity, and whatever of `credit` that
     /// refill did not need becomes overflow.
-    fn rejoin(&mut self, credit: u128) {
-        let full = Self::scaled(self.capacity);
-        let refill = full.saturating_sub(self.level);
+    fn rejoin(&mut self, credit: BigInt) {
+        let full = Self::scaled(&self.capacity);
+        let refill = &full - &self.level;
         self.level = full;
-        self.overflow = self.overflow.saturating_add(credit.saturating_sub(refill));
+        if credit > refill {
+            self.overflow += credit - refill;
+        }
         self.blocks_below_threshold = 0;
     }
 
@@ -212,12 +217,15 @@ impl BucketEntry {
     /// applied yet. One paid at or below `uncredited_through` predates the
     /// view, so it refills the level and credits nothing.
     fn refill(&mut self, freezes: &[FreezeInterval], before: i64, uncredited_through: i64) {
-        for rejoin in freezes.iter().filter_map(|interval| interval.rejoin) {
+        for rejoin in freezes
+            .iter()
+            .filter_map(|interval| interval.rejoin.as_ref())
+        {
             if rejoin.at < before && self.refilled_through.is_none_or(|at| rejoin.at > at) {
                 let credit = if rejoin.at > uncredited_through {
-                    rejoin.topup.max(0) as u128 * PPM as u128
+                    rejoin.topup.as_bigint() * PPM
                 } else {
-                    0
+                    BigInt::from(0)
                 };
                 self.rejoin(credit);
                 self.refilled_through = Some(rejoin.at);
@@ -230,7 +238,7 @@ impl BucketEntry {
     fn mark_refilled(&mut self, freezes: &[FreezeInterval], before: i64) {
         self.refilled_through = freezes
             .iter()
-            .filter_map(|interval| interval.rejoin)
+            .filter_map(|interval| interval.rejoin.as_ref())
             .map(|rejoin| rejoin.at)
             .filter(|at| *at < before)
             .max();
@@ -261,9 +269,9 @@ pub struct LeakyBucketProposal {
     pub ejection_offers: Vec<Validator>,
     pub drained: HashSet<Validator>,
     /// Capacity less level, in units of `1 / PPM` of a bond unit.
-    pub shortfall: HashMap<Validator, u128>,
+    pub shortfall: HashMap<Validator, BigInt>,
     /// Overflow less what has been paid, in units of `1 / PPM` of a bond unit.
-    pub overflow: HashMap<Validator, u128>,
+    pub overflow: HashMap<Validator, BigInt>,
     /// Nays on overflow claims this node has seen from validators its latest
     /// floor still shows holding stake, by accused and then in the order this
     /// node accepted them. Each is offered only if the block's floor proves it.
@@ -272,27 +280,20 @@ pub struct LeakyBucketProposal {
 
 impl LeakyBucketProposal {
     pub fn votes_yea(&self, record: &ClaimRecord) -> bool {
-        match record.terms {
+        let zero = BigInt::from(0);
+        match &record.terms {
             ClaimTerms::Eject => self.drained.contains(&record.claim.target),
             ClaimTerms::Rejoin { topup, .. } => {
                 // A validator with no bucket here is full, as a new entry
                 // starts (`BucketEntry::full`).
-                let shortfall = self
-                    .shortfall
-                    .get(&record.claim.target)
-                    .copied()
-                    .unwrap_or(0);
-                (topup.max(0) as u128).saturating_mul(PPM as u128) >= shortfall
+                let shortfall = self.shortfall.get(&record.claim.target).unwrap_or(&zero);
+                topup.as_bigint() * PPM >= *shortfall
             }
             ClaimTerms::Overflow { amount } => {
                 // A validator with no bucket here has earned nothing in this
                 // view, as a new entry starts with no overflow.
-                let overflow = self
-                    .overflow
-                    .get(&record.claim.target)
-                    .copied()
-                    .unwrap_or(0);
-                overflow >= (amount.max(0) as u128).saturating_mul(PPM as u128)
+                let overflow = self.overflow.get(&record.claim.target).unwrap_or(&zero);
+                *overflow >= amount.as_bigint() * PPM
             }
         }
     }
@@ -320,16 +321,16 @@ pub struct ViewSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BucketSnapshot {
     pub validator: Validator,
-    pub capacity: u64,
-    pub level: u128,
-    pub threshold: u128,
+    pub capacity: BigInt,
+    pub level: BigInt,
+    pub threshold: BigInt,
     pub drained: bool,
     /// Consecutive observations below the threshold.
     pub blocks_below_threshold: u64,
     /// Everything credited, before payments are taken off.
-    pub overflow: u128,
+    pub overflow: BigInt,
     /// Bond units paid out of the overflow since the view began crediting.
-    pub paid: i64,
+    pub paid: BigInt,
     pub ejected: bool,
 }
 
@@ -419,8 +420,9 @@ struct Logged {
     number: i64,
     sender: Validator,
     sequence_number: i64,
-    committee: Arc<BTreeMap<Validator, NonZeroU64>>,
-    reward: u128,
+    /// Positive stakes only.
+    committee: Arc<BTreeMap<Validator, BigInt>>,
+    reward: BigInt,
 }
 
 impl LeakyBucketParams {
@@ -436,7 +438,7 @@ impl LeakyBucketParams {
         freezes: &[FreezeInterval],
         uncredited_through: i64,
     ) {
-        let Some(capacity) = block.committee.get(validator).copied() else {
+        let Some(capacity) = block.committee.get(validator) else {
             return;
         };
         let own_sequence = (block.sender == *validator).then_some(block.sequence_number);
@@ -455,9 +457,9 @@ impl LeakyBucketParams {
             }
             None => {
                 let mut fresh = if frozen {
-                    BucketEntry::at_threshold(capacity, self.theta_eject_ppm)
+                    BucketEntry::at_threshold(capacity.clone(), self.theta_eject_ppm)
                 } else {
-                    BucketEntry::full(capacity)
+                    BucketEntry::full(capacity.clone())
                 };
                 fresh.mark_refilled(freezes, block.number);
                 let entry = entry.insert(fresh);
@@ -468,7 +470,7 @@ impl LeakyBucketParams {
             }
         };
         if block.sender == *validator {
-            entry.fill(block.reward);
+            entry.fill(&block.reward);
         }
         entry.observe_threshold(self.theta_eject_ppm);
     }
@@ -523,7 +525,7 @@ struct ViewState {
 #[derive(Default)]
 struct Baseline {
     credited_from: i64,
-    paid_before: HashMap<Validator, i64>,
+    paid_before: HashMap<Validator, BigInt>,
 }
 
 /// The highest-numbered block observed: its committee is who can currently be
@@ -546,19 +548,12 @@ impl ViewState {
     }
 
     /// What `knowledge` shows `validator` paid since the view's credit began.
-    fn paid_since_baseline(&self, validator: &Validator, knowledge: &Knowledge) -> i64 {
+    fn paid_since_baseline(&self, validator: &Validator, knowledge: &Knowledge) -> BigInt {
+        let zero = BigInt::from(0);
         // Paid nothing before the view began when the starting floor recorded
         // no payment to it.
-        let before = self
-            .baseline
-            .paid_before
-            .get(validator)
-            .copied()
-            .unwrap_or(0);
-        knowledge
-            .claimed_total(validator)
-            .saturating_sub(before)
-            .max(0)
+        let before = self.baseline.paid_before.get(validator).unwrap_or(&zero);
+        (knowledge.claimed_total(validator).into_bigint() - before).max(zero)
     }
 
     fn replay(
@@ -568,7 +563,7 @@ impl ViewState {
         freezes: &[FreezeInterval],
     ) -> Option<BucketEntry> {
         let uncredited_through = self.uncredited_through();
-        let mut entry = self.base.get(validator).copied();
+        let mut entry = self.base.get(validator).cloned();
         for block in &self.log {
             params.step(&mut entry, validator, block, freezes, uncredited_through);
         }
@@ -599,16 +594,13 @@ impl BucketView {
             .claimed
             .iter()
             .map(|claimed| {
-                let since: i64 = claimed
+                let since: BigInt = claimed
                     .payments
                     .iter()
                     .filter(|payment| payment.at >= credited_from)
-                    .map(|payment| payment.amount)
+                    .map(|payment| payment.amount.as_bigint())
                     .sum();
-                (
-                    claimed.validator.clone(),
-                    claimed.total.saturating_sub(since),
-                )
+                (claimed.validator.clone(), claimed.total.as_bigint() - since)
             })
             .collect();
         self.state.lock().baseline = Baseline {
@@ -646,7 +638,7 @@ impl BucketView {
             .live
             .iter()
             .map(|(validator, live)| {
-                let mut entry = *live;
+                let mut entry = live.clone();
                 entry.refill(
                     &effective(
                         &state.known,
@@ -659,11 +651,11 @@ impl BucketView {
                 );
                 BucketSnapshot {
                     validator: validator.clone(),
-                    capacity: entry.capacity.get(),
-                    level: entry.level,
                     threshold: entry.threshold(self.params.theta_eject_ppm),
                     drained: entry.is_drained(self.params.theta_eject_ppm),
                     blocks_below_threshold: entry.blocks_below_threshold,
+                    capacity: entry.capacity,
+                    level: entry.level,
                     overflow: entry.overflow,
                     paid: state.paid_since_baseline(validator, &state.known),
                     ejected: state.known.is_ejected(validator),
@@ -704,12 +696,11 @@ impl BucketView {
     /// Folds one accepted block in: every member's bucket drains by one
     /// block, and the sender's refills by the block's reward.
     pub fn observe(&self, observation: &Observation) {
-        let committee: BTreeMap<Validator, NonZeroU64> = observation
+        let committee: BTreeMap<Validator, BigInt> = observation
             .committee
             .iter()
-            .filter_map(|(validator, stake)| {
-                NonZeroU64::new((*stake).max(0) as u64).map(|stake| (validator.clone(), stake))
-            })
+            .filter(|(_, stake)| **stake > BigInt::from(0))
+            .map(|(validator, stake)| (validator.clone(), stake.clone()))
             .collect();
         if committee.is_empty() {
             return;
@@ -774,7 +765,7 @@ impl BucketView {
             ..
         } = &mut *state;
         for validator in block.committee.keys().filter(|v| !slashed.contains(*v)) {
-            let mut entry = live.get(validator).copied();
+            let mut entry = live.get(validator).cloned();
             self.params.step(
                 &mut entry,
                 validator,
@@ -810,7 +801,7 @@ impl BucketView {
             .bonds
             .iter()
             .chain(floor.withdrawers.iter())
-            .filter(|bond| bond.stake > 0)
+            .filter(|bond| !bond.stake.is_zero())
             .map(|bond| &bond.validator)
             .collect();
         let knowledge = Knowledge::of(floor, floor_number);
@@ -822,7 +813,7 @@ impl BucketView {
                 .bonds
                 .iter()
                 .chain(floor.withdrawers.iter())
-                .filter(|bond| bond.stake == 0)
+                .filter(|bond| bond.stake.is_zero())
                 .map(|bond| bond.validator.clone()),
         );
         // A validator that bonds again starts a new entry, which must not be
@@ -835,7 +826,7 @@ impl BucketView {
             .cloned()
             .collect();
         for validator in departed {
-            let paid = knowledge.claimed_total(&validator);
+            let paid = knowledge.claimed_total(&validator).into_bigint();
             state.baseline.paid_before.insert(validator, paid);
         }
         state
@@ -876,8 +867,8 @@ impl BucketView {
                 .filter(|interval| interval.rejoin.is_some())
             {
                 match kept.iter_mut().find(|known| known.from == interval.from) {
-                    Some(known) => *known = *interval,
-                    None => kept.push(*interval),
+                    Some(known) => *known = interval.clone(),
+                    None => kept.push(interval.clone()),
                 }
             }
         }
@@ -895,7 +886,7 @@ impl BucketView {
                     ..
                 } = &mut *state;
                 for validator in block.committee.keys().filter(|v| !slashed.contains(*v)) {
-                    let mut entry = base.get(validator).copied();
+                    let mut entry = base.get(validator).cloned();
                     self.params.step(
                         &mut entry,
                         validator,
@@ -963,7 +954,7 @@ impl BucketView {
                 let mut entry = if freezes
                     == effective(&state.known, &state.remembered, validator, retention)
                 {
-                    *live
+                    live.clone()
                 } else {
                     state.replay(&self.params, validator, &freezes).expect(
                         "a tracked validator is rebuilt from the base and log that built it",
@@ -1003,16 +994,18 @@ impl BucketView {
                 .map(|(validator, entry)| {
                     (
                         (*validator).clone(),
-                        BucketEntry::scaled(entry.capacity).saturating_sub(entry.level),
+                        (BucketEntry::scaled(&entry.capacity) - &entry.level).max(BigInt::from(0)),
                     )
                 })
                 .collect(),
             overflow: entries
                 .iter()
                 .map(|(validator, entry)| {
-                    let paid =
-                        state.paid_since_baseline(validator, knowledge) as u128 * PPM as u128;
-                    ((*validator).clone(), entry.overflow.saturating_sub(paid))
+                    let paid = state.paid_since_baseline(validator, knowledge) * PPM;
+                    (
+                        (*validator).clone(),
+                        (&entry.overflow - paid).max(BigInt::from(0)),
+                    )
                 })
                 .collect(),
             accusations: state
@@ -1064,9 +1057,9 @@ mod tests {
                 .into_iter()
                 .find(|bucket| bucket.validator == *validator)
                 .map(|bucket| BucketStatus {
-                    level: bucket.level,
-                    overflow: bucket.overflow,
-                    capacity: bucket.capacity,
+                    level: small(&bucket.level),
+                    overflow: small(&bucket.overflow),
+                    capacity: u64::try_from(&bucket.capacity).expect("test capacities fit u64"),
                     blocks_below_threshold: bucket.blocks_below_threshold,
                 })
         }
@@ -1086,11 +1079,18 @@ mod tests {
 
     /// The overflow the view would vote with, payments taken off.
     fn owed(view: &BucketView, target: &Validator) -> u128 {
-        view.proposal(&validator(OBSERVER))
-            .overflow
-            .get(target)
-            .copied()
-            .expect("tracked")
+        small(
+            view.proposal(&validator(OBSERVER))
+                .overflow
+                .get(target)
+                .expect("tracked"),
+        )
+    }
+
+    fn small(value: &BigInt) -> u128 { u128::try_from(value).expect("test amounts fit u128") }
+
+    fn stake(value: i64) -> TokenAmount {
+        TokenAmount::new(BigInt::from(value)).expect("test stakes are non-negative")
     }
 
     fn floor(
@@ -1140,20 +1140,21 @@ mod tests {
         FreezeInterval {
             from,
             from_sequence: from - 1,
-            rejoin: Some(Rejoin { at, topup }),
+            rejoin: Some(Rejoin {
+                at,
+                topup: stake(topup),
+            }),
         }
     }
 
-    fn entry(capacity: u64) -> BucketEntry {
-        BucketEntry::full(NonZeroU64::new(capacity).expect("a bucket needs a positive bond"))
-    }
+    fn entry(capacity: u64) -> BucketEntry { BucketEntry::full(BigInt::from(capacity)) }
 
     fn bonds(stakes: &[(u8, i64)]) -> Vec<Bond> {
         stakes
             .iter()
-            .map(|(byte, stake)| Bond {
+            .map(|(byte, value)| Bond {
                 validator: validator(*byte),
-                stake: *stake,
+                stake: stake(*value),
             })
             .collect()
     }
@@ -1281,11 +1282,19 @@ mod tests {
     fn decay_removes_lambda_of_capacity_per_block_and_floors_at_zero() {
         let mut bucket = entry(1_000);
         bucket.decay(10_000);
-        assert_eq!(bucket.level, 990_000_000, "1% of capacity per block");
+        assert_eq!(
+            small(&bucket.level),
+            990_000_000,
+            "1% of capacity per block"
+        );
         for _ in 0..200 {
             bucket.decay(10_000);
         }
-        assert_eq!(bucket.level, 0, "the level floors rather than underflowing");
+        assert_eq!(
+            small(&bucket.level),
+            0,
+            "the level floors rather than going negative"
+        );
     }
 
     /// `(1 − θ)/λ` decays land the level EXACTLY on the threshold, and the
@@ -1315,32 +1324,34 @@ mod tests {
     fn fill_tops_up_the_level_then_spills_to_overflow() {
         let mut bucket = entry(1_000);
         bucket.decay(10_000);
-        assert_eq!(bucket.level, 990_000_000);
+        assert_eq!(small(&bucket.level), 990_000_000);
 
-        bucket.fill(5_000_000);
-        assert_eq!((bucket.level, bucket.overflow), (995_000_000, 0));
+        bucket.fill(&BigInt::from(5_000_000));
+        assert_eq!(held(&bucket), (995_000_000, 0));
 
-        bucket.fill(100_000_000);
+        bucket.fill(&BigInt::from(100_000_000));
         assert_eq!(
-            (bucket.level, bucket.overflow),
+            held(&bucket),
             (1_000_000_000, 95_000_000),
             "the level caps at capacity and the remainder becomes overflow"
         );
     }
 
+    /// The level and overflow of `bucket`.
+    fn held(bucket: &BucketEntry) -> (u128, u128) {
+        (small(&bucket.level), small(&bucket.overflow))
+    }
+
     #[test]
     fn overflow_never_refills_the_level() {
         let mut bucket = entry(1_000);
-        bucket.fill(500_000_000);
-        assert_eq!(
-            (bucket.level, bucket.overflow),
-            (1_000_000_000, 500_000_000)
-        );
+        bucket.fill(&BigInt::from(500_000_000));
+        assert_eq!(held(&bucket), (1_000_000_000, 500_000_000));
         for _ in 0..50 {
             bucket.decay(10_000);
         }
         assert_eq!(
-            (bucket.level, bucket.overflow),
+            held(&bucket),
             (500_000_000, 500_000_000),
             "a drained level does not draw on overflow, even below the threshold"
         );
@@ -1353,7 +1364,7 @@ mod tests {
     fn reseating_a_bond_preserves_the_level_as_a_share_of_capacity() {
         let drained = |capacity| {
             let mut bucket = entry(capacity);
-            bucket.fill(50_000_000);
+            bucket.fill(&BigInt::from(50_000_000));
             for _ in 0..11 {
                 bucket.decay(10_000);
             }
@@ -1362,10 +1373,10 @@ mod tests {
 
         let mut shrunk = drained(1_000);
         assert!(shrunk.level < shrunk.threshold(900_000));
-        shrunk.reseat(NonZeroU64::new(400).unwrap());
+        shrunk.reseat(&BigInt::from(400));
         assert_eq!(
-            (shrunk.level, shrunk.capacity.get(), shrunk.overflow),
-            (356_000_000, 400, 50_000_000)
+            (held(&shrunk), small(&shrunk.capacity)),
+            ((356_000_000, 50_000_000), 400)
         );
         assert!(
             shrunk.level < shrunk.threshold(900_000),
@@ -1373,27 +1384,27 @@ mod tests {
         );
 
         let mut grown = drained(1_000);
-        grown.reseat(NonZeroU64::new(3_000).unwrap());
-        assert_eq!(grown.level, 2_670_000_000);
+        grown.reseat(&BigInt::from(3_000));
+        assert_eq!(small(&grown.level), 2_670_000_000);
         assert!(
             grown.level < grown.threshold(900_000),
             "the share of capacity is unchanged, so the position is unchanged"
         );
     }
 
-    /// `bond-maximum` ships as `i64::MAX`, so the reseat is reachable with two
-    /// bonds whose product overflows `u128`.
+    /// A bond can be the largest token amount, so the reseat is reachable
+    /// with two such bonds.
     #[test]
     fn reseating_between_the_largest_permitted_bonds_holds_the_share() {
-        let largest = NonZeroU64::new(i64::MAX as u64).expect("positive");
-        let mut bucket = BucketEntry::full(largest);
+        let largest = TokenAmount::max().into_bigint();
+        let mut bucket = BucketEntry::full(largest.clone());
         bucket.decay(10_000);
 
-        bucket.reseat(NonZeroU64::new(largest.get() - 1).expect("positive"));
+        bucket.reseat(&(largest - 1));
 
-        let capacity = bucket.capacity.get() as u128;
+        let capacity = bucket.capacity.clone();
         assert!(
-            bucket.level >= capacity * 989_999 && bucket.level < capacity * 990_001,
+            bucket.level >= &capacity * 989_999u64 && bucket.level < &capacity * 990_001u64,
             "the level must still be 99% of the new capacity, got {}",
             bucket.level
         );
@@ -1414,7 +1425,7 @@ mod tests {
             "each observation below the threshold adds one"
         );
 
-        bucket.fill(1_000_000_000);
+        bucket.fill(&BigInt::from(1_000_000_000));
         bucket.observe_threshold(900_000);
         assert_eq!(
             bucket.blocks_below_threshold, 0,
@@ -1468,7 +1479,7 @@ mod tests {
             let mut bucket = entry(bond);
             bucket.decay(10_000);
             assert_eq!(
-                bucket.level,
+                small(&bucket.level),
                 bond as u128 * 990_000,
                 "bond {bond} must lose 1% of itself"
             );
@@ -1574,9 +1585,9 @@ mod tests {
         let buckets: Vec<&Validator> = snapshot.buckets.iter().map(|b| &b.validator).collect();
         assert_eq!(buckets, vec![&validator(1), &validator(2), &validator(3)]);
         for bucket in &snapshot.buckets {
-            assert_eq!(bucket.capacity, 1_000);
+            assert_eq!(small(&bucket.capacity), 1_000);
             assert_eq!(
-                bucket.threshold,
+                small(&bucket.threshold),
                 1_000 * view.params().theta_eject_ppm as u128
             );
             assert_eq!(bucket.drained, bucket.level < bucket.threshold);
@@ -1585,7 +1596,7 @@ mod tests {
         let silent = &snapshot.buckets[2];
         assert!(silent.drained);
         assert!(silent.blocks_below_threshold >= view.params().eject_observation_blocks);
-        assert_eq!(silent.overflow, 0);
+        assert_eq!(small(&silent.overflow), 0);
         assert!(snapshot.buckets[..2]
             .iter()
             .all(|producer| !producer.drained));
@@ -1913,7 +1924,7 @@ mod tests {
             },
             electorate: Vec::new(),
             terms: crate::rust::economics::claims::ClaimTerms::Rejoin {
-                topup,
+                topup: stake(topup),
                 grace_end: 1_000,
             },
         }
@@ -2011,7 +2022,9 @@ mod tests {
                 proposer: validator(target),
             },
             electorate: Vec::new(),
-            terms: ClaimTerms::Overflow { amount },
+            terms: ClaimTerms::Overflow {
+                amount: stake(amount),
+            },
         }
     }
 
@@ -2019,7 +2032,7 @@ mod tests {
         FloorState {
             claimed: vec![Claimed {
                 validator: validator(2),
-                total,
+                total: stake(total),
                 payments: Vec::new(),
             }],
             ..floor(bonds(committee), vec![], vec![])
@@ -2132,10 +2145,16 @@ mod tests {
         let paid = FloorState {
             claimed: vec![Claimed {
                 validator: validator(2),
-                total: 7,
+                total: 7.into(),
                 payments: vec![
-                    crate::rust::rholang::runtime::Payment { at: 1, amount: 3 },
-                    crate::rust::rholang::runtime::Payment { at: 4, amount: 4 },
+                    crate::rust::rholang::runtime::Payment {
+                        at: 1,
+                        amount: 3.into(),
+                    },
+                    crate::rust::rholang::runtime::Payment {
+                        at: 4,
+                        amount: 4.into(),
+                    },
                 ],
             }],
             ..floor(bonds(&committee), vec![], vec![])
@@ -2182,14 +2201,14 @@ mod tests {
     }
 
     fn reward_of(view: &BucketView, observation: &Observation) -> u128 {
-        compute_reward(
+        small(&compute_reward(
             &observation.committee,
             &observation.sender,
             &observation.fresh,
             &observation.parents,
             observation.block_number,
             &view.params.reward,
-        )
+        ))
     }
 
     /// The published bound `Cum_W(V) − C(W) − ClaimedOverflow_W` is not a
@@ -2405,7 +2424,7 @@ mod tests {
             .proposal_at(&validator(OBSERVER), &showing)
             .overflow
             .get(&validator(2))
-            .copied()
+            .map(small)
             .expect("tracked");
         assert!(
             bound <= under_showing,
@@ -2518,7 +2537,10 @@ mod tests {
                             intervals.push(FreezeInterval {
                                 from,
                                 from_sequence: from - 1,
-                                rejoin: Some(Rejoin { at, topup }),
+                                rejoin: Some(Rejoin {
+                                    at,
+                                    topup: stake(topup),
+                                }),
                             });
                             from = at + 1;
                         } else {
@@ -2576,7 +2598,7 @@ mod tests {
                 let open: Vec<FreezeInterval> = intervals
                     .iter()
                     .filter(|interval| interval.rejoin.is_none())
-                    .copied()
+                    .cloned()
                     .collect();
                 let swept = Knowledge::of(&frozen_floor(&committee, W, &open), 20_000);
                 for view in [&early, &late] {
@@ -2619,7 +2641,7 @@ mod tests {
                     from: interval.from,
                     from_sequence: interval.from_sequence,
                     rejoin: if index < stage.ends {
-                        interval.rejoin
+                        interval.rejoin.clone()
                     } else {
                         None
                     },
@@ -2632,7 +2654,7 @@ mod tests {
             FloorState {
                 claimed: vec![Claimed {
                     validator: validator(W),
-                    total: stage.claimed,
+                    total: stake(stage.claimed),
                     payments: Vec::new(),
                 }],
                 ..frozen_floor(&base, W, &knowledge(intervals, stage))
@@ -2649,7 +2671,10 @@ mod tests {
                         let interval = FreezeInterval {
                             from,
                             from_sequence: from - 1,
-                            rejoin: Some(Rejoin { at, topup }),
+                            rejoin: Some(Rejoin {
+                                at,
+                                topup: stake(topup),
+                            }),
                         };
                         from = at + 1;
                         interval
@@ -2758,7 +2783,7 @@ mod tests {
                         .proposal_at(&validator(OBSERVER), &Knowledge::of(&stage_floor(&intervals, stage), 0))
                         .overflow
                         .get(&validator(W))
-                        .copied()
+                        .map(small)
                         .unwrap_or(0);
                     prop_assert!(bound <= holds, "bound {} over overflow {}", bound, holds);
                 }
@@ -2809,7 +2834,7 @@ mod tests {
         for number in 21..=30i64 {
             view.observe(&observation(number, 1, &[1], &halved));
         }
-        let shortfall = view.proposal(&validator(OBSERVER)).shortfall[&validator(2)];
+        let shortfall = small(&view.proposal(&validator(OBSERVER)).shortfall[&validator(2)]);
         assert_eq!(
             shortfall,
             95 * PPM as u128,

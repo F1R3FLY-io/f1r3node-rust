@@ -22,7 +22,7 @@ async fn the_pos_contract_exposes_every_chain_parameter() {
     pos.fault_tolerance_threshold_ppm = 123_456;
     pos.max_parent_depth = 17;
     pos.deploy_lifespan = 61;
-    pos.min_phlo_price = 3;
+    pos.min_phlo_price = 3.into();
     pos.epoch_length = 997;
     pos.quarantine_length = 50_021;
     pos.lambda_base_ppm = 11_111;
@@ -50,7 +50,7 @@ async fn the_pos_contract_exposes_every_chain_parameter() {
         fault_tolerance_threshold_ppm: 123_456,
         max_parent_depth: 17,
         deploy_lifespan: 61,
-        min_phlo_price: 3,
+        min_phlo_price: 3.into(),
         epoch_length: 997,
         quarantine_length: 50_021,
         leaky_bucket: LeakyBucketParams {

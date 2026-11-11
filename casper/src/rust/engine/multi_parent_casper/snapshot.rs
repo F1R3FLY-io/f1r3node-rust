@@ -588,10 +588,10 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
         let bm = &block.body.state.bonds;
         return Ok(OnChainCasperState {
             shard_conf: this.casper_shard_conf.clone(),
-            chain: this.chain_parameters,
+            chain: this.chain_parameters.clone(),
             bonds_map: bm
                 .iter()
-                .map(|v| (v.validator.clone(), v.stake))
+                .map(|v| (v.validator.clone(), v.stake.to_bigint()))
                 .collect::<HashMap<_, _>>(),
             active_validators: cached,
         });
@@ -623,10 +623,10 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
 
     Ok(OnChainCasperState {
         shard_conf: this.casper_shard_conf.clone(),
-        chain: this.chain_parameters,
+        chain: this.chain_parameters.clone(),
         bonds_map: bm
             .iter()
-            .map(|v| (v.validator.clone(), v.stake))
+            .map(|v| (v.validator.clone(), v.stake.to_bigint()))
             .collect::<HashMap<_, _>>(),
         active_validators: av,
     })

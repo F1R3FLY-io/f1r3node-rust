@@ -51,11 +51,13 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockCommitment, BlockMessage, Bond, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::dag::dag_ops;
 use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::CasperSnapshot;
@@ -97,10 +99,10 @@ const DRIFT: i64 = 15000; // 15 seconds
 /// stays.
 pub struct Validate;
 
-fn sorted_bonds(bonds: &[Bond]) -> Vec<(&Validator, i64)> {
-    let mut sorted: Vec<(&Validator, i64)> = bonds
+fn sorted_bonds(bonds: &[Bond]) -> Vec<(&Validator, &TokenAmount)> {
+    let mut sorted: Vec<(&Validator, &TokenAmount)> = bonds
         .iter()
-        .map(|bond| (&bond.validator, bond.stake))
+        .map(|bond| (&bond.validator, &bond.stake))
         .collect();
     sorted.sort();
     sorted
@@ -297,12 +299,12 @@ impl Validate {
         let weight = if b.header.parents_hash_list.is_empty() {
             proto_util::weight_map(genesis)
                 .get(&b.sender)
-                .copied()
-                .unwrap_or(0)
+                .cloned()
+                .unwrap_or_default()
         } else {
             proto_util::weight_from_sender(block_store, b)?
         };
-        if weight > 0 {
+        if weight > BigInt::from(0) {
             Ok(true)
         } else {
             tracing::warn!(
@@ -2023,12 +2025,11 @@ impl Validate {
     }
 
     /// Every deploy pays at least minPhloPrice.
-    pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> ValidBlockProcessing {
-        if b.body
-            .deploys
-            .iter()
-            .all(|deploy| deploy.deploy.data.phlo_price >= min_phlo_price)
-        {
+    pub fn phlo_price(b: &BlockMessage, min_phlo_price: &TokenAmount) -> ValidBlockProcessing {
+        if b.body.deploys.iter().all(|deploy| {
+            deploy.deploy.data.validate_amounts().is_ok()
+                && deploy.deploy.data.phlo_price >= *min_phlo_price
+        }) {
             Either::Right(ValidBlock::Valid)
         } else {
             Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
