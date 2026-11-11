@@ -851,16 +851,11 @@ impl GrpcTransportReceiver {
             if let Err(e) = server_result {
                 tracing::error!(error = %e, "F1r3fly gRPC server failed");
             }
-
-            Ok::<(), CommError>(())
         });
 
-        // Handle the Result from the spawn task
-        Ok(tokio::spawn(async move {
-            if let Err(e) = server_task.await {
-                tracing::error!(error = %e, "F1r3fly gRPC server task panicked");
-            }
-        }))
+        // The caller stops the server by aborting this handle, so it must be
+        // the server task itself.
+        Ok(server_task)
     }
 }
 

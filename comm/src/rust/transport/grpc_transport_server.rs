@@ -142,6 +142,17 @@ impl GrpcTransportServer {
     }
 }
 
+/// Cancels the server task and waits for it to end, so its socket is closed
+/// before the caller binds the port again.
+async fn shut_down(handle: Cancelable) {
+    handle.abort();
+    if let Err(e) = handle.await {
+        if e.is_panic() {
+            tracing::error!(error = %e, "F1r3fly gRPC server task panicked");
+        }
+    }
+}
+
 /// TransportServer manages the lifecycle of a GrpcTransportServer
 ///
 /// Provides atomic start/stop operations to ensure only one server instance
@@ -186,7 +197,7 @@ impl TransportServer {
 
         // Stop any existing server
         if let Some(old_handle) = handle_guard.take() {
-            old_handle.abort();
+            shut_down(old_handle).await;
         }
 
         // Start new server
@@ -221,7 +232,7 @@ impl TransportServer {
 
         // Stop server if running
         if let Some(handle) = handle_guard.take() {
-            handle.abort();
+            shut_down(handle).await;
         }
 
         // Update state atomically
