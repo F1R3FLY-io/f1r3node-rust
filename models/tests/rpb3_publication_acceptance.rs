@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -25,6 +26,7 @@ use rspace_plus_plus::rspace::history::history_repository::{
     HistoryRepository, HistoryRepositoryInstances,
 };
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
+use rspace_plus_plus::rspace::history::CurrentRoot;
 use rspace_plus_plus::rspace::hot_store_action::{
     HotStoreAction, InsertAction, InsertContinuations, InsertData, InsertJoins,
 };
@@ -55,6 +57,51 @@ type ParRepository = dyn HistoryRepository<Par, BindPattern, ListParWithRandom, 
     + Sync
     + 'static;
 type AuthorityImage = [BTreeMap<Vec<u8>, Vec<u8>>; 3];
+type ParRepositoryInstances =
+    HistoryRepositoryInstances<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+
+const PUBLICATION_MODEL_CONFIGURATION: &str =
+    "formal/tlaplus/stack_safe_pda/RSpaceRPB3CanonicalAdmissionPublication.cfg";
+const MODEL_ONLY_INVARIANT: &str = "TypeInvariant";
+const PUBLICATION_INVARIANT_BINDINGS: &[(&str, &str)] = &[
+    (
+        "MalformedInputCannotBeAdmitted",
+        "generated_full_par_bincode_wire_matches_typed_oracle_and_refusal",
+    ),
+    (
+        "MalformedRefusalPreservesEveryNamespace",
+        "authenticated_malformed_compact_par_refuses_before_durable_publication",
+    ),
+    (
+        "UnpublishedImportHasNoRootAuthority",
+        "generated_lifecycle_keeps_unpublished_imports_without_root_authority",
+    ),
+    (
+        "UnpublishedCheckpointPreservesEveryNamespace",
+        "generated_lifecycle_keeps_unpublished_checkpoints_out_of_every_namespace",
+    ),
+    (
+        "PublicationRequiresAdmissionAndSeal",
+        "generated_authenticated_full_wire_par_import_seals_publishes_and_reopens",
+    ),
+    (
+        "PublicationMatchesTypedOracle",
+        "compact_admission_refusal_and_typed_publication_survive_lmdb_reopen",
+    ),
+    (
+        "EveryKnownRootHasCompleteClosureAndExactObservation",
+        "generated_lifecycle_keeps_every_known_root_closed_and_exactly_observable",
+    ),
+    (
+        "CurrentRootIsKnown",
+        "generated_lifecycle_keeps_the_current_root_known",
+    ),
+    (
+        "GenerationAdvancesOnlyOnActivation",
+        "generated_lifecycle_advances_the_generation_only_on_activation",
+    ),
+];
+const RSPACE_ROOTS_NAMESPACE: usize = 2;
 
 #[derive(Debug, PartialEq, Eq)]
 struct PublicationObservation {
@@ -897,5 +944,1017 @@ proptest! {
             assert_eq!(reopened_data[0].source, datum.source);
             }
         });
+    }
+}
+
+fn test_definition_count(source: &str, test: &str) -> usize {
+    let mut carries_test_attribute = false;
+    let mut definitions = 0;
+    for line in source.lines().map(str::trim) {
+        match line {
+            "#[test]" | "#[tokio::test]" => carries_test_attribute = true,
+            attribute if attribute.starts_with("#[") => {}
+            definition => {
+                let parameters = definition
+                    .strip_prefix("async fn ")
+                    .or_else(|| definition.strip_prefix("fn "))
+                    .and_then(|signature| signature.strip_prefix(test));
+                definitions += match (carries_test_attribute, parameters) {
+                    (true, Some(parameters)) if parameters.starts_with('(') => 1,
+                    _ => 0,
+                };
+                carries_test_attribute = false;
+            }
+        }
+    }
+    definitions
+}
+
+fn binding_defects(configuration: &str, source: &str, bindings: &[(&str, &str)]) -> Vec<String> {
+    let mut defects = Vec::new();
+    let mut configured = Vec::with_capacity(bindings.len() + 1);
+    for statement in configuration.lines() {
+        let mut tokens = statement.split_whitespace();
+        match (tokens.next(), tokens.next(), tokens.next()) {
+            (Some("INVARIANT"), Some(invariant), None) => configured.push(invariant),
+            (Some("INVARIANT" | "INVARIANTS"), _, _) => defects.push(format!(
+                "configuration statement `{}` does not name exactly one invariant",
+                statement.trim()
+            )),
+            _ => {}
+        }
+    }
+    defects.extend(
+        configured
+            .iter()
+            .filter(|invariant| **invariant != MODEL_ONLY_INVARIANT)
+            .filter_map(|invariant| {
+                match bindings
+                    .iter()
+                    .filter(|(bound, _)| bound == invariant)
+                    .count()
+                {
+                    1 => None,
+                    0 => Some(format!(
+                        "configured invariant {invariant} has no bound test"
+                    )),
+                    rows => Some(format!(
+                        "configured invariant {invariant} has {rows} bound tests"
+                    )),
+                }
+            }),
+    );
+    defects.extend(
+        bindings
+            .iter()
+            .filter(|(invariant, _)| !configured.contains(invariant))
+            .map(|(invariant, _)| {
+                format!("bound invariant {invariant} is not checked by the configuration")
+            }),
+    );
+    defects.extend(bindings.iter().filter_map(|(_, test)| {
+        match test_definition_count(source, test) {
+            1 => None,
+            definitions => Some(format!(
+                "bound test {test} is defined {definitions} times as a test function"
+            )),
+        }
+    }));
+    defects
+}
+
+#[test]
+fn publication_invariant_bindings_cover_the_model_configuration() {
+    let configuration = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("models crate sits inside the repository root")
+            .join(PUBLICATION_MODEL_CONFIGURATION),
+    )
+    .expect("RPB3 publication model configuration reads");
+    let source = include_str!("rpb3_publication_acceptance.rs");
+    let bindings = PUBLICATION_INVARIANT_BINDINGS;
+    let no_defects = Vec::<String>::new();
+    assert_eq!(
+        binding_defects(&configuration, source, bindings),
+        no_defects,
+        "the binding table, the model configuration and the bound tests are out of step"
+    );
+
+    for (removed, (invariant, _)) in bindings.iter().enumerate() {
+        let remaining = [&bindings[..removed], &bindings[removed + 1..]].concat();
+        assert_eq!(binding_defects(&configuration, source, &remaining), vec![
+            format!("configured invariant {invariant} has no bound test")
+        ]);
+    }
+
+    let extended = format!("{configuration}\nINVARIANT SomeNewInvariant\n");
+    assert_eq!(binding_defects(&extended, source, bindings), vec![
+        "configured invariant SomeNewInvariant has no bound test".to_owned()
+    ]);
+
+    let mut misbound = bindings.to_vec();
+    misbound[0].1 = "lifecycle_test_that_is_not_defined";
+    assert_eq!(binding_defects(&configuration, source, &misbound), vec![
+        "bound test lifecycle_test_that_is_not_defined is defined 0 times as a test function"
+            .to_owned()
+    ]);
+
+    let (first_invariant, first_test) = bindings[0];
+    let doubled = [bindings, &bindings[..1]].concat();
+    assert_eq!(binding_defects(&configuration, source, &doubled), vec![
+        format!("configured invariant {first_invariant} has 2 bound tests")
+    ]);
+
+    let retired = [bindings, &[("RetiredInvariant", first_test)]].concat();
+    assert_eq!(binding_defects(&configuration, source, &retired), vec![
+        "bound invariant RetiredInvariant is not checked by the configuration".to_owned()
+    ]);
+
+    let redefined = format!("{source}\n#[test]\nfn {first_test}() {{}}\n");
+    assert_eq!(binding_defects(&configuration, &redefined, bindings), vec![
+        format!("bound test {first_test} is defined 2 times as a test function")
+    ]);
+
+    let solo = [("Solo", "solo_test")];
+    assert_eq!(
+        binding_defects("INVARIANT Solo", "#[test]\nfn solo_test() {}", &solo),
+        no_defects
+    );
+    assert_eq!(
+        binding_defects(
+            "INVARIANT Solo",
+            "#[tokio::test]\nasync fn solo_test() {}",
+            &solo
+        ),
+        no_defects
+    );
+    assert_eq!(
+        binding_defects("INVARIANT Solo", "fn solo_test() {}", &solo),
+        vec!["bound test solo_test is defined 0 times as a test function".to_owned()]
+    );
+    assert_eq!(
+        binding_defects("INVARIANTS Solo Other", "#[test]\nfn solo_test() {}", &solo),
+        vec![
+            "configuration statement `INVARIANTS Solo Other` does not name exactly one invariant"
+                .to_owned(),
+            "bound invariant Solo is not checked by the configuration".to_owned(),
+        ]
+    );
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LifecycleStep {
+    Checkpoint,
+    CheckpointUnchanged,
+    RefusedCheckpoint,
+    ImportActivate,
+    ImportPreserve,
+    MalformedImport,
+    ActivateKnown(u8),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LifecyclePhase {
+    StepStart,
+    CheckpointAccepted,
+    CheckpointWithoutActionsReturned,
+    CheckpointWithoutEffectReturned,
+    ImportStaged,
+    ImportSealed,
+    Rejected,
+    Published,
+    StepEnd,
+}
+
+#[derive(Clone, Copy)]
+enum ImportRecordForm {
+    FullWire,
+    MalformedMetadata,
+}
+
+struct ImportCandidateObservation {
+    root: Blake2b256Hash,
+    is_verified_member: bool,
+}
+
+struct KnownRootObservation {
+    root: Blake2b256Hash,
+    is_verified_member: bool,
+    reader_opens: bool,
+    observed_data: Result<Vec<u8>, String>,
+    expected_data: Vec<u8>,
+}
+
+struct LifecycleObservation {
+    step_index: usize,
+    step: LifecycleStep,
+    phase: LifecyclePhase,
+    image: AuthorityImage,
+    step_start_image: AuthorityImage,
+    current: CurrentRoot,
+    step_start_current: CurrentRoot,
+    import_candidate: Option<ImportCandidateObservation>,
+    unchanged_checkpoint_root: Option<Blake2b256Hash>,
+    activations: u64,
+    initial_generation: u64,
+    current_is_verified_member: bool,
+    current_is_accepted_as_known: bool,
+    known_roots: Vec<KnownRootObservation>,
+}
+
+struct GhostRoot {
+    root: Blake2b256Hash,
+    channel: Par,
+    expected_data: Vec<u8>,
+}
+
+struct LifecycleGhost {
+    initial_generation: u64,
+    activations: u64,
+    known_roots: Vec<GhostRoot>,
+}
+
+struct StepFrame {
+    index: usize,
+    step: LifecycleStep,
+    start_image: AuthorityImage,
+    start_current: CurrentRoot,
+    import_candidate: Option<Blake2b256Hash>,
+    unchanged_checkpoint_root: Option<Blake2b256Hash>,
+}
+
+struct LifecycleImport {
+    channel: Par,
+    datum: Datum<ListParWithRandom>,
+    root: Blake2b256Hash,
+    page: StateImportPage,
+}
+
+struct Lifecycle<M> {
+    base: i16,
+    manager: M,
+    authority: Arc<RSpaceStateAuthority>,
+    reader_repository: Box<ParRepository>,
+    importer: Box<dyn RSpaceImporter>,
+    ghost: LifecycleGhost,
+}
+
+fn lifecycle_step_tag(step_index: usize) -> u8 {
+    u8::try_from(step_index).expect("lifecycle step index fits in a byte")
+}
+
+fn lifecycle_value(base: i16, step_index: usize) -> i64 {
+    i64::from(base) + i64::from(lifecycle_step_tag(step_index))
+}
+
+fn lifecycle_par(base: i16, step_index: usize) -> Par {
+    let mut typed = par_corpus::gint(lifecycle_value(base, step_index));
+    typed.replace_locally_free(vec![0xE0, lifecycle_step_tag(step_index)]);
+    typed.replace_connective_used(step_index % 2 == 1);
+    typed
+}
+
+fn lifecycle_import(base: i16, step_index: usize, form: ImportRecordForm) -> LifecycleImport {
+    let typed = lifecycle_par(base, step_index);
+    let channel = par_corpus::gint(lifecycle_value(base, step_index));
+    let datum = Datum::create(
+        &channel,
+        ListParWithRandom {
+            pars: vec![typed.clone()],
+            random_state: vec![7, lifecycle_step_tag(step_index)],
+            cost_region: None,
+        },
+        false,
+    );
+    let (mut wire, _) = full_par_wire(&typed, typed.locally_free());
+    *wire.last_mut().expect("full wire is not empty") = match form {
+        ImportRecordForm::FullWire => u8::from(typed.connective_used()),
+        ImportRecordForm::MalformedMetadata => 2,
+    };
+    let encoded = encode_datum(&datum);
+    let canonical_len = bincode_encoder::encode(&typed).len();
+    let mut record = Vec::with_capacity(encoded.len() - canonical_len + wire.len());
+    record.extend_from_slice(&encoded[..8]);
+    record.extend_from_slice(&wire);
+    record.extend_from_slice(&encoded[8 + canonical_len..]);
+    let (root, page) = authenticated_data_page(&channel, record);
+    LifecycleImport {
+        channel,
+        datum,
+        root,
+        page,
+    }
+}
+
+fn inserted_data_encoding(
+    actions: &[HotStoreAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>],
+) -> Vec<u8> {
+    actions
+        .iter()
+        .find_map(|action| match action {
+            HotStoreAction::Insert(InsertAction::InsertData(insert)) => {
+                Some(encode_datums(&insert.data))
+            }
+            _ => None,
+        })
+        .expect("checkpoint actions insert data")
+}
+
+fn absent_record_deletes(
+    channel: &Par,
+) -> Vec<HotStoreAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>> {
+    use rspace_plus_plus::rspace::hot_store_action::{
+        DeleteAction, DeleteContinuations, DeleteData, DeleteJoins,
+    };
+    vec![
+        HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData {
+            channel: channel.clone(),
+        })),
+        HotStoreAction::Delete(DeleteAction::DeleteContinuations(DeleteContinuations {
+            channels: vec![channel.clone()],
+        })),
+        HotStoreAction::Delete(DeleteAction::DeleteJoins(DeleteJoins {
+            channel: channel.clone(),
+        })),
+    ]
+}
+
+async fn open_lifecycle(base: i16, step_count: usize) -> Lifecycle<impl KeyValueStoreManager> {
+    let scratch = test_scratch::acquire("rpb3-publication-lifecycle-");
+    let mut manager = mk_rspace_store_manager(scratch.path().to_path_buf(), 32 * 1024 * 1024);
+    let authority = manager
+        .state_authority("rspace")
+        .await
+        .expect("lifecycle authority opens");
+    let reader_repository =
+        ParRepositoryInstances::repository(authority.clone()).expect("lifecycle repository opens");
+    let importer = Box::new(RSpaceImporterStore::create::<
+        Par,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >(authority.clone()));
+    let initial = authority
+        .current_verified_root()
+        .expect("current verified root reads")
+        .expect("fresh authority has a current root");
+    let mut known_roots = Vec::with_capacity(step_count + 1);
+    known_roots.push(GhostRoot {
+        root: initial.root().clone(),
+        channel: par_corpus::gint(lifecycle_value(base, 0)),
+        expected_data: encode_datums(&Vec::<Datum<ListParWithRandom>>::new()),
+    });
+    Lifecycle {
+        base,
+        manager,
+        authority,
+        reader_repository,
+        importer,
+        ghost: LifecycleGhost {
+            initial_generation: initial.generation(),
+            activations: 0,
+            known_roots,
+        },
+    }
+}
+
+impl<M: KeyValueStoreManager> Lifecycle<M> {
+    fn current(&self) -> CurrentRoot {
+        self.authority
+            .current_verified_root()
+            .expect("current verified root reads")
+            .expect("lifecycle authority keeps a current root")
+    }
+
+    fn current_repository(&self) -> Box<ParRepository> {
+        ParRepositoryInstances::repository(self.authority.clone())
+            .expect("repository opens at the current root")
+    }
+
+    async fn report(
+        &mut self,
+        frame: &StepFrame,
+        phase: LifecyclePhase,
+        check: &mut dyn FnMut(&LifecycleObservation),
+    ) {
+        let current = self.current();
+        let mut known_roots = Vec::with_capacity(self.ghost.known_roots.len());
+        for known in &self.ghost.known_roots {
+            let (reader_opens, observed_data) =
+                match self.reader_repository.get_history_reader(&known.root) {
+                    Ok(reader) => (
+                        true,
+                        reader
+                            .get_data(&hash(&known.channel))
+                            .map(|datums| encode_datums(&datums))
+                            .map_err(|error| error.to_string()),
+                    ),
+                    Err(error) => (false, Err(error.to_string())),
+                };
+            known_roots.push(KnownRootObservation {
+                root: known.root.clone(),
+                is_verified_member: self
+                    .authority
+                    .contains_verified_root(&known.root)
+                    .expect("verified-root membership reads"),
+                reader_opens,
+                observed_data,
+                expected_data: known.expected_data.clone(),
+            });
+        }
+        let observation = LifecycleObservation {
+            step_index: frame.index,
+            step: frame.step,
+            phase,
+            image: authority_image(&mut self.manager).await,
+            step_start_image: frame.start_image.clone(),
+            step_start_current: frame.start_current.clone(),
+            import_candidate: frame.import_candidate.as_ref().map(|candidate| {
+                ImportCandidateObservation {
+                    root: candidate.clone(),
+                    is_verified_member: self
+                        .authority
+                        .contains_verified_root(candidate)
+                        .expect("verified-root membership reads"),
+                }
+            }),
+            unchanged_checkpoint_root: frame.unchanged_checkpoint_root.clone(),
+            activations: self.ghost.activations,
+            initial_generation: self.ghost.initial_generation,
+            current_is_verified_member: self
+                .authority
+                .contains_verified_root(current.root())
+                .expect("verified-root membership reads"),
+            current_is_accepted_as_known: self
+                .authority
+                .known_verified_root(current.root())
+                .is_ok(),
+            current,
+            known_roots,
+        };
+        check(&observation);
+    }
+
+    async fn begin_step(
+        &mut self,
+        index: usize,
+        step: LifecycleStep,
+        import_candidate: Option<Blake2b256Hash>,
+        check: &mut dyn FnMut(&LifecycleObservation),
+    ) -> StepFrame {
+        let frame = StepFrame {
+            index,
+            step,
+            start_image: authority_image(&mut self.manager).await,
+            start_current: self.current(),
+            import_candidate,
+            unchanged_checkpoint_root: None,
+        };
+        self.report(&frame, LifecyclePhase::StepStart, check).await;
+        frame
+    }
+
+    async fn checkpoint(
+        &mut self,
+        index: usize,
+        step: LifecycleStep,
+        check: &mut dyn FnMut(&LifecycleObservation),
+    ) {
+        let typed = lifecycle_par(self.base, index);
+        let frame = self.begin_step(index, step, None, check).await;
+        let components = ParBag::from_compact_bytes(typed.compact_snapshot())
+            .expect("canonical compact image is admitted");
+        let admitted = Par::from_parts(
+            components,
+            typed.locally_free.clone(),
+            typed.connective_used,
+        );
+        self.report(&frame, LifecyclePhase::CheckpointAccepted, check)
+            .await;
+        let actions = checkpoint_actions(&admitted);
+        let expected_data = inserted_data_encoding(&actions);
+        let published_root = self
+            .current_repository()
+            .checkpoint(actions)
+            .expect("admitted checkpoint publishes")
+            .root();
+        self.ghost.activations += 1;
+        self.ghost.known_roots.push(GhostRoot {
+            root: published_root,
+            channel: admitted,
+            expected_data,
+        });
+        self.report(&frame, LifecyclePhase::Published, check).await;
+        self.report(&frame, LifecyclePhase::StepEnd, check).await;
+    }
+
+    async fn checkpoint_unchanged(
+        &mut self,
+        index: usize,
+        step: LifecycleStep,
+        check: &mut dyn FnMut(&LifecycleObservation),
+    ) {
+        let mut frame = self.begin_step(index, step, None, check).await;
+        for (phase, actions) in [
+            (LifecyclePhase::CheckpointWithoutActionsReturned, Vec::new()),
+            (
+                LifecyclePhase::CheckpointWithoutEffectReturned,
+                absent_record_deletes(&lifecycle_par(self.base, index)),
+            ),
+        ] {
+            frame.unchanged_checkpoint_root = Some(
+                self.current_repository()
+                    .checkpoint(actions)
+                    .expect("a checkpoint that changes nothing is accepted")
+                    .root(),
+            );
+            self.report(&frame, phase, check).await;
+        }
+        self.report(&frame, LifecyclePhase::StepEnd, check).await;
+    }
+
+    async fn refuse_checkpoint(
+        &mut self,
+        index: usize,
+        step: LifecycleStep,
+        check: &mut dyn FnMut(&LifecycleObservation),
+    ) {
+        let typed = lifecycle_par(self.base, index);
+        let compact = typed.compact_snapshot();
+        let refused_length = (1..compact.len())
+            .find(|length| ParBag::from_compact_bytes(&compact[..*length]).is_err())
+            .expect("a truncated compact image is refused by admission");
+        let frame = self.begin_step(index, step, None, check).await;
+        assert!(
+            publish_compact(
+                self.current_repository().as_ref(),
+                &compact[..refused_length],
+                &typed
+            )
+            .is_err(),
+            "a refused compact image must not reach a checkpoint"
+        );
+        self.report(&frame, LifecyclePhase::Rejected, check).await;
+        self.report(&frame, LifecyclePhase::StepEnd, check).await;
+    }
+
+    async fn import(
+        &mut self,
+        index: usize,
+        step: LifecycleStep,
+        activates: bool,
+        check: &mut dyn FnMut(&LifecycleObservation),
+    ) {
+        let import = lifecycle_import(self.base, index, ImportRecordForm::FullWire);
+        let frame = self
+            .begin_step(index, step, Some(import.root.clone()), check)
+            .await;
+        let (publication_mode, activations) = match activates {
+            true => (StateImportPublicationMode::Activate(import.root.clone()), 1),
+            false => (StateImportPublicationMode::PreserveCurrent, 0),
+        };
+        let mut session = self
+            .importer
+            .begin_import(
+                StateImportSpec::new([import.root.clone()], publication_mode)
+                    .expect("import spec for the candidate root is valid"),
+            )
+            .expect("import session begins");
+        session
+            .validate_and_stage_page(import.page)
+            .expect("authenticated page validates and stages");
+        self.report(&frame, LifecyclePhase::ImportStaged, check)
+            .await;
+        let sealed = session.seal().expect("fully paged session seals");
+        self.report(&frame, LifecyclePhase::ImportSealed, check)
+            .await;
+        sealed
+            .publish(&StateImportPublicationWitness::new())
+            .expect("sealed import publishes");
+        self.ghost.activations += activations;
+        self.ghost.known_roots.push(GhostRoot {
+            root: import.root,
+            channel: import.channel,
+            expected_data: encode_datums(&vec![import.datum]),
+        });
+        self.report(&frame, LifecyclePhase::Published, check).await;
+        self.report(&frame, LifecyclePhase::StepEnd, check).await;
+    }
+
+    async fn refuse_import(
+        &mut self,
+        index: usize,
+        step: LifecycleStep,
+        check: &mut dyn FnMut(&LifecycleObservation),
+    ) {
+        let import = lifecycle_import(self.base, index, ImportRecordForm::MalformedMetadata);
+        let frame = self
+            .begin_step(index, step, Some(import.root.clone()), check)
+            .await;
+        let mut session = self
+            .importer
+            .begin_import(
+                StateImportSpec::new(
+                    [import.root.clone()],
+                    StateImportPublicationMode::Activate(import.root),
+                )
+                .expect("import spec for the malformed root is valid"),
+            )
+            .expect("malformed import session begins");
+        assert!(
+            matches!(
+                session.validate_and_stage_page(import.page),
+                Err(StateImportError::MalformedRecord { .. })
+            ),
+            "a malformed record must refuse the import page"
+        );
+        self.report(&frame, LifecyclePhase::Rejected, check).await;
+        assert!(
+            matches!(
+                session.seal(),
+                Err(StateImportError::IncompletePagination(_))
+            ),
+            "a refused import session must not seal"
+        );
+        self.report(&frame, LifecyclePhase::StepEnd, check).await;
+    }
+
+    async fn activate_known(
+        &mut self,
+        index: usize,
+        step: LifecycleStep,
+        selector: u8,
+        check: &mut dyn FnMut(&LifecycleObservation),
+    ) {
+        let frame = self.begin_step(index, step, None, check).await;
+        let selected = usize::from(selector) % self.ghost.known_roots.len();
+        let known = self
+            .authority
+            .known_verified_root(&self.ghost.known_roots[selected].root)
+            .expect("ghost-known root is a known verified root");
+        self.authority
+            .activate_known(known)
+            .expect("known root activates");
+        self.ghost.activations += 1;
+        self.report(&frame, LifecyclePhase::StepEnd, check).await;
+    }
+
+    async fn close(mut self) {
+        drop(self.importer);
+        drop(self.reader_repository);
+        drop(self.authority);
+        self.manager
+            .shutdown()
+            .await
+            .expect("lifecycle manager closes");
+    }
+}
+
+async fn drive_lifecycle(
+    base: i16,
+    steps: &[LifecycleStep],
+    check: &mut dyn FnMut(&LifecycleObservation),
+) {
+    let mut lifecycle = open_lifecycle(base, steps.len()).await;
+    for (index, step) in steps.iter().copied().enumerate() {
+        match step {
+            LifecycleStep::Checkpoint => lifecycle.checkpoint(index, step, check).await,
+            LifecycleStep::CheckpointUnchanged => {
+                lifecycle.checkpoint_unchanged(index, step, check).await
+            }
+            LifecycleStep::RefusedCheckpoint => {
+                lifecycle.refuse_checkpoint(index, step, check).await
+            }
+            LifecycleStep::ImportActivate => lifecycle.import(index, step, true, check).await,
+            LifecycleStep::ImportPreserve => lifecycle.import(index, step, false, check).await,
+            LifecycleStep::MalformedImport => lifecycle.refuse_import(index, step, check).await,
+            LifecycleStep::ActivateKnown(selector) => {
+                lifecycle.activate_known(index, step, selector, check).await
+            }
+        }
+    }
+    lifecycle.close().await;
+}
+
+fn checked_lifecycle_points<const ASSERTIONS: usize>(
+    base: i16,
+    steps: &[LifecycleStep],
+    assertions: [fn(&LifecycleObservation) -> usize; ASSERTIONS],
+) -> [usize; ASSERTIONS] {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime builds");
+    let mut checked = [0; ASSERTIONS];
+    runtime.block_on(drive_lifecycle(base, steps, &mut |observation| {
+        for (points, assertion) in checked.iter_mut().zip(assertions) {
+            *points += assertion(observation);
+        }
+    }));
+    checked
+}
+
+fn lifecycle_steps(
+    required: &'static [&'static [LifecycleStep]],
+) -> impl Strategy<Value = Vec<LifecycleStep>> {
+    let generated = prop_oneof![
+        Just(LifecycleStep::Checkpoint),
+        Just(LifecycleStep::CheckpointUnchanged),
+        Just(LifecycleStep::RefusedCheckpoint),
+        Just(LifecycleStep::ImportActivate),
+        Just(LifecycleStep::ImportPreserve),
+        Just(LifecycleStep::MalformedImport),
+        any::<u8>().prop_map(LifecycleStep::ActivateKnown),
+    ];
+    let forced: Vec<_> = required
+        .iter()
+        .map(|alternatives| {
+            (
+                proptest::sample::select(*alternatives),
+                any::<proptest::sample::Index>(),
+            )
+        })
+        .collect();
+    (proptest::collection::vec(generated, 0..=5), forced).prop_map(|(mut steps, forced)| {
+        for (forced_step, position) in forced {
+            steps.insert(position.index(steps.len() + 1), forced_step);
+        }
+        steps
+    })
+}
+
+fn observation_point(observation: &LifecycleObservation) -> String {
+    format!(
+        "step {} {:?} at {:?}",
+        observation.step_index, observation.step, observation.phase
+    )
+}
+
+fn unpublished_import_has_no_root_authority(observation: &LifecycleObservation) -> usize {
+    match observation.phase {
+        LifecyclePhase::ImportStaged | LifecyclePhase::ImportSealed => {
+            let candidate = observation
+                .import_candidate
+                .as_ref()
+                .expect("an unpublished import observation carries its candidate root");
+            assert!(
+                !candidate.is_verified_member,
+                "{}: unpublished import candidate {} is a verified root",
+                observation_point(observation),
+                candidate.root
+            );
+            assert_eq!(
+                observation.current,
+                observation.step_start_current,
+                "{}: an unpublished import moved the current root or its generation",
+                observation_point(observation)
+            );
+            assert!(
+                observation.image[RSPACE_ROOTS_NAMESPACE]
+                    == observation.step_start_image[RSPACE_ROOTS_NAMESPACE],
+                "{}: an unpublished import changed rspace-roots from {} to {} entries",
+                observation_point(observation),
+                observation.step_start_image[RSPACE_ROOTS_NAMESPACE].len(),
+                observation.image[RSPACE_ROOTS_NAMESPACE].len()
+            );
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn unpublished_checkpoint_preserves_every_namespace(observation: &LifecycleObservation) -> usize {
+    match observation.phase {
+        LifecyclePhase::CheckpointAccepted => {
+            assert!(
+                observation.image == observation.step_start_image,
+                "{}: an unpublished checkpoint changed entries per namespace from {:?} to {:?}",
+                observation_point(observation),
+                observation.step_start_image.each_ref().map(BTreeMap::len),
+                observation.image.each_ref().map(BTreeMap::len)
+            );
+            assert_eq!(
+                observation.current,
+                observation.step_start_current,
+                "{}: an unpublished checkpoint moved the current root or its generation",
+                observation_point(observation)
+            );
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn unchanged_checkpoint_preserves_every_namespace(observation: &LifecycleObservation) -> usize {
+    match observation.phase {
+        LifecyclePhase::CheckpointWithoutActionsReturned
+        | LifecyclePhase::CheckpointWithoutEffectReturned => {
+            for (namespace, name) in ["rspace-history", "rspace-cold", "rspace-roots"]
+                .into_iter()
+                .enumerate()
+            {
+                assert!(
+                    observation.image[namespace] == observation.step_start_image[namespace],
+                    "{}: an unchanged checkpoint changed {} from {} to {} entries",
+                    observation_point(observation),
+                    name,
+                    observation.step_start_image[namespace].len(),
+                    observation.image[namespace].len()
+                );
+            }
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn every_known_root_is_closed_and_exactly_observable(observation: &LifecycleObservation) -> usize {
+    for known in &observation.known_roots {
+        assert!(
+            known.is_verified_member,
+            "{}: published root {} is not a verified root",
+            observation_point(observation),
+            known.root
+        );
+        assert!(
+            known.reader_opens,
+            "{}: no history reader opens for known root {}: {:?}",
+            observation_point(observation),
+            known.root,
+            known.observed_data
+        );
+        assert!(
+            known.observed_data.as_ref() == Ok(&known.expected_data),
+            "{}: known root {} returns {:?} bytes of data, not the {} bytes published there",
+            observation_point(observation),
+            known.root,
+            known.observed_data.as_ref().map(Vec::len),
+            known.expected_data.len()
+        );
+    }
+    observation.known_roots.len()
+}
+
+fn current_root_is_known(observation: &LifecycleObservation) -> usize {
+    assert!(
+        observation.current_is_verified_member,
+        "{}: current root {} is not a verified root",
+        observation_point(observation),
+        observation.current.root()
+    );
+    assert!(
+        observation.current_is_accepted_as_known,
+        "{}: known_verified_root refuses current root {}",
+        observation_point(observation),
+        observation.current.root()
+    );
+    1
+}
+
+fn unchanged_checkpoint_keeps_the_current_and_known_roots(
+    observation: &LifecycleObservation,
+) -> usize {
+    match observation.phase {
+        LifecyclePhase::CheckpointWithoutActionsReturned
+        | LifecyclePhase::CheckpointWithoutEffectReturned => {
+            assert_eq!(
+                observation.unchanged_checkpoint_root.as_ref(),
+                Some(observation.current.root()),
+                "{}: an unchanged checkpoint returned a root other than the current root",
+                observation_point(observation)
+            );
+            assert_eq!(
+                observation.current.root(),
+                observation.step_start_current.root(),
+                "{}: an unchanged checkpoint moved the current root",
+                observation_point(observation)
+            );
+            assert!(
+                observation.image[RSPACE_ROOTS_NAMESPACE]
+                    == observation.step_start_image[RSPACE_ROOTS_NAMESPACE],
+                "{}: an unchanged checkpoint changed rspace-roots, which records the known \
+                 roots, from {} to {} entries",
+                observation_point(observation),
+                observation.step_start_image[RSPACE_ROOTS_NAMESPACE].len(),
+                observation.image[RSPACE_ROOTS_NAMESPACE].len()
+            );
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn generation_advances_only_on_activation(observation: &LifecycleObservation) -> usize {
+    assert_eq!(
+        observation.current.generation(),
+        observation.initial_generation + observation.activations,
+        "{}: generation is not the initial generation {} plus {} activations",
+        observation_point(observation),
+        observation.initial_generation,
+        observation.activations
+    );
+    1
+}
+
+fn unchanged_checkpoint_keeps_the_generation(observation: &LifecycleObservation) -> usize {
+    match observation.phase {
+        LifecyclePhase::CheckpointWithoutActionsReturned
+        | LifecyclePhase::CheckpointWithoutEffectReturned => {
+            assert_eq!(
+                observation.current.generation(),
+                observation.step_start_current.generation(),
+                "{}: an unchanged checkpoint advanced the generation",
+                observation_point(observation)
+            );
+            1
+        }
+        _ => 0,
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(12))]
+
+    #[test]
+    fn generated_lifecycle_keeps_unpublished_imports_without_root_authority(
+        base in any::<i16>(),
+        steps in lifecycle_steps(&[&[
+            LifecycleStep::ImportActivate,
+            LifecycleStep::ImportPreserve,
+        ]]),
+    ) {
+        let checked =
+            checked_lifecycle_points(base, &steps, [unpublished_import_has_no_root_authority]);
+        prop_assert!(!checked.contains(&0), "an assertion never ran: {checked:?}");
+    }
+
+    #[test]
+    fn generated_lifecycle_keeps_unpublished_checkpoints_out_of_every_namespace(
+        base in any::<i16>(),
+        steps in lifecycle_steps(&[
+            &[LifecycleStep::Checkpoint],
+            &[LifecycleStep::CheckpointUnchanged],
+        ]),
+    ) {
+        let checked = checked_lifecycle_points(base, &steps, [
+            unpublished_checkpoint_preserves_every_namespace,
+            unchanged_checkpoint_preserves_every_namespace,
+        ]);
+        prop_assert!(!checked.contains(&0), "an assertion never ran: {checked:?}");
+    }
+
+    #[test]
+    fn generated_lifecycle_keeps_every_known_root_closed_and_exactly_observable(
+        base in any::<i16>(),
+        steps in lifecycle_steps(&[&[
+            LifecycleStep::Checkpoint,
+            LifecycleStep::ImportActivate,
+            LifecycleStep::ImportPreserve,
+        ]]),
+    ) {
+        let checked = checked_lifecycle_points(base, &steps, [
+            every_known_root_is_closed_and_exactly_observable,
+        ]);
+        prop_assert!(!checked.contains(&0), "an assertion never ran: {checked:?}");
+    }
+
+    #[test]
+    fn generated_lifecycle_keeps_the_current_root_known(
+        base in any::<i16>(),
+        steps in lifecycle_steps(&[
+            &[
+                LifecycleStep::Checkpoint,
+                LifecycleStep::ImportActivate,
+                LifecycleStep::ActivateKnown(0),
+            ],
+            &[LifecycleStep::CheckpointUnchanged],
+        ]),
+    ) {
+        let checked = checked_lifecycle_points(base, &steps, [
+            current_root_is_known,
+            unchanged_checkpoint_keeps_the_current_and_known_roots,
+        ]);
+        prop_assert!(!checked.contains(&0), "an assertion never ran: {checked:?}");
+    }
+
+    #[test]
+    fn generated_lifecycle_advances_the_generation_only_on_activation(
+        base in any::<i16>(),
+        steps in lifecycle_steps(&[
+            &[
+                LifecycleStep::Checkpoint,
+                LifecycleStep::ImportActivate,
+                LifecycleStep::ImportPreserve,
+                LifecycleStep::ActivateKnown(0),
+            ],
+            &[LifecycleStep::CheckpointUnchanged],
+        ]),
+    ) {
+        let checked = checked_lifecycle_points(base, &steps, [
+            generation_advances_only_on_activation,
+            unchanged_checkpoint_keeps_the_generation,
+        ]);
+        prop_assert!(!checked.contains(&0), "an assertion never ran: {checked:?}");
     }
 }

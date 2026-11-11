@@ -3733,6 +3733,88 @@ The procedure notation specifies the transaction law rather than a second implem
 matching and multi-channel search use the same operations inside loop-driven state machines rather
 than native recursion.
 
+### RPB3 admission publication invariants
+
+`RSpaceRPB3CanonicalAdmissionPublication` is a TLA+ model of the steps by which RSpace takes in new
+state and makes it readable, and of what must stay unchanged while those steps are under way or
+after the new state is refused. The model is
+`formal/tlaplus/stack_safe_pda/RSpaceRPB3CanonicalAdmissionPublication.tla`; its baseline
+configuration, `formal/tlaplus/stack_safe_pda/RSpaceRPB3CanonicalAdmissionPublication.cfg`, lists
+ten invariants, which are conditions that the TLC model checker verifies in every reachable state
+of the model. `bash scripts/check-rpb3-publication-model.sh` runs that check and then three mutant
+configurations, each of which adds one faulty step and must be reported as violating one named
+invariant.
+
+The table below defines the terms this section uses. Each definition uses only terms defined above
+it.
+
+| Term | Meaning |
+|---|---|
+| Root | A 32-byte hash that names one complete RSpace state. The state that a root names never changes. A reader opened at a root returns the records of that state. |
+| Authority | The RSpace state authority, `RSpaceStateAuthority`: the component that owns the stored RSpace state. |
+| Namespace | One of the three key-value stores of an authority. `rspace-history` holds history objects, the tree nodes that lead from a root to its records. `rspace-cold` holds cold objects, the records themselves. `rspace-roots` holds root records, which only the authority writes. |
+| Closure | Every history object and cold object that can be reached from a root. A closure is complete when all of those objects are stored. |
+| Known root | A root that the authority has recorded in `rspace-roots` as readable. A reader opens only at a known root. |
+| Current root | The one known root that the authority presents as the present state of RSpace. One root record in `rspace-roots` names it. |
+| Activation | A step that sets the current root. |
+| Generation | A counter stored with the current root. It is 0 when the authority is created and grows by one at every activation after that. |
+| Request | One attempt to add a root, called the candidate root of the request, to the known roots. A checkpoint request builds the candidate root from local changes to the state at the current root. An import request receives the closure of the candidate root in pages, and either activates that root (`import-activate`) or leaves the current root as it is (`import-preserve`). |
+| Admission | The check that the input bytes of a request are a canonical encoding, that is, the single byte sequence that stands for their value. Input that passes is admitted and the request is accepted. Input that fails is malformed and the request is rejected. |
+| Staging | Storing the history objects and the cold objects of an import while its candidate root is not yet a known root. The model stores the history objects first. |
+| Seal | The check, made after staging, that the closure of the candidate root of an import is complete. |
+| Publication | The single step that makes the candidate root of a request a known root. For a checkpoint the same step stores its history objects and cold objects and activates the root. For an import the same step activates the root only in `import-activate` mode. |
+| Observation | What a reader returns at a root. The model keeps one abstract value per root; the tests use the encoded data read at that root. |
+| Typed oracle | The root and the observation obtained when the same value is built from typed Rust values instead of from input bytes. |
+
+The model follows one request at a time and records how far it has come as a phase. `idle` is the
+phase before the first request and after a known root has been activated.
+
+The model has no step for a checkpoint request that changes nothing, that is, one whose candidate
+root is the root that is already current: the only step it has for an accepted checkpoint is
+publication, which always advances the generation. The implementation publishes nothing for such a
+request and leaves the known roots, the current root and the generation as they are; the tests
+bound to `UnpublishedCheckpointPreservesEveryNamespace`, `CurrentRootIsKnown` and
+`GenerationAdvancesOnlyOnActivation` in the table below check this.
+
+```text
+┌──────┐  begin   ┌───────────┐   admitted   ┌──────────┐     checkpoint: publish      ┌───────────┐
+│ idle │ ───────▶ │ submitted │ ───────────▶ │ accepted │ ───────────────────────────▶ │ published │
+└──────┘          └─────┬─────┘              └────┬─────┘                              └───────────┘
+                        │ malformed               │ import: stage history                     ▲
+                        ▼                         ▼                           import: publish │
+                   ┌──────────┐           ┌────────────────┐ stage cold ┌────────┐  seal  ┌───┴────┐
+                   │ rejected │           │ history-staged │ ─────────▶ │ staged │ ─────▶ │ sealed │
+                   └──────────┘           └────────────────┘            └────────┘        └────────┘
+
+begin, for the next request:    rejected ──▶ submitted    published ──▶ submitted
+activate a known root:          idle ──▶ idle    rejected ──▶ idle    published ──▶ idle
+```
+
+Legend: boxes are phases, arrows are steps of the model, and a `checkpoint:` or `import:` label limits a step to that kind of request.
+
+The next table states each invariant of the baseline configuration, in the order of the
+configuration, and names the test in `models/tests/rpb3_publication_acceptance.rs` that is bound to
+it. "When the request began" means the state at the step that made the request submitted.
+
+| Invariant | Statement | Bound test |
+|---|---|---|
+| `TypeInvariant` | Every variable of the model holds a value of its declared type. | None; checked by the model only. |
+| `MalformedInputCannotBeAdmitted` | A request with malformed input is never accepted, history-staged, staged, sealed or published. | `generated_full_par_bincode_wire_matches_typed_oracle_and_refusal` |
+| `MalformedRefusalPreservesEveryNamespace` | When a request is rejected, the history objects, the cold objects, the known roots, the current root and the generation are the same as when the request began. | `authenticated_malformed_compact_par_refuses_before_durable_publication` |
+| `UnpublishedImportHasNoRootAuthority` | While an import is accepted, history-staged, staged or sealed, the known roots, the current root and the generation are the same as when the request began. | `generated_lifecycle_keeps_unpublished_imports_without_root_authority` |
+| `UnpublishedCheckpointPreservesEveryNamespace` | While a checkpoint is submitted or accepted, the history objects, the cold objects, the known roots, the current root and the generation are the same as when the request began. | `generated_lifecycle_keeps_unpublished_checkpoints_out_of_every_namespace` |
+| `PublicationRequiresAdmissionAndSeal` | A published request has canonical input that was admitted, has been sealed if it is an import, and has been published exactly once. | `generated_authenticated_full_wire_par_import_seals_publishes_and_reopens` |
+| `PublicationMatchesTypedOracle` | After publication the candidate root and its observation are those of the typed oracle for the input, the candidate root is a known root, and it is the current root if the request is a checkpoint or an `import-activate` import. | `compact_admission_refusal_and_typed_publication_survive_lmdb_reopen` |
+| `EveryKnownRootHasCompleteClosureAndExactObservation` | Every known root has a complete closure, and the observation at it is exactly the one that belongs to that root. | `generated_lifecycle_keeps_every_known_root_closed_and_exactly_observable` |
+| `CurrentRootIsKnown` | The current root is always a known root. | `generated_lifecycle_keeps_the_current_root_known` |
+| `GenerationAdvancesOnlyOnActivation` | The generation always equals the number of activations so far. | `generated_lifecycle_advances_the_generation_only_on_activation` |
+
+The test `publication_invariant_bindings_cover_the_model_configuration` in the same file reads the
+configuration and its own source and fails if an `INVARIANT` line other than `TypeInvariant` has no
+row or more than one row in the table `PUBLICATION_INVARIANT_BINDINGS`, if a row names an invariant
+that the configuration does not check, or if a row names a test that is not defined exactly once as
+a test function in that file.
+
 ## Migration and completion
 
 The typed authority foundation is now concrete rather than hypothetical. Checkpoint `7ea86db75`
