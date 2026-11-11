@@ -6144,6 +6144,181 @@ pub proof fn runtime_epm_child_modeled_witness()
     assert(runtime_epm_source_eof(before, Seq::empty()).is_some());
 }
 
+pub proof fn runtime_epm_owner_step_is_selected(score: bridge::ScoreAdmissionBridge)
+    ensures match bridge::bridge_epathmap_owner_score_step(score) {
+        None => true,
+        Some(next) => bridge::bridge_score_finish_selected(score) == Some(next),
+    },
+{
+    if let Some(next) = bridge::bridge_epathmap_owner_score_step(score) {
+        bridge::bridge_score_finish_selection_group_6_earlier_groups_empty(score);
+        assert(bridge::bridge_var_score_step(score).is_none());
+        assert(bridge::bridge_ezipper_score_step(score).is_none());
+        reveal(bridge::bridge_score_finish_selection_group_6);
+        reveal(bridge::bridge_score_finish_selected);
+    }
+}
+
+pub proof fn runtime_epm_owner_generic_root_agrees(
+    before: RuntimeFrameImage, snapshot_bytes: Seq<u8>,
+)
+    ensures match runtime_epm_source_score_finish_selected(before, snapshot_bytes) {
+        None => true,
+        Some(next) => (bridge::bridge_score_finish_selected(before.score) == Some(next)
+            && before.score.admission.frames.len() == 1)
+            ==> runtime_message_driver_step(before, RuntimeMessageEvent::Eof)
+                == runtime_message_driver_step(
+                    before, RuntimeMessageEvent::EofEPathMap { snapshot_bytes },
+                ),
+    },
+{
+    if let Some(next) = runtime_epm_source_score_finish_selected(before, snapshot_bytes) {
+        if bridge::bridge_score_finish_selected(before.score) == Some(next)
+            && before.score.admission.frames.len() == 1
+        {
+            runtime_noscore_child_selector_excluded(before);
+            runtime_selected_score_finish_is_checked(before);
+            assert(finish::message_eof_ready(before.score));
+        }
+    }
+}
+
+pub proof fn runtime_epm_owner_generic_child_agrees(
+    before: RuntimeFrameImage, snapshot_bytes: Seq<u8>,
+)
+    ensures match runtime_epm_source_score_finish_selected(before, snapshot_bytes) {
+        None => true,
+        Some(next) => (bridge::bridge_score_finish_selected(before.score) == Some(next)
+            && before.score.admission.frames.len() != 1)
+            ==> runtime_message_driver_step(before, RuntimeMessageEvent::Eof)
+                == runtime_message_driver_step(
+                    before, RuntimeMessageEvent::EofEPathMap { snapshot_bytes },
+                ),
+    },
+{
+    if let Some(next) = runtime_epm_source_score_finish_selected(before, snapshot_bytes) {
+        if bridge::bridge_score_finish_selected(before.score) == Some(next)
+            && before.score.admission.frames.len() != 1
+        {
+            runtime_noscore_child_selector_excluded(before);
+            runtime_selected_score_finish_is_checked(before);
+            runtime_child_eof_gate_intro(before, next);
+            reveal(runtime_message_eof_child_accept);
+        }
+    }
+}
+
+pub proof fn runtime_epm_owner_generic_agrees(before: RuntimeFrameImage, snapshot_bytes: Seq<u8>)
+    ensures match runtime_epm_source_score_finish_selected(before, snapshot_bytes) {
+        None => true,
+        Some(next) => {
+            &&& snapshot_bytes
+                == before.score.admission.frames.last().returns.last().body_bytes
+            &&& bridge::bridge_epathmap_owner_score_step(before.score) == Some(next)
+            &&& bridge::bridge_score_finish_selected(before.score) == Some(next)
+            &&& runtime_message_driver_step(before, RuntimeMessageEvent::Eof)
+                == runtime_message_driver_step(
+                    before, RuntimeMessageEvent::EofEPathMap { snapshot_bytes },
+                )
+        },
+    },
+{
+    runtime_epm_owner_step_is_selected(before.score);
+    runtime_epm_owner_generic_root_agrees(before, snapshot_bytes);
+    runtime_epm_owner_generic_child_agrees(before, snapshot_bytes);
+}
+
+pub proof fn runtime_epm_owner_generic_route_exact(before: RuntimeFrameImage)
+    ensures match bridge::bridge_epathmap_owner_score_step(before.score) {
+        None => true,
+        Some(next) => {
+            &&& bridge::bridge_score_finish_selected(before.score) == Some(next)
+            &&& runtime_epm_source_score_finish_selected(
+                before, before.score.admission.frames.last().returns.last().body_bytes,
+            ) == if runtime_frame_image_wf(before) { Some(next) } else { None }
+            &&& runtime_message_driver_step(before, RuntimeMessageEvent::Eof)
+                == runtime_message_driver_step(
+                    before, RuntimeMessageEvent::EofEPathMap {
+                        snapshot_bytes:
+                            before.score.admission.frames.last().returns.last().body_bytes,
+                    },
+                )
+        },
+    },
+{
+    runtime_epm_owner_step_is_selected(before.score);
+    if let Some(next) = bridge::bridge_epathmap_owner_score_step(before.score) {
+        let snapshot_bytes = before.score.admission.frames.last().returns.last().body_bytes;
+        if runtime_frame_image_wf(before) {
+            assert(runtime_epm_source_score_finish_selected(before, snapshot_bytes) == Some(next));
+            runtime_epm_owner_generic_root_agrees(before, snapshot_bytes);
+            runtime_epm_owner_generic_child_agrees(before, snapshot_bytes);
+        } else {
+            reveal(runtime_message_eof_child_accept);
+            reveal(runtime_child_eof_gate);
+        }
+    }
+}
+
+pub proof fn runtime_epm_owner_generic_root_witness()
+    ensures
+        runtime_epm_source_score_finish_selected(runtime_epm_root_before(), Seq::empty())
+            .is_some(),
+        bridge::bridge_epathmap_owner_score_step(runtime_epm_root_before().score)
+            == runtime_epm_source_score_finish_selected(runtime_epm_root_before(), Seq::empty()),
+        bridge::bridge_score_finish_selected(runtime_epm_root_before().score)
+            == runtime_epm_source_score_finish_selected(runtime_epm_root_before(), Seq::empty()),
+        runtime_message_driver_step(runtime_epm_root_before(), RuntimeMessageEvent::Eof)
+            == runtime_message_driver_step(
+                runtime_epm_root_before(),
+                RuntimeMessageEvent::EofEPathMap { snapshot_bytes: Seq::empty() },
+            ),
+        match runtime_message_driver_step(runtime_epm_root_before(), RuntimeMessageEvent::Eof) {
+            Some(RuntimeMessageOutcome::RootReturned { returned }) => {
+                &&& returned.remaining_frames == 0
+                &&& returned.pre_pop.score.admission.frames[0].score_handle.is_some()
+                &&& returned.summary.program_type_id == 31
+                &&& returned.summary.complete
+            },
+            _ => false,
+        },
+{
+    runtime_epm_root_modeled_witness();
+    runtime_epm_owner_generic_agrees(runtime_epm_root_before(), Seq::empty());
+}
+
+pub proof fn runtime_epm_owner_generic_child_witness()
+    ensures
+        runtime_epm_source_score_finish_selected(runtime_epm_child_before(), Seq::empty())
+            .is_some(),
+        bridge::bridge_epathmap_owner_score_step(runtime_epm_child_before().score)
+            == runtime_epm_source_score_finish_selected(runtime_epm_child_before(), Seq::empty()),
+        bridge::bridge_score_finish_selected(runtime_epm_child_before().score)
+            == runtime_epm_source_score_finish_selected(runtime_epm_child_before(), Seq::empty()),
+        runtime_message_driver_step(runtime_epm_child_before(), RuntimeMessageEvent::Eof)
+            == runtime_message_driver_step(
+                runtime_epm_child_before(),
+                RuntimeMessageEvent::EofEPathMap { snapshot_bytes: Seq::empty() },
+            ),
+        match runtime_message_driver_step(runtime_epm_child_before(), RuntimeMessageEvent::Eof) {
+            Some(RuntimeMessageOutcome::ParentAccepted { image }) => {
+                &&& image.score.admission.frames.len() == 1
+                &&& image.score.admission.completed == 1
+                &&& image.score.admission.frames[0].waiting_id.is_none()
+                &&& image.score.admission.frames[0].returns.last().kind
+                    == admission::AdmissionReturnedKind::ExprPayload {
+                        score_present: true,
+                        canonical_fixed_point: true,
+                        canonical_path_stable: true,
+                    }
+            },
+            _ => false,
+        },
+{
+    runtime_epm_child_modeled_witness();
+    runtime_epm_owner_generic_agrees(runtime_epm_child_before(), Seq::empty());
+}
+
 }
 
 fn main() {}

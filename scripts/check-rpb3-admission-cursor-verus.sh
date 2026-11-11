@@ -1474,6 +1474,13 @@ proofs_rpb3_runtime_frame_source_refinement=(
   runtime_root_return_observable_exact
   runtime_raw_par_finish_selected_exact
   runtime_par_root_return_witness
+  runtime_epm_owner_step_is_selected
+  runtime_epm_owner_generic_root_agrees
+  runtime_epm_owner_generic_child_agrees
+  runtime_epm_owner_generic_agrees
+  runtime_epm_owner_generic_route_exact
+  runtime_epm_owner_generic_root_witness
+  runtime_epm_owner_generic_child_witness
 )
 proofs_rpb3_score_admission_bridge=(
   bridge_certified_interval_entries_exact
@@ -2563,7 +2570,11 @@ for proof in runtime_noscore_key_value_pair_modeled_witness \
   source_checked_frame_request_push_fresh_refines \
   source_checked_frame_request_push_indexed_fresh_refines \
   source_checked_fresh_root_refines \
-  source_initial_indexed_cursor_rejects_consumed; do
+  source_initial_indexed_cursor_rejects_consumed \
+  runtime_epm_owner_generic_agrees \
+  runtime_epm_owner_generic_route_exact \
+  runtime_epm_owner_generic_root_witness \
+  runtime_epm_owner_generic_child_witness; do
   if ! rg -q "^pub proof fn ${proof}\\(" \
     "$model_dir/rpb3_runtime_frame_source_refinement.rs"; then
     echo "rpb3-admission-cursor: missing runtime proof $proof" >&2
