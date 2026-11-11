@@ -88,7 +88,7 @@ async fn floor_of_view_holds_until_witnessed_then_advances() {
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 3,
+                stake: 3.into(),
             })
             .collect();
 
@@ -266,7 +266,7 @@ async fn floor_of_view_advances_onto_the_already_finalized_candidate() {
             .iter()
             .map(|validator| Bond {
                 validator: validator.clone(),
-                stake: 3,
+                stake: 3.into(),
             })
             .collect();
         let genesis = create_genesis_block(
@@ -354,7 +354,7 @@ async fn floor_of_view_growth_feedback_loop_stale_justification_chain() {
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 10,
+                stake: 10.into(),
             })
             .collect();
 

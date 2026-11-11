@@ -24,7 +24,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::{ReadLimits, SnapshotError};
 use tokio::runtime::Runtime;
 
-const DAG_STORES: [&str; 10] = [
+const DAG_STORES: [&str; 15] = [
     "block-metadata",
     "latest-messages",
     "invalid-blocks",
@@ -35,6 +35,11 @@ const DAG_STORES: [&str; 10] = [
     "carrier-index",
     "carrier-index-meta",
     "genesis-hash",
+    "dag-membership-v1",
+    "dag-height-v1",
+    "dag-children-v1",
+    "dag-history-state-v1",
+    "dag-gc-retry-v1",
 ];
 const BLOCK_STORES: [&str; 2] = ["blocks", "blocks-approved"];
 
@@ -625,10 +630,11 @@ fn scratch_views_share_no_mutable_stores_with_each_other_or_production() {
             .dag
             .get_representation()
             .unwrap()
-            .contains(&extra.block_hash));
+            .contains(&extra.block_hash)
+            .unwrap());
     }
 
-    assert_eq!(view_b.representation.dag_set.len(), 4);
+    assert_eq!(view_b.representation.resident_counts().blocks, 4);
     assert_eq!(view_b.representation.last_finalized_block_hash, g);
     assert!(view_b
         .representation
@@ -636,14 +642,14 @@ fn scratch_views_share_no_mutable_stores_with_each_other_or_production() {
         .read()
         .contains(&b2));
     assert_eq!(
-        view_b.representation.latest_messages_map.len(),
+        view_b.representation.latest_message_hashes().len(),
         snapshot.latest_messages.len()
     );
     assert!(view_b
         .representation
         .lifecycle
         .read()
-        .canonical_appearance(&[1u8; 32], &|_| true)
+        .canonical_appearance(&[1u8; 32], &|_| Ok(true))
         .unwrap()
         .is_none());
 }
@@ -712,7 +718,7 @@ fn held_block_without_metadata_row_is_incomplete_evidence() {
     metadata_store(fx.handle("block-metadata"))
         .delete(vec![BlockHashSerde(b1.clone())])
         .unwrap();
-    assert!(fx.dag.get_representation().unwrap().contains(&b1));
+    assert!(fx.dag.get_representation().unwrap().contains(&b1).unwrap());
 
     let result = capture(&fx.dag, &fx.blocks, &request(&[]));
     match result {
@@ -836,7 +842,9 @@ fn metadata_collections_are_bounded_before_typed_decoding() {
     let typed = metadata_store(fx.handle("block-metadata"));
     let hash = fx.chain[1].block_hash.clone();
     let mut metadata = typed.get_unsafe(&BlockHashSerde(hash.clone())).unwrap();
-    metadata.weight_map = (0..5).map(|n| (BlockHash::from(vec![n; 32]), 1)).collect();
+    metadata.weight_map = (0..5)
+        .map(|n| (BlockHash::from(vec![n; 32]), 1.into()))
+        .collect();
     typed
         .put_one(BlockHashSerde(hash.clone()), metadata.clone())
         .unwrap();
@@ -1303,7 +1311,7 @@ impl<'a> CanonicalReader<'a> {
         self.count(value.weight_map.len());
         for (validator, weight) in &value.weight_map {
             assert_eq!(self.bytes(), validator.as_ref());
-            assert_eq!(i64::from_be_bytes(self.fixed()), *weight);
+            assert_eq!(self.bytes(), weight.as_bigint().to_signed_bytes_be());
         }
         assert_eq!(i64::from_be_bytes(self.fixed()), value.block_number);
         assert_eq!(i32::from_be_bytes(self.fixed()), value.sequence_number);
@@ -1357,6 +1365,8 @@ impl<'a> CanonicalReader<'a> {
         self.count(snapshot.coverage.requested_bodies);
         self.tag("generation");
         assert_eq!(self.number(), snapshot.insertion_generation);
+        self.tag("view_sequence");
+        assert_eq!(self.number(), snapshot.view_sequence);
         self.tag("transactions");
         self.count(snapshot.transactions.len());
         for t in &snapshot.transactions {

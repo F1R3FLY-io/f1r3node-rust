@@ -106,7 +106,7 @@ impl EquivocationDetector {
             }
             let bonded = post_state_bonds
                 .iter()
-                .any(|bond| bond.validator == equivocation.sender && bond.stake > 0);
+                .any(|bond| bond.validator == equivocation.sender && !bond.stake.is_zero());
             if bonded
                 && Self::is_equivocation_detectable(
                     dag,
@@ -452,7 +452,10 @@ mod tests {
         let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
         let block_metadata_index = Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store)));
 
-        let mut dag = KeyValueDagRepresentation {
+        let mut dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set: imbl::HashSet::new(),
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -474,25 +477,30 @@ mod tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
 
         for (index, block) in blocks.iter().enumerate() {
             let block_number = index as i64;
-            dag.dag_set.insert(block.block_hash.clone());
-            dag.block_number_map
+            dag.fixture_mut().dag_set.insert(block.block_hash.clone());
+            dag.fixture_mut()
+                .block_number_map
                 .insert(block.block_hash.clone(), block_number);
-            dag.height_map
+            dag.fixture_mut()
+                .height_map
                 .entry(block_number)
                 .or_default()
                 .insert(block.block_hash.clone());
-            dag.sequence_map
+            dag.fixture_mut()
+                .sequence_map
                 .entry((block.sender.clone(), block.seq_num))
                 .or_default()
                 .insert(block.block_hash.clone());
             if let Some(self_parent) = proto_util::creator_justification_block_message(block)
                 .map(|justification| justification.latest_block_hash)
             {
-                dag.self_justification_map
+                dag.fixture_mut()
+                    .self_justification_map
                     .insert(block.block_hash.clone(), self_parent);
             }
             dag.block_metadata_index
@@ -522,7 +530,8 @@ mod tests {
         let a2 = block(&v, 2, hash(12), Some(a1.block_hash.clone()));
         let a3 = block(&v, 3, hash(13), Some(a2.block_hash.clone()));
         let mut dag = dag_with(&[a1.clone(), a2.clone(), a3.clone()]);
-        dag.latest_messages_map
+        dag.fixture_mut()
+            .latest_messages_map
             .insert(v.clone(), a3.block_hash.clone());
         (dag, v, [a1, a2, a3])
     }
@@ -762,7 +771,7 @@ mod tests {
         let mut dag = dag_with(&[g.clone(), left.clone(), right.clone(), observed.clone()]);
         let mut held = metadata(&right, 1);
         held.equivocates = Some(left.block_hash.clone());
-        dag.invalid_blocks_set.insert(held);
+        dag.fixture_mut().invalid_blocks_set.insert(held);
         let store = block_store_with(&[left.clone(), right.clone(), observed.clone()]);
 
         let mut judged = block(&validator(3), 1, hash(50), None);
@@ -779,12 +788,12 @@ mod tests {
         (dag, store, g, judged, v)
     }
 
-    fn neglect_verdict(both: bool, stake: Option<i64>) -> ValidBlockProcessing {
+    fn neglect_verdict(both: bool, stake: Option<u64>) -> ValidBlockProcessing {
         let (dag, store, genesis, judged, v) = neglect_case(both);
         let bonds: Vec<Bond> = stake
             .map(|stake| Bond {
                 validator: v,
-                stake,
+                stake: stake.into(),
             })
             .into_iter()
             .collect();

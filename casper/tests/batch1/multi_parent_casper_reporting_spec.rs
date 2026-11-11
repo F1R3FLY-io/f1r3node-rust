@@ -204,6 +204,7 @@ async fn reporting_a_slashing_block_replays_its_own_evidence() {
         if !nodes[2]
             .casper
             .dag_contains(&justification.latest_block_hash)
+            .expect("dag lookup")
         {
             let cited = nodes[1]
                 .block_store

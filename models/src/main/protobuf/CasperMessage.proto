@@ -289,7 +289,7 @@ message NoApprovedBlockAvailableProto {
 // --------- Core Protocol  --------
 message BlockMessageProto {
   option (scalapb.message).extends = "CasperMessageProto";
-  bytes                       blockHash      = 1; // Merkle block hash (scheme v2); covers every field except blockHash and sig
+  bytes                       blockHash      = 1; // Merkle block hash (scheme v3); covers every field except blockHash and sig
   HeaderProto                 header         = 2 [(scalapb.field).no_box = true];
   BodyProto                   body           = 3 [(scalapb.field).no_box = true];
   repeated JustificationProto justifications = 4; // latest block of each validator in the current view, in strictly ascending validator order
@@ -346,7 +346,8 @@ message DeployDataProto {
   int64  timestamp            = 3; //millisecond timestamp
   bytes  sig                  = 4; //signature of (hash(term) + timestamp) using private key
   string sigAlgorithm         = 5; //name of the algorithm used to sign
-  int64 phloPrice             = 7; //phlo price
+  reserved 7;
+  bytes phloPrice             = 15;
   int64 phloLimit             = 8; //phlo limit for the deployment
   int64 validAfterBlockNumber = 10;
   string shardId              = 11;//shard ID to prevent replay of deploys between shards
@@ -372,6 +373,7 @@ message RholangValue {
     RholangMap map_value = 8;
     RholangNil nil_value = 9;
     string uri_value = 10;
+    string big_int_value = 11; // canonical signed decimal, absolute value below 2^512
   }
 }
 
@@ -534,7 +536,8 @@ message PeekProto {
 
 message BondProto {
   bytes validator = 1;
-  int64 stake     = 2;
+  reserved 2;
+  bytes stake = 3;
 }
 // --------- End Core Protocol  --------
 

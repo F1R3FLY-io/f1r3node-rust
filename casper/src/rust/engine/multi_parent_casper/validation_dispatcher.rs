@@ -2,17 +2,15 @@
 //! `handle_invalid_block`.
 //!
 //! Phase 3 Step 4 — extracted from `engine::multi_parent_casper`. Each
-//! function takes the casper instance as a `&MultiParentCasperImpl<T>`
+//! function takes the casper instance as a `&MultiParentCasperImpl`
 //! reference (rather than `&self`) so the implementation can live in
 //! this module while the trait method is a one-line delegate in
 //! `traits.rs`.
 
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
-use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
@@ -65,8 +63,8 @@ where
 /// which is precluded by the validator-identity check upstream).
 ///
 /// A `Left` from any validator short-circuits and is returned directly.
-async fn run_validation_steps<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+async fn run_validation_steps(
+    this: &MultiParentCasperImpl,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
     skip_checkpoint_and_bonds: bool,
@@ -101,9 +99,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     // A second signed block at a held sequence number is an equivocation
     // whatever else is wrong with it, so it is judged before every check
     // that could discard it.
-    let requested_as_dependency = this
-        .casper_buffer_storage
-        .requested_as_dependency(&BlockHashSerde(block.block_hash.clone()));
+    let requested_as_dependency = this.ingest.view().is_cited(&block.block_hash);
     let (equivocation_result, t0) = timed_step(
         "equivocation",
         BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC,
@@ -262,7 +258,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         async {
             Ok(Validate::phlo_price(
                 block,
-                this.casper_shard_conf.min_phlo_price,
+                &this.casper_shard_conf.min_phlo_price,
             ))
         },
     )
@@ -310,8 +306,8 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
 /// `dispatch_validate` and `dispatch_validate_self_created`. The
 /// `log_label` distinguishes "block" vs "self-created block" in the
 /// warn-on-error messages for operator clarity.
-async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+async fn update_mergeable_cache_after_validation(
+    this: &MultiParentCasperImpl,
     block: &BlockMessage,
     log_label: &str,
 ) {
@@ -355,8 +351,8 @@ async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync
     }
 }
 
-pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn dispatch_validate(
+    this: &MultiParentCasperImpl,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
@@ -391,10 +387,7 @@ pub(crate) async fn dispatch_validate<T: TransportLayer + Send + Sync>(
 
 /// Measured against the live frontier after replay, not the pre-replay
 /// snapshot: a slow replay is what carries a block past the parent-depth limit.
-fn record_arrival_depth<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
-    block: &BlockMessage,
-) {
+fn record_arrival_depth(this: &MultiParentCasperImpl, block: &BlockMessage) {
     let frontier = match this.block_dag_storage.get_representation() {
         Ok(dag) => dag.latest_block_number(),
         Err(error) => {
@@ -424,8 +417,8 @@ fn record_arrival_depth<T: TransportLayer + Send + Sync>(
     }
 }
 
-pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn dispatch_validate_self_created(
+    this: &MultiParentCasperImpl,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
     pre_state_hash: Bytes,
@@ -505,14 +498,13 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
     Ok(val_result)
 }
 
-pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) fn dispatch_handle_invalid_block(
+    this: &MultiParentCasperImpl,
     block: &BlockMessage,
     status: &InvalidBlock,
     dag: &KeyValueDagRepresentation,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
     let handle_invalid_block_effect = |block_dag_storage: &BlockDagKeyValueStorage,
-                                       casper_buffer_storage: &CasperBufferKeyValueStorage,
                                        status: &InvalidBlock,
                                        block: &BlockMessage,
                                        sibling: BlockHash|
@@ -523,27 +515,8 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
             status,
             PrettyPrinter::build_string_bytes(&sibling)
         );
-
-        // Bug #17 / T-9.20: in-process atomic transition of the
-        // (DAG insert, casper-buffer remove) pair via
-        // `atomic_insert_then_buffer`. Distinct LMDB envs mean
-        // cross-store ACID is physically impossible; the helper
-        // documents the lock-order contract (DAG global_lock A,
-        // buffer state_lock B) and the on-resume reconciliation
-        // closes any crash-window drift. See
-        // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
         this.block_store.persist_block(block)?;
-        let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-        let updated_dag =
-            block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
-                block_dag_storage,
-                block,
-                InsertMode::Equivocation { sibling },
-                casper_buffer_storage,
-                block_storage::rust::dag::buffer_dag_transition::BufferTransition::RemoveFromBuffer(
-                    block_hash_serde,
-                ),
-            )?;
+        let updated_dag = block_dag_storage.insert(block, InsertMode::Equivocation { sibling })?;
         record_dag_cardinality_metrics(&updated_dag);
         Ok(updated_dag)
     };
@@ -557,19 +530,11 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
                     PrettyPrinter::build_string_bytes(&block.block_hash)
                 ))
             })?;
-            handle_invalid_block_effect(
-                &this.block_dag_storage,
-                &this.casper_buffer_storage,
-                status,
-                block,
-                sibling,
-            )
+            handle_invalid_block_effect(&this.block_dag_storage, status, block, sibling)
         }
 
+        // Not inserted: block ingest drops the block and discards a pending body.
         _ => {
-            let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-            this.casper_buffer_storage.remove(block_hash_serde)?;
-            this.block_store.discard_pending(&block.block_hash);
             tracing::warn!(
                 "Recording invalid block {} for {:?}.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),

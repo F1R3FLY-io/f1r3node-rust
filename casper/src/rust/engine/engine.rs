@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
@@ -28,9 +27,8 @@ use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
-use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
+use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
-use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::running::Running;
 use crate::rust::errors::CasperError;
@@ -241,8 +239,7 @@ pub(crate) fn publish_chain_identity(
 // NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
-    blocks_in_processing: Arc<InFlightBlocks>,
+    ingest: IngestHandle,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
     the_init: Arc<
@@ -251,7 +248,6 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     disable_state_exporter: bool,
     transport: Arc<U>,
     conf: RPConf,
-    block_retriever: BlockRetriever<U>,
     // Phase 7b-1: optional snapshot chunk-fetch context.  When
     // `Some`, the running engine's packet dispatch routes
     // snapshot-related CasperMessage variants to the sync driver
@@ -294,17 +290,16 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
         PrettyPrinter::build_string_no_limit(&approved_block.candidate.block.block_hash);
 
     publish_chain_identity(casper.genesis_block_hash(), &conf.chain_id)?;
+    ingest.attach_casper(casper.clone()).await?;
 
     let running = Arc::new(Running::new(
-        block_processing_queue_tx,
-        blocks_in_processing,
+        ingest,
         casper,
         approved_block,
         the_init,
         disable_state_exporter,
         transport,
         conf,
-        block_retriever,
         state_items_tx,
     ));
 
@@ -347,8 +342,7 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
 // NOTE: Parameter types adapted to match GenesisValidator changes (Arc wrappers, trait objects)
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
-    blocks_in_processing: &Arc<InFlightBlocks>,
+    ingest: &IngestHandle,
     casper_shard_conf: &CasperShardConf,
     validator_id: &Option<ValidatorIdentity>,
     init: Arc<
@@ -364,10 +358,8 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     block_dag_storage: &BlockDagKeyValueStorage,
     deploy_storage: &KeyValueDeployStorage,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    casper_buffer_storage: &CasperBufferKeyValueStorage,
     rspace_state_manager: &RSpaceStateManager,
     event_publisher: F1r3flyEvents,
-    block_retriever: BlockRetriever<U>,
     engine_cell: &Arc<EngineCell>,
     runtime_manager_arc: &Arc<RuntimeManager>,
     estimator: &Estimator,
@@ -391,10 +383,8 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         block_dag_storage.clone(),
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        casper_buffer_storage.clone(),
         rspace_state_manager.clone(),
-        block_processing_queue_tx.clone(),
-        blocks_in_processing.clone(),
+        ingest.clone(),
         casper_shard_conf.clone(),
         validator_id.clone(),
         init,
@@ -405,7 +395,6 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         trim_state,
         disable_state_exporter,
         event_publisher.clone(),
-        block_retriever.clone(),
         engine_cell.clone(),
         runtime_manager,
         estimator.clone(),

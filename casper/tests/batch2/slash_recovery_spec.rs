@@ -54,10 +54,33 @@ async fn equivocation(nodes: &mut [TestNode], shard_id: &str, observers: &[usize
     first.sender
 }
 
+/// `node` receives `first`, then judges `second` an equivocation and holds
+/// the pair.
+async fn hold_pair(node: &mut TestNode, first: &BlockMessage, second: &BlockMessage) {
+    node.process_block(first.clone())
+        .await
+        .expect("observer processes the first block");
+    let flagged = node
+        .process_block(second.clone())
+        .await
+        .expect("observer processes the sibling");
+    assert!(
+        matches!(flagged, Either::Left(_)),
+        "the observer holds the sibling as an equivocation: {flagged:?}"
+    );
+}
+
 struct TestContext {
     genesis: GenesisContext,
     shard_id: String,
 }
+
+type BondsFunction = fn(
+    Vec<crypto::rust::public_key::PublicKey>,
+) -> std::collections::HashMap<
+    crypto::rust::public_key::PublicKey,
+    shared::rust::token_amount::TokenAmount,
+>;
 
 impl TestContext {
     async fn new() -> Self {
@@ -79,12 +102,20 @@ impl TestContext {
         // built by `build_genesis_parameters_with_defaults(_, None)`.
         fn bonds_function(
             validators: Vec<crypto::rust::public_key::PublicKey>,
-        ) -> std::collections::HashMap<crypto::rust::public_key::PublicKey, i64> {
+        ) -> std::collections::HashMap<
+            crypto::rust::public_key::PublicKey,
+            shared::rust::token_amount::TokenAmount,
+        > {
             validators
                 .into_iter()
-                .zip(vec![100i64, 100, 100, 100])
+                .zip(vec![100u64, 100, 100, 100])
+                .map(|(key, stake)| (key, stake.into()))
                 .collect()
         }
+        Self::with_bonds(bonds_function).await
+    }
+
+    async fn with_bonds(bonds_function: BondsFunction) -> Self {
         let parameters =
             GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
         let genesis = GenesisBuilder::new()
@@ -248,10 +279,10 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let equivocator_stake = post_merge_bonds
         .iter()
         .find(|b| b.validator == equivocator_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("equivocator must still appear in bonds map");
     assert!(
-        equivocator_stake <= 1,
+        equivocator_stake <= 1.into(),
         "post-merge equivocator stake must be at the bond floor (<=1); got {}",
         equivocator_stake
     );
@@ -261,7 +292,7 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let proposer_stake = post_merge_bonds
         .iter()
         .find(|b| b.validator == merge_proposer_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("merge proposer must still appear in bonds map");
     let proposer_genesis_stake = ctx
         .genesis
@@ -271,7 +302,7 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
         .bonds
         .iter()
         .find(|b| b.validator == merge_proposer_pk.bytes)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("merge proposer must be bonded at genesis");
     assert_eq!(
         proposer_stake, proposer_genesis_stake,
@@ -437,10 +468,10 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     let equivocator_stake = post_merge_bonds
         .iter()
         .find(|b| b.validator == equivocator)
-        .map(|b| b.stake)
+        .map(|b| b.stake.clone())
         .expect("equivocator must still appear in bonds map");
     assert!(
-        equivocator_stake <= 1,
+        equivocator_stake <= 1.into(),
         "post-merge equivocator stake must be at the bond floor (<=1) even when a \
          pre-slash sibling is merged; got {}",
         equivocator_stake
@@ -619,4 +650,157 @@ async fn slash_block_replays_with_its_own_slash_targets() {
         .await
         .expect("replay with the block's own slash targets");
     assert_eq!(with_own_targets, *post_state);
+}
+
+/// Validator 2 outweighs the others, so a merge of its block with a sibling
+/// takes its block as the main parent.
+fn validator_2_heaviest(
+    validators: Vec<crypto::rust::public_key::PublicKey>,
+) -> std::collections::HashMap<
+    crypto::rust::public_key::PublicKey,
+    shared::rust::token_amount::TokenAmount,
+> {
+    validators
+        .into_iter()
+        .zip(vec![100u64, 100, 300, 100])
+        .map(|(key, stake)| (key, stake.into()))
+        .collect()
+}
+
+/// The only block carrying a slash loses its merge to a sibling that also
+/// writes PoS state and is the merge's main parent: the merged pre-state still
+/// shows the offender bonded, and the merge proposer, with no deploys of its
+/// own, must slash again.
+#[tokio::test]
+async fn a_slash_lost_to_the_merge_is_issued_again_by_the_merge_proposer() {
+    use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
+    use casper::rust::util::construct_deploy::DEFAULT_SEC;
+    use models::rust::casper::protocol::casper_message::Bond;
+
+    use crate::helper::bonding_util;
+
+    let ctx = TestContext::with_bonds(validator_2_heaviest).await;
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("create_network(3)");
+    let deploy = |nonce: i32| {
+        construct_deploy::basic_deploy_data(nonce, None, Some(ctx.shard_id.clone()))
+            .expect("build deploy")
+    };
+    let offender = nodes[0]
+        .validator_id_opt
+        .as_ref()
+        .expect("node 0 has validator identity")
+        .public_key
+        .bytes
+        .clone();
+    let stake = |bonds: &[Bond]| {
+        bonds
+            .iter()
+            .find(|bond| bond.validator == offender)
+            .map(|bond| bond.stake.clone())
+    };
+
+    let first = nodes[0]
+        .create_block_unsafe(&[deploy(900)])
+        .await
+        .expect("validator 0 creates a block");
+    let second = equivocate_block(&mut nodes[0], &first, vec![deploy(901)])
+        .await
+        .expect("validator 0 signs a sibling");
+    hold_pair(&mut nodes[1], &first, &second).await;
+
+    let block_1 = nodes[1]
+        .create_block_unsafe(&[deploy(1)])
+        .await
+        .expect("validator 1 creates block_1");
+    assert!(slashes_in(&block_1).contains(&offender));
+    let verdict = nodes[1]
+        .process_block(block_1.clone())
+        .await
+        .expect("node 1 processes block_1");
+    assert!(
+        matches!(verdict, Either::Right(ValidBlock::Valid)),
+        "block_1: {verdict:?}"
+    );
+
+    let bond = bonding_util::bonding_deploy(100, &DEFAULT_SEC, Some(ctx.shard_id.clone()))
+        .expect("bond deploy");
+    let block_2 = nodes[2]
+        .create_block_unsafe(&[bond])
+        .await
+        .expect("validator 2 creates block_2");
+    assert!(slashes_in(&block_2).is_empty());
+    for i in [2, 1] {
+        let verdict = nodes[i]
+            .process_block(block_2.clone())
+            .await
+            .expect("process block_2");
+        assert!(
+            matches!(verdict, Either::Right(ValidBlock::Valid)),
+            "block_2 at node {i}: {verdict:?}"
+        );
+    }
+
+    let merge_block = match nodes[1]
+        .create_block(&[])
+        .await
+        .expect("create merge block")
+    {
+        BlockCreatorResult::Created(block, ..) => block,
+        BlockCreatorResult::NoNewDeploys => {
+            panic!("the merge proposer issues no block for the slash its merge lost")
+        }
+    };
+    assert!(
+        merge_block.header.parents_hash_list.first() == Some(&block_2.block_hash)
+            && merge_block
+                .header
+                .parents_hash_list
+                .contains(&block_1.block_hash),
+        "precondition: merge_block merges block_1 under main parent block_2"
+    );
+    let pre_state_bonds = nodes[1]
+        .runtime_manager
+        .compute_bonds(&merge_block.body.state.pre_state_hash)
+        .await
+        .expect("pre-state bonds");
+    assert!(
+        stake(&pre_state_bonds).is_some_and(|s| !s.is_zero()),
+        "precondition: the merge drops block_1's slash"
+    );
+
+    assert!(
+        slashes_in(&merge_block).contains(&offender),
+        "the merge proposer issues the lost slash again"
+    );
+    hold_pair(&mut nodes[2], &first, &second).await;
+    let verdict = nodes[2]
+        .process_block(block_1.clone())
+        .await
+        .expect("node 2 processes block_1");
+    assert!(
+        matches!(verdict, Either::Right(ValidBlock::Valid)),
+        "block_1 at node 2: {verdict:?}"
+    );
+    for i in [1, 2] {
+        let verdict = nodes[i]
+            .process_block(merge_block.clone())
+            .await
+            .expect("validate merge_block");
+        assert!(
+            matches!(verdict, Either::Right(ValidBlock::Valid)),
+            "merge_block at node {i}: {verdict:?}"
+        );
+    }
+    let post_state_bonds = nodes[1]
+        .runtime_manager
+        .compute_bonds(&merge_block.body.state.post_state_hash)
+        .await
+        .expect("post-state bonds");
+    assert_eq!(
+        stake(&post_state_bonds),
+        Some(shared::rust::token_amount::TokenAmount::zero()),
+        "a block whose own slash succeeded leaves the offender at stake 0"
+    );
 }

@@ -55,7 +55,7 @@ impl ServerTransportLayer for SilentPeer {
 }
 
 #[tokio::test]
-async fn timed_out_stream_does_not_block_the_next_queued_stream() {
+async fn timed_out_stream_discards_queue_and_allows_a_later_send() {
     let runtime = TransportLayerTestRuntime::new("test".to_string());
     let local = runtime
         .create_environment(get_free_port().await.unwrap())
@@ -87,6 +87,7 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
             .await
     });
 
+    let channels_map = Arc::new(Mutex::new(HashMap::new()));
     let client = GrpcTransportClient::new(
         "test".to_string(),
         ChainIdCell::unknown(),
@@ -95,7 +96,7 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
         runtime.max_message_size,
         runtime.max_message_size,
         8,
-        Arc::new(Mutex::new(HashMap::new())),
+        channels_map.clone(),
         Duration::from_secs(1),
     )
     .unwrap();
@@ -120,13 +121,42 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
         .stream(&remote.peer, &make_blob("second"))
         .await
         .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), first_request_dropped.notified())
+        .await
+        .unwrap();
+    let closed_channel = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let channel = channels_map
+                .lock()
+                .await
+                .get(&remote.peer)
+                .and_then(|cell| cell.get().cloned());
+            if let Some(channel) = channel.filter(|channel| channel.buffer.is_complete()) {
+                break channel;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(requests_seen.load(Ordering::SeqCst), 1);
+
+    client
+        .stream(&remote.peer, &make_blob("third"))
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(15), request_started.notified())
         .await
         .unwrap();
     assert_eq!(requests_seen.load(Ordering::SeqCst), 2);
-    tokio::time::timeout(Duration::from_secs(15), first_request_dropped.notified())
+    let current_channel = channels_map
+        .lock()
         .await
-        .unwrap();
+        .get(&remote.peer)
+        .and_then(|cell| cell.get().cloned())
+        .expect("the third send opens a channel");
+    assert!(!Arc::ptr_eq(&current_channel, &closed_channel));
+    assert!(!current_channel.buffer.is_complete());
 
     client.disconnect(&remote.peer).await.unwrap();
     server.abort();

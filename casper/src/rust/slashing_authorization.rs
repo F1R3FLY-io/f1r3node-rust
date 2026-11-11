@@ -17,6 +17,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, EquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::{self, Validator};
+use num_bigint::BigInt;
 
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
@@ -149,7 +150,7 @@ fn evidence_for(
 pub fn authorized_slash_candidates(
     snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
-    slashable: &HashMap<Validator, i64>,
+    slashable: &HashMap<Validator, BigInt>,
 ) -> Result<Vec<AuthorizedSlashCandidate>, CasperError> {
     let mut by_offender: BTreeMap<Validator, BlockMetadata> = BTreeMap::new();
     for metadata in snapshot.dag.invalid_blocks() {
@@ -185,7 +186,7 @@ pub fn authorized_slash_candidates(
 /// rejects the block as `InvalidBlock::UnauthorizedSlashDeploy`.
 pub fn validate_received_slash_deploys(
     block: &BlockMessage,
-    slashable: &HashMap<Validator, i64>,
+    slashable: &HashMap<Validator, BigInt>,
     shard_id: &str,
     chain_id: &[u8],
 ) -> Result<(), CasperError> {
@@ -212,7 +213,10 @@ pub fn validate_received_slash_deploys(
             .into());
         }
         let offender = equivocator_proven_by(evidence, shard_id, chain_id)?;
-        if !slashable.get(&offender).is_some_and(|stake| *stake > 0) {
+        if !slashable
+            .get(&offender)
+            .is_some_and(|stake| *stake > BigInt::from(0))
+        {
             return Err(SlashAuthError::NothingToSlash {
                 validator: hex::encode(&offender),
             }

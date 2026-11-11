@@ -30,6 +30,7 @@ use libfuzzer_sys::fuzz_target;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 
 mod support;
@@ -72,8 +73,10 @@ struct Input {
 
 fn validator(index: u8) -> Validator { support::public(&support::key(index % VALIDATORS)) }
 
-fn bonded(bonds: &HashMap<Validator, i64>, validator: &Validator) -> bool {
-    bonds.get(validator).is_some_and(|stake| *stake > 0)
+fn bonded(bonds: &HashMap<Validator, BigInt>, validator: &Validator) -> bool {
+    bonds
+        .get(validator)
+        .is_some_and(|stake| *stake > BigInt::from(0))
 }
 
 /// The slash `input` describes, and whether the oracle accepts it, with the
@@ -81,7 +84,7 @@ fn bonded(bonds: &HashMap<Validator, i64>, validator: &Validator) -> bool {
 fn slash(
     input: &SlashInput,
     proposer_index: u8,
-    bonds: &HashMap<Validator, i64>,
+    bonds: &HashMap<Validator, BigInt>,
 ) -> (
     models::rust::casper::protocol::casper_message::ProcessedSystemDeploy,
     bool,
@@ -144,7 +147,15 @@ fuzz_target!(|input: Input| {
             )
         })
         .collect::<Vec<_>>();
-    let bonds: HashMap<Validator, i64> = bonds_list.iter().cloned().collect();
+    let bonds: HashMap<Validator, BigInt> = bonds_list
+        .iter()
+        .map(|(validator, stake)| (validator.clone(), BigInt::from(*stake)))
+        .collect();
+    let slashable: HashMap<Validator, BigInt> = bonds
+        .iter()
+        .filter(|(validator, _)| bonded(&bonds, validator))
+        .map(|(validator, stake)| (validator.clone(), stake.clone()))
+        .collect();
 
     let mut held = Vec::new();
     for pair in input.pairs.iter().take(6) {
@@ -195,7 +206,8 @@ fuzz_target!(|input: Input| {
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        authorized_slash_candidates(&snapshot, &store).expect("every held block is stored"),
+        authorized_slash_candidates(&snapshot, &store, &slashable)
+            .expect("every held block is stored"),
         expected_candidates
     );
 
@@ -217,7 +229,8 @@ fuzz_target!(|input: Input| {
     }
     let block = support::block_with_system_deploys(input.proposer, proposer, 5, deploys);
     assert_eq!(
-        validate_received_slash_deploys(&block, &bonds, support::SHARD, &support::CHAIN).is_ok(),
+        validate_received_slash_deploys(&block, &slashable, support::SHARD, &support::CHAIN)
+            .is_ok(),
         expected_ok
     );
 });

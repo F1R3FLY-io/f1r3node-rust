@@ -23,7 +23,6 @@ use crate::rust::blocks::proposer::propose_result::{
     ProposeFailure, ProposeResult,
 };
 use crate::rust::casper::{Casper, CasperSnapshot};
-use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::multi_parent_casper::created_event;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -638,7 +637,6 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     block_store: KeyValueBlockStore,
     deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
     conf: RPConf,
@@ -663,7 +661,6 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
         ProductionBlockValidator,
         ProductionProposeEffectHandler::new(
             block_store,
-            block_retriever,
             transport,
             connections_cell,
             conf,
@@ -798,7 +795,6 @@ impl BlockValidator for ProductionBlockValidator {
 
 pub struct ProductionProposeEffectHandler<T: TransportLayer + Send + Sync> {
     block_store: KeyValueBlockStore,
-    block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
     conf: RPConf,
@@ -808,7 +804,6 @@ pub struct ProductionProposeEffectHandler<T: TransportLayer + Send + Sync> {
 impl<T: TransportLayer + Send + Sync> ProductionProposeEffectHandler<T> {
     pub fn new(
         block_store: KeyValueBlockStore,
-        block_retriever: BlockRetriever<T>,
         transport: Arc<T>,
         connections_cell: ConnectionsCell,
         conf: RPConf,
@@ -816,7 +811,6 @@ impl<T: TransportLayer + Send + Sync> ProductionProposeEffectHandler<T> {
     ) -> Self {
         Self {
             block_store,
-            block_retriever,
             transport,
             connections_cell,
             conf,
@@ -838,11 +832,6 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
 
         // save changes to Casper (publishes BlockAdded and BlockFinalised events)
         casper.handle_valid_block(block).await?;
-
-        // inform block retriever about block
-        self.block_retriever
-            .ack_in_casper(block.block_hash.clone())
-            .await?;
 
         // Broadcast hash to peers on a best-effort basis, but do not let network fan-out tail
         // block local propose completion latency.

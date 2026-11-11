@@ -165,7 +165,10 @@ fn dag_with_finalized_sibling(
     finalized_blocks_set.insert(genesis.clone());
     finalized_blocks_set.insert(finalized_sibling.clone());
 
-    KeyValueDagRepresentation {
+    block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+        history: None,
+        view_sequence: u64::MAX,
+        view_max_height: None,
         dag_set,
         latest_messages_map: imbl::HashMap::new(),
         child_map,
@@ -185,6 +188,7 @@ fn dag_with_finalized_sibling(
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
     }
+    .build()
 }
 
 /// A settled sibling's deploy conflicts with a far more expensive scope

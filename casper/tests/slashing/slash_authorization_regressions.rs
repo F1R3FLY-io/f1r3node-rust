@@ -24,6 +24,7 @@ use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, EquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
+use num_bigint::BigInt;
 use proptest::prelude::*;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -56,10 +57,10 @@ fn snapshot(fixture: &DetectorFixture) -> CasperSnapshot {
 }
 
 /// `validators`, each holding stake a slash can take.
-fn stakes(validators: &[Bytes]) -> HashMap<Bytes, i64> {
+fn stakes(validators: &[Bytes]) -> HashMap<Bytes, BigInt> {
     validators
         .iter()
-        .map(|validator| (validator.clone(), 100))
+        .map(|validator| (validator.clone(), BigInt::from(100)))
         .collect()
 }
 
@@ -194,7 +195,10 @@ async fn an_offender_holding_no_stake_is_no_candidate() {
 /// Judges `block`'s slashes as a node of shard `root` and chain `CHAIN`
 /// whose floor holds `stakes` a slash can take.
 fn received(block: &BlockMessage, stakes: &[(Bytes, i64)]) -> Result<(), CasperError> {
-    let slashable: HashMap<Bytes, i64> = stakes.iter().cloned().collect();
+    let slashable: HashMap<Bytes, BigInt> = stakes
+        .iter()
+        .map(|(validator, stake)| (validator.clone(), BigInt::from(*stake)))
+        .collect();
     validate_received_slash_deploys(block, &slashable, "root", &CHAIN)
 }
 
