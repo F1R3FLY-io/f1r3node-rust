@@ -1123,6 +1123,83 @@ async fn repeat_deploy_accepts_fresh_deploys_in_block_not_yet_inserted() {
     .await
 }
 
+/// genesis → b1 … b`length`, indexed by height. `carriers` places one deploy
+/// at a height.
+fn linear_chain(
+    block_store: &mut KeyValueBlockStore,
+    block_dag_storage: &mut IndexedBlockDagStorage,
+    length: i64,
+    carriers: &[(i64, &ProcessedDeploy)],
+) -> Vec<BlockMessage> {
+    let genesis = create_genesis_block(
+        block_store,
+        block_dag_storage,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let mut chain = vec![genesis.clone()];
+    for height in 1..=length {
+        let deploys = carriers
+            .iter()
+            .find(|(at, _)| *at == height)
+            .map(|(_, deploy)| vec![(*deploy).clone()]);
+        let parent = chain
+            .last()
+            .expect("chain starts at genesis")
+            .block_hash
+            .clone();
+        chain.push(create_block(
+            block_store,
+            block_dag_storage,
+            vec![parent],
+            &genesis,
+            None,
+            None,
+            None,
+            deploys,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ));
+    }
+    chain
+}
+
+/// An uninserted block on `tip` that carries `deploy`.
+fn candidate_on(tip: &BlockMessage, deploy: &ProcessedDeploy) -> BlockMessage {
+    build_block(
+        vec![tip.block_hash.clone()],
+        None,
+        1786500000000,
+        None,
+        None,
+        Some(vec![deploy.clone()]),
+        None,
+        None,
+        None,
+        Some(1),
+    )
+}
+
+fn deploy_valid_after(valid_after_block_number: i64) -> ProcessedDeploy {
+    let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+    let mut data = deploy.deploy.data.clone();
+    data.valid_after_block_number = valid_after_block_number;
+    ProcessedDeploy {
+        deploy: create_signed_deploy_with_data(data).expect("signed deploy"),
+        ..deploy
+    }
+}
+
 /// Fast-path equivalence, repeat case: with the carrier index certified
 /// complete, a row hit routes to the exact scan and the repeat is flagged
 /// exactly as the uncertified path flags it.
@@ -1794,31 +1871,6 @@ async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
     .await
 }
 
-fn child_block(
-    block_store: &mut KeyValueBlockStore,
-    block_dag_storage: &mut IndexedBlockDagStorage,
-    parent: &BlockMessage,
-    genesis: &BlockMessage,
-    deploys: Option<Vec<ProcessedDeploy>>,
-) -> BlockMessage {
-    create_block(
-        block_store,
-        block_dag_storage,
-        vec![parent.block_hash.clone()],
-        genesis,
-        None,
-        None,
-        None,
-        deploys,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-}
-
 async fn floor_context_at_genesis(
     snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
@@ -1841,51 +1893,15 @@ async fn floor_context_at_genesis(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_flags_a_floor_live_copy_below_the_tip_window() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
-        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let genesis = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        let carrier = child_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            &genesis,
-            &genesis,
-            Some(vec![deploy.clone()]),
-        );
-        let mut tip = carrier.clone();
-        for _ in 0..3 {
-            tip = child_block(
-                &mut block_store,
-                &mut block_dag_storage,
-                &tip,
-                &genesis,
-                None,
-            );
-        }
-        assert_eq!(proto_util::block_number(&carrier), 1);
-        assert_eq!(proto_util::block_number(&tip), 4);
-        let candidate = child_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            &tip,
-            &genesis,
-            Some(vec![deploy]),
-        );
+        let deploy = deploy_valid_after(0);
+        let chain = linear_chain(&mut block_store, &mut block_dag_storage, 4, &[(1, &deploy)]);
+        let candidate = candidate_on(&chain[4], &deploy);
 
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
-        let ctx = floor_context_at_genesis(&snapshot, &block_store, &tip, &genesis).await;
+        let ctx = floor_context_at_genesis(&snapshot, &block_store, &chain[4], &chain[0]).await;
 
         assert_eq!(
             Validate::transaction_expiration(&candidate, 3, Some(ctx.floor.block_number)),
@@ -1900,50 +1916,22 @@ async fn repeat_deploy_flags_a_floor_live_copy_below_the_tip_window() {
     .await
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_below_the_tip_window_does_not_trust_a_pruned_carrier_index() {
+/// A chain to height 4 with the deploy's carrier at `carrier_height`, and a
+/// carrier index certified from 0 and pruned below `prune_cutoff`, above the
+/// carrier. Validating a block on height 4 that carries the deploy again
+/// (lifespan 3) must not take the index's absence as proof.
+async fn assert_a_pruned_carrier_index_is_not_trusted(
+    valid_after: i64,
+    carrier_height: i64,
+    prune_cutoff: i64,
+) {
     with_storage(|mut block_store, mut block_dag_storage| async move {
-        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let genesis = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        let mut tip = child_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            &genesis,
-            &genesis,
-            Some(vec![deploy.clone()]),
-        );
-        for _ in 0..3 {
-            tip = child_block(
-                &mut block_store,
-                &mut block_dag_storage,
-                &tip,
-                &genesis,
-                None,
-            );
-        }
-        let candidate = build_block(
-            vec![tip.block_hash.clone()],
-            None,
-            1786500000000,
-            None,
-            None,
-            Some(vec![deploy.clone()]),
-            None,
-            None,
-            None,
-            Some(5),
-        );
+        let deploy = deploy_valid_after(valid_after);
+        let chain = linear_chain(&mut block_store, &mut block_dag_storage, 4, &[(
+            carrier_height,
+            &deploy,
+        )]);
+        let candidate = candidate_on(&chain[4], &deploy);
 
         let dag = block_dag_storage
             .get_representation()
@@ -1952,12 +1940,12 @@ async fn repeat_deploy_below_the_tip_window_does_not_trust_a_pruned_carrier_inde
             .write()
             .set_watermark_if_absent(0)
             .expect("certify");
-        dag.prune_carriers_below(2).expect("prune");
+        dag.prune_carriers_below(prune_cutoff).expect("prune");
         assert!(dag
             .carrier_index_proves_absence(&deploy.deploy.sig)
             .expect("probe"));
         let mut snapshot = mk_casper_snapshot(dag);
-        let ctx = floor_context_at_genesis(&snapshot, &block_store, &tip, &genesis).await;
+        let ctx = floor_context_at_genesis(&snapshot, &block_store, &chain[4], &chain[0]).await;
 
         let (result, snapshotter) = record_metrics(|| {
             Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx))
@@ -1974,67 +1962,39 @@ async fn repeat_deploy_below_the_tip_window_does_not_trust_a_pruned_carrier_inde
     .await
 }
 
+/// The scan starts at 1, below the tip window (2), because the deploy is
+/// older than that window.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_below_the_tip_window_does_not_trust_a_pruned_carrier_index() {
+    assert_a_pruned_carrier_index_is_not_trusted(0, 1, 2).await;
+}
+
+/// A late block: the scan starts at its tip window (2), but the node has
+/// already pruned below 3.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_in_the_tip_window_does_not_trust_a_carrier_index_pruned_above_its_start() {
+    assert_a_pruned_carrier_index_is_not_trusted(1, 2, 3).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_keeps_the_gate_for_a_rejection_below_the_tip_window() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
-        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let genesis = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-        let carrier = child_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            &genesis,
-            &genesis,
-            Some(vec![deploy.clone()]),
-        );
-        let mut record = child_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            &carrier,
-            &genesis,
-            None,
-        );
+        let deploy = deploy_valid_after(0);
+        let chain = linear_chain(&mut block_store, &mut block_dag_storage, 5, &[(1, &deploy)]);
+        let mut record = chain[2].clone();
         record.body.rejected_deploys = vec![RejectedDeploy {
             sig: deploy.deploy.sig.clone(),
             duplicate: false,
             carrier: Bytes::new(),
         }];
         block_store.put(record.block_hash.clone(), &record).unwrap();
-        let mut tip = record.clone();
-        for _ in 0..3 {
-            tip = child_block(
-                &mut block_store,
-                &mut block_dag_storage,
-                &tip,
-                &genesis,
-                None,
-            );
-        }
-        assert_eq!(proto_util::block_number(&record), 2);
-        assert_eq!(proto_util::block_number(&tip), 5);
-        let candidate = child_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            &tip,
-            &genesis,
-            Some(vec![deploy]),
-        );
+        let candidate = candidate_on(&chain[5], &deploy);
 
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
-        let mut ctx = floor_context_at_genesis(&snapshot, &block_store, &tip, &genesis).await;
+        let mut ctx = floor_context_at_genesis(&snapshot, &block_store, &chain[5], &chain[0]).await;
 
         assert_eq!(
             Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx)),

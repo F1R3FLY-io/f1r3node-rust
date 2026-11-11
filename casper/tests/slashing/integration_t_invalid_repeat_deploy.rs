@@ -24,7 +24,7 @@
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::Casper;
-use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::construct_deploy;
 use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rspace_plus_plus::rspace::history::Either;
@@ -33,7 +33,7 @@ use super::integration_helpers::{
     canonical_validator_order, production_snapshot_at, propose_with_block_mutation,
 };
 use super::observer::SlashingObserver;
-use crate::helper::test_node::{ShardOverrides, TestNode};
+use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
@@ -111,85 +111,5 @@ async fn integration_t_invalid_repeat_deploy() {
         !has_v0,
         "demoted: InvalidRepeatDeploy is judged against local state and \
          mints no slash evidence"
-    );
-}
-
-#[serial_test::serial]
-#[tokio::test]
-async fn integration_t_invalid_repeat_deploy_below_the_tip_window() {
-    let genesis = GenesisBuilder::new()
-        .build_genesis_with_parameters(None)
-        .await
-        .expect("Failed to build genesis");
-    let shard_id = genesis.genesis_block.shard_id.clone();
-
-    let mut nodes = TestNode::create_network_with_overrides(genesis.clone(), 3, ShardOverrides {
-        deploy_lifespan: Some(3),
-        ..Default::default()
-    })
-    .await
-    .expect("Failed to create network");
-
-    let deploy_valid_after = |id: i64, valid_after: i64| {
-        construct_deploy::source_deploy_now_full(
-            format!("@{id}!({id})"),
-            None,
-            None,
-            None,
-            Some(valid_after),
-            Some(shard_id.clone()),
-        )
-        .expect("deploy")
-    };
-
-    let d1 = deploy_valid_after(1, 0);
-    let b1 = nodes[0]
-        .add_block_from_deploys(std::slice::from_ref(&d1))
-        .await
-        .expect("b1");
-    assert_eq!(proto_util::block_number(&b1), 1);
-    nodes[1]
-        .process_block(b1)
-        .await
-        .expect("nodes[1] process b1");
-
-    for height in 2..=4 {
-        let filler = deploy_valid_after(height, height - 1);
-        let block = nodes[0]
-            .add_block_from_deploys(std::slice::from_ref(&filler))
-            .await
-            .expect("filler block");
-        assert_eq!(proto_util::block_number(&block), height);
-        nodes[1]
-            .process_block(block)
-            .await
-            .expect("nodes[1] process filler");
-    }
-
-    let d1_processed = ProcessedDeploy {
-        deploy: d1,
-        cost: PCost { cost: 0 },
-        deploy_log: Vec::new(),
-        is_failed: false,
-        system_deploy_error: None,
-    };
-    let mutated =
-        propose_with_block_mutation(&mut nodes[0], vec![deploy_valid_after(20, 4)], move |b| {
-            b.body.deploys = vec![d1_processed];
-        })
-        .await
-        .expect("propose_with_block_mutation");
-
-    let status = nodes[1]
-        .process_block(mutated)
-        .await
-        .expect("process_block");
-    assert!(
-        matches!(
-            status,
-            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
-        ),
-        "expected InvalidRepeatDeploy, got: {:?}",
-        status
     );
 }

@@ -52,9 +52,11 @@ Redelivery must not create a second entry for the same signature and block hash.
 
 ### C2 — Sound absence proof
 
-The fast path can use index absence only when `W <= max(start, 0)` and `start` is the tip window start `max_parent_height + 1 - expiration_threshold`.
+The fast path can use index absence only when `W <= max(start, 0)` and `P <= max(start, 0)`, where `P` is the recorded prune cutoff.
 
-A block that carries a deploy older than the tip window has a lower `start` (issue #944). That block uses the reference scan, because pruning follows the node LFB and a late block floor can trail it.
+Pruning follows the node LFB, so a scan can start below `P`. Two cases reach it: a block that carries a deploy older than its tip window (issue #944), and a late block whose tip window starts below the cutoff. Both use the reference scan.
+
+A prune walk runs concurrently with validation. Validation reads `P` again after the probes and discards the absences if `P` moved above the start.
 
 Under that gate, an absent index row proves that the reference predicate is false for that signature.
 
@@ -70,7 +72,7 @@ The implementation must not convert unreadable index state into acceptance.
 
 ### C4 — Retention safety
 
-Pruning can remove only entries below every future scan start.
+Pruning can remove only entries below the recorded prune cutoff `P`. A prune walk records `P` (`prune-cutoff`) before it removes a row, and `P` never decreases.
 
 Pruning must preserve C2 for all later validation calls.
 
@@ -84,7 +86,7 @@ Tests in `carrier_index.rs` (PR #695, 2026-10-10):
 
 - `a_prune_walk_writes_the_carrier_table_in_a_bounded_number_of_batches`
 - `a_prune_walk_writes_no_batch_larger_than_the_write_chunk`
-- `a_prune_that_fails_part_way_is_finished_by_the_next_walk`. A mutation that writes `last-prune` before the data fails this test.
+- `a_prune_that_fails_part_way_is_finished_by_the_next_walk`. A mutation that writes `last-prune` before the data fails this test. The test also requires the failed walk to have recorded `P`.
 
 ### C5 — Verdict equivalence
 

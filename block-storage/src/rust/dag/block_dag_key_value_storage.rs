@@ -272,16 +272,24 @@ impl KeyValueDagRepresentation {
         self.carrier_index.read().watermark()
     }
 
+    /// Repeat-deploy carrier index: the highest cutoff a prune walk has
+    /// started with. The fast path engages only for scan windows starting
+    /// at or above it; a prune runs concurrently with validation, so the
+    /// caller re-reads it after probing.
+    pub fn carrier_index_prune_cutoff(&self) -> Result<Option<i64>, KvStoreError> {
+        self.carrier_index.read().prune_cutoff()
+    }
+
     /// Repeat-deploy carrier index: true when the index holds NO carrier
     /// for the sig. Sound as an absence proof only when the scan window
-    /// starts at or above the watermark. A `false` is not a verdict — it
-    /// routes the sig to the exact ancestor scan.
+    /// starts at or above the watermark and the prune cutoff. A `false` is
+    /// not a verdict — it routes the sig to the exact ancestor scan.
     pub fn carrier_index_proves_absence(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
         self.carrier_index.read().proves_absence(sig)
     }
 
-    /// Repeat-deploy carrier index: drop entries below the cutoff (below
-    /// every future scan window). The finalizer drives this on LFB advances.
+    /// Repeat-deploy carrier index: drop entries below the cutoff. The
+    /// finalizer drives this on LFB advances.
     pub fn prune_carriers_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
         self.carrier_index.read().prune_below(cutoff)
     }

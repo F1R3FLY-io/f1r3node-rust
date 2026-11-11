@@ -10,6 +10,7 @@ pub mod finalized_win_pending_rejection_spec;
 pub mod floor_derivation_reuse_spec;
 pub mod floor_erasure_reproduction_spec;
 pub mod floor_fork_reproduction_spec;
+pub mod floor_lag_repeat_deploy_spec;
 pub mod floor_of_view_test;
 pub mod floor_stall_reproduction_spec;
 pub mod limited_parent_depth_spec;

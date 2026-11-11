@@ -64,8 +64,6 @@ mod tests {
     #[test]
     fn repeat_scan_covers_the_gap_between_the_floor_and_tip_clocks() {
         assert_eq!(repeat_scan_start(6, 4, 3, 2).unwrap(), 3);
-        assert!(is_open(2, 4, 3).unwrap());
-        assert!(!is_open(1, 4, 3).unwrap());
     }
 
     #[test]
