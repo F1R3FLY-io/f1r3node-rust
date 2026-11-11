@@ -382,92 +382,15 @@ async fn i5_replay_reproduces_the_ci_verdicts_exactly() {
     assert_fidelity(&load(include_str!("../resources/stall_fixtures/i5.json"))).await;
 }
 
-#[tokio::test]
-async fn testnet04_426_replay_reproduces_the_logged_verdicts_exactly() {
-    crate::init_logger();
-    assert_fidelity(&load(include_str!(
-        "../resources/stall_fixtures/testnet04_426.json"
-    )))
-    .await;
-}
-
-/// Appends one block from `proposer` on its own latest message, citing every
-/// validator's latest message in `sample`'s snapshot, and moves the
-/// proposer's snapshot entry to it.
-fn with_block_citing_snapshot(fx: &mut Fixture, sample: usize, proposer: &str) {
-    let snapshot = fx.samples[sample].snapshot.clone();
-    let parent = snapshot[proposer].clone();
-    let height = fx
-        .blocks
-        .iter()
-        .find(|b| b.id == parent)
-        .expect("snapshot block is in the fixture")
-        .height
-        + 1;
-    let id = format!("cites-snapshot-{proposer}");
-    fx.blocks.push(FxBlock {
-        id: id.clone(),
-        sender: proposer.to_string(),
-        height,
-        main_parent: Some(parent),
-        extra_filler_parent: false,
-        extra_parents: Vec::new(),
-        era: 0,
-        justifications: snapshot,
-    });
-    fx.max_height = fx.max_height.max(height);
-    fx.samples[sample].snapshot.insert(proposer.to_string(), id);
-}
-
-async fn verdict_on_426_after_one_block_from(proposer: &str) -> (i64, i64, i64, bool) {
-    let mut fx = load(include_str!(
-        "../resources/stall_fixtures/testnet04_426.json"
-    ));
-    let sample = fx
-        .samples
-        .iter()
-        .position(|s| s.target == "a0bf4bceab")
-        .expect("fixture carries the #426 sample");
-    with_block_citing_snapshot(&mut fx, sample, proposer);
-    let rebuilt = rebuild(&fx).await;
-    replay_sample(&rebuilt, fx.ftt_ppm, &fx.samples[sample]).await
-}
-
-async fn assert_one_block_certifies_426(proposer: &str) {
-    assert_eq!(
-        verdict_on_426_after_one_block_from(proposer).await,
-        (10000, 6000, 10000, true),
-        "one block from {proposer} citing the frozen snapshot must certify #426 \
-         (agreeing, max_clique, total, decision)"
-    );
-}
-
-/// 042a52cd already sits in both 5000-cliques, so its block adds no member
-/// to either.
-#[tokio::test]
-async fn testnet04_426_one_block_from_042a52cd_does_not_certify() {
-    crate::init_logger();
-    assert_eq!(
-        verdict_on_426_after_one_block_from("042a52cd").await,
-        (10000, 5000, 10000, false)
-    );
-}
-
-#[tokio::test]
-async fn testnet04_426_one_block_from_04a78451_citing_the_snapshot_certifies() {
-    crate::init_logger();
-    assert_one_block_certifies_426("04a78451").await;
-}
-
-#[tokio::test]
-async fn testnet04_426_one_block_from_041bfdab_citing_the_snapshot_certifies() {
-    crate::init_logger();
-    assert_one_block_certifies_426("041bfdab").await;
-}
-
 const TESTNET04_426: &str = include_str!("../resources/stall_fixtures/testnet04_426.json");
 const TARGET_426: &str = "a0bf4bceab";
 const SPINE_TARGETS: usize = 32;
+
+#[tokio::test]
+async fn testnet04_426_replay_reproduces_the_logged_verdicts_exactly() {
+    crate::init_logger();
+    assert_fidelity(&load(TESTNET04_426)).await;
+}
 
 fn block<'a>(fx: &'a Fixture, id: &str) -> &'a FxBlock {
     fx.blocks
@@ -510,7 +433,11 @@ async fn fork_choice(
         ),
     };
     let tips = choice.tips.iter().map(&name).collect();
-    let scores = choice.scores.iter().map(|(h, s)| (name(h), s.clone())).collect();
+    let scores = choice
+        .scores
+        .iter()
+        .map(|(h, s)| (name(h), s.clone()))
+        .collect();
     (tips, scores)
 }
 

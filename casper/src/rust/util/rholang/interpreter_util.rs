@@ -977,7 +977,7 @@ pub(crate) async fn ensure_scope_mergeable_present(
 /// the same Δ. Beyond the cap, `compute_parents_post_state` returns `Err` (the
 /// proposer parks; a validator deterministically rejects) instead of silently
 /// substituting one parent's post-state and dropping the others' writes.
-pub(crate) const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
+pub const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
 
 /// Advisory cap on the merge scope `|visible_blocks|`. This is NOT node-
 /// deterministic (branch width differs across each node's view), so it MUST NOT
