@@ -810,6 +810,7 @@ mod tests {
                 finalization_rate: 1,
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
+                dag_hot_window_depth: 1024,
                 deploy_lifespan: 50,
                 deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),

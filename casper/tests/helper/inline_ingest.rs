@@ -147,9 +147,13 @@ impl InlineIngest {
         if self.intake.sender_authorization(&block)? == SenderAuthorization::Unauthorized {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
         }
-        let all_held = proto_util::dependencies_hashes_of(&block)
-            .iter()
-            .all(|dependency| self.dag.contains(dependency));
+        let mut all_held = true;
+        for dependency in proto_util::dependencies_hashes_of(&block) {
+            if !self.dag.contains(&dependency)? {
+                all_held = false;
+                break;
+            }
+        }
         if !all_held {
             return Ok(Either::Left(BlockStatus::missing_blocks()));
         }
@@ -265,7 +269,7 @@ impl InlineIngest {
                 self.block_store.pending_blocks().release(&hash);
             }
             Effect::DiscardStored(hash) => {
-                if !self.dag.contains(&hash) {
+                if !self.dag.contains(&hash)? {
                     self.block_store.discard_stored(&hash)?;
                 }
             }

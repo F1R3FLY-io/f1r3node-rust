@@ -376,7 +376,11 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     let block_dag_storage = {
         use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 
-        BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
+        BlockDagKeyValueStorage::new_with_hot_window(
+            &mut rnode_store_manager,
+            conf.casper.dag_hot_window_depth,
+        )
+        .await?
     };
 
     // This node's chain identity, as far as storage knows it. A node that
@@ -1170,47 +1174,43 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                     };
                     let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
 
-                    // Run GC. `collect_garbage` awaits `floor_of_block`, so on the
-                    // common multi-thread runtime the whole pass (including the
-                    // blocking LMDB reads in `get_representation`/`block_store`)
-                    // runs inside `block_in_place`, driven via a nested `block_on`
-                    // — the standard pattern for calling async code from a
-                    // blocking context without starving other workers.
-                    match tokio::runtime::Handle::try_current() {
-                        Ok(rt_handle)
-                            if rt_handle.runtime_flavor()
-                                == tokio::runtime::RuntimeFlavor::MultiThread =>
-                        {
-                            tokio::task::block_in_place(move || {
-                                let dag = gc_block_dag_storage
-                                    .get_representation()
-                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-                                let mut gc_state = gc_state.blocking_lock();
-                                rt_handle
-                                    .block_on(mergeable_channels_gc::collect_garbage(
-                                        &mut gc_state,
-                                        &dag,
-                                        &gc_block_store,
-                                        &gc_runtime_manager,
-                                        &gc_casper_shard_conf,
-                                    ))
-                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))
-                            })?;
-                        }
-                        _ => {
-                            let dag = gc_block_dag_storage
-                                .get_representation()
-                                .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-                            let mut gc_state = gc_state.lock().await;
-                            mergeable_channels_gc::collect_garbage(
-                                &mut gc_state,
-                                &dag,
-                                &gc_block_store,
-                                &gc_runtime_manager,
-                                &gc_casper_shard_conf,
-                            )
-                            .await
-                            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                    loop {
+                        let progress = match tokio::runtime::Handle::try_current() {
+                            Ok(rt_handle)
+                                if rt_handle.runtime_flavor()
+                                    == tokio::runtime::RuntimeFlavor::MultiThread =>
+                            {
+                                tokio::task::block_in_place(|| {
+                                    let mut gc_state = gc_state.blocking_lock();
+                                    rt_handle
+                                        .block_on(mergeable_channels_gc::collect_garbage(
+                                            &mut gc_state,
+                                            &gc_block_dag_storage,
+                                            &gc_block_store,
+                                            &gc_runtime_manager,
+                                            &gc_casper_shard_conf,
+                                        ))
+                                        .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                                })?
+                            }
+                            _ => {
+                                let mut gc_state = gc_state.lock().await;
+                                mergeable_channels_gc::collect_garbage(
+                                    &mut gc_state,
+                                    &gc_block_dag_storage,
+                                    &gc_block_store,
+                                    &gc_runtime_manager,
+                                    &gc_casper_shard_conf,
+                                )
+                                .await
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))?
+                            }
+                        };
+                        match progress {
+                            mergeable_channels_gc::GcProgress::Complete { .. } => break,
+                            mergeable_channels_gc::GcProgress::Yielded { .. } => {
+                                tokio::task::yield_now().await
+                            }
                         }
                     }
 

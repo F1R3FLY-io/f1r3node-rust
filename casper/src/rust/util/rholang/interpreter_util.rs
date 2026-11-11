@@ -96,7 +96,7 @@ fn block_in_base_merge_scope(
     hash: &BlockHash,
     base_hash: &BlockHash,
     base_block_number: i64,
-) -> Result<bool, CasperError> {
+) -> Result<bool, shared::rust::store::key_value_store::KvStoreError> {
     if hash == base_hash {
         return Ok(false);
     }
@@ -1209,14 +1209,19 @@ pub async fn compute_parents_post_state(
                 // (Port note: 6981b37a's empty-deploys guard is deliberately NOT
                 // taken — it re-exposed ancestor-merges on linear chains here.)
                 for candidate in &parents {
-                    let covers_all = parents
+                    let mut covers_all = true;
+                    for parent in parents
                         .iter()
                         .filter(|p| p.block_hash != candidate.block_hash)
-                        .all(|p| {
-                            s.dag
-                                .is_dag_ancestor(&p.block_hash, &candidate.block_hash)
-                                .unwrap_or(false)
-                        });
+                    {
+                        if !s
+                            .dag
+                            .is_dag_ancestor(&parent.block_hash, &candidate.block_hash)?
+                        {
+                            covers_all = false;
+                            break;
+                        }
+                    }
                     if covers_all {
                         let resolved = resolve_merge_floor(
                             block_store,
@@ -1487,7 +1492,7 @@ pub async fn compute_parents_post_state(
                             break;
                         }
                         base_lineage_blocks.insert(hash.clone());
-                        cursor = s.dag.main_parent(&hash);
+                        cursor = s.dag.main_parent(&hash)?;
                     }
                     Ok(base_lineage_blocks)
                 })?;
@@ -1503,11 +1508,6 @@ pub async fn compute_parents_post_state(
             let base_state =
                 Blake2b256Hash::from_bytes_prost(&anchor_block.body.state.post_state_hash);
 
-            let include_visible_ancestor =
-                |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
-                    block_in_base_merge_scope(dag, hash, &scope_anchor_hash, scope_anchor_number)
-                        .unwrap_or(false)
-                };
             // Get all ancestors of all parents (including the parents themselves)
             // Use bounded traversal that stops once the floor's represented past is reached.
             let collect_ancestors_started = std::time::Instant::now();
@@ -1517,8 +1517,13 @@ pub async fn compute_parents_post_state(
                         Vec::new();
                     for parent_hash in &parent_hashes {
                         let visible_ancestors =
-                            s.dag.with_ancestors(parent_hash.clone(), |bh| {
-                                include_visible_ancestor(bh, &s.dag)
+                            s.dag.try_with_ancestors(parent_hash.clone(), |bh| {
+                                block_in_base_merge_scope(
+                                    &s.dag,
+                                    bh,
+                                    &scope_anchor_hash,
+                                    scope_anchor_number,
+                                )
                             })?;
                         let mut visible_ancestors_with_parent = visible_ancestors;
                         visible_ancestors_with_parent.insert(parent_hash.clone());
@@ -1544,12 +1549,20 @@ pub async fn compute_parents_post_state(
             } else {
                 None
             };
-            in_blocking(|| {
-                visible_blocks.retain(|bh| {
-                    block_in_base_merge_scope(&s.dag, bh, &scope_anchor_hash, scope_anchor_number)
-                        .unwrap_or(true)
-                })
-            });
+            visible_blocks = in_blocking(|| -> Result<HashSet<BlockHash>, CasperError> {
+                let mut scoped_visible_blocks = HashSet::new();
+                for hash in visible_blocks {
+                    if block_in_base_merge_scope(
+                        &s.dag,
+                        &hash,
+                        &scope_anchor_hash,
+                        scope_anchor_number,
+                    )? {
+                        scoped_visible_blocks.insert(hash);
+                    }
+                }
+                Ok(scoped_visible_blocks)
+            })?;
             metrics::histogram!(PARENTS_POST_STATE_COLLECT_ANCESTORS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(collect_ancestors_started.elapsed().as_secs_f64());
             if tracing::enabled!(target: "f1r3fly.merge.cpps", tracing::Level::DEBUG) {
@@ -1798,7 +1811,7 @@ pub async fn compute_parents_post_state(
                     // a held-set gap, not the window edge: defer, never walk a
                     // shorter lineage. `main_parent` is `None` only for a block
                     // whose metadata is present and records no parent (genesis).
-                    let number = s.dag.block_number(&hash).ok_or_else(|| {
+                    let number = s.dag.block_number(&hash)?.ok_or_else(|| {
                         CasperError::BlockNotHeld(
                             hash.clone(),
                             MissingBlockContext::new("rejected-slash lineage walk"),
@@ -1807,7 +1820,7 @@ pub async fn compute_parents_post_state(
                     if number < settled_walk_bound {
                         break;
                     }
-                    cursor = s.dag.main_parent(&hash);
+                    cursor = s.dag.main_parent(&hash)?;
                     count_visible.insert(hash);
                 }
                 dag_merger::scope_prior_rejection_counts(count_visible, |hash: &BlockHash| {
@@ -2839,7 +2852,7 @@ mod backstop_tests {
             .expect("floor metadata")
             .block_number;
 
-        assert!(dag.is_finalized(&off_main.block_hash));
+        assert!(dag.is_finalized(&off_main.block_hash).unwrap());
         assert!(!dag
             .is_in_main_chain(&off_main.block_hash, &floor.block_hash)
             .expect("main-chain query"));

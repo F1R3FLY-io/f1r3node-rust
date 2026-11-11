@@ -311,7 +311,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
     ) -> Result<WorkOutcome, CasperError> {
         casper.handle_invalid_block(block, invalid, &snapshot.dag)?;
         self.announcer.announce(block);
-        Ok(if self.dag.contains(&block.block_hash) {
+        Ok(if self.dag.contains(&block.block_hash)? {
             WorkOutcome::Settled
         } else {
             WorkOutcome::Rejected {
@@ -457,7 +457,7 @@ mod tests {
             Ok(CasperSnapshot::new(self.dag.get_representation()?))
         }
 
-        fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
+        fn dag_contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> { Ok(false) }
 
         fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.anchor) }
 

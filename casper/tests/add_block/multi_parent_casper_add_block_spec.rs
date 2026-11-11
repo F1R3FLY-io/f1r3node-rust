@@ -431,7 +431,7 @@ async fn multi_parent_casper_should_reject_a_parentless_non_genesis_block_that_b
         status,
         Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender))
     );
-    assert!(!node.casper.dag_contains(&forged.block_hash));
+    assert!(!node.casper.dag_contains(&forged.block_hash).unwrap());
 }
 
 /// A main parent that this node does not hold leaves the sender's weight
@@ -494,7 +494,7 @@ async fn multi_parent_casper_should_hold_a_block_with_an_unknown_main_parent_off
 
     assert_eq!(status, Either::Left(BlockError::MissingBlocks));
     assert!(node.block_store.is_pending(&forged.block_hash));
-    assert!(!node.casper.dag_contains(&forged.block_hash));
+    assert!(!node.casper.dag_contains(&forged.block_hash).unwrap());
 }
 
 #[tokio::test]
@@ -656,7 +656,7 @@ async fn multi_parent_casper_should_persist_a_block_whose_pending_body_was_disca
 
     nodes[1].casper.handle_valid_block(&block).await.unwrap();
 
-    assert!(nodes[1].casper.dag_contains(&block.block_hash));
+    assert!(nodes[1].casper.dag_contains(&block.block_hash).unwrap());
     assert_eq!(
         nodes[1].block_store.get(&block.block_hash).unwrap(),
         Some(block)
@@ -739,7 +739,7 @@ async fn multi_parent_casper_should_recover_when_a_requested_child_fills_the_sen
         nodes[1].process_block(block.clone()).await.unwrap();
     }
     for block in &chain {
-        assert!(nodes[1].casper.dag_contains(&block.block_hash));
+        assert!(nodes[1].casper.dag_contains(&block.block_hash).unwrap());
     }
 }
 
@@ -1303,7 +1303,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
         "a demoted verdict's block must be dropped, not recorded as evidence"
     );
     assert!(
-        !dag.contains(&signed_invalid_block.block_hash),
+        !dag.contains(&signed_invalid_block.block_hash).unwrap(),
         "a demoted verdict's block must not enter the DAG"
     );
 }

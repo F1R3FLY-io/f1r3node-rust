@@ -43,7 +43,7 @@ impl Casper for MultiParentCasperImpl {
         super::snapshot::compute_snapshot(self).await
     }
 
-    fn dag_contains(&self, hash: &BlockHash) -> bool {
+    fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
         super::block_admission::admit_dag_contains(self, hash)
     }
 

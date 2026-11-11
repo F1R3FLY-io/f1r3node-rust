@@ -53,7 +53,7 @@ impl Casper for AnchorCasper {
         unimplemented!("not exercised by settled-admission tests")
     }
 
-    fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
+    fn dag_contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> { Ok(false) }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.anchor) }
 
@@ -334,7 +334,8 @@ async fn settled_admission_still_admits_a_genuine_straggler() {
             .dag_reader
             .get_representation()
             .unwrap()
-            .contains(&straggler.block_hash),
+            .contains(&straggler.block_hash)
+            .unwrap(),
         "admitted straggler must be in the DAG",
     );
     assert_eq!(

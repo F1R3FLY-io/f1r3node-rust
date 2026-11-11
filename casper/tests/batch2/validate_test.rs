@@ -2173,7 +2173,7 @@ async fn parent_validation_progress_verdict_is_independent_of_finality_markers()
             .get_representation()
             .expect("dag representation");
         assert!(
-            dag.is_finalized(&b2.block_hash),
+            dag.is_finalized(&b2.block_hash).unwrap(),
             "fixture precondition: b2 must carry the finality marker, or this \
              test is not exercising the truncation it is about",
         );

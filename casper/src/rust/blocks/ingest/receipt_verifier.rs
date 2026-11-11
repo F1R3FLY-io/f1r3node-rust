@@ -9,6 +9,7 @@ use prost::bytes::Bytes;
 use tokio::sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
 
 use super::checked_block::{CheckedBlock, IntegrityFailure};
+use crate::rust::errors::CasperError;
 
 /// Integrity checks that run at once, node-wide.
 pub const MAX_PARALLEL_RECEIPT_VERIFICATIONS: usize = 2;
@@ -18,13 +19,15 @@ pub const MAX_PENDING_RECEIPT_VERIFICATIONS: usize = 512;
 /// runs at a time.
 pub const MAX_PENDING_RECEIPT_VERIFICATIONS_PER_PEER: usize = 16;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ReceiptRefusal {
     Invalid(IntegrityFailure),
     Overloaded,
     /// Another copy of the block passed the check, or the node already knows
     /// the block.
     AlreadyKnown,
+    /// The node could not tell whether it already holds the block.
+    KnownCheck(CasperError),
 }
 
 /// The lock for one hash under check. The flag records that a copy passed.
@@ -148,7 +151,7 @@ impl ReceiptVerifier {
         peer: &Bytes,
         block: BlockMessage,
         source: &'static str,
-        known: impl Fn(&BlockHash) -> bool,
+        known: impl Fn(&BlockHash) -> Result<bool, CasperError>,
     ) -> Result<CheckedBlock, ReceiptRefusal> {
         self.verify_with(peer, block, known, move |block| {
             CheckedBlock::check(block, source).map_err(|(_, failure)| failure)
@@ -191,7 +194,7 @@ impl ReceiptVerifier {
         &self,
         peer: &Bytes,
         block: BlockMessage,
-        known: impl Fn(&BlockHash) -> bool,
+        known: impl Fn(&BlockHash) -> Result<bool, CasperError>,
         check: F,
     ) -> Result<CheckedBlock, ReceiptRefusal>
     where
@@ -225,7 +228,7 @@ impl ReceiptVerifier {
             guard: None,
         };
         let guard = lock.lock_owned().await;
-        if *guard || known(&hash) {
+        if *guard || known(&hash).map_err(ReceiptRefusal::KnownCheck)? {
             return Err(ReceiptRefusal::AlreadyKnown);
         }
         hash_ticket.guard = Some(guard);
@@ -303,7 +306,9 @@ mod tests {
             .into_iter()
             .map(|(peer, block)| {
                 let verifier = verifier.clone();
-                tokio::spawn(async move { verifier.verify(&peer, block, SOURCE, |_| false).await })
+                tokio::spawn(
+                    async move { verifier.verify(&peer, block, SOURCE, |_| Ok(false)).await },
+                )
             })
             .collect();
         let mut results = Vec::new();
@@ -335,7 +340,7 @@ mod tests {
                 .verify_with(
                     &peer,
                     block,
-                    |_| false,
+                    |_| Ok(false),
                     move |block| {
                         started_tx.send(()).expect("verification started");
                         release_rx
@@ -380,7 +385,7 @@ mod tests {
                 let peer = attacker.clone();
                 tokio::spawn(async move {
                     verifier
-                        .verify(&peer, large_unsigned_block(), SOURCE, |_| false)
+                        .verify(&peer, large_unsigned_block(), SOURCE, |_| Ok(false))
                         .await
                 })
             })
@@ -413,7 +418,7 @@ mod tests {
                 let peer = attacker.clone();
                 tokio::spawn(async move {
                     verifier
-                        .verify(&peer, large_unsigned_block(), SOURCE, |_| false)
+                        .verify(&peer, large_unsigned_block(), SOURCE, |_| Ok(false))
                         .await
                 })
             })
@@ -469,7 +474,7 @@ mod tests {
                         .verify_with(
                             &Bytes::from_static(b"first"),
                             first_block,
-                            |_| false,
+                            |_| Ok(false),
                             move |block| {
                                 checks.fetch_add(1, Ordering::SeqCst);
                                 started_tx.send(()).expect("verification started");
@@ -492,7 +497,7 @@ mod tests {
                         .verify_with(
                             &Bytes::from_static(b"second"),
                             original,
-                            |_| false,
+                            |_| Ok(false),
                             move |block| {
                                 checks.fetch_add(1, Ordering::SeqCst);
                                 check(block)
@@ -508,7 +513,7 @@ mod tests {
                 tokio::spawn(async move {
                     verifier
                         .verify(&Bytes::from_static(b"cancelled"), original, SOURCE, |_| {
-                            false
+                            Ok(false)
                         })
                         .await
                 })
@@ -540,7 +545,7 @@ mod tests {
         let verifier = ReceiptVerifier::new(2, 8, 8);
         let block = signed_block();
         let result = verifier
-            .verify(&Bytes::from_static(b"peer"), block, SOURCE, |_| true)
+            .verify(&Bytes::from_static(b"peer"), block, SOURCE, |_| Ok(true))
             .await;
         assert_eq!(result, Err(ReceiptRefusal::AlreadyKnown));
         assert_eq!(verifier.peak_active(), 0);
@@ -568,7 +573,7 @@ mod tests {
             let verifier = verifier.clone();
             tokio::spawn(async move {
                 verifier
-                    .verify(&Bytes::from_static(b"second"), other, SOURCE, |_| false)
+                    .verify(&Bytes::from_static(b"second"), other, SOURCE, |_| Ok(false))
                     .await
             })
         };

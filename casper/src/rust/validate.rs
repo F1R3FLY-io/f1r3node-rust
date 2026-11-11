@@ -1338,15 +1338,18 @@ impl Validate {
             let mut parent_numbers: Vec<(BlockHash, i64)> = Vec::with_capacity(parent_hashes.len());
             let mut frontier_known = true;
             for parent_hash in &parent_hashes {
-                match s.dag.lookup_unsafe(parent_hash) {
-                    Ok(meta) => parent_numbers.push((parent_hash.clone(), meta.block_number)),
+                match s.dag.lookup(parent_hash) {
+                    Ok(Some(meta)) => parent_numbers.push((parent_hash.clone(), meta.block_number)),
                     // A parent with no metadata leaves the frontier unknown, and
                     // an anchor derived from a partial parent set could reject a
                     // legal block. Skip the check and let the dependency gate
                     // handle the missing parent.
-                    Err(_) => {
+                    Ok(None) => {
                         frontier_known = false;
                         break;
+                    }
+                    Err(error) => {
+                        return Either::Left(BlockError::from_validation_error(error.into()))
                     }
                 }
             }
@@ -1438,21 +1441,32 @@ impl Validate {
                 // and no default.
                 let mut lowest_parent_height = b.body.state.block_number;
                 for parent_hash in &parent_hashes {
-                    if let Ok(Some(meta)) = s.dag.lookup(parent_hash) {
-                        if meta.block_number < lowest_parent_height {
-                            lowest_parent_height = meta.block_number;
+                    match s.dag.lookup(parent_hash) {
+                        Ok(Some(meta)) => {
+                            lowest_parent_height = lowest_parent_height.min(meta.block_number)
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            return Either::Left(BlockError::from_validation_error(error.into()))
                         }
                     }
                 }
                 let ancestor_hashes: Vec<BlockHash> =
-                    dag_ops::bf_traverse(vec![prev_block_hash.clone()], |hash| {
-                        match s.dag.lookup(hash) {
-                            Ok(Some(meta)) if meta.block_number >= lowest_parent_height => {
-                                meta.parents.clone()
-                            }
-                            _ => vec![],
+                    match dag_ops::try_bf_traverse(vec![prev_block_hash.clone()], |hash| {
+                        Ok::<_, shared::rust::store::key_value_store::KvStoreError>(
+                            match s.dag.lookup(hash)? {
+                                Some(meta) if meta.block_number >= lowest_parent_height => {
+                                    meta.parents.clone()
+                                }
+                                _ => vec![],
+                            },
+                        )
+                    }) {
+                        Ok(hashes) => hashes,
+                        Err(error) => {
+                            return Either::Left(BlockError::from_validation_error(error.into()))
                         }
-                    });
+                    };
                 let ancestor_set: HashSet<BlockHash> = ancestor_hashes.into_iter().collect();
 
                 // Check if at least one parent is new (not in ancestor closure)
@@ -1937,7 +1951,11 @@ mod merge_recovery_validation_tests {
         block_number: i64,
         invalid: bool,
     ) {
-        snapshot.dag.dag_set.insert(block_hash.clone());
+        snapshot
+            .dag
+            .fixture_mut()
+            .dag_set
+            .insert(block_hash.clone());
         snapshot
             .dag
             .block_metadata_index

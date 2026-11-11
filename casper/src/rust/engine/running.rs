@@ -258,11 +258,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             CasperMessage::BlockHashMessage(h) => {
                 metrics::counter!(BLOCK_HASH_RECEIVED_METRIC, "source" => RUNNING_METRICS_SOURCE)
                     .increment(1);
-                self.handle_announcement(peer, h.block_hash, "BlockHashMessage");
-                Ok(())
+                self.handle_announcement(peer, h.block_hash, "BlockHashMessage")
             }
             CasperMessage::BlockMessage(b) => {
-                if self.is_known(&b.block_hash) {
+                if self.is_known(&b.block_hash)? {
                     tracing::debug!(
                         "Ignoring BlockMessage {} from {}",
                         PrettyPrinter::build_string_block_message(&b, true),
@@ -291,6 +290,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                             );
                             return Ok(());
                         }
+                        Err(ReceiptRefusal::KnownCheck(error)) => return Err(error),
                         Err(ReceiptRefusal::AlreadyKnown) => {
                             tracing::debug!(
                                 "Skipping BlockMessage {}: another copy passed its check",
@@ -339,10 +339,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 self.handle_has_block_request(peer, hbr, |hash| self.casper.dag_contains(&hash))
                     .await
             }
-            CasperMessage::HasBlock(hb) => {
-                self.handle_announcement(peer, hb.hash, "HasBlock");
-                Ok(())
-            }
+            CasperMessage::HasBlock(hb) => self.handle_announcement(peer, hb.hash, "HasBlock"),
             CasperMessage::ForkChoiceTipRequest(_) => {
                 self.handle_fork_choice_tip_request(peer).await
             }
@@ -726,20 +723,25 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     fn wal_payload_ctx(&self) -> Option<&WalPayloadContext> { self.wal_payload_ctx.get() }
 
     /// Held by block ingest or already in the DAG.
-    fn is_known(&self, hash: &BlockHash) -> bool {
-        self.ingest.view().is_held(hash) || self.casper.dag_contains(hash)
+    fn is_known(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+        Ok(self.ingest.view().is_held(hash) || self.casper.dag_contains(hash)?)
     }
 
     /// A peer says it holds `hash` (a block-hash broadcast or a HasBlock).
-    fn handle_announcement(&self, peer: PeerNode, hash: BlockHash, kind: &'static str) {
-        if self.is_known(&hash) {
+    fn handle_announcement(
+        &self,
+        peer: PeerNode,
+        hash: BlockHash,
+        kind: &'static str,
+    ) -> Result<(), CasperError> {
+        if self.is_known(&hash)? {
             tracing::debug!(
                 "Ignoring {} {} from {}",
                 kind,
                 PrettyPrinter::build_string_bytes(&hash),
                 peer.endpoint.host
             );
-            return;
+            return Ok(());
         }
         tracing::debug!(
             "Incoming {} {} from {}",
@@ -748,6 +750,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             peer.endpoint.host
         );
         self.ingest.announce(hash, peer);
+        Ok(())
     }
 
     pub async fn handle_block_request(
@@ -779,9 +782,9 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         &self,
         peer: PeerNode,
         hbr: HasBlockRequest,
-        block_lookup: impl Fn(BlockHash) -> bool,
+        block_lookup: impl Fn(BlockHash) -> Result<bool, CasperError>,
     ) -> Result<(), CasperError> {
-        if block_lookup(hbr.hash.clone()) {
+        if block_lookup(hbr.hash.clone())? {
             let has_block = HasBlock { hash: hbr.hash };
             self.transport
                 .send_message_to_peer(&self.conf, &peer, Arc::new(has_block.to_proto()))

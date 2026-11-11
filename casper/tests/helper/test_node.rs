@@ -572,7 +572,9 @@ impl TestNode {
 
     /// Checks if this node's DAG holds a block (equivalent to Scala contains, line 346).
     pub fn contains(&self, block_hash: &BlockHash) -> bool {
-        self.block_dag_storage.contains(block_hash)
+        self.block_dag_storage
+            .contains(block_hash)
+            .expect("test node DAG membership read failed")
     }
 
     /// The block is in the DAG, held by block ingest, or needed (equivalent to Scala knowsAbout, line 347-348).

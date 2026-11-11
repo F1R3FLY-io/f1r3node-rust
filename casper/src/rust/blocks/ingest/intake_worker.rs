@@ -104,7 +104,7 @@ impl Intake {
             })
         };
 
-        let verdict = self.of_interest(block, solicited);
+        let verdict = self.of_interest(block, solicited)?;
         if verdict != OfInterestVerdict::Fresh {
             tracing::debug!(
                 block = %PrettyPrinter::build_string_bytes(&hash),
@@ -194,15 +194,19 @@ impl Intake {
         })
     }
 
-    fn of_interest(&self, block: &BlockMessage, solicited: bool) -> OfInterestVerdict {
+    fn of_interest(
+        &self,
+        block: &BlockMessage,
+        solicited: bool,
+    ) -> Result<OfInterestVerdict, CasperError> {
         let approved = &self.approved_block;
-        of_interest_verdict(
-            self.dag.contains(&block.block_hash) || self.view.is_held(&block.block_hash),
+        Ok(of_interest_verdict(
+            self.dag.contains(&block.block_hash)? || self.view.is_held(&block.block_hash),
             approved.shard_id.eq_ignore_ascii_case(&block.shard_id),
             Validate::version(block, approved.header.version),
             proto_util::block_number(block) < proto_util::block_number(approved),
             solicited,
-        )
+        ))
     }
 
     pub fn sender_authorization(
