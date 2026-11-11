@@ -14,12 +14,14 @@ pub const MEMBERSHIP_TABLE: &str = "dag-membership-v1";
 pub const HEIGHT_TABLE: &str = "dag-height-v1";
 pub const CHILDREN_TABLE: &str = "dag-children-v1";
 pub const STATE_TABLE: &str = "dag-history-state-v1";
+pub const SEQUENCE_TABLE: &str = "dag-sequence-v1";
 
 #[derive(Clone, Copy, Debug)]
 pub struct HistoryTableSlots {
     pub membership: usize,
     pub heights: usize,
     pub children: usize,
+    pub sequences: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +122,25 @@ pub fn hash_prefix_bounds(prefix: &[u8]) -> Result<(Vec<u8>, Vec<u8>), KvStoreEr
     Ok((lower, upper))
 }
 
+/// `sender`'s length, `sender`, then `seq_num` in big-endian order with the
+/// sign bit flipped, so one sender's blocks at one sequence number share a
+/// prefix and the hash follows.
+fn sequence_prefix(sender: &[u8], seq_num: i32) -> Result<Vec<u8>, KvStoreError> {
+    let length = u8::try_from(sender.len()).map_err(|_| invalid("DAG sender is too long"))?;
+    let mut key = Vec::with_capacity(1 + sender.len() + 4 + LENGTH);
+    key.push(length);
+    key.extend_from_slice(sender);
+    key.extend_from_slice(&((seq_num as u32) ^ (1 << 31)).to_be_bytes());
+    Ok(key)
+}
+
+fn sequence_key(sender: &[u8], seq_num: i32, hash: &[u8]) -> Result<Vec<u8>, KvStoreError> {
+    validate_hash(hash)?;
+    let mut key = sequence_prefix(sender, seq_num)?;
+    key.extend_from_slice(hash);
+    Ok(key)
+}
+
 fn child_key(parent: &[u8], child: &[u8]) -> Result<Vec<u8>, KvStoreError> {
     validate_hash(child)?;
     let mut key = Vec::with_capacity(2 * LENGTH + 1);
@@ -199,6 +220,15 @@ impl DagHistoryIndex {
             encode_height_key(record.height, &metadata.block_hash)?,
             encode(&sequence)?,
         )?;
+        tx.put(
+            self.slots.sequences,
+            sequence_key(
+                &metadata.sender,
+                metadata.sequence_number,
+                &metadata.block_hash,
+            )?,
+            encode(&sequence)?,
+        )?;
         for parent in &metadata.parents {
             let key = child_key(parent, &metadata.block_hash)?;
             let value = if parent.len() == LENGTH {
@@ -268,6 +298,59 @@ impl DagHistoryIndex {
             rows,
             next: page.next,
         })
+    }
+
+    /// The blocks visible at `view_sequence` that `sender` signed at
+    /// `seq_num`.
+    pub fn blocks_at_sequence(
+        &self,
+        sender: &[u8],
+        seq_num: i32,
+        view_sequence: u64,
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        let query = HistoryQuery::new("sequence");
+        let prefix = sequence_prefix(sender, seq_num)?;
+        let mut lower = prefix.clone();
+        lower.extend_from_slice(&[0; LENGTH]);
+        let mut upper = prefix.clone();
+        upper.extend_from_slice(&[u8::MAX; LENGTH]);
+        let mut rows = Vec::new();
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let page = self.group.scan_page(
+                self.slots.sequences,
+                Some(&lower),
+                Some(&upper),
+                after.as_deref(),
+                1024,
+            )?;
+            query.visited(page.rows.len());
+            for (key, value) in page.rows {
+                let sequence: u64 = decode(&value)?;
+                if sequence > view_sequence {
+                    continue;
+                }
+                if key.len() != prefix.len() + LENGTH {
+                    return Err(KvStoreError::SerializationError(
+                        "Invalid DAG sequence key length".into(),
+                    ));
+                }
+                let hash = BlockHash::copy_from_slice(&key[prefix.len()..]);
+                let membership = self.membership(&hash, view_sequence)?.ok_or_else(|| {
+                    KvStoreError::KeyNotFound("DAG sequence index has no visible membership".into())
+                })?;
+                if membership.sequence != sequence {
+                    return Err(KvStoreError::SerializationError(
+                        "DAG sequence and membership indexes disagree".into(),
+                    ));
+                }
+                rows.push(hash);
+            }
+            match page.next {
+                Some(next) => after = Some(next),
+                None => return Ok(rows),
+            }
+        }
     }
 
     pub fn scan_children(

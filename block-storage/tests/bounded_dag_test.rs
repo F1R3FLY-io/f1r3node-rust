@@ -47,6 +47,7 @@ fn lmdb_manager(directory: &std::path::Path) -> Box<dyn KeyValueStoreManager> {
         "dag-children-v1",
         "dag-history-state-v1",
         "dag-gc-retry-v1",
+        "dag-sequence-v1",
     ]
     .into_iter()
     .map(|name| {
@@ -124,6 +125,67 @@ async fn eviction_preserves_historical_queries_and_captured_views() {
         Some(chain[0].block_hash.clone())
     );
     assert_eq!(current.resident_counts().blocks, 2);
+}
+
+/// A block the window has evicted is still found by sender and sequence
+/// number, alone and once a twin is held beside it, and again after a
+/// restart.
+#[tokio::test]
+async fn an_evicted_block_is_found_by_sender_and_sequence_number() {
+    let directory = tempfile::tempdir().unwrap();
+    let sender = BlockHash::from(vec![0x5A; 65]);
+    let mut early = block(1, vec![]);
+    early.sender = sender.clone();
+    early.seq_num = 1;
+    let mut twin = block(1, vec![]);
+    twin.sender = sender.clone();
+    twin.seq_num = 1;
+    {
+        let mut manager = lmdb_manager(directory.path());
+        let storage = BlockDagKeyValueStorage::new_with_hot_window(manager.as_mut(), 1)
+            .await
+            .unwrap();
+        let genesis = block(0, vec![]);
+        storage.insert(&genesis, InsertMode::Approved).unwrap();
+        early.header.parents_hash_list = vec![genesis.block_hash.clone()];
+        storage.insert(&early, InsertMode::Approved).unwrap();
+        let mut tip = early.block_hash.clone();
+        for height in 2..40 {
+            let next = block(height, vec![tip]);
+            storage.insert(&next, InsertMode::Approved).unwrap();
+            tip = next.block_hash.clone();
+        }
+        let view = storage.get_representation().unwrap();
+        assert_eq!(
+            view.resident_counts().blocks,
+            2,
+            "the early block is evicted"
+        );
+        assert_eq!(view.blocks_at(&sender, 1).unwrap(), vec![early
+            .block_hash
+            .clone()]);
+
+        twin.header.parents_hash_list = vec![genesis.block_hash.clone()];
+        storage
+            .insert(&twin, InsertMode::Equivocation {
+                sibling: early.block_hash.clone(),
+            })
+            .unwrap();
+    }
+
+    let mut manager = lmdb_manager(directory.path());
+    let storage = BlockDagKeyValueStorage::new_with_hot_window(manager.as_mut(), 1)
+        .await
+        .unwrap();
+    let mut held = storage
+        .get_representation()
+        .unwrap()
+        .blocks_at(&sender, 1)
+        .unwrap();
+    held.sort();
+    let mut expected = vec![early.block_hash.clone(), twin.block_hash.clone()];
+    expected.sort();
+    assert_eq!(held, expected);
 }
 
 #[tokio::test]

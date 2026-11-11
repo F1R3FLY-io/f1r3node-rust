@@ -17,6 +17,7 @@ const LATEST: usize = 1;
 const INVALID: usize = 2;
 const GENESIS: usize = 3;
 const STATE: usize = 7;
+const SEQUENCES: usize = 9;
 const PROGRESS: &[u8] = b"dag.progress";
 const GC_SLOTS: DagGcSlots = DagGcSlots {
     state: STATE,
@@ -80,6 +81,7 @@ impl DagPersistence {
                 membership: 4,
                 heights: 5,
                 children: 6,
+                sequences: SEQUENCES,
             })),
             gc: Arc::new(DagGcStore::new(group.clone(), GC_SLOTS)),
             group,
@@ -136,6 +138,7 @@ impl DagPersistence {
             (METADATA, "block-metadata"),
             (4, "dag-membership-v1"),
             (5, "dag-height-v1"),
+            (SEQUENCES, "dag-sequence-v1"),
         ] {
             if self.group.len(slot)? != progress.total {
                 return Err(KvStoreError::InvalidArgument(format!(

@@ -1046,7 +1046,6 @@ impl DetachedDagSnapshot {
                 .iter()
                 .map(|(hash, justification)| (hash.clone(), justification.clone()))
                 .collect(),
-            sequence_map: metadata_store.sequence_map(),
             invalid_blocks_set: self.invalid_blocks.values().cloned().collect(),
             last_finalized_block_hash,
             finalized_blocks_set: self.finalized_block_set.iter().cloned().collect(),
@@ -1114,6 +1113,7 @@ mod tests {
             "dag-children-v1",
             "dag-history-state-v1",
             "dag-gc-retry-v1",
+            "dag-sequence-v1",
         ];
         let mapping = stores
             .into_iter()

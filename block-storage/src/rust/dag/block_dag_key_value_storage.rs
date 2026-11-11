@@ -50,7 +50,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
 use tokio::sync::mpsc;
 
-use super::block_metadata_store::{BlockMetadataStore, SequenceMap};
+use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
 use super::dag_gc_store::DagGcStore;
 use super::dag_history_index::{DagHistoryIndex, HistoryPage};
@@ -109,7 +109,6 @@ pub struct KeyValueDagRepresentation {
     pub(crate) block_number_map: imbl::HashMap<BlockHash, i64>,
     pub(crate) main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub(crate) self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
-    pub(crate) sequence_map: SequenceMap,
     pub(crate) invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub(crate) finalized_blocks_set: imbl::HashSet<BlockHash>,
@@ -155,7 +154,6 @@ pub struct DagFixture {
     pub block_number_map: imbl::HashMap<BlockHash, i64>,
     pub main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
-    pub sequence_map: SequenceMap,
     pub invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub finalized_blocks_set: imbl::HashSet<BlockHash>,
@@ -184,7 +182,6 @@ impl DagFixture {
             block_number_map: self.block_number_map,
             main_parent_map: self.main_parent_map,
             self_justification_map: self.self_justification_map,
-            sequence_map: self.sequence_map,
             invalid_blocks_set: self.invalid_blocks_set,
             last_finalized_block_hash: self.last_finalized_block_hash,
             finalized_blocks_set: self.finalized_blocks_set,
@@ -206,7 +203,6 @@ pub struct DagFixtureMut<'a> {
     pub block_number_map: &'a mut imbl::HashMap<BlockHash, i64>,
     pub main_parent_map: &'a mut imbl::HashMap<BlockHash, BlockHash>,
     pub self_justification_map: &'a mut imbl::HashMap<BlockHash, BlockHash>,
-    pub sequence_map: &'a mut SequenceMap,
     pub invalid_blocks_set: &'a mut imbl::HashSet<BlockMetadata>,
     pub finalized_blocks_set: &'a mut imbl::HashSet<BlockHash>,
 }
@@ -252,7 +248,6 @@ impl KeyValueDagRepresentation {
             block_number_map: state.block_number_map,
             main_parent_map: state.main_parent_map,
             self_justification_map: state.self_justification_map,
-            sequence_map: state.sequence_map,
             invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: self.last_finalized_block_hash.clone(),
             finalized_blocks_set: state.finalized_block_set,
@@ -277,7 +272,6 @@ impl KeyValueDagRepresentation {
             block_number_map: &mut self.block_number_map,
             main_parent_map: &mut self.main_parent_map,
             self_justification_map: &mut self.self_justification_map,
-            sequence_map: &mut self.sequence_map,
             invalid_blocks_set: &mut self.invalid_blocks_set,
             finalized_blocks_set: &mut self.finalized_blocks_set,
         }
@@ -899,9 +893,24 @@ impl KeyValueDagRepresentation {
         Ok(invalid_block_hashes)
     }
 
-    /// The blocks held from `sender` at sequence number `seq_num`.
-    pub fn blocks_at(&self, sender: &Validator, seq_num: i32) -> Option<&imbl::HashSet<BlockHash>> {
-        self.sequence_map.get(&(sender.clone(), seq_num))
+    /// The blocks held from `sender` at sequence number `seq_num`, resident
+    /// or not.
+    pub fn blocks_at(
+        &self,
+        sender: &Validator,
+        seq_num: i32,
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        if let Some(history) = &self.history {
+            return history.blocks_at_sequence(sender, seq_num, self.view_sequence);
+        }
+        let mut held = Vec::new();
+        for hash in &self.dag_set {
+            let metadata = self.lookup_unsafe(hash)?;
+            if metadata.sender == *sender && metadata.sequence_number == seq_num {
+                held.push(hash.clone());
+            }
+        }
+        Ok(held)
     }
 
     pub fn self_justification(
@@ -1496,6 +1505,7 @@ impl BlockDagKeyValueStorage {
             "dag-children-v1",
             "dag-history-state-v1",
             "dag-gc-retry-v1",
+            "dag-sequence-v1",
         ] {
             atomic_stores.push(kvm.store(name.to_string()).await?);
         }
@@ -1741,7 +1751,6 @@ impl BlockDagKeyValueStorage {
         let block_number_map = dag_state_guard.block_number_map.clone();
         let main_parent_map = dag_state_guard.main_parent_map.clone();
         let self_justification_map = dag_state_guard.self_justification_map.clone();
-        let sequence_map = dag_state_guard.sequence_map.clone();
         let last_finalized_block = match &dag_state_guard.last_finalized_block {
             Some((hash, _)) => hash.clone(),
             None if allow_uninitialized => BlockHash::new(),
@@ -1777,7 +1786,6 @@ impl BlockDagKeyValueStorage {
             block_number_map,
             main_parent_map,
             self_justification_map,
-            sequence_map,
             invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: last_finalized_block,
             finalized_blocks_set: finalized_blocks,
@@ -2391,7 +2399,7 @@ mod tests {
 
     use super::*;
 
-    const DAG_STORES: [&str; 15] = [
+    const DAG_STORES: [&str; 16] = [
         "block-metadata",
         "latest-messages",
         "invalid-blocks",
@@ -2407,6 +2415,7 @@ mod tests {
         "dag-children-v1",
         "dag-history-state-v1",
         "dag-gc-retry-v1",
+        "dag-sequence-v1",
     ];
 
     #[test]

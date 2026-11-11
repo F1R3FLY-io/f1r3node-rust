@@ -676,7 +676,6 @@ pub mod test_helpers {
                 block_number_map: imbl::HashMap::new(),
                 main_parent_map: imbl::HashMap::new(),
                 self_justification_map: imbl::HashMap::new(),
-                sequence_map: imbl::HashMap::new(),
                 invalid_blocks_set: imbl::HashSet::new(),
                 last_finalized_block_hash: BlockHash::new(),
                 finalized_blocks_set: imbl::HashSet::new(),

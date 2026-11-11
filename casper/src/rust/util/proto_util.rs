@@ -1028,7 +1028,6 @@ mod fork_choice_b1_repro_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            sequence_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),

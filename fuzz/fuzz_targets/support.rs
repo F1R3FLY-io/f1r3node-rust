@@ -166,7 +166,6 @@ fn empty_dag() -> KeyValueDagRepresentation {
         block_number_map: imbl::HashMap::new(),
         main_parent_map: imbl::HashMap::new(),
         self_justification_map: imbl::HashMap::new(),
-        sequence_map: imbl::HashMap::new(),
         invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: Bytes::new(),
         finalized_blocks_set: imbl::HashSet::new(),
@@ -213,11 +212,6 @@ pub fn snapshot(held: &[Held], max_block_num: i64, bonds: Vec<(Validator, i64)>)
         fixture
             .block_number_map
             .insert(metadata.block_hash.clone(), metadata.block_number);
-        fixture
-            .sequence_map
-            .entry((metadata.sender.clone(), metadata.sequence_number))
-            .or_default()
-            .insert(metadata.block_hash.clone());
         if metadata.is_invalid() {
             fixture.invalid_blocks_set.insert(metadata.clone());
         } else {
