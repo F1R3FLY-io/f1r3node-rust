@@ -124,7 +124,8 @@ const _: () = assert!(
 ///     order 14 — `FD_ENTROPY_HEADROOM_BITS` (u64_be)
 ///   PR 2.17 (`snapshot` encoder — first `u8_raw`):
 ///     order 15 — `SNAPSHOT_FORMAT_VERSION`  (u8_raw)
-const EXPECTED_ENTRY_COUNT: usize = 17;
+///   PeTTa consensus mode (`swi_prolog_service.rs`): orders 18-28.
+const EXPECTED_ENTRY_COUNT: usize = 28;
 
 /// A single consensus-observable constant's contribution to the
 /// fingerprint fold.
@@ -467,7 +468,9 @@ mod tests {
         //  wire bytes embedded in every WAL entry, and the snapshot
         //  version is the leading byte of the encoded slice whose
         //  Blake2b256 root is the on-chain commitment.)
-        const EXPECTED_FOR_CURRENT: &str = "dd40a754542ccc54";
+        // PeTTa consensus mode → `4fb384ac1e75e374`: orders 18-28 from
+        // `swi_prolog_service.rs` (limits, phlo, allowlist, backend pins).
+        const EXPECTED_FOR_CURRENT: &str = "4fb384ac1e75e374";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \
@@ -621,7 +624,7 @@ mod tests {
     ///
     /// # Detection scope
     ///
-    /// The scan walks `io/**/*.rs` recursively (so registrations in
+    /// The scan walks `interpreter/**/*.rs` recursively (so registrations in
     /// submodule trees like `io/path/`, `io/wal/`, `io/snapshot/`
     /// are covered).  It flags any `#[cfg(...)]`, `#[cfg_attr(...)]`,
     /// or `cfg!(...)` predicate containing `target_os`,
@@ -705,10 +708,8 @@ mod tests {
             }
         }
 
-        let io_dir = std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/rust/interpreter/io"
-        ));
+        let io_dir =
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/rust/interpreter"));
         let mut rs_files = Vec::new();
         collect_rs_files(&io_dir, &mut rs_files);
         // Sanity check: recursion must reach at least one file inside
@@ -737,7 +738,7 @@ mod tests {
             let content = std::fs::read_to_string(path)
                 .unwrap_or_else(|e| panic!("readable .rs file {}: {e}", path.display()));
             let lines: Vec<&str> = content.lines().collect();
-            // Display path relative to io/ for readable diagnostics.
+            // Display path relative to interpreter/ for readable diagnostics.
             let display_path = path
                 .strip_prefix(&io_dir)
                 .map(|p| p.to_string_lossy().into_owned())

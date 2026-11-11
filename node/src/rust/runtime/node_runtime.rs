@@ -1327,6 +1327,10 @@ async fn await_http_server_task(
 /// Returns `Ok(())` on successful node shutdown, or an error if initialization fails
 pub async fn start(node_conf: NodeConf) -> eyre::Result<()> {
     info!("Starting RChain node runtime...");
+    if std::env::var_os("PETTA_DIR").is_some() {
+        rholang::rust::interpreter::swi_prolog_service::check_backend()
+            .map_err(|e| eyre::eyre!("PeTTa backend does not match the consensus pins: {e}"))?;
+    }
     let observer = crate::rust::soak_observer::Observer::bind(&node_conf)?;
 
     // Create node identifier from certificate

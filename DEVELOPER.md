@@ -8,6 +8,15 @@ The formal-verification gates need more tools. See [Formal Verification Tooling]
 
 ## Required Tooling
 
+**SWI-Prolog** - Required runtime dependency for MeTTa smart contract execution via PeTTa submodule
+- Nix/direnv users: Already provisioned in the development shell
+- Manual installation:
+  - macOS: `brew install swi-prolog`
+  - Ubuntu/Debian: `apt-get install swi-prolog`
+  - Fedora: `dnf install pl`
+- The `swipl` binary must be in your PATH
+- PeTTa submodule must be initialized: `git submodule update --init --recursive`
+
 ### macOS
 
 ```bash
