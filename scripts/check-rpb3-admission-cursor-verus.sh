@@ -1470,6 +1470,10 @@ proofs_rpb3_runtime_frame_source_refinement=(
   runtime_emap_ezipper_source_steps_quiet
   source_noscore_emap_incomplete_route_witness
   source_message_finish_route_reads_complete_summary
+  runtime_root_return_extends_component_route
+  runtime_root_return_observable_exact
+  runtime_raw_par_finish_selected_exact
+  runtime_par_root_return_witness
 )
 proofs_rpb3_score_admission_bridge=(
   bridge_certified_interval_entries_exact

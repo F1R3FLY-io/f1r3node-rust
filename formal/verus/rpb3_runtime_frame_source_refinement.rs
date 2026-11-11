@@ -654,6 +654,47 @@ pub open spec fn runtime_empty_send_return() -> Option<RuntimeRootReturnImage> {
     }
 }
 
+pub open spec fn runtime_par_root_frame() -> admission::AdmissionFrameState {
+    admission::AdmissionFrameState {
+        physical_source: 0,
+        physical_start: 0,
+        program_type_id: 1,
+        region_start: 0,
+        region_end: 0,
+        source_bytes: Seq::empty(),
+        cursor: 0,
+        slot_count: 12,
+        last_slot: None,
+        seen: Set::empty(),
+        required: Set::empty(),
+        scalar_slots: Set::empty(),
+        scalar_occurrences: Seq::empty(),
+        returns: Seq::empty(),
+        family: admission::AdmissionFamily::Other,
+        waiting_id: None,
+        waiting_kind: 0,
+        waiting_slot: None,
+        waiting_tag: None,
+        return_id: None,
+        frame_kind: 1,
+        body_id: 0,
+        score_handle: None,
+        nested_started: 0,
+        nested_resolved: 0,
+    }
+}
+
+pub open spec fn runtime_par_root_before() -> RuntimeFrameImage {
+    RuntimeFrameImage {
+        score: bridge::bridge_initial(runtime_par_root_frame()),
+        capacity: 1,
+        frame_bytes: 1,
+        max_frames: 1,
+        max_storage_bytes: 1,
+        max_capacity_bytes: 1,
+    }
+}
+
 pub open spec fn runtime_noscore_receive_bind_before() -> RuntimeFrameImage {
     RuntimeFrameImage {
         score: bridge::ScoreAdmissionBridge {
@@ -2694,7 +2735,7 @@ pub struct RuntimeRootReturnImage {
     pub remaining_frames: usize,
 }
 
-pub open spec fn runtime_message_eof_root_return(
+pub open spec fn runtime_message_eof_root_return_component_only(
     before: RuntimeFrameImage, after_finish: bridge::ScoreAdmissionBridge,
 ) -> Option<RuntimeRootReturnImage> {
     if !runtime_frame_image_wf(before) {
@@ -2717,6 +2758,79 @@ pub open spec fn runtime_message_eof_root_return(
                     _ => None,
                 }
             },
+        }
+    }
+}
+
+pub open spec fn runtime_message_eof_root_return(
+    before: RuntimeFrameImage, after_finish: bridge::ScoreAdmissionBridge,
+) -> Option<RuntimeRootReturnImage> {
+    if !runtime_frame_image_wf(before)
+        || !finish::message_eof_ready(before.score)
+        || !runtime_score_source_edge(before.score, after_finish)
+        || after_finish.admission.frames.len() != 1
+    {
+        None
+    } else {
+        match admission::concrete_message_driver_step(
+            after_finish.admission, admission::ConcreteFrameActionModel::Complete,
+        ) {
+            Some(admission::ConcreteFrameOutcomeModel::RootFinished { summary }) => {
+                if (summary.score_handle as int) < after_finish.admission.arena.len() {
+                    Some(RuntimeRootReturnImage {
+                        summary,
+                        pre_pop: RuntimeFrameImage { score: after_finish, ..before },
+                        score_bytes: after_finish.admission.arena[
+                            summary.score_handle as int
+                        ].transcript_bytes,
+                        remaining_frames: 0,
+                    })
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        }
+    }
+}
+
+pub struct RuntimeRootComponentObservation {
+    pub family_tag: u8,
+    pub complete: bool,
+}
+
+pub struct RuntimeRootObservation {
+    pub semantic_default_par: Option<bool>,
+    pub canonical_path_stable_par: Option<bool>,
+    pub component: Option<RuntimeRootComponentObservation>,
+    pub ghost score_bytes: Seq<u8>,
+}
+
+pub open spec fn runtime_root_return_observation(
+    returned: RuntimeRootReturnImage,
+) -> RuntimeRootObservation {
+    let root = returned.pre_pop.score.admission.frames[0];
+    if returned.summary.family == admission::AdmissionFamily::Other
+        && returned.summary.program_type_id == 1
+    {
+        RuntimeRootObservation {
+            semantic_default_par: Some(admission::admission_raw_par_semantic_default(root)),
+            canonical_path_stable_par: admission::admission_raw_par_path_stability(root),
+            component: None,
+            score_bytes: returned.score_bytes,
+        }
+    } else {
+        RuntimeRootObservation {
+            semantic_default_par: None,
+            canonical_path_stable_par: None,
+            component: match finish::component_tag_for_family(returned.summary.family) {
+                None => None,
+                Some(family_tag) => Some(RuntimeRootComponentObservation {
+                    family_tag,
+                    complete: returned.summary.complete,
+                }),
+            },
+            score_bytes: returned.score_bytes,
         }
     }
 }
@@ -3789,10 +3903,101 @@ pub proof fn runtime_root_return_is_pre_pop_exact(
         },
     },
 {
-    finish::modeled_root_return_matches_pre_pop(before.score, after_finish);
     admission::concrete_message_driver_step_simulates(
         after_finish.admission, admission::ConcreteFrameActionModel::Complete,
     );
+}
+
+pub proof fn runtime_root_return_extends_component_route(
+    before: RuntimeFrameImage, after_finish: bridge::ScoreAdmissionBridge,
+)
+    ensures runtime_message_eof_root_return_component_only(before, after_finish).is_some()
+        ==> runtime_message_eof_root_return(before, after_finish)
+            == runtime_message_eof_root_return_component_only(before, after_finish),
+{
+    if let Some(old) = runtime_message_eof_root_return_component_only(before, after_finish) {
+        finish::modeled_root_return_matches_pre_pop(before.score, after_finish);
+        admission::concrete_message_driver_step_simulates(
+            after_finish.admission, admission::ConcreteFrameActionModel::Complete,
+        );
+        let returned = finish::modeled_message_eof_to_root_return(
+            before.score, after_finish,
+        ).unwrap();
+        assert(finish::modeled_message_finish_action(before.score, after_finish).is_some());
+        assert(finish::message_eof_ready(before.score));
+        assert(bridge::bridge_score_source_step(before.score, after_finish));
+        runtime_score_source_edge_exact(before.score, after_finish);
+        assert(after_finish.admission.frames.len() == 1);
+        assert(old.summary.score_handle == returned.component.score_handle);
+        assert((old.summary.score_handle as int) < after_finish.admission.arena.len());
+        assert(old.score_bytes
+            == after_finish.admission.arena[old.summary.score_handle as int].transcript_bytes);
+        assert(old.remaining_frames == 0);
+    }
+}
+
+pub proof fn runtime_root_return_observable_exact(
+    before: RuntimeFrameImage, after_finish: bridge::ScoreAdmissionBridge,
+)
+    ensures match runtime_message_eof_root_return(before, after_finish) {
+        None => true,
+        Some(returned) => {
+            let root = returned.pre_pop.score.admission.frames[0];
+            let handle = returned.summary.score_handle;
+            let observed = runtime_root_return_observation(returned);
+            &&& runtime_frame_image_wf(returned.pre_pop)
+            &&& bridge::bridge_root_handle(returned.pre_pop.score) == Some(handle)
+            &&& bridge::bridge_root_transcript(returned.pre_pop.score)
+                == Some(observed.score_bytes)
+            &&& observed.score_bytes
+                == returned.pre_pop.score.transcript.entries[handle as int].transcript
+            &&& observed.component.is_some()
+                == finish::component_tag_for_family(returned.summary.family).is_some()
+            &&& match observed.component {
+                None => true,
+                Some(component) => {
+                    &&& finish::component_tag_for_family(returned.summary.family)
+                        == Some(component.family_tag)
+                    &&& admission::admission_family_program_id(returned.summary.family)
+                        == Some(returned.summary.program_type_id)
+                    &&& component.complete == admission::admission_family_complete(root)
+                    &&& component.complete
+                        == returned.pre_pop.score.admission.arena[handle as int].semantic
+                },
+            }
+            &&& observed.semantic_default_par.is_some()
+                == (returned.summary.family == admission::AdmissionFamily::Other
+                    && returned.summary.program_type_id == 1)
+            &&& (observed.semantic_default_par.is_some() ==> {
+                &&& root.family == admission::AdmissionFamily::Other
+                &&& root.program_type_id == 1
+                &&& observed.semantic_default_par
+                    == Some(admission::admission_raw_par_semantic_default(root))
+                &&& observed.canonical_path_stable_par
+                    == admission::admission_raw_par_path_stability(root)
+                &&& observed.component.is_none()
+            })
+            &&& (observed.semantic_default_par.is_none()
+                ==> observed.canonical_path_stable_par.is_none())
+        },
+    },
+{
+    if let Some(returned) = runtime_message_eof_root_return(before, after_finish) {
+        assert(bridge::bridge_well_formed(after_finish)
+            && admission::admission_state_wf(after_finish.admission)) by {
+            runtime_score_source_edge_exact(before.score, after_finish);
+            bridge::bridge_score_source_step_preserves_exact(before.score, after_finish);
+        }
+        admission::concrete_message_driver_step_simulates(
+            after_finish.admission, admission::ConcreteFrameActionModel::Complete,
+        );
+        assert(admission::admission_complete_root(after_finish.admission));
+        bridge::bridge_root_exact(after_finish);
+        let root = after_finish.admission.frames[0];
+        assert(admission::admission_frame_wf(root));
+        assert(returned.pre_pop.score == after_finish);
+        assert(runtime_frame_image_wf(returned.pre_pop));
+    }
 }
 
 pub proof fn runtime_empty_send_return_is_reachable()
@@ -3815,6 +4020,7 @@ pub proof fn runtime_empty_send_return_is_reachable()
     assert(runtime_frame_image_wf(before));
     let after_finish = finish::empty_send_finish_after().unwrap();
     finish::modeled_root_return_matches_pre_pop(before.score, after_finish);
+    runtime_score_source_edge_exact(before.score, after_finish);
     assert(admission::admission_complete_root(after_finish.admission));
     admission::concrete_message_view_rel(after_finish.admission);
     admission::concrete_message_driver_step_simulates(
@@ -3854,6 +4060,206 @@ pub proof fn runtime_selected_empty_send_return_is_reachable()
     assert(runtime_message_eof_root_return(
         before, bridge::bridge_score_finish_selected(before.score).unwrap(),
     ) == Some(returned));
+}
+
+pub proof fn runtime_raw_par_finish_selected_exact(before: bridge::ScoreAdmissionBridge)
+    requires
+        before.admission.frames.len() > 0,
+        before.admission.frames.last().family == admission::AdmissionFamily::Other,
+        before.admission.frames.last().program_type_id == 1,
+    ensures
+        bridge::bridge_score_finish_selected(before) == match bridge::bridge_raw_par_step(before) {
+            None => None,
+            Some((next, _, _, _)) => Some(next),
+        },
+{
+    assert(bridge::bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge::bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge::bridge_cost_bound_step(before).is_none());
+    assert(bridge::bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge::bridge_cost_signature_step(before).is_none());
+    assert(bridge::bridge_cost_region_step(before).is_none());
+    assert(bridge::bridge_cost_token_stack_step(before).is_none());
+    assert(bridge::bridge_bundle_step(before).is_none());
+    assert(bridge::bridge_if_step(before).is_none());
+    assert(bridge::bridge_send_step(before).is_none());
+    assert(bridge::bridge_match_step(before).is_none());
+    assert(bridge::bridge_absent_specialized_constructor_step(before).is_none());
+    assert(bridge::bridge_absent_connective_step(before).is_none());
+    assert(bridge::bridge_receive_bind_step(before).is_none());
+    assert(bridge::bridge_match_case_step(before).is_none());
+    assert(bridge::bridge_bool_oneof_step(before).is_none());
+    assert(bridge::bridge_expr_atom_step(before).is_none());
+    assert(bridge::bridge_expr_numeric_step(before).is_none());
+    assert(bridge::bridge_expr_big_rational_step(before).is_none());
+    assert(bridge::bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge::bridge_sys_auth_token_step(before).is_none());
+    assert(bridge::bridge_new_empty_collections_step(before).is_none());
+    assert(bridge::bridge_new_one_injection_step(before).is_none());
+    assert(bridge::bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge::bridge_new_one_uri_step(before).is_none());
+    assert(bridge::bridge_new_collections_step(before).is_none());
+    assert(bridge::bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge::bridge_expr_structural_step(before).is_none());
+    assert(bridge::bridge_evar_step(before).is_none());
+    assert(bridge::bridge_ordered_sequence_step(before).is_none());
+    assert(bridge::bridge_emethod_step(before).is_none());
+    assert(bridge::bridge_emap_finish_step(before).is_none());
+    assert(bridge::bridge_connective_not_step(before).is_none());
+    assert(bridge::bridge_connective_varref_step(before).is_none());
+    assert(bridge::bridge_connective_collection_step(before).is_none());
+    assert(bridge::bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge::bridge_receive_present_condition_step(before).is_none());
+    assert(bridge::bridge_receive_absent_condition_step(before).is_none());
+    assert(bridge::bridge_nonsemantic_step(before).is_none());
+    reveal(bridge::bridge_score_finish_selection_group_1);
+    reveal(bridge::bridge_score_finish_selection_group_2);
+    reveal(bridge::bridge_score_finish_selection_group_3);
+    reveal(bridge::bridge_score_finish_selection_group_4);
+    reveal(bridge::bridge_score_finish_selection_group_5);
+    reveal(bridge::bridge_score_finish_selected);
+}
+
+pub proof fn runtime_par_root_return_witness()
+    ensures
+        runtime_frame_image_wf(runtime_par_root_before()),
+        bridge::bridge_raw_par_step(runtime_par_root_before().score).is_some(),
+        bridge::bridge_score_finish_selected(runtime_par_root_before().score)
+            == Some(bridge::bridge_raw_par_step(runtime_par_root_before().score).unwrap().0),
+        runtime_message_eof_root_return_component_only(
+            runtime_par_root_before(),
+            bridge::bridge_raw_par_step(runtime_par_root_before().score).unwrap().0,
+        ).is_none(),
+        match runtime_message_driver_step(runtime_par_root_before(), RuntimeMessageEvent::Eof) {
+            Some(RuntimeMessageOutcome::RootReturned { returned }) => {
+                &&& returned.remaining_frames == 0
+                &&& returned.summary.program_type_id == 1
+                &&& returned.summary.family == admission::AdmissionFamily::Other
+                &&& returned.summary.complete
+                &&& returned.summary.score_handle == 2
+                &&& returned.pre_pop.score
+                    == bridge::bridge_raw_par_step(runtime_par_root_before().score).unwrap().0
+                &&& returned.score_bytes == returned.pre_pop.score.transcript.entries[2].transcript
+                &&& runtime_root_return_observation(returned).semantic_default_par == Some(true)
+                &&& runtime_root_return_observation(returned).component.is_none()
+            },
+            _ => false,
+        },
+{
+    let root = runtime_par_root_frame();
+    let before = runtime_par_root_before();
+    let start = before.score;
+    assert forall|slot: int| 0 <= slot < root.slot_count as int
+        implies root.required.contains(slot)
+            == (exists|tag: u32| admission::admission_required_descriptor_slot(
+                root.program_type_id, tag, slot,
+            )) by {
+        assert forall|tag: u32|
+            !#[trigger] admission::admission_required_descriptor_slot(
+                root.program_type_id, tag, slot,
+            ) by {
+            assert(admission::admission_descriptor_not_pathmap(root.program_type_id, tag));
+        }
+    }
+    assert(admission::admission_required_slots_generated(root));
+    assert(admission::admission_root_initial(root));
+    admission::admission_initial_wf(root);
+    bridge::bridge_initial_exact(root);
+    assert(runtime_frame_image_wf(before));
+    assert(bridge::bridge_raw_par_returns_source(root, start.admission.arena));
+    reveal_with_fuel(bridge::bridge_raw_par_ordered_handles, 11);
+    assert(bridge::bridge_raw_par_ordered_handles(
+        root.returns, bridge::bridge_raw_par_score_tags(),
+    ).is_some());
+    let components = bridge::bridge_raw_par_ordered_handles(
+        root.returns, bridge::bridge_raw_par_score_tags(),
+    ).unwrap();
+    assert(components.len() == 0);
+    assert(!admission::admission_raw_par_connective_used(root));
+    let flag = score::ScoreNode::Integer(0i64);
+    assert(score::integer_transcript(0i64).len() == 10);
+    assert(score::checked_append(start.transcript, flag).is_some());
+    assert(bridge::bridge_append_unattached(start, flag).is_some());
+    bridge::bridge_append_unattached_exact(start, flag);
+    bridge::bridge_append_unattached_preserves_admission_wf(start, flag);
+    let (after_flag, flag_handle) = bridge::bridge_append_unattached(start, flag).unwrap();
+    assert(flag_handle == 0);
+    assert(after_flag.transcript.entries.len() == 1);
+    assert(after_flag.transcript.entries[0].transcript == score::integer_transcript(0i64));
+    let children = components.push(flag_handle);
+    assert(children.len() == 1);
+    assert(children[0] == 0);
+    assert(score::child_handles_valid(after_flag.transcript.entries, children));
+    let constructor = score::ScoreNode::Integer(999i64);
+    assert(score::integer_transcript(999i64).len() == 10);
+    assert(score::checked_append(after_flag.transcript, constructor).is_some());
+    assert(bridge::bridge_append_unattached(after_flag, constructor).is_some());
+    bridge::bridge_append_unattached_exact(after_flag, constructor);
+    let (after_constructor, constructor_handle) =
+        bridge::bridge_append_unattached(after_flag, constructor).unwrap();
+    assert(constructor_handle == 1);
+    let entries = after_constructor.transcript.entries;
+    assert(entries.len() == 2);
+    assert(entries.take(1) == after_flag.transcript.entries);
+    assert(entries[0] == entries.take(1)[0]);
+    assert(entries[0].transcript.len() == 10);
+    assert(entries[1].transcript == score::integer_transcript(999i64));
+    assert(entries[1].transcript.len() == 10);
+    let node_children = seq![constructor_handle] + children;
+    assert(node_children.len() == 2);
+    assert(node_children[0] == 1);
+    assert(node_children[1] == 0);
+    assert(node_children.drop_first().len() == 1);
+    assert(node_children.drop_first()[0] == 0);
+    assert(node_children.drop_first().drop_first().len() == 0);
+    assert(score::children_transcript(entries, node_children.drop_first().drop_first())
+        == Seq::<u8>::empty());
+    assert(score::children_transcript(entries, node_children.drop_first())
+        == entries[0].transcript + Seq::<u8>::empty());
+    assert(score::children_transcript(entries, node_children)
+        == entries[1].transcript + (entries[0].transcript + Seq::<u8>::empty()));
+    assert(score::children_transcript(entries, node_children).len() == 20);
+    let node = score::ScoreNode::Node(node_children);
+    assert(score::kind_transcript(entries, node).len() == 22);
+    assert(score::child_handles_valid(entries, node_children));
+    assert(score::checked_append(after_constructor.transcript, node).is_some());
+    assert(bridge::bridge_append_unattached(after_constructor, node).is_some());
+    bridge::bridge_append_unattached_exact(after_constructor, node);
+    let (after_node, score_handle) =
+        bridge::bridge_append_unattached(after_constructor, node).unwrap();
+    assert(score_handle == 2);
+    assert(admission::admission_attach_score_step(
+        after_node.admission, score_handle, root.body_id,
+    ).is_some());
+    assert(bridge::bridge_constructor_step(after_flag, 999i32, children).is_some());
+    assert(bridge::bridge_raw_par_step(start).is_some());
+    bridge::bridge_raw_par_exact(start);
+    let (next, _, _, raw_score_handle) = bridge::bridge_raw_par_step(start).unwrap();
+    assert(raw_score_handle == 2);
+    runtime_raw_par_finish_selected_exact(start);
+    assert(bridge::bridge_score_finish_selected(start) == Some(next));
+    assert(next.admission.frames.len() == 1);
+    let pre_pop_root = next.admission.frames[0];
+    assert(pre_pop_root.score_handle == Some(2usize));
+    assert(pre_pop_root.family == admission::AdmissionFamily::Other);
+    assert(pre_pop_root.program_type_id == 1);
+    assert(pre_pop_root.returns.len() == 0);
+    assert(pre_pop_root.scalar_occurrences.len() == 0);
+    assert(admission::admission_score_body_agrees(pre_pop_root, next.admission.arena));
+    assert(admission::admission_complete_root(next.admission));
+    admission::concrete_message_view_rel(next.admission);
+    admission::concrete_message_driver_step_simulates(
+        next.admission, admission::ConcreteFrameActionModel::Complete,
+    );
+    assert(bridge::bridge_score_source_step(start, next));
+    runtime_score_source_edge_exact(start, next);
+    assert(finish::message_eof_ready(start));
+    assert(runtime_noscore_child_kind(before).is_none());
+    assert(runtime_message_eof_root_return(before, next).is_some());
+    assert(!admission::admission_raw_par_has_components(pre_pop_root));
+    assert(!admission::admission_raw_par_connective_used(pre_pop_root));
+    assert(finish::component_tag_for_family(pre_pop_root.family).is_none());
+    assert(runtime_message_eof_root_return_component_only(before, next).is_none());
 }
 
 pub proof fn runtime_noscore_receive_bind_modeled_witness()
