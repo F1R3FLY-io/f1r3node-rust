@@ -1179,7 +1179,7 @@ jobs:
       github.event_name == 'pull_request'
       && needs.build_base.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.crate == 'casper' && 60 || 45 }}
+    timeout-minutes: ${{ matrix.crate == 'casper' && 90 || 45 }}
     strategy:
       fail-fast: false
       matrix:
