@@ -1,7 +1,4 @@
-#[cfg(test)]
 use std::collections::HashSet;
-#[cfg(test)]
-use std::ops::Bound;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
@@ -14,18 +11,6 @@ mod job;
 #[cfg(any(test, feature = "test-utils"))]
 pub use job::collect_garbage_with;
 pub use job::{collect_garbage, GcProgress, GcSweep};
-
-#[cfg(test)]
-#[derive(Default)]
-struct LegacySweep {
-    swept_height: Option<i64>,
-    pending: HashSet<BlockHash>,
-}
-
-#[cfg(test)]
-impl LegacySweep {
-    fn new() -> Self { Self::default() }
-}
 
 /// Conditions 1 and 2 of `is_safe_to_delete`, plus the "has children" half of
 /// condition 3 — everything that can be decided about a candidate WITHOUT
@@ -72,7 +57,6 @@ fn reaches_ancestor_check(
 }
 
 /// Check if a block's mergeable data is safe to delete.
-#[cfg(test)]
 fn is_safe_to_delete(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
@@ -94,48 +78,12 @@ fn is_safe_to_delete(
     Ok(moved_past.contains(block_hash))
 }
 
-/// Add every block whose height has come into deletion range since the last
-/// pass, and advance the sweep.
-///
-/// Enumeration deliberately does not filter on finality. A block below the
-/// ceiling can still be unfinalized while finality lags, and skipping it here
-/// would move the sweep past it for good; leaving it to condition 1 of
-/// `is_safe_to_delete` means it is simply retried until it qualifies — or, for
-/// an orphan that never finalizes, retried forever at the cost of one entry,
-/// never blocking anything else.
-///
-/// The ceiling is a coarse upper bound on what is worth looking at, and it is
-/// anchored on the floor for the same reason `is_safe_to_delete` is: a
-/// tip-anchored ceiling would sweep in the entire span between the floor and the
-/// tip, which the predicate refuses on every pass.
-#[cfg(test)]
-fn extend_pending_to_ceiling(
-    sweep: &mut LegacySweep,
-    ceiling: i64,
-    height_map: &imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
-) {
-    if sweep.swept_height.is_some_and(|swept| ceiling <= swept) {
-        return;
-    }
-
-    let lower = match sweep.swept_height {
-        Some(swept) => Bound::Excluded(swept),
-        None => Bound::Unbounded,
-    };
-
-    for (_, hashes) in height_map.range((lower, Bound::Included(ceiling))) {
-        sweep.pending.extend(hashes.iter().cloned());
-    }
-
-    sweep.swept_height = Some(ceiling);
-}
-
 /// The blocks every validator has moved past, down to `min_height`: the
 /// deepest block on every validator's strict main-parent lineage, and its
 /// ancestors through any parent. A block merged in as a secondary parent is
 /// as far behind every validator as the main-chain block that merged it.
-/// Computed once per pass. Heights come from the in-memory index; parents are
-/// a block-metadata store read for each block the walk expands.
+/// Computed once per pass; heights and parents are read through the DAG, from
+/// disk below the memory window.
 ///
 /// Stops the walk once it reaches `min_height` — the lowest height any
 /// candidate in `pending` can have. A candidate's own height is always >=
@@ -151,7 +99,6 @@ fn extend_pending_to_ceiling(
 /// is derived by the caller from `reaches_ancestor_check`-eligible candidates
 /// only, so a permanently-unfinalized orphan — refused before this set is
 /// ever consulted — does not drag the walk down either.
-#[cfg(test)]
 fn moved_past_by_every_validator(
     dag: &KeyValueDagRepresentation,
     min_height: i64,
@@ -170,32 +117,47 @@ fn moved_past_by_every_validator(
         }
     }
 
+    // The walks below take infallible lookups, where `None` means "not held".
+    // A failed read is not that: the first one is kept and fails the pass, so
+    // nothing is collected on a guess.
+    let read_error = std::cell::RefCell::new(None);
+
     // Main-parent chains are linear, so the intersection of N strict-ancestor
     // paths is just the path below their deepest common point.
     // `common_strict_ancestors` below is that intersection, kept as the
     // differential oracle for the anchor.
-    let Some(anchor) = deepest_common_strict_ancestor(
+    let anchor = deepest_common_strict_ancestor(
         latest_messages,
-        |block_hash| dag.main_parent(block_hash).ok().flatten(),
-        |block_hash| block_height(dag, block_hash),
-    ) else {
+        |block_hash| recorded(&read_error, dag.main_parent(block_hash)),
+        |block_hash| recorded(&read_error, dag.block_number(block_hash)),
+    );
+    if let Some(error) = read_error.take() {
+        return Err(error);
+    }
+    let Some(anchor) = anchor else {
         return Ok(None);
     };
 
-    ancestry_down_to(
+    let ancestry = ancestry_down_to(
         anchor,
-        |block_hash| dag.block_number(block_hash).ok().flatten(),
+        |block_hash| recorded(&read_error, dag.block_number(block_hash)),
         |block_hash| dag.lookup_unsafe(block_hash).map(|meta| meta.parents),
         min_height,
-    )
-    .map(Some)
+    )?;
+    match read_error.take() {
+        Some(error) => Err(error),
+        None => Ok(Some(ancestry)),
+    }
 }
 
-#[cfg(test)]
-fn block_height(dag: &KeyValueDagRepresentation, block_hash: &BlockHash) -> Option<i64> {
-    dag.lookup_unsafe(block_hash)
-        .ok()
-        .map(|meta| meta.block_number)
+fn recorded<T>(
+    read_error: &std::cell::RefCell<Option<KvStoreError>>,
+    result: Result<Option<T>, KvStoreError>,
+) -> Option<T> {
+    result.unwrap_or_else(|error| {
+        read_error.borrow_mut().get_or_insert(error);
+        None
+    })
 }
 
 /// The deepest block that is a strict main-chain ancestor of every latest
@@ -208,7 +170,6 @@ fn block_height(dag: &KeyValueDagRepresentation, block_hash: &BlockHash) -> Opti
 /// Convergence advances only the highest frontier entries, so the work is
 /// proportional to how far the validators have diverged — a few blocks when
 /// healthy, and bounded by the stall when not — rather than to the chain length.
-#[cfg(test)]
 fn deepest_common_strict_ancestor(
     latest_messages: impl IntoIterator<Item = BlockHash>,
     main_parent: impl Fn(&BlockHash) -> Option<BlockHash>,
@@ -252,7 +213,6 @@ fn deepest_common_strict_ancestor(
 /// A block the node does not hold is in no candidate set, so it is kept in
 /// the result but not expanded: stopping there can only keep data, never
 /// delete it.
-#[cfg(test)]
 fn ancestry_down_to<E>(
     anchor: BlockHash,
     height_of: impl Fn(&BlockHash) -> Option<i64>,
@@ -318,106 +278,7 @@ mod tests {
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
-    use super::{LegacySweep as GcSweep, *};
-
-    // -- enumeration / sweep bookkeeping -----------------------------------
-
-    fn at_height(n: i64) -> BlockHash { BlockHash::from(format!("h{}", n).into_bytes()) }
-
-    fn height_map(top: i64) -> imbl::OrdMap<i64, imbl::HashSet<BlockHash>> {
-        (0..=top)
-            .map(|n| {
-                let mut set = imbl::HashSet::new();
-                set.insert(at_height(n));
-                (n, set)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn enumerates_everything_up_to_the_ceiling_on_the_first_pass() {
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 3, &height_map(10));
-
-        assert_eq!(sweep.pending.len(), 4);
-        assert!(sweep.pending.contains(&at_height(0)));
-        assert!(sweep.pending.contains(&at_height(3)));
-        assert!(!sweep.pending.contains(&at_height(4)));
-    }
-
-    #[test]
-    fn second_pass_enumerates_only_what_newly_came_into_range() {
-        let map = height_map(10);
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 3, &map);
-        sweep.pending.clear(); // stand in for the first pass having deleted them
-
-        extend_pending_to_ceiling(&mut sweep, 5, &map);
-
-        assert_eq!(sweep.pending.len(), 2);
-        assert!(sweep.pending.contains(&at_height(4)));
-        assert!(sweep.pending.contains(&at_height(5)));
-    }
-
-    #[test]
-    fn a_pass_that_adds_no_range_leaves_pending_untouched() {
-        let map = height_map(10);
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 5, &map);
-        let after_first = sweep.pending.clone();
-
-        extend_pending_to_ceiling(&mut sweep, 5, &map);
-        assert_eq!(sweep.pending, after_first);
-
-        extend_pending_to_ceiling(&mut sweep, 2, &map);
-        assert_eq!(sweep.pending, after_first);
-    }
-
-    /// THE regression this sweep design exists for: a block a pass can't yet
-    /// clear (here, standing in for an orphan that never finalizes) does not
-    /// stop that same pass, or any later one, from enumerating and retrying
-    /// everything else. The old level/watermark design advanced only when an
-    /// entire height was fully resolved — one permanently-unresolvable block
-    /// froze it there forever.
-    #[test]
-    fn a_block_refused_this_pass_stays_pending_for_the_next() {
-        let map = height_map(10);
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 2, &map);
-
-        // Only block 0 clears this pass; block 1 and 2 stay pending — one of
-        // them standing in for a block that will never clear.
-        sweep.pending.remove(&at_height(0));
-
-        extend_pending_to_ceiling(&mut sweep, 4, &map);
-
-        assert!(
-            !sweep.pending.contains(&at_height(0)),
-            "already-cleared block stays cleared"
-        );
-        assert!(
-            sweep.pending.contains(&at_height(1)),
-            "never-cleared block is retried, not dropped"
-        );
-        assert!(
-            sweep.pending.contains(&at_height(2)),
-            "never-cleared block is retried, not dropped"
-        );
-        assert!(
-            sweep.pending.contains(&at_height(3)) && sweep.pending.contains(&at_height(4)),
-            "enumeration still advanced past the stuck blocks"
-        );
-    }
-
-    #[test]
-    fn enumeration_does_not_depend_on_the_finalized_block_cache() {
-        // Heights are the only input: `finalized_blocks_set` is a bounded cache
-        // that evicts, so a block missing from it must still be enumerated and
-        // left for condition 1 of `is_safe_to_delete` to judge.
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 6, &height_map(20));
-        assert_eq!(sweep.pending.len(), 7);
-    }
+    use super::*;
 
     // -- common_strict_ancestors --------------------------------------------
 

@@ -45,7 +45,7 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::key_value_store::KeyValueStore;
 
-const STORES: [&str; 20] = [
+const STORES: [&str; 18] = [
     "block-metadata",
     "equivocation-tracker",
     "latest-messages",
@@ -64,8 +64,6 @@ const STORES: [&str; 20] = [
     "dag-children-v1",
     "dag-history-state-v1",
     "dag-gc-retry-v1",
-    "dag-gc-work-v1",
-    "dag-gc-visited-v1",
 ];
 
 struct Fixture {

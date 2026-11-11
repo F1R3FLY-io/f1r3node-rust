@@ -47,8 +47,6 @@ fn lmdb_manager(directory: &std::path::Path) -> Box<dyn KeyValueStoreManager> {
         "dag-children-v1",
         "dag-history-state-v1",
         "dag-gc-retry-v1",
-        "dag-gc-work-v1",
-        "dag-gc-visited-v1",
     ]
     .into_iter()
     .map(|name| {

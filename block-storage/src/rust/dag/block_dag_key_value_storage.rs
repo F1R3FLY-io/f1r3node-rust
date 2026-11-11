@@ -1532,8 +1532,6 @@ impl BlockDagKeyValueStorage {
             "dag-children-v1",
             "dag-history-state-v1",
             "dag-gc-retry-v1",
-            "dag-gc-work-v1",
-            "dag-gc-visited-v1",
         ] {
             atomic_stores.push(kvm.store(name.to_string()).await?);
         }
@@ -2486,7 +2484,7 @@ mod tests {
 
     use super::*;
 
-    const DAG_STORES: [&str; 18] = [
+    const DAG_STORES: [&str; 16] = [
         "block-metadata",
         "equivocation-tracker",
         "latest-messages",
@@ -2503,8 +2501,6 @@ mod tests {
         "dag-children-v1",
         "dag-history-state-v1",
         "dag-gc-retry-v1",
-        "dag-gc-work-v1",
-        "dag-gc-visited-v1",
     ];
 
     fn hash(i: u32) -> Bytes {

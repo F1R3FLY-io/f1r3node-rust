@@ -21,8 +21,6 @@ const PROGRESS: &[u8] = b"dag.progress";
 const GC_SLOTS: DagGcSlots = DagGcSlots {
     state: STATE,
     retry: 8,
-    work: 9,
-    visited: 10,
 };
 
 #[derive(Clone, Default)]

@@ -1206,8 +1206,6 @@ mod tests {
             "dag-children-v1",
             "dag-history-state-v1",
             "dag-gc-retry-v1",
-            "dag-gc-work-v1",
-            "dag-gc-visited-v1",
         ];
         let mapping = stores
             .into_iter()

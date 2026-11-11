@@ -195,8 +195,6 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         "dag-children-v1",
         "dag-history-state-v1",
         "dag-gc-retry-v1",
-        "dag-gc-work-v1",
-        "dag-gc-visited-v1",
     ] {
         mappings.push((Db::new(name.to_string(), None), dag_storage_env_config()));
     }
