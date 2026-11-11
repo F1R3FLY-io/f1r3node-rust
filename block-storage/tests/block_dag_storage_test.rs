@@ -79,10 +79,7 @@ async fn slash_evidence_is_invalid_metadata_without_a_latest_message_update() {
 
     let genesis = genesis_block();
     let storage = create_dag_storage(&genesis).await;
-    let before = storage
-        .get_representation()
-        .unwrap()
-        .latest_message_hashes();
+    let before = storage.get_representation().unwrap();
     let mut evidence = chain_block(100, vec![Bytes::from(vec![0x70; 32])]);
     evidence.sender = genesis.sender.clone();
     evidence.seq_num = genesis.seq_num.saturating_add(100);
@@ -91,12 +88,17 @@ async fn slash_evidence_is_invalid_metadata_without_a_latest_message_update() {
         .insert(&evidence, InsertMode::SlashEvidence)
         .unwrap();
 
-    assert_eq!(dag.latest_message_hashes(), before);
-    assert!(dag.lookup(&evidence.block_hash).unwrap().unwrap().invalid);
+    assert_eq!(dag.latest_message_hashes(), before.latest_message_hashes());
+    assert_eq!(dag.latest_block_number(), before.latest_block_number());
     assert_eq!(
-        dag.invalid_blocks_map().unwrap().get(&evidence.block_hash),
-        Some(&evidence.sender)
+        dag.resident_counts().blocks,
+        before.resident_counts().blocks
     );
+    assert!(!before.contains(&evidence.block_hash).unwrap());
+    assert!(dag.contains(&evidence.block_hash).unwrap());
+    let metadata = dag.lookup(&evidence.block_hash).unwrap().unwrap();
+    assert!(metadata.invalid);
+    assert_eq!(metadata.sender, evidence.sender);
 }
 
 fn proptest_config() -> ProptestConfig {
@@ -142,8 +144,8 @@ fn lookup_elements(
             let block_metadata = dag.lookup(&block_element.block_hash).unwrap();
             let latest_message_hash = dag.latest_message_hash(&block_element.sender);
             let latest_message = dag.latest_message(&block_element.sender).unwrap();
-            let children = dag.children(&block_element.block_hash);
-            let contains = dag.contains(&block_element.block_hash);
+            let children = dag.children(&block_element.block_hash).unwrap();
+            let contains = dag.contains(&block_element.block_hash).unwrap();
             BlockLookup {
                 block_metadata,
                 latest_message_hash,
@@ -398,7 +400,7 @@ fn dag_storage_should_be_able_to_handle_checking_if_contains_a_block_with_empty_
     let dag = dag_storage
         .get_representation()
         .expect("dag representation");
-    let contains = dag.contains(&prost::bytes::Bytes::new());
+    let contains = dag.contains(&prost::bytes::Bytes::new()).unwrap();
     assert!(!contains);
 }
 
@@ -755,7 +757,7 @@ fn dag_storage_settled_history_insert_never_touches_latest_messages() {
         .get_representation()
         .expect("dag representation");
     assert!(
-        dag.contains(&settled.block_hash),
+        dag.contains(&settled.block_hash).unwrap(),
         "the settled block itself must be in the DAG"
     );
     assert_eq!(
@@ -929,19 +931,19 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         .unwrap();
 
     assert!(dag.lookup_unsafe(&genesis.block_hash).unwrap().finalized);
-    assert!(dag.is_finalized(&genesis.block_hash));
+    assert!(dag.is_finalized(&genesis.block_hash).unwrap());
 
     assert!(!dag.lookup_unsafe(&b1.block_hash).unwrap().finalized);
-    assert!(!dag.is_finalized(&b1.block_hash));
+    assert!(!dag.is_finalized(&b1.block_hash).unwrap());
 
     assert!(!dag.lookup_unsafe(&b2.block_hash).unwrap().finalized);
-    assert!(!dag.is_finalized(&b2.block_hash));
+    assert!(!dag.is_finalized(&b2.block_hash).unwrap());
 
     assert!(!dag.lookup_unsafe(&b3.block_hash).unwrap().finalized);
-    assert!(!dag.is_finalized(&b3.block_hash));
+    assert!(!dag.is_finalized(&b3.block_hash).unwrap());
 
     assert!(!dag.lookup_unsafe(&b4.block_hash).unwrap().finalized);
-    assert!(!dag.is_finalized(&b4.block_hash));
+    assert!(!dag.is_finalized(&b4.block_hash).unwrap());
 
     let effects = std::sync::Arc::new(std::sync::Mutex::new(HashSet::new()));
     let effects_clone = effects.clone();
@@ -966,10 +968,10 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
         .get_representation()
         .expect("dag representation");
     assert_eq!(dag.last_finalized_block(), b3.block_hash);
-    assert!(dag.is_finalized(&b1.block_hash));
-    assert!(dag.is_finalized(&b2.block_hash));
-    assert!(dag.is_finalized(&b3.block_hash));
-    assert!(!dag.is_finalized(&b4.block_hash));
+    assert!(dag.is_finalized(&b1.block_hash).unwrap());
+    assert!(dag.is_finalized(&b2.block_hash).unwrap());
+    assert!(dag.is_finalized(&b3.block_hash).unwrap());
+    assert!(!dag.is_finalized(&b4.block_hash).unwrap());
 
     let b1_meta = dag.lookup_unsafe(&b1.block_hash).unwrap();
     assert!(b1_meta.finalized);
@@ -1098,11 +1100,11 @@ async fn finalization_sweep_treats_unheld_parents_as_settled_ancestry() {
         .get_representation()
         .expect("dag representation");
     assert_eq!(dag.last_finalized_block(), b3.block_hash);
-    assert!(dag.is_finalized(&b1.block_hash));
-    assert!(dag.is_finalized(&b2.block_hash));
-    assert!(dag.is_finalized(&b3.block_hash));
+    assert!(dag.is_finalized(&b1.block_hash).unwrap());
+    assert!(dag.is_finalized(&b2.block_hash).unwrap());
+    assert!(dag.is_finalized(&b3.block_hash).unwrap());
     assert!(
-        !dag.contains(&sub_horizon_parent),
+        !dag.contains(&sub_horizon_parent).unwrap(),
         "staging: the sub-horizon parent must not be held"
     );
 }
@@ -1868,12 +1870,12 @@ fn truncated_window_finalization_walk_terminates_at_the_horizon() {
             ("b3", &b3.block_hash),
         ] {
             assert!(
-                dag.is_finalized(hash),
+                dag.is_finalized(hash).unwrap(),
                 "{name} is held ancestry of the adopted LFB and must be marked finalized"
             );
         }
         assert!(
-            !dag.contains(&below_boundary.block_hash),
+            !dag.contains(&below_boundary.block_hash).unwrap(),
             "the below-boundary reference stays unheld: the walk terminates \
              there without inventing an entry for it"
         );
@@ -2019,16 +2021,19 @@ async fn representation_exposes_navigation_and_error_paths() {
 
     assert_eq!(dag.get_max_height(), 3);
     assert_eq!(dag.latest_block_number(), 3);
-    assert_eq!(dag.block_number(&genesis.block_hash), Some(0));
-    assert_eq!(dag.block_number(&missing), None);
+    assert_eq!(dag.block_number(&genesis.block_hash).unwrap(), Some(0));
+    assert_eq!(dag.block_number(&missing).unwrap(), None);
     assert!(matches!(
         dag.block_number_unsafe(&missing),
         Err(KvStoreError::MissingBlock { .. })
     ));
     assert_eq!(dag.lookup(&missing).unwrap(), None);
-    assert_eq!(dag.children(&missing), None);
+    assert_eq!(dag.children(&missing).unwrap(), None);
 
-    assert_eq!(dag.main_parent(&b2.block_hash), Some(b1.block_hash.clone()));
+    assert_eq!(
+        dag.main_parent(&b2.block_hash).unwrap(),
+        Some(b1.block_hash.clone())
+    );
     assert_eq!(dag.parents_unsafe(&b2.block_hash).unwrap(), vec![b1
         .block_hash
         .clone()]);
@@ -2121,7 +2126,11 @@ async fn invalid_insert_populates_the_invalid_blocks_map() {
         .unwrap();
 
     let dag = dag_storage.get_representation().unwrap();
-    let invalid_map = dag.invalid_blocks_map().unwrap();
+    let invalid_map: HashMap<_, _> = dag
+        .invalid_blocks()
+        .into_iter()
+        .map(|metadata| (metadata.block_hash, metadata.sender))
+        .collect();
     assert_eq!(
         invalid_map.get(&invalid_block.block_hash),
         Some(&invalid_block.sender)
@@ -2331,7 +2340,7 @@ async fn record_directly_finalized_rejects_unknown_hashes_and_propagates_effect_
     assert!(matches!(result, Err(KvStoreError::IoError(_))));
     let dag = dag_storage.get_representation().unwrap();
     assert!(
-        !dag.is_finalized(&b1.block_hash),
+        !dag.is_finalized(&b1.block_hash).unwrap(),
         "a failed finalization effect must leave the block unfinalized"
     );
 
@@ -2340,7 +2349,7 @@ async fn record_directly_finalized_rejects_unknown_hashes_and_propagates_effect_
         .await
         .unwrap();
     let dag = dag_storage.get_representation().unwrap();
-    assert!(dag.is_finalized(&b1.block_hash));
+    assert!(dag.is_finalized(&b1.block_hash).unwrap());
     assert_eq!(dag.last_finalized_block(), b1.block_hash);
 }
 
@@ -2361,11 +2370,15 @@ async fn genesis_is_finalized_even_when_it_reached_the_dag_before_the_approved_i
 
     let genesis = genesis_block();
     dag_storage.insert(&genesis, InsertMode::Normal).unwrap();
+    assert!(matches!(
+        dag_storage.get_representation(),
+        Err(shared::rust::store::key_value_store::KvStoreError::LastFinalizedBlockUninitialized)
+    ));
     dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
 
     let dag = dag_storage.get_representation().unwrap();
     assert!(
-        dag.is_finalized(&genesis.block_hash),
+        dag.is_finalized(&genesis.block_hash).unwrap(),
         "the approved insert marks genesis finalized however it first arrived"
     );
 
@@ -2384,7 +2397,7 @@ async fn genesis_is_finalized_even_when_it_reached_the_dag_before_the_approved_i
 
     let dag = dag_storage.get_representation().unwrap();
     assert!(
-        dag.is_finalized(&genesis.block_hash),
+        dag.is_finalized(&genesis.block_hash).unwrap(),
         "the sweep stops at the first finalized ancestor, so a genesis missed \
          at insert stays unfinalized for the life of the node"
     );
@@ -2413,7 +2426,7 @@ async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_h
 
     let dag = dag_storage.get_representation().unwrap();
     assert!(
-        dag.is_finalized(&anchor.block_hash),
+        dag.is_finalized(&anchor.block_hash).unwrap(),
         "the approved insert marks the restore anchor however it first arrived"
     );
     assert_eq!(

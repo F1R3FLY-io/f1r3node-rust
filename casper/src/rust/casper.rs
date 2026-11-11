@@ -95,7 +95,7 @@ pub trait Casper {
     /// Defaulted to a no-op so effect mocks need no block ingest.
     async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
 
-    fn dag_contains(&self, hash: &BlockHash) -> bool;
+    fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError>;
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError>;
 
@@ -588,9 +588,8 @@ impl CasperShardConf {
     }
 }
 
-// TODO(#325): Move test_helpers to a #[cfg(test)] module or separate test-utils crate
-// to avoid including test code in production binaries.
 /// Test helpers for creating mock Casper implementations.
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_helpers {
     use async_trait::async_trait;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -655,7 +654,6 @@ pub mod test_helpers {
         pub fn create_empty_snapshot() -> CasperSnapshot {
             use std::sync::Arc;
 
-            use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
             use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
             use parking_lot::RwLock;
             use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -663,7 +661,10 @@ pub mod test_helpers {
 
             let block_metadata_store =
                 KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-            let dag = KeyValueDagRepresentation {
+            let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+                history: None,
+                view_sequence: u64::MAX,
+                view_max_height: None,
                 dag_set: imbl::HashSet::new(),
                 latest_messages_map: imbl::HashMap::new(),
                 child_map: imbl::HashMap::new(),
@@ -685,7 +686,7 @@ pub mod test_helpers {
                 carrier_index: Arc::new(RwLock::new(
                     block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
                 )),
-            };
+            }.build();
 
             CasperSnapshot::new(dag)
         }
@@ -723,7 +724,7 @@ pub mod test_helpers {
             Ok(self.snapshot.clone())
         }
 
-        fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
+        fn dag_contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> { Ok(false) }
 
         fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
             Err(CasperError::RuntimeError(

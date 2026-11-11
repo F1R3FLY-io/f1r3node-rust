@@ -460,7 +460,9 @@ impl Casper for StubCasper {
         self.ingest.need(hash).await
     }
 
-    fn dag_contains(&self, hash: &BlockHash) -> bool { self.dag.contains(hash) }
+    fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+        Ok(self.dag.contains(hash)?)
+    }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.approved) }
 
@@ -753,7 +755,11 @@ impl Node {
         self.ingest.view().is_held(&b.block_hash) || self.in_dag(b)
     }
 
-    fn in_dag(&self, b: &BlockMessage) -> bool { self.casper.dag_contains(&b.block_hash) }
+    fn in_dag(&self, b: &BlockMessage) -> bool {
+        self.casper
+            .dag_contains(&b.block_hash)
+            .expect("DAG membership read")
+    }
 
     fn count_in_dag<'a>(&self, blocks: impl IntoIterator<Item = &'a BlockMessage>) -> usize {
         blocks.into_iter().filter(|b| self.in_dag(b)).count()

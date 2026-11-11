@@ -26,8 +26,11 @@ use crate::rust::casper::{Casper, CasperSnapshot, DeployError};
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::interpreter_util;
 
-pub(crate) fn admit_dag_contains(this: &MultiParentCasperImpl, hash: &BlockHash) -> bool {
-    this.block_dag_storage.contains(hash)
+pub(crate) fn admit_dag_contains(
+    this: &MultiParentCasperImpl,
+    hash: &BlockHash,
+) -> Result<bool, CasperError> {
+    Ok(this.block_dag_storage.contains(hash)?)
 }
 
 pub(crate) fn admit_get_approved_block(

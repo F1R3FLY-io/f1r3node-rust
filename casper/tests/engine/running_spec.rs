@@ -108,7 +108,9 @@ mod tests {
             self.inner.get_snapshot().await
         }
 
-        fn dag_contains(&self, hash: &BlockHash) -> bool { self.inner.dag_contains(hash) }
+        fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+            self.inner.dag_contains(hash)
+        }
 
         fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
             self.inner.get_approved_block()

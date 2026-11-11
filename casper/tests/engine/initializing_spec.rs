@@ -690,7 +690,12 @@ fn request_floor_cache_in_background(
     approved_block: &ApprovedBlock,
 ) -> tokio::task::JoinHandle<()> {
     let (engine, approved_block) = (engine.clone(), approved_block.clone());
-    tokio::spawn(async move { engine.request_floor_cache(&approved_block).await })
+    tokio::spawn(async move {
+        engine
+            .request_floor_cache(&approved_block, 0, i64::MAX)
+            .await
+            .unwrap()
+    })
 }
 
 async fn await_floor_cache_request(request: tokio::task::JoinHandle<()>) {
@@ -713,7 +718,10 @@ async fn a_floor_cache_retry_after_a_timeout_learns_the_genesis_hash() {
 
     tokio::time::pause();
 
-    engine.request_floor_cache(&approved_block).await;
+    engine
+        .request_floor_cache(&approved_block, 0, i64::MAX)
+        .await
+        .unwrap();
     assert!(
         floor_cache_requests(&fixture) > 0,
         "the first attempt asks the bootstrap"

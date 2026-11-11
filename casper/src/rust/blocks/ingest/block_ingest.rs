@@ -226,7 +226,21 @@ pub struct Stores<'a> {
 }
 
 impl StoreReads for Stores<'_> {
-    fn in_dag(&self, hash: &BlockHash) -> bool { self.dag.contains(hash) }
+    fn in_dag(&self, hash: &BlockHash) -> bool {
+        match self.dag.contains(hash) {
+            Ok(held) => held,
+            // Unproven membership is treated as absent, as `is_satisfied`
+            // treats unproven satisfaction.
+            Err(error) => {
+                tracing::warn!(
+                    hash = %PrettyPrinter::build_string_bytes(hash),
+                    %error,
+                    "DAG membership check failed; the block is treated as absent"
+                );
+                false
+            }
+        }
+    }
 
     fn is_satisfied(&self, hash: &BlockHash) -> bool {
         match self.dag.is_dependency_satisfied(hash) {
@@ -253,7 +267,7 @@ impl StoreReads for Stores<'_> {
                 tracing::warn!(%error, "dependency check failed; the block waits on its dependencies");
                 hashes
                     .iter()
-                    .filter(|hash| !self.dag.contains(hash))
+                    .filter(|hash| !self.in_dag(hash))
                     .cloned()
                     .collect()
             }
@@ -707,7 +721,8 @@ impl Owner {
                 None
             }
             Effect::DiscardStored(hash) => {
-                if !self.dag.contains(&hash) {
+                // A body whose DAG membership cannot be read is kept.
+                if matches!(self.dag.contains(&hash), Ok(false)) {
                     if let Err(error) = self.block_store.discard_stored(&hash) {
                         tracing::warn!(
                             hash = %PrettyPrinter::build_string_bytes(&hash),

@@ -27,7 +27,10 @@ async fn process_in_order(genesis: &GenesisContext, blocks: &[BlockMessage]) -> 
     }
 
     let dag = receiver.casper.block_dag().await.unwrap();
-    let in_dag = blocks.iter().map(|b| dag.contains(&b.block_hash)).collect();
+    let in_dag = blocks
+        .iter()
+        .map(|b| dag.contains(&b.block_hash).unwrap())
+        .collect();
     let latest = dag
         .latest_message_hashes()
         .into_iter()

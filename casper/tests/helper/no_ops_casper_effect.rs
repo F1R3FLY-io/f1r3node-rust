@@ -197,7 +197,7 @@ impl Casper for NoOpsCasperEffect {
         ))
     }
 
-    fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
+    fn dag_contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> { Ok(false) }
 
     fn deploy(
         &self,
@@ -285,7 +285,10 @@ impl NoOpsCasperEffect {
         // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala test logic)
         if let Ok(Some(block)) = self.block_store.get(&block_hash) {
             // Add to DAG set
-            self.block_dag_storage.dag_set.insert(block_hash.clone());
+            self.block_dag_storage
+                .fixture_mut()
+                .dag_set
+                .insert(block_hash.clone());
 
             // Add block metadata to the metadata store
             let block_metadata = BlockMetadata::from_block(&block, false, None, None);
@@ -306,6 +309,7 @@ impl NoOpsCasperEffect {
             // 1. Update latest message for block sender (if not empty)
             if !block.sender.is_empty() {
                 self.block_dag_storage
+                    .fixture_mut()
                     .latest_messages_map
                     .insert(block.sender.clone(), block.block_hash.clone());
             }
@@ -333,10 +337,12 @@ impl NoOpsCasperEffect {
             for validator in newly_bonded {
                 if !self
                     .block_dag_storage
+                    .fixture_mut()
                     .latest_messages_map
                     .contains_key(validator)
                 {
                     self.block_dag_storage
+                        .fixture_mut()
                         .latest_messages_map
                         .insert(validator.clone(), block.block_hash.clone());
                 }
@@ -363,6 +369,7 @@ impl NoOpsCasperEffect {
         // If approved, also add to finalized blocks set
         if approved {
             self.block_dag_storage
+                .fixture_mut()
                 .finalized_blocks_set
                 .insert(block.block_hash);
         }
