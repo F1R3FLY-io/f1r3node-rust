@@ -191,34 +191,31 @@ There is no compatibility setting. To upgrade a network to the new build:
 3. Proposer streams the full `BlockMessage` to requesting peer
 4. Receiving peer enters the [validation pipeline](#4-block-validation)
 
-The block retriever (`block_retriever.rs`) handles missing dependencies:
-- Tracks pending requests per block hash
-- Implements retry budgets, cooldowns, and quarantine for stuck requests
-- Deduplicates requests to avoid flooding
+[Block ingest](./BLOCK_INGEST.md) fetches missing dependencies. One owner keeps what the node needs and asks peers for it on a paced schedule.
 
 ---
 
 ## 4. Block Validation
 
-`BlockProcessor` runs an 8-step pipeline on received blocks.
+[Block ingest](./BLOCK_INGEST.md) takes a received block through these steps.
 
-Before a block enters the pipeline, the node recomputes the block hash and verifies the signature. This check runs when the block message arrives, before the node marks the block hash as in flight. If the hash or the signature does not match, the node drops the copy. The node does not change the in-flight markers, the buffer, or the request state for that block hash, so the original block can still arrive.
+Before a block enters ingest, the node recomputes the block hash and verifies the signature. If the hash or the signature does not match, the node drops the copy and changes nothing keyed by that block hash, so the original block can still arrive.
 
-The node limits these checks. It runs at most 2 checks at a time, and one at a time for each peer. It keeps at most 512 blocks in this stage, and at most 16 blocks from one peer. If a limit is full, the node drops the block. The block hash is not verified yet, so the drop does not change the retry budget of that hash.
+The node limits these checks. It runs at most 2 checks at a time, and one at a time for each peer. It keeps at most 512 blocks in this stage, and at most 16 blocks from one peer. If a limit is full, the node drops the block, and block ingest asks for it again if the node needs it. Copies of one block hash are checked one at a time. Once a copy passes, the others are skipped.
 
 ### Step 1: Interest Check
-- Already in DAG or casper buffer? Skip.
+- Already in the DAG or held by block ingest? Skip.
 - Shard ID and version match the approved block? Required.
-- Block number >= approved block number? Required (no ancient blocks).
+- Block number >= approved block number? Required (no ancient blocks), unless the node asked for the block.
 
 ### Step 2: Format
 - Check field validity: hash length, timestamp within ±15s of local time, required fields present
 - Require justifications in strictly ascending validator order. This also refuses a duplicate validator.
 
 ### Step 3: Dependency Resolution
-- All parent blocks must be in the DAG
-- If missing: store block in **casper buffer** (max ~16K entries), request missing parents from peers
-- Casper buffer tracks retry attempts per dependency and quarantines blocks after budget exhaustion
+- All dependencies must be in the DAG before the block is validated
+- If one is missing: block ingest holds the block, and the missing block becomes a need that it fetches from peers
+- The insert of the last missing dependency releases the block for validation
 
 ### Step 4: Snapshot Computation
 - Recompute `CasperSnapshot` with the block's actual parents as tips
@@ -573,7 +570,7 @@ See [F1R3FLY-io/f1r3node issues](https://github.com/F1R3FLY-io/f1r3node/issues) 
 |------|------|
 | `casper/src/rust/blocks/proposer/proposer.rs` | Proposal orchestration, constraint checks |
 | `casper/src/rust/blocks/proposer/block_creator.rs` | Deploy selection, block assembly |
-| `casper/src/rust/blocks/block_processor.rs` | 8-step validation pipeline, casper buffer |
+| `casper/src/rust/blocks/ingest/` | Block ingest: intake, dependency tracking, fetching, validation dispatch |
 | `casper/src/rust/validate.rs` | Individual validation rules |
 
 ### Fork Choice & Safety

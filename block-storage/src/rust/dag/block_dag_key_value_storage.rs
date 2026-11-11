@@ -36,7 +36,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
@@ -61,6 +61,7 @@ use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
+use tokio::sync::mpsc;
 
 use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
@@ -123,7 +124,6 @@ pub struct KeyValueDagRepresentation {
     pub(crate) block_number_map: imbl::HashMap<BlockHash, i64>,
     pub(crate) main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub(crate) self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
-    #[cfg(any(test, feature = "test-internals"))]
     pub(crate) invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub(crate) finalized_blocks_set: imbl::HashSet<BlockHash>,
@@ -532,27 +532,7 @@ impl KeyValueDagRepresentation {
         })
     }
 
-    #[cfg(any(test, feature = "test-internals"))]
-    pub fn invalid_blocks(&self) -> Result<imbl::HashSet<BlockMetadata>, KvStoreError> {
-        if self.history.is_none() {
-            return Ok(self.invalid_blocks_set.clone());
-        }
-        let mut result = imbl::HashSet::new();
-        let mut after = None;
-        loop {
-            let page = self.scan_membership_page(after.as_deref(), 1024)?;
-            for hash in page.rows {
-                let metadata = self.lookup_unsafe(&hash)?;
-                if metadata.invalid {
-                    result.insert(metadata);
-                }
-            }
-            after = page.next;
-            if after.is_none() {
-                return Ok(result);
-            }
-        }
-    }
+    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
 
     /// Cached justification-derived floor of a block, if already computed.
     pub fn get_cached_floor(
@@ -935,7 +915,7 @@ impl KeyValueDagRepresentation {
 
     #[cfg(any(test, feature = "test-internals"))]
     pub fn invalid_blocks_map(&self) -> Result<HashMap<BlockHash, Validator>, KvStoreError> {
-        let invalid_blocks = self.invalid_blocks()?;
+        let invalid_blocks = self.invalid_blocks();
         let mut invalid_block_hashes = HashMap::new();
         for block in invalid_blocks {
             if let Some(metadata) = self.lookup(&block.block_hash)? {
@@ -1351,9 +1331,89 @@ pub struct BlockDagKeyValueStorage {
     /// LEARN it — hash only, never the block — during restore. Consumers
     /// that need a network-uniform genesis sentinel read this register.
     pub(crate) genesis_hash_index: KeyValueTypedStoreImpl<String, BlockHashSerde>,
+    /// Receives the hash of every block this storage inserts, in every mode,
+    /// once the block is visible in the DAG.
+    insert_observer: Arc<OnceLock<mpsc::UnboundedSender<BlockHash>>>,
 }
 
 impl BlockDagKeyValueStorage {
+    /// Report every block inserted from now on to `observer`. A storage has
+    /// one observer for its lifetime.
+    pub fn set_insert_observer(
+        &self,
+        observer: mpsc::UnboundedSender<BlockHash>,
+    ) -> Result<(), KvStoreError> {
+        self.insert_observer.set(observer).map_err(|_| {
+            KvStoreError::InvalidArgument(
+                "the DAG storage already has an insert observer".to_string(),
+            )
+        })
+    }
+
+    pub fn contains(&self, hash: &BlockHash) -> bool {
+        self.block_metadata_index.read().contains(hash)
+    }
+
+    /// A block that depends on `hash` need not wait for it: the block is in
+    /// the DAG, or it was detected as an equivocation.
+    pub fn is_dependency_satisfied(&self, hash: &BlockHash) -> Result<bool, KvStoreError> {
+        Ok(self
+            .unsatisfied_dependencies(std::slice::from_ref(hash))?
+            .is_empty())
+    }
+
+    /// The hashes in `hashes` that a dependent block must still wait for:
+    /// neither in the DAG nor detected as an equivocation. The equivocation
+    /// records are read once for the whole list.
+    pub fn unsatisfied_dependencies(
+        &self,
+        hashes: &[BlockHash],
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        let absent: Vec<BlockHash> = hashes
+            .iter()
+            .filter(|hash| !self.contains(hash))
+            .cloned()
+            .collect();
+        if absent.is_empty() {
+            return Ok(absent);
+        }
+        self.access_equivocations_tracker(|tracker| {
+            let records = tracker.data()?;
+            Ok(absent
+                .into_iter()
+                .filter(|hash| {
+                    !records
+                        .iter()
+                        .any(|record| record.equivocation_detected_block_hashes.contains(hash))
+                })
+                .collect())
+        })
+    }
+
+    pub fn lookup(&self, hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
+        self.block_metadata_index.read().get(hash)
+    }
+
+    pub fn latest_message_hash(
+        &self,
+        validator: &Validator,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(self
+            .latest_messages_index
+            .get_one(&ValidatorSerde(validator.clone()))?
+            .map(BlockHash::from))
+    }
+
+    /// `None` until the approved block is inserted.
+    pub fn last_finalized_block(&self) -> Option<BlockHash> {
+        let guard = self.block_metadata_index.read();
+        let dag_state = guard.dag_state().read();
+        dag_state
+            .last_finalized_block
+            .as_ref()
+            .map(|(hash, _)| hash.clone())
+    }
+
     /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
     /// (same shared lifecycle tables), for callers holding the storage rather
     /// than a representation. Lock order: `block_metadata_index` before
@@ -1513,6 +1573,7 @@ impl BlockDagKeyValueStorage {
             dag_generation: Arc::new(AtomicU64::new(0)),
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             genesis_hash_index: genesis_hash_db,
+            insert_observer: Arc::new(OnceLock::new()),
         })
     }
 
@@ -1645,6 +1706,7 @@ impl BlockDagKeyValueStorage {
             genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),
+            insert_observer: Arc::new(OnceLock::new()),
         }
     }
 
@@ -1731,12 +1793,8 @@ impl BlockDagKeyValueStorage {
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
 
-        #[cfg(any(test, feature = "test-internals"))]
-        let invalid_blocks: imbl::HashSet<BlockMetadata> = if self.persistence.is_none() {
-            self.invalid_blocks_index.to_map()?.into_values().collect()
-        } else {
-            imbl::HashSet::new()
-        };
+        let invalid_blocks: imbl::HashSet<BlockMetadata> =
+            self.invalid_blocks_index.to_map()?.into_values().collect();
 
         self.block_metadata_index.write().refresh_window()?;
 
@@ -1783,7 +1841,6 @@ impl BlockDagKeyValueStorage {
             block_number_map,
             main_parent_map,
             self_justification_map,
-            #[cfg(any(test, feature = "test-internals"))]
             invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: last_finalized_block,
             finalized_blocks_set: finalized_blocks,
@@ -2129,7 +2186,7 @@ impl BlockDagKeyValueStorage {
                     .add(block_metadata.clone())?;
                 if invalid {
                     self.invalid_blocks_index
-                        .put_one(block_hash.into(), block_metadata)?;
+                        .put_one(block_hash.clone().into(), block_metadata)?;
                 }
                 self.latest_messages_index.put(
                     latest_to_publish
@@ -2140,6 +2197,10 @@ impl BlockDagKeyValueStorage {
             }
             if self.persistence.is_none() {
                 self.dag_generation.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(observer) = self.insert_observer.get() {
+                // A closed receiver means the observer has stopped; inserts go on.
+                let _ = observer.send(block_hash);
             }
         }
 

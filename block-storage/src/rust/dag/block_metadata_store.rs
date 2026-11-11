@@ -390,13 +390,11 @@ impl BlockMetadataStore {
         let block_info = Self::block_metadata_to_info(&block_hash, &block_metadata);
 
         self.store
-            .put_one(BlockHashSerde(block_hash.clone()), block_metadata)?;
+            .put_one(BlockHashSerde(block_hash), block_metadata)?;
         self.dag_state = Self::validate_dag_state(Self::add_block_to_dag_state(
             self.dag_state.clone(),
             block_info,
         ));
-
-        // Update persistent block metadata store
 
         Ok(())
     }
@@ -770,6 +768,7 @@ mod tests {
     use models::rust::block_implicits::get_random_block;
     use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_store::KeyValueStore;
 
     use super::*;
 
@@ -798,6 +797,65 @@ mod tests {
 
     fn store_over(kv: Arc<InMemoryKeyValueStore>) -> BlockMetadataStore {
         BlockMetadataStore::new(KeyValueTypedStoreImpl::new(kv))
+    }
+
+    /// An in-memory store whose writes fail.
+    #[derive(Clone)]
+    struct RefusingWrites(Arc<InMemoryKeyValueStore>);
+
+    impl KeyValueStore for RefusingWrites {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
+        fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
+            self.0.get(keys)
+        }
+
+        fn put(&self, _kv_pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
+            Err(KvStoreError::IoError("write refused".to_string()))
+        }
+
+        fn put_one_if_absent(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<bool, KvStoreError> {
+            Err(KvStoreError::IoError("write refused".to_string()))
+        }
+
+        fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> { self.0.delete(keys) }
+
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            self.0.delete_if_value(key, expected)
+        }
+
+        fn iterate(&self, f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> { self.0.iterate(f) }
+
+        fn iterate_while(
+            &self,
+            f: &mut dyn FnMut(Vec<u8>, Vec<u8>) -> Result<bool, KvStoreError>,
+        ) -> Result<(), KvStoreError> {
+            self.0.iterate_while(f)
+        }
+
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
+
+        fn to_map(&self) -> Result<std::collections::BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> {
+            self.0.to_map()
+        }
+
+        fn print_store(&self) -> Result<(), KvStoreError> { self.0.print_store() }
+
+        fn non_empty(&self) -> Result<bool, KvStoreError> { self.0.non_empty() }
+
+        fn size_bytes(&self) -> usize { self.0.size_bytes() }
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_dag_state_unchanged() {
+        let mut store = BlockMetadataStore::new(KeyValueTypedStoreImpl::new(Arc::new(
+            RefusingWrites(Arc::new(InMemoryKeyValueStore::new())),
+        )));
+        let genesis = block(0, vec![]);
+        assert!(store.add(meta(&genesis)).is_err());
+        assert!(!store.contains(&genesis.block_hash));
+        assert!(store.dag_set().is_empty());
+        assert!(store.block_number_map().is_empty());
     }
 
     #[test]

@@ -1138,7 +1138,6 @@ impl DetachedDagSnapshot {
                 .iter()
                 .map(|(hash, justification)| (hash.clone(), justification.clone()))
                 .collect(),
-            #[cfg(any(test, feature = "test-internals"))]
             invalid_blocks_set: self.invalid_blocks.values().cloned().collect(),
             last_finalized_block_hash,
             finalized_blocks_set: self.finalized_block_set.iter().cloned().collect(),

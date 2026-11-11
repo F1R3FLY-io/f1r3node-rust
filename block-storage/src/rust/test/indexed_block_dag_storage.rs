@@ -263,7 +263,6 @@ mod tests {
         let dag = storage.get_representation().unwrap();
         assert!(dag
             .invalid_blocks()
-            .unwrap()
             .iter()
             .any(|meta| meta.block_hash == inserted.block_hash));
     }

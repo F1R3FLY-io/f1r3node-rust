@@ -32,7 +32,7 @@
 //! `engine::multi_parent_casper::validation_dispatcher::dispatch_handle_invalid_block`
 //! path.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -48,7 +48,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
+    ApprovedBlock, BlockMessage, Bond, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
@@ -73,8 +73,7 @@ use crate::rust::metrics_constants::{
     REPEAT_DEPLOY_RETRY_GATE_TIME_METRIC,
 };
 use crate::rust::slashing_authorization::{
-    epoch_for_block_number, received_slash_deploy_authorized, slash_target_key,
-    validate_received_slash_deploys, SlashAuthError,
+    slashable_evidence, validate_received_slash_deploys, SlashAuthError,
 };
 use crate::rust::system_deploy::is_system_deploy_id;
 use crate::rust::util::proto_util;
@@ -1740,119 +1739,48 @@ impl Validate {
         }
     }
 
-    /// If block contains an invalid justification block B and the creator of B is still bonded,
-    /// return a RejectableBlock. Otherwise, return an IncludeableBlock.
+    /// If block contains an invalid justification block B whose creator the block may slash and
+    /// the creator still holds stake in the block's post-state, return a RejectableBlock.
+    /// Otherwise, return an IncludeableBlock. A slash the block or a parent carries leaves the
+    /// creator unbonded in the post-state.
     pub fn neglected_invalid_block(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
+        post_state_bonds: &[Bond],
     ) -> ValidBlockProcessing {
-        let epoch_length = s.on_chain_state.shard_conf.epoch_length;
-        let current_epoch =
-            match epoch_for_block_number(block.body.state.block_number, epoch_length) {
-                Ok(epoch) => epoch,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        SlashAuthError::from(error),
-                    )))
-                }
-            };
-        let bonds = proto_util::bonds(block);
-        let bonds_by_validator: HashMap<&Validator, BigInt> = bonds
-            .iter()
-            .map(|bond| (&bond.validator, bond.stake.to_bigint()))
-            .collect();
-        let mut slash_targets = HashSet::new();
-
-        for system_deploy in &block.body.system_deploys {
-            let ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash,
-                        issuer_public_key,
-                        target_activation_epoch,
-                    },
-                ..
-            } = system_deploy
-            else {
-                continue;
-            };
-            if issuer_public_key.bytes != block.sender {
-                continue;
-            }
-
-            let metadata = match s.dag.lookup(invalid_block_hash) {
-                Ok(Some(metadata)) => metadata,
-                Ok(None) => continue,
+        let mut cited = Vec::new();
+        for justification in &block.justifications {
+            match s.dag.lookup(&justification.latest_block_hash) {
+                Ok(Some(metadata)) => cited.push(metadata),
+                Ok(None) => {}
                 Err(error) => {
                     return Either::Left(BlockError::from_validation_error(CasperError::from(
                         error,
                     )))
                 }
-            };
-            let target_activation_epoch = (*target_activation_epoch).into();
-            let bond = bonds_by_validator
-                .get(&metadata.sender)
-                .cloned()
-                .unwrap_or_default();
-            let authorized = match received_slash_deploy_authorized(
-                block.body.state.block_number,
-                metadata.block_number,
-                target_activation_epoch,
-                epoch_length,
-                bond,
-                metadata.invalid,
-            ) {
-                Ok(authorized) => authorized,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        SlashAuthError::from(error),
-                    )))
-                }
-            };
-            if authorized {
-                slash_targets.insert(slash_target_key(&metadata.sender, target_activation_epoch));
             }
         }
-
-        for justification in &block.justifications {
-            let metadata = match s.dag.lookup(&justification.latest_block_hash) {
-                Ok(Some(metadata)) => metadata,
-                Ok(None) => continue,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        error,
-                    )))
-                }
-            };
-            if !metadata.invalid {
-                continue;
+        let slashable = match slashable_evidence(
+            cited,
+            block.body.state.block_number,
+            s.on_chain_state.shard_conf.epoch_length,
+            &s.on_chain_state.bonds_map,
+        ) {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                return Either::Left(BlockError::from_validation_error(CasperError::from(
+                    SlashAuthError::from(error),
+                )))
             }
+        };
 
-            let bond = bonds_by_validator
-                .get(&metadata.sender)
-                .or_else(|| bonds_by_validator.get(&justification.validator))
-                .cloned()
-                .unwrap_or_default();
-            let slash_required = match received_slash_deploy_authorized(
-                block.body.state.block_number,
-                metadata.block_number,
-                current_epoch,
-                epoch_length,
-                bond,
-                metadata.invalid,
-            ) {
-                Ok(required) => required,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        SlashAuthError::from(error),
-                    )))
-                }
-            };
-            if slash_required
-                && !slash_targets.contains(&slash_target_key(&metadata.sender, current_epoch))
-            {
-                return Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock));
-            }
+        let still_bonded = slashable.iter().any(|evidence| {
+            post_state_bonds.iter().any(|bond| {
+                bond.validator == evidence.sender && bond.stake.to_bigint() > BigInt::from(0)
+            })
+        });
+        if still_bonded {
+            return Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock));
         }
 
         Either::Right(ValidBlock::Valid)
@@ -2115,52 +2043,122 @@ mod merge_recovery_validation_tests {
         }
     }
 
-    #[test]
-    fn stale_invalid_justification_is_not_slash_obligating() {
+    fn bonds(stakes: &[(&Validator, u64)]) -> Vec<Bond> {
+        stakes
+            .iter()
+            .map(|(validator, stake)| Bond {
+                validator: (*validator).clone(),
+                stake: (*stake).into(),
+            })
+            .collect()
+    }
+
+    /// A snapshot at epoch length 10 whose committee holds `offender` and
+    /// `proposer`, with `offender`'s invalid block at `evidence_block_number`.
+    fn snapshot_with_evidence(
+        offender: &Validator,
+        proposer: &Validator,
+        invalid: &BlockHash,
+        evidence_block_number: i64,
+    ) -> CasperSnapshot {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         snapshot.on_chain_state.shard_conf.epoch_length = 10;
-        let offender = validator(2);
-        let proposer = validator(3);
-        let invalid = hash(17);
-        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 391, true);
-        let block = candidate(4334, proposer, offender, invalid, Vec::new());
+        snapshot.on_chain_state.bonds_map = [
+            (offender.clone(), BigInt::from(1000)),
+            (proposer.clone(), BigInt::from(1000)),
+        ]
+        .into_iter()
+        .collect();
+        add_metadata(
+            &mut snapshot,
+            invalid.clone(),
+            offender.clone(),
+            evidence_block_number,
+            true,
+        );
+        snapshot
+    }
+
+    #[test]
+    fn stale_invalid_justification_is_not_slash_obligating() {
+        let (offender, proposer, invalid) = (validator(2), validator(3), hash(17));
+        let mut snapshot = snapshot_with_evidence(&offender, &proposer, &invalid, 391);
+        let block = candidate(
+            4334,
+            proposer.clone(),
+            offender.clone(),
+            invalid,
+            Vec::new(),
+        );
+        let post_state = bonds(&[(&offender, 1000), (&proposer, 1000)]);
 
         assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Validate::neglected_invalid_block(&block, &mut snapshot, &post_state),
             Either::Right(ValidBlock::Valid)
         ));
     }
 
     #[test]
-    fn current_invalid_justification_requires_matching_slash() {
-        let mut snapshot =
-            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.shard_conf.epoch_length = 10;
-        let offender = validator(4);
-        let proposer = validator(5);
-        let invalid = hash(34);
-        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 94, true);
+    fn current_invalid_justification_requires_a_slash() {
+        let (offender, proposer, invalid) = (validator(4), validator(5), hash(34));
+        let mut snapshot = snapshot_with_evidence(&offender, &proposer, &invalid, 94);
         let unrelated = hash(51);
         add_metadata(&mut snapshot, unrelated.clone(), validator(6), 94, true);
+        let block = candidate(95, proposer.clone(), offender.clone(), invalid, vec![
+            slash(unrelated, proposer.clone(), 9),
+        ]);
+        let post_state = bonds(&[(&offender, 1000), (&proposer, 1000)]);
+
+        assert!(matches!(
+            Validate::neglected_invalid_block(&block, &mut snapshot, &post_state),
+            Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
+        ));
+    }
+
+    #[test]
+    fn an_offender_slashed_in_the_post_state_is_owed_nothing() {
+        let (offender, proposer, invalid) = (validator(7), validator(8), hash(68));
+        let mut snapshot = snapshot_with_evidence(&offender, &proposer, &invalid, 94);
         let block = candidate(
             95,
             proposer.clone(),
             offender.clone(),
             invalid.clone(),
-            vec![slash(unrelated, proposer.clone(), 9)],
+            vec![slash(invalid, proposer.clone(), 9)],
         );
+        let post_state = bonds(&[(&offender, 0), (&proposer, 1000)]);
 
         assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot),
-            Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
+            Validate::neglected_invalid_block(&block, &mut snapshot, &post_state),
+            Either::Right(ValidBlock::Valid)
+        ));
+    }
+
+    #[test]
+    fn an_offender_outside_the_committee_is_owed_no_slash() {
+        let (offender, proposer, invalid) = (validator(9), validator(10), hash(85));
+        let mut snapshot = snapshot_with_evidence(&offender, &proposer, &invalid, 94);
+        snapshot.on_chain_state.bonds_map = [(proposer.clone(), BigInt::from(1000))]
+            .into_iter()
+            .collect();
+        let post_state = bonds(&[(&offender, 1000), (&proposer, 1000)]);
+
+        let slashing = candidate(
+            95,
+            proposer.clone(),
+            offender.clone(),
+            invalid.clone(),
+            vec![slash(invalid.clone(), proposer.clone(), 9)],
+        );
+        assert!(matches!(
+            Validate::slash_deploy_authorization(&slashing, &snapshot),
+            Either::Left(BlockError::Invalid(InvalidBlock::UnauthorizedSlashDeploy))
         ));
 
-        let block = candidate(95, proposer.clone(), offender, invalid.clone(), vec![
-            slash(invalid, proposer, 9),
-        ]);
+        let block = candidate(95, proposer, offender, invalid, Vec::new());
         assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Validate::neglected_invalid_block(&block, &mut snapshot, &post_state),
             Either::Right(ValidBlock::Valid)
         ));
     }

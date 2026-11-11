@@ -2,7 +2,7 @@
 //! `record_dag_cardinality_metrics`, `estimator`.
 //!
 //! Phase 3 Step 3 — extracted from `engine::multi_parent_casper`. Each
-//! function takes the casper instance as a `&MultiParentCasperImpl<T>`
+//! function takes the casper instance as a `&MultiParentCasperImpl`
 //! reference (rather than `&self`) so the implementation can live in this
 //! module while the trait method is a one-line delegate in `traits.rs`.
 
@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -112,8 +111,8 @@ pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
         .set(dag.resident_counts().finalized as f64);
 }
 
-pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn compute_snapshot(
+    this: &MultiParentCasperImpl,
 ) -> Result<CasperSnapshot, CasperError> {
     let mut dag = this.block_dag_storage.get_representation()?;
 
@@ -139,9 +138,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     }
     // Storage errors during snapshot construction must propagate: a
     // silent empty `valid_latest_metas` would feed wrong fork-choice on
-    // the consensus hot path. Bug #17 / T-9.20 hardened this contract
-    // for crash-window drift; same discipline applies to general
-    // storage I/O.
+    // the consensus hot path.
     let mut valid_latest_metas: HashMap<Validator, BlockMetadata> =
         HashMap::with_capacity(valid_latest_msgs.len());
     // A slot that is unheld, or whose held target the validator never signed,
@@ -544,8 +541,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     })
 }
 
-pub(crate) async fn estimator<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn estimator(
+    this: &MultiParentCasperImpl,
     dag: &mut KeyValueDagRepresentation,
 ) -> Result<Vec<BlockHash>, CasperError> {
     // Phase 12 (PERF-5): use `into_iter` to consume the already-owned
@@ -577,8 +574,8 @@ pub(crate) async fn estimator<T: TransportLayer + Send + Sync>(
     }
 }
 
-pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn get_on_chain_state(
+    this: &MultiParentCasperImpl,
     block: &BlockMessage,
 ) -> Result<OnChainCasperState, CasperError> {
     let cache_key = block.body.state.post_state_hash.to_vec();

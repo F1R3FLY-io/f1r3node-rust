@@ -198,7 +198,7 @@ fuzz_target!(|input: Input| {
         Ok(current_epoch) => {
             let candidates = candidate_result.expect("candidate authorization domain");
             let mut expected = BTreeMap::<Validator, (Bytes, Epoch)>::new();
-            for metadata in snapshot.dag.invalid_blocks().unwrap() {
+            for metadata in snapshot.dag.invalid_blocks() {
                 if !metadata.invalid {
                     continue;
                 }

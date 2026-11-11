@@ -231,7 +231,7 @@ async fn invalid_blocks_map_stays_empty_for_a_demoted_verdict() {
     // is_slashable narrowing): the block is dropped without entering
     // dag.invalidBlocks.
     let dag = nodes[1].casper.block_dag().await.expect("Should get DAG");
-    let invalid_blocks = dag.invalid_blocks().unwrap();
+    let invalid_blocks = dag.invalid_blocks();
 
     let is_in_invalid_blocks = invalid_blocks
         .iter()

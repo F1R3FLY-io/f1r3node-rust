@@ -4,7 +4,6 @@ pub mod block_metadata_store;
 pub mod dag_history_index;
 pub mod dag_gc_store;
 pub(crate) mod dag_persistence;
-pub mod buffer_dag_transition;
 pub mod deploy_lifecycle_types;
 pub mod equivocation_tracker_store;
 pub mod equivocations_access;
