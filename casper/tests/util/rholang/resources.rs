@@ -454,37 +454,6 @@ async fn store_from_dyn(
     })
 }
 
-pub async fn casper_buffer_storage_from_dyn(
-    kvm: &mut dyn KeyValueStoreManager,
-) -> Result<
-    block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage,
-    shared::rust::store::key_value_store::KvStoreError,
-> {
-    use std::collections::HashSet;
-
-    use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-    use models::rust::block_hash::BlockHashSerde;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-
-    let parents_store_kv = kvm.store("parents-map".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get parents-map store: {:?}",
-            e
-        ))
-    })?;
-    let parents_store: KeyValueTypedStoreImpl<BlockHashSerde, HashSet<BlockHashSerde>> =
-        KeyValueTypedStoreImpl::new(parents_store_kv);
-
-    CasperBufferKeyValueStorage::new_from_kv_store(parents_store)
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to create CasperBufferKeyValueStorage: {:?}",
-                e
-            ))
-        })
-}
-
 pub async fn mk_runtime_manager(
     _prefix: &str,
     mergeable_tags: Option<

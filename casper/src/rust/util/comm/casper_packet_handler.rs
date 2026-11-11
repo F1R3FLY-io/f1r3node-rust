@@ -171,7 +171,7 @@ async fn check_message(
             let engine = engine_cell.get().await;
             match engine.with_casper() {
                 Some(casper) => {
-                    if casper.contains(&bhm.block_hash) {
+                    if casper.dag_contains(&bhm.block_hash) {
                         Ok(Dispatch::Drop)
                     } else {
                         Ok(Dispatch::Handle)

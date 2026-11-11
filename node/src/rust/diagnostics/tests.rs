@@ -28,7 +28,6 @@ mod tests {
             shard_name: "root".to_string(),
             parent_shard_id: "".to_string(),
             casper_loop_interval: Duration::from_secs(30),
-            requested_blocks_timeout: Duration::from_secs(120),
             finalization_rate: 1,
             max_number_of_parents: 2147483647,
             max_parent_depth: 100,

@@ -403,7 +403,6 @@ async fn create_initializing_engine_with_dag(
     // Create engine-specific channels (each Initializing instance needs its own)
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
-    let (block_processing_queue_tx, _block_processing_queue_rx) = mpsc::channel(1024);
 
     // Use all stores and managers from fixture (matching Scala's Setup pattern)
     Ok(Arc::new(Initializing::new(
@@ -415,10 +414,8 @@ async fn create_initializing_engine_with_dag(
         block_dag_storage,
         fixture.deploy_storage.clone(),
         fixture.rejected_deploy_buffer.clone(),
-        fixture.casper_buffer_storage.clone(),
         fixture.rspace_state_manager.clone(),
-        block_processing_queue_tx,
-        fixture.blocks_in_processing.clone(),
+        fixture.ingest.clone(),
         fixture.casper_shard_conf.clone(),
         Some(fixture.validator_id.clone()),
         the_init,
@@ -429,7 +426,6 @@ async fn create_initializing_engine_with_dag(
         true,
         false,
         fixture.event_publisher.clone(),
-        fixture.block_retriever.clone(),
         engine_cell.clone(),
         fixture.runtime_manager.clone(),
         fixture.estimator.clone(),
@@ -883,8 +879,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     .set_responses(|_peer, _protocol| Ok(()));
 
                 transition_to_initializing(
-                    &fixture.block_processing_queue_tx,
-                    &fixture.blocks_in_processing,
+                    &fixture.ingest,
                     &fixture.casper_shard_conf,
                     &Some(fixture.validator_id.clone()),
                     the_init,
@@ -898,10 +893,8 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.block_dag_storage,
                     &fixture.deploy_storage,
                     &fixture.rejected_deploy_buffer,
-                    &fixture.casper_buffer_storage,
                     &fixture.rspace_state_manager,
                     fixture.event_publisher.clone(),
-                    fixture.block_retriever.clone(),
                     &engine_cell,
                     &fixture.runtime_manager,
                     &fixture.estimator,

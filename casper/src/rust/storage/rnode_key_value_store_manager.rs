@@ -47,11 +47,6 @@ fn deploy_storage_env_config() -> LmdbEnvConfig {
     LmdbEnvConfig::new("deploystorage".to_string(), GB)
 }
 
-// Temporary storage / cache
-fn casper_buffer_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("casperbuffer".to_string(), GB)
-}
-
 fn reporting_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("reporting".to_string(), 10 * TB) }
 
 fn transaction_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("transaction".to_string(), GB) }
@@ -173,11 +168,6 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         (
             Db::new("reporting-cache".to_string(), None),
             reporting_env_config(),
-        ),
-        // CasperBuffer
-        (
-            Db::new("parents-map".to_string(), None),
-            casper_buffer_env_config(),
         ),
         // Rholang evaluator store
         (

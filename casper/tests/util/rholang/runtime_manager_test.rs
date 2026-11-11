@@ -3939,25 +3939,20 @@ async fn consensus_parameters_read_rejects_out_of_range_values() {
 /// blocks its peers reject (parent spread, expiry, repeat window, phlo floor).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::blocks::ingest::block_ingest::IngestHandle;
     use casper::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
-    use casper::rust::engine::block_retriever::BlockRetriever;
     use casper::rust::estimator::Estimator;
-    use comm::rust::rp::connect::{Connections, ConnectionsCell};
-    use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
-    use crate::engine::setup;
     use crate::util::genesis_builder::GenesisBuilder;
     use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, casper_buffer_storage_from_dyn,
-        key_value_deploy_storage_from_dyn, mk_runtime_manager_with_history_at,
-        mk_test_rnode_store_manager_from_genesis,
+        block_dag_storage_from_dyn, key_value_deploy_storage_from_dyn,
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
     };
 
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
@@ -3982,9 +3977,6 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     let deploy_storage = key_value_deploy_storage_from_dyn(&mut *kvm)
         .await
         .expect("deploy storage");
-    let casper_buffer = casper_buffer_storage_from_dyn(&mut *kvm)
-        .await
-        .expect("casper buffer");
     let mut buffer_kvm = InMemoryStoreManager::new();
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         KeyValueRejectedDeployBuffer::new(&mut buffer_kvm)
@@ -3992,16 +3984,8 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
             .expect("rejected buffer"),
     ));
 
-    let local_peer = setup::peer_node("adoption-local", 40400);
-    let rp_conf = create_rp_conf_ask(local_peer.clone(), None, None);
-    let block_retriever = BlockRetriever::new(
-        Arc::new(Mutex::new(HashMap::new())),
-        Arc::new(TransportLayerStub::new()),
-        ConnectionsCell {
-            peers: Arc::new(Mutex::new(Connections::from_vec(vec![local_peer]))),
-        },
-        rp_conf,
-    );
+    let (ingest, _ports) = IngestHandle::open(block_store.clone(), block_dag_storage.clone())
+        .expect("block ingest opens on a fresh DAG storage");
 
     // Local conf diverges from the chain on every value.
     let mut local_conf = CasperShardConf::new();
@@ -4011,7 +3995,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     local_conf.epoch_length = 10000;
 
     let casper = hash_set_casper(
-        block_retriever,
+        ingest,
         F1r3flyEvents::new(),
         Arc::new(runtime_manager),
         Estimator::apply(),
@@ -4019,7 +4003,6 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
         block_dag_storage,
         deploy_storage,
         rejected_deploy_buffer,
-        casper_buffer,
         None,
         local_conf,
         genesis_context.genesis_block.clone(),

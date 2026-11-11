@@ -246,9 +246,6 @@ impl MultiParentCasper for AttachedCasper {
             &self.approved,
         ))
     }
-    async fn fetch_dependencies(&self) -> Result<(), CasperError> {
-        panic!("observer invoked consensus")
-    }
     fn normalized_initial_fault(
         &self,
         _: HashMap<Validator, num_bigint::BigInt>,
@@ -284,9 +281,7 @@ impl Casper for AttachedCasper {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         panic!("observer invoked the production snapshot")
     }
-    fn contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
     fn dag_contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
-    fn buffer_contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         panic!("observer invoked consensus")
     }
@@ -328,12 +323,6 @@ impl Casper for AttachedCasper {
         _: &InvalidBlock,
         _: &KeyValueDagRepresentation,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        panic!("observer invoked consensus")
-    }
-    fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        panic!("observer invoked consensus")
-    }
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
         panic!("observer invoked consensus")
     }
 }

@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
@@ -34,9 +33,8 @@ use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
+use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
-use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
     log_no_approved_block_available, publish_chain_identity, send_no_approved_block_available,
     transition_to_running, Engine,
@@ -81,13 +79,8 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    casper_buffer_storage: CasperBufferKeyValueStorage,
     rspace_state_manager: RSpaceStateManager,
-
-    // Block processing queue - matches Scala's blockProcessingQueue: Queue[F, (Casper[F], BlockMessage)]
-    // Using trait object to support different MultiParentCasper implementations
-    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
-    blocks_in_processing: Arc<InFlightBlocks>,
+    ingest: IngestHandle,
     casper_shard_conf: CasperShardConf,
     validator_id: Option<ValidatorIdentity>,
     the_init: Arc<
@@ -114,7 +107,6 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     /// Event publisher for F1r3fly events
     event_publisher: F1r3flyEvents,
 
-    block_retriever: BlockRetriever<T>,
     engine_cell: Arc<EngineCell>,
     runtime_manager: Arc<RuntimeManager>,
     estimator: Arc<Mutex<Option<Estimator>>>,
@@ -302,10 +294,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         block_dag_storage: BlockDagKeyValueStorage,
         deploy_storage: KeyValueDeployStorage,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-        casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
-        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
-        blocks_in_processing: Arc<InFlightBlocks>,
+        ingest: IngestHandle,
         casper_shard_conf: CasperShardConf,
         validator_id: Option<ValidatorIdentity>,
         the_init: Arc<
@@ -318,7 +308,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         trim_state: bool,
         disable_state_exporter: bool,
         event_publisher: F1r3flyEvents,
-        block_retriever: BlockRetriever<T>,
         engine_cell: Arc<EngineCell>,
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
@@ -336,10 +325,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             block_dag_storage,
             deploy_storage,
             rejected_deploy_buffer,
-            casper_buffer_storage,
             rspace_state_manager,
-            block_processing_queue_tx,
-            blocks_in_processing,
+            ingest,
             casper_shard_conf,
             validator_id,
             the_init,
@@ -356,7 +343,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             no_approved_block_retries: Arc::new(Mutex::new(0)),
             restore_failures: Arc::new(Mutex::new(0)),
             event_publisher,
-            block_retriever,
             engine_cell,
             runtime_manager,
             estimator: Arc::new(Mutex::new(Some(estimator))),
@@ -1654,7 +1640,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Pass Arc<RuntimeManager> directly to hash_set_casper
         let casper = crate::rust::casper::hash_set_casper(
-            self.block_retriever.clone(),
+            self.ingest.clone(),
             self.event_publisher.clone(),
             runtime_manager,
             estimator,
@@ -1662,7 +1648,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.block_dag_storage.clone(),
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            self.casper_buffer_storage.clone(),
             self.validator_id.clone(),
             casper_shard_conf,
             ab,
@@ -1782,15 +1767,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         }
 
         transition_to_running(
-            self.block_processing_queue_tx.clone(),
-            self.blocks_in_processing.clone(),
+            self.ingest.clone(),
             Arc::new(casper),
             approved_block.clone(),
             the_init,
             self.disable_state_exporter,
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
-            self.block_retriever.clone(),
             snapshot_chunk_ctx,
             wal_payload_ctx,
             &self.engine_cell,
