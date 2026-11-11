@@ -88,6 +88,7 @@ source_files=(
   "$model_dir/rpb3_integrated_dispatcher.rs"
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
+  "$model_dir/rpb3_epm_live_handoff.rs"
   "$model_dir/rpb3_score_finish_unique.rs"
   "$model_dir/rpb3_score_finish_groups.rs"
   "$model_dir/rpb3_no_score_child_eof_coverage.rs"
@@ -948,6 +949,17 @@ proofs_rpb3_epm_frame_path_invariant=(
   epm_frame_path_wf_obligation_accept
   epm_frame_path_wf_accept_child
   epm_frame_path_wf_discharges_return_premises
+)
+proofs_rpb3_epm_live_handoff=(
+  live_runtime_epm_handoff_top_kind
+  product_epm_handoff_is_functional
+  live_runtime_epm_handoff_is_functional
+  live_runtime_epm_handoff_preserves_wf
+  epm_handoff_witness_admission_is_wf
+  epm_handoff_witness_before_is_wf
+  epm_handoff_witness_links
+  epm_handoff_witness_is_step
+  epm_handoff_witness_is_integrated_step
 )
 proofs_rpb3_epm_loop_continuation_source=(
   forward_scalar_prefix_preserves_image
@@ -2170,6 +2182,7 @@ proofs_rpb3_integrated_dispatcher=(
   integrated_live_step_establishes_kind_guard
   integrated_epm_raw_par_return_is_integrated_step
   integrated_epm_nested_return_is_integrated_step
+  integrated_epm_handoff_is_integrated_step
   integrated_trace_wf
   integrated_trace_wf_append
   live_root_completion_is_exact
@@ -2285,6 +2298,7 @@ gated_modules=(
   rpb3_epm_batch_cursor_composition
   rpb3_epm_batch_cursor_source_extraction
   rpb3_epm_frame_path_invariant
+  rpb3_epm_live_handoff
   rpb3_epm_loop_continuation_source
   rpb3_epm_loop_observation_bridge
   rpb3_epm_nested_accept_checked_stats_refinement
@@ -4675,6 +4689,39 @@ fi
 if ! rg -q '^verification results:: 18 verified, 0 errors' "$score_finish_unique_log"; then
   cat "$score_finish_unique_log"
   echo "rpb3-admission-cursor: score-finish uniqueness module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_epm_live_handoff[@]}"; do
+  proof_log="$evidence_dir/epm-live-handoff-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_epm_live_handoff --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap live handoff $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap live handoff $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+epm_live_handoff_log="$evidence_dir/epm-live-handoff-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_epm_live_handoff \
+  "$integrated_source" \
+  >"$epm_live_handoff_log" 2>&1; then
+  cat "$epm_live_handoff_log"
+  echo "rpb3-admission-cursor: EPathMap live handoff module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 9 verified, 0 errors' "$epm_live_handoff_log"; then
+  cat "$epm_live_handoff_log"
+  echo "rpb3-admission-cursor: EPathMap live handoff module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do

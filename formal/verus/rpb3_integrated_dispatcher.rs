@@ -1,18 +1,22 @@
 //! One dispatcher relation over the integrated live admission product.
 //!
-//! `integrated_step` keeps four action families exclusive through its action
+//! `integrated_step` keeps five action families exclusive through its action
 //! constructor and through guards keyed on the top frame kind: Live product
 //! actions (Message, Map, and scalar EPathMap frames), CanonicalPath driver
 //! actions (kind-4 frames and the pre-pop child of a kind-4 parent), ACT
-//! Forward and Unwind batches (a kind-3 top frame), and the EPathMap obligation
+//! Forward and Unwind batches (a kind-3 top frame), the EPathMap obligation
 //! returns, keyed on the returning child's kind: a raw-Par Message child (a
 //! kind-1 top frame) or a NestedEpm1 EPathMap child (a kind-3 top frame)
-//! returns into its EPathMap parent. Their relations are in
-//! `rpb3_epm_obligation_return_live`. No integrated action carries a successor
-//! state. `integrated_step_is_function` proves that a fixed `(before, action)`
-//! selects at most one successor. The observed steps of `MessagePush` and
-//! `MapValuePush` are plain-or-indexed disjunctions whose sides have different
-//! successors, so the action names the side it takes in an explicit route.
+//! returns into its EPathMap parent, and the EPathMap handoff, which gives a
+//! pushed EPathMap child (a kind-3 top frame) its initial EPathMap frame. Their
+//! relations are in `rpb3_epm_obligation_return_live` and
+//! `rpb3_epm_live_handoff`. No integrated action carries a successor state: the
+//! handoff's backing and ACT plan images are observations that
+//! `linked_map_epm_handoff` validates. `integrated_step_is_function` proves
+//! that a fixed `(before, action)` selects at most one successor. The observed
+//! steps of `MessagePush` and `MapValuePush` are plain-or-indexed disjunctions
+//! whose sides have different successors, so the action names the side it
+//! takes in an explicit route.
 
 use vstd::prelude::*;
 
@@ -25,6 +29,7 @@ use crate::{
     rpb3_epathmap_terminal_source_observation as epm_terminal,
     rpb3_epm_active_line_work_source as active, rpb3_epm_batch_cursor_composition as batch,
     rpb3_epm_batch_cursor_source_extraction as act_source,
+    rpb3_epm_live_handoff as handoff,
     rpb3_epm_obligation_return_live as obligation_return,
     rpb3_epm_push_live_action_refinement as push_live,
     rpb3_epm_push_source_action_refinement as push_source,
@@ -92,6 +97,17 @@ pub enum IntegratedAction {
     /// `finish_other_complete` runs the same `process_admission_completion`.
     /// The relation is `live_runtime_epm_nested_return_step`.
     EpmNestedReturn,
+    /// A pushed EPathMap child (kind 3) whose EPathMap entry is still `None`
+    /// gets its initial EPathMap frame, which production builds inside the
+    /// push (`EPathMapFrame::prepare_epm1_cursor`, then
+    /// `EPathMapFrame::with_prepared_epm1_region`). `backing`, `plan` and
+    /// `validated` are observations that `linked_map_epm_handoff` validates,
+    /// not successors. The relation is `live_runtime_epm_handoff_step`.
+    EpmHandoff {
+        backing: epm::IndexedBackingImage,
+        plan: Option<epm::ActPlanImage>,
+        validated: Option<epm::ValidatedActPlanImage>,
+    },
 }
 
 /// A completed root has no live post-frame. Its image names the state that
@@ -168,8 +184,9 @@ pub open spec fn integrated_live_required_top_kind(action: LiveRuntimeProductAct
 
 /// The top frame kind an integrated action is keyed on. The EPathMap obligation
 /// returns are keyed on the returning child's kind: kind 1 for the raw-Par
-/// Message child and kind 3 for the NestedEpm1 EPathMap child. `ChildReturn`
-/// has none: its guard reads the CanonicalPath parent under the child that just
+/// Message child and kind 3 for the NestedEpm1 EPathMap child. The EPathMap
+/// handoff is keyed on the pushed EPathMap child, kind 3. `ChildReturn` has
+/// none: its guard reads the CanonicalPath parent under the child that just
 /// finished.
 pub open spec fn integrated_action_required_top_kind(action: IntegratedAction) -> Option<u8> {
     match action {
@@ -182,14 +199,16 @@ pub open spec fn integrated_action_required_top_kind(action: IntegratedAction) -
         IntegratedAction::ActForward { .. } | IntegratedAction::ActUnwind { .. } => Some(3u8),
         IntegratedAction::EpmRawParReturn => Some(1u8),
         IntegratedAction::EpmNestedReturn => Some(3u8),
+        IntegratedAction::EpmHandoff { .. } => Some(3u8),
     }
 }
 
 /// The guard keyed on the top frame kind. Each action family runs only on its
 /// frames: Live on Message/Map/EPathMap tops (per action), CanonicalPath on a
-/// kind-4 top or the pre-pop child of a kind-4 parent, ACT on a kind-3 top, and
+/// kind-4 top or the pre-pop child of a kind-4 parent, ACT on a kind-3 top,
 /// the EPathMap obligation returns on the returning child: a kind-1 top for
-/// `EpmRawParReturn` and a kind-3 top for `EpmNestedReturn`.
+/// `EpmRawParReturn` and a kind-3 top for `EpmNestedReturn`, and the EPathMap
+/// handoff on the pushed kind-3 top.
 pub open spec fn integrated_kind_guard(
     before: LiveRuntimeProductState, action: IntegratedAction,
 ) -> bool {
@@ -529,6 +548,13 @@ pub open spec fn integrated_step(
                 IntegratedAction::EpmNestedReturn => match after {
                     IntegratedState::Active { product: next } =>
                         obligation_return::live_runtime_epm_nested_return_step(product, next),
+                    IntegratedState::Accepted { .. } => false,
+                },
+                IntegratedAction::EpmHandoff { backing, plan, validated } => match after {
+                    IntegratedState::Active { product: next } =>
+                        handoff::live_runtime_epm_handoff_step(
+                            product, next, backing, plan, validated,
+                        ),
                     IntegratedState::Accepted { .. } => false,
                 },
             }
@@ -1734,6 +1760,15 @@ pub proof fn integrated_step_is_function(
                 ),
                 _ => {},
             },
+            IntegratedAction::EpmHandoff { backing, plan, validated } => match (left, right) {
+                (
+                    IntegratedState::Active { product: next_left },
+                    IntegratedState::Active { product: next_right },
+                ) => handoff::live_runtime_epm_handoff_is_functional(
+                    product, next_left, next_right, backing, plan, validated,
+                ),
+                _ => {},
+            },
             IntegratedAction::CanonicalPath { .. }
             | IntegratedAction::ActForward { .. }
             | IntegratedAction::ActUnwind { .. } => {},
@@ -2185,6 +2220,13 @@ pub proof fn integrated_step_preserves_wf(
                     obligation_return::live_runtime_epm_nested_return_preserves_wf(product, next);
                 }
             },
+            IntegratedAction::EpmHandoff { backing, plan, validated } => {
+                if let IntegratedState::Active { product: next } = after {
+                    handoff::live_runtime_epm_handoff_preserves_wf(
+                        product, next, backing, plan, validated,
+                    );
+                }
+            },
         },
     }
 }
@@ -2525,6 +2567,31 @@ pub proof fn integrated_epm_nested_return_is_integrated_step(
     obligation_return::live_runtime_epm_nested_return_preserves_wf(before, after);
 }
 
+/// The EPathMap handoff lifts to the dispatcher: a
+/// `live_runtime_epm_handoff_step` runs on a well-formed state whose top frame
+/// is the pushed kind-3 child, so it is an `EpmHandoff` integrated step with
+/// the same observations, and its successor is well-formed.
+pub proof fn integrated_epm_handoff_is_integrated_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    backing: epm::IndexedBackingImage,
+    plan: Option<epm::ActPlanImage>,
+    validated: Option<epm::ValidatedActPlanImage>,
+)
+    requires handoff::live_runtime_epm_handoff_step(before, after, backing, plan, validated),
+    ensures
+        integrated_wf(IntegratedState::Active { product: before }),
+        integrated_step(
+            IntegratedState::Active { product: before },
+            IntegratedState::Active { product: after },
+            IntegratedAction::EpmHandoff { backing, plan, validated },
+        ),
+        integrated_wf(IntegratedState::Active { product: after }),
+{
+    handoff::live_runtime_epm_handoff_top_kind(before, after, backing, plan, validated);
+    handoff::live_runtime_epm_handoff_preserves_wf(before, after, backing, plan, validated);
+}
+
 // ---------------------------------------------------------------------------
 // A10: traces
 // ---------------------------------------------------------------------------
@@ -2717,7 +2784,8 @@ pub proof fn integrated_accept_refines_root(
                     path_driver::canonical_path_driver_product_active_sync(driver_before, path);
                 },
                 IntegratedAction::ActForward { .. } | IntegratedAction::ActUnwind { .. }
-                | IntegratedAction::EpmRawParReturn | IntegratedAction::EpmNestedReturn => {},
+                | IntegratedAction::EpmRawParReturn | IntegratedAction::EpmNestedReturn
+                | IntegratedAction::EpmHandoff { .. } => {},
             }
         },
     }

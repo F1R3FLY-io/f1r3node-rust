@@ -99,6 +99,8 @@ mod rpb3_epm_path_invariant_integrated;
 #[cfg(rpb3_live_push)]
 mod rpb3_epm_obligation_return_witness;
 #[cfg(rpb3_live_push)]
+mod rpb3_epm_live_handoff;
+#[cfg(rpb3_live_push)]
 mod rpb3_plain_parser_source_refinement;
 #[cfg(rpb3_live_push)]
 mod rpb3_no_score_child_eof_coverage;
