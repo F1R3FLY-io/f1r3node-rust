@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockAPI.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -406,6 +406,71 @@ impl std::fmt::Display for NoNewDeploysError {
 
 impl std::error::Error for NoNewDeploysError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposeRefusal {
+    NotBonded,
+    NotEnoughNewBlocks,
+    TooFarAheadOfLastFinalized,
+    HistoryIncomplete,
+    MissingBlock,
+    FloorDistanceHold,
+}
+
+impl ProposeRefusal {
+    pub fn from_failure(failure: &ProposeFailure) -> Option<Self> {
+        match failure {
+            ProposeFailure::CheckConstraintsFailure(check) => Some(match check {
+                CheckProposeConstraintsFailure::NotBonded => ProposeRefusal::NotBonded,
+                CheckProposeConstraintsFailure::NotEnoughNewBlocks => {
+                    ProposeRefusal::NotEnoughNewBlocks
+                }
+                CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized => {
+                    ProposeRefusal::TooFarAheadOfLastFinalized
+                }
+                CheckProposeConstraintsFailure::HistoryIncomplete => {
+                    ProposeRefusal::HistoryIncomplete
+                }
+            }),
+            ProposeFailure::MissingBlock(_) => Some(ProposeRefusal::MissingBlock),
+            ProposeFailure::FloorDistanceHold => Some(ProposeRefusal::FloorDistanceHold),
+            ProposeFailure::NoNewDeploys
+            | ProposeFailure::InternalDeployError
+            | ProposeFailure::BugError => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ProposeRefusedError {
+    pub refusal: ProposeRefusal,
+    pub message: String,
+}
+
+impl std::fmt::Display for ProposeRefusedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ProposeRefusedError {}
+
+fn propose_failure_error(status: &ProposeStatus, seq_number: i32) -> eyre::Report {
+    let refusal = match status {
+        ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
+            tracing::debug!("Propose: no new deploys (seqNum {})", seq_number);
+            return eyre::Report::new(NoNewDeploysError);
+        }
+        ProposeStatus::Failure(failure) => ProposeRefusal::from_failure(failure),
+        ProposeStatus::Success(_) => None,
+    };
+    let message = format!("Failure: {} (seqNum {})", status, seq_number);
+    tracing::debug!("{}", message);
+    match refusal {
+        Some(refusal) => eyre::Report::new(ProposeRefusedError { refusal, message }),
+        None => eyre::eyre!("{}", message),
+    }
+}
+
 impl BlockAPI {
     fn find_deploy_scan_depth() -> usize { 128 }
 
@@ -582,7 +647,10 @@ impl BlockAPI {
         }
 
         // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), DeployValidationError> = Ok(())
+        let validation_result: Result<(), DeployValidationError> = d
+            .data
+            .validate_amounts()
+            .map_err(|message| DeployValidationError { message })
             .and_then(|_| {
                 if is_node_read_only {
                     Err(DeployValidationError {
@@ -652,7 +720,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             // The floor check reads the SAME value the validity rule reads
             // (the shard conf), never a second node-conf copy.
-            let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
+            let min_phlo_price = casper.casper_shard_conf().min_phlo_price.clone();
             if d.data.phlo_price < min_phlo_price {
                 return Err(eyre::Report::new(DeployValidationError {
                     message: format!(
@@ -731,13 +799,9 @@ impl BlockAPI {
 
             let r: ApiErr<String> = match proposer_result {
                 ProposerResult::Empty => log_debug("Failure: another propose is in progress"),
-                ProposerResult::Failure(ref status, seq_number) => match status {
-                    ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
-                        tracing::debug!("Propose: no new deploys (seqNum {})", seq_number);
-                        Err(eyre::Report::new(NoNewDeploysError))
-                    }
-                    _ => log_debug(&format!("Failure: {} (seqNum {})", status, seq_number)),
-                },
+                ProposerResult::Failure(ref status, seq_number) => {
+                    Err(propose_failure_error(status, seq_number))
+                }
                 ProposerResult::Started(seq_number) => {
                     log_success(&format!("Propose started (seqNum {})", seq_number))
                 }
@@ -1206,6 +1270,7 @@ impl BlockAPI {
     pub async fn visualize_dag<R: 'static, V, VFut>(
         engine_cell: &EngineCell,
         depth: i32,
+        max_depth_limit: i32,
         start_block_number: i32,
         visualizer: V,
         serialize: tokio::sync::oneshot::Receiver<R>,
@@ -1248,11 +1313,13 @@ impl BlockAPI {
             Ok(result)
         }
 
+        let effective_depth = clamp_depth(depth, max_depth_limit, "visualize-dag");
+
         let eng = engine_cell.get().await;
         if let Some(casper) = eng.with_casper() {
             casper_response(
                 casper.as_ref(),
-                depth,
+                effective_depth,
                 start_block_number,
                 visualizer,
                 serialize,
@@ -1550,7 +1617,7 @@ impl BlockAPI {
             })?;
 
             let dag = casper.block_dag().await?;
-            if dag.contains(&block.block_hash) {
+            if dag.contains(&block.block_hash)? {
                 let block_info = BlockAPI::get_full_block_info(casper, &block).await?;
                 Ok(block_info)
             } else {
@@ -1576,10 +1643,10 @@ impl BlockAPI {
         block: &BlockMessage,
         constructor: fn(&BlockMessage, f32, bool) -> A,
     ) -> ApiErr<A> {
-        let is_finalized = dag.is_finalized(&block.block_hash);
+        let is_finalized = dag.is_finalized(&block.block_hash)?;
 
         let normalized_fault_tolerance = if is_finalized {
-            if let Ok(Some(meta)) = dag.lookup(&block.block_hash) {
+            if let Some(meta) = dag.lookup(&block.block_hash)? {
                 meta.fault_tolerance_value
             } else {
                 Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
@@ -1589,12 +1656,7 @@ impl BlockAPI {
         };
 
         let weights_map = proto_util::weight_map(block);
-        let weights_u64: HashMap<Bytes, u64> = weights_map
-            .into_iter()
-            .map(|(k, v)| (k, v as u64))
-            .collect();
-
-        let initial_fault = casper.normalized_initial_fault(weights_u64)?;
+        let initial_fault = casper.normalized_initial_fault(weights_map)?;
         let fault_tolerance = crate::rust::safety::initial_fault::display_projection(
             normalized_fault_tolerance,
             initial_fault,
@@ -1784,7 +1846,7 @@ impl BlockAPI {
                     hash
                 )))
             })?;
-            let result = dag.is_finalized(&given_block_hash.into());
+            let result = dag.is_finalized(&given_block_hash.into())?;
             Ok(result)
         } else {
             tracing::warn!("{}", error_message);
@@ -2135,11 +2197,16 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use prost::bytes::Bytes;
     use tokio::sync::Semaphore;
 
     use super::{
-        await_exploratory_deploy_task, deploy_is_block_expired, ExploratoryDeployOutcome,
-        ExploratoryDeployTaskError,
+        await_exploratory_deploy_task, deploy_is_block_expired, propose_failure_error,
+        ExploratoryDeployOutcome, ExploratoryDeployTaskError, NoNewDeploysError, ProposeRefusal,
+        ProposeRefusedError,
+    };
+    use crate::rust::blocks::proposer::propose_result::{
+        CheckProposeConstraintsFailure, ProposeFailure, ProposeStatus,
     };
 
     struct DropSignal(Arc<AtomicBool>);
@@ -2178,5 +2245,72 @@ mod tests {
         assert!(deploy_is_block_expired(0, 50, 50).unwrap());
         assert!(!deploy_is_block_expired(1, 50, 50).unwrap());
         assert!(!deploy_is_block_expired(0, 49, 50).unwrap());
+    }
+
+    #[test]
+    fn expected_propose_refusals_are_typed() {
+        let cases = vec![
+            (
+                ProposeFailure::CheckConstraintsFailure(CheckProposeConstraintsFailure::NotBonded),
+                ProposeRefusal::NotBonded,
+                "Failure: Proposal failed: validator is not bonded (seqNum 7)",
+            ),
+            (
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::NotEnoughNewBlocks,
+                ),
+                ProposeRefusal::NotEnoughNewBlocks,
+                "Failure: Proposal failed: Must wait for more blocks from other validators (seqNum 7)",
+            ),
+            (
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
+                ),
+                ProposeRefusal::TooFarAheadOfLastFinalized,
+                "Failure: Proposal failed: too far ahead of the last finalized block (seqNum 7)",
+            ),
+            (
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::HistoryIncomplete,
+                ),
+                ProposeRefusal::HistoryIncomplete,
+                "Failure: Proposal failed: this node's history does not reach far enough to build a snapshot; it is still catching up (seqNum 7)",
+            ),
+            (
+                ProposeFailure::MissingBlock(Bytes::from_static(&[0xab; 32])),
+                ProposeRefusal::MissingBlock,
+                "Failure: Proposal failed: MissingBlock abababababababab — requested from peers, retrying (seqNum 7)",
+            ),
+            (
+                ProposeFailure::FloorDistanceHold,
+                ProposeRefusal::FloorDistanceHold,
+                "Failure: Proposal held: the merge exceeds the floor-distance cap and no witness block could be built; retrying once finality advances (seqNum 7)",
+            ),
+        ];
+
+        for (failure, expected_refusal, expected_message) in cases {
+            let err = propose_failure_error(&ProposeStatus::Failure(failure), 7);
+            let refused = err
+                .downcast_ref::<ProposeRefusedError>()
+                .unwrap_or_else(|| panic!("untyped propose refusal: {}", err));
+            assert_eq!(refused.refusal, expected_refusal);
+            assert_eq!(err.to_string(), expected_message);
+        }
+    }
+
+    #[test]
+    fn propose_faults_stay_untyped() {
+        let no_new_deploys =
+            propose_failure_error(&ProposeStatus::Failure(ProposeFailure::NoNewDeploys), 1);
+        assert!(no_new_deploys.downcast_ref::<NoNewDeploysError>().is_some());
+
+        for failure in [
+            ProposeFailure::InternalDeployError,
+            ProposeFailure::BugError,
+        ] {
+            let err = propose_failure_error(&ProposeStatus::Failure(failure), 1);
+            assert!(err.downcast_ref::<ProposeRefusedError>().is_none());
+            assert!(err.downcast_ref::<NoNewDeploysError>().is_none());
+        }
     }
 }

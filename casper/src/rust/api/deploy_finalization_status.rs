@@ -52,21 +52,21 @@ impl std::error::Error for DeployFinalizationCorruption {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DeployFinalizationState {
     /// A successful execution or a re-application of the deploy lies on the
-    /// adopted LFB's state lineage. Terminal.
+    /// state lineage of the adopted LFB's floor. Terminal.
     Finalized,
-    /// Past the contestability bound, the deploy is not on the adopted LFB's
-    /// state lineage, and an execution with `is_failed=true` (e.g.,
-    /// insufficient phlo, failed payment, contract error) lies in the LFB's
-    /// DAG closure. Effects will never apply. Terminal.
+    /// Past the contestability bound, the deploy is not on the state lineage
+    /// of the adopted LFB's floor, and an execution with `is_failed=true`
+    /// (e.g., insufficient phlo, failed payment, contract error) lies in that
+    /// floor's DAG closure. Effects will never apply. Terminal.
     Failed,
     /// Not yet settled: no terminal record has been determined. Covers
-    /// unincluded deploys, inclusions the LFB has not reached yet, and
-    /// contested histories still inside their validity window. Client should
-    /// keep polling.
+    /// unincluded deploys, inclusions the LFB's floor has not reached yet
+    /// (including finalized ones above it), and contested histories still
+    /// inside their validity window. Client should keep polling.
     Pending,
-    /// Past the contestability bound, the deploy is not on the adopted LFB's
-    /// state lineage, and no execution with `is_failed=true` lies in the LFB's
-    /// DAG closure. The deploy can never land. Terminal.
+    /// Past the contestability bound, the deploy is not on the state lineage
+    /// of the adopted LFB's floor, and no execution with `is_failed=true` lies
+    /// in that floor's DAG closure. The deploy can never land. Terminal.
     Expired,
 }
 

@@ -14,7 +14,7 @@ use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::soak_snapshot::SnapshotError;
 
 use crate::rust::pending_blocks::{
-    PendingBlockLimits, PendingBlocks, PendingClass, PendingInsert, PendingOutcome,
+    PendingBlockLimits, PendingBlocks, PendingClass, PendingInsert, PendingUsage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,31 +286,32 @@ impl KeyValueBlockStore {
         self.put(block.block_hash.clone(), block)
     }
 
+    pub fn remove_if_matches(&self, expected: &BlockMessage) -> Result<bool, KvStoreError> {
+        let key = expected.block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(false);
+        };
+        let actual = BlockMessage::from_proto(Self::bytes_to_block_proto(&bytes)?)
+            .map_err(KvStoreError::SerializationError)?;
+        if actual != *expected || !self.store.delete_if_value(&key, &bytes)? {
+            return Ok(false);
+        }
+        if let Ok(mut cache) = Self::deploy_sig_cache().lock() {
+            cache.entries.remove(&key);
+            cache.order.retain(|hash| hash != &key);
+        }
+        Ok(true)
+    }
+
     pub fn put_pending(
         &self,
         block: &BlockMessage,
-        solicited: bool,
-    ) -> Result<PendingOutcome, KvStoreError> {
-        let class = if solicited {
-            PendingClass::Solicited
-        } else {
-            PendingClass::Unsolicited
-        };
-        self.put_pending_as(block, class)
-    }
-
-    pub fn put_pending_as(
-        &self,
-        block: &BlockMessage,
         class: PendingClass,
-    ) -> Result<PendingOutcome, KvStoreError> {
+    ) -> Result<PendingInsert, KvStoreError> {
         if self.disk_contains(&block.block_hash)? {
-            return Ok(PendingOutcome {
-                status: PendingInsert::Accepted,
-                evicted: Vec::new(),
-            });
+            return Ok(PendingInsert::Accepted);
         }
-        let outcome = self.pending.insert_as(block, class);
+        let outcome = self.pending.insert(block, class);
         if self.disk_contains(&block.block_hash)? {
             self.pending.remove(&block.block_hash);
         }
@@ -342,13 +343,24 @@ impl KeyValueBlockStore {
         self.store.delete_if_value(&key, &bytes)
     }
 
+    /// Delete the body stored on disk for `block_hash`, if there is one. The
+    /// delete compares against the bytes just read, so a body rewritten in
+    /// between stays.
+    pub fn discard_stored(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        let key = block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(false);
+        };
+        self.store.delete_if_value(&key, &bytes)
+    }
+
     pub fn is_pending(&self, block_hash: &BlockHash) -> bool { self.pending.contains(block_hash) }
 
     pub fn pending_blocks(&self) -> &PendingBlocks { &self.pending }
 
-    pub fn set_pending_limits(&self, limits: PendingBlockLimits) -> Vec<BlockHash> {
-        self.pending.set_limits(limits)
-    }
+    pub fn set_pending_limits(&self, limits: PendingBlockLimits) { self.pending.set_limits(limits) }
+
+    pub fn pending_usage(&self) -> PendingUsage { self.pending.usage() }
 
     fn disk_contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
         Ok(self
@@ -1304,13 +1316,36 @@ mod tests {
     }
 
     #[test]
+    fn remove_if_matches_preserves_a_replacement_and_removes_the_expected_copy() {
+        let (store, disk) = in_mem_store();
+        let original = models::rust::block_implicits::get_random_block_default();
+        let mut damaged = original.clone();
+        damaged.extra_bytes = prost::bytes::Bytes::from_static(b"corrupt copy");
+
+        assert!(!store.remove_if_matches(&damaged).unwrap());
+        store.put_block_message(&original).unwrap();
+        assert!(!store.remove_if_matches(&damaged).unwrap());
+        assert_eq!(
+            store.get(&original.block_hash).unwrap(),
+            Some(original.clone())
+        );
+        store.put_block_message(&damaged).unwrap();
+        assert!(store.remove_if_matches(&damaged).unwrap());
+        assert!(disk
+            .get_one(&original.block_hash.to_vec())
+            .unwrap()
+            .is_none());
+        assert!(store.get(&original.block_hash).unwrap().is_none());
+    }
+
+    #[test]
     fn pending_block_is_readable_but_not_written_to_disk() {
         let (bs, disk) = in_mem_store();
         let block = models::rust::block_implicits::get_random_block_default();
         let hash = block.block_hash.clone();
 
         assert_eq!(
-            bs.put_pending(&block, false).unwrap().status,
+            bs.put_pending(&block, PendingClass::Unsolicited).unwrap(),
             PendingInsert::Accepted
         );
 
@@ -1327,7 +1362,7 @@ mod tests {
         let (bs, disk) = in_mem_store();
         let block = models::rust::block_implicits::get_random_block_default();
         let hash = block.block_hash.clone();
-        bs.put_pending(&block, true).unwrap();
+        bs.put_pending(&block, PendingClass::Solicited).unwrap();
 
         bs.persist_block(&block).unwrap();
 
@@ -1339,41 +1374,45 @@ mod tests {
     }
 
     #[test]
-    fn persist_block_writes_a_block_that_the_pending_area_evicted() {
+    fn persist_block_writes_a_block_that_the_pending_area_no_longer_holds() {
         let (bs, disk) = in_mem_store();
-        bs.set_pending_limits(PendingBlockLimits {
-            max_blocks: 1,
-            max_bytes: usize::MAX,
-            max_per_sender: 10,
-        });
-        let evicted = models::rust::block_implicits::get_random_block_default();
-        let mut newer = evicted.clone();
-        newer.block_hash = prost::bytes::Bytes::from(vec![9u8; 32]);
-        bs.put_pending(&evicted, false).unwrap();
-        let outcome = bs.put_pending(&newer, false).unwrap();
-        assert_eq!(outcome.evicted, vec![evicted.block_hash.clone()]);
-        assert!(bs.get(&evicted.block_hash).unwrap().is_none());
+        let discarded = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&discarded, PendingClass::Unsolicited)
+            .unwrap();
+        assert!(bs.discard_pending(&discarded.block_hash));
+        assert!(bs.get(&discarded.block_hash).unwrap().is_none());
 
-        bs.persist_block(&evicted).unwrap();
+        bs.persist_block(&discarded).unwrap();
 
         assert!(disk
-            .get_one(&evicted.block_hash.to_vec())
+            .get_one(&discarded.block_hash.to_vec())
             .unwrap()
             .is_some());
-        assert_eq!(bs.get(&evicted.block_hash).unwrap(), Some(evicted));
+        assert_eq!(bs.get(&discarded.block_hash).unwrap(), Some(discarded));
+    }
+
+    #[test]
+    fn pending_usage_reports_the_area_totals() {
+        let (bs, _disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&block, PendingClass::Unsolicited).unwrap();
+        let usage = bs.pending_usage();
+        assert_eq!(usage.blocks, 1);
+        assert_eq!(usage.bytes, bs.pending_blocks().bytes());
+        assert_eq!(usage.by_sender.get(&block.sender), Some(&1));
     }
 
     #[test]
     fn put_and_discard_clear_the_pending_entry() {
         let (bs, disk) = in_mem_store();
         let stored = models::rust::block_implicits::get_random_block_default();
-        bs.put_pending(&stored, false).unwrap();
+        bs.put_pending(&stored, PendingClass::Unsolicited).unwrap();
         bs.put_block_message(&stored).unwrap();
         assert!(!bs.is_pending(&stored.block_hash));
         assert!(disk.get_one(&stored.block_hash.to_vec()).unwrap().is_some());
 
         let dropped = models::rust::block_implicits::get_random_block_default();
-        bs.put_pending(&dropped, false).unwrap();
+        bs.put_pending(&dropped, PendingClass::Unsolicited).unwrap();
         assert!(bs.discard_pending(&dropped.block_hash));
         assert!(bs.get(&dropped.block_hash).unwrap().is_none());
         assert!(!bs.contains_key(&dropped.block_hash).unwrap());
@@ -1385,7 +1424,7 @@ mod tests {
         let block = models::rust::block_implicits::get_random_block_default();
         bs.put_block_message(&block).unwrap();
         assert_eq!(
-            bs.put_pending(&block, false).unwrap().status,
+            bs.put_pending(&block, PendingClass::Unsolicited).unwrap(),
             PendingInsert::Accepted
         );
         assert!(!bs.is_pending(&block.block_hash));
@@ -1404,7 +1443,7 @@ mod tests {
         assert_eq!(bs.get(&stored.block_hash).unwrap(), None);
 
         let pending = models::rust::block_implicits::get_random_block_default();
-        bs.put_pending(&pending, false).unwrap();
+        bs.put_pending(&pending, PendingClass::Unsolicited).unwrap();
         assert!(bs.discard_copy(&pending).unwrap());
         assert!(!bs.is_pending(&pending.block_hash));
     }

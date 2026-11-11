@@ -11,6 +11,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlockCandidate, BlockMessage, UnapprovedBlock,
 };
 use serial_test::serial;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::helper::test_node::TestNode;
 use crate::util::comm::transport_layer_test_impl::TransportLayerTestImpl;
@@ -45,11 +46,11 @@ impl TestContext {
             .build_genesis_with_parameters(Some(params))
             .await?;
 
-        let bonds: HashMap<PublicKey, i64> = genesis_params
+        let bonds: HashMap<PublicKey, TokenAmount> = genesis_params
             .proof_of_stake
             .validators
             .iter()
-            .map(|v| (v.pk.clone(), v.stake))
+            .map(|v| (v.pk.clone(), v.stake.clone()))
             .collect();
 
         let required_sigs = (bonds.len() - 1) as i32;
@@ -328,15 +329,15 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         ctx.protocol.deploy_timestamp,
         &ctx.protocol.vaults,
         &ctx.protocol.bonds_bytes,
-        ctx.protocol.minimum_bond + 1,                  // incorrect
-        ctx.protocol.maximum_bond - 1,                  // incorrect
-        ctx.protocol.epoch_length + 1,                  // incorrect
-        ctx.protocol.quarantine_length + 1,             // incorrect
-        ctx.protocol.number_of_active_validators + 1,   // incorrect
-        ctx.protocol.fault_tolerance_threshold_ppm + 1, // incorrect
-        ctx.protocol.max_parent_depth + 1,              // incorrect
-        ctx.protocol.deploy_lifespan + 1,               // incorrect
-        ctx.protocol.min_phlo_price + 1,                // incorrect
+        TokenAmount::new(ctx.protocol.minimum_bond.to_bigint() + 1).unwrap(), // incorrect
+        TokenAmount::new(ctx.protocol.maximum_bond.to_bigint() - 1).unwrap(), // incorrect
+        ctx.protocol.epoch_length + 1,                                        // incorrect
+        ctx.protocol.quarantine_length + 1,                                   // incorrect
+        ctx.protocol.number_of_active_validators + 1,                         // incorrect
+        ctx.protocol.fault_tolerance_threshold_ppm + 1,                       // incorrect
+        ctx.protocol.max_parent_depth + 1,                                    // incorrect
+        ctx.protocol.deploy_lifespan + 1,                                     // incorrect
+        TokenAmount::new(ctx.protocol.min_phlo_price.to_bigint() + 1).unwrap(), // incorrect
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,

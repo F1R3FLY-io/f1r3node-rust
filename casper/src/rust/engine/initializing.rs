@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, KeyValueDagRepresentation,
+};
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
@@ -24,10 +25,9 @@ use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, MergeableEntryRequest,
-    MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
+    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, StoreItemsMessage,
+    StoreItemsMessageRequest,
 };
-use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
@@ -35,10 +35,8 @@ use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::rust::block_status::ValidBlock;
-use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
+use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
-use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
     log_no_approved_block_available, publish_chain_identity, send_no_approved_block_available,
     transition_to_running, Engine,
@@ -83,13 +81,8 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: KeyValueDeployStorage,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    casper_buffer_storage: CasperBufferKeyValueStorage,
     rspace_state_manager: RSpaceStateManager,
-
-    // Block processing queue - matches Scala's blockProcessingQueue: Queue[F, (Casper[F], BlockMessage)]
-    // Using trait object to support different MultiParentCasper implementations
-    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
-    blocks_in_processing: Arc<InFlightBlocks>,
+    ingest: IngestHandle,
     casper_shard_conf: CasperShardConf,
     validator_id: Option<ValidatorIdentity>,
     the_init: Arc<
@@ -97,13 +90,9 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     >,
     block_message_rx: Arc<Mutex<Option<mpsc::Receiver<BlockMessage>>>>,
     tuple_space_rx: Arc<Mutex<Option<mpsc::Receiver<StoreItemsMessage>>>>,
-    /// Receives `MergeableEntryResponse` routed from `handle_message_recv`.
-    /// Drained by `lfs_block_requester::stream` during `request_approved_state`.
-    mergeable_message_rx: Arc<Mutex<Option<mpsc::Receiver<MergeableEntryResponse>>>>,
     // Senders to enqueue messages from `handle` (producer side)
     pub block_message_tx: Arc<Mutex<Option<mpsc::Sender<BlockMessage>>>>,
     pub tuple_space_tx: Arc<Mutex<Option<mpsc::Sender<StoreItemsMessage>>>>,
-    pub mergeable_message_tx: Arc<Mutex<Option<mpsc::Sender<MergeableEntryResponse>>>>,
     block_message_queue_pending: Arc<AtomicUsize>,
     tuple_space_queue_pending: Arc<AtomicUsize>,
     trim_state: bool,
@@ -120,7 +109,6 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     /// Event publisher for F1r3fly events
     event_publisher: F1r3flyEvents,
 
-    block_retriever: BlockRetriever<T>,
     engine_cell: Arc<EngineCell>,
     runtime_manager: Arc<RuntimeManager>,
     estimator: Arc<Mutex<Option<Estimator>>>,
@@ -150,10 +138,10 @@ fn apply_floor_cache_entries(
 ) -> Result<usize, CasperError> {
     let mut written = 0usize;
     for entry in entries {
-        if !solicited.contains(&entry.block_hash) || !dag.contains(&entry.block_hash) {
+        if !solicited.contains(&entry.block_hash) || !dag.contains(&entry.block_hash)? {
             continue;
         }
-        if !dag.contains(&entry.floor_hash) || !dag.contains(&entry.frontier_hash) {
+        if !dag.contains(&entry.floor_hash)? || !dag.contains(&entry.frontier_hash)? {
             tracing::debug!(
                 block = %PrettyPrinter::build_string_bytes(&entry.block_hash),
                 floor = %PrettyPrinter::build_string_bytes(&entry.floor_hash),
@@ -308,10 +296,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         block_dag_storage: BlockDagKeyValueStorage,
         deploy_storage: KeyValueDeployStorage,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-        casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
-        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
-        blocks_in_processing: Arc<InFlightBlocks>,
+        ingest: IngestHandle,
         casper_shard_conf: CasperShardConf,
         validator_id: Option<ValidatorIdentity>,
         the_init: Arc<
@@ -321,12 +307,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         block_message_rx: mpsc::Receiver<BlockMessage>,
         tuple_space_tx: mpsc::Sender<StoreItemsMessage>,
         tuple_space_rx: mpsc::Receiver<StoreItemsMessage>,
-        mergeable_message_tx: mpsc::Sender<MergeableEntryResponse>,
-        mergeable_message_rx: mpsc::Receiver<MergeableEntryResponse>,
         trim_state: bool,
         disable_state_exporter: bool,
         event_publisher: F1r3flyEvents,
-        block_retriever: BlockRetriever<T>,
         engine_cell: Arc<EngineCell>,
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
@@ -344,19 +327,15 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             block_dag_storage,
             deploy_storage,
             rejected_deploy_buffer,
-            casper_buffer_storage,
             rspace_state_manager,
-            block_processing_queue_tx,
-            blocks_in_processing,
+            ingest,
             casper_shard_conf,
             validator_id,
             the_init,
             block_message_rx: Arc::new(Mutex::new(Some(block_message_rx))),
             tuple_space_rx: Arc::new(Mutex::new(Some(tuple_space_rx))),
-            mergeable_message_rx: Arc::new(Mutex::new(Some(mergeable_message_rx))),
             block_message_tx: Arc::new(Mutex::new(Some(block_message_tx))),
             tuple_space_tx: Arc::new(Mutex::new(Some(tuple_space_tx))),
-            mergeable_message_tx: Arc::new(Mutex::new(Some(mergeable_message_tx))),
             block_message_queue_pending: Arc::new(AtomicUsize::new(0)),
             tuple_space_queue_pending: Arc::new(AtomicUsize::new(0)),
             trim_state,
@@ -366,7 +345,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             no_approved_block_retries: Arc::new(Mutex::new(0)),
             restore_failures: Arc::new(Mutex::new(0)),
             event_publisher,
-            block_retriever,
             engine_cell,
             runtime_manager,
             estimator: Arc::new(Mutex::new(Some(estimator))),
@@ -541,23 +519,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                 } else {
                     tracing::warn!(
                         "block_message_tx sender is None; block message channel not available (message not enqueued)"
-                    );
-                }
-                Ok(())
-            }
-            CasperMessage::MergeableEntryResponse(resp) => {
-                // Forward to the channel drained by lfs_block_requester::stream.
-                let sender = self.mergeable_message_tx.lock().unwrap().as_ref().cloned();
-                if let Some(tx) = sender {
-                    if let Err(e) = tx.send(resp).await {
-                        tracing::warn!(
-                            "Failed to enqueue MergeableEntryResponse into mergeable channel: {:?}",
-                            e
-                        );
-                    }
-                } else {
-                    tracing::warn!(
-                        "mergeable_message_tx sender is None; mergeable channel not available (message dropped)"
                     );
                 }
                 Ok(())
@@ -809,8 +770,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(SYNC_CHANNEL_CAPACITY);
         let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(SYNC_CHANNEL_CAPACITY);
-        let (mergeable_tx, mergeable_rx) =
-            mpsc::channel::<MergeableEntryResponse>(SYNC_CHANNEL_CAPACITY);
         let (floor_cache_tx, floor_cache_rx) =
             mpsc::channel::<FloorCacheResponse>(FLOOR_CACHE_CHANNEL_CAPACITY);
 
@@ -818,16 +777,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         install_slot(&self.block_message_rx, block_rx, "block_message_rx")?;
         install_slot(&self.tuple_space_tx, tuple_tx, "tuple_space_tx")?;
         install_slot(&self.tuple_space_rx, tuple_rx, "tuple_space_rx")?;
-        install_slot(
-            &self.mergeable_message_tx,
-            mergeable_tx,
-            "mergeable_message_tx",
-        )?;
-        install_slot(
-            &self.mergeable_message_rx,
-            mergeable_rx,
-            "mergeable_message_rx",
-        )?;
         install_slot(&self.floor_cache_tx, floor_cache_tx, "floor_cache_tx")?;
         install_slot(&self.floor_cache_rx, floor_cache_rx, "floor_cache_rx")?;
 
@@ -917,17 +866,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     CasperError::RuntimeError("Block message receiver not available".to_string())
                 })?;
 
-        let mergeable_response_rx = self
-            .mergeable_message_rx
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| {
-                CasperError::RuntimeError(
-                    "Mergeable-entry response receiver not available".to_string(),
-                )
-            })?;
-
         // Create block requester wrapper with needed components and stream
         let mut block_requester = BlockRequesterWrapper::new(
             &self.transport_layer,
@@ -935,8 +873,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             &self.rp_conf_ask,
             self.block_store.clone(),
             Box::new(|block| self.validate_block(block)),
-        )
-        .with_runtime_manager(self.runtime_manager.clone());
+        );
 
         // Create empty queue for block requester (must be created outside tokio::join! for lifetime reasons)
         let empty_queue = VecDeque::new(); // Empty queue since we drained it above
@@ -959,7 +896,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &empty_queue,
                 response_message_rx,
                 self.block_message_queue_pending.clone(),
-                mergeable_response_rx,
                 min_block_number_for_deploy_lifespan,
                 lfs_request_timeout,
                 &mut block_requester,
@@ -1012,17 +948,33 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Now populate DAG with the final state (equivalent to evalMap in Scala)
         if let Some(st) = final_state_result {
+            let anchor_height = proto_util::block_number(&approved_block.candidate.block);
+            let restored_min = st
+                .height_map
+                .keys()
+                .next()
+                .copied()
+                .unwrap_or(anchor_height);
+            let restored_max = st
+                .height_map
+                .keys()
+                .next_back()
+                .copied()
+                .unwrap_or(anchor_height);
             self.populate_dag(
                 approved_block.candidate.block.clone(),
                 st.lower_bound,
                 st.height_map,
+                st.slash_evidence,
+                st.slash_targets,
             )
             .await?;
             // After the blocks are in, never before: the caches are keyed by
             // hash, and a floor entry pointing at a block the DAG does not hold
             // reads back as a missing block rather than as a floor.
             self.seed_floor_caches(approved_block)?;
-            self.request_floor_cache(approved_block).await;
+            self.request_floor_cache(approved_block, restored_min, restored_max)
+                .await?;
             establish_chain_identity(&self.block_dag_storage, &self.rp_conf_ask.chain_id)?;
         } else {
             tracing::warn!(
@@ -1144,13 +1096,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // stored post-state so `RuntimeManager::load_mergeable_channels`
         // succeeds during validation.
         //
-        // Merge of dev (EPOCH-004): dev's `lfs_block_requester::stream` now
-        // routes `MergeableEntryResponse` messages through
-        // `mergeable_message_rx` to populate the cache during sync, which
-        // covers most of the same ground. This explicit replay is the
-        // defensive companion path — it catches any block whose mergeable
-        // entry was missed by the streaming response (e.g. a peer that
-        // didn't ship one), and is a no-op when the cache is already warm.
         // Bounded by the state floor, not the block floor: the replay executes
         // blocks, so it must not walk below the history the horizon sync just
         // imported, and a block below the parent reach is never merged on.
@@ -1166,18 +1111,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         Ok(())
     }
 
-    fn validate_block(&self, block: &BlockMessage) -> bool {
-        let block_number = proto_util::block_number(block);
-        if block_number == 0 {
-            // TODO: validate genesis (zero) block correctly - OLD
-            true
-        } else {
-            match Validate::block_hash(block) {
-                Either::Right(ValidBlock::Valid) => true,
-                _ => false,
-            }
-        }
-    }
+    fn validate_block(&self, block: &BlockMessage) -> bool { Validate::historical_block(block) }
 
     /// Receive finality for the restored window instead of re-deriving it.
     ///
@@ -1189,13 +1123,17 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// makes the recursion terminate inside the window at any chain height,
     /// for O(window) bytes.
     ///
-    /// Failure degrades to that crawl — alive and alarmed, never a wedge — so
-    /// this never fails the restore. The genesis hash that the response also
+    /// The genesis hash that the response also
     /// carries is different: `require_genesis_hash` fails the restore without
     /// it, because it is this node's chain identity. So the request waits for
     /// a slow or briefly unreachable bootstrap for up to five minutes, which is
     /// far cheaper than the full restore that a failure starts again.
-    pub async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
+    pub async fn request_floor_cache(
+        &self,
+        approved_block: &ApprovedBlock,
+        restored_min: i64,
+        restored_max: i64,
+    ) -> Result<(), CasperError> {
         const ATTEMPTS: u32 = 30;
         const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -1203,107 +1141,119 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // derivation terminates locally — the same discriminator guard_deferral
         // and the settled door use. Nothing to ask for.
         if proto_util::block_number(&approved_block.candidate.block) == 0 {
-            return;
+            return Ok(());
         }
 
-        let result: Result<(), CasperError> = async {
+        let result: Result<bool, CasperError> = async {
             let dag = self.block_dag_storage.get_representation()?;
-            let hashes: Vec<BlockHash> = dag.dag_set.iter().cloned().collect();
-            let solicited: HashSet<BlockHash> = hashes.iter().cloned().collect();
-            let mut rx = self.floor_cache_rx.lock().unwrap().take().ok_or_else(|| {
-                CasperError::RuntimeError("floor-cache receiver not available".to_string())
-            })?;
-
-            let request = models::rust::casper::protocol::casper_message::FloorCacheRequest {
-                hashes: hashes.clone(),
+            let Some(mut rx) = self.floor_cache_rx.lock().unwrap().take() else {
+                tracing::warn!("floor-cache receiver not available");
+                return Ok(false);
             };
-            for attempt in 1..=ATTEMPTS {
-                if let Err(e) = self
-                    .transport_layer
-                    .send_to_bootstrap(&self.rp_conf_ask, Arc::new(request.clone().to_proto()))
-                    .await
-                {
-                    tracing::warn!(attempt, error = %e, "floor-cache request failed; retrying");
-                    sleep(RESPONSE_TIMEOUT).await;
-                    continue;
-                }
-                match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
-                    Ok(Some(response)) => {
-                        // This node may already hold an identity, for example one
-                        // adopted from the bootstrap. A different shipped hash cannot
-                        // agree with it, and the record is write-once, so such a
-                        // hash is not recorded.
-                        if let Some(adopted) = self.rp_conf_ask.chain_id.get() {
-                            if !response.genesis_hash.is_empty()
-                                && response.genesis_hash != *adopted
-                            {
-                                tracing::warn!(
-                                    attempt,
-                                    shipped = %PrettyPrinter::build_string_bytes(&response.genesis_hash),
-                                    adopted = %PrettyPrinter::build_string_bytes(adopted),
-                                    "floor-cache response names a genesis hash other than this \
-                                     node's chain identity; ignoring it"
+            let mut after = None;
+            loop {
+                let page = dag.scan_height_range(restored_min, restored_max, false, after.as_deref(), 1024)?;
+                let hashes = page.rows;
+                let solicited: HashSet<BlockHash> = hashes.iter().cloned().collect();
+                if !hashes.is_empty() {
+                    let mut received = false;
+                    let request = models::rust::casper::protocol::casper_message::FloorCacheRequest {
+                        hashes: hashes.clone(),
+                    };
+                    for attempt in 1..=ATTEMPTS {
+                        if let Err(e) = self
+                            .transport_layer
+                            .send_to_bootstrap(&self.rp_conf_ask, Arc::new(request.clone().to_proto()))
+                            .await
+                        {
+                            tracing::warn!(attempt, error = %e, "floor-cache request failed; retrying");
+                            sleep(RESPONSE_TIMEOUT).await;
+                            continue;
+                        }
+                        match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
+                            Ok(Some(response)) => {
+                                if !response.entries.is_empty()
+                                    && !response.entries.iter().any(|entry| solicited.contains(&entry.block_hash))
+                                {
+                                    continue;
+                                }
+                                // This node may already hold an identity, for example one
+                                // adopted from the bootstrap. A different shipped hash cannot
+                                // agree with it, and the record is write-once, so such a
+                                // hash is not recorded.
+                                if let Some(adopted) = self.rp_conf_ask.chain_id.get() {
+                                    if !response.genesis_hash.is_empty()
+                                        && response.genesis_hash != *adopted
+                                    {
+                                        tracing::warn!(
+                                            attempt,
+                                            shipped = %PrettyPrinter::build_string_bytes(&response.genesis_hash),
+                                            adopted = %PrettyPrinter::build_string_bytes(adopted),
+                                            "floor-cache response names a genesis hash other than this \
+                                             node's chain identity; ignoring it"
+                                        );
+                                        continue;
+                                    }
+                                }
+                                // The genesis hash rides the same trusted exchange:
+                                // a truncated node holds no height-0 block, and the
+                                // newly-bonded latest-message placeholder must be
+                                // this network-uniform value on every node. The block
+                                // body lands too (verified against the hash) so this
+                                // node's latest-message structures stay identical to
+                                // a ceremony node's.
+                                if !response.genesis_hash.is_empty() {
+                                    self.block_dag_storage
+                                        .record_genesis_hash(response.genesis_hash.clone())?;
+                                }
+                                let genesis_landed = match response.genesis_block {
+                                    Some(block) if !response.genesis_hash.is_empty() => {
+                                        receive_shipped_genesis(
+                                            &self.block_dag_storage,
+                                            &self.block_store,
+                                            &response.genesis_hash,
+                                            block,
+                                        )?
+                                    }
+                                    _ => false,
+                                };
+                                let written =
+                                    apply_floor_cache_entries(&dag, &solicited, response.entries)?;
+                                tracing::info!(
+                                    written,
+                                    requested = hashes.len(),
+                                    genesis_learned = !response.genesis_hash.is_empty(),
+                                    genesis_landed,
+                                    "Floor cache received: restored blocks carry their finality"
                                 );
-                                continue;
+                                received = true;
+                                break;
+                            }
+                            Ok(None) => {
+                                tracing::warn!("floor-cache channel closed");
+                                return Ok(false);
+                            }
+                            Err(_) => {
+                                tracing::warn!(attempt, "floor-cache request timed out; retrying");
                             }
                         }
-                        // The genesis hash rides the same trusted exchange:
-                        // a truncated node holds no height-0 block, and the
-                        // newly-bonded latest-message placeholder must be
-                        // this network-uniform value on every node. The block
-                        // body lands too (verified against the hash) so this
-                        // node's latest-message structures stay identical to
-                        // a ceremony node's.
-                        if !response.genesis_hash.is_empty() {
-                            self.block_dag_storage
-                                .record_genesis_hash(response.genesis_hash.clone())?;
-                        }
-                        let genesis_landed = match response.genesis_block {
-                            Some(block) if !response.genesis_hash.is_empty() => {
-                                receive_shipped_genesis(
-                                    &self.block_dag_storage,
-                                    &self.block_store,
-                                    &response.genesis_hash,
-                                    block,
-                                )?
-                            }
-                            _ => false,
-                        };
-                        let written =
-                            apply_floor_cache_entries(&dag, &solicited, response.entries)?;
-                        tracing::info!(
-                            written,
-                            requested = hashes.len(),
-                            genesis_learned = !response.genesis_hash.is_empty(),
-                            genesis_landed,
-                            "Floor cache received: restored blocks carry their finality"
-                        );
-                        return Ok(());
                     }
-                    Ok(None) => {
-                        return Err(CasperError::RuntimeError(
-                            "floor-cache channel closed".to_string(),
-                        ));
-                    }
-                    Err(_) => {
-                        tracing::warn!(attempt, "floor-cache request timed out; retrying");
-                    }
+                    if !received { return Ok(false); }
                 }
+                after = page.next;
+                if after.is_none() { break; }
             }
-            Err(CasperError::RuntimeError(format!(
-                "no floor-cache response after {} attempts",
-                ATTEMPTS
-            )))
+            Ok(true)
         }
         .await;
 
-        if let Err(e) = result {
+        if !result? {
             tracing::warn!(
-                error = %e,
                 "Proceeding without the shipped floor cache: sibling-branch validation \
                  will re-derive finality gap-by-gap (slow, not wrong)"
             );
         }
+        Ok(())
     }
 
     /// Record the anchor's floor and frontier as this node's own, so the first
@@ -1335,7 +1285,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             (&seed.floor_hash, "floor"),
             (&seed.frontier_hash, "frontier"),
         ] {
-            if !dag.contains(hash) {
+            if !dag.contains(hash)? {
                 tracing::warn!(
                     seeded = %PrettyPrinter::build_string_bytes(hash),
                     kind = label,
@@ -1364,6 +1314,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         start_block: BlockMessage,
         min_height: i64,
         height_map: BTreeMap<i64, HashSet<BlockHash>>,
+        slash_evidence: HashSet<BlockHash>,
+        slash_targets: HashSet<BlockHash>,
     ) -> Result<(), CasperError> {
         async fn add_block_to_dag<T: TransportLayer + Send + Sync + Clone>(
             initializing: &Initializing<T>,
@@ -1396,16 +1348,30 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .state
             .bonds
             .iter()
-            .filter(|bond| bond.stake == 0)
+            .filter(|bond| bond.stake.is_zero())
             .map(|bond| bond.validator.to_vec())
             .collect();
 
-        let invalid_blocks: HashSet<ByteString> = start_block
+        let mut invalid_blocks: HashSet<ByteString> = start_block
             .justifications
             .iter()
             .filter(|justification| slashed_validators.contains(&justification.validator.to_vec()))
             .map(|justification| justification.latest_block_hash.to_vec())
             .collect();
+        invalid_blocks.extend(slash_targets.into_iter().map(|hash| hash.to_vec()));
+
+        for hash in slash_evidence {
+            let block = self.block_store.get(&hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "Slash evidence {} missing from block store during DAG population",
+                    PrettyPrinter::build_string_bytes(&hash)
+                ))
+            })?;
+            self.block_dag_storage.insert(
+                &block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SlashEvidence,
+            )?;
+        }
 
         let mut inserted = 0usize;
 
@@ -1444,15 +1410,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// Replay blocks in topological order to populate the mergeable channel cache.
     /// This is necessary for multi-parent block validation, which requires mergeable
     /// channel data from parent blocks to compute merged state.
-    ///
-    /// The LFS sync transfers the RSpace trie but not the mergeable channel store,
-    /// so we must regenerate any entries the streaming `MergeableEntryRequest`/
-    /// `MergeableEntryResponse` exchange in `lfs_block_requester` didn't already
-    /// fill in (see its `process_mergeable_entry`). That streaming path covers
-    /// every block downloaded during sync when the responding peer has an
-    /// entry, so this function is expected to find most (often all) blocks
-    /// already cached — it exists to catch the remainder (peer soft-misses,
-    /// blocks the node already had locally before this sync, etc).
     ///
     /// Before this fix, this loop replayed EVERY block from `min_block_number`
     /// to the LFB unconditionally, regardless of whether its cache entry was
@@ -1502,17 +1459,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Get all blocks in the DAG that need replay (from minBlockNumber to LFB)
         // We process in topological order (by block number, then by hash for determinism)
-        let all_blocks = dag.topo_sort(min_block_number, None)?;
-        let blocks_to_replay: Vec<BlockHash> = all_blocks.into_iter().flatten().collect();
+        let blocks_to_replay = blocks_for_mergeable_replay(&dag, min_block_number)?;
 
         tracing::info!(
             "Found {} blocks in range for mergeable channel cache check.",
             blocks_to_replay.len()
         );
 
-        // Replay each block to populate mergeable channels, skipping any block
-        // whose entry is already cached (typically filled in by the streaming
-        // MergeableEntryResponse exchange during block download above).
         let mut skipped = 0usize;
         let mut replayed = 0usize;
         for block_hash in blocks_to_replay {
@@ -1635,9 +1588,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
         let is_genesis = parents.is_empty();
 
-        // Get invalid blocks map for replay
         let dag = self.block_dag_storage.get_representation()?;
-        let invalid_blocks_map = dag.invalid_blocks_map()?;
+        let invalid_blocks_map = proto_util::block_slash_invalid_blocks(&dag, block)?;
 
         tracing::debug!(
             "Replaying block #{} ({}) with {} deploys, {} parents",
@@ -1714,7 +1666,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Pass Arc<RuntimeManager> directly to hash_set_casper
         let casper = crate::rust::casper::hash_set_casper(
-            self.block_retriever.clone(),
+            self.ingest.clone(),
             self.event_publisher.clone(),
             runtime_manager,
             estimator,
@@ -1722,7 +1674,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             self.block_dag_storage.clone(),
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            self.casper_buffer_storage.clone(),
             self.validator_id.clone(),
             casper_shard_conf,
             ab,
@@ -1842,15 +1793,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         }
 
         transition_to_running(
-            self.block_processing_queue_tx.clone(),
-            self.blocks_in_processing.clone(),
+            self.ingest.clone(),
             Arc::new(casper),
             approved_block.clone(),
             the_init,
             self.disable_state_exporter,
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
-            self.block_retriever.clone(),
             snapshot_chunk_ctx,
             wal_payload_ctx,
             &self.engine_cell,
@@ -1927,44 +1876,6 @@ impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrappe
     }
 
     fn validate_block(&self, block: &BlockMessage) -> bool { (self.validate_block_fn)(block) }
-
-    async fn request_for_mergeable_entry(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
-        let req = MergeableEntryRequest {
-            block_hash: block_hash.clone(),
-        };
-        self.transport_layer
-            .send_message_to_peers(
-                self.connections_cell,
-                self.rp_conf_ask,
-                Arc::new(req.to_proto()),
-                None,
-            )
-            .await
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-        Ok(())
-    }
-
-    fn put_mergeable_entry(
-        &self,
-        block_hash: &BlockHash,
-        serialized_entry: &[u8],
-    ) -> Result<(), CasperError> {
-        if serialized_entry.is_empty() {
-            return Ok(());
-        }
-        // Look up the block to compute the local mergeable_key (must match
-        // the server's key exactly; both sides derive it from the block's
-        // post_state/sender/seq).
-        let block = self.block_store.get_unsafe(block_hash);
-        let key_bytes = RuntimeManager::mergeable_key_bytes_for_block(&block)?;
-        let runtime_manager = self.runtime_manager.as_ref().ok_or_else(|| {
-            CasperError::RuntimeError(
-                "BlockRequesterWrapper missing runtime_manager (mergeable-entry import)"
-                    .to_string(),
-            )
-        })?;
-        runtime_manager.put_mergeable_entry_bytes(key_bytes, serialized_entry.to_vec())
-    }
 }
 
 /// Wrapper struct for block request operations
@@ -1974,10 +1885,6 @@ pub struct BlockRequesterWrapper<'a, T: TransportLayer> {
     rp_conf_ask: &'a RPConf,
     block_store: KeyValueBlockStore,
     validate_block_fn: Box<dyn Fn(&BlockMessage) -> bool + Send + Sync + 'a>,
-    /// Optional runtime_manager handle for the mergeable-channels store
-    /// import path. Required in production; optional for tests that don't
-    /// exercise the mergeable path.
-    runtime_manager: Option<Arc<RuntimeManager>>,
 }
 
 impl<'a, T: TransportLayer> BlockRequesterWrapper<'a, T> {
@@ -1994,15 +1901,7 @@ impl<'a, T: TransportLayer> BlockRequesterWrapper<'a, T> {
             rp_conf_ask,
             block_store,
             validate_block_fn,
-            runtime_manager: None,
         }
-    }
-
-    /// Attach a `RuntimeManager` so the wrapper can import mergeable-channel
-    /// entries.
-    pub fn with_runtime_manager(mut self, runtime_manager: Arc<RuntimeManager>) -> Self {
-        self.runtime_manager = Some(runtime_manager);
-        self
     }
 }
 
@@ -2085,6 +1984,20 @@ impl<T: TransportLayer + Send + Sync>
     }
 }
 
+fn blocks_for_mergeable_replay(
+    dag: &KeyValueDagRepresentation,
+    min_block_number: i64,
+) -> Result<Vec<BlockHash>, CasperError> {
+    let mut blocks = Vec::new();
+    for hash in dag.topo_sort(min_block_number, None)?.into_iter().flatten() {
+        let metadata = dag.lookup_unsafe(&hash)?;
+        if !metadata.invalid {
+            blocks.push(hash);
+        }
+    }
+    Ok(blocks)
+}
+
 /// The blocks the restored DAG must hold, highest height first.
 ///
 /// The height map is the requester's own record of what it downloaded and
@@ -2112,7 +2025,6 @@ mod tests {
     /// partially-covering response still lands everything legitimate.
     #[test]
     fn shipped_floor_entries_apply_only_to_solicited_held_blocks() {
-        use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
         use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
         use models::rust::casper::protocol::casper_message::FloorCacheEntry;
         use parking_lot::RwLock as PlRwLock;
@@ -2126,7 +2038,10 @@ mod tests {
         let mut dag_set = imbl::HashSet::new();
         dag_set.insert(held.clone());
         dag_set.insert(floor.clone());
-        let dag = KeyValueDagRepresentation {
+        let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -2149,7 +2064,8 @@ mod tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
 
         let entry = |hash: &BlockHash| FloorCacheEntry {
             block_hash: hash.clone(),
@@ -2186,7 +2102,6 @@ mod tests {
     /// same rule, then solicited like every other restored block.
     #[test]
     fn a_shipped_entry_naming_unheld_history_is_refused_and_never_replaces_a_seed() {
-        use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
         use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
         use models::rust::casper::protocol::casper_message::FloorCacheEntry;
         use parking_lot::RwLock as PlRwLock;
@@ -2202,7 +2117,10 @@ mod tests {
         dag_set.insert(anchor.clone());
         dag_set.insert(band.clone());
         dag_set.insert(seeded_floor.clone());
-        let dag = KeyValueDagRepresentation {
+        let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -2225,7 +2143,8 @@ mod tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
 
         dag.put_cached_floor(anchor.clone(), seeded_floor.clone())
             .expect("seed the anchor");
@@ -2369,9 +2288,12 @@ mod tests {
             assert!(landed, "a verified genesis copy must land");
 
             let dag = dag_storage.get_representation().unwrap();
-            assert!(dag.contains(&genesis.block_hash), "genesis enters the DAG");
             assert!(
-                dag.is_finalized(&genesis.block_hash),
+                dag.contains(&genesis.block_hash).unwrap(),
+                "genesis enters the DAG"
+            );
+            assert!(
+                dag.is_finalized(&genesis.block_hash).unwrap(),
                 "genesis is finalized by definition"
             );
             assert_eq!(
@@ -2409,7 +2331,7 @@ mod tests {
             assert!(!landed, "a forged copy must be refused");
             let dag2 = dag_storage2.get_representation().unwrap();
             assert!(
-                !dag2.contains(&genesis.block_hash),
+                !dag2.contains(&genesis.block_hash).unwrap(),
                 "a refused copy leaves no trace in the DAG"
             );
             assert!(
@@ -2487,7 +2409,7 @@ mod tests {
 
             let dag = dag_storage.get_representation().unwrap();
             assert!(
-                dag.is_finalized(&genesis.block_hash),
+                dag.is_finalized(&genesis.block_hash).unwrap(),
                 "genesis is finalized by definition"
             );
             assert_eq!(
