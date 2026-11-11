@@ -33,6 +33,9 @@ pub struct TlsEnvironment {
     pub cert: String,
     pub key: String,
     pub peer: PeerNode,
+    /// The socket a server for this peer serves from, bound before the peer
+    /// was created so no other process can take the port
+    pub listener: Option<std::net::TcpListener>,
 }
 
 /// Test runtime for transport layer testing
@@ -86,7 +89,25 @@ impl TransportLayerTestRuntime {
             cert,
             key,
             peer,
+            listener: None,
         })
+    }
+
+    /// Create an environment for a peer that runs a server, on a port bound
+    /// here and held until the server serves from it
+    pub async fn create_bound_environment(&self) -> Result<TlsEnvironment, CommError> {
+        let listener = std::net::TcpListener::bind("0.0.0.0:0")
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?
+            .port();
+        let mut env = self.create_environment(port).await?;
+        env.listener = Some(listener);
+        Ok(env)
     }
 
     /// Create transport layer client
@@ -131,6 +152,16 @@ impl TransportLayerTestRuntime {
             self.max_stream_message_size,
             4, // parallelism
         );
+        let transport_server = match &env.listener {
+            Some(listener) => transport_server
+                .with_listener(
+                    listener
+                        .try_clone()
+                        .expect("a bound test listener can be duplicated"),
+                )
+                .expect("a bound test listener can serve"),
+            None => transport_server,
+        };
 
         TransportServer::new(transport_server)
     }
@@ -154,46 +185,27 @@ impl TransportLayerTestRuntime {
         // Create dispatcher callback
         let callback = DispatcherCallback::new();
 
-        // Pick fresh ports again when another process takes a probed port
-        let mut attempt = 1;
-        let (env1, env2, remote_transport_server) = loop {
-            // Create two environments
-            let port1 = get_free_port()
-                .await
-                .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-            let port2 = get_free_port()
-                .await
-                .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+        // Create two environments; only the remote one runs a server
+        let port1 = get_free_port()
+            .await
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+        let env1 = self.create_environment(port1).await?;
+        let env2 = self.create_bound_environment().await?;
 
-            let env1 = self.create_environment(port1).await?;
-            let env2 = self.create_environment(port2).await?;
-
-            // Create and start the remote server
-            let remote_transport_server = self.create_transport_layer_server(&env2);
-            let remote = env2.peer.clone();
-            match remote_transport_server
-                .start(
-                    protocol_dispatcher.to_handler(remote.clone(), Some(callback.clone())),
-                    stream_dispatcher.to_handler(remote, Some(callback.clone())),
-                )
-                .await
-            {
-                Ok(()) => break (env1, env2, remote_transport_server),
-                Err(error) if address_in_use(&error) && attempt < SETUP_ATTEMPTS => {
-                    eprintln!(
-                        "transport test setup attempt {attempt}/{SETUP_ATTEMPTS}: port {port2} is in use; retrying with fresh ports"
-                    );
-                    attempt += 1;
-                }
-                Err(error) => return Err(error),
-            }
-        };
-
-        // Create transport layer
+        // Create transport layer and server
         let local_transport = self.create_transport_layer(&env1)?;
+        let remote_transport_server = self.create_transport_layer_server(&env2);
 
         let local = env1.peer.clone();
         let remote = env2.peer.clone();
+
+        // Start the remote server
+        remote_transport_server
+            .start(
+                protocol_dispatcher.to_handler(remote.clone(), Some(callback.clone())),
+                stream_dispatcher.to_handler(remote.clone(), Some(callback.clone())),
+            )
+            .await?;
 
         // Give the server a moment to start
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -245,80 +257,37 @@ impl TransportLayerTestRuntime {
         let callback1 = DispatcherCallback::new();
         let callback2 = DispatcherCallback::new();
 
-        // Pick fresh ports again when another process takes a probed port
-        let mut attempt = 1;
-        let (env1, env2, env3, remote_transport_server1, remote_transport_server2) = loop {
-            // Create three environments
-            let port1 = get_free_port()
-                .await
-                .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-            let port2 = get_free_port()
-                .await
-                .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-            let port3 = get_free_port()
-                .await
-                .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+        // Create three environments; only the remote ones run servers
+        let port1 = get_free_port()
+            .await
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+        let env1 = self.create_environment(port1).await?;
+        let env2 = self.create_bound_environment().await?;
+        let env3 = self.create_bound_environment().await?;
 
-            let env1 = self.create_environment(port1).await?;
-            let env2 = self.create_environment(port2).await?;
-            let env3 = self.create_environment(port3).await?;
-
-            // Create and start both remote servers
-            let remote_transport_server1 = self.create_transport_layer_server(&env2);
-            let remote_transport_server2 = self.create_transport_layer_server(&env3);
-            let remote1 = env2.peer.clone();
-            let remote2 = env3.peer.clone();
-
-            let started1 = remote_transport_server1
-                .start(
-                    protocol_dispatcher.to_handler(remote1.clone(), Some(callback1.clone())),
-                    stream_dispatcher.to_handler(remote1, Some(callback1.clone())),
-                )
-                .await;
-            let started2 = match started1 {
-                Ok(()) => {
-                    let started2 = remote_transport_server2
-                        .start(
-                            protocol_dispatcher
-                                .to_handler(remote2.clone(), Some(callback2.clone())),
-                            stream_dispatcher.to_handler(remote2, Some(callback2.clone())),
-                        )
-                        .await;
-                    if started2.is_err() {
-                        // Release the first port before picking new ones
-                        let _ = remote_transport_server1.stop().await;
-                    }
-                    started2
-                }
-                Err(error) => Err(error),
-            };
-
-            match started2 {
-                Ok(()) => {
-                    break (
-                        env1,
-                        env2,
-                        env3,
-                        remote_transport_server1,
-                        remote_transport_server2,
-                    )
-                }
-                Err(error) if address_in_use(&error) && attempt < SETUP_ATTEMPTS => {
-                    eprintln!(
-                        "transport test setup attempt {attempt}/{SETUP_ATTEMPTS}: a port in {port1}/{port2}/{port3} is in use; retrying with fresh ports"
-                    );
-                    attempt += 1;
-                }
-                Err(error) => return Err(error),
-            }
-        };
-
-        // Create transport layer
+        // Create transport layer and servers
         let local_transport = self.create_transport_layer(&env1)?;
+        let remote_transport_server1 = self.create_transport_layer_server(&env2);
+        let remote_transport_server2 = self.create_transport_layer_server(&env3);
 
         let local = env1.peer.clone();
         let remote1 = env2.peer.clone();
         let remote2 = env3.peer.clone();
+
+        // Start both remote servers
+        remote_transport_server1
+            .start(
+                protocol_dispatcher.to_handler(remote1.clone(), Some(callback1.clone())),
+                stream_dispatcher.to_handler(remote1.clone(), Some(callback1.clone())),
+            )
+            .await?;
+
+        remote_transport_server2
+            .start(
+                protocol_dispatcher.to_handler(remote2.clone(), Some(callback2.clone())),
+                stream_dispatcher.to_handler(remote2.clone(), Some(callback2.clone())),
+            )
+            .await?;
 
         // Give the servers a moment to start
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -611,16 +580,6 @@ impl DispatcherCallback {
     }
 }
 
-const SETUP_ATTEMPTS: usize = 5;
-
-/// Whether a server failed to start because its port is taken
-fn address_in_use(error: &CommError) -> bool {
-    let message = error.to_string();
-    ["Address already in use", "(os error 48)", "(os error 98)"]
-        .iter()
-        .any(|marker| message.contains(marker))
-}
-
 /// Get free port for testing
 pub async fn get_free_port() -> Result<u16, std::io::Error> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -667,32 +626,38 @@ pub struct ThreeNodesResult<T> {
 mod tests {
     use super::*;
 
-    /// The retry in `run_two_nodes_test` and `run_three_nodes_test` relies on `address_in_use`
-    /// recognizing what a server reports when its port is taken between the probe and the bind.
+    /// A bound environment holds its port before the server starts, and the
+    /// server delivers messages on that port.
     #[tokio::test]
-    async fn starting_a_server_on_a_taken_port_is_address_in_use() {
+    async fn a_server_serves_from_the_port_its_environment_holds() {
         let runtime = TransportLayerTestRuntime::new("test".to_string());
-        let taken = TcpListener::bind("0.0.0.0:0").await.unwrap();
-        let port = taken.local_addr().unwrap().port();
-        let env = runtime.create_environment(port).await.unwrap();
-        let server = runtime.create_transport_layer_server(&env);
-
-        let error = server
+        let remote = runtime.create_bound_environment().await.unwrap();
+        assert!(
+            std::net::TcpListener::bind(("0.0.0.0", remote.port)).is_err(),
+            "the port must be held before the server starts"
+        );
+        let server = runtime.create_transport_layer_server(&remote);
+        let dispatcher = TestProtocolDispatcher::new();
+        let callback = DispatcherCallback::new();
+        server
             .start(
-                TestProtocolDispatcher::new().to_handler(env.peer.clone(), None),
-                TestStreamDispatcher::new().to_handler(env.peer.clone(), None),
+                dispatcher.to_handler(remote.peer.clone(), Some(callback.clone())),
+                TestStreamDispatcher::new().to_handler(remote.peer.clone(), None),
             )
             .await
-            .expect_err("the port is taken");
+            .expect("start");
 
-        assert!(address_in_use(&error), "not recognized: {error}");
-    }
-
-    #[test]
-    fn other_errors_are_not_address_in_use() {
-        let error = CommError::ConfigError(
-            "Failed to create F1r3fly incoming stream: bad cert".to_string(),
-        );
-        assert!(!address_in_use(&error));
+        let local = runtime
+            .create_environment(get_free_port().await.unwrap())
+            .await
+            .unwrap();
+        let transport = runtime.create_transport_layer(&local).unwrap();
+        send_heartbeat(Arc::new(transport), &local.peer, &remote.peer, "test")
+            .await
+            .expect("heartbeat");
+        tokio::time::timeout(Duration::from_secs(5), callback.wait_until_dispatched())
+            .await
+            .expect("the heartbeat is dispatched");
+        assert_eq!(dispatcher.received().len(), 1);
     }
 }

@@ -7,7 +7,7 @@ use std::time::Duration;
 use comm::rust::errors::CommError;
 use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::transport::f1r3fly_connector::F1r3flyConnector;
-use comm::rust::transport::f1r3fly_server::F1r3flyServer;
+use comm::rust::transport::f1r3fly_server::{F1r3flyIncoming, F1r3flyServer};
 use comm::rust::transport::grpc_transport::GrpcTransport;
 use comm::rust::transport::grpc_transport_client::GrpcTransportClient;
 use comm::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
@@ -23,7 +23,15 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
-use super::transport_layer_runtime::{get_free_port, TransportLayerTestRuntime};
+use super::transport_layer_runtime::{get_free_port, TlsEnvironment, TransportLayerTestRuntime};
+
+fn serve_from_bound_listener(remote: &mut TlsEnvironment) -> F1r3flyIncoming {
+    let listener = remote.listener.take().expect("a bound environment");
+    let address = listener.local_addr().unwrap();
+    F1r3flyServer::builder("test".to_string(), &remote.cert, &remote.key, address)
+        .unwrap()
+        .incoming_from_listener(tokio::net::TcpListener::from_std(listener).unwrap())
+}
 
 struct SilentPeer {
     requests_seen: Arc<AtomicUsize>,
@@ -61,10 +69,7 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
         .create_environment(get_free_port().await.unwrap())
         .await
         .unwrap();
-    let remote = runtime
-        .create_environment(get_free_port().await.unwrap())
-        .await
-        .unwrap();
+    let mut remote = runtime.create_bound_environment().await.unwrap();
 
     let requests_seen = Arc::new(AtomicUsize::new(0));
     let request_started = Arc::new(Notify::new());
@@ -74,12 +79,7 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
         request_started: request_started.clone(),
         first_request_dropped: first_request_dropped.clone(),
     };
-    let address = format!("127.0.0.1:{}", remote.port).parse().unwrap();
-    let incoming = F1r3flyServer::builder("test".to_string(), &remote.cert, &remote.key, address)
-        .unwrap()
-        .incoming()
-        .await
-        .unwrap();
+    let incoming = serve_from_bound_listener(&mut remote);
     let server = tokio::spawn(async move {
         Server::builder()
             .add_service(TransportLayerServer::new(peer))
@@ -157,23 +157,14 @@ async fn tls_stream_observes_both_receiver_and_sender_deadlines() {
         ),
         (Duration::from_millis(300), Duration::from_millis(300), None),
     ] {
-        let remote = runtime
-            .create_environment(get_free_port().await.unwrap())
-            .await
-            .unwrap();
+        let mut remote = runtime.create_bound_environment().await.unwrap();
         let requests_seen = Arc::new(AtomicUsize::new(0));
         let peer = SilentPeer {
             requests_seen: requests_seen.clone(),
             request_started: Arc::new(Notify::new()),
             first_request_dropped: Arc::new(Notify::new()),
         };
-        let address = format!("127.0.0.1:{}", remote.port).parse().unwrap();
-        let incoming =
-            F1r3flyServer::builder("test".to_string(), &remote.cert, &remote.key, address)
-                .unwrap()
-                .incoming()
-                .await
-                .unwrap();
+        let incoming = serve_from_bound_listener(&mut remote);
         let server = tokio::spawn(async move {
             Server::builder()
                 .timeout(server_timeout)
