@@ -55,7 +55,7 @@ block `b' ∈ D` has `b.hash` in its justifications. We write
 
 The Rocq mechanization passes `d := requestedAsDep(D, b)` as a
 boolean parameter to `check_equivocations` rather than recomputing
-it (the upstream block-processor knows the flag and forwards it).
+it (block ingest knows the flag and forwards it).
 
 ### Definition 4.3 (Detection rules)
 

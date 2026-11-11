@@ -81,6 +81,7 @@ fuzz_target!(|input: Input| {
     if input.latest_present {
         snapshot
             .dag
+            .fixture_mut()
             .latest_messages_map
             .insert(sender.clone(), support::block_hash(input.latest_hash));
     }

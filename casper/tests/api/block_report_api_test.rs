@@ -185,11 +185,16 @@ async fn api_over_a_finalized_chain(
             Some("root".to_string()),
             None,
         );
-        dag.dag_set.insert(block.block_hash.clone());
-        dag.finalized_blocks_set.insert(block.block_hash.clone());
-        dag.block_number_map
+        let fixture = dag.fixture_mut();
+        fixture.dag_set.insert(block.block_hash.clone());
+        fixture
+            .finalized_blocks_set
+            .insert(block.block_hash.clone());
+        fixture
+            .block_number_map
             .insert(block.block_hash.clone(), height);
-        dag.height_map
+        fixture
+            .height_map
             .entry(height)
             .or_default()
             .insert(block.block_hash.clone());
