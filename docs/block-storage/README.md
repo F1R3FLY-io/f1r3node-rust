@@ -1,4 +1,4 @@
-> Last updated: 2026-11-07
+> Last updated: 2026-11-10
 
 # Crate: block-storage
 
@@ -39,22 +39,24 @@ Resident map sizes do not describe total DAG history.
 `record_directly_finalized(hash, ft_value, effect)` persists finality metadata and finalized progress before refreshing the resident window.
 `BlockMetadataStore` maintains resident block numbers, main parents, self-justifications, adjacency, and finalized-status caches over durable metadata.
 
-**Restart and index migration.** Startup resumes legacy metadata indexing in pages of at most 1,024 records, with each page and its cursor committed atomically.
-After migration, restart checks committed table counts and finalized metadata, then rebuilds the resident band through paged height scans.
-It does not rebuild the complete historical DAG in memory.
-Migration work can still cover the complete metadata store.
-The page limit bounds each batch, not total migration time.
+**Durable tables.** Five databases in the `dagstorage` environment back history outside the window: `dag-membership-v1` (hash to publication sequence, height and invalid flag), `dag-height-v1` (height order), `dag-children-v1` (reverse edges), `dag-history-state-v1` (publication progress and GC discovery state), and `dag-gc-retry-v1` (mergeable-channel GC candidates not yet deletable).
+They share one environment so a publication or finalization is one transaction.
+
+**Restart.** Startup checks committed table counts and the persisted last finalized block against metadata, then rebuilds only the resident band through paged height scans.
+Metadata written without these tables is refused with an instruction to wipe the node's data directory.
+
+**Fault tolerance and invalid blocks.** Propagating a higher fault tolerance updates only the finalized blocks still resident; evicted blocks keep their stored value.
+Each representation still loads the `invalid-blocks` table for slash evidence.
+
+**Mergeable-channel GC.** Discovery progress and the queue of candidates not yet deletable are durable.
+The walk that proves every validator has moved past a candidate is rebuilt in memory for each pass, and a storage read error fails the pass rather than deleting anything.
 
 **Diagnostics and test access.** `resident_counts()` reports resident cache cardinalities.
 Production callers use query methods rather than resident maps, whose visibility is restricted to the crate.
 `DagFixture`, `detached_fixture()`, and `fixture_mut()` require tests or the `test-internals` feature.
 Fixture mutation requires a detached view and cannot modify a view backed by durable publication.
 
-**Database compatibility.** DAG index migration changes storage indices, not block hashes or signatures.
-It does not convert an existing chain to the upstream Merkle block-hash scheme v2.
-Stored blocks must independently satisfy the current block verification rules.
-
-**Validation record.** The [bounded DAG implementation and validation report](bounded-dag-validation.md) explains the retained regressions, historical results, archived experiments, and outstanding acceptance work.
+**Tests.** `bounded_dag_test`, `dag_window_parity_test` (every accessor agrees with an unbounded DAG below the window) and `dag_memory_bound_test` (live heap stays bounded with the window on; the unbounded baseline is ignored by default).
 
 ## Pending Blocks
 
