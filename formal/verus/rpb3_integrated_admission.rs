@@ -2760,6 +2760,7 @@ pub proof fn product_epm_source_child_score_selected_exact(
             }
         }
         product_epm_receipts_carried_preserves(before, after);
+        product_score_wf_intro(after);
         assert(product_score_wf(after));
     }
 }
@@ -3633,6 +3634,7 @@ pub proof fn product_map_steady_preserves_exact(
         }
     });
     product_epm_receipts_carried_preserves(before, after);
+    product_score_wf_intro(after);
     assert(product_score_wf(after));
 }
 
@@ -3672,13 +3674,54 @@ pub proof fn product_epm_handoff_preserves_exact(
         product_epm_handoff_step(before, after, backing, plan, validated),
     ensures product_score_wf(after),
 {
+    let last = before.epm_frames.len() - 1;
     if let Some(linked) = epm::linked_map_epm_handoff(
         before.bridge.admission, before.indexed_regions, backing, plan, validated,
     ) {
         assert(epm::linked_indexed_sources(linked));
         assert(epm::frame_layout_wf(linked.epm));
+        assert(epm::source_epm_initial_frame(
+            before.bridge.admission.frames.last(), backing, plan, validated,
+        ) == Some(linked.epm));
+        assert(before.bridge.admission.frames[last].frame_kind == 3);
+        assert(linked.epm.snapshot == before.indexed_regions[last]);
+        assert(after.bridge.admission == before.bridge.admission);
+        assert(after.indexed_regions == before.indexed_regions);
+        assert forall|i: int| 0 <= i < after.epm_frames.len() implies {
+            &&& epm::indexed_image_wf(after.indexed_regions[i])
+            &&& after.indexed_regions[i].bytes
+                == after.bridge.admission.frames[i].source_bytes
+            &&& match after.epm_frames[i] {
+                None => true,
+                Some(frame) => {
+                    &&& after.bridge.admission.frames[i].frame_kind == 3
+                    &&& frame.snapshot == after.indexed_regions[i]
+                    &&& epm::frame_layout_wf(frame)
+                },
+            }
+        } by {
+            assert(epm::indexed_image_wf(after.indexed_regions[i]));
+            assert(after.indexed_regions[i].bytes
+                == after.bridge.admission.frames[i].source_bytes);
+            if i == last {
+                assert(after.epm_frames[i] == Some(linked.epm));
+                assert(after.bridge.admission.frames[i].frame_kind == 3);
+                assert(linked.epm.snapshot == after.indexed_regions[i]);
+            } else {
+                assert(after.epm_frames[i] == before.epm_frames[i]);
+                match before.epm_frames[i] {
+                    None => {},
+                    Some(frame) => {
+                        assert(before.bridge.admission.frames[i].frame_kind == 3);
+                        assert(frame.snapshot == before.indexed_regions[i]);
+                        assert(epm::frame_layout_wf(frame));
+                    },
+                }
+            }
+        }
     }
     product_epm_receipts_carried_preserves(before, after);
+    product_score_wf_intro(after);
     assert(product_score_wf(after));
 }
 
@@ -3753,6 +3796,7 @@ pub proof fn product_epm_continue_preserves_exact(
         }
     });
     product_epm_receipts_carried_preserves(before, after);
+    product_score_wf_intro(after);
     assert(product_score_wf(after));
 }
 
@@ -4415,6 +4459,7 @@ pub proof fn product_epm_complete_preserves_exact(
         assert(false);
     }
     product_epm_receipts_carried_preserves(before, after);
+    product_score_wf_intro(after);
     assert(product_score_wf(after));
 }
 
