@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use comm::rust::errors::CommError;
 use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
@@ -38,7 +39,7 @@ async fn stopping_one_peer_discards_only_its_pending_packets() {
     second.enque(&blob(&sender, b"three")).await.unwrap();
     assert_eq!(cache.len(), 3);
 
-    assert_eq!(first.stop_and_discard(), 2);
+    assert_eq!(first.close_and_discard(), 2);
     assert!(first.is_complete());
     assert_eq!(cache.len(), 1);
     assert!(matches!(
@@ -49,24 +50,41 @@ async fn stopping_one_peer_discards_only_its_pending_packets() {
     assert!(!second.is_complete());
 }
 
-#[tokio::test]
-async fn concurrent_enqueue_and_stop_leave_no_cached_packets() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_during_concurrent_enqueue_leaves_no_cached_packets() {
     let cache = Arc::new(dashmap::DashMap::new());
     let sender = peer(b"sender");
-    let queue = Arc::new(StreamObservable::new(peer(b"receiver"), 128, cache.clone()));
+    let queue = Arc::new(StreamObservable::new(peer(b"receiver"), 64, cache.clone()));
     let producer = {
         let queue = queue.clone();
         tokio::spawn(async move {
-            for _ in 0..128 {
-                let _ = queue.enque(&blob(&sender, b"pending")).await;
+            let mut sent = 0usize;
+            loop {
+                match queue.enque(&blob(&sender, b"pending")).await {
+                    Ok(()) => sent += 1,
+                    Err(CommError::PeerUnavailable(_)) => return sent,
+                    Err(other) => panic!("unexpected enqueue error: {other}"),
+                }
                 tokio::task::yield_now().await;
             }
         })
     };
 
-    tokio::task::yield_now().await;
-    queue.stop_and_discard();
-    producer.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while cache.len() < 16 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("producer fills the queue");
+
+    queue.close_and_discard();
+    let sent = tokio::time::timeout(Duration::from_secs(5), producer)
+        .await
+        .expect("producer stops once the queue is closed")
+        .unwrap();
+
+    assert!(sent > 0);
     assert!(queue.is_complete());
     assert!(cache.is_empty());
 }

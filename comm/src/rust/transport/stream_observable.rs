@@ -1,8 +1,6 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/StreamObservable.scala
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 
 use chrono::{NaiveDateTime, Utc};
 
@@ -35,7 +33,6 @@ pub struct StreamObservable {
     peer: PeerNode,
     cache: StreamCache,
     subject: FlumeLimitedBuffer<Stream>,
-    pending: Mutex<HashSet<String>>,
 }
 
 impl StreamObservable {
@@ -132,7 +129,6 @@ impl StreamObservable {
             peer,
             cache,
             subject,
-            pending: Mutex::new(HashSet::new()),
         }
     }
 
@@ -164,16 +160,13 @@ impl StreamObservable {
                 };
 
                 // Try to push to buffer
-                let mut pending = self.pending.lock().unwrap();
-                if self.subject.is_complete() {
+                let push_succeed = self.subject.push_next(stream_msg);
+
+                if !push_succeed && self.subject.is_complete() {
                     self.cache.remove(&key);
+                    self.update_stream_cache_metrics();
                     return Err(CommError::PeerUnavailable(self.peer.to_address()));
                 }
-                let push_succeed = self.subject.push_next(stream_msg);
-                if push_succeed {
-                    pending.insert(key.clone());
-                }
-                drop(pending);
 
                 if !push_succeed {
                     // Buffer is full
@@ -201,28 +194,15 @@ impl StreamObservable {
         Ok(())
     }
 
-    /// Complete the stream
-    pub fn complete(&self) {
-        let _pending = self.pending.lock().unwrap();
-        self.subject.complete();
-        tracing::debug!("Stream for {} marked as complete", self.peer.endpoint.host);
-    }
-
-    pub fn finish(&self, key: &str) {
-        self.pending.lock().unwrap().remove(key);
-        self.cache.remove(key);
-    }
-
-    pub fn stop_and_discard(&self) -> usize {
-        let mut pending = self.pending.lock().unwrap();
-        self.subject.complete();
-        let keys: Vec<String> = pending.drain().collect();
-        drop(pending);
-        for key in &keys {
-            self.cache.remove(key.as_str());
+    /// Close the queue and remove the cache entries of every packet not yet
+    /// taken by the subscriber. Returns the number of packets discarded.
+    pub fn close_and_discard(&self) -> usize {
+        let discarded = self.subject.close_and_drain();
+        for stream_msg in &discarded {
+            self.cache.remove(&stream_msg.key);
         }
         self.update_stream_cache_metrics();
-        keys.len()
+        discarded.len()
     }
 
     /// Check if the stream is complete
@@ -238,9 +218,6 @@ impl StreamObservable {
 
     /// Get the buffer size
     pub fn buffer_size(&self) -> usize { self.subject.buffer_size() }
-
-    /// Check if the stream is still active (not closed)
-    pub fn is_active(&self) -> bool { self.subject.is_active() }
 }
 
 #[cfg(test)]
@@ -286,7 +263,6 @@ mod tests {
 
         assert_eq!(observable.peer().id.key, peer.id.key);
         assert_eq!(observable.buffer_size(), buffer_size);
-        assert!(observable.is_active());
         assert!(!observable.is_complete());
     }
 
@@ -327,14 +303,40 @@ mod tests {
         // Initially not complete
         assert!(!observable.is_complete());
 
-        // Complete the stream
-        observable.complete();
+        assert_eq!(observable.close_and_discard(), 0);
         assert!(observable.is_complete());
 
         let sender = create_test_peer();
         let blob = create_test_blob(sender, vec![1, 2, 3]);
         let result = observable.enque(&blob).await;
         assert!(matches!(result, Err(CommError::PeerUnavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn close_and_discard_removes_only_undelivered_packets() {
+        let cache = create_test_cache();
+        let mut observable = StreamObservable::new(create_test_peer(), 4, cache.clone());
+        let mut subscription = observable.subscribe().expect("Should get subscription");
+        let sender = create_test_peer();
+
+        for i in 0..3u8 {
+            observable
+                .enque(&create_test_blob(sender.clone(), vec![i; 8]))
+                .await
+                .unwrap();
+        }
+        let delivered = subscription.next().await.expect("first packet");
+
+        assert_eq!(observable.close_and_discard(), 2);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains_key(&delivered.key));
+        assert!(subscription.next().await.is_none());
+
+        let refused = observable
+            .enque(&create_test_blob(sender, vec![9; 8]))
+            .await;
+        assert!(matches!(refused, Err(CommError::PeerUnavailable(_))));
+        assert_eq!(cache.len(), 1);
     }
 
     #[tokio::test]

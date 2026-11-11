@@ -351,9 +351,9 @@ impl GrpcTransportClient {
 
                     // Clean up cache
                     // This happens regardless of success/failure
-                    buffer_for_task.finish(&stream_msg.key);
+                    cache_clone.remove(&stream_msg.key);
                     if timed_out {
-                        let dropped = buffer_for_task.stop_and_discard();
+                        let dropped = buffer_for_task.close_and_discard();
                         tracing::warn!(peer = %peer_clone.to_address(), dropped, "Stopped outgoing stream queue after timeout");
                         break;
                     }
@@ -405,6 +405,7 @@ impl GrpcTransportClient {
                             if let Some(victim_channel_cell) = channels_map.remove(&victim) {
                                 if let Some(victim_channel) = victim_channel_cell.get() {
                                     victim_channel.buffer_subscriber.abort();
+                                    victim_channel.buffer.close_and_discard();
                                 }
                                 evicted_peer_ids.push(victim.id);
                             }
@@ -450,6 +451,7 @@ impl GrpcTransportClient {
 
                 // Clean up: cancel subscriber and remove from map
                 channel.buffer_subscriber.abort();
+                channel.buffer.close_and_discard();
 
                 {
                     let mut channels_map = self.channels_map.lock().await;
@@ -526,6 +528,9 @@ impl GrpcTransportClient {
     ///
     /// This method uses a pre-created transport client, eliminating the need for
     /// complex connection management in spawned tasks.
+    ///
+    /// Returns true when the stream hit a deadline, so the caller stops this
+    /// peer's queue.
     async fn stream_blob_file_with_client(
         key: &str,
         peer: &PeerNode,
@@ -724,6 +729,7 @@ impl TransportLayer for GrpcTransportClient {
             // If the channel was initialized, abort its buffer subscriber
             if let Some(channel) = channel_cell.get() {
                 channel.buffer_subscriber.abort();
+                channel.buffer.close_and_discard();
             }
             // The channel itself will be dropped when removed from the map
         }

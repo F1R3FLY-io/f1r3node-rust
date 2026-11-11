@@ -124,16 +124,15 @@ async fn timed_out_stream_discards_queue_and_allows_a_later_send() {
     tokio::time::timeout(Duration::from_secs(15), first_request_dropped.notified())
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    let closed_channel = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let closed = channels_map
+            let channel = channels_map
                 .lock()
                 .await
                 .get(&remote.peer)
-                .and_then(|cell| cell.get())
-                .is_some_and(|channel| channel.buffer.is_complete());
-            if closed {
-                break;
+                .and_then(|cell| cell.get().cloned());
+            if let Some(channel) = channel.filter(|channel| channel.buffer.is_complete()) {
+                break channel;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -150,6 +149,14 @@ async fn timed_out_stream_discards_queue_and_allows_a_later_send() {
         .await
         .unwrap();
     assert_eq!(requests_seen.load(Ordering::SeqCst), 2);
+    let current_channel = channels_map
+        .lock()
+        .await
+        .get(&remote.peer)
+        .and_then(|cell| cell.get().cloned())
+        .expect("the third send opens a channel");
+    assert!(!Arc::ptr_eq(&current_channel, &closed_channel));
+    assert!(!current_channel.buffer.is_complete());
 
     client.disconnect(&remote.peer).await.unwrap();
     server.abort();
