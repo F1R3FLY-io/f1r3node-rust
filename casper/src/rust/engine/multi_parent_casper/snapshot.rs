@@ -213,7 +213,22 @@ pub(crate) async fn compute_snapshot(
             Some(this.casper_shard_conf.max_parent_depth),
         )
         .await?;
-    let ghost_main_parent = fork_choice.tips.into_iter().next();
+    // Fork choice's head is where its descent stops, which need not be anyone's
+    // latest message, so the main parent is the best-ranked tip that is a
+    // candidate.
+    let ghost_main_parent = fork_choice
+        .tips
+        .iter()
+        .find(|tip| parent_blocks_list.iter().any(|b| b.block_hash == **tip))
+        .cloned();
+    if ghost_main_parent.is_none() && !parent_blocks_list.is_empty() {
+        tracing::warn!(
+            target: "f1r3fly.casper.parent_selection",
+            ranked_tips = fork_choice.tips.len(),
+            candidates = parent_blocks_list.len(),
+            "fork choice ranked none of the candidate parents; the main parent falls back to block-hash order"
+        );
+    }
     let mut sorted_parents_list = parent_blocks_list;
     sorted_parents_list.sort_by(|a, b| {
         let a_main = ghost_main_parent.as_ref() == Some(&a.block_hash);
@@ -252,10 +267,11 @@ pub(crate) async fn compute_snapshot(
     // C15 / Smell-3: shared wire-convention constant — see
     // `crate::rust::casper::UNLIMITED_PARENTS`.
     // COUNT CAP. Truncation drops tips, so the proposer's own latest message
-    // is pulled to the front first: losing your own tip to a cap is
-    // self-orphaning, and unlike the depth cap below there is no protocol
-    // reason to allow it — the block is perfectly valid with your own tip
-    // among its parents. Only binds on a validator set larger than the cap.
+    // is pulled in right behind the main parent first: losing your own tip to
+    // a cap is self-orphaning, and unlike the depth cap below there is no
+    // protocol reason to allow it — the block is perfectly valid with your own
+    // tip among its parents. The main parent keeps index 0. Only binds on a
+    // validator set larger than the cap.
     let mut parents_after_count_limit = compacted_parents;
     if this.casper_shard_conf.max_number_of_parents != crate::rust::casper::UNLIMITED_PARENTS {
         let cap = this.casper_shard_conf.max_number_of_parents as usize;
@@ -267,7 +283,7 @@ pub(crate) async fn compute_snapshot(
                 {
                     if idx >= cap {
                         let own_block = parents_after_count_limit.remove(idx);
-                        parents_after_count_limit.insert(0, own_block);
+                        parents_after_count_limit.insert(1, own_block);
                     }
                 }
             }
@@ -293,17 +309,9 @@ pub(crate) async fn compute_snapshot(
         // head, extend its own tip alone, and part its main chain from
         // everyone else's. The parent the window cannot hold is then the
         // proposer's own, and its deploys return only by re-proposal from the
-        // pool. The head is absent only when compaction or the count cap
-        // removed it, and the ghost-first order then puts the best remaining
-        // candidate first.
-        let anchor_index = ghost_main_parent
-            .as_ref()
-            .and_then(|head| {
-                parents_with_meta
-                    .iter()
-                    .position(|(b, _)| b.block_hash == *head)
-            })
-            .unwrap_or(0);
+        // pool. Index 0 is the main parent: the sort puts it first and the
+        // count cap keeps it there.
+        let anchor_index = 0;
         let anchor_number = parents_with_meta[anchor_index].1.block_number;
         let mut nearest_first: Vec<usize> = (0..parents_with_meta.len())
             .filter(|&i| i != anchor_index)
