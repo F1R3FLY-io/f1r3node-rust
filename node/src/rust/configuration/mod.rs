@@ -226,12 +226,12 @@ pub mod builder {
             }
         }
 
-        // A dropped delivery freezes the receiver's view until the retriever
-        // recovers it, and the recovery that must fit inside the citability
-        // window is the FULL re-request ladder (every backoff interval until
-        // the retry budget exhausts), not just the first anchor interval.
+        // A dropped delivery freezes the receiver's view until block ingest
+        // asks for it again; the recovery that must fit inside the
+        // citability window is the re-request ladder up to its slowest
+        // interval, not just the first one.
         let recovery_span = std::time::Duration::from_millis(
-            casper::rust::engine::block_retriever::total_unresolved_rerequest_span_ms(),
+            casper::rust::blocks::ingest::fetch_scheduler::total_unresolved_rerequest_span_ms(),
         );
         if max_parent_depth != i32::MAX && max_parent_depth > 0 {
             let citability_window = node_conf
@@ -243,7 +243,7 @@ pub mod builder {
                 warnings.push(format!(
                     "the citability window (max-parent-depth {} x heartbeat.check-interval \
                     {:?} = {:?}) is smaller than the full dependency-recovery re-request \
-                    span ({:?} across the whole retry budget): a lost block delivery \
+                    span ({:?} until re-requests reach their slowest interval): a lost block delivery \
                     cannot finish recovering before its blocks fall below the parent-depth \
                     horizon, converting a dropped packet into a finality stall. Raise \
                     max-parent-depth or slow the cadence.",
@@ -264,6 +264,9 @@ pub mod builder {
                 horizon are undefined at zero or below",
                 max_parent_depth,
             ));
+        }
+        if node_conf.casper.dag_hot_window_depth <= 0 {
+            return Err(eyre::eyre!("casper.dag-hot-window-depth must be positive"));
         }
         if node_conf.casper.deploy_lifespan <= 0 {
             return Err(eyre::eyre!(
@@ -734,7 +737,7 @@ mod embedded_defaults_tests {
 
         assert_eq!(
             cfg.logging.filter,
-            "info,tonic=error,hyper=error,tower=error,reqwest=error,heed=error,h2=error,comm::rust::transport::transport_layer=warn,casper::rust::engine::block_retriever=warn,casper::rust::engine::multi_parent_casper::validation_dispatcher=warn,casper::rust::util::rholang::interpreter_util=warn"
+            "info,tonic=error,hyper=error,tower=error,reqwest=error,heed=error,h2=error,comm::rust::transport::transport_layer=warn,casper::rust::engine::multi_parent_casper::validation_dispatcher=warn,casper::rust::util::rholang::interpreter_util=warn"
         );
         assert!(matches!(cfg.logging.format, LogFormat::Json));
         assert!(matches!(cfg.logging.sink, LogSink::Stdout));
@@ -763,6 +766,29 @@ mod embedded_defaults_tests {
         assert_eq!(cfg.logging.file.max_total_size_bytes, 1024);
         assert!(matches!(cfg.logging.file.rotation, LogRotation::Daily));
         assert_eq!(cfg.logging.file.retention, 14);
+    }
+
+    #[test]
+    fn report_cache_retention_outside_its_range_is_rejected() {
+        for value in ["-1", "4294967296"] {
+            let override_config = format!("api-server.report-cache-retention-blocks = {value}");
+            let result: Result<NodeConf, _> = hocon::HoconLoader::new()
+                .load_str(EMBEDDED_DEFAULTS)
+                .unwrap()
+                .load_str(&override_config)
+                .unwrap()
+                .resolve();
+            assert!(result.is_err(), "{value}");
+        }
+
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .load_str("api-server.report-cache-retention-blocks = 4294967295")
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(cfg.api_server.report_cache_retention_blocks, u32::MAX);
     }
 
     #[test]

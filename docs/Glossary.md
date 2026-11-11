@@ -29,6 +29,14 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Build identity
+
+A build identity is the source identifier that the node binary stores and reports in its version output.
+The build identity comes from an explicit build input, Git, or the fallback value `unknown`.
+
+**Preferred usage.** Use this term for the value of `F1R3NODE_BUILD_ID`.
+Keep the build identity separate from the package version and image tag.
+
 ### Deploy parameter
 
 A deploy parameter is a named, typed Rholang value included in the signed deploy data.

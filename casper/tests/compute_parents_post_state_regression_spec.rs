@@ -358,8 +358,10 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         genesis_block.block_hash.clone(),
     );
     snapshot_with_skew.dag.last_finalized_block_hash = genesis_block.block_hash.clone();
+    snapshot_with_skew.dag = snapshot_with_skew.dag.detached_fixture().unwrap().build();
     snapshot_with_skew
         .dag
+        .fixture_mut()
         .finalized_blocks_set
         .insert(b1.block_hash.clone());
 
@@ -1335,4 +1337,371 @@ async fn run_visible_blocks_scope_test() {
             }
         }
     }
+}
+
+#[test]
+fn a_restored_node_merges_a_side_branch_below_its_horizon_like_a_full_node() {
+    let stack_bytes = std::env::var("F1R3_COMPUTE_PARENTS_REGRESSION_STACK_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(64 * 1024 * 1024);
+
+    let handle = std::thread::Builder::new()
+        .name("restored-node-merge-scope".to_string())
+        .stack_size(stack_bytes)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build Tokio runtime");
+            runtime.block_on(run_restored_node_merge_scope_test());
+        })
+        .expect("Failed to spawn test thread");
+
+    handle.join().expect("Test thread panicked");
+}
+
+/// `orphan` (height 1) carries a deploy and reaches the main chain only as the
+/// secondary parent of `side` (height 4), whose main parent is on the main
+/// chain. A restored node holds genesis and heights 2 and up, so the floor
+/// derivation stays inside what it holds while the merge-scope walk from the
+/// side tip reaches `orphan` below the horizon. The node must refuse, fetch
+/// what each refusal names, and end on the full node's state.
+async fn run_restored_node_merge_scope_test() {
+    let secp = Secp256k1;
+    let (_validator_sk, validator_pk) = secp.new_key_pair();
+    let validator: Bytes = validator_pk.bytes.clone();
+    let shard_name = "test-shard".to_string();
+
+    let mut kvm = InMemoryStoreManager::new();
+    let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+        .await
+        .expect("Failed to create block store");
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+        .await
+        .expect("Failed to create DAG storage");
+    let rspace_store = kvm
+        .r_space_stores()
+        .await
+        .expect("Failed to get rspace stores");
+    let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
+        .await
+        .expect("Failed to create mergeable store");
+    let (mut runtime_manager, _) = RuntimeManager::create_with_history(
+        rspace_store,
+        mergeable_store,
+        Genesis::default_mergeable_tags_arc(),
+        ExternalServices::noop(),
+    );
+
+    let genesis = Genesis {
+        shard_id: shard_name.clone(),
+        timestamp: 0,
+        block_number: 0,
+        proof_of_stake: ProofOfStake {
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
+            validators: vec![GenesisValidator {
+                pk: validator_pk.clone(),
+                stake: 100.into(),
+            }],
+            epoch_length: 1000,
+            quarantine_length: 50000,
+            number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: (0).into(),
+            pos_multi_sig_public_keys: vec![
+                "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
+                "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
+                "047f0f0f5bbe1d6d1a8dac4d88a3957851940f39a57cd89d55fe25b536ab67e6d76fd3f365c83e5bfe11fe7117e549b1ae3dd39bfc867d1c725a4177692c4e7754".to_string(),
+            ],
+            pos_multi_sig_quorum: 2,
+        },
+        vaults: vec![casper::rust::genesis::contracts::vault::Vault {
+            vault_address:
+                rholang::rust::interpreter::util::vault_address::VaultAddress::from_public_key(
+                    &construct_deploy::DEFAULT_PUB,
+                )
+                .expect("Failed to create default deployer vault address"),
+            initial_balance: 9_000_000.into(),
+        }],
+        supply: (i64::MAX as u64).into(),
+        version: 1,
+        native_token_name: "F1R3CAP".to_string(),
+        native_token_symbol: "F1R3".to_string(),
+        native_token_decimals: 8,
+        fs_bundle: Vec::new(),
+        consensus_fs_snapshot_cadence: None,
+    };
+
+    let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+        .await
+        .expect("Failed to create genesis block");
+    block_store
+        .put_block_message(&genesis_block)
+        .expect("Failed to store genesis block");
+    dag_storage
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .expect("Failed to insert genesis in DAG");
+    let genesis_hash = genesis_block.block_hash.clone();
+
+    let mut seq = 0;
+    let mut child = |parents: &[&BlockMessage], deploys: Vec<ProcessedDeploy>| {
+        seq += 1;
+        let height = parents
+            .iter()
+            .map(|parent| parent.body.state.block_number)
+            .max()
+            .expect("a child has parents")
+            + 1;
+        let mut block = block_implicits::get_random_block(
+            Some(height),
+            Some(seq),
+            Some(proto_util::post_state_hash(parents[0])),
+            Some(StateHash::default()),
+            Some(validator.clone()),
+            Some(1),
+            Some(now_millis()),
+            Some(
+                parents
+                    .iter()
+                    .map(|parent| parent.block_hash.clone())
+                    .collect(),
+            ),
+            Some(Vec::new()),
+            Some(deploys),
+            Some(Vec::new()),
+            Some(parents[0].body.state.bonds.clone()),
+            Some(shard_name.clone()),
+            None,
+        );
+        if parents.len() > 1 {
+            block.body.merge_base = parents[0].block_hash.clone();
+        }
+        block
+    };
+
+    let orphan_deploy = construct_deploy::source_deploy_now_full(
+        r#"@"below-the-restore-horizon"!!(1)"#.to_string(),
+        None,
+        Some((1).into()),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard_name.clone()),
+    )
+    .expect("Failed to build orphan deploy");
+
+    let mut main: Vec<BlockMessage> = vec![genesis_block.clone()];
+    let mut orphan: Option<BlockMessage> = None;
+    let mut side: Option<BlockMessage> = None;
+    let mut side_tip: Option<BlockMessage> = None;
+    for height in 1..=6 {
+        let mut raws = vec![("main", child(&[&main[height - 1]], Vec::new()))];
+        match height {
+            1 => raws.push((
+                "orphan",
+                child(&[&genesis_block], vec![ProcessedDeploy::empty(
+                    orphan_deploy.clone(),
+                )]),
+            )),
+            4 => raws.push((
+                "side",
+                child(
+                    &[&main[3], orphan.as_ref().expect("orphan stepped")],
+                    Vec::new(),
+                ),
+            )),
+            5 => raws.push((
+                "side_tip",
+                child(&[side.as_ref().expect("side stepped")], Vec::new()),
+            )),
+            _ => {}
+        }
+        for (role, raw_block) in raws {
+            let stepped = step_block(
+                &mut block_store,
+                &dag_storage,
+                &mut runtime_manager,
+                &raw_block,
+                validator.clone(),
+                shard_name.clone(),
+                genesis_hash.clone(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("Failed to step {role} at height {height}: {error:?}"));
+            match role {
+                "main" => main.push(stepped),
+                "orphan" => orphan = Some(stepped),
+                "side" => side = Some(stepped),
+                _ => side_tip = Some(stepped),
+            }
+        }
+    }
+    let orphan = orphan.expect("orphan stepped");
+    let side = side.expect("side stepped");
+    let side_tip = side_tip.expect("side tip stepped");
+    assert!(
+        orphan.body.deploys.iter().all(|pd| !pd.is_failed),
+        "the orphan deploy must execute cleanly"
+    );
+
+    let mut restored_kvm = InMemoryStoreManager::new();
+    let restored_store = KeyValueBlockStore::create_from_kvm(&mut restored_kvm)
+        .await
+        .expect("Failed to create restored block store");
+    let restored_dag = BlockDagKeyValueStorage::new(&mut restored_kvm)
+        .await
+        .expect("Failed to create restored DAG storage");
+    restored_store
+        .put_block_message(&genesis_block)
+        .expect("Failed to store restored genesis");
+    restored_dag
+        .insert(
+            &genesis_block,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .expect("Failed to insert restored genesis");
+    let band = main[2..=4]
+        .iter()
+        .chain(std::iter::once(&side))
+        .chain(std::iter::once(&main[5]))
+        .chain(std::iter::once(&side_tip))
+        .chain(std::iter::once(&main[6]));
+    for block in band {
+        restored_store
+            .put_block_message(block)
+            .expect("Failed to store restored block");
+        restored_dag
+            .insert(
+                block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .expect("Failed to insert restored block");
+    }
+
+    // A restored node's floors derive forward from its seeded anchor. Both
+    // nodes get the same cached floors, so the held history is the only
+    // difference between them.
+    for dag in [&dag_storage, &restored_dag] {
+        let view = dag.get_representation().expect("dag representation");
+        for tip in [&main[6], &side_tip] {
+            view.put_cached_floor(tip.block_hash.clone(), main[3].block_hash.clone())
+                .expect("Failed to seed cached floor");
+        }
+    }
+
+    let parents = vec![main[6].clone(), side_tip.clone()];
+    let latest_messages: std::collections::BTreeMap<_, _> =
+        [(validator.clone(), main[6].block_hash.clone())]
+            .into_iter()
+            .collect();
+    let snapshot_of = |dag: &BlockDagKeyValueStorage| {
+        let mut snapshot = mk_snapshot(
+            dag.get_representation().expect("dag representation"),
+            validator.clone(),
+            shard_name.clone(),
+            genesis_hash.clone(),
+        );
+        snapshot.dag.last_finalized_block_hash = genesis_hash.clone();
+        snapshot
+    };
+
+    let full = compute_parents_post_state(
+        &block_store,
+        parents.clone(),
+        &snapshot_of(&dag_storage),
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to merge on the full node");
+
+    assert!(
+        full.applied_from_scope.contains(&orphan_deploy.sig),
+        "the full node merges the orphan's deploy"
+    );
+
+    // Settled history arrives without a replay, so its mergeable entry is
+    // absent on the restored node.
+    assert!(runtime_manager
+        .delete_mergeable_channels(
+            &orphan.body.state.post_state_hash,
+            orphan.sender.clone(),
+            orphan.seq_num,
+        )
+        .expect("Failed to delete mergeable entry"));
+    runtime_manager.parents_post_state_cache.clear();
+    runtime_manager.block_index_cache.clear();
+
+    let mut fetched: Vec<(BlockHash, &'static str)> = Vec::new();
+    let restored = loop {
+        match compute_parents_post_state(
+            &restored_store,
+            parents.clone(),
+            &snapshot_of(&restored_dag),
+            &runtime_manager,
+            &latest_messages,
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(merged) => break merged,
+            Err(CasperError::BlockNotHeld(missing, site)) => {
+                assert!(
+                    fetched.len() < 8,
+                    "the restored node kept refusing: {fetched:?}"
+                );
+                let block = block_store
+                    .get(&missing)
+                    .expect("full node block store")
+                    .expect("the full node holds every block a refusal names");
+                restored_store
+                    .put_block_message(&block)
+                    .expect("Failed to store fetched block");
+                restored_dag
+                    .insert(
+                        &block,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,
+                    )
+                    .expect("Failed to admit fetched block");
+                fetched.push((missing, site.accessor()));
+            }
+            Err(other) => panic!("the restored node failed instead of refusing: {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        restored.state, full.state,
+        "the restored node merged a different scope than the full node; fetched {fetched:?}"
+    );
+    assert_eq!(restored.applied_from_scope, full.applied_from_scope);
+    assert_eq!(
+        fetched.first(),
+        Some(&(orphan.block_hash.clone(), "lookup_unsafe")),
+        "the merge-scope walk refuses first, naming the orphan; fetched {fetched:?}"
+    );
+    assert!(
+        fetched
+            .iter()
+            .all(|(hash, _)| *hash == orphan.block_hash || *hash == main[1].block_hash),
+        "only the two height-1 blocks lie below the horizon; fetched {fetched:?}"
+    );
+    assert!(
+        runtime_manager
+            .get_mergeable_entry_bytes(&orphan)
+            .expect("mergeable entry query failed")
+            .1
+            .is_some(),
+        "the merge replays the fetched block to rebuild its mergeable entry"
+    );
 }

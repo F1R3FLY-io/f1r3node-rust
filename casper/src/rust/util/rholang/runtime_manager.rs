@@ -49,7 +49,7 @@ use crate::rust::metrics_constants::{
     RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
-use crate::rust::rholang::runtime::RuntimeOps;
+use crate::rust::rholang::runtime::{ConsensusParameters, RuntimeOps};
 use crate::rust::util::bounded_cache::BoundedCache;
 use crate::rust::util::rholang::interpreter_util::MAX_PARENT_MERGE_SCOPE_BLOCKS;
 use crate::rust::util::rholang::replay_cache::{
@@ -404,7 +404,6 @@ pub struct MergedPreState {
     /// adjudicated and carries the formation-time duplicate flag. These
     /// travel to the block body as-is; the record IS the consensus content.
     pub rejected_user: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
-    pub rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
     /// User sigs whose chains the merge APPLIED from scope: their effects
     /// are in `state`, so executing any of them on top would double-apply.
     /// Empty on the non-merging shapes (genesis, single parent, covering
@@ -1155,14 +1154,13 @@ impl RuntimeManager {
             .await
     }
 
-    /// On-chain consensus parameters `(max-parent-depth, deploy-lifespan,
-    /// min-phlo-price)` at `start_hash`, or `None` when the chain's genesis
-    /// predates them. Read once at casper construction (`hash_set_casper`) —
-    /// not cached here.
+    /// On-chain consensus parameters at `start_hash`, or `None` when the
+    /// chain's genesis predates them. Read once at casper construction
+    /// (`hash_set_casper`) — not cached here.
     pub async fn get_consensus_parameters(
         &self,
         start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, shared::rust::token_amount::TokenAmount)>, CasperError> {
+    ) -> Result<Option<ConsensusParameters>, CasperError> {
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops.get_consensus_parameters(start_hash).await

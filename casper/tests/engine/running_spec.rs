@@ -8,14 +8,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::blocks::block_processor::QueuedBlock;
+use casper::rust::blocks::ingest::block_ingest::Stores;
+use casper::rust::blocks::ingest::ingest_state::{IngestInput, IngestState, Refusal, Refused};
+use casper::rust::blocks::ingest::peer_reputation::STRIKE_THRESHOLD;
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
-use casper::rust::engine::block_retriever::AdmitHashReason;
 use casper::rust::engine::engine::Engine;
 use casper::rust::engine::engine_cell::EngineCell;
-use casper::rust::engine::peer_scoring::{Strike, STRIKE_THRESHOLD};
 use casper::rust::engine::running::{update_fork_choice_tips_if_stuck, Running};
 use casper::rust::errors::CasperError;
 use casper::rust::validate::Validate;
@@ -50,10 +50,6 @@ mod tests {
 
     #[async_trait]
     impl MultiParentCasper for ValidatorAwareNoOpsCasper {
-        async fn fetch_dependencies(&self) -> Result<(), CasperError> {
-            self.inner.fetch_dependencies().await
-        }
-
         fn normalized_initial_fault(
             &self,
             weights: std::collections::HashMap<
@@ -112,11 +108,9 @@ mod tests {
             self.inner.get_snapshot().await
         }
 
-        fn contains(&self, hash: &BlockHash) -> bool { self.inner.contains(hash) }
-
-        fn dag_contains(&self, hash: &BlockHash) -> bool { self.inner.dag_contains(hash) }
-
-        fn buffer_contains(&self, hash: &BlockHash) -> bool { self.inner.buffer_contains(hash) }
+        fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+            self.inner.dag_contains(hash)
+        }
 
         fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
             self.inner.get_approved_block()
@@ -182,18 +176,10 @@ mod tests {
         > {
             self.inner.handle_invalid_block(block, status, dag)
         }
-
-        fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-            self.inner.get_dependency_free_from_buffer()
-        }
-
-        fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-            self.inner.get_all_from_buffer()
-        }
     }
 
     #[tokio::test]
-    async fn engine_should_enqueue_block_message_for_processing() {
+    async fn engine_should_hand_a_block_message_to_block_ingest() {
         let fixture = TestFixture::new().await;
         let block_message = get_random_block(
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
@@ -210,13 +196,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify the block was enqueued for processing (following Scala test behavior)
-        // This matches the Scala test pattern: getRandomBlock() -> signBlock() -> handle() -> check queue
         assert!(
             fixture
-                .is_block_in_processing_queue(&signed_block.block_hash)
+                .was_delivered_to_ingest(&signed_block.block_hash)
                 .await,
-            "Block should be enqueued in processing queue after being handled"
+            "a handled block message must be delivered to block ingest"
         );
     }
 
@@ -406,8 +390,7 @@ mod tests {
         };
 
         let running = Running::new(
-            fixture.block_processing_queue_tx.clone(),
-            fixture.blocks_in_processing.clone(),
+            fixture.ingest.clone(),
             Arc::new(ValidatorAwareNoOpsCasper {
                 inner: casper,
                 validator_id: fixture.validator_id.clone(),
@@ -420,7 +403,6 @@ mod tests {
             false,
             fixture.transport_layer.clone(),
             fixture.rp_conf_ask.clone(),
-            fixture.block_retriever.clone(),
             None,
         );
         engine_cell.set(Arc::new(running)).await;
@@ -499,8 +481,7 @@ mod tests {
         };
 
         let running = Running::new(
-            fixture.block_processing_queue_tx.clone(),
-            fixture.blocks_in_processing.clone(),
+            fixture.ingest.clone(),
             Arc::new(ValidatorAwareNoOpsCasper {
                 inner: casper,
                 validator_id: fixture.validator_id.clone(),
@@ -513,7 +494,6 @@ mod tests {
             false,
             fixture.transport_layer.clone(),
             fixture.rp_conf_ask.clone(),
-            fixture.block_retriever.clone(),
             None,
         );
         engine_cell.set(Arc::new(running)).await;
@@ -556,39 +536,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_block_message_is_enqueued_only_once() {
-        let fixture = TestFixture::new().await;
-        let block_message = get_random_block(
-            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
-        );
-        let signed_block = fixture.validator_id.sign_block(&block_message);
-
-        for _ in 0..2 {
-            fixture
-                .engine
-                .handle(
-                    fixture.local.clone(),
-                    CasperMessage::BlockMessage(signed_block.clone()),
-                )
-                .await
-                .unwrap();
-        }
-
-        let mut rx = fixture.block_processing_queue_rx.lock().await;
-        let mut enqueued = 0usize;
-        while let Ok((_, block, _)) = rx.try_recv() {
-            if block.block().block_hash == signed_block.block_hash {
-                enqueued += 1;
-            }
-        }
-        assert_eq!(
-            enqueued, 1,
-            "a block already queued/in-processing must not be enqueued again"
-        );
-    }
-
-    #[tokio::test]
-    async fn forged_copy_does_not_take_the_in_flight_slot_of_the_honest_block() {
+    async fn a_forged_copy_never_reaches_block_ingest_and_the_honest_block_still_does() {
         let fixture = TestFixture::new().await;
         let block_message = get_random_block(
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
@@ -611,13 +559,7 @@ mod tests {
                 .unwrap();
         }
 
-        let mut rx = fixture.block_processing_queue_rx.lock().await;
-        let mut enqueued = Vec::new();
-        while let Ok((_, block, _)) = rx.try_recv() {
-            assert!(matches!(block, QueuedBlock::Network(_)));
-            enqueued.push(block.block().clone());
-        }
-        assert_eq!(enqueued, vec![honest]);
+        assert_eq!(drain_deliveries(&fixture).await, vec![honest]);
     }
 
     #[tokio::test]
@@ -932,13 +874,88 @@ mod tests {
         assert_eq!(fixture.transport_layer.request_count(), 0);
     }
 
-    async fn drain_queue(fixture: &TestFixture) -> Vec<BlockHash> {
-        let mut rx = fixture.block_processing_queue_rx.lock().await;
-        let mut hashes = Vec::new();
-        while let Ok((_, block, _guard)) = rx.try_recv() {
-            hashes.push(block.block().block_hash.clone());
+    /// Block ingest's state over the fixture's view: what the engine reads
+    /// when it decides whether to ignore a peer or a block.
+    struct Owner {
+        state: IngestState,
+    }
+
+    impl Owner {
+        fn new(fixture: &TestFixture) -> Self {
+            Self {
+                state: IngestState::new(fixture.ingest.view().clone()),
+            }
         }
-        hashes
+
+        fn handle(&mut self, fixture: &TestFixture, input: IngestInput) {
+            let stores = Stores {
+                dag: &fixture.block_dag_storage,
+                block_store: &fixture.block_store,
+            };
+            self.state
+                .handle(input, fixture.ingest.view().now_ms(), &stores);
+        }
+
+        fn need(&mut self, fixture: &TestFixture, hash: &BlockHash) {
+            self.handle(fixture, IngestInput::Need { hash: hash.clone() });
+        }
+
+        /// Take what the engine sent block ingest's owner.
+        async fn absorb(&mut self, fixture: &TestFixture) {
+            let inputs: Vec<IngestInput> = {
+                let mut ports = fixture.ingest_ports.lock().await;
+                std::iter::from_fn(|| ports.inputs.try_recv().ok()).collect()
+            };
+            for input in inputs {
+                self.handle(fixture, input);
+            }
+        }
+
+        /// Intake refuses `block` from `peer` as having an unauthorized
+        /// sender; a delivery is unsolicited unless the node asked for it.
+        fn refuse_unauthorized(
+            &mut self,
+            fixture: &TestFixture,
+            block: &BlockMessage,
+            peer: &PeerNode,
+        ) {
+            let unsolicited = !fixture.ingest.view().is_solicited(&block.block_hash);
+            self.handle(
+                fixture,
+                IngestInput::IntakeRefused(Refused {
+                    hash: block.block_hash.clone(),
+                    from: Some(peer.clone()),
+                    unsolicited,
+                    size: 0,
+                    sender: block.sender.clone(),
+                    height: block.body.state.block_number,
+                    reason: Refusal::Unauthorized,
+                }),
+            );
+        }
+    }
+
+    async fn drain_deliveries(fixture: &TestFixture) -> Vec<BlockMessage> {
+        let mut ports = fixture.ingest_ports.lock().await;
+        let mut blocks = Vec::new();
+        while let Ok(delivery) = ports.awaited.try_recv() {
+            blocks.push(delivery.block.into_block());
+        }
+        while let Ok(delivery) = ports.unsolicited.try_recv() {
+            blocks.push(delivery.block.into_block());
+        }
+        blocks
+    }
+
+    async fn drain_announcements(fixture: &TestFixture) -> Vec<(BlockHash, PeerNode)> {
+        let mut ports = fixture.ingest_ports.lock().await;
+        let mut announced = Vec::new();
+        while let Ok(input) = ports.inputs.try_recv() {
+            if let IngestInput::Announced { hash, peer } = input {
+                announced.push((hash, peer));
+            }
+        }
+        announced
     }
 
     fn signed_random_block(fixture: &TestFixture) -> BlockMessage {
@@ -947,7 +964,12 @@ mod tests {
         ))
     }
 
-    async fn push_struck_blocks(fixture: &TestFixture, peer: &PeerNode, count: usize) {
+    async fn push_refused_blocks(
+        fixture: &TestFixture,
+        owner: &mut Owner,
+        peer: &PeerNode,
+        count: usize,
+    ) {
         for _ in 0..count {
             let block = signed_random_block(fixture);
             fixture
@@ -955,18 +977,17 @@ mod tests {
                 .handle(peer.clone(), CasperMessage::BlockMessage(block.clone()))
                 .await
                 .unwrap();
-            assert_eq!(drain_queue(fixture).await, vec![block.block_hash.clone()]);
-            fixture
-                .block_retriever
-                .strike_block_source(&block.block_hash, Strike::UnauthorizedSender);
+            assert_eq!(drain_deliveries(fixture).await, vec![block.clone()]);
+            owner.refuse_unauthorized(fixture, &block, peer);
         }
     }
 
     #[tokio::test]
     async fn engine_should_ignore_block_traffic_from_a_peer_with_too_many_invalid_pushes() {
         let fixture = TestFixture::new().await;
+        let mut owner = Owner::new(&fixture);
         let attacker = peer_node("attacker", 40400);
-        push_struck_blocks(&fixture, &attacker, STRIKE_THRESHOLD).await;
+        push_refused_blocks(&fixture, &mut owner, &attacker, STRIKE_THRESHOLD).await;
 
         let dropped = signed_random_block(&fixture);
         fixture
@@ -974,9 +995,8 @@ mod tests {
             .handle(attacker.clone(), CasperMessage::BlockMessage(dropped))
             .await
             .unwrap();
-        assert!(drain_queue(&fixture).await.is_empty());
+        assert!(drain_deliveries(&fixture).await.is_empty());
 
-        let requests_before = fixture.transport_layer.request_count();
         fixture
             .engine
             .handle(
@@ -987,7 +1007,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(fixture.transport_layer.request_count(), requests_before);
+        assert!(drain_announcements(&fixture).await.is_empty());
 
         let honest = signed_random_block(&fixture);
         fixture
@@ -998,12 +1018,13 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(drain_queue(&fixture).await, vec![honest.block_hash]);
+        assert_eq!(drain_deliveries(&fixture).await, vec![honest]);
     }
 
     #[tokio::test]
     async fn engine_should_score_out_a_peer_that_pushes_forged_blocks() {
         let fixture = TestFixture::new().await;
+        let mut owner = Owner::new(&fixture);
         let forger_peer = peer_node("forger", 40400);
         let honest = signed_random_block(&fixture);
         let (sk, _pk) = Secp256k1.new_key_pair();
@@ -1018,8 +1039,9 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert!(drain_queue(&fixture).await.is_empty());
-        assert!(fixture.block_retriever.should_ignore_peer(&forger_peer));
+        owner.absorb(&fixture).await;
+        assert!(drain_deliveries(&fixture).await.is_empty());
+        assert!(fixture.ingest.view().is_ignored(&forger_peer));
 
         fixture
             .engine
@@ -1029,34 +1051,71 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(drain_queue(&fixture).await, vec![honest.block_hash]);
-        assert!(!fixture.block_retriever.should_ignore_peer(&fixture.local));
+        assert_eq!(drain_deliveries(&fixture).await, vec![honest]);
+        assert!(!fixture.ingest.view().is_ignored(&fixture.local));
+    }
+
+    /// A message that fails the integrity check never reaches block ingest,
+    /// so the need for the hash it claims stays outstanding.
+    async fn refuse_without_touching_the_claimed_hash(foreign_hash: bool) {
+        let fixture = TestFixture::new().await;
+        let mut owner = Owner::new(&fixture);
+        let honest = signed_random_block(&fixture);
+        owner.need(&fixture, &honest.block_hash);
+
+        let mut refused = signed_random_block(&fixture);
+        if foreign_hash {
+            let (sk, _pk) = Secp256k1.new_key_pair();
+            let other = ValidatorIdentity::new(&sk);
+            refused.block_hash = honest.block_hash.clone();
+            refused.sig = other.signature(honest.block_hash.as_ref()).sig;
+            refused.sender = other.public_key.bytes.clone();
+        } else {
+            refused = honest.clone();
+            refused.sig = Bytes::from(vec![0u8; honest.sig.len()]);
+        }
+        fixture
+            .engine
+            .handle(
+                peer_node("sender", 40400),
+                CasperMessage::BlockMessage(refused),
+            )
+            .await
+            .unwrap();
+        owner.absorb(&fixture).await;
+
+        assert!(drain_deliveries(&fixture).await.is_empty());
+        assert!(
+            fixture.ingest.view().is_awaited(&honest.block_hash),
+            "a refused message must not end the need for the hash it claims"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_signed_under_a_foreign_hash_does_not_touch_that_hash() {
+        refuse_without_touching_the_claimed_hash(true).await;
+    }
+
+    #[tokio::test]
+    async fn a_badly_signed_message_does_not_touch_the_hash_that_it_claims() {
+        refuse_without_touching_the_claimed_hash(false).await;
     }
 
     #[tokio::test]
     async fn engine_should_not_strike_a_peer_for_a_block_requested_as_a_dependency() {
         let fixture = TestFixture::new().await;
+        let mut owner = Owner::new(&fixture);
         let server = peer_node("server", 40400);
         for _ in 0..STRIKE_THRESHOLD {
             let block = signed_random_block(&fixture);
-            fixture
-                .block_retriever
-                .admit_hash(
-                    block.block_hash.clone(),
-                    None,
-                    AdmitHashReason::MissingDependencyRequested,
-                )
-                .await
-                .unwrap();
+            owner.need(&fixture, &block.block_hash);
             fixture
                 .engine
                 .handle(server.clone(), CasperMessage::BlockMessage(block.clone()))
                 .await
                 .unwrap();
-            assert_eq!(drain_queue(&fixture).await, vec![block.block_hash.clone()]);
-            fixture
-                .block_retriever
-                .strike_block_source(&block.block_hash, Strike::InvalidSender);
+            assert_eq!(drain_deliveries(&fixture).await, vec![block.clone()]);
+            owner.refuse_unauthorized(&fixture, &block, &server);
         }
 
         let next = signed_random_block(&fixture);
@@ -1065,26 +1124,19 @@ mod tests {
             .handle(server, CasperMessage::BlockMessage(next.clone()))
             .await
             .unwrap();
-        assert_eq!(drain_queue(&fixture).await, vec![next.block_hash]);
+        assert_eq!(drain_deliveries(&fixture).await, vec![next]);
     }
 
     #[tokio::test]
     async fn engine_should_accept_a_requested_block_from_an_ignored_peer() {
         let fixture = TestFixture::new().await;
+        let mut owner = Owner::new(&fixture);
         let peer = peer_node("only-holder", 40400);
-        push_struck_blocks(&fixture, &peer, STRIKE_THRESHOLD).await;
-        assert!(fixture.block_retriever.should_ignore_peer(&peer));
+        push_refused_blocks(&fixture, &mut owner, &peer, STRIKE_THRESHOLD).await;
+        assert!(fixture.ingest.view().is_ignored(&peer));
 
         let announced = Bytes::from(vec![9u8; 32]);
-        fixture
-            .block_retriever
-            .admit_hash(
-                announced.clone(),
-                None,
-                AdmitHashReason::MissingDependencyRequested,
-            )
-            .await
-            .unwrap();
+        owner.need(&fixture, &announced);
         fixture
             .engine
             .handle(
@@ -1095,29 +1147,18 @@ mod tests {
             )
             .await
             .unwrap();
-        let state = fixture
-            .block_retriever
-            .get_request_state_for_test(&announced)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(state.waiting_list.contains(&peer) || state.peers.contains(&peer));
+        assert_eq!(drain_announcements(&fixture).await, vec![(
+            announced,
+            peer.clone()
+        )]);
 
         let requested = signed_random_block(&fixture);
-        fixture
-            .block_retriever
-            .admit_hash(
-                requested.block_hash.clone(),
-                None,
-                AdmitHashReason::MissingDependencyRequested,
-            )
-            .await
-            .unwrap();
+        owner.need(&fixture, &requested.block_hash);
         fixture
             .engine
             .handle(peer, CasperMessage::BlockMessage(requested.clone()))
             .await
             .unwrap();
-        assert_eq!(drain_queue(&fixture).await, vec![requested.block_hash]);
+        assert_eq!(drain_deliveries(&fixture).await, vec![requested]);
     }
 }
