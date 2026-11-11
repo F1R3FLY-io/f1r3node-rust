@@ -13,8 +13,14 @@ use crate::helper::bonding_util;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_VALIDATOR_KEY_PAIRS};
 
-fn equal_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-    validators.into_iter().map(|pk| (pk, 10)).collect()
+fn equal_bonds(
+    validators: Vec<PublicKey>,
+) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
+    validators
+        .into_iter()
+        .map(|pk| (pk, 10))
+        .map(|(key, stake)| (key, stake.into()))
+        .collect()
 }
 
 /// Four validators with equal stake are bonded at genesis, but only `running`
@@ -104,11 +110,12 @@ async fn network_with_newcomer_stake(
         DEFAULT_VALIDATOR_KEY_PAIRS[2].clone(),
         (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
     ];
-    let bonds: HashMap<PublicKey, i64> = validator_key_pairs
+    let bonds: HashMap<PublicKey, shared::rust::token_amount::TokenAmount> = validator_key_pairs
         .iter()
         .take(3)
         .enumerate()
-        .map(|(i, (_, pk))| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(i, (_, pk))| (pk.clone(), 2 * i as u64 + 1))
+        .map(|(key, stake)| (key, stake.into()))
         .collect();
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
     parameters.2.proof_of_stake.epoch_length = 4;
@@ -177,7 +184,7 @@ async fn a_validator_bonded_later_that_never_runs_does_not_stall_finalization() 
     );
     let dag = nodes[0].block_dag_storage.get_representation().unwrap();
     assert!(
-        dag.is_finalized(&carrier.block_hash),
+        dag.is_finalized(&carrier.block_hash).unwrap(),
         "the block that carries the user deploy (#{}) must finalize; LFB is #{}",
         carrier.body.state.block_number,
         after.body.state.block_number
@@ -233,8 +240,8 @@ async fn a_newcomer_that_starts_its_node_is_accepted_and_then_counts() {
     for node in &nodes[..3] {
         let dag = node.block_dag_storage.get_representation().unwrap();
         assert_eq!(
-            dag.latest_messages_map.get(&DEFAULT_PUB.bytes),
-            Some(&first.block_hash),
+            dag.latest_message_hash(&DEFAULT_PUB.bytes),
+            Some(first.block_hash.clone()),
             "{} must accept the newcomer's first block",
             node.name
         );

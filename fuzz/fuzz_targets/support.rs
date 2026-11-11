@@ -154,7 +154,10 @@ fn empty_dag() -> KeyValueDagRepresentation {
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let floor_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let frontier_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    KeyValueDagRepresentation {
+    block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+        history: None,
+        view_sequence: u64::MAX,
+        view_max_height: None,
         dag_set: imbl::HashSet::new(),
         latest_messages_map: imbl::HashMap::new(),
         child_map: imbl::HashMap::new(),
@@ -173,6 +176,7 @@ fn empty_dag() -> KeyValueDagRepresentation {
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
     }
+    .build()
 }
 
 fn metadata(evidence: &Evidence) -> BlockMetadata {
@@ -220,22 +224,31 @@ pub fn snapshot(
             continue;
         }
         let metadata = metadata(evidence);
-        dag.dag_set.insert(metadata.block_hash.clone());
-        dag.block_number_map
+        dag.fixture_mut()
+            .dag_set
+            .insert(metadata.block_hash.clone());
+        dag.fixture_mut()
+            .block_number_map
             .insert(metadata.block_hash.clone(), metadata.block_number);
-        dag.height_map
+        dag.fixture_mut()
+            .height_map
             .entry(metadata.block_number)
             .or_insert_with(imbl::HashSet::new)
             .insert(metadata.block_hash.clone());
         if metadata.invalid {
-            dag.invalid_blocks_set.insert(metadata.clone());
+            dag.fixture_mut()
+                .invalid_blocks_set
+                .insert(metadata.clone());
         }
         dag.block_metadata_index
             .write()
             .add(metadata)
             .expect("metadata insert");
     }
-    let bonds_map = bonds.iter().cloned().collect::<HashMap<_, _>>();
+    let bonds_map = bonds
+        .iter()
+        .map(|(validator, stake)| (validator.clone(), (*stake).into()))
+        .collect::<HashMap<_, _>>();
     let active_validators = bonds.into_iter().map(|(validator, _)| validator).collect();
     CasperSnapshot {
         dag,

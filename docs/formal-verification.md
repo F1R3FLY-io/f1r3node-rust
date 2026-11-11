@@ -96,6 +96,12 @@ and reused by every verified area:
 
 ## Worked example: byte-bounded block admission
 
+> **Superseded.** [Block ingest](./casper/BLOCK_INGEST.md) replaced the
+> pipeline that this example maps onto: the processing queue,
+> `block_processor_instance.rs` and `block_retriever.rs`. The model in
+> `formal/tlaplus/block_admission/` stays as a record. Its mapping to code
+> and the obligations below no longer describe the node.
+
 The 2026-08-04 daily soak (run 30880995655) breached the host RSS ceiling
 *after* the replay-cache runaway fix held. Per-node attribution showed the
 readonly observer at 6,492MB peak against a 947–3,371MB validator baseline:

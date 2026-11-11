@@ -23,6 +23,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use shared::rust::token_amount::TokenAmount;
 use tempfile::TempDir;
 
 use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
@@ -76,6 +77,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static CACHE_ACCESSES: AtomicU64 = AtomicU64::new(0);
 static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Default)]
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
 }
@@ -88,11 +90,12 @@ impl GenesisBuilder {
         self
     }
 
-    pub fn create_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+    pub fn create_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, TokenAmount> {
         validators
             .into_iter()
             .enumerate()
-            .map(|(i, v)| (v, (i as i64) * 2 + 1))
+            .map(|(i, v)| (v, (i as u64) * 2 + 1))
+            .map(|(key, stake)| (key, stake.into()))
             .collect()
     }
 
@@ -153,7 +156,7 @@ impl GenesisBuilder {
 
     #[allow(clippy::type_complexity)]
     pub fn build_genesis_parameters_with_defaults(
-        bonds_function: Option<fn(Vec<PublicKey>) -> HashMap<PublicKey, i64>>,
+        bonds_function: Option<fn(Vec<PublicKey>) -> HashMap<PublicKey, TokenAmount>>,
         validators_num: Option<usize>,
     ) -> GenesisParameters {
         let bonds_function = bonds_function.unwrap_or(Self::create_bonds);
@@ -177,7 +180,7 @@ impl GenesisBuilder {
 
     pub fn build_genesis_parameters(
         validator_key_pairs: Vec<(PrivateKey, PublicKey)>,
-        bonds: &HashMap<PublicKey, i64>,
+        bonds: &HashMap<PublicKey, TokenAmount>,
     ) -> GenesisParameters {
         let mut genesis_vaults: Vec<(PrivateKey, PublicKey)> = vec![
             (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
@@ -207,7 +210,7 @@ impl GenesisBuilder {
                 VaultAddress::from_public_key(pk)
                     .map(|vault_address| Vault {
                         vault_address,
-                        initial_balance: 0,
+                        initial_balance: 0.into(),
                     })
                     .expect("GenesisBuilder: Failed to create rev address")
             }))
@@ -217,8 +220,8 @@ impl GenesisBuilder {
             shard_id: "root".to_string(),
             timestamp: 0,
             proof_of_stake: ProofOfStake {
-                minimum_bond: 1,
-                maximum_bond: i64::MAX,
+                minimum_bond: 1.into(),
+                maximum_bond: (i64::MAX as u64).into(),
                 // Epoch length is set to large number to prevent trigger of epoch change
                 // in PoS close block method, which causes block merge conflicts
                 // - epoch change can be set as a parameter in Rholang tests (e.g. PoSSpec)
@@ -228,19 +231,19 @@ impl GenesisBuilder {
                 fault_tolerance_threshold_ppm: 0,
                 max_parent_depth: 15,
                 deploy_lifespan: 50,
-                min_phlo_price: 0,
+                min_phlo_price: (0).into(),
                 validators: bonds
                     .iter()
                     .map(|(pk, stake)| Validator {
                         pk: pk.clone(),
-                        stake: *stake,
+                        stake: stake.clone(),
                     })
                     .collect(),
                 pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
                 pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
             },
             vaults,
-            supply: i64::MAX,
+            supply: (i64::MAX as u64).into(),
             block_number: 0,
             version: 1,
             native_token_name: "F1R3CAP".to_string(),
@@ -255,7 +258,7 @@ impl GenesisBuilder {
         Vault {
             vault_address: VaultAddress::from_public_key(pubkey)
                 .expect("GenesisBuilder: Failed to create rev address"),
-            initial_balance: 9000000,
+            initial_balance: 9000000.into(),
         }
     }
 
