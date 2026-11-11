@@ -2588,6 +2588,93 @@ mod tests {
     }
 
     #[test]
+    fn a_finalization_that_fails_part_way_changes_nothing_before_or_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mapping = || -> HashMap<Db, LmdbEnvConfig> {
+            DAG_STORES
+                .iter()
+                .map(|name| {
+                    (Db::new(name.to_string(), None), LmdbEnvConfig {
+                        name: "dagstorage".to_string(),
+                        max_env_size: 1 << 30,
+                        max_dbs: 32,
+                    })
+                })
+                .collect()
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let open = || {
+            runtime.block_on(async {
+                let mut kvm = LmdbDirStoreManager::new(dir.path().to_path_buf(), mapping());
+                BlockDagKeyValueStorage::new_with_hot_window(&mut kvm, 3)
+                    .await
+                    .unwrap()
+            })
+        };
+        let storage = open();
+        let mut chain: Vec<BlockMessage> = Vec::new();
+        for height in 0..10i64 {
+            let parents = chain
+                .last()
+                .map(|parent| vec![parent.block_hash.clone()])
+                .unwrap_or_default();
+            let block = models::rust::block_implicits::get_random_block(
+                Some(height),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            storage.insert(&block, mode).unwrap();
+            chain.push(block);
+        }
+        runtime
+            .block_on(storage.record_directly_finalized(
+                chain[5].block_hash.clone(),
+                0.5,
+                |_| async { Ok(()) },
+            ))
+            .unwrap();
+
+        let never_published = BlockHash::from(vec![9u8; 32]);
+        assert!(storage
+            .block_metadata_index
+            .write()
+            .record_finalized(
+                chain[9].block_hash.clone(),
+                HashSet::from([chain[7].block_hash.clone(), never_published]),
+                0.9,
+            )
+            .is_err());
+
+        let unchanged = |storage: &BlockDagKeyValueStorage| {
+            let dag = storage.get_representation().unwrap();
+            assert_eq!(dag.last_finalized_block(), chain[5].block_hash);
+            for block in [&chain[7], &chain[9]] {
+                let metadata = dag.lookup_unsafe(&block.block_hash).unwrap();
+                assert!(!metadata.finalized && !metadata.directly_finalized);
+            }
+        };
+        unchanged(&storage);
+        drop(storage);
+        unchanged(&open());
+    }
+
+    #[test]
     fn ft_propagation_raises_only_finalized_blocks_still_in_memory() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let storage = runtime.block_on(async {

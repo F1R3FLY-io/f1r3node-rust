@@ -180,6 +180,100 @@ async fn restart_rebuilds_only_the_hot_window() {
     }
 }
 
+async fn insert_chain(storage: &BlockDagKeyValueStorage, blocks: i64) -> std::time::Duration {
+    let started = std::time::Instant::now();
+    let mut parent: Option<BlockHash> = None;
+    for height in 0..blocks {
+        let mut item = block(height, parent.iter().cloned().collect());
+        item.sender = vec![1u8; 65].into();
+        item.seq_num = height as i32;
+        storage.insert(&item, InsertMode::Approved).unwrap();
+        parent = Some(item.block_hash);
+    }
+    started.elapsed()
+}
+
+#[tokio::test]
+async fn insertion_cost_grows_linearly_with_history() {
+    let mut small =
+        rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
+    let mut large =
+        rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
+    let small = BlockDagKeyValueStorage::new_with_hot_window(&mut small, 2)
+        .await
+        .unwrap();
+    let large = BlockDagKeyValueStorage::new_with_hot_window(&mut large, 2)
+        .await
+        .unwrap();
+    let base = insert_chain(&small, 1_000).await;
+    let four_times = insert_chain(&large, 4_000).await;
+    let ratio = four_times.as_secs_f64() / base.as_secs_f64();
+    assert!(
+        ratio < 8.0,
+        "4x the inserts took {ratio:.1}x the time; a per-insert scan of history gives ~16x"
+    );
+}
+
+#[tokio::test]
+async fn a_deploy_whose_carrier_left_memory_keeps_its_canonical_appearance() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    let deploy = processed_deploy_gen()
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+    let mut windowed_kvm =
+        rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
+    let mut unbounded_kvm =
+        rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
+    let windowed = BlockDagKeyValueStorage::new_with_hot_window(&mut windowed_kvm, 2)
+        .await
+        .unwrap();
+    let unbounded = BlockDagKeyValueStorage::new_with_hot_window(&mut unbounded_kvm, i64::MAX / 2)
+        .await
+        .unwrap();
+    let genesis = block(0, vec![]);
+    let mut carrier = block(1, vec![genesis.block_hash.clone()]);
+    carrier.body.deploys = vec![deploy.clone()];
+    let mut chain = vec![genesis, carrier.clone()];
+    for height in 2..=12 {
+        let parent = chain.last().unwrap().block_hash.clone();
+        chain.push(block(height, vec![parent]));
+    }
+    for storage in [&windowed, &unbounded] {
+        storage.insert(&chain[0], InsertMode::Approved).unwrap();
+        for item in &chain[1..] {
+            storage.insert(item, InsertMode::Normal).unwrap();
+        }
+        storage
+            .record_directly_finalized(chain[9].block_hash.clone(), 0.9, |_| async { Ok(()) })
+            .await
+            .unwrap();
+    }
+    let windowed = windowed.get_representation().unwrap();
+    let unbounded = unbounded.get_representation().unwrap();
+    assert_eq!(
+        windowed.resident_counts().blocks,
+        6,
+        "only heights 7..=12 stay in memory; the carrier at height 1 has left"
+    );
+    assert!(windowed.contains(&carrier.block_hash).unwrap());
+    assert_eq!(
+        unbounded
+            .deploy_canonical_appearance(&deploy.deploy.sig)
+            .unwrap(),
+        Some(carrier.block_hash.clone())
+    );
+    assert_eq!(
+        windowed
+            .deploy_canonical_appearance(&deploy.deploy.sig)
+            .unwrap(),
+        Some(carrier.block_hash.clone())
+    );
+}
+
 #[tokio::test]
 async fn metadata_without_the_history_indexes_is_refused() {
     let directory = tempfile::tempdir().unwrap();
