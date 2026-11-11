@@ -663,6 +663,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-image-publish-tags.sh
 
+      - name: Verify build identity workflow
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-build-identity-workflow.sh
+
       - name: Verify release train tag
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-tag-ca-release.sh
@@ -1240,7 +1244,7 @@ jobs:
           # node's process bootstrap/wiring joins the scaffolding exclusion:
           # reachable only from a booted node (covered by the integration
           # suites), never from the crate's own test run.
-          ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|node/src/rust/runtime/|node/src/rust/instances/(block_processor_instance|proposer_instance)\.rs)'
+          ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|node/src/rust/runtime/|node/src/rust/instances/proposer_instance\.rs)'
           cargo llvm-cov report --release -p ${{ matrix.crate }} \
             --ignore-filename-regex "$ignore_regex" \
             --json --summary-only --output-path target/coverage/coverage-${{ matrix.crate }}.json
@@ -1374,6 +1378,7 @@ jobs:
     with:
       gated: false
       checkout_ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+      build_id: ${{ needs.build_base.outputs.VERSION }}
       oci_tests: ${{ needs.build_base.outputs.OCI_TESTS != 'false' }}
     secrets: inherit
 

@@ -1,164 +1,16 @@
-//! Mergeable Channels Garbage Collection
-//!
-//! Garbage collects mergeable channel data for blocks that are provably unreachable.
-//! This is required for multi-parent mode where immediate deletion during finalization
-//! can cause data races.
-
 use std::collections::HashSet;
-use std::ops::Bound;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::casper::CasperShardConf;
-use crate::rust::finality::floor::{floor_of_block, Floor};
-use crate::rust::metrics_constants::MERGEABLE_CHANNELS_GC_METRICS_SOURCE;
-use crate::rust::safety::clique_oracle::FtThreshold;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::finality::floor::Floor;
 
-/// Sweep state carried across garbage-collection passes.
-///
-/// Each pass enumerates only the heights that have come into range since the
-/// last one, and keeps whatever it could not yet delete. A block that never
-/// clears — an orphan on a losing fork, permanently unfinalized — is retried
-/// forever at the cost of one set entry; it cannot stop the sweep from moving
-/// on to blocks that do clear, unlike a scheme that only advances a watermark
-/// once an entire height is fully resolved.
-#[derive(Debug, Default)]
-pub struct GcSweep {
-    /// Highest height already enumerated. `None` before the first pass, so that
-    /// genesis is included.
-    swept_height: Option<i64>,
-    /// Enumerated but not yet deletable. Retried on every subsequent pass; its
-    /// size tracks how far finality is behind the deletion horizon.
-    pending: HashSet<BlockHash>,
-}
-
-impl GcSweep {
-    pub fn new() -> Self { Self::default() }
-
-    pub fn pending_len(&self) -> usize { self.pending.len() }
-}
-
-/// Garbage collects mergeable channel data for blocks that are provably unreachable.
-///
-/// A block's mergeable data is safe to delete when:
-/// 1. The block is finalized
-/// 2. The block is deeper than maxParentDepth + depthBuffer below the floor
-/// 3. Every validator has moved past it: it is an ancestor, through any
-///    parent, of the deepest block on every validator's main chain
-pub async fn collect_garbage(
-    sweep: &mut GcSweep,
-    dag: &KeyValueDagRepresentation,
-    block_store: &KeyValueBlockStore,
-    runtime_manager: &std::sync::Arc<RuntimeManager>,
-    casper_shard_conf: &CasperShardConf,
-) -> Result<usize, KvStoreError> {
-    let pass_started = std::time::Instant::now();
-    let mut deleted_count = 0;
-
-    // The deletion anchor, derived ONCE per pass: the floor of the last
-    // finalized block. Deletion is irreversible and the data serves merges,
-    // whose scope is bounded below by the floor — see `is_safe_to_delete`.
-    let floor = floor_of_block(
-        dag,
-        block_store,
-        &dag.last_finalized_block(),
-        FtThreshold::from_ppm(casper_shard_conf.fault_tolerance_threshold_ppm),
-    )
-    .await
-    .map_err(|e| KvStoreError::IoError(e.to_string()))?;
-
-    // The sweep shares that anchor. A tip-anchored ceiling would enumerate the
-    // whole span between the floor and the tip — blocks `is_safe_to_delete`
-    // refuses on every pass, which is the sweep exists to avoid doing twice.
-    enumerate_newly_in_range(sweep, dag, &floor, casper_shard_conf);
-    metrics::gauge!("mergeable_channels_gc_pending").set(sweep.pending.len() as f64);
-
-    // The ancestor walk only ever needs to reach as low as the oldest
-    // candidate this pass can actually test against it. A candidate that
-    // fails `reaches_ancestor_check` — an orphan that will never finalize,
-    // most commonly — is refused before the moved-past set is ever
-    // consulted, so its height must not drag the walk down either; only
-    // candidates that clear that bar can pull `min_height` lower.
-    let mut min_height: Option<i64> = None;
-    for hash in sweep.pending.iter() {
-        if reaches_ancestor_check(dag, hash, &floor, casper_shard_conf)? {
-            if let Ok(height) = dag.block_number_unsafe(hash) {
-                min_height = Some(min_height.map_or(height, |m| m.min(height)));
-            }
-        }
-    }
-    // Depth, not raw height: a stable value here means the ancestor walk's
-    // window is stable. A value that grows over a soak run means some
-    // eligible candidate — finalized, deep enough, has children — is stuck
-    // outside the moved-past set and is the one holding the walk back.
-    metrics::histogram!("mergeable_channels_gc.oldest_eligible_pending_depth")
-        .record(min_height.map_or(0, |h| floor.block_number - h) as f64);
-
-    let moved_past = match min_height {
-        Some(min_height) => moved_past_by_every_validator(dag, min_height)?,
-        None => None,
-    };
-    metrics::histogram!("mergeable_channels_gc.ancestor_set_size")
-        .record(moved_past.as_ref().map_or(0, |a| a.len()) as f64);
-    let mut collected = Vec::new();
-
-    for block_hash in sweep.pending.iter() {
-        if is_safe_to_delete(
-            dag,
-            block_hash,
-            &floor,
-            casper_shard_conf,
-            moved_past.as_ref(),
-        )? {
-            collected.push(block_hash.clone());
-        }
-    }
-
-    for block_hash in collected {
-        // Removed from `pending` only after storage confirms the attempt —
-        // not before. `sweep` is the caller's own persistent state, not a
-        // local copy: an early return from a `?` below would otherwise leave
-        // this entry evicted from `pending` with its deletion status
-        // unknown, and nothing ever retries it again.
-        if let Some(block) = block_store.get(&block_hash)? {
-            let deleted = runtime_manager
-                .delete_mergeable_channels(
-                    &block.body.state.post_state_hash,
-                    block.sender.clone(),
-                    block.seq_num,
-                )
-                .map_err(|e| KvStoreError::IoError(e.to_string()))?;
-
-            if deleted {
-                deleted_count += 1;
-                tracing::debug!(
-                    "GC: Deleted mergeable data for block {}",
-                    hex::encode(&block_hash)
-                );
-            }
-        }
-        sweep.pending.remove(&block_hash);
-    }
-
-    if deleted_count > 0 {
-        metrics::counter!("mergeable_channels_gc_deleted").increment(deleted_count as u64);
-        tracing::info!(
-            "Mergeable channels GC: Deleted {} blocks' data",
-            deleted_count
-        );
-    } else {
-        tracing::debug!("Mergeable channels GC: No data to delete");
-    }
-
-    metrics::histogram!("mergeable_channels_gc.pass.time", "source" => MERGEABLE_CHANNELS_GC_METRICS_SOURCE)
-        .record(pass_started.elapsed().as_secs_f64());
-
-    Ok(deleted_count)
-}
+mod job;
+#[cfg(any(test, feature = "test-utils"))]
+pub use job::collect_garbage_with;
+pub use job::{collect_garbage, GcProgress, GcSweep};
 
 /// Conditions 1 and 2 of `is_safe_to_delete`, plus the "has children" half of
 /// condition 3 — everything that can be decided about a candidate WITHOUT
@@ -176,7 +28,7 @@ fn reaches_ancestor_check(
     //    satisfies this — permanently, not just for this pass — and that is
     //    fine: it stays in `pending` and is retried, but never blocks any
     //    other block's own check from succeeding.
-    if !dag.is_finalized(block_hash) {
+    if !dag.is_finalized(block_hash)? {
         return Ok(false);
     }
 
@@ -201,10 +53,7 @@ fn reaches_ancestor_check(
 
     // Every validator must have moved past this block — but that is only
     // checkable once it has children at all.
-    match dag.children(block_hash) {
-        Some(children_set) => Ok(!children_set.is_empty()),
-        None => Ok(false), // No children means no one can have moved past
-    }
+    dag.has_children(block_hash)
 }
 
 /// Check if a block's mergeable data is safe to delete.
@@ -229,63 +78,12 @@ fn is_safe_to_delete(
     Ok(moved_past.contains(block_hash))
 }
 
-/// Add every block whose height has come into deletion range since the last
-/// pass, and advance the sweep.
-///
-/// Enumeration deliberately does not filter on finality. A block below the
-/// ceiling can still be unfinalized while finality lags, and skipping it here
-/// would move the sweep past it for good; leaving it to condition 1 of
-/// `is_safe_to_delete` means it is simply retried until it qualifies — or, for
-/// an orphan that never finalizes, retried forever at the cost of one entry,
-/// never blocking anything else.
-///
-/// The ceiling is a coarse upper bound on what is worth looking at, and it is
-/// anchored on the floor for the same reason `is_safe_to_delete` is: a
-/// tip-anchored ceiling would sweep in the entire span between the floor and the
-/// tip, which the predicate refuses on every pass.
-fn enumerate_newly_in_range(
-    sweep: &mut GcSweep,
-    dag: &KeyValueDagRepresentation,
-    floor: &Floor,
-    casper_shard_conf: &CasperShardConf,
-) {
-    let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
-
-    extend_pending_to_ceiling(
-        sweep,
-        floor.block_number - max_allowed_depth,
-        &dag.height_map,
-    );
-}
-
-fn extend_pending_to_ceiling(
-    sweep: &mut GcSweep,
-    ceiling: i64,
-    height_map: &imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
-) {
-    if sweep.swept_height.is_some_and(|swept| ceiling <= swept) {
-        return;
-    }
-
-    let lower = match sweep.swept_height {
-        Some(swept) => Bound::Excluded(swept),
-        None => Bound::Unbounded,
-    };
-
-    for (_, hashes) in height_map.range((lower, Bound::Included(ceiling))) {
-        sweep.pending.extend(hashes.iter().cloned());
-    }
-
-    sweep.swept_height = Some(ceiling);
-}
-
 /// The blocks every validator has moved past, down to `min_height`: the
 /// deepest block on every validator's strict main-parent lineage, and its
 /// ancestors through any parent. A block merged in as a secondary parent is
 /// as far behind every validator as the main-chain block that merged it.
-/// Computed once per pass. Heights come from the in-memory index; parents are
-/// a block-metadata store read for each block the walk expands.
+/// Computed once per pass; heights and parents are read through the DAG, from
+/// disk below the memory window.
 ///
 /// Stops the walk once it reaches `min_height` — the lowest height any
 /// candidate in `pending` can have. A candidate's own height is always >=
@@ -319,31 +117,47 @@ fn moved_past_by_every_validator(
         }
     }
 
+    // The walks below take infallible lookups, where `None` means "not held".
+    // A failed read is not that: the first one is kept and fails the pass, so
+    // nothing is collected on a guess.
+    let read_error = std::cell::RefCell::new(None);
+
     // Main-parent chains are linear, so the intersection of N strict-ancestor
     // paths is just the path below their deepest common point.
     // `common_strict_ancestors` below is that intersection, kept as the
     // differential oracle for the anchor.
-    let Some(anchor) = deepest_common_strict_ancestor(
+    let anchor = deepest_common_strict_ancestor(
         latest_messages,
-        |block_hash| dag.main_parent(block_hash),
-        |block_hash| block_height(dag, block_hash),
-    ) else {
+        |block_hash| recorded(&read_error, dag.main_parent(block_hash)),
+        |block_hash| recorded(&read_error, dag.block_number(block_hash)),
+    );
+    if let Some(error) = read_error.take() {
+        return Err(error);
+    }
+    let Some(anchor) = anchor else {
         return Ok(None);
     };
 
-    ancestry_down_to(
+    let ancestry = ancestry_down_to(
         anchor,
-        |block_hash| dag.block_number(block_hash),
+        |block_hash| recorded(&read_error, dag.block_number(block_hash)),
         |block_hash| dag.lookup_unsafe(block_hash).map(|meta| meta.parents),
         min_height,
-    )
-    .map(Some)
+    )?;
+    match read_error.take() {
+        Some(error) => Err(error),
+        None => Ok(Some(ancestry)),
+    }
 }
 
-fn block_height(dag: &KeyValueDagRepresentation, block_hash: &BlockHash) -> Option<i64> {
-    dag.lookup_unsafe(block_hash)
-        .ok()
-        .map(|meta| meta.block_number)
+fn recorded<T>(
+    read_error: &std::cell::RefCell<Option<KvStoreError>>,
+    result: Result<Option<T>, KvStoreError>,
+) -> Option<T> {
+    result.unwrap_or_else(|error| {
+        read_error.borrow_mut().get_or_insert(error);
+        None
+    })
 }
 
 /// The deepest block that is a strict main-chain ancestor of every latest
@@ -465,105 +279,6 @@ mod tests {
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
     use super::*;
-
-    // -- enumeration / sweep bookkeeping -----------------------------------
-
-    fn at_height(n: i64) -> BlockHash { BlockHash::from(format!("h{}", n).into_bytes()) }
-
-    fn height_map(top: i64) -> imbl::OrdMap<i64, imbl::HashSet<BlockHash>> {
-        (0..=top)
-            .map(|n| {
-                let mut set = imbl::HashSet::new();
-                set.insert(at_height(n));
-                (n, set)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn enumerates_everything_up_to_the_ceiling_on_the_first_pass() {
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 3, &height_map(10));
-
-        assert_eq!(sweep.pending.len(), 4);
-        assert!(sweep.pending.contains(&at_height(0)));
-        assert!(sweep.pending.contains(&at_height(3)));
-        assert!(!sweep.pending.contains(&at_height(4)));
-    }
-
-    #[test]
-    fn second_pass_enumerates_only_what_newly_came_into_range() {
-        let map = height_map(10);
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 3, &map);
-        sweep.pending.clear(); // stand in for the first pass having deleted them
-
-        extend_pending_to_ceiling(&mut sweep, 5, &map);
-
-        assert_eq!(sweep.pending.len(), 2);
-        assert!(sweep.pending.contains(&at_height(4)));
-        assert!(sweep.pending.contains(&at_height(5)));
-    }
-
-    #[test]
-    fn a_pass_that_adds_no_range_leaves_pending_untouched() {
-        let map = height_map(10);
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 5, &map);
-        let after_first = sweep.pending.clone();
-
-        extend_pending_to_ceiling(&mut sweep, 5, &map);
-        assert_eq!(sweep.pending, after_first);
-
-        extend_pending_to_ceiling(&mut sweep, 2, &map);
-        assert_eq!(sweep.pending, after_first);
-    }
-
-    /// THE regression this sweep design exists for: a block a pass can't yet
-    /// clear (here, standing in for an orphan that never finalizes) does not
-    /// stop that same pass, or any later one, from enumerating and retrying
-    /// everything else. The old level/watermark design advanced only when an
-    /// entire height was fully resolved — one permanently-unresolvable block
-    /// froze it there forever.
-    #[test]
-    fn a_block_refused_this_pass_stays_pending_for_the_next() {
-        let map = height_map(10);
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 2, &map);
-
-        // Only block 0 clears this pass; block 1 and 2 stay pending — one of
-        // them standing in for a block that will never clear.
-        sweep.pending.remove(&at_height(0));
-
-        extend_pending_to_ceiling(&mut sweep, 4, &map);
-
-        assert!(
-            !sweep.pending.contains(&at_height(0)),
-            "already-cleared block stays cleared"
-        );
-        assert!(
-            sweep.pending.contains(&at_height(1)),
-            "never-cleared block is retried, not dropped"
-        );
-        assert!(
-            sweep.pending.contains(&at_height(2)),
-            "never-cleared block is retried, not dropped"
-        );
-        assert!(
-            sweep.pending.contains(&at_height(3)) && sweep.pending.contains(&at_height(4)),
-            "enumeration still advanced past the stuck blocks"
-        );
-    }
-
-    #[test]
-    fn enumeration_does_not_depend_on_the_finalized_block_cache() {
-        // Heights are the only input: `finalized_blocks_set` is a bounded cache
-        // that evicts, so a block missing from it must still be enumerated and
-        // left for condition 1 of `is_safe_to_delete` to judge.
-        let mut sweep = GcSweep::new();
-        extend_pending_to_ceiling(&mut sweep, 6, &height_map(20));
-        assert_eq!(sweep.pending.len(), 7);
-    }
 
     // -- common_strict_ancestors --------------------------------------------
 
@@ -930,7 +645,10 @@ mod tests {
         let mut latest_messages_map = imbl::HashMap::new();
         latest_messages_map.insert(validator, hash(TOP));
 
-        KeyValueDagRepresentation {
+        block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map,
             child_map,
@@ -952,17 +670,18 @@ mod tests {
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
+        .build()
     }
 
     /// max_allowed_depth = max_parent_depth + gc buffer = 4.
-    fn conf() -> CasperShardConf {
+    pub(super) fn conf() -> CasperShardConf {
         let mut conf = CasperShardConf::new();
         conf.max_parent_depth = 3;
         conf.mergeable_channels_gc_depth_buffer = 1;
         conf
     }
 
-    fn floor_at(n: u8) -> Floor {
+    pub(super) fn floor_at(n: u8) -> Floor {
         Floor {
             hash: hash(n),
             block_number: n as i64,
@@ -1029,7 +748,8 @@ mod tests {
     #[test]
     fn a_validator_that_never_proposed_does_not_stop_collection() {
         let mut dag = linear_chain_dag();
-        dag.latest_messages_map
+        dag.fixture_mut()
+            .latest_messages_map
             .insert(Bytes::from(vec![0x07u8; 65]), hash(0));
         let conf = conf();
         assert!(
@@ -1058,7 +778,7 @@ mod tests {
     #[test]
     fn an_unfinalized_block_is_never_collected() {
         let mut dag = linear_chain_dag();
-        dag.finalized_blocks_set.remove(&hash(5));
+        dag.fixture_mut().finalized_blocks_set.remove(&hash(5));
         {
             let mut bms = dag.block_metadata_index.write();
             let mut meta = bms.get(&hash(5)).expect("lookup").expect("metadata");
@@ -1185,7 +905,10 @@ mod tests {
         latest_messages_map.insert(validator_a, hash(TOP));
         latest_messages_map.insert(validator_b, side(6));
 
-        KeyValueDagRepresentation {
+        block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map,
             child_map,
@@ -1207,6 +930,7 @@ mod tests {
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
+        .build()
     }
 
     /// `linear_chain_dag` plus `side3`, a finalized block at height 3 that
@@ -1215,17 +939,30 @@ mod tests {
     fn chain_with_a_merged_side_block() -> (KeyValueDagRepresentation, BlockHash) {
         let mut dag = linear_chain_dag();
         let side = Bytes::from_static(b"side3");
-        dag.dag_set.insert(side.clone());
-        dag.block_number_map.insert(side.clone(), 3);
-        dag.main_parent_map.insert(side.clone(), hash(2));
-        dag.finalized_blocks_set.insert(side.clone());
-        let mut at_three = dag.height_map.get(&3).cloned().unwrap_or_default();
+        dag.fixture_mut().dag_set.insert(side.clone());
+        dag.fixture_mut().block_number_map.insert(side.clone(), 3);
+        dag.fixture_mut()
+            .main_parent_map
+            .insert(side.clone(), hash(2));
+        dag.fixture_mut().finalized_blocks_set.insert(side.clone());
+        let mut at_three = dag
+            .fixture_mut()
+            .height_map
+            .get(&3)
+            .cloned()
+            .unwrap_or_default();
         at_three.insert(side.clone());
-        dag.height_map.insert(3, at_three);
-        let mut below = dag.child_map.get(&hash(2)).cloned().unwrap_or_default();
+        dag.fixture_mut().height_map.insert(3, at_three);
+        let mut below = dag
+            .fixture_mut()
+            .child_map
+            .get(&hash(2))
+            .cloned()
+            .unwrap_or_default();
         below.insert(side.clone());
-        dag.child_map.insert(hash(2), below);
-        dag.child_map
+        dag.fixture_mut().child_map.insert(hash(2), below);
+        dag.fixture_mut()
+            .child_map
             .insert(side.clone(), std::iter::once(hash(4)).collect());
         {
             let mut bms = dag.block_metadata_index.write();

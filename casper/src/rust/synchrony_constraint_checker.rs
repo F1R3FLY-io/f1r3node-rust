@@ -372,7 +372,7 @@ pub async fn check(
                 // local to the proposer, so this node's own latest messages decide.
                 let latest_messages: BTreeMap<Validator, BlockHash> = snapshot
                     .dag
-                    .latest_messages_map
+                    .latest_message_hashes()
                     .iter()
                     .map(|(validator, hash)| (validator.clone(), hash.clone()))
                     .collect();
@@ -392,7 +392,7 @@ pub async fn check(
                     last_proposed_block_meta.clone(),
                     snapshot.dag.clone(),
                     &validator,
-                );
+                )?;
 
                 // This method can be called on readonly node or not active validator.
                 // So map validator -> stake might not have key associated with the node,
@@ -444,7 +444,7 @@ pub async fn check(
                             last_finalized_block_meta,
                             snapshot.dag.clone(),
                             &validator,
-                        );
+                        )?;
                         let (finalized_seen_senders_weight, finalized_synchrony_constraint_value) =
                             compute_synchrony_value(
                                 &finalized_seen_senders,
@@ -518,7 +518,7 @@ fn calculate_seen_senders_since(
     last_proposed: BlockMetadata,
     dag: KeyValueDagRepresentation,
     excluded_validator: &Validator,
-) -> HashSet<Validator> {
+) -> Result<HashSet<Validator>, CasperError> {
     let latest_messages = dag.latest_message_hashes();
     let mut seen_senders: HashSet<Validator> = HashSet::new();
 
@@ -563,7 +563,7 @@ fn calculate_seen_senders_since(
             continue;
         }
 
-        if let Ok(latest_block_number) = dag.block_number_unsafe(latest_block_hash) {
+        if let Some(latest_block_number) = dag.block_number(latest_block_hash)? {
             if should_count_fallback_sender(
                 latest_block_hash.as_ref(),
                 latest_block_number,
@@ -575,7 +575,7 @@ fn calculate_seen_senders_since(
         }
     }
 
-    seen_senders
+    Ok(seen_senders)
 }
 
 fn should_count_fallback_sender(
