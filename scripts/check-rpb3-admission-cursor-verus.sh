@@ -1141,6 +1141,18 @@ proofs_rpb3_epm_obligation_return_witness=(
   epm_nested_alive_witness_returned_pop
   epm_nested_alive_witness_is_step
   epm_nested_alive_witness_is_integrated_step
+  epm_raw_par_witness_unscored_shape
+  epm_raw_par_witness_finish_candidate
+  epm_raw_par_witness_finish_selects
+  epm_raw_par_witness_score_product_parts
+  epm_raw_par_witness_score_product_step
+  epm_raw_par_witness_noscore_kind
+  epm_raw_par_witness_score_live_parts
+  epm_raw_par_witness_score_live_step
+  epm_raw_par_witness_scores_child
+  epm_raw_par_witness_start_trace
+  epm_raw_par_witness_push_literals
+  epm_raw_par_witness_trace
 )
 proofs_rpb3_epm_parser_escape_invariant=(
   parser_escape_wf_initial
@@ -4587,7 +4599,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: EPathMap obligation return witness module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 105 verified, 0 errors' "$epm_obligation_return_witness_log"; then
+if ! rg -q '^verification results:: 117 verified, 0 errors' "$epm_obligation_return_witness_log"; then
   cat "$epm_obligation_return_witness_log"
   echo "rpb3-admission-cursor: EPathMap obligation return witness module did not verify" >&2
   exit 1

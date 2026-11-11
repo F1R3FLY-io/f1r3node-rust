@@ -30,6 +30,28 @@
 //! `epm_raw_par_witness_is_integrated_step` lifts that step to an
 //! `EpmRawParReturn` step of the integrated dispatcher.
 //!
+//! `epm_raw_par_witness_scores_child` shows that the unscored and the scored
+//! states are a `Live` `MessageChildScore` step of the integrated dispatcher,
+//! as production scores a message frame at its EOF
+//! (`message_finish_step_into`) before `finish_message_complete` pops it. The
+//! score finish selects the scored bridge
+//! (`epm_raw_par_witness_finish_selects`): C is a program-1 Par value child of
+//! an EPathMap entry, so `bridge_score_finish_epathmap_returns` adds only the
+//! raw-Par candidate to the fold of `bridge_score_finish_selected`, and that
+//! candidate is the bridge of `bridge_raw_par_step`. No arm of
+//! `runtime_noscore_child_kind` takes C (`epm_raw_par_witness_noscore_kind`),
+//! so C's EOF goes through the score finish. `epm_raw_par_witness_trace` joins
+//! the two steps into an integrated trace from the unscored state: `Live`
+//! `MessageChildScore`, then `EpmRawParReturn`. It starts from the unscored
+//! state alone (`epm_raw_par_witness_start_trace`) and appends each step with
+//! `integrated_trace_wf_append`; `epm_raw_par_witness_push_literals` equates
+//! the pushed sequences with the trace's literals. The proofs that hold the
+//! well-formedness facts only combine facts
+//! (`epm_raw_par_witness_score_product_step`,
+//! `epm_raw_par_witness_score_live_step`); the conjuncts that need the
+//! concrete states come from `epm_raw_par_witness_score_product_parts` and
+//! `epm_raw_par_witness_score_live_parts`, which hold none.
+//!
 //! The score bridges, the products and the live states are opaque. Their
 //! shape lemmas reveal them, and every other proof works from those shapes, so
 //! that no proof unfolds more of the concrete state than it uses. The
@@ -137,7 +159,8 @@ use crate::{
     rpb3_epm_source_accept_refinement as source_accept, rpb3_integrated_dispatcher as dispatcher,
     rpb3_map_frame_refinement as map, rpb3_path_parser_refinement as parser,
     rpb3_runtime_frame_source_refinement as runtime, rpb3_score_admission_bridge as score_bridge,
-    rpb3_score_arena_source_refinement as arena, rpb3_score_transcript as score,
+    rpb3_score_arena_source_refinement as arena, rpb3_score_finish_groups as finish_groups,
+    rpb3_score_finish_unique as finish_unique, rpb3_score_transcript as score,
     rpb3_wire_cursor_source_refinement as wire, LiveRuntimeProductState,
     LiveSourceProductState, ProductScoreState,
 };
@@ -1844,6 +1867,292 @@ pub proof fn epm_raw_par_witness_is_integrated_step()
     dispatcher::integrated_epm_raw_par_return_is_integrated_step(
         epm_raw_par_witness_scored(),
         epm_raw_par_witness_returned(),
+    );
+}
+
+/// The unscored product in explicit form: the unscored bridge, the map over
+/// the unscored admission state, the EPathMap frames with EP's frame, the
+/// regions of the four frames, and no receipts.
+pub proof fn epm_raw_par_witness_unscored_shape()
+    ensures
+        epm_raw_par_witness_unscored_product() == (ProductScoreState {
+            bridge: epm_raw_par_witness_unscored_bridge(),
+            map: map::IntegratedAdmissionState {
+                admission: epm_raw_par_witness_admission(),
+                map_frames: seq![None, None, None, None],
+                transcript: epm_raw_par_witness_unscored_bridge().transcript,
+            },
+            epm_frames: seq![None, None, Some(epm_raw_par_witness_parent_epm()), None],
+            indexed_regions: epm_raw_par_witness_regions(),
+            accepted_epm_sources: seq![None, None, None, None],
+        }),
+{
+    reveal(epm_raw_par_witness_unscored_product);
+}
+
+/// The raw-Par candidate of the score finish for the unscored bridge is the
+/// scored bridge, the bridge that `bridge_raw_par_step` returns.
+pub proof fn epm_raw_par_witness_finish_candidate()
+    ensures
+        finish_groups::finish_candidate_raw_par(epm_raw_par_witness_unscored_bridge())
+            == Some(epm_raw_par_witness_scored_bridge()),
+{
+    reveal(finish_groups::finish_candidate_raw_par);
+    epm_raw_par_witness_score_step();
+}
+
+/// The score finish selects the scored product's bridge for the unscored
+/// product's: C is a well-formed program-1 Par value child of an EPathMap
+/// entry, so the fold of `bridge_score_finish_selected` adds only the raw-Par
+/// candidate (`bridge_score_finish_epathmap_returns`), which is the scored
+/// bridge.
+pub proof fn epm_raw_par_witness_finish_selects()
+    ensures
+        score_bridge::bridge_score_finish_selected(epm_raw_par_witness_unscored_product().bridge)
+            == Some(epm_raw_par_witness_scored_product().bridge),
+{
+    reveal(finish_groups::finish_top_wf);
+    epm_raw_par_witness_unscored_shape();
+    epm_raw_par_witness_scored_shape();
+    epm_raw_par_witness_child_frame_wf();
+    epm_raw_par_witness_finish_candidate();
+    let unscored = epm_raw_par_witness_unscored_bridge();
+    assert(unscored.admission.frames.last() == epm_raw_par_witness_child_frame());
+    assert(finish_groups::finish_top_wf(unscored));
+    finish_unique::bridge_score_finish_epathmap_returns(unscored);
+    finish_unique::finish_selected_unfolds(unscored);
+}
+
+/// The conjuncts of `product_message_child_score_step` from the unscored to
+/// the scored product besides well-formedness and the score source step: C is
+/// a kind-1 frame above three frames and has no Map frame, the map follows the
+/// scored bridge, the EPathMap frames and the regions are kept, and the
+/// receipts are carried.
+pub proof fn epm_raw_par_witness_score_product_parts()
+    ensures
+        ({
+            let before = epm_raw_par_witness_unscored_product();
+            let after = epm_raw_par_witness_scored_product();
+            &&& before.bridge.admission.frames.len() > 1
+            &&& before.bridge.admission.frames.last().frame_kind == 1
+            &&& before.map.map_frames.last().is_none()
+            &&& after.map.admission == after.bridge.admission
+            &&& after.map.transcript == after.bridge.transcript
+            &&& after.map.map_frames == before.map.map_frames
+            &&& after.epm_frames == before.epm_frames
+            &&& after.indexed_regions == before.indexed_regions
+            &&& after.accepted_epm_sources == integrated::product_epm_receipts_carried(
+                before,
+                after,
+            )
+        }),
+{
+    epm_raw_par_witness_unscored_shape();
+    epm_raw_par_witness_scored_shape();
+    let before = epm_raw_par_witness_unscored_product();
+    let after = epm_raw_par_witness_scored_product();
+    assert(integrated::product_epm_receipts_carried(before, after)
+        =~= seq![None, None, None, None]);
+}
+
+/// The unscored and the scored products are a
+/// `product_message_child_score_step`: the unscored product is well-formed,
+/// and the selected score finish is a score source step.
+pub proof fn epm_raw_par_witness_score_product_step()
+    ensures
+        integrated::product_message_child_score_step(
+            epm_raw_par_witness_unscored_product(),
+            epm_raw_par_witness_scored_product(),
+        ),
+{
+    epm_raw_par_witness_unscored_product_wf();
+    epm_raw_par_witness_finish_selects();
+    score_bridge::bridge_score_finish_selected_is_source_step(
+        epm_raw_par_witness_unscored_product().bridge,
+    );
+    epm_raw_par_witness_score_product_parts();
+}
+
+/// A runtime image whose top frame is a program-1 frame of family Other has no
+/// unscored child kind: no arm of `runtime_noscore_child_kind` returns a kind
+/// for that family and program.
+pub proof fn epm_raw_par_witness_noscore_kind(image: runtime::RuntimeFrameImage)
+    requires
+        image.score.admission.frames.last().family == admission::AdmissionFamily::Other,
+        image.score.admission.frames.last().program_type_id == 1,
+    ensures
+        runtime::runtime_noscore_child_kind(image).is_none(),
+{
+}
+
+/// The conjuncts of `live_runtime_product_message_child_score_step` from the
+/// unscored to the scored live state besides well-formedness, the selected
+/// score finish and the product step: the states hold the unscored and the
+/// scored products, C's cursor is on top of four cursors and at End, C waits
+/// for nothing, has no score and has consumed its region, C is a program-1
+/// frame of family Other, and the scored state has the post-state shape.
+pub proof fn epm_raw_par_witness_score_live_parts()
+    ensures
+        ({
+            let before = epm_raw_par_witness_unscored();
+            let after = epm_raw_par_witness_scored();
+            &&& before.source.product == epm_raw_par_witness_unscored_product()
+            &&& after.source.product == epm_raw_par_witness_scored_product()
+            &&& before.cursors.len() > 1
+            &&& before.cursors.last().is_some()
+            &&& before.source.product.bridge.admission.frames.last().waiting_id.is_none()
+            &&& before.source.product.bridge.admission.frames.last().score_handle.is_none()
+            &&& before.source.product.bridge.admission.frames.last().cursor
+                == before.source.product.bridge.admission.frames.last().region_end
+            &&& before.source.runtime.score.admission.frames.last().family
+                == admission::AdmissionFamily::Other
+            &&& before.source.runtime.score.admission.frames.last().program_type_id == 1
+            &&& wire::wire_runtime_next_field(before.cursors.last().unwrap()) == Some(
+                wire::WireConcreteTransition::End {
+                    state: wire::wire_runtime_derive_cursor(
+                        before.cursors.last().unwrap(),
+                    ).unwrap(),
+                },
+            )
+            &&& after.source.runtime == runtime::RuntimeFrameImage {
+                score: after.source.product.bridge,
+                ..before.source.runtime
+            }
+            &&& after.source.arena == integrated::product_runtime_arena_from_score(
+                after.source.product.bridge.transcript,
+            )
+            &&& after.source.wire == before.source.wire
+            &&& after.cursors == before.cursors
+        }),
+{
+    epm_raw_par_witness_unscored_live_shape();
+    epm_raw_par_witness_scored_live_shape();
+    epm_raw_par_witness_unscored_shape();
+    epm_raw_par_witness_child_cursor_ends();
+    let before = epm_raw_par_witness_unscored();
+    assert(before.source.product.bridge.admission.frames.last()
+        == epm_raw_par_witness_child_frame());
+    assert(before.cursors.last() == Some(epm_raw_par_witness_child_cursor()));
+}
+
+/// The unscored and the scored live states are a
+/// `live_runtime_product_message_child_score_step`: the unscored state is
+/// well-formed, C has no unscored child kind, the score finish selects the
+/// scored bridge, and the products are a `product_message_child_score_step`.
+pub proof fn epm_raw_par_witness_score_live_step()
+    ensures
+        integrated::live_runtime_product_message_child_score_step(
+            epm_raw_par_witness_unscored(),
+            epm_raw_par_witness_scored(),
+        ),
+{
+    epm_raw_par_witness_unscored_state_wf();
+    epm_raw_par_witness_score_live_parts();
+    epm_raw_par_witness_noscore_kind(epm_raw_par_witness_unscored().source.runtime);
+    epm_raw_par_witness_finish_selects();
+    epm_raw_par_witness_score_product_step();
+}
+
+/// The witness scores C in a `Live` `MessageChildScore` step of the integrated
+/// dispatcher, by the dispatcher's kind guard for Live steps, and both of its
+/// states are well-formed integrated states.
+pub proof fn epm_raw_par_witness_scores_child()
+    ensures
+        dispatcher::integrated_wf(
+            dispatcher::IntegratedState::Active { product: epm_raw_par_witness_unscored() },
+        ),
+        dispatcher::integrated_step(
+            dispatcher::IntegratedState::Active { product: epm_raw_par_witness_unscored() },
+            dispatcher::IntegratedState::Active { product: epm_raw_par_witness_scored() },
+            dispatcher::IntegratedAction::Live {
+                live_action: integrated::LiveRuntimeProductAction::MessageChildScore,
+                route: dispatcher::IntegratedPushRoute::Plain,
+            },
+        ),
+        dispatcher::integrated_wf(
+            dispatcher::IntegratedState::Active { product: epm_raw_par_witness_scored() },
+        ),
+{
+    epm_raw_par_witness_state_is_wf();
+    epm_raw_par_witness_score_live_step();
+    dispatcher::integrated_live_step_establishes_kind_guard(
+        epm_raw_par_witness_unscored(),
+        epm_raw_par_witness_scored(),
+        integrated::LiveRuntimeProductAction::MessageChildScore,
+    );
+}
+
+/// A well-formed integrated state alone is an integrated trace of no steps.
+pub proof fn epm_raw_par_witness_start_trace(state: dispatcher::IntegratedState)
+    requires
+        dispatcher::integrated_wf(state),
+    ensures
+        dispatcher::integrated_trace(seq![state], Seq::<dispatcher::IntegratedAction>::empty()),
+{
+    assert(seq![state][0] == state);
+}
+
+/// Three states and two actions pushed one at a time onto the empty sequence
+/// are the literal sequences of the three states and of the two actions, and
+/// the last state of each pushed prefix is the state pushed last.
+pub proof fn epm_raw_par_witness_push_literals(
+    first: dispatcher::IntegratedState,
+    second: dispatcher::IntegratedState,
+    third: dispatcher::IntegratedState,
+    first_action: dispatcher::IntegratedAction,
+    second_action: dispatcher::IntegratedAction,
+)
+    ensures
+        seq![first].last() == first,
+        seq![first].push(second).last() == second,
+        seq![first].push(second).push(third) == seq![first, second, third],
+        Seq::<dispatcher::IntegratedAction>::empty().push(first_action).push(second_action)
+            == seq![first_action, second_action],
+{
+    assert(seq![first].push(second).push(third) =~= seq![first, second, third]);
+    assert(Seq::<dispatcher::IntegratedAction>::empty().push(first_action).push(second_action)
+        =~= seq![first_action, second_action]);
+}
+
+/// The witness is an integrated trace from the unscored state: a `Live`
+/// `MessageChildScore` step scores C, and an `EpmRawParReturn` step returns
+/// it into EP. The trace starts from the unscored state alone, and
+/// `integrated_trace_wf_append` appends the two steps.
+pub proof fn epm_raw_par_witness_trace()
+    ensures
+        dispatcher::integrated_trace(
+            seq![
+                dispatcher::IntegratedState::Active { product: epm_raw_par_witness_unscored() },
+                dispatcher::IntegratedState::Active { product: epm_raw_par_witness_scored() },
+                dispatcher::IntegratedState::Active { product: epm_raw_par_witness_returned() },
+            ],
+            seq![
+                dispatcher::IntegratedAction::Live {
+                    live_action: integrated::LiveRuntimeProductAction::MessageChildScore,
+                    route: dispatcher::IntegratedPushRoute::Plain,
+                },
+                dispatcher::IntegratedAction::EpmRawParReturn,
+            ],
+        ),
+{
+    epm_raw_par_witness_scores_child();
+    epm_raw_par_witness_is_integrated_step();
+    let unscored = dispatcher::IntegratedState::Active { product: epm_raw_par_witness_unscored() };
+    let scored = dispatcher::IntegratedState::Active { product: epm_raw_par_witness_scored() };
+    let returned = dispatcher::IntegratedState::Active { product: epm_raw_par_witness_returned() };
+    let score_action = dispatcher::IntegratedAction::Live {
+        live_action: integrated::LiveRuntimeProductAction::MessageChildScore,
+        route: dispatcher::IntegratedPushRoute::Plain,
+    };
+    let return_action = dispatcher::IntegratedAction::EpmRawParReturn;
+    epm_raw_par_witness_start_trace(unscored);
+    epm_raw_par_witness_push_literals(unscored, scored, returned, score_action, return_action);
+    dispatcher::integrated_trace_wf_append(seq![unscored], Seq::empty(), scored, score_action);
+    dispatcher::integrated_trace_wf_append(
+        seq![unscored].push(scored),
+        Seq::empty().push(score_action),
+        returned,
+        return_action,
     );
 }
 
