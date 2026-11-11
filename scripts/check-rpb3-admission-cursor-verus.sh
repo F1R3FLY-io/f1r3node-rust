@@ -88,6 +88,7 @@ source_files=(
   "$model_dir/rpb3_integrated_dispatcher.rs"
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
+  "$model_dir/rpb3_no_score_child_eof_coverage.rs"
   "$model_dir/rpb3_plain_parser_source_refinement.rs"
   "$model_dir/rpb3_epm_obligation_return_live.rs"
   "$model_dir/rpb3_epm_parser_escape_invariant.rs"
@@ -1379,6 +1380,54 @@ proofs_rpb3_message_driver_source_integration=(
   generated_message_source_operations_scored_eof_selected_exact
   generated_message_source_operations_noscore_eof_selected_exact
 )
+proofs_rpb3_no_score_child_eof_coverage=(
+  nsc_complete_step_facts
+  nsc_classify_set_map_arm
+  nsc_classify_scored_prefix
+  nsc_classify_structural_arm
+  nsc_classify_family_arm
+  nsc_case_split_total
+  nsc_route_selects_every_case
+  nsc_quiet_group_one_steps
+  nsc_quiet_group_two_steps
+  nsc_quiet_group_three_steps
+  nsc_quiet_group_four_steps
+  nsc_quiet_group_five_steps
+  nsc_quiet_group_six_steps
+  nsc_quiet_groups_exclude_score_route
+  nsc_emap_ezipper_score_selector_none
+  nsc_selected_structural_frame
+  nsc_noscore_route_excludes_score_route
+  nsc_every_case_reaches_parent_accept
+  nsc_selected_kind_is_pushed_summary
+  nsc_ezipper_absent_routed_witness
+  nsc_emap_incomplete_routed_witness
+  nsc_inhabited_fixed_point_class
+  nsc_inhabited_unit_class
+  nsc_inhabited_var_ref_class
+  nsc_inhabited_connective_body_class
+  nsc_inhabited_bytes_class
+  nsc_inhabited_receive_bind_class
+  nsc_inhabited_match_case_class
+  nsc_inhabited_big_rational_class
+  nsc_inhabited_evar_class
+  nsc_inhabited_structural_class
+  nsc_inhabited_emethod_class
+  nsc_inhabited_key_value_pair_class
+  nsc_inhabited_opaque_class
+  nsc_descriptor_low_entries
+  nsc_descriptor_middle_entries
+  nsc_descriptor_expr_entries
+  nsc_descriptor_upper_entries
+  nsc_descriptor_high_entries
+  nsc_descriptor_children_classified
+  nsc_class_arms_are_descriptor_edges
+  nsc_every_class_has_descriptor_arm
+  nsc_always_scored_has_no_case
+  nsc_always_scored_child_has_no_prestate
+  nsc_eof_coverage_universal
+  nsc_source_noscore_route_on_emap_ezipper
+)
 proofs_rpb3_path_parser_refinement=(
   initial_parser_source_snapshot_has_witness
   initial_single_byte_varint
@@ -2163,6 +2212,7 @@ gated_modules=(
   rpb3_map_push_scoped_identity_classes
   rpb3_map_push_selected_subview_extraction
   rpb3_message_driver_source_integration
+  rpb3_no_score_child_eof_coverage
   rpb3_path_parser_refinement
   rpb3_plain_parser_source_refinement
   rpb3_runtime_frame_source_refinement
@@ -4403,6 +4453,39 @@ fi
 if ! rg -q '^verification results:: 105 verified, 0 errors' "$epm_obligation_return_witness_log"; then
   cat "$epm_obligation_return_witness_log"
   echo "rpb3-admission-cursor: EPathMap obligation return witness module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_no_score_child_eof_coverage[@]}"; do
+  proof_log="$evidence_dir/no-score-child-eof-coverage-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_no_score_child_eof_coverage --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: no-score child EOF coverage $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: no-score child EOF coverage $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+no_score_child_eof_coverage_log="$evidence_dir/no-score-child-eof-coverage-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_no_score_child_eof_coverage \
+  "$integrated_source" \
+  >"$no_score_child_eof_coverage_log" 2>&1; then
+  cat "$no_score_child_eof_coverage_log"
+  echo "rpb3-admission-cursor: no-score child EOF coverage module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 46 verified, 0 errors' "$no_score_child_eof_coverage_log"; then
+  cat "$no_score_child_eof_coverage_log"
+  echo "rpb3-admission-cursor: no-score child EOF coverage module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do
