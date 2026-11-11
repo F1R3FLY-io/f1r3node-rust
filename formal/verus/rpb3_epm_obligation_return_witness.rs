@@ -3751,8 +3751,16 @@ pub proof fn epm_nested_alive_witness_frame_kinds()
             &&& epm::epm_parent_resolved(frames[2]).nested_resolved == 1
         }),
 {
-    epm_raw_par_witness_nested_frames();
-    epm_nested_dead_witness_frame_facts();
+    assert({
+        let frames = epm_nested_alive_witness_admission().frames;
+        &&& frames.len() == 4
+        &&& frames[0].frame_kind == 1
+        &&& frames[1].frame_kind == 1
+        &&& frames[2].frame_kind == 3
+        &&& frames[3].frame_kind == 3
+        &&& frames[2].nested_resolved == 0
+        &&& epm::epm_parent_resolved(frames[2]).nested_resolved == 1
+    }) by (compute_only);
 }
 
 /// The indexed regions in explicit form: the outer, program-31 and EP regions
