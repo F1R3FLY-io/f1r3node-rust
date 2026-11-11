@@ -413,6 +413,7 @@ pub enum ProposeRefusal {
     TooFarAheadOfLastFinalized,
     HistoryIncomplete,
     MissingBlock,
+    FloorDistanceHold,
 }
 
 impl ProposeRefusal {
@@ -431,6 +432,7 @@ impl ProposeRefusal {
                 }
             }),
             ProposeFailure::MissingBlock(_) => Some(ProposeRefusal::MissingBlock),
+            ProposeFailure::FloorDistanceHold => Some(ProposeRefusal::FloorDistanceHold),
             ProposeFailure::NoNewDeploys
             | ProposeFailure::InternalDeployError
             | ProposeFailure::BugError => None,
@@ -2278,6 +2280,11 @@ mod tests {
                 ProposeFailure::MissingBlock(Bytes::from_static(&[0xab; 32])),
                 ProposeRefusal::MissingBlock,
                 "Failure: Proposal failed: MissingBlock abababababababab — requested from peers, retrying (seqNum 7)",
+            ),
+            (
+                ProposeFailure::FloorDistanceHold,
+                ProposeRefusal::FloorDistanceHold,
+                "Failure: Proposal held: the merge exceeds the floor-distance cap and no witness block could be built; retrying once finality advances (seqNum 7)",
             ),
         ];
 

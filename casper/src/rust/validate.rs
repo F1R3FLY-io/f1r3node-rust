@@ -1322,11 +1322,9 @@ impl Validate {
         // block_number; production assigns 0).
         if max_parent_depth != i32::MAX {
             // ANCHOR: the block's OWN parent frontier, never this node's tip.
-            // The proposer drops parents more than `max_parent_depth` below the
-            // highest parent it selected (`snapshot.rs`), so anchoring the check
-            // on that same value makes proposer and validator agree by
-            // construction — filtering only ever removes LOW parents, so the max
-            // over the declared parents is the max the proposer used.
+            // The proposer keeps only parents within a `max_parent_depth` span
+            // around its main parent (`snapshot.rs`), so the declared parents
+            // satisfy this pairwise rule by construction.
             //
             // Reading `latest_block_number()` here instead made a validity
             // verdict depend on how far ahead the validating node happened to
