@@ -1392,10 +1392,11 @@
       "tests": [],
       "docs": [],
       "decision": [
-        "decision-87"
+        "decision-87",
+        "decision-89"
       ],
       "reason": null,
-      "note": "A deploy fails deterministically when it exceeds its phlo or its host-work budget. Memory exhaustion cannot be a consensus outcome, because it depends on the node."
+      "note": "A deploy fails deterministically when it exceeds its phlo. Decision 89 removed the host-work budget of the base and of the spaces. Memory exhaustion cannot be a consensus outcome, because it depends on the node."
     },
     {
       "id": "RR-20",

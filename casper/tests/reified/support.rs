@@ -304,10 +304,15 @@ pub fn searched_signer(label: &str, accept: impl Fn(&[u8; 2]) -> bool) -> (Priva
         .expect("the key chain holds a key with the wanted buckets")
 }
 
-/// The signer of the key `Blake2b256(label)`. The merge row of N4 gives each of its two space
-/// blocks its own payer (decision 82, fact 3, measured in P9 step 5). On the merged base, a merge
-/// keeps both sequential offers of one payer (probe R10 of decision 108), and the row keeps its
-/// two payers.
+// Changed for the N4 contract (a merge across blocks with every collection kind): the space
+// branch of the merge row has eight blocks. The text before:
+// /// The signer of the key `Blake2b256(label)`. The merge row of N4 gives each of its two space
+// /// blocks its own payer (decision 82, fact 3, measured in P9 step 5). On the merged base, a merge
+// /// keeps both sequential offers of one payer (probe R10 of decision 108), and the row keeps its
+// /// two payers.
+/// The signer of the key `Blake2b256(label)`. The merge row of N4 alternates two labeled payers
+/// over the space blocks of its branch (decision 82, fact 3, measured in P9 step 5). On the
+/// merged base, a merge keeps the sequential offers of one payer (probe R10 of decision 108).
 pub fn labeled_signer(label: &str) -> (PrivateKey, PublicKey) {
     let secret = PrivateKey::from_bytes(&Blake2b256::hash(label.as_bytes().to_vec()));
     let public = Secp256k1.to_public(&secret);

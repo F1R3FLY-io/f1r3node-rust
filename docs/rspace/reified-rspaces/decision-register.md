@@ -193,8 +193,8 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 137](#decision-137) | The campaign closes at claimed_done on the host verification, with no pgmcp run | 2026-11-10 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
-| [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
-| [M-4](#m-4) | Replay consult through child modules | 2026-10-04 | In force |
+| [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04. [Decision 89](#decision-89) retires its host-work clauses, and [decision 90](#decision-90) retires its legacy charges |
+| [M-4](#m-4) | Replay consult through child modules | 2026-10-04 | Retired by [decision 90](#decision-90). The rigged replay modes retire, and `replay_rspace.rs` no longer declares `space_replay` |
 | [M-5](#m-5) | Runtime-level cross-process harnesses | 2026-10-04 | In force |
 | [I-1](#i-1) | Spaces are not ISpace implementors | 2026-10-04 | In force |
 | [I-2](#i-2) | Single-channel handle forwarder | 2026-10-04 | In force, revised 2026-10-04, forwarder argument changed by decision 32 |
@@ -2582,6 +2582,7 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 - The Determinism section goes in `specification.md`, and P10 drafts the body of PR-C in pgmcp.
 - Deviation D-A: the codex modules `Occurrence.v`, `DirectionalMatch.v`, `EventCoverage.v` and `SavedQueryPolicy.tla` are recorded with their successors, and each of their laws is checked against a successor.
 - Deviation D-B: `MANIFEST.toml` stays the index of the examples, and the expected values are Rust data in the harness. The reason: rholang has no TOML parser, and campaign commits never change `Cargo.lock`.
+  *Changed on 2026-11-11: two commits change `Cargo.lock`. The merge of [decision 90](#decision-90) brings the lock of the base, and commit `cf4bcb410` moves the three packages of `rholang-rs` to the parser pin `6548aec`. Deviation D-B stays.*
 - This host has a Zen 3 CPU with no LBR, so the benchmarks record call graphs with `perf record --call-graph dwarf`.
 
 **User's words.** "Approve v2 (Recommended)". The recommendation was the main session's.
@@ -4202,7 +4203,7 @@ The independent arbitration pass of 2026-10-04 confirmed M-1 for writes. It refu
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force, revised 2026-10-04. [Decision 45](#decision-45) adds the legacy charges of a legacy deploy. [Decision 47](#decision-47) adds one accessor, and [decision 78](#decision-78) adds one test edit. |
+| Status | In force, revised 2026-10-04. [Decision 45](#decision-45) adds the legacy charges of a legacy deploy. [Decision 47](#decision-47) adds one accessor, and [decision 78](#decision-78) adds one test edit. [Decision 89](#decision-89) retires the host-work clauses and decision 78, and [decision 90](#decision-90) retires the legacy charges of Option P. |
 | Replaces | `observe_space_work` on the accounting observer, edits to `accounting/costs.rs`, and the earlier `reserve_primitive` plan |
 | Footprint | Zero edits to the cost-accounting module and the observer trait |
 | Related | [I-12](#i-12), [phlo](glossary.md#phlo), [host work](glossary.md#host-work) |
@@ -4214,9 +4215,13 @@ The independent arbitration pass of 2026-10-04 confirmed M-1 for writes. It refu
 - At the baseline, only `Comm`, `RSpaceProduce`, and `RSpaceConsume` carry consensus cost (`accounting/mod.rs::consensus_cost_unit`).
 - `MeteredMachine::reserve_primitive` is diagnostic only, with cost 0, so it cannot charge anything.
 - Matching, attach, and rehydration work use the existing host-work (liveness) budget. The tools are the metered methods of the injected matcher (`get_metered`, `check_commit_metered`) and `reserve_host_work`.
+  *Retired by [decision 89](#decision-89): the base removed host-work metering, so a space operation meters only its COMMs and the bytes that it stores.*
 - The node charges host work before the work, independent of cache state.
+  *Retired by [decision 89](#decision-89).*
 - The Reified host-work cost functions live in a new `reified/costs.rs`.
+  *Retired by [decision 89](#decision-89).*
 - In a legacy deploy, each staged operation also pays the [legacy charges](glossary.md#legacy-charge) of its equivalent host operation ([decision 45](#decision-45), Option P).
+  *Retired by [decision 90](#decision-90): the merge of `702496775` removes Option P.*
 
 **User's words.** The section quotation above.
 
@@ -4227,7 +4232,7 @@ The independent arbitration pass of 2026-10-04 confirmed M-1 for writes. It refu
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | Retired by [decision 90](#decision-90) (C6, step D). The rigged replay modes of the spaces retire, so `ReplayRSpace` no longer implements `SpaceTxnHost`. `replay_rspace.rs` comments out `mod space_replay;`, and the file stays on disk. |
 | Replaces | The new `replay_consult.rs` refactor |
 | Footprint | A one-line `replay_rspace.rs` hunk |
 | Related | [Decision 19](#decision-19), [pairing](glossary.md#pairing) |

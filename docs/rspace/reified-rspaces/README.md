@@ -5,7 +5,10 @@ Each [space](glossary.md#space) chooses an [outer store](glossary.md#outer-store
 A [factory](glossary.md#factory) creates a space and returns a [handle](glossary.md#handle).
 A program then sends and receives on the names of the space, inside a `use` block or with a `new x : s` annotation.
 Every space persists as ordinary channels in the one [RSpace](glossary.md#rspace) of the node.
-So the existing [checkpoint](glossary.md#checkpoint), [replay](glossary.md#replay), and [merge](glossary.md#merge) machinery covers spaces, and the consensus code does not change ([decision 18](decision-register.md#decision-18), [M-1](decision-register.md#m-1)).
+So the existing [checkpoint](glossary.md#checkpoint), [replay](glossary.md#replay), and [merge](glossary.md#merge) machinery covers spaces ([M-1](decision-register.md#m-1)).
+
+The consensus code changes only where the protobuf fields of [decision 112](decision-register.md#decision-112) reach it ([decision 121](decision-register.md#decision-121)).
+These changes are the fixed hash of the empty state, one check of a payer, and the literals of one test file.
 
 This directory documents the campaign that implements the [FIPS](glossary.md#fips) in this repository.
 This README is the index and the reading order of the documents.
@@ -39,7 +42,7 @@ A document that a later step of P10 writes shows the step as "planned in P10" wi
 |---|---|---|
 | [README.md](README.md) | This index: scope, reading order, documents, diagrams, phases, and the checking procedure. | Written |
 | [glossary.md](glossary.md) | Every campaign term with a stable anchor, in dependency order, with the background terms of Rholang, RSpace, and the verification tools. | Written |
-| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 88, M-1 to M-5, and I-1 to I-21, with dates, words of the user, reasons, and supersession links. | Written, with every decision up to decision 88 |
+| [decision-register.md](decision-register.md) | The normative register: decisions 1 to 137, M-1 to M-5, and I-1 to I-21, with dates, words of the user, reasons, and supersession links. | Written, with every decision up to decision 137 |
 | [specification.md](specification.md) | The normative behavior of spaces: outer stores, disciplines, qualifiers, the sweep, the VectorDB bounds, and the vector operations. | Written. P4 to P8 wrote the sections of their phases (Table 1 of the document). P10 step S5 added the final scope and the determinism of section 11 (`rrs-perf-docs-final-spec-design-security`). |
 | [fips-conformance-matrix.md](fips-conformance-matrix.md) and [its JSON source](fips-conformance-matrix.json) | One row for each normative clause of the FIPS and of the agent section of the Agents FIPS, with code, proof, test, and document evidence. | Written in P10 step S4 (`rrs-fips-clause-matrix`). `check-fips-matrix.py` checks it and renders the Markdown from the JSON. P11 runs it on the frozen candidate. |
 | [design.md](design.md) | The module structure: types, the agent traits, the generic space algorithm, and the space transaction. | Written. P1 wrote the substrate, and P4 to P9 wrote the parts N1 to N19 of the native spaces. P10 step S5 added part N20 on the persistence and the recovery of space state. |
@@ -66,6 +69,7 @@ A document that a later step of P10 writes shows the step as "planned in P10" wi
 | [design-record/](design-record/README.md) | The design ledger of 2026-08-15 with its provenance record. It is history and is exempt from the documentation lint. | Written |
 | [../../rholang/21-reified-spaces.md](../../rholang/21-reified-spaces.md) | The language chapter of Reified spaces: every family and qualifier, `use` blocks, annotations, factories, the handle methods, theories, queries, joins, VectorDB spaces and own spaces, each with an executed example. | Written in P10 step S5, after the first sections of P6 and P8 (`rrs-doc-language-chapter`) |
 | [verification/test-port-ledger.json](verification/test-port-ledger.json) | The ledger of the legacy Reified tests: one row for each test of the legacy branch, with its disposition: port, retarget, or drop with a named successor. | Written in P9 step 7. `check-test-port-ledger.py` checks it. |
+| [verification/ignored-tests.json](verification/ignored-tests.json) | The record of the skipped tests: one row for each test of a workspace crate with the attribute `#[ignore]`, with its name, test binaries, origin and reason ([decision 13](decision-register.md#decision-13)). | Written on 2026-11-11. [Verification 35.9.2](verification.md#3592-the-skipped-tests) compares its counts with Table 259. |
 
 ## Diagrams
 
@@ -118,7 +122,7 @@ Update `fonts.lock`, render every diagram again, and review the images.
 | 32 | [The advisory query](diagrams/32-advisory-query.svg) (sequence) | Drawn in P6 step 8e |
 | 33 | [The number model](diagrams/33-number-model.svg) (activity) | Drawn in P6 step 8e |
 | 34 | [The process harnesses of P9](diagrams/34-p9-process-harnesses.svg) (sequence) | Drawn in P9 step 8 |
-| 34a | [The blocks of the N4 merge with an empty sibling](diagrams/34a-n4-merge-dag.svg) (component), a sub-figure of figure 34 | Drawn in P9 step 8 |
+| 34a | [The blocks of the N4 merge with an empty sibling](diagrams/34a-n4-merge-dag.svg) (component), a sub-figure of figure 34 | Drawn in P9 step 8. *Changed on 2026-11-11: the space branch has one creation block of each of the eight families, and one touch block follows the merge for each family ([verification 34.6](verification.md#346-step-5-n4-spaces-under-caspers-proposal-validation-and-merge)).* |
 | 35 | [TensorLogic from end to end](diagrams/35-tl-components.svg) (component) | Drawn in P9 for the TensorLogic design of P12 |
 | 36 | [One join and one projection](diagrams/36-tl-join-projection.svg) (component) | Drawn in P9 for the TensorLogic design of P12 |
 | 37 | [The TensorLogic grammar, part 1: entry points, statements and let](diagrams/37-tl-grammar-statements.svg) (railroad) | Drawn in P9 for the TensorLogic design of P12 |

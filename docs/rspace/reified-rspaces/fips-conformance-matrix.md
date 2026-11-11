@@ -332,8 +332,8 @@ A row may cover more lines than the clause needs, and two rows may share a line.
 | Lines | 209 |
 | Status | `deviation` |
 | Clause | When the server runs out of memory, the deploy fails with an out-of-memory error. |
-| Decisions | [decision 87](decision-register.md#decision-87) |
-| Note | A deploy fails deterministically when it exceeds its phlo or its host-work budget. Memory exhaustion cannot be a consensus outcome, because it depends on the node. |
+| Decisions | [decision 87](decision-register.md#decision-87), [decision 89](decision-register.md#decision-89) |
+| Note | A deploy fails deterministically when it exceeds its phlo. Decision 89 removed the host-work budget of the base and of the spaces. Memory exhaustion cannot be a consensus outcome, because it depends on the node. |
 
 ### RR-20
 

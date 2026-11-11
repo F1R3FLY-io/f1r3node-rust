@@ -558,6 +558,8 @@ pub fn combine_new(
     }
 }
 
+/// Scores a `UseBlock` from its scored space and body. A missing part scores as `ABSENT`, and
+/// the node `USE_BLOCK` holds the score of the space and then the score of the body.
 pub fn combine_use_block(
     space: Option<ScoredTerm<Par>>,
     body: Option<ScoredTerm<Par>>,
@@ -603,6 +605,9 @@ fn combine_param_parts(
     (positional, out, scores)
 }
 
+/// Scores the `SendParams` of a send. The positional values keep their order. `named` holds the
+/// scored values in the order of the keys of `params.named`. The node `SEND_PARAMS` holds the
+/// positional scores and then one node for each key, which holds the score of its value.
 pub fn combine_send_params(
     params: &SendParams,
     positional: Vec<ScoredTerm<Par>>,
@@ -616,6 +621,9 @@ pub fn combine_send_params(
     }
 }
 
+/// Scores the `QuerySpec` of a receive bind, as `combine_send_params` scores the params of a
+/// send. The payload values keep their order. `named` holds the scored values in the order of the
+/// keys of `query.named`. The node `QUERY_SPEC` holds the scores.
 pub fn combine_query_spec(
     query: &QuerySpec,
     payload: Vec<ScoredTerm<Par>>,

@@ -9359,7 +9359,7 @@ mod tests {
         (SpaceOp::Produce(op), hash)
     }
 
-    // Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg:8-14).
+    // Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg).
     // Under rule (a) (decision-c6 §3, plan-join-batch Step 5 item 12 and C-18), W fires at its
     // arrival with a1 and a2: a1 claims its record, and a2 is persistent, so the class of 1 is
     // free. V then fires with a2 through a one-bind consume on [D(s)]. The body before:

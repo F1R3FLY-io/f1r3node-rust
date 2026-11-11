@@ -540,6 +540,21 @@ Each case sends one record to a new channel of a space that already holds S reco
 The S records lie on channels of 100 records, and the fill of each channel is its own setup step.
 The measured send goes to a new channel, so the records of the other channels change only the size of the history trie.
 
+*Table 19a. One send to a new channel of a space of 1,000 records, with its checkpoint.*
+
+| Case | Outcome | Phlo | Median time in ms (95 % interval) |
+|---|---|---|---|
+| `checkpoint_size/bag/1000` | fits | 4,639 | 1.94 (1.93 to 1.95) |
+| `checkpoint_size/priorityqueue/1000` | fits | 7,171 | 2.19 (2.17 to 2.20) |
+| `checkpoint_size/queue/1000` | fits | 7,147 | 2.12 (2.11 to 2.13) |
+| `checkpoint_size/set/1000` | fits | 4,639 | 1.94 (1.93 to 1.96) |
+| `checkpoint_size/stack/1000` | fits | 7,147 | 2.16 (2.15 to 2.18) |
+| `checkpoint_size/vectordb/1000` | fits | 4,716 | 2.10 (2.09 to 2.12) |
+
+The series names the sizes 1,000, 10,000, 100,000 and 1,000,000 (the constant `STATE_SIZES` in `rholang/benches/reified_persistence.rs`).
+The timed run of 2026-11-10 sets `RRS_BENCH_MAX_SIZE` to 1,000 (Section 2.5), so Table 19a holds the size 1,000 only.
+No run measured the larger sizes, so this section states no growth of the checkpoint time with the size of the space.
+
 ### 5.3 Restart and attach
 
 The `bag/100` case receives from a bag of 100 records on an LMDB store after a reset to the root.
@@ -644,7 +659,7 @@ The last column explains each ratio.
 | `collection_retrieval/stack_find_all` | 1.3 | one receive from a stack space of 1,000 records | 13.010 | 9,678,546 | As for the queue. |
 | `matcher_comparison/exact_match/1000` | 0.4 | one record of a receive that scans 1,000 records and matches none | 0.012 | 27,811 | The legacy case compares two integers. The receive now matches a Rholang pattern against each record with the matcher, inside a deploy. |
 | `vectordb_top_k/top_10/1000` | 117.9 | one record of a query for the best eight records of a VectorDB space of 100 records | 0.088 | 749 | The legacy case ranks 1,000 vectors of 384 floats in memory. The space query ranks exact numbers inside a deploy. |
-| `lock_contention_same_channel/produce/8` | 90.5 | one of eight parallel sends to one channel of a bag space | 0.204 | 2,252 | The legacy case writes a shared map from eight threads. The eight space jobs share the footprint key of their space ([I-11](decision-register.md#i-11)), so they run one after another. |
+| `lock_contention_same_channel/produce/8` | 90.5 | one of eight parallel sends to one channel of a bag space | 0.204 | 2,252 | The legacy case writes a shared map from eight threads. The eight space jobs share the footprint key of their space ([decision 92](decision-register.md#decision-92)), so they run one after another. |
 | `lock_contention_different_channels/isolated_channels/8` | 81.9 | one of eight parallel sends to eight channels of a bag space | 0.240 | 2,925 | The legacy case writes eight maps from eight threads. The jobs of different channels of one space also share its footprint key, so they also run one after another. |
 | `atomic_ordering/seqcst_fetch_add` | 1.8 | one send and one drain round of a queue space, in a deploy of 10 sends | 0.410 | 224,788 | The legacy case increments an atomic counter. The order of a queue record now comes from the counter record of the collection, with its events. |
 

@@ -629,10 +629,11 @@ A space that a factory creates is a native space.
 ### Op channel
 
 An op channel is a channel whose unforgeable id has the two bytes $`[\mathtt{0xE0}, \mathit{op}]`$.
-The byte $`\mathit{op}`$ selects a factory (`0x00` to `0x1F`), a system process (`0x21` to `0x23`), or an internal operation (`0x30` to `0x32`).
+The byte $`\mathit{op}`$ selects a factory (`0x00` to `0x1F`), a system process (`0x21` to `0x25`), or an internal operation (`0x30` to `0x32`).
+[Decision 57](decision-register.md#decision-57) gives `0x24` and `0x25` to `embed` and `ann`.
 The byte `0x20` is reserved for the factories of native engines, which are held.
 
-The node finds the native code of the process of an op channel by the number $`200 + \mathit{op}`$, its body reference. The baseline uses the body references 0 to 36 and 101 to 108.
+The node finds the native code of the process of an op channel by the number $`200 + \mathit{op}`$, its body reference. The base uses body references below 200.
 A persistent send `!!` to an op channel that takes calls aborts the deploy ([decision 32](decision-register.md#decision-32), item A21).
 The syntax markers and `AGENT_TAG` have the same id layout, but they take no calls.
 

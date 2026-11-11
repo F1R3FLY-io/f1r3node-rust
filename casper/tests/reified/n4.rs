@@ -23,10 +23,15 @@
 //!
 //! | Test | Property |
 //! |---|---|
-//! | `n4_space_chain_propose_validate` | Node 0 proposes ten blocks: the creations of a queue, a set, a priority queue, a VectorDB space and a PathMap space, each with records and a waiter, and then a touch of each space. Node 1 validates each block. Producer and validator have equal settlement receipts. At the last block, both nodes read the same deliveries of each family: the config of the handle, a take and a fired waiter. |
-//! | `n4_space_merge_with_empty_sibling` | Node 0 proposes two space blocks of two payers, and node 1 proposes an empty block from genesis. Node 2 merges them. The main parent of the merge block is the empty block, the merge rejects no deploy, and every node validates the merge block. Node 0 then touches the queue of its branch on the merge, and every node validates that block. |
+//! | `n4_space_chain_propose_validate` | Node 0 proposes sixteen blocks: the creations of a queue, a set, a priority queue, a VectorDB space, a PathMap space, a bag, a stack and a cell, each with records and a waiter, and then a touch of each space. Node 1 validates each block. Producer and validator have equal settlement receipts. At the last block, both nodes read the same deliveries of each family: the config of the handle, a take and a fired waiter. |
+//! | `n4_space_merge_with_empty_sibling` | Node 0 proposes eight space blocks, one creation of each family, and the two payers alternate. Node 1 proposes an empty block from genesis. Node 2 merges them. The main parent of the merge block is the empty block, the merge rejects no deploy, and every node validates every block. Node 0 then touches each space of its branch on the merge, one block for each family, and every node validates each touch. At the last touch, every node reads the deliveries of each family: the config, a take and a fired waiter. |
 //! | `n4_concurrent_space_blocks_agree` | Two searched payers create their own spaces in sibling blocks over genesis, the first on node 0 and the second on node 1. Every node validates both siblings and the merge block of node 2, and the merge rejects no deploy (decision 108). |
 //! | `n4_tampered_space_block_rejected` | A space block with a changed post-state hash, and the same block with a channel added to the footprint of a space row of its operation journal, are each signed again. The validator rejects each with its reason, keeps its DAG heads, and then accepts the untampered block. A timeout guards against a hang. |
+//!
+//! The eight families cover every collection kind of the campaign: the seven disciplines on the
+//! HashMap store, and the bag on the PathMap store. The N4 contract asks for a merge across blocks
+//! with every collection kind. Before 2026-11-11, the families had no bag on the HashMap store, no
+//! stack and no cell, and the merge row merged a queue and a set only.
 //!
 //! The keys are the genesis vaults of the test genesis, two labeled signers and two searched
 //! signers. The time stamps are fixed per deploy, and every offer has the phlo limit [`PHLO`] and
@@ -108,8 +113,13 @@ struct Family {
     touch: &'static str,
 }
 
-/// The five families of the space chain.
-const FAMILIES: [Family; 5] = [
+// Changed for the N4 contract (a merge across blocks with every collection kind): the bag on the
+// HashMap store, the stack and the cell join the families. The text before:
+// /// The five families of the space chain.
+// const FAMILIES: [Family; 5] = [
+/// The eight families of N4, one for each collection kind. The queue and the set stay first,
+/// because the concurrent row and the tampered row take them by position.
+const FAMILIES: [Family; 8] = [
     Family {
         label: "queue",
         urn: "rho:space:hashmap:queue",
@@ -146,6 +156,29 @@ for (@w <- b ~ ([0.0, 1.0]; threshold=0.9)) { out!(["fired", w]) }"#,
         ctor: r#""default""#,
         state: r#"use space { @[*a, 1]!(5) | @[*a, 2]!(6) } | for (@v <- b) { out!(["fired", v]) }"#,
         touch: r#"for (@v <- a) { out!(["take", v]) } | use space { @[*b, 3]!(7) }"#,
+    },
+    Family {
+        label: "bag",
+        urn: "rho:space:hashmap:bag",
+        ctor: r#""default""#,
+        state: r#"a!(1) | a!(2) | a!(3) | for (@2 <- b) { out!(["fired", 2]) }"#,
+        touch: r#"for (@x <- a) { out!(["take", x]) | a!(x + 10) } | b!(2)"#,
+    },
+    Family {
+        label: "stack",
+        urn: "rho:space:hashmap:stack",
+        ctor: r#""default""#,
+        state: r#"a!(1) | a!(2) | a!(3) | for (@2 <- b) { out!(["fired", 2]) }"#,
+        touch: r#"for (@x <- a) { out!(["take", x]) | a!(x + 10) } | b!(2)"#,
+    },
+    // A cell holds at most one record and one waiter (specification, rule CL-1), so the state
+    // stores one record. The take empties the cell before the touch stores the next record.
+    Family {
+        label: "cell",
+        urn: "rho:space:hashmap:cell",
+        ctor: r#""default""#,
+        state: r#"a!(1) | for (@2 <- b) { out!(["fired", 2]) }"#,
+        touch: r#"for (@x <- a) { out!(["take", x]) | a!(x + 10) } | b!(2)"#,
     },
 ];
 
@@ -264,9 +297,14 @@ fn disjoint_payers() -> [(PrivateKey, PublicKey); 2] {
     [first, second]
 }
 
-/// Two labeled payers, one for each space block of the merge row (decision 82, fact 3;
-/// verification.md, section 34.6). On the merged base, a merge also keeps two sequential offers
-/// of one payer in one branch (probe R10 of decision 108), and the row keeps its two payers.
+// Changed for the N4 contract (a merge across blocks with every collection kind): the space
+// branch of the merge row has eight blocks. The text before:
+// /// Two labeled payers, one for each space block of the merge row (decision 82, fact 3;
+// /// verification.md, section 34.6). On the merged base, a merge also keeps two sequential offers
+// /// of one payer in one branch (probe R10 of decision 108), and the row keeps its two payers.
+/// The two labeled payers of the merge row (decision 82, fact 3; verification.md, section 34.6).
+/// The space blocks of its branch alternate between them. On the merged base, a merge keeps the
+/// sequential offers of one payer in one branch (probe R10 of decision 108).
 fn two_payers() -> [(PrivateKey, PublicKey); 2] {
     [
         labeled_signer("rrs-n4-first"),
@@ -319,7 +357,8 @@ async fn n4_space_chain_propose_validate() {
 }
 
 /// N4 (amendment A3): an empty sibling is the main parent of the merge block, and the merge keeps
-/// the space blocks of the other branch.
+/// the space blocks of the other branch. The branch creates every family, so the merge spans
+/// every collection kind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn n4_space_merge_with_empty_sibling() {
     // Changed by decision 84 (the revert of the DR-119 backport): two labeled payers.
@@ -329,25 +368,50 @@ async fn n4_space_merge_with_empty_sibling() {
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .expect("the network starts");
-    let [queue, set, ..] = &FAMILIES;
-    submit(
-        &nodes[0],
-        signed_offer(&payers[0], &queue.creation("merge"), 1, PHLO, EXPOSURE),
-    )
-    .await;
-    let first = propose(&mut nodes, 0).await;
-    submit(
-        &nodes[0],
-        signed_offer(&payers[1], &set.creation("merge"), 2, PHLO, EXPOSURE),
-    )
-    .await;
-    let second = propose(&mut nodes, 0).await;
-    assert_space_deploy(&first, "the queue block");
-    assert_space_deploy(&second, "the set block");
+    // Changed for the N4 contract (a merge across blocks with every collection kind): the space
+    // branch holds one creation block of each family, and the two payers alternate. A merge
+    // keeps the sequential offers of one payer in one branch (probe R10 of decision 108). The
+    // text before:
+    // let [queue, set, ..] = &FAMILIES;
+    // submit(
+    //     &nodes[0],
+    //     signed_offer(&payers[0], &queue.creation("merge"), 1, PHLO, EXPOSURE),
+    // )
+    // .await;
+    // let first = propose(&mut nodes, 0).await;
+    // submit(
+    //     &nodes[0],
+    //     signed_offer(&payers[1], &set.creation("merge"), 2, PHLO, EXPOSURE),
+    // )
+    // .await;
+    // let second = propose(&mut nodes, 0).await;
+    // assert_space_deploy(&first, "the queue block");
+    // assert_space_deploy(&second, "the set block");
+    let payer = |index: usize| &payers[index % payers.len()];
+    let mut branch = Vec::with_capacity(FAMILIES.len());
+    for (index, (stamp, family)) in (1i64..).zip(FAMILIES.iter()).enumerate() {
+        submit(
+            &nodes[0],
+            signed_offer(
+                payer(index),
+                &family.creation("merge"),
+                stamp,
+                PHLO,
+                EXPOSURE,
+            ),
+        )
+        .await;
+        let block = propose(&mut nodes, 0).await;
+        assert_space_deploy(&block, &format!("the {} block", family.label));
+        branch.push(block);
+    }
+    let last = branch.last().expect("the branch has blocks");
     nodes[1].allow_empty_blocks = true;
     let empty = propose(&mut nodes, 1).await;
     assert!(empty.body.deploys.is_empty(), "the sibling is empty");
-    for block in [&first, &second, &empty] {
+    // Changed for the N4 contract: node 2 receives every block of the branch. The text before:
+    // for block in [&first, &second, &empty] {
+    for block in branch.iter().chain([&empty]) {
         accept(&mut nodes[2], block).await;
     }
     nodes[2].allow_empty_blocks = true;
@@ -357,8 +421,13 @@ async fn n4_space_merge_with_empty_sibling() {
         Some(&empty.block_hash),
         "the empty sibling is the main parent of the merge block"
     );
+    // Changed for the N4 contract: the head of the branch is its last block. The text before:
+    // assert!(
+    //     merge.header.parents_hash_list.contains(&second.block_hash),
+    //     "the merge block has the space branch as a parent"
+    // );
     assert!(
-        merge.header.parents_hash_list.contains(&second.block_hash),
+        merge.header.parents_hash_list.contains(&last.block_hash),
         "the merge block has the space branch as a parent"
     );
     assert!(
@@ -367,27 +436,78 @@ async fn n4_space_merge_with_empty_sibling() {
     );
     accept(&mut nodes[0], &empty).await;
     accept(&mut nodes[0], &merge).await;
-    accept(&mut nodes[1], &first).await;
-    accept(&mut nodes[1], &second).await;
+    // Changed for the N4 contract: node 1 validates every block of the branch. The text before:
+    // accept(&mut nodes[1], &first).await;
+    // accept(&mut nodes[1], &second).await;
+    for block in &branch {
+        accept(&mut nodes[1], block).await;
+    }
     accept(&mut nodes[1], &merge).await;
-    submit(
-        &nodes[0],
-        signed_offer(&payers[0], &queue.touching("merge"), 3, PHLO, EXPOSURE),
-    )
-    .await;
-    let touch = propose(&mut nodes, 0).await;
-    assert_space_deploy(&touch, "the touch on the merge");
-    assert!(
-        touch.header.parents_hash_list.contains(&merge.block_hash),
-        "the touch block has the merge block as a parent"
-    );
-    accept(&mut nodes[1], &touch).await;
-    accept(&mut nodes[2], &touch).await;
-    assert_eq!(
-        tags_at(&nodes[2], &touch, &queue.deliveries("merge")).await,
-        BTreeSet::from(["config", "fired", "take"].map(String::from)),
-        "the touch reads the queue of the space branch through the merge"
-    );
+    // Changed for the N4 contract: the payer of each family touches its space on the merge, one
+    // block for each family, and every node reads the deliveries of each family. The text before:
+    // submit(
+    //     &nodes[0],
+    //     signed_offer(&payers[0], &queue.touching("merge"), 3, PHLO, EXPOSURE),
+    // )
+    // .await;
+    // let touch = propose(&mut nodes, 0).await;
+    // assert_space_deploy(&touch, "the touch on the merge");
+    // assert!(
+    //     touch.header.parents_hash_list.contains(&merge.block_hash),
+    //     "the touch block has the merge block as a parent"
+    // );
+    // accept(&mut nodes[1], &touch).await;
+    // accept(&mut nodes[2], &touch).await;
+    // assert_eq!(
+    //     tags_at(&nodes[2], &touch, &queue.deliveries("merge")).await,
+    //     BTreeSet::from(["config", "fired", "take"].map(String::from)),
+    //     "the touch reads the queue of the space branch through the merge"
+    // );
+    let first_touch = FAMILIES.len() as i64 + 1;
+    let mut touch = None;
+    for (index, (stamp, family)) in (first_touch..).zip(FAMILIES.iter()).enumerate() {
+        submit(
+            &nodes[0],
+            signed_offer(
+                payer(index),
+                &family.touching("merge"),
+                stamp,
+                PHLO,
+                EXPOSURE,
+            ),
+        )
+        .await;
+        let block = propose(&mut nodes, 0).await;
+        assert_space_deploy(&block, &format!("the touch of the {} space", family.label));
+        if index == 0 {
+            assert!(
+                block.header.parents_hash_list.contains(&merge.block_hash),
+                "the first touch block has the merge block as a parent"
+            );
+        }
+        accept(&mut nodes[1], &block).await;
+        accept(&mut nodes[2], &block).await;
+        touch = Some(block);
+    }
+    let touch = touch.expect("the touches have blocks");
+    for family in &FAMILIES {
+        let channel = family.deliveries("merge");
+        let merger = tags_at(&nodes[2], &touch, &channel).await;
+        assert_eq!(
+            merger,
+            BTreeSet::from(["config", "fired", "take"].map(String::from)),
+            "{}: the touch reads the space of the branch through the merge",
+            family.label
+        );
+        for node in &nodes[..2] {
+            assert_eq!(
+                tags_at(node, &touch, &channel).await,
+                merger,
+                "{}: every node reads the deliveries of the merger",
+                family.label
+            );
+        }
+    }
 }
 
 // Changed by decision 108: the row returns with the merge of feature/cost-accounted-rho, which

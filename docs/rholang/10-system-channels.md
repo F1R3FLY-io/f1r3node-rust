@@ -558,6 +558,57 @@ A failed check of the call gives `EXT_BAD_ARG`, and a failure of the model or of
 Like `embed`, the process is recorded.
 Play makes the checks of the call, and replay delivers the recorded reply without a check of the call.
 
+## <a id="reified-namespace"></a>Reified RSpaces: the names of the namespace tag `0xE0`
+
+Every Reified name is a `GPrivate` whose id starts with the [namespace tag](../rspace/reified-rspaces/glossary.md#namespace-tag) `0xE0` ([decision 7](../rspace/reified-rspaces/decision-register.md#decision-7)).
+A program cannot write a `GPrivate` id, so only the node makes these names.
+Each Reified process listens on an [op channel](../rspace/reified-rspaces/glossary.md#op-channel), a name whose id has the two bytes `[0xE0, op]`.
+The node finds the code of the process by its body reference $`200 + \mathit{op}`$.
+The other processes of this chapter have names of one byte, and their body references are below 200.
+So a Reified channel never equals the channel of another process.
+
+*Table 2. The ops of the op channels `[0xE0, op]` (`spaces/namespace.rs` and `reified/system_channels.rs`).*
+
+| Op | What the op names | Body reference |
+|---|---|---|
+| `0x00` to `0x1F` | The factories `rho:space:<outer>:<inner>` of the 32 [families](21-reified-spaces.md#space-families). The FIPS name `rho:space:HashMapBagSpace` names `0x00`, and `rho:space:PathMapSpace` names `0x07`. | 200 to 231 |
+| `0x20` | Reserved for the factory of a native engine. The node installs no process on it, because [decision 2](../rspace/reified-rspaces/decision-register.md#decision-2) holds the MeTTa space. | none |
+| `0x21` | `rho:space:getSpaceAgent` | 233 |
+| `0x22` | `rho:assert:assertEqual` | 234 |
+| `0x23` | `rho:lang:vector` | 235 |
+| `0x24` | `rho:vectordb:embed`, only in a `chromadb` build ([decision 113](../rspace/reified-rspaces/decision-register.md#decision-113)) | 236 |
+| `0x25` | `rho:vectordb:ann`, only in a `chromadb` build | 237 |
+| `0x30` | `rho:reified:internal:handleOp` | 248 |
+| `0x31` | `rho:reified:internal:matcherOp` | 249 |
+| `0x32` | `rho:reified:internal:sinkOp` | 250 |
+| `0xD0` to `0xD4` | The [markers](../rspace/reified-rspaces/glossary.md#marker) `USE`, `NEWSPACE`, `PARAMS`, `QUERY` and `FREE`. They take no calls, and [decision 112](../rspace/reified-rspaces/decision-register.md#decision-112) retired the marker tuples that they headed. | none |
+| `0xD5` to `0xDF` | Reserved for future syntax markers ([decision 57](../rspace/reified-rspaces/decision-register.md#decision-57)). | none |
+| `0xFF` | The marker `AGENT_TAG`. It tags the names that a user agent returns, and it takes no calls. | none |
+| `0x26` to `0x2F`, `0x33` to `0xCF` and `0xE0` to `0xFE` | Open to the factories and the processes of a registered space kind ([decision 127](../rspace/reified-rspaces/decision-register.md#decision-127)). | $`200 + \mathit{op}`$ |
+
+An id with more than two bytes names a channel or a name of one space.
+Its second byte is a [KIND](../rspace/reified-rspaces/glossary.md#kind) letter, and the 32-byte [space id](../rspace/reified-rspaces/glossary.md#space-id) `sid` follows.
+Table 3 lists the KINDs, where ‖ is byte concatenation.
+A temp or seq space uses the lowercase form of a KIND, the byte `kind | 0x20`, and the hot store alone holds its channels.
+The KINDs M and T have no lowercase form.
+[Figure 02](../rspace/reified-rspaces/diagrams/02-namespace-bytes.svg) shows every layout, and [section N2 of the design](../rspace/reified-rspaces/design.md#n2-namespace-and-records) states the decoder.
+
+*Table 3. The KINDs of the ids with more than two bytes (`spaces/namespace.rs`).*
+
+| KIND | Byte | Id | Bytes | What the id names |
+|---|---|---|---|---|
+| D | `0x44` | `E0‖D‖sid‖key` | more than 34 | The data channel of the collection `key`, with its records and its waiters |
+| C | `0x43` | `E0‖C‖sid` | 34 | The config channel of the space |
+| I | `0x49` | `E0‖I‖sid‖prefix` | 34 or more | A path index of a PathMap space |
+| A | `0x41` | `E0‖A‖sid` | 34 | The name allocator of an Array or Vector space |
+| S | `0x53` | `E0‖S‖sid` or `E0‖S‖sid‖key` | 34, or more than 34 | The space counter, or the counter of the collection `key` |
+| H | `0x48` | `E0‖H‖sid` | 34 | The handle `this` of the space |
+| N | `0x4E` | `E0‖N‖sid‖tail` | 66 or 42 | A [name of the space](../rspace/reified-rspaces/glossary.md#space-name), with 32 random bytes, or with an 8-byte index in an Array or Vector space |
+| X | `0x58` | `E0‖X‖state` | 34 or more | A matcher of a space with a user agent |
+| B | `0x42` | `E0‖B‖tag` | 34 | A body of a receive on a space with a user agent |
+| M | `0x4D` | `E0‖M‖…` | 34 or more | Reserved for the state of an engine |
+| T | `0x54` | `E0‖T‖…` | 34 or more | Reserved for canonical theory and space-spec content |
+
 ## Channel Summary
 
 | URI | Arity | Category | Deterministic |

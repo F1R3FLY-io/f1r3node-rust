@@ -231,7 +231,7 @@ for (@y <- @"x" ~ ([1]; 2)) { Nil }
 
 ### Bare floats
 
-The v3 grammar reads a float without a suffix, such as `0.85` or `1e3`, as a 64-bit float ([I-7](decision-register.md#i-7)).
+The v3 grammar reads a float without a suffix, such as `0.85` or `1e3`, as a 64-bit float ([I-7](decision-register.md#i-7), superseded by [decision 110](decision-register.md#decision-110)).
 The node applies `preprocess_floats` before it parses, and it keeps that rewrite ([decision 110](decision-register.md#decision-110)).
 The rewrite gives a float without a suffix the suffix `f64`, so `5.`, `5.e3` and `.5` stay valid floats, as on the base.
 It leaves a number that an identifier follows as it is, so `5.toByteArray()` stays a method call on an integer.

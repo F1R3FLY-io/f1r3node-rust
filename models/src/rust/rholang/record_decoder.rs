@@ -174,7 +174,9 @@ pub const EX_G_INT32: u32 = 38;
 pub const EX_G_UINT32: u32 = 39;
 pub const EX_G_UINT16: u32 = 40;
 pub const EX_G_UINT8: u32 = 41;
+/// The serde variant index of the arm `EFreeBody`, which decision 112 adds.
 pub const EX_E_FREE_BODY: u32 = 42;
+/// The serde variant index of the arm `EParamsBody`, which decision 112 adds.
 pub const EX_E_PARAMS_BODY: u32 = 43;
 // Changed by decision 112: the oneof has two more arms. The text before:
 // pub const EXPR_INSTANCE_VARIANT_COUNT: u32 = 42;

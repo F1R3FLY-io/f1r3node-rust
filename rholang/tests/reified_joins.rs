@@ -59,7 +59,7 @@
 //! | `space_joins_legacy_charges_equal_host` | retired by decision 90 (decision 69) with Option P: each staged shape charged what `ChargingRSpace` charged for its host call |
 //! | `space_joins_classification_fires_as_check_joins` | a collection without joins fires as it fired at the second-wave commit |
 //! | `space_joins_native_execution_fails_closed` | decision 46: a join fails before any space work |
-// Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg:8-14). The row
+// Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg). The row
 // before:
 // //! | `space_joins_set_join_cascade_fires_exposed_waiter` | decision 50: a set waiter that a class move exposes fires in the same transaction |
 //! | `space_joins_set_join_cascade_fires_exposed_waiter` | decision 118: the waiter of the F-JF-1 trace fires at its arrival, because its class has a persistent member |
@@ -5338,7 +5338,7 @@ async fn space_joins_native_play_commits_and_legacy_fails_closed() {
 
 // ─── 7.2: decision 50 ────────────────────────────────────────────────────────────────────────
 
-// Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg:8-14). Rule
+// Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg). Rule
 // (a) of decision 118 makes W fire at its arrival, so the case below replaces this one. The case
 // before:
 // /// One case of `space_joins_set_join_cascade_fires_exposed_waiter`. The set holds a1 and the
@@ -5550,7 +5550,7 @@ async fn set_cascade_case(second_member: bool) {
     // replay_case(SpaceInner::Set, script).await;
 }
 
-// Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg:8-14). The doc
+// Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg). The doc
 // before:
 // /// Decision 50 (finding F-JF-1, joins plan 4.9). A fire on a joined set can remove the
 // /// non-persistent first member of a class while a persistent member stays. Then the class moves to
@@ -5570,7 +5570,7 @@ async fn set_cascade_case(second_member: bool) {
 // /// The second case adds a second member b2 of the class of b. The fire of W then retires b2 with
 // /// `K_retire` and the random state of b (RETIRE-SET-BINDS).
 /// Decision 50 (finding F-JF-1, joins plan 4.9), restated by decision 118. The trace of F-JF-1 is
-/// vacuous (NoSetCascadeUnsafe.cfg:8-14): a set class with a persistent member never blocks as a
+/// vacuous (NoSetCascadeUnsafe.cfg): a set class with a persistent member never blocks as a
 /// class, so the join of that trace fires at its arrival and never parks.
 ///
 /// The first case has three sends on one set collection: a1, b and a persistent a2 of the class of

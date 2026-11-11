@@ -322,7 +322,9 @@ impl Score {
     pub const EPLUSPLUS: i32 = 120;
     pub const EMINUSMINUS: i32 = 121;
     pub const EMOD: i32 = 122;
+    /// The score of the expression `EFreeBody` (decision 112).
     pub const EFREE: i32 = 123;
+    /// The score of the expression `EParamsBody` (decision 112).
     pub const EPARAMS: i32 = 124;
 
     // Other
@@ -346,9 +348,13 @@ impl Score {
     pub const COST_STACK: i32 = 315;
     pub const COST_SIG_NAME: i32 = 316;
     pub const COST_SIG_UNIT: i32 = 317;
+    /// The score of a `UseBlock`, the block `use space { body }` (decision 112).
     pub const USE_BLOCK: i32 = 318;
+    /// The score of the `SendParams` of a send (decision 112).
     pub const SEND_PARAMS: i32 = 319;
+    /// The score of the `QuerySpec` of a receive bind (decision 112).
     pub const QUERY_SPEC: i32 = 320;
+    /// The score of the `SpaceAnnotation` list of a `new` (decision 112).
     pub const SPACE_ANNOTATION: i32 = 321;
 
     pub const CONNECTIVE_NOT: i32 = 400;

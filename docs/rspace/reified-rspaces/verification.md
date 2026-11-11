@@ -1030,6 +1030,8 @@ The base commit `2538d1f82` (DR-131 P2a) added that comment, and the campaign fo
 | `e_free_body` | Item 16 and decision 18: no K15 protobuf field. |
 | `event_coverage` | Item 4: no production EventCoverage. |
 
+*Changed by [decision 112](decision-register.md#decision-112): the Reified syntax now uses the protobuf fields `use_blocks` and `e_free_body`. So the production scan of `complete-policies.json` drops their two tokens and holds 22.*
+
 **The `0xF3` rule.** The key `forbidden_anywhere` of `complete-policies.json` lists `0xF3` and `0xf3`, because the Reified [namespace tag](glossary.md#namespace-tag) is `0xE0` ([decision 7](decision-register.md#decision-7)).
 `check-complete.py --phase p1` applies these tokens to the three P1 sources, and it printed `complete phase p1: 91803 checks, 0 findings`.
 The production scan does not list `0xF3`, because the MeTTaIL tag band `0xF0` to `0xF9` enters production code with the F1r3lang merge in P12.
@@ -1326,8 +1328,13 @@ Then it runs `bash -n` and the script, in a cleared environment with empty `HOME
 
 The harness compares the exit code, the citation total, and the set of mismatch lines with the policy.
 It also requires that `HOME` and `TMPDIR` stay empty.
-`check-rocq-line-refs.sh` exits with 1 after 125 citations and 7 mismatches (finding `rrs-finding-preexisting-rocq-citation-drift`), and `check-source-line-refs.sh` exits with 1 after 132 citations and 35 mismatches.
+`check-rocq-line-refs.sh` exits with 1 after 126 citations and 16 mismatches (finding `rrs-finding-preexisting-rocq-citation-drift`), and `check-source-line-refs.sh` exits with 1 after 590 citations and 67 mismatches.
 Both audits read only `docs/casper/theory`, so they do not check this dossier.
+
+*Changed on 2026-11-11: the counts follow the final checkers run of 2026-11-10.*
+Merge 2 took `docs/casper/theory` from the base `702496775`, and 40 of its files changed.
+The text before gave 125 citations with 7 mismatches, and 132 citations with 35 mismatches.
+In each run, the mismatch lines equal the set of the closure policy.
 
 **The ledger copy by inverse redaction.** The repository holds a redacted copy of the design ledger in `design-record/`.
 The copy has the SHA-256 digest `5f42c87067eddf859bd6aff837f2b67127061d621e5266330e96a979cae0e8ed`, 1,585 lines, one `[HOME]` token, and no home path.
@@ -4753,6 +4760,8 @@ The list property and the replay property run on the driver.
 The map also names witness tests: the counterexamples CE-1 and CE-2, the carries at the round cap, and Rule E with embeddings.
 The three join tests, the replay test and the restore of a member that a peek cascade lifts are witnesses too.
 
+*Changed by [decision 90](decision-register.md#decision-90) (C6, step D): the agreement property `prop_vectordb_driver_and_engine_agree` retires with the rigged replay modes ([decision 125](decision-register.md#decision-125)).*
+
 `prop_vectordb_transactions_are_bounded` follows the operation of each transaction of a chain.
 A transaction that runs an operation stops at the round cap only after exactly $`c`$ fires.
 A settle job starts its own count (decision 49).
@@ -5797,6 +5806,8 @@ Changed by [decision 90](decision-register.md#decision-90) (C6, step D): every s
 | `UseBalanceUnsafe.cfg` | TLA+ Unsafe | The use context leaks into the rest of the process. | `UseBalance` (5 states, complement 13,541) |
 | A re-issue counted as a use | Rust mutant | The re-issue branch runs with `OpOrigin::Program`. | `reducer_seq_atomic_guard` |
 | A scanned forwarder hop | Rust mutant | The forwarder hop is scanned. | `reducer_seq_payload` |
+
+*Changed by [decision 91](decision-register.md#decision-91): the admitted uses of a channel form a causal chain, so `SeqGuardToctouUnsafe.cfg` now refutes `SeqCausalChain` of `SpaceCoordination.tla`. The state counts of its row are those of `SeqExclusive`.*
 
 The two Rocq mutants of step 1 on gate 3 are commented out, because their anchors no longer exist.
 The three controls of gate 3 restate them.
@@ -7310,13 +7321,25 @@ So the merge rows use one payer for each space block: two searched payers whose 
 
 | Test | Property | Result |
 |---|---|---|
-| `n4_space_chain_propose_validate` | Node 0 proposes ten blocks: the creations of a queue, a set, a priority queue, a VectorDB space and a PathMap space, each with records and a waiter, and then a touch of each space. Node 1 validates each block, and the two nodes hold equal settlement receipts. At the last block, both nodes read the same deliveries of each family: the config of the handle, a take and a fired waiter. | Pass |
-| `n4_space_merge_with_empty_sibling` | Node 0 proposes two space blocks of the two payers, and node 1 proposes an empty block from genesis. Node 2 merges them. The empty block is the main parent of the merge block, the merge rejects no deploy, and every node validates the merge block. Node 0 then touches the queue of its branch on the merge, every node validates that block, and the touch delivers the config, a take and a fired waiter. | Pass |
+| `n4_space_chain_propose_validate` | Node 0 proposes sixteen blocks: the creations of a queue, a set, a priority queue, a VectorDB space, a PathMap space, a bag, a stack and a cell, each with records and a waiter, and then a touch of each space. Node 1 validates each block, and the two nodes hold equal settlement receipts. At the last block, both nodes read the same deliveries of each family: the config of the handle, a take and a fired waiter. | Pass |
+| `n4_space_merge_with_empty_sibling` | Node 0 proposes eight space blocks, one creation of each family, and the two payers alternate. Node 1 proposes an empty block from genesis. Node 2 merges them. The empty block is the main parent of the merge block, the merge rejects no deploy, and every node validates every block. Node 0 then touches each space of its branch on the merge, one block for each family, and every node validates each touch. At the last touch, every node reads the deliveries of each family: the config, a take and a fired waiter. | Pass |
 | `n4_concurrent_space_blocks_agree` | The two payers create their own spaces in sibling blocks over genesis. Every node validates both siblings and the merge block, and the merge rejects no deploy. | Pass |
 | `n4_tampered_space_block_rejected` | A space block with a changed post-state hash, and the same block with a channel added to the footprint of a space row of its operation journal, are each signed again. Node 1 rejects the first with "offered block replay post-state differs from commitment" and the second with "native replay has incomplete operations" or "native replay stalled". Its DAG does not hold either block, and its DAG heads do not change. Both nodes then accept the untampered block. | Pass |
 
 *Amended by [decision 84](decision-register.md#decision-84) (section 34.10).* The revert of DR-119 disables `n4_concurrent_space_blocks_agree`.
 The merge row takes two labeled payers, and no bucket search chooses them.
+
+*Changed on 2026-11-11 for the N4 condition of `rrs-consensus-merge`: a merge across blocks that contain every collection kind.*
+Before this change, the families held no bag on the HashMap store, no stack and no cell.
+The merge row merged the queue and the set only.
+Now the eight families hold the seven [inner collections](glossary.md#inner-collection) on the HashMap store and the bag on the PathMap store.
+The chain row proposes sixteen blocks, and Table 207 gives the rows as they are now.
+
+The merge row merges a branch with one creation block of each family, and the two labeled payers alternate.
+On the merged base, a merge keeps the sequential offers of one payer in one branch.
+Probe R10 of [decision 108](decision-register.md#decision-108) measured this fact, and `casper/tests/reified/support.rs` records it.
+A cell holds at most one record and one waiter (rule CL-1), so the cell family stores one record.
+Section 35.9 gives the gates of the change, and the suite now takes 129.4 seconds in the release profile.
 
 N4 has no Casper-level counter row (decision 82).
 The rholang merge suites (section 34.3.3) and the models `CounterConflict.v` and `CounterConflict.tla` cover the guard of M-1.
@@ -7442,16 +7465,22 @@ No row needs a per-test override.
 
 | Disposition | Meaning | Rows |
 |---|---|---|
-| port | The behavior stays, and each successor tests it. | 558 |
-| retarget | A recorded decision changed the mechanism of the behavior, and each successor tests the new mechanism. | 258 |
+| port | The behavior stays, and each successor tests it. | 557 |
+| retarget | A recorded decision changed the mechanism of the behavior, and each successor tests the new mechanism. | 259 |
 | drop | A recorded decision removed the behavior, and each successor tests what replaces it. The row names the decision or the plan section. | 365 |
 
 Each row names its behavior, from its area and its test name, and at least one successor by file and exact test name.
 The checker finds each successor as a function of that name in its file.
 72 rows are positive matcher tests of the legacy branch, in which a receive fired under the wildcard matcher.
 Each of them also names a non-match counterpart, a test in which a pattern that does not match does not fire (plan section "Tests").
-The rows name 301 distinct successors.
-The two successors that serve the most rows are the similarity reference cases (90 rows) and the observer parity of the queue (59 rows).
+The rows name 297 distinct successors.
+The two successors that serve the most rows are the similarity reference cases (90 rows) and the observer parity of the queue (72 rows).
+
+*Changed on 2026-11-11: the counts of this section follow the ledger of merge 2 (`30dbcea11`).*
+Merge 2 changed 49 rows of the ledger, but it did not change the counts of this section.
+The row `test_rig_with_event_log` moved from port to retarget, because native replay replaced the replay rig ([decision 125](decision-register.md#decision-125)).
+The other changed rows name renamed or replaced successors, and 13 of them now name the observer parity of the queue.
+The text before gave 558 port rows, 258 retarget rows, 301 distinct successors and 59 rows of the observer parity.
 
 *Table 214. The rows of each legacy area.*
 
@@ -7459,7 +7488,7 @@ The two successors that serve the most rows are the similarity reference cases (
 |---|---|---|---|---|
 | Adapter | 17 | 9 | 5 | 3 |
 | Charging agent | 33 | 0 | 24 | 9 |
-| Checkpoints | 22 | 15 | 3 | 4 |
+| Checkpoints | 22 | 14 | 4 | 4 |
 | Collections | 101 | 69 | 16 | 16 |
 | End to end | 23 | 16 | 4 | 3 |
 | Errors | 2 | 0 | 0 | 2 |
@@ -7483,7 +7512,7 @@ The two successors that serve the most rows are the similarity reference cases (
 | Theories | 35 | 34 | 0 | 1 |
 | Types | 134 | 68 | 17 | 49 |
 | VectorDB | 254 | 122 | 22 | 110 |
-| Total | 1,181 | 558 | 258 | 365 |
+| Total | 1,181 | 557 | 259 | 365 |
 
 *Table 215. The drops by class of reason.*
 
@@ -7698,7 +7727,7 @@ Figure V3 shows the blocks of the N4 merge with an empty sibling (section 34.6).
 
 *Figure V2. Source: [diagrams/34-p9-process-harnesses.puml](diagrams/34-p9-process-harnesses.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
-![Diagram of the blocks of the N4 merge with an empty sibling. Genesis is an offered v6 genesis with three validators and two labeled payers. Node 0, the leader, proposes block A, in which payer 0 creates a queue space with records and a waiter, and block B on A, in which payer 1 creates a set space; each space block has its own payer, because a merge rejects the second of two sequential offers of one payer in one branch. Node 1 proposes the empty block E on genesis. Node 2 proposes the merge block M with the parents E and B, and E is the main parent. The chains of the main parent never enter a merge, so the merge applies the deploys of A and B to the post-state of E, and the merge of the space branch is not vacuous; the merge rejects no deploy. Node 0 then proposes block T on M, in which payer 0 touches its queue space, and T delivers the config, a take and a fired waiter. Every node validates M and then T.](diagrams/34a-n4-merge-dag.svg)
+![Diagram of the blocks of the N4 merge with an empty sibling. Genesis is an offered v6 genesis with three validators and two labeled payers. Node 0, the leader, proposes the blocks C1 to C8 in a chain on genesis. Each block creates the space of one family. The families are a queue, a set, a priority queue, a VectorDB space, a PathMap space, a bag, a stack and a cell. Payer 0 offers C1, C3, C5 and C7, and payer 1 offers C2, C4, C6 and C8. On the merged base, a merge keeps the sequential offers of one payer in one branch. Node 1 proposes the empty block E on genesis. Node 2 proposes the merge block M with the parents E and C8, and E is the main parent. The chains of the main parent never enter a merge, so the merge applies the deploys of C1 to C8 to the post-state of E. So the merge of the space branch is not vacuous, and the merge rejects no deploy. Node 0 then proposes the blocks T1 to T8 in a chain on M. In each block, a payer touches a space that it created. Every node validates M and each touch block. At T8, every node reads the config, a take and a fired waiter of each family.](diagrams/34a-n4-merge-dag.svg)
 
 *Figure V3. Source: [diagrams/34a-n4-merge-dag.puml](diagrams/34a-n4-merge-dag.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -7864,7 +7893,7 @@ The phase has eleven steps, and this section records each step when it lands:
 5. S5 and S6: the documents and the diagrams.
 6. S4: the FIPS clause matrix and its checker.
 7. S8: the benchmarks and `performance.md`.
-8. S9 to S11: the claims gate, the tracker notes and the full gate set. Changed by decision 131: the final verification of the epic runs the full gate set. The leaf `rrs-final-claims-audit` is the claims gate, and pgmcp holds the tracker notes. Changed by [decision 137](decision-register.md#decision-137): the full gate set runs on a development host, and the leaves close at claimed_done. Section 35.9 records the full gate set.
+8. S9 to S11: the claims gate, the tracker notes and the full gate set. Changed by decision 131: the final verification of the epic runs the full gate set. The leaf `rrs-final-claims-audit` is the claims gate, and pgmcp holds the tracker notes. Changed by [decision 137](decision-register.md#decision-137): the full gate set runs on a development host, and the leaves close at claimed_done. Section 35.9 records the full gate set, and section 35.10 records the map of the legacy defects D1 to D13.
 
 ### 35.1 Step S1: the aggregate gate
 
@@ -8373,6 +8402,7 @@ The other chapters get these changes:
 
 - Chapters 02, 06, 07 and 08 each get a short Reified section that links to chapter 21.
 - Chapter 10 gets a Reified section on the space factories and processes, and its channel summary lists them. Its VectorDB section gets an anchor, and its three blocks become example files.
+  *Changed on 2026-11-11: chapter 10 also gets a [Reified section](../../rholang/10-system-channels.md#reified-namespace) on the names of the tag `0xE0` ([decision 7](decision-register.md#decision-7)). Its Table 2 lists the ops of the op channels, and its Table 3 lists the KINDs. The item `rrs-perf-docs-final` asks for this namespace note.*
 - `chromadb.md` gets the anchor of its Reified section, whose two blocks were already the files of the example `vectordb-mirror`.
 - `docs/rholang/README.md` lists chapter 21, and `examples/README.md` lists the Reified examples.
 
@@ -8477,6 +8507,7 @@ Part 6 updates the indexes:
 - `theory-seam.md` and `f1r3lang-integration.md` pass the lint. Their rows "Planned in P12" are current, because P12 waits for the readiness signal.
 
 The link from `docs/node/README.md` to `performance.md` waits for step S8, which writes `performance.md`.
+*Changed on 2026-11-11: step S8 wrote `performance.md`, and the line "See also" of [`docs/node/README.md`](../../node/README.md) now links it.*
 
 #### 35.4.9 The rules of each inner collection
 
@@ -8856,6 +8887,9 @@ Phase P11 holds the same gates: the full gates, the pin of the parser revision a
 A leaf of the campaign closes at the tracker status claimed_done when each of its requirements and checks has passed.
 The closure report in the tracker repeats the results of this section.
 
+The commit of the A12 batch changes documents, the test `casper/tests/reified/n4.rs` and the comments of six Rust files, and it gives the candidate F'.
+The job A12 checks F' with the gates of that change, and Tables 257, 258 and 260 give the job.
+
 The gate set runs in this order:
 
 1. The legs of the aggregate gate, the release tests of each crate, step S3, the mutant harnesses and the FIPS matrix.
@@ -8864,7 +8898,7 @@ The gate set runs in this order:
 4. The terminal verification: the two tests of [I-14](decision-register.md#i-14) and an empty `git diff HEAD -- casper/src`.
 5. The check of each result against the frozen candidate (section 35.9.1), the roll-up of the leaves, the cleanup and the closure report.
 
-Nine jobs ran the gate set, and Table 257 names them.
+Ten jobs ran the gate set, and Table 257 names them.
 Regression 1 ran before the fix batch of commit `cf4bcb410`.
 Regression 2 ran eight crates again after the batch, so only the three other crates count from regression 1.
 
@@ -8881,6 +8915,7 @@ Regression 2 ran eight crates again after the batch, so only the three other cra
 | Checkers | 2026-11-10 11:35 | The documents of section 35.8 | The `checkers` leg |
 | Benchmarks | 2026-11-10 11:38 | `dde077f81` with no change | The timed run of both benches |
 | Terminal | 2026-11-10 12:20 | `dde077f81` with no change | The two tests of I-14, the diff of `casper/src` and `cargo deny` |
+| A12 | 2026-11-11 16:41 | `085704154` with the A12 batch | `cargo fmt`, the check of the Rust diff, clippy, `cargo doc -p models`, the N4 suite and the `checkers` leg |
 
 *Table 258. The gates of step S11.*
 
@@ -8903,6 +8938,13 @@ Regression 2 ran eight crates again after the batch, so only the three other cra
 | The two tests of I-14 | Terminal | 2 passed, 0 failed. The two constants at `HEAD` are those of merge 2 ([decision 112](decision-register.md#decision-112)). |
 | `git diff HEAD -- casper/src` | Terminal | Empty |
 | The timed run of the benchmarks of step S8 | Benchmarks | The run timed 155 cases with 10 samples each. Each of the 154 contract cases fits, and its phlo equals contract v2. [performance.md](performance.md) gives the results. |
+| The Rust diff of F' against `085704154` | A12 | The changed Rust files are `n4.rs` and six files whose changed lines are all comments. No Cargo file changes. |
+| `cargo fmt --all -- --check` on F' | A12 | No finding |
+| `cargo clippy --workspace --all-targets -- -D warnings` on F' | A12 | No finding |
+| `cargo doc -p models --no-deps` on F' | A12 | Five warnings, each on a line of the base `702496775`. No warning names a line of the campaign. |
+| The N4 suite on F' (Table 208) | A12 | 4 passed and 0 failed in 129.4 s |
+| The `checkers` leg on F' | A12 | `reified-rspaces ALL: PASS=49 FAIL=1 SKIP=0` in 91 s. Checker 26, `check-footprint.py --policy d112`, failed with 7 violations. The policy did not yet approve the changes of the batch to five files of the base, or the new file `verification/ignored-tests.json`. |
+| `check-footprint.py --policy d112` on F', after the update of `footprint-policies.json` | A12 | 0 violations in 6,621 files. The check undoes each approved edit and compares the result with the digest of the base `702496775`. So each change of the batch to a file of the base is an approved edit. Checker 1 and checkers 10 to 16, which read the same policy, pass again. |
 | Phase P12 | None | Not run, because the user has not signalled that F1r3lang is ready |
 
 The release tests run under `cargo nextest` in release mode.
@@ -8927,6 +8969,9 @@ Table 259 gives the counts of each crate, and the two notes under it explain the
 
 1. `reified_rehydrate::reified_factory_theory_argument` expected the record 1 at the head of a queue. The creation of the queue runs `a!(1)` and `a!(2)` as parallel tasks, and racing sends take their places in arrival order ([decision 93](decision-register.md#decision-93)). So the head is 1 or 2, and 200 runs before the fix gave only these two values. The test now accepts either value, and the old assertion stays as a comment. The fix check ran the test once, then 100 runs pinned to one CPU and 100 runs without a pin, with no failure.
 2. `genesis::contracts::block_data_contract_spec` failed because its genesis build took more than its limit of 30 s. The build took 50.6 s under the load of the full suite. Alone, the test passed three times out of three, in 8.1 s, 7.9 s and 8.3 s. The test and its limit are equal to the base `702496775`, so the campaign does not change them ([decision 70](decision-register.md#decision-70)).
+
+The release tests ran on the frozen candidate. In the Rust code, F' changes the N4 tests and comments only, so the other counts of Table 259 hold for F'.
+The job A12 ran the N4 suite again (Table 258).
 
 #### 35.9.1 The check of each result against the frozen candidate
 
@@ -8971,6 +9016,108 @@ Table 260 gives the result of each job.
 | Checkers | None | Its documents changed after the job. The final run of the closure report checks the final documents. |
 | Benchmarks | `dde077f81` with no change | Equal |
 | Terminal | `dde077f81` with no change | Equal |
+| A12 | `085704154` with the A12 batch | F' differs from the frozen candidate in `n4.rs` and in the comments of six Rust files, and the job checks this. Comments change no compiled code. So each result of the frozen candidate holds for F', and the job ran the N4 suite again. |
+
+#### 35.9.2 The skipped tests
+
+[Decision 13](decision-register.md#decision-13) asks the workspace regression gate to skip the tests with the attribute `#[ignore]` by exact name and to record their reasons.
+The record [`verification/ignored-tests.json`](verification/ignored-tests.json) names each test that the release tests of Table 259 skip.
+Each row gives the crate, the file, the line, the name of the test, its test binaries, its origin and its reason.
+The record holds 91 tests, and the release tests skip 99 runs.
+Three files also compile into the target `tests/mod.rs` of their crate, so their eight tests run in two binaries.
+For each crate, the runs of the record equal the skipped count of Table 259.
+
+The base `702496775` has 90 of the tests, each with the same attribute in the same file.
+The campaign adds one test, `reified_ordinary_regression_r3_measure_witnesses`, which measures the witnesses of the aliased join of `R3_GREEDY_DATA` and runs only with `--ignored`.
+The attribute text gives the reason of 87 tests, and the comment above the test gives the reason of two tests.
+The code of the other two tests states their reason, and the record cites it.
+The nextest profile filters no test, so the skipped set is the set of the attribute, and the record names each member of that set.
+
+*Table 261. The skipped tests of each file.*
+
+| File | Tests | Runs | Origin | Reason |
+|---|---|---|---|---|
+| `rholang/tests/tests/fs_wal/observation.rs` | 31 | 31 | Base | A triage of a gap in the replay harness of a leader and a follower |
+| `rholang/tests/tests/fs_wal/mutation.rs` | 29 | 29 | Base | The same triage |
+| `rholang/tests/fs_wal_spec.rs` | 4 | 4 | Base | The same triage |
+| `rholang/tests/fileio_replay_spec.rs` | 4 | 8 | Base | The same triage |
+| `rholang/tests/replay_memory_profile_spec.rs` | 1 | 2 | Base | A manual memory profile |
+| `rholang/tests/reified_ordinary_regression.rs` | 1 | 1 | Campaign | A measurement of the witnesses of an aliased join |
+| `rholang/src/rust/interpreter/io/nss.rs` | 2 | 2 | Base | Smoke tests that need a `root` account with uid 0 |
+| `rholang/src/rust/interpreter/io/verify.rs` | 1 | 1 | Base | A helper that regenerates the 11 pins of `stable_hash` |
+| `rholang/src/rust/interpreter/accounting/monetary_allocation/funding_family_optimizer_tests.rs` | 1 | 1 | Base | A measurement that can take hours (DR-131, ruling D-K) |
+| `casper/tests/merging/conflict_detection_perf_spec.rs` | 3 | 3 | Base | Performance benchmarks |
+| `casper/tests/block_creator_memory_profile_spec.rs` | 2 | 2 | Base | A manual memory profile |
+| `casper/tests/batch2/clique_oracle_test.rs` | 1 | 1 | Base | A diagnostic of the growth of the clique oracle |
+| `casper/tests/batch2/floor_of_view_test.rs` | 1 | 1 | Base | A diagnostic of the growth of the floor of view |
+| `casper/tests/batch2/loss_priority_spec.rs` | 1 | 1 | Base | An expected failure that marks a bias of the base (issue 294) |
+| `casper/tests/batch2/map_cell_convergence_spec.rs` | 1 | 1 | Base | A soak of more than 400 blocks |
+| `casper/tests/batch2/rholang_build_test.rs` | 1 | 1 | Base | A genesis with 1,000 vaults |
+| `casper/tests/genesis/contracts/fileio_examples_spec.rs` | 1 | 1 | Base | A triage: the test does not reach its assertion |
+| `rspace++/tests/concurrent_rspace_test.rs` | 3 | 6 | Base | Timing-sensitive tests that must run alone |
+| `rspace++/src/rspace/merger/channel_change.rs` | 1 | 1 | Base | A pin of finding A, the non-associative max-union combine |
+| `models/tests/record_decoder_malformed.rs` | 1 | 1 | Base | A child process of the gate of malformed input |
+| `node/tests/soak_observer.rs` | 1 | 1 | Base | A child process of a soak test of the same file |
+| Total | 91 | 99 | | |
+
+The campaign changes the attribute of no test of the base.
+Each file of the base has the same number of `#[ignore]` attributes at `702496775` and at the candidate.
+
+### 35.10 Step S9: the legacy defects D1 to D13
+
+The [design ledger](design-record/2026-08-15-design-ledger.md) of the campaign lists 13 defects of the legacy branch, D1 to D13, in its defect register.
+The ledger requires that the migration resolves each of them, and it plans a map of their resolutions for this dossier.
+Design v2 of the phase asks for that map in step S9, and Table 262 gives it.
+
+The branch builds the spaces again on the one host RSpace, which owns checkpoint, replay and reset ([I-1](decision-register.md#i-1)).
+The legacy modules, for example `generic_rspace.rs` and `registry.rs`, do not exist on the branch.
+So a deletion closes some defects, and a new design closes the others.
+A gate keeps each defect closed: it fails when its defect comes back.
+
+A gate is a test, a Rocq theorem, a TLA+ invariant, or a checker of `checker-commands.txt`, for example a rule of `doc_lint.py`.
+A token is a pattern of the key `forbidden_non_test` of `complete-policies.json`.
+`check-complete.py` fails when a phase source holds a token outside its test region.
+An Unsafe control is a TLC configuration that restores the legacy behavior.
+The TLA+ gate passes only when the control refutes exactly the invariant that the row names.
+A bare `.v` file is in `formal/rocq/reified_rspaces/theories`, and a bare `.tla` file is in `formal/tlaplus/reified_rspaces`.
+
+The table gives D13 eight rows, D13a to D13h, because the ledger groups eight smaller defects under it.
+The ledger also maps each defect to a fix of its early plan.
+Where a later decision differs from that map, the later decision is in force, and the table follows it.
+For example, [decision 102](decision-register.md#decision-102) replaces the canonical tie order of D5 with a random pick in play, which replay follows.
+A later round of the ledger also replaces the lazy channel of `rank("all")` with the query param `results = "all"`, so D2 has no mechanism left.
+
+*Table 262. The legacy defects and their resolutions.*
+
+| Defect | Legacy behavior | Resolution | Gate |
+|---|---|---|---|
+| D1 | A random UUID as the id of a new space, so a replay derived another id | [I-19](decision-register.md#i-19): the factory derives the space id from the random state of the call, under the namespace tag of [decision 7](decision-register.md#decision-7) (rules SM-1 and DT-2). `derive_space_id` (`rholang/src/rust/interpreter/spaces/types/id.rs:13`) computes it. | `space_id_is_the_space_id_purpose_draw_of_the_call` (`rholang/src/rust/interpreter/spaces/types/id.rs:33`)<br>`n1_parked_wake_across_deploys_replay_equal` (`rholang/tests/reified_n1_replay.rs:186`)<br>The token `Uuid`<br>`UuidUnsafe.cfg` refutes exactly `ReplayPrefixEqual` (`CheckpointReplay.tla:1011`) |
+| D2 | A UUID name and an empty random state for each lazy result channel | Deleted: no lazy result channel exists. A list query binds one value, the list of its records (rule VD-6). `list_data` (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:953`) keeps the random state of one member and merges the random states of more members in delivery order. | `rspace_list_random_state_zero_one_and_two_members` (`rholang/tests/reified_vectordb.rs:3837`)<br>`n1_k_comm_replay_equal` (`rholang/tests/reified_n1_replay.rs:286`)<br>`space_native_vectordb_replay_equal` (`rholang/tests/reified_native_spaces.rs:1644`)<br>The token `Uuid` |
+| D3 | `Produce::default()` events on three produce-match paths, and space state outside the block hash | The spaces keep their records in the host RSpace ([I-1](decision-register.md#i-1), [decision 19](decision-register.md#decision-19)), so the block hash covers the space state. A space transaction makes the observer calls and the events of the equivalent host program ([M-3](decision-register.md#m-3), rule DT-6). Every produce identity comes from `Produce::create`. | `commit_trace_eq_host` (`EventCorrelation.v:5518`)<br>`coverage_commit` (`EventCorrelation.v:8088`)<br>`two_block_replay_preserves_roots` (`EventCorrelation.v:8227`)<br>`space_event_coverage_debug_assert` (`rholang/tests/reified_cross_block_merge.rs:1106`)<br>`space_determinism_merge_trace_roots_are_pinned` (`rholang/tests/reified_cross_block_merge.rs:1073`)<br>The token `Produce::default()` |
+| D4 | A VectorDB clone that stored its records again in HashMap order and did not reset `next_id` | Deleted: the VectorDB records live in the host RSpace, with their metadata in the envelope of [M-2](decision-register.md#m-2). A record id is the hash of its source produce (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:38`), and no `next_id` exists. A soft revert gives back the hot store of the soft checkpoint. | `soft_revert_after_prefix_failure` (`Checkpoint.v:1297`)<br>`prop_soft_revert_restores_the_parent` (`rspace++/tests/reified_checkpoint_props.rs:406`)<br>`space_vector_discipline_restart_keeps_values_ties_and_order` (`rholang/tests/reified_vectordb.rs:3457`) |
+| D5 | Unordered iteration in the PathMap candidates, the checkpoint hash, the visits of `find_and_remove` and the NaN ties of `max_by` | Rule DT-1 names the order of every choice. A head-only collection orders its entries by their order and their bytes, and a PathMap receive visits the paths in key order (rule PS-5). A bag, a set and a VectorDB pick at random in play, and replay follows the recorded pick ([decision 102](decision-register.md#decision-102), [decision 124](decision-register.md#decision-124)). The trait member `Discipline::RANDOM_PICKS` (`rholang/src/rust/interpreter/spaces/generic.rs:1009`) marks these kinds. The checkpoint root does not depend on the order of the records, and a VectorDB space refuses a NaN with `NonFiniteValue`. | `checkpoint_root_order_independent` (`Checkpoint.v:1116`)<br>`prop_permuted_parents_share_roots` (`rspace++/tests/reified_checkpoint_props.rs:398`)<br>`candidate_order_total` (`PathMapPrefix.v:1016`)<br>`prop_candidates_cover_the_prefix_in_key_order` (`rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:1039`)<br>`space_pick_helpers_put_the_named_candidates_first_in_replay` (`rholang/src/rust/interpreter/spaces/generic.rs:11641`)<br>`selection_total_order` (`Similarity.v:1169`)<br>`space_vectordb_errors_have_their_codes` (`rholang/tests/reified_vectordb.rs:940`) |
+| D6 | `WildcardMatch` in every factory space, so a receive took any datum | P4 design B.5: a space matches with the injected matcher of its host, which host play and replay also use. `SpaceMatcher::new` (`rholang/src/rust/interpreter/spaces/matching.rs:35`) takes it from the store. | `pattern_enforcement_hashmap_bag` (`rholang/tests/reified_pattern_enforcement.rs:407`)<br>`prop_pattern_enforcement_any_wired_family` (`rholang/tests/reified_pattern_enforcement.rs:1098`)<br>`space_matching_binds_with_the_injected_matcher` (`rholang/src/rust/interpreter/spaces/matching.rs:171`)<br>The token `WildcardMatch`<br>`WildcardUnsafe.cfg` refutes exactly `PatternEnforcement` (`GenericRSpace.tla:583`) |
+| D7 | `use_blocks`, hyperparams and pattern modifiers that the sorters cloned but did not score or sort | [Decision 112](decision-register.md#decision-112) carries the syntax in protobuf fields instead of the marker tuples of [decision 18](decision-register.md#decision-18). The sorter scores and sorts each field with `USE_BLOCK`, `SEND_PARAMS`, `QUERY_SPEC` and `SPACE_ANNOTATION` (`models/src/rust/rholang/sorter/score_tree.rs:352-358`). The named params have one canonical order. | `sorter_canonical_forms_match_the_golden_fixture` (`models/tests/sorter_canonical_golden.rs:825`), with the rows `send/params`, `bind/query-spec`, `new/space-types` and `par/use-blocks`<br>`canon_map_permutation_invariant` (`SyntaxFields.v:826`)<br>`named_params_canonical` (`SyntaxFields.v:1089`) |
+| D8 | A seq guard that checked a claim and then inserted it, and a racy `fetch_add` and `store` at the wrap of a cyclic array | Seq: each channel of a seq space has one claim ([decision 73](decision-register.md#decision-73)). An operation may use the channel only when the last use is in its causal history (rule QF-15, [decision 91](decision-register.md#decision-91)). It stores its claims only after its commit (rule QF-17). `SeqClaims` (`rholang/src/rust/interpreter/spaces/ephemeral.rs:337`) holds the claims. Array: the allocator record holds the next index, and one allocation is one job over its lock keys (rules AL-1 and AL-2). Two branches that allocate from one space consume one produce of the record, so a merge never gives one index to both (rule AL-5). The trait member `OuterStore::allocate` (`rholang/src/rust/interpreter/spaces/generic.rs:836`) stages each allocation. | `SeqGuardToctouUnsafe.cfg` refutes exactly `SeqCausalChain` (`SpaceCoordination.tla:450`)<br>`prop_seq_claim_causal_chain` (`rholang/tests/reified_seq.rs:705`)<br>`loom_seq_guard` (`rholang/tests/loom_reified.rs:598`)<br>`LazyAllocatorUnsafe.cfg` refutes exactly `NoDuplicateIndex` (`CounterConflict.tla:343`)<br>`space_array_cyclic_allocator_identities_unique` (`rholang/tests/reified_array_vector.rs:592`)<br>`space_allocator_cyclic_array_wraps_modulo_its_size` (`rholang/src/rust/interpreter/spaces/allocator.rs:327`) |
+| D9 | `try_lock().unwrap()` on the space mutexes, which panicked under contention | A space transaction waits for its locks in two phases, and it takes each phase in one sorted call ([decision 94](decision-register.md#decision-94)). It never tries a lock, so contention makes it wait. No `try_lock` remains in `reduce.rs`, the Reified sources or the substrate. | `NoDeadlock` (`JoinScopeLock.tla:486`), which `PhaseBSplitUnsafe.cfg` and `PhaseAAfterPhaseBUnsafe.cfg` refute<br>`loom_space_routing` (`rholang/tests/loom_reified.rs:343`)<br>The token `.unwrap()`, with the key `allowed_expect`, which allows only a lock `expect` |
+| D10 | A matrix path that fired the first continuation and not the matched one, removed a waiter by pattern equality, and scored by cosine only | [I-9](decision-register.md#i-9): no matrix path exists, and the kernels are sequential. The driver and the join engine call the same trait methods `Discipline::eligible` and `Discipline::list_selection`, which `VectorDbDiscipline` implements (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:390`, `416`). An offer fires the first waiter in pick order whose own query admits the datum and whose pattern binds it (`first_offer_target`, `rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1924`). A fire removes the byte-equal waiter (`remove_continuation`, `rspace++/src/rspace/space_store_handle.rs:2094`). | `waiter_removal_by_record_identity` (`ContinuationCollection.v:273`)<br>`pattern_equality_removal_can_remove_another_waiter` (`ContinuationCollection.v:289`), the counterexample of the legacy removal<br>`vdb_no_pending_match` (`VectorDbDiscipline.v:662`)<br>`prop_bag_waiter_removal_by_record_identity` (`rholang/tests/reified_bag.rs:3758`)<br>`prop_vectordb_no_pending_match` (`rholang/tests/reified_vectordb.rs:2507`), on the driver and on the join engine<br>`space_similarity_topk_reference_cases_through_the_space` (`rholang/tests/reified_vectordb.rs:3310`) |
+| D11 | A checkpoint that dropped the persist flags (`(a, false)`), the installs and the log | The spaces keep their records in the host RSpace, and the host checkpoints do not change ([I-1](decision-register.md#i-1), [I-4](decision-register.md#i-4)). A reset gives back every record of the checkpoint with its persist flag. The rig accepts exactly the log of play and reproduces play. | `checkpoint_restore_preserves_persist` (`Checkpoint.v:998`), whose headline note says that D11 cannot occur<br>`checkpoint_reset_restores_store` (`Checkpoint.v:926`)<br>`rig_and_reset_replays_the_log` (`Checkpoint.v:1187`)<br>`prop_checkpoint_keeps_persistent_data` (`rspace++/tests/reified_checkpoint_props.rs:391`) |
+| D12 | A dead parallel `SpaceRegistry` that read `SystemTime::now`, a charging agent and a phlogiston meter beside the interpreter costs, and an always-on VectorDB feature flag | Registry: not ported. The test-port ledger retargets or drops every row of the registry, the charging agent and the phlogiston meter. Gas: the phlo of a space operation comes only from the observer calls of its staged produces, consumes and COMMs ([M-3](decision-register.md#m-3), rule DT-4). [Decision 89](decision-register.md#decision-89) removed the host-work metering of the spaces, and [decision 90](decision-register.md#decision-90) deleted the legacy charges of Option P. Flag: the VectorDB space type exists in every build, and only `embed` and `ann` need the feature `chromadb` ([decision 113](decision-register.md#decision-113)). | `prop_bag_observer_calls_equal_host` (`rholang/tests/reified_bag.rs:3606`)<br>`queue_parity_fifo_and_peek_restore` (`rholang/tests/reified_queue_parity.rs:785`)<br>`p6_processes_have_the_table_values` (`rholang/src/rust/interpreter/reified/system_channels.rs:801`)<br>`check-test-port-ledger.py` |
+| D13a | Stale comments and documents | The tokens `TODO`, `FIXME`, `todo!` and `unimplemented!` fail in a phase source. The rules `link`, `rocq-cite` and `rust-cite` of `doc_lint.py` fail on a stale link or citation in the campaign documents. The leaf `rrs-final-claims-audit` audited the claims once (decision 131). | The four tokens<br>`link` (`scripts/verify-reified/doc_lint.py:171`), `rocq-cite` (`scripts/verify-reified/doc_lint.py:186`) and `rust-cite` (`scripts/verify-reified/doc_lint.py:187`)<br>No rule checks a claim in prose |
+| D13b | A `ttl` send param that the documents advertised and the code did not implement | No `ttl` exists in the code. The trait member `Discipline::SEND_PARAMS` (`rholang/src/rust/interpreter/spaces/generic.rs:979`) closes the send keys of each discipline. `check_params` (`rholang/src/rust/interpreter/spaces/generic.rs:5411`) refuses an unknown key with `UnknownParam` before any staging. The follow-up `rrs-fu-send-ttl` tracks the feature. | `space_engine_checks_params_and_queries_before_the_bump` (`rholang/src/rust/interpreter/spaces/generic.rs:9235`)<br>`space_factory_kwargs_unknown_param_with_suggestion` (`rholang/tests/reified_families.rs:933`)<br>`space_factory_schemas_cover_the_wired_families` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:374`) |
+| D13c | `rank("all")` in the documents only | The query param `results = "all"` implements the request with no lazy channel. A list receive binds one value, the list of all eligible records in selection order (rule VD-6). | `prop_vectordb_list_is_ordered_and_complete` (`rholang/tests/reified_vectordb.rs:2599`)<br>`space_vectordb_bounds_select_the_eligible_records` (`rholang/tests/reified_vectordb.rs:601`) |
+| D13d | `sim("boost")` in the documents only | No `boost` query form exists in the code, and no document outside the ledger names it. The trait member `Discipline::QUERY_PARAMS` (`rholang/src/rust/interpreter/spaces/generic.rs:983`) closes the query keys of each discipline. `check_params` (`rholang/src/rust/interpreter/spaces/generic.rs:5411`) refuses an unknown query key with `UnknownParam` before any staging. | `space_engine_checks_params_and_queries_before_the_bump` (`rholang/src/rust/interpreter/spaces/generic.rs:9235`) |
+| D13e | A `priorityqueue(N)` URN param that the code ignored, with three levels and growth on demand | [I-10](decision-register.md#i-10): the constructor param `priorities` is an optional upper bound, and no storage exists for each level. The URN has no param slot, because `SpaceInner::parse` (`models/src/rust/space_factory_urn.rs:209`) matches an inner name exactly. | `pq_no_level_storage` (`PriorityQueue.v:3908`)<br>`prop_pq_no_level_storage` (`rholang/tests/reified_priority_queue.rs:3605`)<br>`space_disciplines_pq_priorities_bound_rejects` (`rholang/tests/reified_priority_queue.rs:799`)<br>`space_urn_factory_rejects_invalid_forms_and_pairs` (`models/tests/space_factory_urn.rs:185`)<br>The token `ensure_capacity` |
+| D13f | A 4-byte little-endian framing of the modifiers | [Decision 112](decision-register.md#decision-112): the protobuf messages `SendParams` and `QuerySpec` carry the params and the query in the fields `Send.params` and `ReceiveBind.query_spec` (`models/src/main/protobuf/RhoTypes.proto:191`, `207`). Each decoder inverts its encoder and refuses a field that is not canonical. | `field_encode_injective` (`SyntaxFields.v:973`)<br>`field_decode_encode` (`SyntaxFields.v:1017`)<br>`reified_encoding_roundtrip` (`models/tests/reified_encoding.rs:232`)<br>`decoders_reject_each_noncanonical_field` (`models/tests/reified_encoding.rs:1376`) |
+| D13g | A `TypeId` pointer cast for theory validation | The config of a space holds the content identity of its theory, never a handle (rules TH-2 and TH-2a, [decision 74](decision-register.md#decision-74)). Each config read resolves the identity to a checker by a function of the identity alone (rule TH-3). The trait `SpaceTheory` (`rholang/src/rust/interpreter/spaces/theory/mod.rs:101`) and `resolve` (`rholang/src/rust/interpreter/spaces/theory/mod.rs:123`) replace the cast, and no `TypeId` remains in `rholang/src`. | `resolve_identity_deterministic` (`TheoryAdmission.v:587`)<br>`identity_bytes_roundtrip` (`TheoryAdmission.v:822`)<br>`prop_resolve_identity_deterministic` (`rholang/tests/reified_theory.rs:1040`)<br>`theory_identity_persisted_no_handle` (`rholang/tests/reified_theory.rs:676`)<br>`theory_builtins_resolve_only_the_structural_identities` (`rholang/src/rust/interpreter/spaces/theory/builtin.rs:344`) |
+| D13h | HNSW and SQ8 configs that the code parsed and search never used | [Decision 52](decision-register.md#decision-52): the exact engine decides every match, and ChromaDB is the optional search backend of the space, so no index config exists. The test-port ledger drops the legacy HNSW and SQ8 tests for this reason. The only HNSW text in the code is the ChromaDB metadata key `hnsw:space` (`rholang/src/rust/interpreter/reified/vectordb_services.rs:757`). The follow-up `rrs-fu-hnsw-ann` tracks HNSW and SQ8 indexing. | `space_factory_schemas_cover_the_wired_families` (`rholang/src/rust/interpreter/spaces/factory/defaults.rs:374`), which pins the VectorDB keys `capacity`, `dimensions`, `metric` and `mirror`<br>`check-test-port-ledger.py`, which finds the successor `vectordb_ann_ids_feed_the_exact_query` (`rholang/tests/reified_vectordb_chroma.rs:1157`) |
+
+Only D13a has document rules as its gate, and no test or proof.
+The `doc_lint.py` rules `link`, `rocq-cite` and `rust-cite` fail on a stale link or citation, and four tokens fail on a marker in code.
+No rule finds a stale claim in prose, so a stale claim can come back with no failure.
+Design v2 planned the rule `stale-claim` for this purpose, but the claims gate is the leaf `rrs-final-claims-audit` (decision 131), which audited the claims once.
+The registry part of D12 also rests on a document checker, `check-test-port-ledger.py`.
+D13b, D13c and D13d have code gates only, so no rule stops a document that advertises `ttl`, `rank("all")` or `sim("boost")` again.
 
 ## References
 

@@ -7,14 +7,23 @@
 ' n4_space_merge_with_empty_sibling of casper/tests/reified/n4.rs and the
 ' three facts of Casper of decision 82. It adds no new fact.
 '
+' Changed on 2026-11-11 for the N4 condition of rrs-consensus-merge (a merge
+' across blocks that contain every collection kind). The figure before showed
+' a branch of two blocks (a queue and a set), the merge block and one touch of
+' the queue. Now the branch has one creation block of each of the eight
+' families, and one touch block follows the merge for each family.
+'
 ' Reading order, from the bottom to the top:
-'   1. Node 0, the leader, proposes block A (payer 0 creates a queue space)
-'      and block B (payer 1 creates a set space) on genesis.
+'   1. Node 0, the leader, proposes the blocks C1 to C8 on genesis. Each block
+'      creates the space of one family. Payer 0 offers C1, C3, C5 and C7, and
+'      payer 1 offers C2, C4, C6 and C8.
 '   2. Node 1 proposes the empty block E on genesis.
-'   3. Node 2 receives A, B and E and proposes the merge block M. Its first
-'      parent, the main parent, is E. The merge rejects no deploy.
-'   4. Node 0 proposes block T on M: payer 0 touches its queue space. Every
-'      node validates M and T, and T reads the queue of the space branch.
+'   3. Node 2 receives C1 to C8 and E and proposes the merge block M. Its
+'      first parent, the main parent, is E. The merge rejects no deploy.
+'   4. Node 0 proposes the blocks T1 to T8 on M. Each block touches the space
+'      of one family, with the payer that created the space. Every node
+'      validates M and each touch block. At T8, every node reads the
+'      deliveries of each family.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 34a-n4-merge-dag.puml   Check: ./render.sh --check
@@ -28,37 +37,70 @@ skinparam RectangleBorderColor $rrs_relation
 skinparam NoteBorderColor $rrs_relation
 skinparam LegendBorderColor $rrs_relation
 skinparam LegendBackgroundColor $ca_note_grey
+skinparam ranksep 24
 title The blocks of the N4 merge with an empty sibling
 
-rectangle "**T**: node 0\npayer 0 touches its queue space\ndelivers the config, a take\nand a fired waiter" as T $rrs_storage
-rectangle "**M**: merge block of node 2\nparents [E, B]\nno rejected deploy" as M $rrs_host
+rectangle "**T8**: payer 1 touches its cell space\nevery node reads the config, a take\nand a fired waiter of each family" as T8 $rrs_storage
+rectangle "**T7**: payer 0 touches its stack space" as T7 $rrs_storage
+rectangle "**T6**: payer 1 touches its bag space" as T6 $rrs_storage
+rectangle "**T5**: payer 0 touches its PathMap space" as T5 $rrs_storage
+rectangle "**T4**: payer 1 touches its VectorDB space" as T4 $rrs_storage
+rectangle "**T3**: payer 0 touches its priority queue space" as T3 $rrs_storage
+rectangle "**T2**: payer 1 touches its set space" as T2 $rrs_storage
+rectangle "**T1**: node 0\npayer 0 touches its queue space" as T1 $rrs_storage
+rectangle "**M**: merge block of node 2\nparents [E, C8]\nno rejected deploy" as M $rrs_host
+rectangle "**C8**: payer 1 creates a cell space" as C8 $rrs_storage
+rectangle "**C7**: payer 0 creates a stack space" as C7 $rrs_storage
+rectangle "**C6**: payer 1 creates a bag space" as C6 $rrs_storage
+rectangle "**C5**: payer 0 creates a PathMap space" as C5 $rrs_storage
+rectangle "**C4**: payer 1 creates a VectorDB space" as C4 $rrs_storage
+rectangle "**C3**: payer 0 creates a priority queue space" as C3 $rrs_storage
+rectangle "**C2**: payer 1 creates a set space" as C2 $rrs_storage
+rectangle "**C1**: node 0\npayer 0 creates a queue space\nwith records and a waiter" as C1 $rrs_storage
 rectangle "**E**: node 1\nan empty block" as E $rrs_reserved
-rectangle "**B**: node 0\npayer 1 creates a set space" as B $rrs_storage
-rectangle "**A**: node 0\npayer 0 creates a queue space\nwith records and a waiter" as A $rrs_storage
 rectangle "**genesis**\noffered v6, three validators,\ntwo labeled payers" as G $rrs_host
 
-T -[$rrs_relation]-> M : parent
+T8 -[$rrs_relation]-> T7 : parent
+T7 -[$rrs_relation]-> T6 : parent
+T6 -[$rrs_relation]-> T5 : parent
+T5 -[$rrs_relation]-> T4 : parent
+T4 -[$rrs_relation]-> T3 : parent
+T3 -[$rrs_relation]-> T2 : parent
+T2 -[$rrs_relation]-> T1 : parent
+T1 -[$rrs_relation]-> M : parent
 M -[$rrs_effect,bold]-> E : main parent
-M -[$rrs_relation,dashed]-> B : second parent
-B -[$rrs_relation]-> A : parent
-A -[$rrs_relation]-> G : parent
+M -[$rrs_relation,dashed]-> C8 : second parent
+C8 -[$rrs_relation]-> C7 : parent
+C7 -[$rrs_relation]-> C6 : parent
+C6 -[$rrs_relation]-> C5 : parent
+C5 -[$rrs_relation]-> C4 : parent
+C4 -[$rrs_relation]-> C3 : parent
+C3 -[$rrs_relation]-> C2 : parent
+C2 -[$rrs_relation]-> C1 : parent
+C1 -[$rrs_relation]-> G : parent
 E -[$rrs_relation]-> G : parent
 
 note right of M
 The chains of the main parent never enter
 a merge. With E as the main parent, the
-merge applies the deploys of A and B to
+merge applies the deploys of C1 to C8 to
 the post-state of E, so the merge of the
 space branch is not vacuous. Every node
-validates M, and then T.
+validates M and each touch block.
 end note
 
-note right of A
+note right of C4
 Leader rule: node 0 proposes every
-space block. Each space block has its
-own payer, because a merge rejects the
-second of two sequential offers of
-one payer in one branch.
+space block. Each space has one payer,
+and the two payers alternate. On the
+merged base, a merge keeps the
+sequential offers of one payer in one
+branch (probe R10 of decision 108).
+end note
+
+note right of T4
+Funding rule: each payer touches
+only the spaces that it created.
 end note
 
 legend bottom
