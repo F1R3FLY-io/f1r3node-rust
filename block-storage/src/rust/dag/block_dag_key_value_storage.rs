@@ -2369,7 +2369,9 @@ impl BlockDagKeyValueStorage {
             // branches are not reachable via the ancestor chain of the new LFB.
             let scan_started = std::time::Instant::now();
             let mut block_metadata_index_guard = self.block_metadata_index.write();
-            let scanned = block_metadata_index_guard.raise_finalized_ft(ft_value)?;
+            let finalized_hashes = block_metadata_index_guard.finalized_block_hashes();
+            let scanned = finalized_hashes.len();
+            block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)?;
             drop(block_metadata_index_guard);
             metrics::histogram!("propagate_ft.scan.time", "source" => "f1r3fly.casper.block-dag")
                 .record(scan_started.elapsed().as_secs_f64());
@@ -2606,6 +2608,63 @@ mod tests {
         assert!(
             largest_gap < scan / 4,
             "the FT propagation scan held the only worker for {largest_gap:?} of its {scan:?}"
+        );
+    }
+
+    #[test]
+    fn ft_propagation_raises_only_finalized_blocks_still_in_memory() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let storage = runtime.block_on(async {
+            let mut kvm =
+                rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new();
+            BlockDagKeyValueStorage::new_with_hot_window(&mut kvm, 5)
+                .await
+                .unwrap()
+        });
+        let mut chain: Vec<BlockMessage> = Vec::new();
+        for height in 0..50i64 {
+            let parents = chain
+                .last()
+                .map(|parent| vec![parent.block_hash.clone()])
+                .unwrap_or_default();
+            let block = models::rust::block_implicits::get_random_block(
+                Some(height),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            let mode = if height == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            storage.insert(&block, mode).unwrap();
+            chain.push(block);
+        }
+        let tip = chain.last().unwrap().block_hash.clone();
+        runtime
+            .block_on(storage.record_directly_finalized(tip.clone(), 0.5, |_| async { Ok(()) }))
+            .unwrap();
+
+        storage.propagate_ft_to_finalized_blocks(0.8).unwrap();
+
+        let dag = storage.get_representation().unwrap();
+        let ft = |hash: &BlockHash| dag.lookup_unsafe(hash).unwrap().fault_tolerance_value;
+        assert_eq!(ft(&tip), 0.8, "a finalized block in memory is raised");
+        assert_eq!(
+            ft(&chain[10].block_hash),
+            0.5,
+            "a finalized block that left memory keeps its value"
         );
     }
 }

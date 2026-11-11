@@ -509,54 +509,6 @@ impl BlockMetadataStore {
             .collect()
     }
 
-    pub(crate) fn raise_finalized_ft(&mut self, ft: f32) -> Result<usize, KvStoreError> {
-        let Some(persistence) = self.persistence.clone() else {
-            let hashes = self.finalized_block_hashes();
-            let count = hashes.len();
-            self.update_ft_if_higher(hashes, ft)?;
-            return Ok(count);
-        };
-        let mut after = None;
-        let mut count = 0;
-        loop {
-            let page = persistence
-                .history
-                .scan_membership(u64::MAX, after.as_deref(), 1024)?;
-            let mut updates = Vec::new();
-            for hash in page.rows {
-                let member = persistence
-                    .history
-                    .membership(&hash, u64::MAX)?
-                    .ok_or_else(|| {
-                        KvStoreError::KeyNotFound("finalized FT membership missing".into())
-                    })?;
-                let mut metadata = self.get_unsafe(&hash)?;
-                if metadata.block_hash != hash
-                    || metadata.block_number != member.height
-                    || metadata.invalid != member.invalid
-                {
-                    return Err(KvStoreError::InvalidArgument(
-                        "finalized FT metadata disagrees with membership".into(),
-                    ));
-                }
-                if metadata.finalized {
-                    count += 1;
-                    if metadata.fault_tolerance_value < ft {
-                        metadata.fault_tolerance_value = ft;
-                        updates.push((BlockHashSerde(hash), metadata));
-                    }
-                }
-            }
-            if !updates.is_empty() {
-                self.store.put(updates)?;
-            }
-            after = page.next;
-            if after.is_none() {
-                return Ok(count);
-            }
-        }
-    }
-
     pub fn get(&self, hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
         self.store.get_one(&BlockHashSerde(hash.clone()))
     }
