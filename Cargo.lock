@@ -811,6 +811,8 @@ dependencies = [
  "metrics-util 0.17.0",
  "models",
  "num-bigint",
+ "num-rational",
+ "num-traits",
  "parking_lot",
  "proptest",
  "prost 0.14.4",
@@ -843,6 +845,7 @@ dependencies = [
  "eyre",
  "libc",
  "models",
+ "num-bigint",
  "prost 0.14.4",
  "regex",
  "serde",
@@ -1123,6 +1126,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile 2.2.0",
  "shared",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-rustls",
@@ -3543,6 +3547,8 @@ dependencies = [
  "crypto",
  "hex",
  "itertools 0.14.0",
+ "num-bigint",
+ "num-traits",
  "pathmap",
  "proptest",
  "proptest-derive",
@@ -5184,7 +5190,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=dd6f6116fb01eff50afccf9a695801dc9d319722#dd6f6116fb01eff50afccf9a695801dc9d319722"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -5199,7 +5205,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=dd6f6116fb01eff50afccf9a695801dc9d319722#dd6f6116fb01eff50afccf9a695801dc9d319722"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -5208,7 +5214,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=dd6f6116fb01eff50afccf9a695801dc9d319722#dd6f6116fb01eff50afccf9a695801dc9d319722"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
 dependencies = [
  "anyhow",
  "quote",
@@ -5874,6 +5880,7 @@ dependencies = [
  "indexmap 2.14.0",
  "lz4_flex",
  "metrics 0.23.1",
+ "num-bigint",
  "proptest",
  "prost 0.14.4",
  "rand 0.9.5",

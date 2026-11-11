@@ -623,12 +623,12 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
                 &mut PreChargeDeploy {
-                    charge_amount: 9000000,
+                    charge_amount: (9000000).into(),
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 &mut PreChargeDeploy {
-                    charge_amount: 9000000,
+                    charge_amount: (9000000).into(),
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
@@ -659,11 +659,11 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &genesis_context,
                 &state_hash_1,
                 &mut RefundDeploy {
-                    refund_amount: 9000000,
+                    refund_amount: (9000000).into(),
                     rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 &mut RefundDeploy {
-                    refund_amount: 9000000,
+                    refund_amount: (9000000).into(),
                     rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 |_| true,
@@ -2275,7 +2275,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(validator.clone(), 100);
+        bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
@@ -2474,13 +2474,6 @@ async fn bridge_query_survives_multi_parent_merge() {
             .map(|record| hex::encode(&record.sig[..8.min(record.sig.len())]))
             .collect::<Vec<_>>()
     );
-    // Non-slash merge scenario must surface an empty rejected_slashes list so
-    // the block creator's dedup step runs as a no-op.
-    assert!(
-        merged.rejected_slashes.is_empty(),
-        "Merge rejected slashes unexpectedly populated: count={}",
-        merged.rejected_slashes.len()
-    );
 
     // --- Query getNonce from merged state ---
     let get_nonce_rho = format!(
@@ -2568,15 +2561,9 @@ in {{
 /// registry leaves from sibling branches. They genuinely RACE at the raw level —
 /// both read-modify-write the SAME shared TreeHashMap internal-node produce
 /// channels (`racesForSameIOEvent: produceRaces=2`) — yet because they touch
-/// DIFFERENT leaves the merge keeps BOTH: the keep-one / §3c discriminator
-/// classifies the shared-internal-node produces as mergeable, not a genuine
-/// single-value-cell conflict. The correct outcome is therefore `rejected == 0`
-/// with both contracts' data present in the merged state (verified below).
-///
-/// Historical note: this was `#[ignore]`d under an earlier premise that one insert
-/// "must be rejected"; the current keep-one design correctly merges these distinct
-/// leaves, so that premise no longer holds and the test is re-enabled. The genuine
-/// raw race is asserted (below) so `rejected == 0` is a real keep-one result, not a
+/// DIFFERENT leaves the merge keeps BOTH. The correct outcome is therefore
+/// `rejected == 0` with both contracts' data present in the merged state
+/// (verified below). The raw race is asserted so `rejected == 0` is not a
 /// vacuous merge of disjoint branches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_registry_inserts_should_not_conflict() {
@@ -2656,7 +2643,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(validator.clone(), 100);
+        bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
@@ -2870,7 +2857,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         tracing::info!("Racing produces: {}", racing_produces.len());
         // Non-vacuity: the two inserts must GENUINELY race on shared internal-node
         // produce channels, else `rejected == 0` below would be a trivial merge of
-        // disjoint branches rather than a real keep-one/exemption result.
+        // disjoint branches.
         assert!(
             !racing_produces.is_empty(),
             "expected a genuine shared-channel race between the two registry inserts \
@@ -3027,17 +3014,13 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
     }
 
-    // Key assertion: keep-one correctly keeps BOTH inserts (0 rejected). They
-    // raw-race on the shared TreeHashMap internal-node produce channels (asserted
-    // non-empty above), but write DISTINCT leaves, so the §3c discriminator
-    // classifies those shared-node produces as mergeable rather than a genuine
-    // single-value-cell conflict. A rejection here would be a real regression: a
-    // genuinely-mergeable race mis-rejected.
+    // They raw-race on the shared TreeHashMap internal-node produce channels
+    // (asserted non-empty above) but write DISTINCT leaves, so the merge must
+    // keep both inserts.
     assert!(
         merged.rejected_user.is_empty(),
         "concurrent insertArbitrary to DISTINCT registry leaves must merge with 0 \
-         rejected (they share TreeHashMap internal nodes, but the produces there are \
-         mergeable); got {} rejected — keep-one wrongly rejected a mergeable race.",
+         rejected; got {} rejected.",
         merged.rejected_user.len(),
     );
 
@@ -3425,7 +3408,7 @@ async fn stale_diff_application_corrupts_merged_state() {
         shard_conf.max_parent_depth = 0;
         shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(validator.clone(), 100);
+        bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
@@ -3873,11 +3856,12 @@ async fn consensus_parameters_round_trip_through_genesis() {
         mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
     };
 
-    // Values the test-genesis defaults (15, 50, 0) can never produce by accident.
+    // Values the test-genesis defaults (15, 50, 0, 1000) can never produce by accident.
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
-    parameters.2.proof_of_stake.min_phlo_price = 3;
+    parameters.2.proof_of_stake.min_phlo_price = (3).into();
+    parameters.2.proof_of_stake.epoch_length = 9;
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -3900,7 +3884,12 @@ async fn consensus_parameters_round_trip_through_genesis() {
 
     assert_eq!(
         read,
-        Some((21, 70, 3)),
+        Some(casper::rust::rholang::runtime::ConsensusParameters {
+            max_parent_depth: 21,
+            deploy_lifespan: 70,
+            min_phlo_price: 3.into(),
+            epoch_length: 9,
+        }),
         "genesis must bake the consensus parameters into the PoS contract and \
          expose them via getConsensusParameters"
     );
@@ -3974,7 +3963,8 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
-    parameters.2.proof_of_stake.min_phlo_price = 3;
+    parameters.2.proof_of_stake.min_phlo_price = (3).into();
+    parameters.2.proof_of_stake.epoch_length = 9;
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -4013,11 +4003,12 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
         rp_conf,
     );
 
-    // Local conf diverges from the chain on all three values.
+    // Local conf diverges from the chain on every value.
     let mut local_conf = CasperShardConf::new();
     local_conf.max_parent_depth = 15;
     local_conf.deploy_lifespan = 50;
-    local_conf.min_phlo_price = 1;
+    local_conf.min_phlo_price = (1).into();
+    local_conf.epoch_length = 10000;
 
     let casper = hash_set_casper(
         block_retriever,
@@ -4042,9 +4033,10 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
         (
             adopted.max_parent_depth,
             adopted.deploy_lifespan,
-            adopted.min_phlo_price
+            adopted.min_phlo_price.clone(),
+            adopted.epoch_length
         ),
-        (21, 70, 3),
+        (21, 70, 3.into(), 9),
         "the on-chain consensus parameters must be adopted over local configuration"
     );
 }

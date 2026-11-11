@@ -12,7 +12,6 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -21,6 +20,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::blocking::in_blocking;
 use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::replay_failure::ReplayFailure;
@@ -187,30 +187,32 @@ pub(crate) fn canonical_dispositions(
     parents: &[BlockHash],
     earliest_block_number: i64,
 ) -> Result<HashMap<Bytes, SigDisposition>, CasperError> {
-    let mut dispositions: HashMap<Bytes, SigDisposition> = HashMap::new();
-    let mut visited: HashSet<BlockHash> = HashSet::new();
-    let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
-    while let Some(hash) = queue.pop_front() {
-        if !visited.insert(hash.clone()) {
-            continue;
+    in_blocking(|| {
+        let mut dispositions: HashMap<Bytes, SigDisposition> = HashMap::new();
+        let mut visited: HashSet<BlockHash> = HashSet::new();
+        let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
+        while let Some(hash) = queue.pop_front() {
+            if !visited.insert(hash.clone()) {
+                continue;
+            }
+            // A block this walk cannot read is a gap, not a "no": a partial
+            // disposition map silently misreads the retry gate and the
+            // canonical-won filter. Absence keeps its name so callers defer.
+            let facts = block_facts(block_store, &hash, "parents-post-state body read")?;
+            let bn = facts.block_number;
+            if bn < earliest_block_number {
+                continue;
+            }
+            for sig in &facts.deploy_sigs {
+                note_inclusion(&mut dispositions, sig.clone(), bn, &hash, &facts.sender);
+            }
+            for rd in facts.kept_rejected() {
+                note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
+            }
+            queue.extend(facts.parents.iter().cloned());
         }
-        // A block this walk cannot read is a gap, not a "no": a partial
-        // disposition map silently misreads the retry gate and the
-        // canonical-won filter. Absence keeps its name so callers defer.
-        let facts = block_facts(block_store, &hash, "parents-post-state body read")?;
-        let bn = facts.block_number;
-        if bn < earliest_block_number {
-            continue;
-        }
-        for sig in &facts.deploy_sigs {
-            note_inclusion(&mut dispositions, sig.clone(), bn, &hash, &facts.sender);
-        }
-        for rd in facts.kept_rejected() {
-            note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
-        }
-        queue.extend(facts.parents.iter().cloned());
-    }
-    Ok(dispositions)
+        Ok(dispositions)
+    })
 }
 
 fn canonical_disposition_sigs(
@@ -619,23 +621,8 @@ async fn replay_block(
     // creation and replay (see proto_util::slashed_block_senders). A DAG-derived
     // view is node-view-dependent and makes the slash deploy fail replay
     // (ConsumeFailed) because the map is produced into a content-addressed COMM.
-    let slashed_hashes: Vec<BlockHash> = block
-        .body
-        .system_deploys
-        .iter()
-        .filter_map(|psd| match psd {
-            ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash, ..
-                    },
-                ..
-            } => Some(invalid_block_hash.clone()),
-            _ => None,
-        })
-        .collect();
     let invalid_blocks: HashMap<BlockHash, Validator> =
-        proto_util::slashed_block_senders(dag, &slashed_hashes)?;
+        proto_util::block_slash_invalid_blocks(dag, block)?;
 
     // Create block data and check if genesis
     let block_data = BlockData::from_block(block);
@@ -966,23 +953,8 @@ pub(crate) async fn ensure_scope_mergeable_present(
         // one validation/creation used (slashed_block_senders — the block's own
         // slash targets) so the replay reproduces the block's post_state_hash and
         // the entry is stored under the correct key.
-        let slashed_hashes: Vec<BlockHash> = block
-            .body
-            .system_deploys
-            .iter()
-            .filter_map(|psd| match psd {
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy:
-                        SystemDeployData::Slash {
-                            invalid_block_hash, ..
-                        },
-                    ..
-                } => Some(invalid_block_hash.clone()),
-                _ => None,
-            })
-            .collect();
         let invalid_blocks: HashMap<BlockHash, Validator> =
-            proto_util::slashed_block_senders(dag, &slashed_hashes)?;
+            proto_util::block_slash_invalid_blocks(dag, &block)?;
 
         runtime_manager
             .ensure_mergeable_entry(&block, invalid_blocks)
@@ -1173,7 +1145,6 @@ pub async fn compute_parents_post_state(
             Ok(MergedPreState {
                 state,
                 rejected_user: Vec::new(),
-                rejected_slashes: Vec::new(),
                 applied_from_scope: HashSet::new(),
                 merge_base: None,
             })
@@ -1216,7 +1187,6 @@ pub async fn compute_parents_post_state(
                     return Ok(MergedPreState {
                         state,
                         rejected_user: Vec::new(),
-                        rejected_slashes: Vec::new(),
                         applied_from_scope: HashSet::new(),
                         merge_base: None,
                     });
@@ -1291,7 +1261,6 @@ pub async fn compute_parents_post_state(
                             return Ok(MergedPreState {
                                 state,
                                 rejected_user: Vec::new(),
-                                rejected_slashes: Vec::new(),
                                 applied_from_scope: HashSet::new(),
                                 merge_base: Some(candidate.block_hash.clone()),
                             });
@@ -1329,10 +1298,9 @@ pub async fn compute_parents_post_state(
                     .record(cache_lookup_elapsed.as_secs_f64());
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.cache",
-                    "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
+                    "compute_parents_post_state cache hit: parents={}, rejected_deploys={}",
                     cache_key.sorted_parent_hashes.len(),
-                    cached.rejected_user.len(),
-                    cached.rejected_slashes.len()
+                    cached.rejected_user.len()
                 );
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.timing",
@@ -1347,7 +1315,6 @@ pub async fn compute_parents_post_state(
                     path = "cache_hit",
                     post_state = %hex::encode(&cached.state[..8.min(cached.state.len())]),
                     n_rejected = cached.rejected_user.len(),
-                    n_rejected_slash = cached.rejected_slashes.len(),
                     // The FLOOR line carries this on a miss; without it here the
                     // block's state parent goes unrecorded.
                     base = cached.merge_base.as_ref().map(|hash| hex::encode(&hash[..8.min(hash.len())])),
@@ -1454,19 +1421,21 @@ pub async fn compute_parents_post_state(
             // when it is needed.
             let base_holds_floor_started = std::time::Instant::now();
             let mut containment_memo = crate::rust::finality::floor::IntroducedSigsMemo::new();
-            let base_holds_floor = crate::rust::finality::floor::state_contains(
-                &s.dag,
-                block_store,
-                &crate::rust::finality::floor::Floor {
-                    hash: main_parent_hash.clone(),
-                    block_number: base_block_number,
-                },
-                &crate::rust::finality::floor::Floor {
-                    hash: floor_hash.clone(),
-                    block_number: floor_block_number,
-                },
-                &mut containment_memo,
-            )?;
+            let base_holds_floor = in_blocking(|| {
+                crate::rust::finality::floor::state_contains(
+                    &s.dag,
+                    block_store,
+                    &crate::rust::finality::floor::Floor {
+                        hash: main_parent_hash.clone(),
+                        block_number: base_block_number,
+                    },
+                    &crate::rust::finality::floor::Floor {
+                        hash: floor_hash.clone(),
+                        block_number: floor_block_number,
+                    },
+                    &mut containment_memo,
+                )
+            })?;
             metrics::histogram!(PARENTS_POST_STATE_BASE_HOLDS_FLOOR_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(base_holds_floor_started.elapsed().as_secs_f64());
             // The BASE moves with the anchor, not just the scope. Widening the
@@ -1495,29 +1464,33 @@ pub async fn compute_parents_post_state(
             // validator that has not spoken) makes "seen by every other parent"
             // unsatisfiable and the walk runs to genesis.
             let base_lineage_walk_started = std::time::Instant::now();
-            let mut base_lineage_blocks: HashSet<BlockHash> = HashSet::new();
-            let mut cursor = Some(scope_anchor_hash.clone());
-            while let Some(hash) = cursor {
-                let number = s
-                    .dag
-                    .block_number_unsafe(&hash)
-                    .map_err(CasperError::from)?;
-                if number <= floor_block_number {
-                    break;
-                }
-                let mut seen_by_every_other_parent = true;
-                for other in parent_hashes.iter().skip(1) {
-                    if !s.dag.is_dag_ancestor(&hash, other)? {
-                        seen_by_every_other_parent = false;
-                        break;
+            let base_lineage_blocks =
+                in_blocking(|| -> Result<HashSet<BlockHash>, CasperError> {
+                    let mut base_lineage_blocks: HashSet<BlockHash> = HashSet::new();
+                    let mut cursor = Some(scope_anchor_hash.clone());
+                    while let Some(hash) = cursor {
+                        let number = s
+                            .dag
+                            .block_number_unsafe(&hash)
+                            .map_err(CasperError::from)?;
+                        if number <= floor_block_number {
+                            break;
+                        }
+                        let mut seen_by_every_other_parent = true;
+                        for other in parent_hashes.iter().skip(1) {
+                            if !s.dag.is_dag_ancestor(&hash, other)? {
+                                seen_by_every_other_parent = false;
+                                break;
+                            }
+                        }
+                        if seen_by_every_other_parent {
+                            break;
+                        }
+                        base_lineage_blocks.insert(hash.clone());
+                        cursor = s.dag.main_parent(&hash);
                     }
-                }
-                if seen_by_every_other_parent {
-                    break;
-                }
-                base_lineage_blocks.insert(hash.clone());
-                cursor = s.dag.main_parent(&hash);
-            }
+                    Ok(base_lineage_blocks)
+                })?;
             metrics::histogram!(PARENTS_POST_STATE_BASE_LINEAGE_WALK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(base_lineage_walk_started.elapsed().as_secs_f64());
 
@@ -1538,15 +1511,21 @@ pub async fn compute_parents_post_state(
             // Get all ancestors of all parents (including the parents themselves)
             // Use bounded traversal that stops once the floor's represented past is reached.
             let collect_ancestors_started = std::time::Instant::now();
-            let mut visible_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
-            for parent_hash in &parent_hashes {
-                let visible_ancestors = s.dag.with_ancestors(parent_hash.clone(), |bh| {
-                    include_visible_ancestor(bh, &s.dag)
+            let visible_ancestor_sets_with_parents =
+                in_blocking(|| -> Result<Vec<HashSet<BlockHash>>, CasperError> {
+                    let mut visible_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> =
+                        Vec::new();
+                    for parent_hash in &parent_hashes {
+                        let visible_ancestors =
+                            s.dag.with_ancestors(parent_hash.clone(), |bh| {
+                                include_visible_ancestor(bh, &s.dag)
+                            })?;
+                        let mut visible_ancestors_with_parent = visible_ancestors;
+                        visible_ancestors_with_parent.insert(parent_hash.clone());
+                        visible_ancestor_sets_with_parents.push(visible_ancestors_with_parent);
+                    }
+                    Ok(visible_ancestor_sets_with_parents)
                 })?;
-                let mut visible_ancestors_with_parent = visible_ancestors;
-                visible_ancestors_with_parent.insert(parent_hash.clone());
-                visible_ancestor_sets_with_parents.push(visible_ancestors_with_parent);
-            }
             let collect_ancestors_ms = collect_ancestors_started.elapsed().as_millis();
 
             // Flatten all ancestor sets to get visible blocks
@@ -1565,9 +1544,11 @@ pub async fn compute_parents_post_state(
             } else {
                 None
             };
-            visible_blocks.retain(|bh| {
-                block_in_base_merge_scope(&s.dag, bh, &scope_anchor_hash, scope_anchor_number)
-                    .unwrap_or(true)
+            in_blocking(|| {
+                visible_blocks.retain(|bh| {
+                    block_in_base_merge_scope(&s.dag, bh, &scope_anchor_hash, scope_anchor_number)
+                        .unwrap_or(true)
+                })
             });
             metrics::histogram!(PARENTS_POST_STATE_COLLECT_ANCESTORS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(collect_ancestors_started.elapsed().as_secs_f64());
@@ -1805,7 +1786,7 @@ pub async fn compute_parents_post_state(
             // from the same parents. The walk reads DAG metadata only; block
             // bodies load once, inside `records_of`.
             let prior_rejection_started = std::time::Instant::now();
-            let prior_rejection_counts = {
+            let prior_rejection_counts = in_blocking(|| {
                 let mut count_visible: HashSet<BlockHash> = visible_blocks
                     .iter()
                     .chain(base_lineage_blocks.iter())
@@ -1832,8 +1813,8 @@ pub async fn compute_parents_post_state(
                 dag_merger::scope_prior_rejection_counts(count_visible, |hash: &BlockHash| {
                     block_facts(block_store, hash, "prior-rejection records read")
                         .map(|facts| facts.rejected.as_ref().clone())
-                })?
-            };
+                })
+            })?;
             let prior_rejection_elapsed = prior_rejection_started.elapsed();
             let prior_rejection_counts_ms = prior_rejection_elapsed.as_millis();
             metrics::histogram!(PARENTS_POST_STATE_PRIOR_REJECTION_COUNTS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -1890,48 +1871,51 @@ pub async fn compute_parents_post_state(
                 result
             };
             let merge_started = std::time::Instant::now();
-            let merger_result = dag_merger::merge(
-                &s.dag,
-                &scope_anchor_hash,
-                &base_state,
-                |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
-                    let block_index = block_index_f(hash)?;
-                    Ok(block_index.deploy_chains)
-                },
-                &runtime_manager.history_repo,
-                dag_merger::cost_optimal_rejection_alg(),
-                Some(visible_blocks.clone()),
-                floor_block_number,
-                s.on_chain_state.shard_conf.deploy_lifespan,
-                &sig_settled_in_base,
-                &sig_settled_in_floor,
-                &base_lineage_blocks,
-                &prior_rejection_counts,
-            )?;
+            let merger_result = in_blocking(|| {
+                dag_merger::merge(
+                    &s.dag,
+                    &scope_anchor_hash,
+                    &base_state,
+                    |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
+                        let block_index = block_index_f(hash)?;
+                        Ok(block_index.deploy_chains)
+                    },
+                    &runtime_manager.history_repo,
+                    dag_merger::cost_optimal_rejection_alg(),
+                    Some(visible_blocks.clone()),
+                    floor_block_number,
+                    s.on_chain_state.shard_conf.deploy_lifespan,
+                    &sig_settled_in_base,
+                    &sig_settled_in_floor,
+                    &base_lineage_blocks,
+                    &prior_rejection_counts,
+                )
+            })?;
             let merge_elapsed = merge_started.elapsed();
             let merge_ms = merge_elapsed.as_millis();
             metrics::histogram!(PARENTS_POST_STATE_MERGE_CALL_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(merge_elapsed.as_secs_f64());
             let post_merge_started = std::time::Instant::now();
 
-            let (state, mut rejected_user_records, rejected_slash_pairs, applied_user_sigs) =
-                merger_result;
+            let (state, mut rejected_user_records, applied_user_sigs) = merger_result;
             // The tripwire runs on the PRE-suppression records: suppression
             // drops a record whose identical copy is visible elsewhere in
             // scope, but the drop it testifies to still happened in THIS
             // merge — a settled chain kept out must trip regardless of
             // whether its record is re-emitted.
-            assert_no_settled_rejection(
-                block_store,
-                &settled_floors,
-                &rejected_user_records,
-                s.on_chain_state.shard_conf.deploy_lifespan,
-            )?;
-            let suppressed = suppress_already_recorded_rejections(
-                block_store,
-                &visible_blocks,
-                &mut rejected_user_records,
-            )?;
+            let suppressed = in_blocking(|| -> Result<usize, CasperError> {
+                assert_no_settled_rejection(
+                    block_store,
+                    &settled_floors,
+                    &rejected_user_records,
+                    s.on_chain_state.shard_conf.deploy_lifespan,
+                )?;
+                suppress_already_recorded_rejections(
+                    block_store,
+                    &visible_blocks,
+                    &mut rejected_user_records,
+                )
+            })?;
             if suppressed > 0 {
                 tracing::debug!(
                     target: "f1r3fly.casper.recovery",
@@ -1955,11 +1939,10 @@ pub async fn compute_parents_post_state(
                 step = "compute_parents_post_state.MERGE_POST",
                 new_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]),
                 n_rejected_user = rejected_user_records.len(),
-                n_rejected_slash = rejected_slash_pairs.len(),
                 merge_ms,
                 "merge.cpps: dag_merger::merge returned"
             );
-            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_records.len(), n_rejected_slash = rejected_slash_pairs.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_records.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
 
             // Populate the rejected-deploy buffer from the records' (sig,
             // carrier) naming. Looking up the `Signed<DeployData>` from the
@@ -2099,72 +2082,10 @@ pub async fn compute_parents_post_state(
                 }
             }
 
-            // Recover rejected-slash metadata by reading each source block's
-            // system_deploys once. The block creator uses these to dedup
-            // slashes into the merge block's body; without this the slash
-            // effect would be lost to cost-optimal rejection.
-            let rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash> =
-                if rejected_slash_pairs.is_empty() {
-                    Vec::new()
-                } else {
-                    let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
-                    for (sig, src_block) in &rejected_slash_pairs {
-                        by_block
-                            .entry(src_block.clone())
-                            .or_default()
-                            .push(sig.clone());
-                    }
-                    let mut out = Vec::new();
-                    for (src_block, _sigs) in by_block {
-                        match block_store.get(&src_block) {
-                            Ok(Some(block)) => {
-                                for psd in &block.body.system_deploys {
-                                    if let models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Succeeded {
-                                    system_deploy:
-                                        models::rust::casper::protocol::casper_message::SystemDeployData::Slash {
-                                            invalid_block_hash,
-                                            issuer_public_key,
-                                            target_activation_epoch: _,
-                                        },
-                                    ..
-                                } = psd
-                                {
-                                    out.push(
-                                        crate::rust::merging::rejected_slash::RejectedSlash {
-                                            invalid_block_hash: invalid_block_hash.clone(),
-                                            issuer_public_key: issuer_public_key.clone(),
-                                            source_block_hash: src_block.clone(),
-                                        },
-                                    );
-                                }
-                                }
-                            }
-                            Ok(None) => {
-                                tracing::warn!(
-                                    "RejectedSlash extract: source block {} not in store",
-                                    PrettyPrinter::build_string_bytes(&src_block)
-                                );
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    "RejectedSlash extract: failed to load {}: {}",
-                                    PrettyPrinter::build_string_bytes(&src_block),
-                                    err
-                                );
-                            }
-                        }
-                    }
-                    // `by_block` iteration order is non-deterministic;
-                    // `sorted_for_body` makes the cached list a function of
-                    // the merge inputs alone.
-                    crate::rust::merging::rejected_slash::sorted_for_body(out)
-                };
-
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
             let merged = MergedPreState {
                 state: computed_state.clone(),
                 rejected_user: rejected_user_records,
-                rejected_slashes,
                 applied_from_scope: applied_user_sigs,
                 merge_base: Some(scope_anchor_hash.clone()),
             };
@@ -2176,7 +2097,6 @@ pub async fn compute_parents_post_state(
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
                 n_rejected = merged.rejected_user.len(),
-                n_rejected_slash = merged.rejected_slashes.len(),
                 n_applied = merged.applied_from_scope.len(),
                 applied = %named_sigs(&merged.applied_from_scope),
                 "merge.cpps: cache put merged parents-post-state"
@@ -2187,7 +2107,7 @@ pub async fn compute_parents_post_state(
                 .record(post_merge_elapsed.as_secs_f64());
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
-                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, prior_rejection_counts_ms={}, merge_ms={}, post_merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
+                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, prior_rejection_counts_ms={}, merge_ms={}, post_merge_ms={}, visible_blocks={}, rejected_deploys={}, total_ms={}",
                 parents.len(),
                 cache_lookup_ms,
                 collect_ancestors_ms,
@@ -2198,7 +2118,6 @@ pub async fn compute_parents_post_state(
                 post_merge_elapsed.as_millis(),
                 visible_blocks_len,
                 merged.rejected_user.len(),
-                merged.rejected_slashes.len(),
                 total_started.elapsed().as_millis()
             );
             tracing::debug!(
@@ -2207,7 +2126,6 @@ pub async fn compute_parents_post_state(
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
                 n_rejected = merged.rejected_user.len(),
-                n_rejected_slash = merged.rejected_slashes.len(),
                 "merge.cpps: exit compute_parents_post_state"
             );
             Ok(merged)

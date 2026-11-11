@@ -11,6 +11,8 @@ schnorr_secp256k1_experimental = ["crypto/schnorr_secp256k1_experimental"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+num-bigint = { workspace = true }
+num-traits = { workspace = true }
 crypto = { path = "../crypto" }
 rspace_plus_plus = { path = "../rspace++" }
 shared = { path = "../shared" }

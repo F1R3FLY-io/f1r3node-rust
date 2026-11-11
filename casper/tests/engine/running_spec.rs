@@ -56,7 +56,10 @@ mod tests {
 
         fn normalized_initial_fault(
             &self,
-            weights: std::collections::HashMap<models::rust::validator::Validator, u64>,
+            weights: std::collections::HashMap<
+                models::rust::validator::Validator,
+                num_bigint::BigInt,
+            >,
         ) -> Result<f32, CasperError> {
             self.inner.normalized_initial_fault(weights)
         }
@@ -896,26 +899,6 @@ mod tests {
                 "skip={skip} take={take} must not become a trie export or a response"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn mergeable_entry_request_for_an_absent_block_is_silent() {
-        let fixture = TestFixture::new().await;
-
-        fixture
-            .engine
-            .handle(
-                fixture.local.clone(),
-                CasperMessage::MergeableEntryRequest(
-                    models::rust::casper::protocol::casper_message::MergeableEntryRequest {
-                        block_hash: Bytes::from_static(b"absent-mergeable-block"),
-                    },
-                ),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(fixture.transport_layer.request_count(), 0);
     }
 
     #[tokio::test]

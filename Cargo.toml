@@ -53,7 +53,7 @@ async-trait = "0.1"
 # than the prometheus exporter silently route to a noop recorder.
 metrics = "0.23"
 stacker = "0.1"
-num-bigint = "0.4"
+num-bigint = { version = "0.4", features = ["serde"] }
 num-rational = "0.4"
 num-traits = "0.2"
 num-integer = "0.1"
@@ -82,7 +82,7 @@ utoipa = "6"
 validated = "1.0"
 serial_test = "3.1"
 metrics-util = "0.17"
-rholang-parser = { version = "0.1.0", git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "dd6f6116fb01eff50afccf9a695801dc9d319722" }
+rholang-parser = { version = "0.1.0", git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "4e22339eca493c5ce3d14386c2af67af74bfffa2" }
 reqwest = "0.12"
 
 [profile.dev]
