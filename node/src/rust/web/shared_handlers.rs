@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
     BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
     ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
-    NoNewDeploysError, ProposeReadOnlyError,
+    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
@@ -309,6 +309,25 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if cause.downcast_ref::<NoNewDeploysError>().is_some() {
             return (StatusCode::CONFLICT, "no_new_deploys", cause.to_string());
+        }
+        if let Some(e) = cause.downcast_ref::<ProposeRefusedError>() {
+            let (status, kind) = match e.refusal {
+                ProposeRefusal::NotBonded => (StatusCode::CONFLICT, "validator_not_bonded"),
+                ProposeRefusal::NotEnoughNewBlocks => {
+                    (StatusCode::CONFLICT, "not_enough_new_blocks")
+                }
+                ProposeRefusal::TooFarAheadOfLastFinalized => {
+                    (StatusCode::CONFLICT, "too_far_ahead_of_finalized")
+                }
+                ProposeRefusal::HistoryIncomplete => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "history_incomplete")
+                }
+                ProposeRefusal::MissingBlock => (StatusCode::SERVICE_UNAVAILABLE, "missing_block"),
+                ProposeRefusal::FloorDistanceHold => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "floor_distance_hold")
+                }
+            };
+            return (status, kind, cause.to_string());
         }
     }
 
@@ -709,7 +728,8 @@ mod tests {
         use casper::rust::api::block_api::{
             BlockNotFoundError, DeployNotFoundError, DeployValidationError,
             ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
-            LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+            LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal,
+            ProposeRefusedError,
         };
         use casper::rust::casper::DeployError;
         use casper::rust::errors::CasperError;
@@ -792,6 +812,52 @@ mod tests {
                 classify(err),
                 (StatusCode::CONFLICT, "duplicate_deploy".to_string())
             );
+        }
+
+        #[test]
+        fn propose_refusals_map_to_stable_kinds() {
+            let cases = [
+                (
+                    ProposeRefusal::NotBonded,
+                    StatusCode::CONFLICT,
+                    "validator_not_bonded",
+                ),
+                (
+                    ProposeRefusal::NotEnoughNewBlocks,
+                    StatusCode::CONFLICT,
+                    "not_enough_new_blocks",
+                ),
+                (
+                    ProposeRefusal::TooFarAheadOfLastFinalized,
+                    StatusCode::CONFLICT,
+                    "too_far_ahead_of_finalized",
+                ),
+                (
+                    ProposeRefusal::HistoryIncomplete,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "history_incomplete",
+                ),
+                (
+                    ProposeRefusal::MissingBlock,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "missing_block",
+                ),
+                (
+                    ProposeRefusal::FloorDistanceHold,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "floor_distance_hold",
+                ),
+            ];
+            for (refusal, status, kind) in cases {
+                let message = format!("Failure: refused {:?} (seqNum 3)", refusal);
+                let (got_status, got_kind, got_message) =
+                    classify_error(&eyre::Report::new(ProposeRefusedError {
+                        refusal,
+                        message: message.clone(),
+                    }));
+                assert_eq!((got_status, got_kind), (status, kind));
+                assert_eq!(got_message, message);
+            }
         }
 
         #[test]

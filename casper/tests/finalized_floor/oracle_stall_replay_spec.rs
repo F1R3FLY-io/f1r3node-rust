@@ -58,6 +58,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Justification};
 use models::rust::validator::Validator;
+use num_traits::ToPrimitive;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use serde::Deserialize;
 
@@ -148,7 +149,7 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
             e.iter()
                 .map(|(v, stake)| Bond {
                     validator: validator_of[v].clone(),
-                    stake: *stake,
+                    stake: u64::try_from(*stake).expect("fixture stake").into(),
                 })
                 .collect()
         })
@@ -267,8 +268,12 @@ async fn replay_sample(
         CliqueOracle::get_corresponding_weight_map(&rebuilt.hash_of[&sample.target], &rebuilt.dag)
             .await
             .expect("weight map");
+    let expected_weights = rebuilt.era_weights[sample.era]
+        .iter()
+        .map(|(key, value)| (key.clone(), (*value).into()))
+        .collect::<HashMap<_, num_bigint::BigInt>>();
     assert_eq!(
-        &weight_map, &rebuilt.era_weights[sample.era],
+        weight_map, expected_weights,
         "staging: the rebuilt target's committee must be the fixture era"
     );
     oracle_verdict(rebuilt, ftt_ppm, &sample.target, &sample.snapshot).await
@@ -291,11 +296,15 @@ async fn oracle_verdict(
     let weight_map = CliqueOracle::get_corresponding_weight_map(&target, &rebuilt.dag)
         .await
         .expect("weight map");
-    let total: i64 = weight_map.values().sum();
+    let total = weight_map
+        .values()
+        .sum::<num_bigint::BigInt>()
+        .to_i64()
+        .expect("fixture total fits i64");
 
     // Agreement, by the oracle's own definition: the target is on the
     // main-parent spine of the validator's latest message.
-    let mut agreeing_map: HashMap<Validator, i64> = HashMap::new();
+    let mut agreeing_map: HashMap<Validator, num_bigint::BigInt> = HashMap::new();
     for (v, stake) in &weight_map {
         if let Some(lm) = snapshot.get(v) {
             if rebuilt
@@ -303,11 +312,15 @@ async fn oracle_verdict(
                 .is_in_main_chain(&target, lm)
                 .expect("is_in_main_chain")
             {
-                agreeing_map.insert(v.clone(), *stake);
+                agreeing_map.insert(v.clone(), stake.clone());
             }
         }
     }
-    let agreeing: i64 = agreeing_map.values().sum();
+    let agreeing = agreeing_map
+        .values()
+        .sum::<num_bigint::BigInt>()
+        .to_i64()
+        .expect("fixture total fits i64");
 
     // (2q − S)/S recovers the max clique weight exactly for these stakes.
     let ft =
@@ -469,7 +482,7 @@ async fn fork_choice(
     rebuilt: &Rebuilt,
     floor_id: &str,
     snapshot: &BTreeMap<String, String>,
-) -> (Vec<String>, BTreeMap<String, i64>) {
+) -> (Vec<String>, BTreeMap<String, num_bigint::BigInt>) {
     let mut dag = rebuilt.dag.clone();
     let floor = dag
         .lookup_unsafe(&rebuilt.hash_of[floor_id])
@@ -497,7 +510,7 @@ async fn fork_choice(
         ),
     };
     let tips = choice.tips.iter().map(&name).collect();
-    let scores = choice.scores.iter().map(|(h, s)| (name(h), *s)).collect();
+    let scores = choice.scores.iter().map(|(h, s)| (name(h), s.clone())).collect();
     (tips, scores)
 }
 
@@ -510,7 +523,7 @@ async fn fork_choice(
 struct Observation {
     leaders: std::collections::BTreeSet<String>,
     tips: std::collections::BTreeSet<String>,
-    scores: BTreeMap<String, i64>,
+    scores: BTreeMap<String, num_bigint::BigInt>,
     verdicts: Vec<(String, (i64, i64, i64, bool))>,
 }
 
@@ -562,8 +575,9 @@ async fn observe_after_block(
         ));
     }
     let score_of = |tip: &String| {
-        *scores
+        scores
             .get(tip)
+            .cloned()
             .unwrap_or_else(|| panic!("fork choice scores every tip it ranks, but not {tip}"))
     };
     let top = score_of(tips.first().expect("fork choice yields a head"));
@@ -628,7 +642,7 @@ async fn testnet04_426_a_main_parent_only_block_is_indistinguishable_to_fork_cho
     // The common-ancestor search runs over full DAG ancestry, so co-parents can
     // start the scoring lower. Blocks scored by only one side must then be
     // shared trunk: every validator's weight, on every main chain.
-    let total_stake: i64 = fx.eras[0].values().sum();
+    let total_stake = num_bigint::BigInt::from(fx.eras[0].values().sum::<i64>());
     for proposer in sample.snapshot.keys() {
         let full = observe_after_block(proposer, &head, &co_parents, &spine).await;
         let main_only = observe_after_block(proposer, &head, &[], &spine).await;
@@ -647,7 +661,7 @@ async fn testnet04_426_a_main_parent_only_block_is_indistinguishable_to_fork_cho
             match (main_only.scores.get(id), full.scores.get(id)) {
                 (Some(a), Some(b)) => assert_eq!(a, b, "score of {id}: {context}"),
                 (Some(only), None) | (None, Some(only)) => assert_eq!(
-                    *only, total_stake,
+                    only, &total_stake,
                     "{id} is scored by one side only and is not shared trunk: {context}"
                 ),
                 (None, None) => unreachable!("id came from one of the two maps"),

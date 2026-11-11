@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use shared::rust::token_amount::TokenAmount;
 
 /// Casper configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,8 +24,6 @@ pub struct CasperConf {
 
     #[serde(rename = "casper-loop-interval", deserialize_with = "de_duration")]
     pub casper_loop_interval: Duration,
-    #[serde(rename = "requested-blocks-timeout", deserialize_with = "de_duration")]
-    pub requested_blocks_timeout: Duration,
     #[serde(rename = "finalization-rate")]
     pub finalization_rate: i32,
     #[serde(rename = "max-number-of-parents")]
@@ -71,7 +70,7 @@ pub struct CasperConf {
     pub genesis_ceremony: GenesisCeremony,
 
     #[serde(rename = "min-phlo-price")]
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
 
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
@@ -186,9 +185,9 @@ pub struct GenesisBlockData {
     pub wallets_file: String,
 
     #[serde(rename = "bond-minimum")]
-    pub bond_minimum: i64,
+    pub bond_minimum: TokenAmount,
     #[serde(rename = "bond-maximum")]
-    pub bond_maximum: i64,
+    pub bond_maximum: TokenAmount,
 
     #[serde(rename = "epoch-length")]
     pub epoch_length: i32,
@@ -498,8 +497,8 @@ mod native_token_validation_tests {
             genesis_data_dir: String::new(),
             bonds_file: String::new(),
             wallets_file: String::new(),
-            bond_minimum: 0,
-            bond_maximum: 0,
+            bond_minimum: 0.into(),
+            bond_maximum: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,

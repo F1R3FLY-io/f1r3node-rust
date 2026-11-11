@@ -20,6 +20,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -30,8 +31,8 @@ const SOLO_BLOCKS: usize = 257;
 
 fn ftt() -> FtThreshold { FtThreshold::from_ppm(100_000) }
 
-fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-    pks.into_iter().map(|pk| (pk, 100)).collect()
+fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, TokenAmount> {
+    pks.into_iter().map(|pk| (pk, 100u64.into())).collect()
 }
 
 struct StalledShard {

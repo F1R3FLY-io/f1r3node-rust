@@ -12,6 +12,7 @@ use casper::rust::estimator::Estimator;
 use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -19,8 +20,8 @@ use crate::util::genesis_builder::GenesisBuilder;
 /// Comfortably past the test node's parent-depth limit (30).
 const SOLO_BLOCKS: usize = 40;
 
-fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-    pks.into_iter().map(|pk| (pk, 100)).collect()
+fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, TokenAmount> {
+    pks.into_iter().map(|pk| (pk, 100u64.into())).collect()
 }
 
 struct RunawayView {

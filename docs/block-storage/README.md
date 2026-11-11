@@ -4,7 +4,7 @@
 
 **Path**: `block-storage/`
 
-Block persistence, DAG state management, casper buffer, and deploy indexing.
+Block persistence, DAG state management, pending blocks, and deploy indexing.
 
 ## Block Store
 
@@ -38,12 +38,14 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
   - `self_justification_map`: BlockHash → justification BlockHash
   - `finalized_block_set`: Bounded HashSet (cap 50k, prunes to 25k) of finalized blocks
 
-## Casper Buffer
+## Pending Blocks
 
-**`CasperBufferKeyValueStorage`** -- Tracks unprocessed block dependencies:
-- Two `DashMap`s: child_to_parent, parent_to_child adjacency lists
-- `BlockDependencyDag` (doubly-linked DAG) rebuilt from persistent store on startup
-- `add_relation(parent, child)`, `put_pendant(block)`, `remove(hash)`, `get_pendants()`
+**`PendingBlocks`** -- Holds blocks in memory until their sender's authorization is known. `KeyValueBlockStore` owns it and reads fall back to it, so `get` and `contains` also see pending blocks.
+- Limits: 8,192 blocks, 256 MiB, and 2,048 blocks for each sender.
+- A requested block is refused only at a limit. Any other block is refused above 90 percent of a limit.
+- The area never evicts. Block ingest decides what leaves. `usage()` reports the totals and the limits.
+
+**`BlockDagKeyValueStorage::set_insert_observer`** reports each block that the DAG inserts. Block ingest uses it to release the blocks that wait on the inserted block.
 
 ## Finality Storage
 
@@ -62,9 +64,9 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
 The local deploy stores, `deploy_storage` and `rejected_deploy_buffer`, quarantine records with invalid encoding or signatures. Other records stay available.
 
 - **Write checks.** Before a write, the codec checks the parameters, supported signature algorithm, and signature. Prepared writes retain the checked bytes until persistence.
-- **Read checks.** Store open does not scan live records. Reads check the fingerprint of current-format records and verify signatures of historical records. The decoded signature must match the record key. Reads still deserialize deploys.
+- **Read checks.** Store open does not scan live records. Reads check the record fingerprint and that the decoded signature matches the record key. Reads still deserialize deploys.
 - **Record format.** Checked writes store `F1R3DEP\x02`, a 32-byte Blake2b-256 fingerprint, and the protobuf payload in one record. The fingerprint covers the payload. It detects corruption and does not replace signature verification at the write boundary. Raw writes that bypass this boundary are unsupported. No separate verification database or fingerprint cache is required.
-- **Migration.** Reads verify signatures of `F1R3DEP\x01` and legacy bincode records before upgrading them. A batch replaces only records whose bytes still match the read snapshot. Concurrent replacements and deletions remain intact. Migration runs after the read transaction closes. A migration write failure preserves the verified data and requires verification on a later read.
+- **Earlier formats.** There is no migration. Records in `F1R3DEP\x01` or bincode format, and records whose payload stores the phlo price as a 64-bit integer, cannot be decoded and move to quarantine like a damaged record. Deploys from those node versions belong to an earlier chain.
 - **Scan behavior.** An invalid record moves to `deploy_storage_quarantine` or `rejected_deploy_buffer_quarantine` with its raw bytes unchanged. Both databases use the `deploystorage` environment. The scan continues with valid records. If an `any()` predicate fails, the scan first quarantines the invalid records already found, then returns the predicate error.
 - **Backend failures.** Live-store reads, admission writes, and quarantine failures stop the operation and return the error. A failed quarantine write keeps the damaged record in the live store. Migration writes use the fallback described above.
 - **Unsupported format versions.** A record in a format that this node version cannot read is quarantined like a damaged record. The node does not delete it.
@@ -85,7 +87,7 @@ The two stores share the `deploystorage` LMDB environment with a map size of 1 G
 
 ## Tests
 
-`block_dag_storage_test.rs` (proptest integration), `key_value_block_store.rs` (proptest unit), `casper_buffer_key_value_storage.rs` (tokio async), `doubly_linked_dag_operations.rs` (DAG unit tests).
+`block_dag_storage_test.rs` (proptest integration), `key_value_block_store.rs` (proptest unit), `pending_blocks.rs` (admission class and limits), `doubly_linked_dag_operations.rs` (DAG unit tests).
 
 **See also:** [block-storage/ crate](../../block-storage/)
 
