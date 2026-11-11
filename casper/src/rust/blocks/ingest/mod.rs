@@ -20,5 +20,9 @@ pub mod peer_reputation;
 pub mod receipt_verifier;
 pub mod validation_worker;
 
+/// The target of every block ingest decision log, so one filter directive
+/// (`f1r3fly.casper.block-ingest=debug`) shows a block's whole path.
+pub const LOG_TARGET: &str = "f1r3fly.casper.block-ingest";
+
 #[cfg(test)]
 mod ingest_state_tests;

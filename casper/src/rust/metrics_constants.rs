@@ -27,7 +27,10 @@ pub const BLOCK_INGEST_DISK_ENTRIES_METRIC: &str = "block.ingest.disk-entries";
 pub const BLOCK_INGEST_NEEDS_METRIC: &str = "block.ingest.needs";
 pub const BLOCK_INGEST_UNCITED_NEEDS_METRIC: &str = "block.ingest.uncited-needs";
 pub const BLOCK_INGEST_ROOT_NEEDS_METRIC: &str = "block.ingest.root-needs";
-pub const BLOCK_INGEST_VALIDATING_METRIC: &str = "block.ingest.validating";
+pub const BLOCK_INGEST_REQUESTS_OUTSTANDING_METRIC: &str = "block.ingest.requests.outstanding";
+pub const BLOCK_INGEST_EVICTIONS_METRIC: &str = "block.ingest.evictions";
+pub const BLOCK_INGEST_DROPPED_METRIC: &str = "block.ingest.dropped";
+pub const BLOCK_INGEST_NEEDS_DROPPED_METRIC: &str = "block.ingest.needs.dropped";
 pub const BLOCK_INGEST_INSERTS_PENDING_METRIC: &str = "block.ingest.inserts-pending";
 pub const BLOCK_INGEST_LANE_DROPS_METRIC: &str = "block.ingest.lane-drops";
 pub const BLOCK_INGEST_OUTBOUND_DROPS_METRIC: &str = "block.ingest.outbound-drops";
@@ -69,6 +72,11 @@ pub const CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC: &str = "casper.init.approv
 pub const CASPER_INIT_TRANSITION_TO_RUNNING_METRIC: &str = "casper.init.transition-to-running";
 pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
+pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
+pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
+pub const BLOCK_PROCESSING_IN_FLIGHT_METRIC: &str = "block-processing.in-flight";
+pub const BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC: &str =
+    "block-processing.in-flight.oldest-age-seconds";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
 // See: https://github.com/F1R3FLY-io/f1r3node/pull/367
 // pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str = "mergeable.channels.gc.deleted";

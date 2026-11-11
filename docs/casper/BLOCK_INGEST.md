@@ -135,15 +135,38 @@ The names that monitoring rules read keep their earlier source labels:
 - `f1r3fly.casper.block-processor`: `block.validation.time`, `block.processing.stage.validation-setup.time`, `block.processing.stage.storage.time`, `block.size`, `block.validation.success`, `block.validation.failed`
 - `f1r3fly.casper.block-retriever`: `block.requests.total`, `block.requests.retries`, `block.download.end-to-end-time`
 
+The block-processing gauges that shard monitors and soak scripts read also keep their names and the source `f1r3fly.casper.block-processor`:
+
+- `block-processing.active`: validations that run now.
+- `block-processing.queue.pending`: held blocks that are ready and wait for a validation slot.
+- `block-processing.in-flight`: the sum of the two gauges above.
+- `block-processing.in-flight.oldest-age-seconds`: how long the oldest running validation has run, or zero when none runs. A value that grows past ten minutes marks a stuck validation.
+- `block-processing.parallel-limit`: the number of validation slots.
+
 Block ingest adds gauges and counters with the source `f1r3fly.casper.block-ingest`:
 
 - `block.ingest.held` and `block.ingest.disk-entries`
-- `block.ingest.needs`, `block.ingest.uncited-needs` and `block.ingest.root-needs`
-- `block.ingest.validating` and `block.ingest.inserts-pending`
+- `block.ingest.needs`, `block.ingest.uncited-needs`, `block.ingest.root-needs` and `block.ingest.requests.outstanding`
+- `block.ingest.inserts-pending`
+- `block.ingest.evictions`, by `reason`: `pending-area`, `sender-share`, `room-for-requested`, `disk-bound` or `give-up`
+- `block.ingest.dropped`, the blocks that left with a dropped block, by `reason`: `invalid`, `too-large` or `state-unavailable`
+- `block.ingest.needs.dropped`, by `reason`: `uncited` (no held block waits on it) or `uncited-bound`
 - `block.ingest.lane-drops` and `block.ingest.outbound-drops`
 - `block.ingest.peer-reputation.strikes`, `block.ingest.peer-reputation.ignored-peers` and `block.ingest.peer-reputation.dropped-messages`
 
 `block.integrity.rejected` counts block messages that fail the integrity check, by `reason` (`malformed` or `hash-mismatch`).
+
+The buffer, retriever and in-flight-cap metrics of the earlier block processor are gone with the components that they measured. The gauges above replace them.
+
+## Logs
+
+The owner logs each decision with the target `f1r3fly.casper.block-ingest`. Set `f1r3fly.casper.block-ingest=debug` in the log filter to see the full path of each block. Each event names the block by its short hash in the `block` field.
+
+- Debug: a block held, with the blocks it waits on; a block needed, with the reason; each request to a peer and each broadcast, with the attempt number; a block inserted, with the blocks that it released; each eviction, with its reason; each retry after a failed validation; a validation that waits on a block or a state root; a need dropped because uncited needs exceed their bound.
+- Info: a block that a held block or the proposer needs and that is still missing when its requests reach the slowest interval (once for each block); an invalid block dropped with the blocks that wait on it. Events that peers can cause at will, such as announcements of hashes that do not exist, stay at debug.
+- Warn: a block given up after repeated failed validations; a block dropped as too large or because its state root cannot be fetched; a validation still running after ten minutes.
+
+The validation worker logs `Block … processing started.` when it takes a block and `Block … validated …` with the verdict, at info level.
 
 ## Tests
 

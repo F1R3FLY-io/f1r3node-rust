@@ -37,8 +37,10 @@ use crate::rust::metrics_constants::{
     BLOCK_INGEST_INSERTS_PENDING_METRIC, BLOCK_INGEST_LANE_DROPS_METRIC,
     BLOCK_INGEST_METRICS_SOURCE, BLOCK_INGEST_NEEDS_METRIC, BLOCK_INGEST_OUTBOUND_DROPS_METRIC,
     BLOCK_INGEST_PEER_REPUTATION_IGNORED_PEERS_METRIC, BLOCK_INGEST_PEER_REPUTATION_STRIKES_METRIC,
-    BLOCK_INGEST_ROOT_NEEDS_METRIC, BLOCK_INGEST_UNCITED_NEEDS_METRIC,
-    BLOCK_INGEST_VALIDATING_METRIC, BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
+    BLOCK_INGEST_REQUESTS_OUTSTANDING_METRIC, BLOCK_INGEST_ROOT_NEEDS_METRIC,
+    BLOCK_INGEST_UNCITED_NEEDS_METRIC, BLOCK_PROCESSING_ACTIVE_METRIC,
+    BLOCK_PROCESSING_IN_FLIGHT_METRIC, BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC,
+    BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC, BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
     BLOCK_PROCESSOR_METRICS_SOURCE,
 };
 use crate::rust::util::proto_util;
@@ -361,7 +363,6 @@ pub fn spawn<T: TransportLayer + Send + Sync + 'static>(
         local: local_tx,
         outbound: outbound_tx,
         work: work_tx,
-        validating: 0,
         in_validation: HashMap::new(),
         width: setup.validation_width,
         state_root_fetch_tx: setup.state_root_fetch_tx,
@@ -600,7 +601,6 @@ struct Owner {
     local: mpsc::Sender<BlockHash>,
     outbound: mpsc::Sender<Outbound>,
     work: mpsc::Sender<(BlockHash, Work)>,
-    validating: usize,
     /// Blocks sent to validation: when, and whether a stuck warning went out.
     in_validation: HashMap<BlockHash, (u64, bool)>,
     width: usize,
@@ -627,7 +627,9 @@ impl Owner {
                 _ = tick.tick() => {
                     metrics::gauge!(BLOCK_INGEST_INSERTS_PENDING_METRIC, "source" => BLOCK_INGEST_METRICS_SOURCE)
                         .set(inserted.len() as f64);
-                    self.warn_stuck_validations();
+                    metrics::gauge!(BLOCK_INGEST_REQUESTS_OUTSTANDING_METRIC, "source" => BLOCK_INGEST_METRICS_SOURCE)
+                        .set(self.state.outstanding_requests(self.now_ms()) as f64);
+                    self.observe_validations();
                     self.tick_input()
                 }
                 Some((root, result)) = async {
@@ -640,7 +642,6 @@ impl Owner {
                 else => return,
             };
             if let IngestInput::Outcome { hash, .. } = &input {
-                self.validating = self.validating.saturating_sub(1);
                 self.in_validation.remove(hash);
             }
             self.handle(input).await;
@@ -764,7 +765,7 @@ impl Owner {
     }
 
     async fn dispatch(&mut self) {
-        while self.validating < self.width {
+        while self.in_validation.len() < self.width {
             let Some(work) = self.state.next_dispatch() else {
                 return;
             };
@@ -772,26 +773,30 @@ impl Owner {
             if self.work.send(work).await.is_err() {
                 return;
             }
-            self.validating += 1;
             self.in_validation.insert(hash, (self.now_ms(), false));
         }
     }
 
-    /// Warn once for each block whose validation has held a slot for longer
-    /// than `STUCK_VALIDATION_WARN_MS`.
-    fn warn_stuck_validations(&mut self) {
+    /// Record how long the oldest validation has run, and warn once for each
+    /// block whose validation has held a slot for longer than
+    /// `STUCK_VALIDATION_WARN_MS`.
+    fn observe_validations(&mut self) {
         let now_ms = self.now_ms();
+        let mut oldest_ms = None;
         for (hash, (since_ms, warned)) in self.in_validation.iter_mut() {
             let elapsed_ms = now_ms.saturating_sub(*since_ms);
+            oldest_ms = oldest_ms.max(Some(elapsed_ms));
             if !*warned && elapsed_ms >= STUCK_VALIDATION_WARN_MS {
                 *warned = true;
                 tracing::warn!(
+                    target: super::LOG_TARGET,
                     hash = %PrettyPrinter::build_string_bytes(hash),
                     elapsed_ms,
                     "block validation still running; it holds one validation slot"
                 );
             }
         }
+        record_oldest_validation(oldest_ms);
     }
 
     fn record_gauges(&self) {
@@ -804,7 +809,6 @@ impl Owner {
                 self.state.uncited_needs(),
             ),
             (BLOCK_INGEST_ROOT_NEEDS_METRIC, self.state.root_needs()),
-            (BLOCK_INGEST_VALIDATING_METRIC, self.validating),
             (
                 BLOCK_INGEST_PEER_REPUTATION_IGNORED_PEERS_METRIC,
                 self.state.ignored_peers(self.now_ms()),
@@ -813,5 +817,27 @@ impl Owner {
         for (name, value) in gauges {
             metrics::gauge!(name, "source" => BLOCK_INGEST_METRICS_SOURCE).set(value as f64);
         }
+        record_processing(self.in_validation.len(), self.state.ready());
     }
+}
+
+/// Validations running and ready blocks waiting for a slot, under the
+/// block-processing names and source that monitors and soak scripts read.
+fn record_processing(active: usize, ready: usize) {
+    for (name, value) in [
+        (BLOCK_PROCESSING_ACTIVE_METRIC, active),
+        (BLOCK_PROCESSING_QUEUE_PENDING_METRIC, ready),
+        (BLOCK_PROCESSING_IN_FLIGHT_METRIC, active + ready),
+    ] {
+        metrics::gauge!(name, "source" => BLOCK_PROCESSOR_METRICS_SOURCE).set(value as f64);
+    }
+}
+
+/// How long the oldest running validation has run; zero while none runs.
+fn record_oldest_validation(oldest_ms: Option<u64>) {
+    metrics::gauge!(
+        BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC,
+        "source" => BLOCK_PROCESSOR_METRICS_SOURCE
+    )
+    .set(oldest_ms.map_or(0.0, |ms| ms as f64 / 1_000.0));
 }

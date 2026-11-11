@@ -230,6 +230,19 @@ impl DependencyTracker {
 
     pub fn held(&self) -> usize { self.held.len() }
 
+    /// Held blocks ready for a validation slot.
+    pub fn ready(&self) -> usize { self.ready.len() }
+
+    /// Validation attempts of `hash` that failed since it was held; a block
+    /// with no failure on record has had none.
+    pub fn failures(&self, hash: &BlockHash) -> u32 {
+        self.failures.get(hash).copied().unwrap_or(0)
+    }
+
+    pub fn retry_at_ms(&self, hash: &BlockHash) -> Option<u64> {
+        self.held.get(hash).and_then(|held| held.retry_at_ms)
+    }
+
     pub fn disk_entries(&self) -> usize { self.disk_entries }
 
     pub fn is_quarantined(&self, hash: &BlockHash, now_ms: u64) -> bool {

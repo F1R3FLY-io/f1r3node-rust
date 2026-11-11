@@ -3,23 +3,71 @@ use std::collections::{HashMap, HashSet};
 use block_storage::rust::pending_blocks::{PendingBlockLimits, PendingUsage};
 use comm::rust::peer_node::PeerNode;
 use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 use super::dependency_tracker::{
     BodyAt, Departure, DependencyTracker, FailureVerdict, HeldMeta, VictimClass, Work,
-    MAX_DISK_ENTRIES,
+    MAX_DISK_ENTRIES, MAX_VALIDATION_FAILURES,
 };
 use super::fetch_scheduler::{FetchAction, FetchScheduler, NeedFacts, NeedOrigin};
 use super::ingest_view::IngestView;
 use super::peer_reputation::{PeerReputation, Strike, StrikeOutcome};
+use super::LOG_TARGET;
 // The retriever's source label is part of the exported name the block-transfer
 // dashboard reads.
 use crate::rust::metrics_constants::{
-    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_RETRIEVER_METRICS_SOURCE,
+    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_INGEST_DROPPED_METRIC,
+    BLOCK_INGEST_EVICTIONS_METRIC, BLOCK_INGEST_METRICS_SOURCE, BLOCK_RETRIEVER_METRICS_SOURCE,
 };
 
 pub const LOCAL_LOOKUPS_PER_TICK: usize = 256;
+
+/// Why a held block was evicted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvictReason {
+    /// The pending area was above its low-water mark.
+    PendingArea,
+    /// Its sender held more than its share of the pending area.
+    SenderShare,
+    /// Room for a requested block the pending area refused.
+    RoomForRequested,
+    /// Bodies on disk exceeded their bound.
+    DiskBound,
+    /// Its validation kept failing.
+    GiveUp,
+}
+
+impl EvictReason {
+    fn label(self) -> &'static str {
+        match self {
+            EvictReason::PendingArea => "pending-area",
+            EvictReason::SenderShare => "sender-share",
+            EvictReason::RoomForRequested => "room-for-requested",
+            EvictReason::DiskBound => "disk-bound",
+            EvictReason::GiveUp => "give-up",
+        }
+    }
+}
+
+/// Why a block left together with every held block that waits on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropReason {
+    Invalid,
+    TooLarge,
+    StateUnavailable,
+}
+
+impl DropReason {
+    fn label(self) -> &'static str {
+        match self {
+            DropReason::Invalid => "invalid",
+            DropReason::TooLarge => "too-large",
+            DropReason::StateUnavailable => "state-unavailable",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingRefusal {
@@ -229,6 +277,11 @@ impl IngestState {
 
     pub fn held(&self) -> usize { self.tracker.held() }
 
+    /// Held blocks ready for a validation slot.
+    pub fn ready(&self) -> usize { self.tracker.ready() }
+
+    pub fn outstanding_requests(&self, now_ms: u64) -> usize { self.scheduler.outstanding(now_ms) }
+
     pub fn disk_entries(&self) -> usize { self.tracker.disk_entries() }
 
     pub fn block_needs(&self) -> usize { self.scheduler.block_needs() }
@@ -293,8 +346,11 @@ impl IngestState {
                 StateFetchResult::Dropped(StateFetchDrop::BudgetExhausted) => {
                     self.scheduler.remove_root(&root);
                     for waiter in self.tracker.root_waiters(&root) {
-                        let departure = self.tracker.drop_with_dependents(&waiter);
-                        self.departed(departure, &mut effects);
+                        self.drop_with_dependents(
+                            &waiter,
+                            DropReason::StateUnavailable,
+                            &mut effects,
+                        );
                     }
                 }
                 StateFetchResult::Dropped(_) => self.scheduler.root_dropped(&root),
@@ -340,6 +396,11 @@ impl IngestState {
             return;
         }
         if stores.in_dag(&hash) {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %short(&hash),
+                "Block is already in the DAG; copy dropped"
+            );
             if meta.body == BodyAt::Pending {
                 effects.push(Effect::DiscardPending(hash.clone()));
             }
@@ -351,6 +412,12 @@ impl IngestState {
             .quarantined_until(&hash)
             .filter(|until_ms| now_ms < *until_ms)
         {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %short(&hash),
+                quarantine_left_ms = until_ms - now_ms,
+                "Block is quarantined after repeated validation failures; copy dropped"
+            );
             if meta.body == BodyAt::Pending {
                 effects.push(Effect::DiscardPending(hash.clone()));
             }
@@ -360,6 +427,11 @@ impl IngestState {
         // A late report for a pending body the owner already discarded: the
         // block is not held, so its need stays and it is fetched again.
         if meta.body == BodyAt::Pending && !stores.holds_pending(&hash) {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %short(&hash),
+                "Pending body was discarded before its report arrived; block fetched again"
+            );
             self.scheduler.local_miss(&hash, now_ms);
             return;
         }
@@ -404,6 +476,17 @@ impl IngestState {
         };
         let facts = citation(&meta);
         let body = meta.body;
+        tracing::debug!(
+            target: LOG_TARGET,
+            block = %short(&hash),
+            height = meta.height,
+            sender = %short(&meta.sender),
+            solicited = meta.solicited,
+            body = ?body,
+            work = ?work,
+            waits_on = %short_all(&missing),
+            "Block held"
+        );
         self.tracker.hold(meta, work, missing.clone());
         self.cite(&missing, &facts, now_ms);
         match body {
@@ -466,7 +549,7 @@ impl IngestState {
                     self.tracker
                         .victims(BodyAt::Pending, VictimClass::Unsolicited, Some(&sender));
                 for (victim, _) in unsolicited.into_iter().take(excess) {
-                    self.evict(&victim, now_ms, effects);
+                    self.evict(&victim, EvictReason::SenderShare, now_ms, effects);
                     excess -= 1;
                 }
                 // Requested blocks that wait on the refused one cannot validate
@@ -482,7 +565,7 @@ impl IngestState {
                     .collect();
                 excess -= waiting.len();
                 for victim in waiting {
-                    self.displace(&victim, now_ms, effects);
+                    self.displace(&victim, EvictReason::SenderShare, now_ms, effects);
                 }
                 if excess == 0 {
                     self.reserve(&hash, &sender, size, reserve_at, stores, effects);
@@ -491,8 +574,7 @@ impl IngestState {
             }
             Refusal::Pending(PendingRefusal::TooLarge) => {
                 self.scheduler.remove_block(&hash);
-                let departure = self.tracker.drop_with_dependents(&hash);
-                self.departed(departure, effects);
+                self.drop_with_dependents(&hash, DropReason::TooLarge, effects);
             }
         }
     }
@@ -512,6 +594,12 @@ impl IngestState {
         let departure = self.tracker.inserted(hash);
         self.scheduler.remove_block(hash);
         let released = departure.released.clone();
+        tracing::debug!(
+            target: LOG_TARGET,
+            block = %short(hash),
+            released = %short_all(&released),
+            "Block inserted into the DAG"
+        );
         self.released(departure);
         for waiter in released {
             self.check_deferred_shape(&waiter, now_ms, stores);
@@ -537,6 +625,12 @@ impl IngestState {
         if missing.is_empty() {
             return;
         }
+        tracing::debug!(
+            target: LOG_TARGET,
+            block = %short(hash),
+            waits_on = %short_all(&missing),
+            "Block fits its main parent's bonds; it waits on its other dependencies"
+        );
         self.tracker.wait_on_dependencies(hash, missing.clone());
         self.cite(&missing, &citation(&meta), now_ms);
     }
@@ -595,33 +689,64 @@ impl IngestState {
                 if let (true, Some(peer)) = (invalid_sender, &pusher) {
                     self.strike(peer, Strike::InvalidSender, now_ms, effects);
                 }
-                let departure = self.tracker.drop_with_dependents(hash);
-                self.departed(departure, effects);
+                self.drop_with_dependents(hash, DropReason::Invalid, effects);
             }
             WorkOutcome::AwaitingBlock(missing) => {
                 if stores.is_satisfied(&missing) {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        block = %short(hash),
+                        dependency = %short(&missing),
+                        "Validation read a snapshot older than a dependency now in the DAG; retrying"
+                    );
                     if self.tracker.stale_snapshot(hash, now_ms) == FailureVerdict::GiveUp {
                         self.give_up(hash, now_ms, effects);
                     }
                 } else {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        block = %short(hash),
+                        waits_on = %short(&missing),
+                        "Validation needs a block this node does not hold"
+                    );
                     self.tracker.wait_on_block(hash, &missing);
                     self.cite(std::slice::from_ref(&missing), &facts, now_ms);
                 }
             }
             WorkOutcome::AwaitingState(root) => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    block = %short(hash),
+                    root = %root,
+                    "Validation needs a state root this node does not hold"
+                );
                 self.tracker.wait_on_root(hash, &root);
                 self.scheduler.need_root(&root, now_ms);
             }
             WorkOutcome::NotSettledHistory => {
                 let missing = missing_dependencies(&meta.deps, stores);
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    block = %short(hash),
+                    waits_on = %short_all(&missing),
+                    "Settled-history admission declined the block; it is validated"
+                );
                 self.tracker.reclassify(hash, missing.clone());
                 self.cite(&missing, &facts, now_ms);
             }
-            WorkOutcome::Failed => {
-                if self.tracker.failed(hash, now_ms) == FailureVerdict::GiveUp {
-                    self.give_up(hash, now_ms, effects);
-                }
-            }
+            WorkOutcome::Failed => match self.tracker.failed(hash, now_ms) {
+                FailureVerdict::GiveUp => self.give_up(hash, now_ms, effects),
+                FailureVerdict::Retry => tracing::debug!(
+                    target: LOG_TARGET,
+                    block = %short(hash),
+                    failures = self.tracker.failures(hash),
+                    retry_in_ms = self
+                        .tracker
+                        .retry_at_ms(hash)
+                        .map(|retry_at_ms| retry_at_ms.saturating_sub(now_ms)),
+                    "Validation attempt failed without a verdict; retrying"
+                ),
+            },
         }
     }
 
@@ -630,7 +755,14 @@ impl IngestState {
     /// ends.
     fn give_up(&mut self, hash: &BlockHash, now_ms: u64, effects: &mut Vec<Effect>) {
         let quarantined_until = self.tracker.quarantined_until(hash);
-        self.evict(hash, now_ms, effects);
+        tracing::warn!(
+            target: LOG_TARGET,
+            block = %short(hash),
+            failures = MAX_VALIDATION_FAILURES,
+            quarantine_ms = quarantined_until.map(|until_ms| until_ms.saturating_sub(now_ms)),
+            "Block validation keeps failing without a verdict; block evicted until its quarantine ends"
+        );
+        self.evict(hash, EvictReason::GiveUp, now_ms, effects);
         if let Some(until_ms) = quarantined_until {
             self.scheduler.defer_until(hash, until_ms);
         }
@@ -672,17 +804,63 @@ impl IngestState {
         self.released(departure);
     }
 
+    /// `hash` and every held block that waits on it leave for good.
+    fn drop_with_dependents(
+        &mut self,
+        hash: &BlockHash,
+        reason: DropReason,
+        effects: &mut Vec<Effect>,
+    ) {
+        let departure = self.tracker.drop_with_dependents(hash);
+        let dropped = departure.removed.len();
+        metrics::counter!(
+            BLOCK_INGEST_DROPPED_METRIC,
+            "source" => BLOCK_INGEST_METRICS_SOURCE,
+            "reason" => reason.label()
+        )
+        .increment(dropped as u64);
+        match reason {
+            DropReason::Invalid => tracing::info!(
+                target: LOG_TARGET,
+                block = %short(hash),
+                reason = reason.label(),
+                dropped,
+                "Block dropped with the held blocks that wait on it"
+            ),
+            DropReason::TooLarge | DropReason::StateUnavailable => tracing::warn!(
+                target: LOG_TARGET,
+                block = %short(hash),
+                reason = reason.label(),
+                dropped,
+                "Block dropped with the held blocks that wait on it"
+            ),
+        }
+        self.departed(departure, effects);
+    }
+
     /// Evict a held block. If others wait on it, it becomes a need again and
     /// keeps the peer that pushed it.
-    fn evict(&mut self, hash: &BlockHash, now_ms: u64, effects: &mut Vec<Effect>) {
-        self.evict_keeping(hash, false, now_ms, effects);
+    fn evict(
+        &mut self,
+        hash: &BlockHash,
+        reason: EvictReason,
+        now_ms: u64,
+        effects: &mut Vec<Effect>,
+    ) {
+        self.evict_keeping(hash, false, reason, now_ms, effects);
     }
 
     /// Evict a held block to make room for a refused requested block. A
     /// requested victim nothing waits on stays a need, so it is fetched again
     /// once the block it made room for has moved on.
-    fn displace(&mut self, hash: &BlockHash, now_ms: u64, effects: &mut Vec<Effect>) {
-        self.evict_keeping(hash, true, now_ms, effects);
+    fn displace(
+        &mut self,
+        hash: &BlockHash,
+        reason: EvictReason,
+        now_ms: u64,
+        effects: &mut Vec<Effect>,
+    ) {
+        self.evict_keeping(hash, true, reason, now_ms, effects);
     }
 
     /// A refused requested block stays needed after the passes that made room
@@ -701,6 +879,7 @@ impl IngestState {
         &mut self,
         hash: &BlockHash,
         keep_requested: bool,
+        reason: EvictReason,
         now_ms: u64,
         effects: &mut Vec<Effect>,
     ) {
@@ -710,7 +889,23 @@ impl IngestState {
             .first()
             .cloned()
             .expect("an eviction removes exactly its own entry");
-        if self.tracker.is_waited_on(hash) {
+        let waited_on = self.tracker.is_waited_on(hash);
+        metrics::counter!(
+            BLOCK_INGEST_EVICTIONS_METRIC,
+            "source" => BLOCK_INGEST_METRICS_SOURCE,
+            "reason" => reason.label()
+        )
+        .increment(1);
+        tracing::debug!(
+            target: LOG_TARGET,
+            block = %short(hash),
+            height = meta.height,
+            sender = %short(&meta.sender),
+            reason = reason.label(),
+            fetched_again = waited_on || (keep_requested && meta.solicited),
+            "Block evicted"
+        );
+        if waited_on {
             let facts = NeedFacts {
                 height_hint: Some(meta.height),
                 trusted: meta.trusted,
@@ -738,7 +933,7 @@ impl IngestState {
             let Some(victim) = self.tracker.disk_victim() else {
                 return;
             };
-            self.evict(&victim, now_ms, effects);
+            self.evict(&victim, EvictReason::DiskBound, now_ms, effects);
         }
     }
 
@@ -782,7 +977,7 @@ impl IngestState {
                     .expect("a victim is held")
                     .sender
                     .clone();
-                self.evict(&victim, now_ms, effects);
+                self.evict(&victim, EvictReason::PendingArea, now_ms, effects);
                 *evicted_by_sender.entry(sender).or_insert(0) += 1;
                 blocks = blocks.saturating_sub(1);
                 bytes = bytes.saturating_sub(size);
@@ -805,7 +1000,7 @@ impl IngestState {
                 self.tracker
                     .victims(BodyAt::Pending, VictimClass::Unsolicited, Some(sender));
             for (victim, _) in victims.into_iter().take(count - sender_target) {
-                self.evict(&victim, now_ms, effects);
+                self.evict(&victim, EvictReason::SenderShare, now_ms, effects);
             }
         }
     }
@@ -869,7 +1064,7 @@ impl IngestState {
             if fits(blocks, bytes) {
                 break;
             }
-            self.displace(&victim, now_ms, effects);
+            self.displace(&victim, EvictReason::RoomForRequested, now_ms, effects);
             blocks = blocks.saturating_sub(1);
             bytes = bytes.saturating_sub(victim_size);
         }
@@ -893,6 +1088,12 @@ fn citation(meta: &HeldMeta) -> NeedFacts {
         trusted: meta.trusted,
         cited_by_bonded: meta.bonded_at_anchor,
     }
+}
+
+fn short(hash: &BlockHash) -> String { PrettyPrinter::build_string_bytes(hash) }
+
+fn short_all(hashes: &[BlockHash]) -> String {
+    hashes.iter().map(short).collect::<Vec<_>>().join(",")
 }
 
 fn missing_dependencies(deps: &[BlockHash], stores: &dyn StoreReads) -> Vec<BlockHash> {

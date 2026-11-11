@@ -3,14 +3,16 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use comm::rust::peer_node::PeerNode;
 use models::rust::block_hash::BlockHash;
+use models::rust::casper::pretty_printer::PrettyPrinter;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 use super::ingest_view::IngestView;
+use super::LOG_TARGET;
 // The retriever's source label is part of the exported names that the
 // monitoring rules and dashboards read.
 use crate::rust::metrics_constants::{
-    BLOCK_REQUESTS_RETRIES_METRIC, BLOCK_REQUESTS_TOTAL_METRIC,
-    BLOCK_RETRIEVER_METRICS_SOURCE as REQUEST_METRICS_SOURCE,
+    BLOCK_INGEST_METRICS_SOURCE, BLOCK_INGEST_NEEDS_DROPPED_METRIC, BLOCK_REQUESTS_RETRIES_METRIC,
+    BLOCK_REQUESTS_TOTAL_METRIC, BLOCK_RETRIEVER_METRICS_SOURCE as REQUEST_METRICS_SOURCE,
 };
 
 /// First re-request interval. A view frozen on one missing block must recover
@@ -244,6 +246,13 @@ impl FetchScheduler {
             }
             return;
         }
+        tracing::debug!(
+            target: LOG_TARGET,
+            block = %PrettyPrinter::build_string_bytes(hash),
+            origin = ?origin,
+            height_hint = facts.height_hint,
+            "Block needed"
+        );
         let seq = self.next_seq;
         self.next_seq += 1;
         self.blocks.insert(hash.clone(), BlockNeed {
@@ -358,6 +367,17 @@ impl FetchScheduler {
             return;
         }
         if !need.announced {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %PrettyPrinter::build_string_bytes(hash),
+                "Need ended: no held block waits on it and no peer announced it"
+            );
+            metrics::counter!(
+                BLOCK_INGEST_NEEDS_DROPPED_METRIC,
+                "source" => BLOCK_INGEST_METRICS_SOURCE,
+                "reason" => "uncited"
+            )
+            .increment(1);
             self.remove_block(hash);
             return;
         }
@@ -470,12 +490,54 @@ impl FetchScheduler {
                 _ => BLOCK_REQUESTS_RETRIES_METRIC,
             };
             metrics::counter!(metric, "source" => REQUEST_METRICS_SOURCE).increment(1);
-            need.first_requested_ms.get_or_insert(now_ms);
+            let first_requested_ms = *need.first_requested_ms.get_or_insert(now_ms);
             need.last_requested_ms = Some(now_ms);
-            actions.extend(need.next_attempt(&hash, connected));
-            need.next_due_ms = now_ms
-                + unresolved_rerequest_interval_ms(need.attempts, UNRESOLVED_REREQUEST_ANCHOR_MS);
+            let attempt = need.next_attempt(&hash, connected);
+            for action in &attempt {
+                match action {
+                    FetchAction::RequestBlock { peer, .. } => tracing::debug!(
+                        target: LOG_TARGET,
+                        block = %PrettyPrinter::build_string_bytes(&hash),
+                        %peer,
+                        attempt = need.attempts + 1,
+                        "Requesting block"
+                    ),
+                    FetchAction::BroadcastHasBlockRequest(_) => tracing::debug!(
+                        target: LOG_TARGET,
+                        block = %PrettyPrinter::build_string_bytes(&hash),
+                        attempt = need.attempts + 1,
+                        "Asking every peer whether it holds the block"
+                    ),
+                    FetchAction::LookupLocal(_) | FetchAction::FetchStateRoot(_) => {}
+                }
+            }
+            actions.extend(attempt);
+            let interval_ms =
+                unresolved_rerequest_interval_ms(need.attempts, UNRESOLVED_REREQUEST_ANCHOR_MS);
+            need.next_due_ms = now_ms + interval_ms;
             need.attempts = need.attempts.saturating_add(1);
+            if need.attempts == LADDER_STEPS {
+                // Only a block this node needs is worth an info line: peers can
+                // announce any number of hashes that do not exist.
+                macro_rules! still_missing {
+                    ($level:ident) => {
+                        tracing::$level!(
+                            target: LOG_TARGET,
+                            block = %PrettyPrinter::build_string_bytes(&hash),
+                            origin = ?need.origin,
+                            height_hint = need.facts.height_hint,
+                            requests = LADDER_STEPS,
+                            missing_for_ms = now_ms.saturating_sub(first_requested_ms),
+                            interval_ms,
+                            "Block still missing; it is asked for at the slowest interval from now on"
+                        )
+                    };
+                }
+                match need.origin {
+                    NeedOrigin::Cited | NeedOrigin::Requested => still_missing!(info),
+                    NeedOrigin::Announced => still_missing!(debug),
+                }
+            }
             window -= 1;
         }
         actions
@@ -500,6 +562,19 @@ impl FetchScheduler {
                 .get(&seq)
                 .cloned()
                 .expect("the sequence number was read from the map");
+            // Debug, not info: peers announce freely, so this rate is theirs to set.
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %PrettyPrinter::build_string_bytes(&hash),
+                bound = MAX_UNCITED_NEEDS,
+                "Need dropped: more needs than the bound that no held block waits on"
+            );
+            metrics::counter!(
+                BLOCK_INGEST_NEEDS_DROPPED_METRIC,
+                "source" => BLOCK_INGEST_METRICS_SOURCE,
+                "reason" => "uncited-bound"
+            )
+            .increment(1);
             self.remove_block(&hash);
         }
     }
