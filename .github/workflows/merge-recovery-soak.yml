@@ -369,7 +369,16 @@ env:
   #   #173). Its only change since f617787 repins pyf1r3fly to 014d105, the
   #   merge of pyf1r3fly #11, whose tree equals the 9fd70f0 tested above.
   #   Verified: descends from f617787; diff is pyproject.toml and poetry.lock.
-  SYSTEM_INTEGRATION_REF: 012bfdac07539b86d58e1a5b2a8e4bab00389e75
+  # 2026-11-10: 012bfda -> 03f3fe8 (system-integration PR #175 head, which
+  #   lands with this change). ShardConfig(deploy_queue=True) runs a deploy
+  #   queue in front of each validator; test_load loads a queued shard and
+  #   takes test_shard_degradation's checks (that test is removed);
+  #   test_capacity ramps load until the shard stops keeping up; rust.conf
+  #   drops the overrides #918 makes node defaults and the parameter #917
+  #   removed. Verified: descends from 012bfda; 516 unit tests pass; test_load
+  #   passes locally on the subprocess provider against this branch's node
+  #   and queue binaries built before the rebase onto dev.
+  SYSTEM_INTEGRATION_REF: 03f3fe8af0b151b921ddcb5af17f8f1de2576329
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
