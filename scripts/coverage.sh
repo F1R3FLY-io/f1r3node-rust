@@ -31,12 +31,12 @@ fi
 #    block-storage's test-internals helpers): compiled for cross-crate test
 #    consumers only.
 # 2. node's process bootstrap and wiring (main.rs, runtime/, the proposer
-#    instance driver): they assemble and run the
-#    live server processes, reachable only from a booted node, which the
+#    instance driver) and deploy-queue's main.rs: they assemble and run the
+#    live server processes, reachable only from a running process, which the
 #    integration suites in system-integration cover. heartbeat_proposer.rs
 #    stays measured — it is logic, not wiring, and its unit tests prove it.
 # Must stay identical to the regex in .github/scripts/run-crate-tests.sh.
-ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|node/src/rust/runtime/|node/src/rust/instances/proposer_instance\.rs)'
+ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|deploy-queue/src/main\.rs|node/src/rust/runtime/|node/src/rust/instances/proposer_instance\.rs)'
 
 out="target/coverage"
 mkdir -p "$out"

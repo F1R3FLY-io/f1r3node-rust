@@ -26,7 +26,7 @@ if [ "$#" -gt 0 ]; then
 	crates=("$@")
 else
 	# Same set as the test jobs in ci.yml.
-	crates=(rspace_plus_plus rholang shared node models crypto block-storage comm graphz casper)
+	crates=(rspace_plus_plus rholang shared node models crypto block-storage comm graphz casper deploy-queue)
 fi
 
 echo "| Crate | Lines | Covered | Line coverage |"
