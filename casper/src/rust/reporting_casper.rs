@@ -107,7 +107,7 @@ impl ReportingCasper for RhoReporterCasper {
 
         let block_data = BlockData::from_block(block);
 
-        let seen_invalid_blocks = proto_util::replay_slashed_block_senders(&dag, block)
+        let seen_invalid_blocks = proto_util::block_slash_invalid_blocks(&dag, block)
             .map_err(|e| format!("Failed to read slash evidence: {}", e))?;
 
         Self::replay_deploys(
