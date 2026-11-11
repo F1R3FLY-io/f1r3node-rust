@@ -154,6 +154,7 @@ runs:
         SOAK_SIGNAL_FILE: /tmp/merge-recovery-soak/signal
         F1R3FLY_NODE_IMAGE: ${{ inputs.node_image }}
         F1R3FLY_NODE_BINARY: /tmp/rnode
+        F1R3FLY_DEPLOY_QUEUE_BINARY: /tmp/deploy-queue
         F1R3FLY_NODE_DEFAULTS_CONF: ${{ inputs.node_repo_dir }}/node/src/main/resources/defaults.conf
         SOAK_DURATION_SECONDS: ${{ inputs.duration_seconds }}
         SOAK_DEADLINE_EPOCH: ${{ inputs.deadline_epoch }}

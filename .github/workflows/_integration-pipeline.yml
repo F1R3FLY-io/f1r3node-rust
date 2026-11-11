@@ -669,7 +669,6 @@ jobs:
             integration-tests/test/tests/custom/ \
             integration-tests/test/tests/standalone/ \
             --deselect integration-tests/test/tests/custom/test_load.py \
-            --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
             --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
             --provider=${{ matrix.provider }} \
@@ -688,7 +687,8 @@ jobs:
   # The user-contract-concurrency suite runs as its own job: its tests share
   # one xdist group, so inside integration_tests they would serialize onto a
   # single worker and put ~30-40 wall-clock minutes of convergence rounds on
-  # that job's critical path. Both legs run on amd64 — the faster runners for
+  # that job's critical path. test_load, which loads a shard through deploy
+  # queues, runs after it on the same runners. Both legs run on amd64 — the faster runners for
   # a wall-clock-bound suite — covering both providers with two runners,
   # respecting the OCI daily instance-creation quota. The job name keeps the
   # "Integration Tests (arch-" prefix so the per-arch aggregators in ci.yml /
@@ -759,16 +759,17 @@ jobs:
           zcat /tmp/rust-node-docker.tar.gz | docker image load
           docker tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} ${{ env.DOCKER_IMAGE_NAME }}:latest
 
-      - name: Extract rnode binary from image (subprocess provider only)
+      - name: Extract rnode and deploy-queue binaries from image (subprocess provider only)
         if: matrix.provider == 'subprocess'
         shell: bash -ex {0}
         run: |
           docker create --name extract-rnode ${{ env.DOCKER_IMAGE_NAME }}:latest
           docker cp extract-rnode:/opt/docker/bin/node /tmp/rnode
-          chmod +x /tmp/rnode
+          docker cp extract-rnode:/opt/docker/bin/deploy-queue /tmp/deploy-queue
+          chmod +x /tmp/rnode /tmp/deploy-queue
           docker rm extract-rnode
           /tmp/rnode --version 2>/dev/null || true
-          ldd /tmp/rnode
+          ldd /tmp/rnode /tmp/deploy-queue
 
       - name: Install system-integration dependencies
         shell: bash -ex {0}
@@ -777,16 +778,22 @@ jobs:
           poetry lock --no-update
           poetry install --with integration
 
-      - name: Run UCC Suite (${{ matrix.provider }} provider)
+      # test_load runs after the UCC suite on the same runner: it builds its own
+      # shard with a deploy queue in front of each validator once the UCC shard
+      # is gone. No -x, so a UCC failure still reports test_load's verdict.
+      - name: Run UCC Suite and Load Test (${{ matrix.provider }} provider)
         shell: bash -ex {0}
         env:
           F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
           F1R3FLY_NODE_BINARY: /tmp/rnode
+          F1R3FLY_DEPLOY_QUEUE_BINARY: /tmp/deploy-queue
           F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node/src/main/resources/defaults.conf
+          LOAD_TEST_OUT: ${{ github.workspace }}/system-integration/integration-tests/test-load.jsonl
         run: |
           cd system-integration
           poetry run pytest \
             integration-tests/test/tests/custom/test_user_contract_concurrency.py \
+            integration-tests/test/tests/custom/test_load.py \
             --provider=${{ matrix.provider }} \
             -v --tb=short --instafail --timeout=1200
 
