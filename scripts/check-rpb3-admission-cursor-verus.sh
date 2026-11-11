@@ -1731,6 +1731,20 @@ proofs_rpb3_score_admission_bridge=(
   bridge_ezipper_witness_owner_scores
   bridge_ezipper_witness_child_completes
   bridge_ezipper_score_after_owner_witness
+  bridge_score_finish_selection_group_6_sound
+  bridge_score_source_step_group_6_top
+  bridge_score_finish_selection_group_6_empty_off_programs
+  bridge_score_finish_selection_group_6_earlier_groups_empty
+  bridge_score_source_step_group_6_preserves_exact
+  bridge_score_source_step_group_6_preserves_shape
+  bridge_score_source_step_group_6_preserves_driver_counts
+  bridge_score_source_step_group_6_preserves_par_source_trace
+  bridge_no_score_child_group_6_empty
+  bridge_structural_no_score_group_6_empty
+  bridge_score_finish_selection_group_6_var_child_before_wf
+  bridge_score_finish_selection_group_6_var_child_witness
+  bridge_score_finish_selection_group_6_owner_witness
+  bridge_score_finish_selection_group_6_ezipper_witness
 )
 proofs_rpb3_score_arena_source_refinement=(
   runtime_children_len_projects
@@ -1886,7 +1900,8 @@ check_proof_inventory() {
     exit 1
   fi
   nonconforming="$(rg -n '\bproof\s+fn\b' "$module_source" \
-    | rg -v "^[0-9]+:$proof_declaration_regex" || true)"
+    | rg -v "^[0-9]+:$proof_declaration_regex" \
+    | rg -v '^[0-9]+:\s*//' || true)"
   if [[ -n "$nonconforming" ]]; then
     printf '%s\n' "$nonconforming" >&2
     echo "rpb3-admission-cursor: non-public proof function in $module" >&2
@@ -2458,7 +2473,13 @@ for proof in bridge_primary_component_source_step_has_unique_finish \
   bridge_score_source_step_preserves_driver_counts \
   bridge_receive_complete_source_step_has_unique_finish \
   bridge_new_complete_source_step_matches_selected \
-  bridge_new_complete_source_step_has_unique_finish; do
+  bridge_new_complete_source_step_has_unique_finish \
+  bridge_score_finish_selection_group_6_sound \
+  bridge_score_source_step_group_6_top \
+  bridge_score_finish_selection_group_6_empty_off_programs \
+  bridge_score_finish_selection_group_6_var_child_witness \
+  bridge_score_finish_selection_group_6_owner_witness \
+  bridge_score_finish_selection_group_6_ezipper_witness; do
   if ! rg -q "^pub proof fn ${proof}\\(" \
     "$model_dir/rpb3_score_admission_bridge.rs"; then
     echo "rpb3-admission-cursor: missing score selector proof $proof" >&2

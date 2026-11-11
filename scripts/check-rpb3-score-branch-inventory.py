@@ -68,11 +68,25 @@ expected = [
     "bridge_receive_present_condition_step",
     "bridge_receive_absent_condition_step",
     "bridge_nonsemantic_step",
+    "bridge_var_score_step",
+    "bridge_epathmap_owner_score_step",
+    "bridge_ezipper_score_step",
 ]
-relation = step.findall(
+open_relation = section(
+    "pub open spec fn bridge_score_source_step(",
+    "pub enum BridgeScoreFinishSelection",
+)
+group_disjunct = re.compile(
+    r"\|\|\| bridge_score_source_step_group_6\(before, after\)"
+)
+if len(group_disjunct.findall(open_relation)) != 1:
+    raise SystemExit(
+        "score-source relation must contain the group 6 disjunct exactly once"
+    )
+relation = step.findall(open_relation) + step.findall(
     section(
+        "pub open spec fn bridge_score_source_step_group_6(",
         "pub open spec fn bridge_score_source_step(",
-        "pub enum BridgeScoreFinishSelection",
     )
 )
 if relation != expected:
@@ -82,13 +96,14 @@ if relation != expected:
         f"{len(set(relation))} distinct branches"
     )
 
+groups = 6
 selected = []
-for index in range(1, 6):
+for index in range(1, groups + 1):
     group = f"pub open spec fn bridge_score_finish_selection_group_{index}("
     proof = f"pub proof fn bridge_score_finish_selection_group_{index}_sound("
     next_group = (
         f"pub open spec fn bridge_score_finish_selection_group_{index + 1}("
-        if index < 5
+        if index < groups
         else "pub open spec fn bridge_score_finish_selected("
     )
     choices = candidate.findall(section(group, proof))
@@ -101,6 +116,20 @@ if selected != relation:
     raise SystemExit(
         "score finish selector differs from the source relation in branch names or order"
     )
+
+fold = section(
+    "pub open spec fn bridge_score_finish_selected(",
+    "pub proof fn ",
+)
+for index in range(1, groups + 1):
+    link = (
+        f"let selection_{index} = "
+        f"bridge_score_finish_selection_group_{index}(before, selection_{index - 1});"
+    )
+    if link not in fold:
+        raise SystemExit(f"score finish selection does not fold group {index}")
+if f"match selection_{groups} {{" not in fold:
+    raise SystemExit(f"score finish selection does not read selection_{groups}")
 
 print(
     f"RPB3 score branch inventory: {len(relation)} ordered source and selector branches agree"

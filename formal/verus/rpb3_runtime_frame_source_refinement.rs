@@ -2563,6 +2563,94 @@ pub open spec fn runtime_noscore_child_eof_accept(
     }
 }
 
+// Disabled: false with group 6, a scored EZipper top selects Unique; see the same-name lemma below.
+// pub proof fn runtime_emap_ezipper_score_groups_quiet(before: bridge::ScoreAdmissionBridge)
+//     requires
+//         before.admission.frames.len() > 0,
+//         before.admission.frames.last().family == admission::AdmissionFamily::Other,
+//         before.admission.frames.last().frame_kind == 1,
+//         before.admission.frames.last().program_type_id == 30
+//             || before.admission.frames.last().program_type_id == 32,
+//         bridge::bridge_emap_finish_step(before).is_none(),
+//     ensures
+//         bridge::bridge_score_finish_selection_group_1(
+//             before, bridge::BridgeScoreFinishSelection::NoCandidate,
+//         ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+//         bridge::bridge_score_finish_selection_group_2(
+//             before, bridge::BridgeScoreFinishSelection::NoCandidate,
+//         ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+//         bridge::bridge_score_finish_selection_group_3(
+//             before, bridge::BridgeScoreFinishSelection::NoCandidate,
+//         ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+//         bridge::bridge_score_finish_selection_group_4(
+//             before, bridge::BridgeScoreFinishSelection::NoCandidate,
+//         ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+//         bridge::bridge_score_finish_selection_group_5(
+//             before, bridge::BridgeScoreFinishSelection::NoCandidate,
+//         ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+//         bridge::bridge_score_finish_selected(before).is_none(),
+// {
+//     let empty = bridge::BridgeScoreFinishSelection::NoCandidate;
+//     assert(bridge::bridge_score_finish_selection_group_1(before, empty) == empty) by {
+//         assert(bridge::bridge_raw_par_step(before).is_none());
+//         assert(bridge::bridge_cost_atom_absent_step(before).is_none());
+//         assert(bridge::bridge_cost_atom_bytes_step(before).is_none());
+//         assert(bridge::bridge_cost_bound_step(before).is_none());
+//         assert(bridge::bridge_cost_atom_bound_forward_step(before).is_none());
+//         assert(bridge::bridge_cost_signature_step(before).is_none());
+//         assert(bridge::bridge_cost_region_step(before).is_none());
+//         assert(bridge::bridge_cost_token_stack_step(before).is_none());
+//         reveal(bridge::bridge_score_finish_selection_group_1);
+//     }
+//     assert(bridge::bridge_score_finish_selection_group_2(before, empty) == empty) by {
+//         assert(bridge::bridge_bundle_step(before).is_none());
+//         assert(bridge::bridge_if_step(before).is_none());
+//         assert(bridge::bridge_send_step(before).is_none());
+//         assert(bridge::bridge_match_step(before).is_none());
+//         assert(bridge::bridge_absent_specialized_constructor_step(before).is_none());
+//         assert(bridge::bridge_absent_connective_step(before).is_none());
+//         assert(bridge::bridge_receive_bind_step(before).is_none());
+//         assert(bridge::bridge_match_case_step(before).is_none());
+//         reveal(bridge::bridge_score_finish_selection_group_2);
+//     }
+//     assert(bridge::bridge_score_finish_selection_group_3(before, empty) == empty) by {
+//         assert(bridge::bridge_bool_oneof_step(before).is_none());
+//         assert(bridge::bridge_expr_atom_step(before).is_none());
+//         assert(bridge::bridge_expr_numeric_step(before).is_none());
+//         assert(bridge::bridge_expr_big_rational_step(before).is_none());
+//         assert(bridge::bridge_expr_fixed_point_step(before).is_none());
+//         assert(bridge::bridge_sys_auth_token_step(before).is_none());
+//         assert(bridge::bridge_new_empty_collections_step(before).is_none());
+//         assert(bridge::bridge_new_one_injection_step(before).is_none());
+//         reveal(bridge::bridge_score_finish_selection_group_3);
+//     }
+//     assert(bridge::bridge_score_finish_selection_group_4(before, empty) == empty) by {
+//         assert(bridge::bridge_new_one_absent_injection_step(before).is_none());
+//         assert(bridge::bridge_new_one_uri_step(before).is_none());
+//         assert(bridge::bridge_new_collections_step(before).is_none());
+//         assert(bridge::bridge_expr_payload_forward_step(before).is_none());
+//         assert(bridge::bridge_expr_structural_constructor(
+//             before.admission.frames.last().program_type_id,
+//         ).is_none());
+//         assert(bridge::bridge_expr_structural_step(before).is_none());
+//         assert(bridge::bridge_evar_step(before).is_none());
+//         assert(bridge::bridge_ordered_sequence_step(before).is_none());
+//         assert(bridge::bridge_emethod_step(before).is_none());
+//         reveal(bridge::bridge_score_finish_selection_group_4);
+//     }
+//     assert(bridge::bridge_score_finish_selection_group_5(before, empty) == empty) by {
+//         assert(bridge::bridge_connective_not_step(before).is_none());
+//         assert(bridge::bridge_connective_varref_step(before).is_none());
+//         assert(bridge::bridge_connective_collection_step(before).is_none());
+//         assert(bridge::bridge_unforgeable_bytes_step(before).is_none());
+//         assert(bridge::bridge_receive_present_condition_step(before).is_none());
+//         assert(bridge::bridge_receive_absent_condition_step(before).is_none());
+//         assert(bridge::bridge_nonsemantic_step(before).is_none());
+//         reveal(bridge::bridge_score_finish_selection_group_5);
+//     }
+//     reveal(bridge::bridge_score_finish_selected);
+// }
+
 pub proof fn runtime_emap_ezipper_score_groups_quiet(before: bridge::ScoreAdmissionBridge)
     requires
         before.admission.frames.len() > 0,
@@ -2571,6 +2659,7 @@ pub proof fn runtime_emap_ezipper_score_groups_quiet(before: bridge::ScoreAdmiss
         before.admission.frames.last().program_type_id == 30
             || before.admission.frames.last().program_type_id == 32,
         bridge::bridge_emap_finish_step(before).is_none(),
+        bridge::bridge_ezipper_score_step(before).is_none(),
     ensures
         bridge::bridge_score_finish_selection_group_1(
             before, bridge::BridgeScoreFinishSelection::NoCandidate,
@@ -2585,6 +2674,9 @@ pub proof fn runtime_emap_ezipper_score_groups_quiet(before: bridge::ScoreAdmiss
             before, bridge::BridgeScoreFinishSelection::NoCandidate,
         ) == bridge::BridgeScoreFinishSelection::NoCandidate,
         bridge::bridge_score_finish_selection_group_5(
+            before, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_score_finish_selection_group_6(
             before, bridge::BridgeScoreFinishSelection::NoCandidate,
         ) == bridge::BridgeScoreFinishSelection::NoCandidate,
         bridge::bridge_score_finish_selected(before).is_none(),
@@ -2647,6 +2739,11 @@ pub proof fn runtime_emap_ezipper_score_groups_quiet(before: bridge::ScoreAdmiss
         assert(bridge::bridge_nonsemantic_step(before).is_none());
         reveal(bridge::bridge_score_finish_selection_group_5);
     }
+    assert(bridge::bridge_score_finish_selection_group_6(before, empty) == empty) by {
+        assert(bridge::bridge_var_score_step(before).is_none());
+        assert(bridge::bridge_epathmap_owner_score_step(before).is_none());
+        reveal(bridge::bridge_score_finish_selection_group_6);
+    }
     reveal(bridge::bridge_score_finish_selected);
 }
 
@@ -2673,6 +2770,10 @@ pub proof fn runtime_noscore_emap_ezipper_selected_quiet(before: RuntimeFrameIma
         bridge::bridge_score_finish_selection_group_5(
             before.score, bridge::BridgeScoreFinishSelection::NoCandidate,
         ) == bridge::BridgeScoreFinishSelection::NoCandidate,
+        bridge::bridge_ezipper_score_step(before.score).is_none(),
+        bridge::bridge_score_finish_selection_group_6(
+            before.score, bridge::BridgeScoreFinishSelection::NoCandidate,
+        ) == bridge::BridgeScoreFinishSelection::NoCandidate,
         bridge::bridge_score_finish_selected(before.score).is_none(),
 {
     let child = before.score.admission.frames.last();
@@ -2688,8 +2789,17 @@ pub proof fn runtime_noscore_emap_ezipper_selected_quiet(before: RuntimeFrameIma
         assert(admission::admission_emap_source_summary(child, arena).is_some());
         assert(!admission::admission_emap_source_summary(child, arena).unwrap().0);
         bridge::bridge_emap_finish_source_complete_and_incomplete(before.score);
+    } else {
+        assert(parent.waiting_tag == Some(33u32));
+        assert(admission::admission_ezipper_expr_payload(child)
+            == Some(admission::AdmissionReturnedKind::ExprPayload {
+                score_present: false, canonical_fixed_point: true,
+                canonical_path_stable: false,
+            }));
+        assert(!child.seen.contains(0));
     }
     assert(bridge::bridge_emap_finish_step(before.score).is_none());
+    assert(bridge::bridge_ezipper_score_step(before.score).is_none());
     runtime_emap_ezipper_score_groups_quiet(before.score);
 }
 
@@ -4073,6 +4183,7 @@ pub proof fn runtime_raw_par_finish_selected_exact(before: bridge::ScoreAdmissio
             Some((next, _, _, _)) => Some(next),
         },
 {
+    bridge::bridge_score_finish_selection_group_6_empty_off_programs(before);
     assert(bridge::bridge_cost_atom_absent_step(before).is_none());
     assert(bridge::bridge_cost_atom_bytes_step(before).is_none());
     assert(bridge::bridge_cost_bound_step(before).is_none());
@@ -5607,6 +5718,63 @@ pub proof fn source_noscore_route_agrees_with_runtime(
     }
 }
 
+// Disabled: false with group 6, a scored EZipper top has a source step; see the same-name lemma below.
+// pub proof fn runtime_emap_ezipper_source_steps_quiet(before: bridge::ScoreAdmissionBridge)
+//     requires
+//         before.admission.frames.len() > 0,
+//         before.admission.frames.last().family == admission::AdmissionFamily::Other,
+//         before.admission.frames.last().frame_kind == 1,
+//         before.admission.frames.last().program_type_id == 30
+//             || before.admission.frames.last().program_type_id == 32,
+//         bridge::bridge_emap_finish_step(before).is_none(),
+//     ensures
+//         forall|after: bridge::ScoreAdmissionBridge|
+//             !bridge::bridge_score_source_step(before, after),
+// {
+//     assert(bridge::bridge_raw_par_step(before).is_none());
+//     assert(bridge::bridge_cost_atom_absent_step(before).is_none());
+//     assert(bridge::bridge_cost_atom_bytes_step(before).is_none());
+//     assert(bridge::bridge_cost_bound_step(before).is_none());
+//     assert(bridge::bridge_cost_atom_bound_forward_step(before).is_none());
+//     assert(bridge::bridge_cost_signature_step(before).is_none());
+//     assert(bridge::bridge_cost_region_step(before).is_none());
+//     assert(bridge::bridge_cost_token_stack_step(before).is_none());
+//     assert(bridge::bridge_bundle_step(before).is_none());
+//     assert(bridge::bridge_if_step(before).is_none());
+//     assert(bridge::bridge_send_step(before).is_none());
+//     assert(bridge::bridge_match_step(before).is_none());
+//     assert(bridge::bridge_absent_specialized_constructor_step(before).is_none());
+//     assert(bridge::bridge_absent_connective_step(before).is_none());
+//     assert(bridge::bridge_receive_bind_step(before).is_none());
+//     assert(bridge::bridge_match_case_step(before).is_none());
+//     assert(bridge::bridge_bool_oneof_step(before).is_none());
+//     assert(bridge::bridge_expr_atom_step(before).is_none());
+//     assert(bridge::bridge_expr_numeric_step(before).is_none());
+//     assert(bridge::bridge_expr_big_rational_step(before).is_none());
+//     assert(bridge::bridge_expr_fixed_point_step(before).is_none());
+//     assert(bridge::bridge_sys_auth_token_step(before).is_none());
+//     assert(bridge::bridge_new_empty_collections_step(before).is_none());
+//     assert(bridge::bridge_new_one_injection_step(before).is_none());
+//     assert(bridge::bridge_new_one_absent_injection_step(before).is_none());
+//     assert(bridge::bridge_new_one_uri_step(before).is_none());
+//     assert(bridge::bridge_new_collections_step(before).is_none());
+//     assert(bridge::bridge_expr_payload_forward_step(before).is_none());
+//     assert(bridge::bridge_expr_structural_constructor(
+//         before.admission.frames.last().program_type_id,
+//     ).is_none());
+//     assert(bridge::bridge_expr_structural_step(before).is_none());
+//     assert(bridge::bridge_evar_step(before).is_none());
+//     assert(bridge::bridge_ordered_sequence_step(before).is_none());
+//     assert(bridge::bridge_emethod_step(before).is_none());
+//     assert(bridge::bridge_connective_not_step(before).is_none());
+//     assert(bridge::bridge_connective_varref_step(before).is_none());
+//     assert(bridge::bridge_connective_collection_step(before).is_none());
+//     assert(bridge::bridge_unforgeable_bytes_step(before).is_none());
+//     assert(bridge::bridge_receive_present_condition_step(before).is_none());
+//     assert(bridge::bridge_receive_absent_condition_step(before).is_none());
+//     assert(bridge::bridge_nonsemantic_step(before).is_none());
+// }
+
 pub proof fn runtime_emap_ezipper_source_steps_quiet(before: bridge::ScoreAdmissionBridge)
     requires
         before.admission.frames.len() > 0,
@@ -5615,6 +5783,7 @@ pub proof fn runtime_emap_ezipper_source_steps_quiet(before: bridge::ScoreAdmiss
         before.admission.frames.last().program_type_id == 30
             || before.admission.frames.last().program_type_id == 32,
         bridge::bridge_emap_finish_step(before).is_none(),
+        bridge::bridge_ezipper_score_step(before).is_none(),
     ensures
         forall|after: bridge::ScoreAdmissionBridge|
             !bridge::bridge_score_source_step(before, after),
@@ -5661,6 +5830,9 @@ pub proof fn runtime_emap_ezipper_source_steps_quiet(before: bridge::ScoreAdmiss
     assert(bridge::bridge_receive_present_condition_step(before).is_none());
     assert(bridge::bridge_receive_absent_condition_step(before).is_none());
     assert(bridge::bridge_nonsemantic_step(before).is_none());
+    assert(bridge::bridge_var_score_step(before).is_none());
+    assert(bridge::bridge_epathmap_owner_score_step(before).is_none());
+    reveal(bridge::bridge_score_source_step_group_6);
 }
 
 pub open spec fn source_unchanged_finish_result(
