@@ -263,7 +263,7 @@ The node limits these checks. It runs at most 2 checks at a time, and one at a t
 3. **Compute LCA**: Lowest Common Ancestor of all latest messages (iterative LUCA-many algorithm)
 4. **Score**: BFS from each latest message up to LCA. Each validator's stake weight flows down through the main-parent chain.
 5. **Rank recursively**: Starting from LCA, greedily pick the highest-scored child. Repeat until no higher-scored descendants exist.
-6. **Apply depth filter**: Main parent (rank 1) always included. Secondary parents filtered to within `max_parent_depth` of main parent.
+6. **Apply depth filter**: Main parent (rank 1) always included. The kept parents span at most `max_parent_depth` heights around the main parent; a parent outside that window is dropped, including the proposer's own tip.
 
 ### Why LMD GHOST?
 
@@ -302,7 +302,7 @@ The merge scope is bounded by the finalized floor of the block. The floor is a p
 
 - Merge cost: O(visible_blocks^2 x deploys^2) for conflict resolution
 - Floor scoping keeps visible_blocks bounded
-- **Δ-backstop**: When the floor distance `Δ = num(maxParent) − num(floor)` exceeds the cap (`MAX_FLOOR_DISTANCE_BLOCKS` = 256), `compute_parents_post_state` refuses the merge with a deterministic error keyed on Δ alone. On propose the round parks and retries after finality advances. On validate an over-Δ block is deterministically invalid. The merge never substitutes a lossy single-parent post-state (R-BACKSTOP — the former fallback dropped co-parent writes, the ~400-block bug).
+- **Δ-backstop**: When the floor distance `Δ = num(maxParent) − num(floor)` exceeds the cap (`MAX_FLOOR_DISTANCE_BLOCKS` = 256), `compute_parents_post_state` refuses the merge with a deterministic error keyed on Δ alone. On validate an over-Δ block is deterministically invalid. On propose, a proposal that may be empty becomes a single-parent witness block: it declares only fork choice's main parent, cites every latest message, and carries no user deploys, so it builds no merge. A proposal that must carry deploys is held (`FloorDistanceHold`, HTTP 503 `floor_distance_hold`) until finality advances. The merge never substitutes a lossy single-parent post-state (R-BACKSTOP — the former fallback dropped co-parent writes, the ~400-block bug). A witness is not such a substitution: it declares one parent, so there is no co-parent write to drop.
 - The visible-scope size (`MAX_PARENT_MERGE_SCOPE_BLOCKS` = 512) is an advisory metric only. Branch width is not node-deterministic, so scope size never gates admission.
 
 ### Validation progress evidence
