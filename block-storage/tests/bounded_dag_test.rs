@@ -187,6 +187,38 @@ async fn legacy_migration_and_restart_rebuild_only_the_hot_window() {
 }
 
 #[tokio::test]
+async fn a_block_outside_the_window_is_held_and_satisfies_its_dependents() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut manager = lmdb_manager(directory.path());
+    let storage = BlockDagKeyValueStorage::new_with_hot_window(manager.as_mut(), 1)
+        .await
+        .unwrap();
+    let genesis = block(0, vec![]);
+    storage.insert(&genesis, InsertMode::Approved).unwrap();
+    let mut chain = vec![genesis];
+    for height in 1..10 {
+        let next = block(height, vec![chain.last().unwrap().block_hash.clone()]);
+        storage.insert(&next, InsertMode::Approved).unwrap();
+        chain.push(next);
+    }
+    assert!(
+        storage
+            .get_representation()
+            .unwrap()
+            .resident_counts()
+            .blocks
+            < chain.len()
+    );
+    let evicted = &chain[1].block_hash;
+    assert!(storage.contains(evicted).unwrap());
+    assert!(storage
+        .unsatisfied_dependencies(std::slice::from_ref(evicted))
+        .unwrap()
+        .is_empty());
+    assert!(storage.is_dependency_satisfied(evicted).unwrap());
+}
+
+#[tokio::test]
 async fn invalid_future_and_failed_publication_preserve_the_valid_frontier() {
     let directory = tempfile::tempdir().unwrap();
     let mut manager = lmdb_manager(directory.path());

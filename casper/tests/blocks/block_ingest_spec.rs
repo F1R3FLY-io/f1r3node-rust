@@ -149,7 +149,7 @@ impl Casper for AcceptingCasper {
     }
 
     fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
-        Ok(self.dag.contains(hash))
+        Ok(self.dag.contains(hash)?)
     }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.approved) }
@@ -454,7 +454,8 @@ async fn blocks_are_classified_validated_and_released_while_every_send_is_stuck(
         wait_until(Duration::from_secs(30), || node
             .dag
             .contains(&parent.block_hash)
-            && node.dag.contains(&child.block_hash))
+            .unwrap()
+            && node.dag.contains(&child.block_hash).unwrap())
         .await,
         "a ready block is validated and its waiting child released while every send is stuck"
     );
@@ -476,7 +477,7 @@ async fn no_request_is_sent_once_every_needed_block_has_arrived() {
     assert!(
         wait_until(Duration::from_secs(30), || parents
             .iter()
-            .all(|parent| node.dag.contains(&parent.block_hash)))
+            .all(|parent| node.dag.contains(&parent.block_hash).unwrap()))
         .await,
         "every needed block is delivered and validated"
     );
@@ -539,7 +540,8 @@ async fn a_valid_block_found_in_the_store_is_checked_and_validated() {
     assert!(
         wait_until(Duration::from_secs(10), || node
             .dag
-            .contains(&block.block_hash))
+            .contains(&block.block_hash)
+            .unwrap())
         .await,
         "a block read from the store is admitted and validated"
     );

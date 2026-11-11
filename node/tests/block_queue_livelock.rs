@@ -461,7 +461,7 @@ impl Casper for StubCasper {
     }
 
     fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
-        Ok(self.dag.contains(hash))
+        Ok(self.dag.contains(hash)?)
     }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.approved) }

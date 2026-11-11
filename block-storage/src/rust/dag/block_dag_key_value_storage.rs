@@ -1331,8 +1331,12 @@ impl BlockDagKeyValueStorage {
         })
     }
 
-    pub fn contains(&self, hash: &BlockHash) -> bool {
-        self.block_metadata_index.read().contains(hash)
+    /// The block is in the DAG, whether or not it is still resident.
+    pub fn contains(&self, hash: &BlockHash) -> Result<bool, KvStoreError> {
+        match &self.persistence {
+            Some(persistence) => Ok(persistence.history.membership(hash, u64::MAX)?.is_some()),
+            None => Ok(self.block_metadata_index.read().contains(hash)),
+        }
     }
 
     /// A block that depends on `hash` need not wait for it: the block is in
@@ -1350,11 +1354,12 @@ impl BlockDagKeyValueStorage {
         &self,
         hashes: &[BlockHash],
     ) -> Result<Vec<BlockHash>, KvStoreError> {
-        let absent: Vec<BlockHash> = hashes
-            .iter()
-            .filter(|hash| !self.contains(hash))
-            .cloned()
-            .collect();
+        let mut absent = Vec::new();
+        for hash in hashes {
+            if !self.contains(hash)? {
+                absent.push(hash.clone());
+            }
+        }
         if absent.is_empty() {
             return Ok(absent);
         }

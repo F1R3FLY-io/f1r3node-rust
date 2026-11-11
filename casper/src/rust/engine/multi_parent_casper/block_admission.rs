@@ -30,7 +30,7 @@ pub(crate) fn admit_dag_contains(
     this: &MultiParentCasperImpl,
     hash: &BlockHash,
 ) -> Result<bool, CasperError> {
-    Ok(this.block_dag_storage.contains(hash))
+    Ok(this.block_dag_storage.contains(hash)?)
 }
 
 pub(crate) fn admit_get_approved_block(
