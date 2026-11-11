@@ -857,7 +857,6 @@ pub fn merge(
         // formation-time duplicate flag. The record is consensus content —
         // it travels to the block body as-is.
         Vec<RejectedDeploy>,
-        Vec<(Bytes, BlockHash)>,
         // User sigs whose chains this merge APPLIED from scope: their
         // effects are in the returned state, so none of them may also be
         // executed fresh on top of it. The merge is the only place this
@@ -2035,12 +2034,7 @@ pub fn merge(
             n_rejected_slash = rejected_slashes.len());
     }
 
-    Ok((
-        new_state,
-        rejected_user_deploys,
-        rejected_slashes,
-        applied_user_sigs,
-    ))
+    Ok((new_state, rejected_user_deploys, applied_user_sigs))
 }
 
 #[cfg(test)]
