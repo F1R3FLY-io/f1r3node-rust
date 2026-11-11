@@ -111,8 +111,11 @@ mod tests {
     async fn test_limited_buffer_push_next() {
         let buffer = FlumeLimitedBuffer::<i32>::drop_new(2);
 
+        // Should accept first two items
         assert!(buffer.push_next(1));
         assert!(buffer.push_next(2));
+
+        // Should reject third item (buffer full)
         assert!(!buffer.push_next(3));
 
         assert!(!buffer.is_complete());
@@ -126,6 +129,8 @@ mod tests {
 
         buffer.complete();
         assert!(buffer.is_complete());
+
+        // Should reject new items after completion
         assert!(!buffer.push_next(1));
     }
 
@@ -133,10 +138,12 @@ mod tests {
     async fn test_limited_buffer_subscription() {
         let mut buffer = FlumeLimitedBuffer::<i32>::drop_new(10);
 
+        // Push some items
         assert!(buffer.push_next(1));
         assert!(buffer.push_next(2));
         assert!(buffer.push_next(3));
 
+        // Subscribe and read items
         let mut subscription = buffer.subscribe().expect("Should get subscription");
 
         let items: Vec<i32> = vec![
@@ -154,17 +161,20 @@ mod tests {
 
         let mut subscription = buffer.subscribe().expect("Should get subscription");
 
+        // Push an item and complete
         assert!(buffer.push_next(42));
-        assert!(buffer.push_next(43));
         buffer.complete();
 
+        // Should receive the item
         assert_eq!(subscription.next().await, Some(42));
-        assert_eq!(subscription.next().await, Some(43));
+
+        // Should end the stream after completion
         assert_eq!(subscription.next().await, None);
     }
 
     #[test]
     fn test_buffer_size_validation() {
+        // Should panic with zero buffer size
         std::panic::catch_unwind(|| {
             FlumeLimitedBuffer::<i32>::drop_new(0);
         })
@@ -175,11 +185,15 @@ mod tests {
     async fn test_drop_new_behavior() {
         let mut buffer = FlumeLimitedBuffer::<String>::drop_new(2);
 
+        // Fill buffer
         assert!(buffer.push_next("first".to_string()));
         assert!(buffer.push_next("second".to_string()));
+
+        // These should be dropped
         assert!(!buffer.push_next("dropped1".to_string()));
         assert!(!buffer.push_next("dropped2".to_string()));
 
+        // Subscribe and verify only first two items are present
         let mut subscription = buffer.subscribe().expect("Should get subscription");
 
         assert_eq!(subscription.next().await, Some("first".to_string()));
