@@ -616,12 +616,12 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::StatusCode;
+    use models::rust::deploy_request::DeployRequest;
     use tower::ServiceExt;
 
     use super::*;
     use crate::rust::api::web_api::{
-        ApiStatus, DataAtNameByBlockHashRequest, DeployRequest, DeployResponse, RhoDataResponse,
-        ViewMode, WebApi,
+        ApiStatus, DataAtNameByBlockHashRequest, DeployResponse, RhoDataResponse, ViewMode, WebApi,
     };
 
     /// Stub WebApi that returns sample DeployResponse for testing.
@@ -1034,6 +1034,7 @@ mod router_tests {
     use comm::rust::peer_node::{NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::ConnectionsCell;
     use comm::rust::rp::rp_conf::{RPConf, RPConfCell};
+    use models::rust::deploy_request::DeployRequest;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
     use tower::ServiceExt;
@@ -1043,7 +1044,7 @@ mod router_tests {
     use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
     use crate::rust::api::web_api::{
         ApiStatus, BalanceResponse, BondStatusResponse, DeployFinalizationStatusJson,
-        DeployRequest, DeployerIdentity, EpochResponse, EpochRewardsResponse, EstimateCostResponse,
+        DeployerIdentity, EpochResponse, EpochRewardsResponse, EstimateCostResponse,
         PendingDeploysJson, PrepareResponse, RegistryResponse, RhoExpr, ValidatorInfo,
         ValidatorStatusResponse, ValidatorsResponse, VersionInfo, ViewMode, WebApi,
     };
@@ -1126,6 +1127,10 @@ mod router_tests {
                 is_ready: self.is_ready,
                 current_epoch: 0,
                 epoch_length: 100,
+                latest_block_number: Some(7),
+                deploy_lifespan: Some(50),
+                max_user_deploys_per_block: Some(4),
+                max_parent_depth: Some(25),
             })
         }
 

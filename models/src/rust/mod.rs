@@ -6,6 +6,8 @@ pub mod bundle_ops;
 pub mod casper;
 pub mod equivocation_record;
 pub mod deploy_parameters;
+pub mod deploy_request;
+pub mod deploy_window;
 pub mod host_work;
 pub mod normalizer_env;
 pub mod par_ext;

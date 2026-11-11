@@ -92,7 +92,7 @@ if out="$("$SCRIPT" "$tmp" 2>&1)"; then
 	printf '::error::expected incomplete default coverage to fail\n%s\n' "$out"
 	fail=1
 fi
-for crate in rspace_plus_plus rholang shared node models crypto block-storage comm graphz casper; do
+for crate in rspace_plus_plus rholang shared node models crypto block-storage comm graphz casper deploy-queue; do
 	check "| $crate |" "$out"
 done
 

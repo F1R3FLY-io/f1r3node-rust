@@ -144,6 +144,12 @@ impl From<KvStoreError> for CasperError {
     }
 }
 
+impl From<models::rust::deploy_window::NegativeDeployLifespan> for CasperError {
+    fn from(error: models::rust::deploy_window::NegativeDeployLifespan) -> Self {
+        CasperError::RuntimeError(error.to_string())
+    }
+}
+
 impl From<ReplayFailure> for CasperError {
     fn from(error: ReplayFailure) -> Self { CasperError::ReplayFailure(error) }
 }

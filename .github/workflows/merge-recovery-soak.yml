@@ -369,7 +369,16 @@ env:
   #   #173). Its only change since f617787 repins pyf1r3fly to 014d105, the
   #   merge of pyf1r3fly #11, whose tree equals the 9fd70f0 tested above.
   #   Verified: descends from f617787; diff is pyproject.toml and poetry.lock.
-  SYSTEM_INTEGRATION_REF: 012bfdac07539b86d58e1a5b2a8e4bab00389e75
+  # 2026-11-10: 012bfda -> 03f3fe8 (system-integration PR #175 head, which
+  #   lands with this change). ShardConfig(deploy_queue=True) runs a deploy
+  #   queue in front of each validator; test_load loads a queued shard and
+  #   takes test_shard_degradation's checks (that test is removed);
+  #   test_capacity ramps load until the shard stops keeping up; rust.conf
+  #   drops the overrides #918 makes node defaults and the parameter #917
+  #   removed. Verified: descends from 012bfda; 516 unit tests pass; test_load
+  #   passes locally on the subprocess provider against this branch's node
+  #   and queue binaries built before the rebase onto dev.
+  SYSTEM_INTEGRATION_REF: 03f3fe8af0b151b921ddcb5af17f8f1de2576329
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -2372,9 +2381,10 @@ jobs:
           jemalloc="/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2"
           container_id="$(docker create "$DOCKER_IMAGE_NAME:latest")"
           docker cp "$container_id:/opt/docker/bin/node" /tmp/rnode.bin
+          docker cp "$container_id:/opt/docker/bin/deploy-queue" /tmp/deploy-queue
           docker cp -L "$container_id:$jemalloc" /tmp/libjemalloc.so.2
           docker rm "$container_id"
-          chmod +x /tmp/rnode.bin
+          chmod +x /tmp/rnode.bin /tmp/deploy-queue
           printf '%s\n' \
             '#!/bin/sh' \
             'LD_PRELOAD="/tmp/libjemalloc.so.2${LD_PRELOAD:+:$LD_PRELOAD}"' \
@@ -2512,6 +2522,41 @@ jobs:
             [ ! -d "$directory" ] || find "$directory" -mindepth 1 -delete
           done
 
+      # Once per window, ramp mixed load through deploy queues until the shard
+      # stops keeping up (test_capacity). Refusals and expiries are outcomes;
+      # the step fails only when the shard stalls or breaks, which the queues
+      # exist to prevent. The segments get what is left of the window.
+      - name: Capacity escalation
+        id: capacity
+        if: always() && needs.schedule_gate.outputs.preflight_only != 'true' && needs.schedule_gate.outputs.canary != 'true' && (needs.schedule_gate.outputs.skip_integration_preflight == 'true' || (steps.integration_preflight.outputs.result == 'passed' && steps.reset_telemetry.outcome == 'success'))
+        env:
+          F1R3FLY_NODE_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          F1R3FLY_NODE_DEFAULTS_CONF: ${{ github.workspace }}/node-under-test/node/src/main/resources/defaults.conf
+          CAPACITY_WORKLOAD: mix
+          CAPACITY_RESUBMIT: "1"
+          CAPACITY_RATES: "2,4,8,16,32"
+          CAPACITY_HOLD_SECONDS: "300"
+          CAPACITY_OUT: /tmp/merge-recovery-soak/capacity/capacity.jsonl
+          BUDGET_SECONDS: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+        shell: bash -euo pipefail {0}
+        run: |
+          started="$(date +%s)"
+          mkdir -p "$(dirname "$CAPACITY_OUT")"
+          set +e
+          (cd system-integration && poetry run pytest \
+            integration-tests/test/tests/custom/test_capacity.py \
+            --provider=docker -v --tb=short --instafail --timeout=7200)
+          status=$?
+          set -e
+          remaining="$(( BUDGET_SECONDS - ($(date +%s) - started) ))"
+          echo "remaining_seconds=$remaining" >> "$GITHUB_OUTPUT"
+          if [ -s "$CAPACITY_OUT" ]; then
+            jq -r 'select(.stage == "summary")
+              | "**Capacity escalation:** \(if .stalled_or_broken then "STALLED OR BROKE" else "no stall" end); no pressure up to \(.sustained_without_pressure)/s, peak \(.peak_finalized_rate)/s finalized; accepted \(.accepted), finalized \(.finalized), refused \(.refused), abandoned \(.abandoned), expired \(.expired)"' \
+              "$CAPACITY_OUT" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
       # The soak runs as consecutive segments sharing one output directory, so
       # results can be published part-way through. The script resumes from its
       # state file each time — counters, the original start time and iteration
@@ -2529,7 +2574,7 @@ jobs:
         with:
           label: segment-1
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_1 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2554,7 +2599,7 @@ jobs:
         with:
           label: segment-2
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_2 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2579,7 +2624,7 @@ jobs:
         with:
           label: segment-3
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_3 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2604,7 +2649,7 @@ jobs:
         with:
           label: segment-4
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_4 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2629,7 +2674,7 @@ jobs:
         with:
           label: segment-5
           deadline_epoch: ${{ needs.schedule_gate.outputs.checkpoint_5 }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2667,7 +2712,7 @@ jobs:
           # verdict and appends the run to its history series.
           # A gate restart soaks a full window, so it has no deadline either.
           deadline_epoch: ${{ needs.schedule_gate.outputs.retry_attempt != '0' && needs.schedule_gate.outputs.gate == '' && needs.schedule_gate.outputs.end_epoch || '' }}
-          duration_seconds: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          duration_seconds: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           target_ref: ${{ needs.schedule_gate.outputs.target_ref }}
           target_sha: ${{ steps.target.outputs.sha }}
           trigger_source: ${{ needs.schedule_gate.outputs.trigger_source }}
@@ -2700,7 +2745,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           SOAK_KIND: ${{ needs.schedule_gate.outputs.kind }}
-          DURATION_SECONDS: ${{ steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
+          DURATION_SECONDS: ${{ steps.capacity.outputs.remaining_seconds || steps.integration_preflight.outputs.remaining_seconds || needs.schedule_gate.outputs.duration_seconds }}
           RETRY_ATTEMPT: ${{ needs.schedule_gate.outputs.retry_attempt }}
           WINDOW_SECONDS: ${{ needs.schedule_gate.outputs.kind == 'weekend' && '216000' || '79200' }}
           DASHBOARD_URL: https://f1r3fly-io.github.io/f1r3node-rust/

@@ -105,7 +105,7 @@ fn deploy_is_block_expired(
     latest_block_number: i64,
     deploy_lifespan: i64,
 ) -> Result<bool, CasperError> {
-    Ok(!crate::rust::util::deploy_window::is_open(
+    Ok(!models::rust::deploy_window::is_open(
         valid_after_block_number,
         latest_block_number,
         deploy_lifespan,
@@ -380,6 +380,21 @@ impl std::fmt::Display for DeployValidationError {
 }
 
 impl std::error::Error for DeployValidationError {}
+
+/// A deploy whose block window or expiration timestamp has closed: no block
+/// can include it any more.
+#[derive(Debug)]
+pub struct DeployExpiredError {
+    pub message: String,
+}
+
+impl std::fmt::Display for DeployExpiredError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for DeployExpiredError {}
 
 #[derive(Debug)]
 pub struct ProposeReadOnlyError;
@@ -685,26 +700,23 @@ impl BlockAPI {
                 } else {
                     Ok(())
                 }
-            })
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if d.data.is_expired_at(now) {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            d.data.expiration_timestamp
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
             });
 
         // Return early if validation fails
         validation_result.map_err(|e| eyre::Report::new(e))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| eyre::eyre!("system clock is before the Unix epoch: {}", e))?
+            .as_millis() as i64;
+        if d.data.is_expired_at(now) {
+            return Err(eyre::Report::new(DeployExpiredError {
+                message: format!(
+                    "Deploy has expired: expirationTimestamp={:?} is in the past.",
+                    d.data.expiration_timestamp
+                ),
+            }));
+        }
 
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
@@ -753,7 +765,7 @@ impl BlockAPI {
                 next_block_number,
                 deploy_lifespan,
             )? {
-                return Err(eyre::Report::new(DeployValidationError {
+                return Err(eyre::Report::new(DeployExpiredError {
                     message: format!(
                         "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
                         d.data.valid_after_block_number, next_block_number, deploy_lifespan

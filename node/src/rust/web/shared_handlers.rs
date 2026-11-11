@@ -11,15 +11,17 @@ use axum::http::request::Parts;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
-    BlockNotFoundError, DeployNotFoundError, DeployValidationError, ExploratoryDeployReadOnlyError,
-    ExploratoryDeployRejection, InvalidHashError, InvalidPublicKeyError, LatestBlockMessageError,
-    NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal, ProposeRefusedError,
+    BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
+    ExploratoryDeployReadOnlyError, ExploratoryDeployRejection, InvalidHashError,
+    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+    ProposeRefusal, ProposeRefusedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
 use casper::rust::errors::CasperError;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
+use models::rust::deploy_request::DeployRequest;
 use rholang::rust::interpreter::errors::InterpreterError;
 use serde::Serialize;
 use serde_json::json;
@@ -30,8 +32,7 @@ use utoipa::ToSchema;
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DeployRequest, ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode,
-    WebApi,
+    ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode, WebApi,
 };
 
 #[derive(Clone)]
@@ -79,7 +80,7 @@ pub struct ApiErrorResponse {
     /// **400 Bad Request:**
     /// `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`,
     /// `invalid_hash`, `illegal_argument`, `rholang_bad_term`,
-    /// `readonly_node_required`,
+    /// `readonly_node_required`, `deploy_expired`,
     ///
     /// **404 Not Found:**
     /// `deploy_not_found`, `block_not_found`, `endpoint_not_found`
@@ -91,7 +92,7 @@ pub struct ApiErrorResponse {
     /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
-    /// `no_new_deploys`
+    /// `no_new_deploys`, `duplicate_deploy`
     ///
     /// **500 Internal Server Error:**
     /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
@@ -292,6 +293,9 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                     (StatusCode::NOT_FOUND, "block_not_found", cause.to_string())
                 }
             };
+        }
+        if cause.downcast_ref::<DeployExpiredError>().is_some() {
+            return (StatusCode::BAD_REQUEST, "deploy_expired", cause.to_string());
         }
         if cause.downcast_ref::<DeployValidationError>().is_some() {
             return (
@@ -500,7 +504,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 400, description = "Malformed request body, invalid field value, or a closed validity window (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `deploy_expired`)", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
@@ -726,7 +730,7 @@ mod tests {
     mod classification {
         use axum::http::StatusCode;
         use casper::rust::api::block_api::{
-            BlockNotFoundError, DeployNotFoundError, DeployValidationError,
+            BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
             ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
             LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal,
             ProposeRefusedError,
@@ -776,6 +780,12 @@ mod tests {
                     message: "bad deploy".to_string(),
                 }),
                 (StatusCode::BAD_REQUEST, "illegal_argument".to_string())
+            );
+            assert_eq!(
+                classify(DeployExpiredError {
+                    message: "window closed".to_string(),
+                }),
+                (StatusCode::BAD_REQUEST, "deploy_expired".to_string())
             );
             assert_eq!(
                 classify(ProposeReadOnlyError),

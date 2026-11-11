@@ -350,7 +350,7 @@ background_pids+=("$pid_ci")
     else
         crates_to_test=(
             crypto shared models graphz block-storage
-            rspace_plus_plus comm rholang casper node
+            rspace_plus_plus comm rholang casper node deploy-queue
         )
     fi
 

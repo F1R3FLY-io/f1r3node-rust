@@ -65,6 +65,36 @@ pub enum F1r3flyEvent {
     ApprovedBlockReceived(ApprovedBlockReceived),
     EnteredRunningState(EnteredRunningState),
     NodeStarted(NodeStarted),
+    DeployVerdicts(DeployVerdicts),
+}
+
+/// Every verdict one settle wrote, in one event: a settle after a long
+/// finality jump can decide hundreds of deploys at once.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeployVerdicts {
+    pub verdicts: Vec<DeployVerdict>,
+}
+
+/// The terminal state the node settled for a deploy. Written once; a deploy
+/// never receives a second verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeployVerdictState {
+    Finalized,
+    Expired,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeployVerdict {
+    pub deploy_id: String,
+    pub state: DeployVerdictState,
+    pub rejection_count: u32,
+    /// The deploy's latest DAG-visible inclusion; `None` for a deploy no
+    /// block ever included.
+    pub block_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +288,10 @@ impl F1r3flyEvent {
     }
 
     pub fn node_started(address: String) -> Self { Self::NodeStarted(NodeStarted { address }) }
+
+    pub fn deploy_verdicts(verdicts: Vec<DeployVerdict>) -> Self {
+        Self::DeployVerdicts(DeployVerdicts { verdicts })
+    }
 }
 
 #[cfg(test)]

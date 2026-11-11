@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package deployqueue.v1;
+
+// Served by the per-validator deploy queue next to `casper.v1.DeployService`.
+service DeployQueue {
+  // Streams every state change of the named deploys, starting with each
+  // deploy's current state. The stream ends once every named deploy is
+  // terminal. A deploy the queue does not hold is reported once as
+  // `unknown` and then dropped from the stream.
+  rpc watchDeploys(WatchDeploysQuery) returns (stream DeployTransition) {}
+}
+
+message WatchDeploysQuery {
+  repeated bytes deploySigs = 1;
+}
+
+message DeployTransition {
+  bytes deploySig = 1;
+  // The node's status vocabulary: Pending, Finalized, Failed, Expired, or
+  // `unknown` for a deploy the queue does not hold.
+  string state = 2;
+  // The queue's own lifecycle state: queued, submitted, in-block,
+  // finalized, failed, expired, rejected.
+  string queueState = 3;
+  uint32 rejectionCount = 4;
+  optional bytes latestBlockHash = 5;
+  // Why the deploy reached a queue-decided terminal state.
+  string detail = 6;
+}

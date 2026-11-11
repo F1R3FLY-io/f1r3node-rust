@@ -46,7 +46,7 @@ COPY rust-toolchain.toml ./
 
 # Create directory structure and copy only Cargo.toml files from all workspace members
 # This allows us to cache dependencies separately from source code
-RUN mkdir -p models crypto rholang rholang/src/main/tree_sitter shared casper comm rspace++ rspace++/libs/rspace_rhotypes block-storage graphz node
+RUN mkdir -p models crypto rholang rholang/src/main/tree_sitter shared casper comm rspace++ rspace++/libs/rspace_rhotypes block-storage graphz node deploy-queue
 
 # Now copy all source code (this layer invalidates when source changes)
 # Copy in dependency order to maximize cache hits - base dependencies first
@@ -61,6 +61,7 @@ COPY comm/ ./comm/
 COPY rho-pure-eval/ ./rho-pure-eval/
 COPY rholang/ ./rholang/
 COPY node/ ./node/
+COPY deploy-queue/ ./deploy-queue/
 COPY scripts/supply-chain/ ./scripts/supply-chain/
 COPY scripts/casper-soak/ ./scripts/casper-soak/
 COPY scripts/file-read-service/ ./scripts/file-read-service/
@@ -93,10 +94,12 @@ RUN --network=none \
         *) export RUSTFLAGS="-C target-feature=+aes,+sse2" ;; \
     esac && \
     if [ "${PROFILING_BUILD}" = "1" ]; then export RUSTFLAGS="${RUSTFLAGS} -C force-frame-pointers=yes"; fi && \
-    F1R3NODE_BUILD_ID="${VERSION}" xx-cargo build --frozen --release -p node --target-dir ./build && \
+    F1R3NODE_BUILD_ID="${VERSION}" xx-cargo build --frozen --release -p node -p deploy-queue --target-dir ./build && \
     xx-verify "./build/${TARGET_TRIPLE}/release/node" && \
+    xx-verify "./build/${TARGET_TRIPLE}/release/deploy-queue" && \
     cp "./build/${TARGET_TRIPLE}/release/node" /build/node_binary && \
-    chmod +x /build/node_binary
+    cp "./build/${TARGET_TRIPLE}/release/deploy-queue" /build/deploy_queue_binary && \
+    chmod +x /build/node_binary /build/deploy_queue_binary
 
 # ============================================================================
 # Stage 2: Runtime base - Install runtime dependencies (cached independently)
@@ -158,6 +161,7 @@ RUN mkdir -p /opt/docker/bin
 # resource files need to be staged into the runtime image.
 
 COPY --from=builder --chmod=755 /build/node_binary /opt/docker/bin/node
+COPY --from=builder --chmod=755 /build/deploy_queue_binary /opt/docker/bin/deploy-queue
 
 # Create entrypoint script for Rust (adapted from docker-entrypoint.sh)
 # Copy the Rust-specific entrypoint script from node directory

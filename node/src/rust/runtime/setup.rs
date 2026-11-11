@@ -918,7 +918,23 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         });
 
         tokio::spawn(async move {
-            while let Some(event) = event_stream.next().await {
+            while let Some(item) = event_stream.next().await {
+                let event = match item {
+                    Ok(event) => event,
+                    Err(lagged) => {
+                        metrics::counter!(
+                            "node.event_consumer.lagged_events",
+                            "source" => "node"
+                        )
+                        .increment(lagged.0);
+                        tracing::warn!(
+                            skipped = lagged.0,
+                            "Node event consumer lagged; the skipped events are lost to \
+                             report prewarm and readiness tracking"
+                        );
+                        continue;
+                    }
+                };
                 match &event {
                     F1r3flyEvent::BlockFinalised(finalized) if prewarm_enabled => {
                         if report_tx.send(finalized.clone()).await.is_err() {

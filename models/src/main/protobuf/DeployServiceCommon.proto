@@ -325,6 +325,11 @@ message Status {
   bool   isReady                     = 15;
   int64  currentEpoch                = 16;
   int32  epochLength                 = 17;
+  // Deploy pacing values; absent until casper is up.
+  optional int64  latestBlockNumber      = 19;
+  optional int64  deployLifespan         = 20;
+  optional uint32 maxUserDeploysPerBlock = 21;
+  optional int32  maxParentDepth         = 22;
 }
 
 message VersionInfo {

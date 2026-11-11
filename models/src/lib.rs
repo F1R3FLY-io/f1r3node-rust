@@ -76,6 +76,17 @@ pub mod routing {
     include!(concat!(env!("OUT_DIR"), "/routing.rs"));
 }
 
+pub mod deployqueue {
+    pub mod v1 {
+        tonic::include_proto!("deployqueue.v1");
+    }
+}
+
+/// Encoded descriptors of every proto this crate compiles, for gRPC
+/// reflection.
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/models_descriptor.bin"));
+
 pub use prost::bytes::Bytes as ByteString;
 use shared::rust::BitSet;
 
