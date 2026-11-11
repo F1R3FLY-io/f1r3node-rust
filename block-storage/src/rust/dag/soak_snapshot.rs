@@ -418,12 +418,10 @@ fn capture_inner(
     }
     let metadata_typed = access.metadata_store().capture_typed_store();
     let latest_typed = access.latest_messages_index();
-    let invalid_typed = access.invalid_blocks_index();
     let floor_typed = access.floor_index();
     let frontier_typed = access.frontier_index();
     let metadata_raw = metadata_typed.raw_store();
     let latest_raw = latest_typed.raw_store();
-    let invalid_raw = invalid_typed.raw_store();
     let floor_raw = floor_typed.raw_store();
     let frontier_raw = frontier_typed.raw_store();
     let blocks_raw = blocks.soak_capture_store();
@@ -432,7 +430,6 @@ fn capture_inner(
     let mut stores = vec![
         metadata_raw,
         latest_raw,
-        invalid_raw,
         floor_raw,
         frontier_raw,
         blocks_raw,
@@ -586,20 +583,11 @@ fn capture_inner(
         latest_messages.insert(validator, hash);
     }
 
-    let invalid_rows = scan(&mut reader, invalid_raw, limits.max_blocks, &mut work)?;
-    let mut invalid_blocks: BTreeMap<BlockHash, BlockMetadata> = BTreeMap::new();
-    let mut invalid_parent_edges = 0usize;
-    for (key, value) in invalid_rows {
-        work.charge(1)?;
-        work.charge(key.len())?;
-        let hash = BlockHash::from(decode_length_prefixed(&key)?);
-        preflight_metadata(&value, limits, &mut invalid_parent_edges, &mut work)?;
-        let metadata: BlockMetadata = invalid_typed.decode_value(&value).map_err(malformed)?;
-        if metadata.block_hash != hash {
-            return Err(malformed("The invalid metadata key differs."));
-        }
-        invalid_blocks.insert(hash, metadata);
-    }
+    let invalid_blocks: BTreeMap<BlockHash, BlockMetadata> = captured_blocks
+        .iter()
+        .filter(|(_, block)| block.metadata.is_invalid())
+        .map(|(hash, block)| (hash.clone(), block.metadata.clone()))
+        .collect();
 
     let mut bodies: BTreeMap<BlockHash, BlockBody> = BTreeMap::new();
     for hash in request.bodies {
@@ -1046,7 +1034,6 @@ impl DetachedDagSnapshot {
                 .iter()
                 .map(|(hash, justification)| (hash.clone(), justification.clone()))
                 .collect(),
-            invalid_blocks_set: self.invalid_blocks.values().cloned().collect(),
             last_finalized_block_hash,
             finalized_blocks_set: self.finalized_block_set.iter().cloned().collect(),
             block_metadata_index: Arc::new(RwLock::new(metadata_store)),
@@ -1098,7 +1085,7 @@ mod tests {
         let stores = [
             "block-metadata",
             "latest-messages",
-            "invalid-blocks",
+            "dag-equivocations-v1",
             "floor-index",
             "frontier-index",
             "deploy-lifecycle-events",

@@ -182,7 +182,6 @@ impl TestFixture {
         let kvm_approved_block = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_metadata = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_latest_messages = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_dagstorage_invalid_blocks = Arc::new(Mutex::new(HashMap::new()));
         let kvm_deploystorage = Arc::new(Mutex::new(HashMap::new()));
 
         // Scala: implicit val blockStore = KeyValueBlockStore[Task](kvm).unsafeRunSync(...)
@@ -215,17 +214,10 @@ impl TestFixture {
         let latest_messages_typed_store =
             KeyValueTypedStoreImpl::<ValidatorSerde, BlockHashSerde>::new(latest_messages_store);
 
-        let invalid_blocks_store = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_dagstorage_invalid_blocks.clone(),
-        ));
-        let invalid_blocks_typed_store =
-            KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(invalid_blocks_store);
-
         let block_dag_storage_unwrapped = BlockDagKeyValueStorage::from_parts(
             Arc::new(parking_lot::RwLock::new(())),
             latest_messages_typed_store,
             Arc::new(parking_lot::RwLock::new(block_metadata_store)),
-            invalid_blocks_typed_store,
             KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),

@@ -1030,6 +1030,7 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
     let dag1 = nodes[1].casper.block_dag().await.unwrap();
     let invalid_hashes: Vec<_> = dag1
         .invalid_blocks()
+        .expect("invalid blocks")
         .iter()
         .map(|m| m.block_hash.clone())
         .collect();
@@ -1292,7 +1293,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
     // the is_slashable narrowing): the block is dropped without entering
     // the DAG or minting slash evidence.
     let dag = nodes[1].casper.block_dag().await.unwrap();
-    let invalid_blocks = dag.invalid_blocks();
+    let invalid_blocks = dag.invalid_blocks().expect("invalid blocks");
 
     let is_recorded = invalid_blocks
         .iter()

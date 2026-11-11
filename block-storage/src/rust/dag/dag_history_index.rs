@@ -15,6 +15,7 @@ pub const HEIGHT_TABLE: &str = "dag-height-v1";
 pub const CHILDREN_TABLE: &str = "dag-children-v1";
 pub const STATE_TABLE: &str = "dag-history-state-v1";
 pub const SEQUENCE_TABLE: &str = "dag-sequence-v1";
+pub const EQUIVOCATIONS_TABLE: &str = "dag-equivocations-v1";
 
 #[derive(Clone, Copy, Debug)]
 pub struct HistoryTableSlots {
@@ -22,6 +23,7 @@ pub struct HistoryTableSlots {
     pub heights: usize,
     pub children: usize,
     pub sequences: usize,
+    pub equivocations: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,11 +128,16 @@ pub fn hash_prefix_bounds(prefix: &[u8]) -> Result<(Vec<u8>, Vec<u8>), KvStoreEr
 /// sign bit flipped, so one sender's blocks at one sequence number share a
 /// prefix and the hash follows.
 fn sequence_prefix(sender: &[u8], seq_num: i32) -> Result<Vec<u8>, KvStoreError> {
+    let mut key = sender_prefix(sender)?;
+    key.extend_from_slice(&((seq_num as u32) ^ (1 << 31)).to_be_bytes());
+    Ok(key)
+}
+
+fn sender_prefix(sender: &[u8]) -> Result<Vec<u8>, KvStoreError> {
     let length = u8::try_from(sender.len()).map_err(|_| invalid("DAG sender is too long"))?;
     let mut key = Vec::with_capacity(1 + sender.len() + 4 + LENGTH);
     key.push(length);
     key.extend_from_slice(sender);
-    key.extend_from_slice(&((seq_num as u32) ^ (1 << 31)).to_be_bytes());
     Ok(key)
 }
 
@@ -220,15 +227,19 @@ impl DagHistoryIndex {
             encode_height_key(record.height, &metadata.block_hash)?,
             encode(&sequence)?,
         )?;
-        tx.put(
-            self.slots.sequences,
-            sequence_key(
-                &metadata.sender,
-                metadata.sequence_number,
-                &metadata.block_hash,
-            )?,
-            encode(&sequence)?,
+        let sequence_key = sequence_key(
+            &metadata.sender,
+            metadata.sequence_number,
+            &metadata.block_hash,
         )?;
+        if record.invalid {
+            tx.put(
+                self.slots.equivocations,
+                sequence_key.clone(),
+                encode(&sequence)?,
+            )?;
+        }
+        tx.put(self.slots.sequences, sequence_key, encode(&sequence)?)?;
         for parent in &metadata.parents {
             let key = child_key(parent, &metadata.block_hash)?;
             let value = if parent.len() == LENGTH {
@@ -308,41 +319,73 @@ impl DagHistoryIndex {
         seq_num: i32,
         view_sequence: u64,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
-        let query = HistoryQuery::new("sequence");
-        let prefix = sequence_prefix(sender, seq_num)?;
-        let mut lower = prefix.clone();
-        lower.extend_from_slice(&[0; LENGTH]);
-        let mut upper = prefix.clone();
-        upper.extend_from_slice(&[u8::MAX; LENGTH]);
+        self.sender_keyed(
+            "sequence",
+            self.slots.sequences,
+            &sequence_prefix(sender, seq_num)?,
+            LENGTH,
+            view_sequence,
+        )
+    }
+
+    /// The equivocations of `sender` visible at `view_sequence`, in sequence
+    /// number order.
+    pub fn equivocations_of(
+        &self,
+        sender: &[u8],
+        view_sequence: u64,
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        self.sender_keyed(
+            "equivocations",
+            self.slots.equivocations,
+            &sender_prefix(sender)?,
+            4 + LENGTH,
+            view_sequence,
+        )
+    }
+
+    /// The hashes ending the keys of `slot` that start with `prefix` and run
+    /// `suffix` bytes past it, each checked against its membership row.
+    fn sender_keyed(
+        &self,
+        operation: &'static str,
+        slot: usize,
+        prefix: &[u8],
+        suffix: usize,
+        view_sequence: u64,
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        let query = HistoryQuery::new(operation);
+        let mut lower = prefix.to_vec();
+        lower.resize(prefix.len() + suffix, 0);
+        let mut upper = prefix.to_vec();
+        upper.resize(prefix.len() + suffix, u8::MAX);
         let mut rows = Vec::new();
         let mut after: Option<Vec<u8>> = None;
         loop {
-            let page = self.group.scan_page(
-                self.slots.sequences,
-                Some(&lower),
-                Some(&upper),
-                after.as_deref(),
-                1024,
-            )?;
+            let page =
+                self.group
+                    .scan_page(slot, Some(&lower), Some(&upper), after.as_deref(), 1024)?;
             query.visited(page.rows.len());
             for (key, value) in page.rows {
                 let sequence: u64 = decode(&value)?;
                 if sequence > view_sequence {
                     continue;
                 }
-                if key.len() != prefix.len() + LENGTH {
-                    return Err(KvStoreError::SerializationError(
-                        "Invalid DAG sequence key length".into(),
-                    ));
+                if key.len() != prefix.len() + suffix {
+                    return Err(KvStoreError::SerializationError(format!(
+                        "Invalid DAG {operation} key length"
+                    )));
                 }
-                let hash = BlockHash::copy_from_slice(&key[prefix.len()..]);
+                let hash = BlockHash::copy_from_slice(&key[key.len() - LENGTH..]);
                 let membership = self.membership(&hash, view_sequence)?.ok_or_else(|| {
-                    KvStoreError::KeyNotFound("DAG sequence index has no visible membership".into())
+                    KvStoreError::KeyNotFound(format!(
+                        "DAG {operation} index has no visible membership"
+                    ))
                 })?;
                 if membership.sequence != sequence {
-                    return Err(KvStoreError::SerializationError(
-                        "DAG sequence and membership indexes disagree".into(),
-                    ));
+                    return Err(KvStoreError::SerializationError(format!(
+                        "DAG {operation} and membership indexes disagree"
+                    )));
                 }
                 rows.push(hash);
             }

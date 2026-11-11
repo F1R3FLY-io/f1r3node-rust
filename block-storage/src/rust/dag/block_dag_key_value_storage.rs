@@ -109,7 +109,6 @@ pub struct KeyValueDagRepresentation {
     pub(crate) block_number_map: imbl::HashMap<BlockHash, i64>,
     pub(crate) main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub(crate) self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
-    pub(crate) invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub(crate) finalized_blocks_set: imbl::HashSet<BlockHash>,
     // P2-14: the metadata index is kept `pub` for cross-crate test
@@ -154,7 +153,6 @@ pub struct DagFixture {
     pub block_number_map: imbl::HashMap<BlockHash, i64>,
     pub main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
-    pub invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub finalized_blocks_set: imbl::HashSet<BlockHash>,
     pub block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
@@ -182,7 +180,6 @@ impl DagFixture {
             block_number_map: self.block_number_map,
             main_parent_map: self.main_parent_map,
             self_justification_map: self.self_justification_map,
-            invalid_blocks_set: self.invalid_blocks_set,
             last_finalized_block_hash: self.last_finalized_block_hash,
             finalized_blocks_set: self.finalized_blocks_set,
             block_metadata_index: self.block_metadata_index,
@@ -203,7 +200,6 @@ pub struct DagFixtureMut<'a> {
     pub block_number_map: &'a mut imbl::HashMap<BlockHash, i64>,
     pub main_parent_map: &'a mut imbl::HashMap<BlockHash, BlockHash>,
     pub self_justification_map: &'a mut imbl::HashMap<BlockHash, BlockHash>,
-    pub invalid_blocks_set: &'a mut imbl::HashSet<BlockMetadata>,
     pub finalized_blocks_set: &'a mut imbl::HashSet<BlockHash>,
 }
 
@@ -220,16 +216,11 @@ impl KeyValueDagRepresentation {
             rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
         );
         let mut metadata = BlockMetadataStore::new(KeyValueTypedStoreImpl::new(raw));
-        let mut invalid_blocks = imbl::HashSet::new();
         let mut after = None;
         loop {
             let page = self.scan_membership_page(after.as_deref(), 1024)?;
             for hash in page.rows {
-                let block = self.lookup_unsafe(&hash)?;
-                if block.is_invalid() {
-                    invalid_blocks.insert(block.clone());
-                }
-                metadata.add(block)?;
+                metadata.add(self.lookup_unsafe(&hash)?)?;
             }
             after = page.next;
             if after.is_none() {
@@ -248,7 +239,6 @@ impl KeyValueDagRepresentation {
             block_number_map: state.block_number_map,
             main_parent_map: state.main_parent_map,
             self_justification_map: state.self_justification_map,
-            invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: self.last_finalized_block_hash.clone(),
             finalized_blocks_set: state.finalized_block_set,
             block_metadata_index: Arc::new(PlRwLock::new(metadata)),
@@ -272,7 +262,6 @@ impl KeyValueDagRepresentation {
             block_number_map: &mut self.block_number_map,
             main_parent_map: &mut self.main_parent_map,
             self_justification_map: &mut self.self_justification_map,
-            invalid_blocks_set: &mut self.invalid_blocks_set,
             finalized_blocks_set: &mut self.finalized_blocks_set,
         }
     }
@@ -498,7 +487,57 @@ impl KeyValueDagRepresentation {
             .filter(|metadata| metadata.sender == *validator))
     }
 
-    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
+    /// Every equivocation the view holds. Reads the whole DAG, so it is for
+    /// tests only.
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn invalid_blocks(&self) -> Result<Vec<BlockMetadata>, KvStoreError> {
+        let mut invalid = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self.scan_membership_page(after.as_deref(), 1024)?;
+            for hash in page.rows {
+                let metadata = self.lookup_unsafe(&hash)?;
+                if metadata.is_invalid() {
+                    invalid.push(metadata);
+                }
+            }
+            after = page.next;
+            if after.is_none() {
+                return Ok(invalid);
+            }
+        }
+    }
+
+    /// Every equivocation the view holds, by hash, with its sender. Tests
+    /// only.
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn invalid_blocks_map(&self) -> Result<HashMap<BlockHash, Validator>, KvStoreError> {
+        Ok(self
+            .invalid_blocks()?
+            .into_iter()
+            .map(|metadata| (metadata.block_hash, metadata.sender))
+            .collect())
+    }
+
+    /// The equivocations `sender` has stored, resident or not, in sequence
+    /// number order.
+    pub fn equivocations_of(&self, sender: &Validator) -> Result<Vec<BlockMetadata>, KvStoreError> {
+        let hashes = match &self.history {
+            Some(history) => history.equivocations_of(sender, self.view_sequence)?,
+            None => {
+                let mut held = Vec::new();
+                for hash in &self.dag_set {
+                    let metadata = self.lookup_unsafe(hash)?;
+                    if metadata.sender == *sender && metadata.is_invalid() {
+                        held.push((metadata.sequence_number, hash.clone()));
+                    }
+                }
+                held.sort();
+                held.into_iter().map(|(_, hash)| hash).collect()
+            }
+        };
+        hashes.iter().map(|hash| self.lookup_unsafe(hash)).collect()
+    }
 
     /// Cached justification-derived floor of a block, if already computed.
     pub fn get_cached_floor(
@@ -859,7 +898,7 @@ impl KeyValueDagRepresentation {
     // Callers no longer need to clone a fully-materialized HashMap
     // (the snapshot path used to do this per snapshot) — the hash
     // values are only cloned for the (small) set of entries that
-    // actually appear in `invalid_blocks`, so the steady-state work
+    // are invalid, so the steady-state work
     // is proportional to |invalid_latest_messages| rather than
     // |latest_message_hashes|.
     pub fn invalid_latest_messages_from_hashes(
@@ -877,20 +916,6 @@ impl KeyValueDagRepresentation {
             }
         }
         Ok(result)
-    }
-
-    #[cfg(any(test, feature = "test-internals"))]
-    pub fn invalid_blocks_map(&self) -> Result<HashMap<BlockHash, Validator>, KvStoreError> {
-        let invalid_blocks = self.invalid_blocks();
-        let mut invalid_block_hashes = HashMap::new();
-        for block in invalid_blocks {
-            if let Some(metadata) = self.lookup(&block.block_hash)? {
-                if metadata.is_invalid() {
-                    invalid_block_hashes.insert(metadata.block_hash, metadata.sender);
-                }
-            }
-        }
-        Ok(invalid_block_hashes)
     }
 
     /// The blocks held from `sender` at sequence number `seq_num`, resident
@@ -1275,7 +1300,6 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) global_lock: Arc<PlRwLock<()>>,
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
-    pub(crate) invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
     /// Memoized per-block finalized frontier (see `KeyValueDagRepresentation::frontier_index`).
@@ -1462,16 +1486,13 @@ impl BlockDagKeyValueStorage {
         hot_window: i64,
     ) -> Result<Self, KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
-        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
+        let equivocations_kv_store = kvm.store("dag-equivocations-v1".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(block_metadata_kv_store.clone());
 
         let latest_messages_kv_store = kvm.store("latest-messages".to_string()).await?;
         let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(latest_messages_kv_store.clone());
-
-        let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
-            KeyValueTypedStoreImpl::new(invalid_blocks_kv_store.clone());
 
         let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
         let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
@@ -1496,7 +1517,7 @@ impl BlockDagKeyValueStorage {
         let mut atomic_stores = vec![
             block_metadata_kv_store,
             latest_messages_kv_store,
-            invalid_blocks_kv_store,
+            equivocations_kv_store,
             genesis_hash_kv_store,
         ];
         for name in [
@@ -1521,7 +1542,6 @@ impl BlockDagKeyValueStorage {
             persistence: Some(persistence),
             global_lock: Arc::new(PlRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
-            invalid_blocks_index: invalid_blocks_db,
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
@@ -1618,7 +1638,6 @@ impl BlockDagKeyValueStorage {
         global_lock: Arc<PlRwLock<()>>,
         latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
         block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
-        invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
         floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
         frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
         dag_generation: Arc<AtomicU64>,
@@ -1628,7 +1647,6 @@ impl BlockDagKeyValueStorage {
             global_lock,
             latest_messages_index,
             block_metadata_index,
-            invalid_blocks_index,
             floor_index,
             frontier_index,
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
@@ -1738,9 +1756,6 @@ impl BlockDagKeyValueStorage {
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
 
-        let invalid_blocks: imbl::HashSet<BlockMetadata> =
-            self.invalid_blocks_index.to_map()?.into_values().collect();
-
         self.block_metadata_index.write().refresh_window()?;
 
         let block_metadata_index_guard = self.block_metadata_index.read();
@@ -1786,7 +1801,6 @@ impl BlockDagKeyValueStorage {
             block_number_map,
             main_parent_map,
             self_justification_map,
-            invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: last_finalized_block,
             finalized_blocks_set: finalized_blocks,
             block_metadata_index: self.block_metadata_index.clone(),
@@ -2130,10 +2144,6 @@ impl BlockDagKeyValueStorage {
                 self.block_metadata_index
                     .write()
                     .add(block_metadata.clone())?;
-                if invalid {
-                    self.invalid_blocks_index
-                        .put_one(block_hash.clone().into(), block_metadata)?;
-                }
                 self.latest_messages_index.put(
                     latest_to_publish
                         .into_iter()
@@ -2346,12 +2356,6 @@ impl SoakCaptureAccess<'_> {
         &self.storage.latest_messages_index
     }
 
-    pub(crate) fn invalid_blocks_index(
-        &self,
-    ) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> {
-        &self.storage.invalid_blocks_index
-    }
-
     pub(crate) fn floor_index(&self) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> {
         &self.storage.floor_index
     }
@@ -2402,7 +2406,7 @@ mod tests {
     const DAG_STORES: [&str; 16] = [
         "block-metadata",
         "latest-messages",
-        "invalid-blocks",
+        "dag-equivocations-v1",
         "floor-index",
         "frontier-index",
         "deploy-lifecycle-events",

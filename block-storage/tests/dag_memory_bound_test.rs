@@ -44,7 +44,7 @@ const DAG_STORES: [&str; 17] = [
     "block-metadata",
     "equivocation-tracker",
     "latest-messages",
-    "invalid-blocks",
+    "dag-equivocations-v1",
     "floor-index",
     "frontier-index",
     "deploy-lifecycle-events",

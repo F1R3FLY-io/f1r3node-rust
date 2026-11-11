@@ -34,7 +34,7 @@ fn lmdb_manager(directory: &std::path::Path) -> Box<dyn KeyValueStoreManager> {
         "block-metadata",
         "equivocation-tracker",
         "latest-messages",
-        "invalid-blocks",
+        "dag-equivocations-v1",
         "floor-index",
         "frontier-index",
         "deploy-lifecycle-events",

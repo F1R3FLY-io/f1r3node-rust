@@ -48,7 +48,7 @@ use shared::rust::store::key_value_store::KeyValueStore;
 const STORES: [&str; 18] = [
     "block-metadata",
     "latest-messages",
-    "invalid-blocks",
+    "dag-equivocations-v1",
     "floor-index",
     "frontier-index",
     "deploy-lifecycle-events",

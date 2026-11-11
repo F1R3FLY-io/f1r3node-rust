@@ -482,9 +482,12 @@ fn dag_storage_should_be_able_to_restore_invalid_blocks_on_startup() {
       }
 
       let dag = dag_storage.get_representation().expect("dag representation");
-      let invalid_blocks = dag.invalid_blocks();
-      let invalid_blocks_set: HashSet<_> = invalid_blocks.iter().cloned().collect();
-      assert_eq!(invalid_blocks_set, block_elements.into_iter().map(|b| BlockMetadata::from_block(&b, Some(sibling()), None, None)).collect::<HashSet<_>>());
+      let senders: HashSet<_> = block_elements.iter().map(|b| b.sender.clone()).collect();
+      let mut held = HashSet::new();
+      for sender in &senders {
+        held.extend(dag.equivocations_of(sender).expect("equivocations"));
+      }
+      assert_eq!(held, block_elements.into_iter().map(|b| BlockMetadata::from_block(&b, Some(sibling()), None, None)).collect::<HashSet<_>>());
     });
 }
 
@@ -2043,22 +2046,20 @@ async fn representation_exposes_navigation_and_error_paths() {
 }
 
 #[tokio::test]
-async fn invalid_insert_populates_the_invalid_blocks_map() {
+async fn an_equivocation_insert_is_found_by_its_sender() {
     let genesis = genesis_block();
     let dag_storage = create_dag_storage(&genesis).await;
     let invalid_block = chain_block(1, vec![genesis.block_hash.clone()]);
     dag_storage.insert(&invalid_block, equivocation()).unwrap();
 
     let dag = dag_storage.get_representation().unwrap();
-    let invalid_map: HashMap<_, _> = dag
-        .invalid_blocks()
+    let held: Vec<_> = dag
+        .equivocations_of(&invalid_block.sender)
+        .unwrap()
         .into_iter()
-        .map(|metadata| (metadata.block_hash, metadata.sender))
+        .map(|metadata| metadata.block_hash)
         .collect();
-    assert_eq!(
-        invalid_map.get(&invalid_block.block_hash),
-        Some(&invalid_block.sender)
-    );
+    assert_eq!(held, vec![invalid_block.block_hash.clone()]);
 }
 
 #[tokio::test]

@@ -220,6 +220,7 @@ async fn reporting_a_slashing_block_replays_its_own_evidence() {
             .get_representation()
             .expect("dag")
             .invalid_blocks()
+            .expect("invalid blocks")
             .is_empty(),
         "premise: the reporting node holds no invalid block"
     );

@@ -14,7 +14,7 @@ use super::{decode, encode};
 
 pub(crate) const METADATA: usize = 0;
 const LATEST: usize = 1;
-const INVALID: usize = 2;
+const EQUIVOCATIONS: usize = 2;
 const GENESIS: usize = 3;
 const STATE: usize = 7;
 const SEQUENCES: usize = 9;
@@ -82,6 +82,7 @@ impl DagPersistence {
                 heights: 5,
                 children: 6,
                 sequences: SEQUENCES,
+                equivocations: EQUIVOCATIONS,
             })),
             gc: Arc::new(DagGcStore::new(group.clone(), GC_SLOTS)),
             group,
@@ -240,9 +241,6 @@ impl DagPersistence {
                         Some(progress.max_height.map_or(metadata.block_number, |height| {
                             height.max(metadata.block_number)
                         }));
-                }
-                if metadata.is_invalid() {
-                    tx.put(INVALID, key.clone(), encode(&metadata)?)?;
                 }
                 for (validator, hash) in latest {
                     tx.put(

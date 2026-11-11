@@ -27,7 +27,7 @@ use tokio::runtime::Runtime;
 const DAG_STORES: [&str; 16] = [
     "block-metadata",
     "latest-messages",
-    "invalid-blocks",
+    "dag-equivocations-v1",
     "floor-index",
     "frontier-index",
     "deploy-lifecycle-events",
