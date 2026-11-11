@@ -88,6 +88,7 @@ source_files=(
   "$model_dir/rpb3_integrated_dispatcher.rs"
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
+  "$model_dir/rpb3_score_finish_unique.rs"
   "$model_dir/rpb3_score_finish_groups.rs"
   "$model_dir/rpb3_no_score_child_eof_coverage.rs"
   "$model_dir/rpb3_plain_parser_source_refinement.rs"
@@ -1960,6 +1961,26 @@ proofs_rpb3_score_finish_groups=(
   finish_nonvacuous_class_6_owner
   finish_nonvacuous_class_6_ezipper
 )
+proofs_rpb3_score_finish_unique=(
+  finish_selected_unfolds
+  finish_selection_folds
+  bridge_score_finish_never_ambiguous
+  bridge_score_finish_unique
+  bridge_score_finish_epathmap_returns
+  finish_epathmap_nested_shape
+  finish_epathmap_nested_witness
+  finish_epathmap_owner_product
+  finish_owner_score_agrees
+  finish_owner_top_shape
+  finish_owner_top_scores
+  finish_owner_top_instance
+  finish_ezipper_top_instance
+  finish_ezipper_scored_instance
+  finish_payload_parent_scored_shape
+  finish_payload_parent_complete_instance
+  finish_payload_parent_incomplete_instance
+  finish_value_child_instance
+)
 proofs_rpb3_score_transcript=(
   empty_arena_well_formed
   empty_append_certificate
@@ -2321,6 +2342,7 @@ gated_modules=(
   rpb3_score_arena_source_refinement
   rpb3_score_cursor_refinement
   rpb3_score_finish_groups
+  rpb3_score_finish_unique
   rpb3_score_transcript
   rpb3_source_observation
   rpb3_staged_admission_refinement
@@ -4620,6 +4642,39 @@ fi
 if ! rg -q '^verification results:: 97 verified, 0 errors' "$score_finish_groups_log"; then
   cat "$score_finish_groups_log"
   echo "rpb3-admission-cursor: score-finish groups module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_score_finish_unique[@]}"; do
+  proof_log="$evidence_dir/score-finish-unique-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_score_finish_unique --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: score-finish uniqueness $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: score-finish uniqueness $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+score_finish_unique_log="$evidence_dir/score-finish-unique-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_score_finish_unique \
+  "$integrated_source" \
+  >"$score_finish_unique_log" 2>&1; then
+  cat "$score_finish_unique_log"
+  echo "rpb3-admission-cursor: score-finish uniqueness module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 18 verified, 0 errors' "$score_finish_unique_log"; then
+  cat "$score_finish_unique_log"
+  echo "rpb3-admission-cursor: score-finish uniqueness module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do
