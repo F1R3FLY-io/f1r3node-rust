@@ -7364,6 +7364,163 @@ pub open spec fn concrete_derived_summary_with_arena(
     }
 }
 
+#[verifier::opaque]
+pub open spec fn admission_root_derived_summary(
+    root: AdmissionFrameState, arena: Seq<AdmissionScoreBinding>,
+) -> Option<AdmissionReturnedKind> {
+    if root.frame_kind != 1 {
+        None
+    } else { match root.family {
+        AdmissionFamily::ReceiveBindFrame => Some(AdmissionReturnedKind::ReceiveBind {
+            source_present: admission_returned_par(root, 1),
+        }),
+        AdmissionFamily::MatchCaseFrame => Some(AdmissionReturnedKind::MatchCase {
+            required_present: admission_returned_par(root, 0)
+                && admission_returned_par(root, 1),
+            canonical_fixed_point: !admission_returned_default_par(root, 3),
+        }),
+        AdmissionFamily::BigRationalFrame => match admission_big_rational_fields(root) {
+            Some((numerator, denominator)) => Some(AdmissionReturnedKind::BigRational {
+                numerator, denominator,
+            }),
+            None => None,
+        },
+        AdmissionFamily::FixedPointFrame => match admission_fixed_point_fields(root) {
+            Some((unscaled, scale)) => Some(AdmissionReturnedKind::FixedPoint {
+                unscaled, scale,
+            }),
+            None => None,
+        },
+        AdmissionFamily::EVarFrame => Some(AdmissionReturnedKind::ExprPayload {
+            score_present: admission_returned_var(root, 0),
+            canonical_fixed_point: true,
+            canonical_path_stable: false,
+        }),
+        AdmissionFamily::Other => match root.program_type_id {
+            2 | 3 | 4 | 5 | 14 | 17 | 18 | 58 | 59 => Some(AdmissionReturnedKind::Other),
+            7 | 64 => Some(AdmissionReturnedKind::Unit),
+            30 => match admission_emap_source_summary(root, arena) {
+                Some((complete, fixed)) => Some(AdmissionReturnedKind::ExprPayload {
+                    score_present: complete,
+                    canonical_fixed_point: fixed,
+                    canonical_path_stable: false,
+                }),
+                None => None,
+            },
+            32 => admission_ezipper_expr_payload(root),
+            33 => Some(AdmissionReturnedKind::ExprPayload {
+                score_present: admission_returned_par(root, 1),
+                canonical_fixed_point: true,
+                canonical_path_stable: false,
+            }),
+            34 => match admission_key_value_pair_fields(root) {
+                Some((key, value_par)) => Some(AdmissionReturnedKind::KeyValuePair {
+                    key, value_par,
+                }),
+                None => None,
+            },
+            36 | 37 => Some(AdmissionReturnedKind::ExprPayload {
+                score_present: admission_returned_par(root, 0),
+                canonical_fixed_point: true,
+                canonical_path_stable: false,
+            }),
+            38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52 | 53
+                | 54 => Some(AdmissionReturnedKind::ExprPayload {
+                score_present: admission_returned_par(root, 0)
+                    && admission_returned_par(root, 1),
+                canonical_fixed_point: true,
+                canonical_path_stable: false,
+            }),
+            56 => match admission_var_ref_fields(root) {
+                Some((index, depth)) => Some(AdmissionReturnedKind::VarRef { index, depth }),
+                None => None,
+            },
+            57 => match admission_connective_body_handles(root) {
+                Some(par_handles) => Some(AdmissionReturnedKind::ConnectiveBody { par_handles }),
+                None => None,
+            },
+            61 | 62 | 63 => match admission_bytes_leaf_payload(root) {
+                Some(value) => Some(AdmissionReturnedKind::Bytes { value }),
+                None => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    } }
+}
+
+pub open spec fn admission_root_noscore_kind(
+    state: AdmissionState,
+) -> Option<AdmissionReturnedKind> {
+    if state.frames.len() != 1 {
+        None
+    } else {
+        match admission_root_derived_summary(state.frames[0], state.arena) {
+            Some(kind) if !admission_summary_has_score(kind) => Some(kind),
+            _ => None,
+        }
+    }
+}
+
+#[verifier::opaque]
+pub open spec fn admission_complete_noscore_root(state: AdmissionState) -> bool {
+    if state.frames.len() != 1 {
+        false
+    } else {
+        let root = state.frames[0];
+        root.cursor == state.root_end
+            && root.region_end == state.root_end
+            && root.waiting_id.is_none()
+            && root.nested_started == root.nested_resolved
+            && admission_slots_complete(root)
+            && admission_family_admissible(root)
+            && root.score_handle.is_none()
+            && admission_root_noscore_kind(state).is_some()
+            && state.pushed as int == state.completed as int + 1
+    }
+}
+
+pub proof fn admission_root_summary_coheres_with_child_edges(
+    parent: AdmissionFrameState, child: AdmissionFrameState,
+    arena: Seq<AdmissionScoreBinding>,
+)
+    requires
+        admission_frame_wf(parent),
+        admission_frame_wf(child),
+        parent.frame_kind == 1,
+        child.frame_kind == 1,
+        child.score_handle.is_none(),
+        parent.program_type_id == 24 ==> parent.family == AdmissionFamily::Expr,
+        match (parent.waiting_slot, parent.waiting_tag) {
+            (Some(slot), Some(tag)) => match generated::generated_descriptor(
+                parent.program_type_id, tag,
+            ) {
+                Some(descriptor) => descriptor.frame_kind == 1
+                    && descriptor.slot == slot
+                    && descriptor.child_type_id == Some(child.program_type_id),
+                None => false,
+            },
+            _ => false,
+        },
+        match admission_root_derived_summary(child, arena) {
+            Some(kind) => !admission_summary_has_score(kind),
+            None => false,
+        } || match concrete_derived_summary_with_arena(parent, child, arena) {
+            Some(kind) => !admission_summary_has_score(kind),
+            None => false,
+        },
+    ensures
+        concrete_derived_summary_with_arena(parent, child, arena)
+            == admission_root_derived_summary(child, arena),
+{
+    reveal(admission_root_derived_summary);
+    if parent.program_type_id == 24 {
+        assert(parent.family == AdmissionFamily::Expr);
+    } else {
+        assert(parent.family != AdmissionFamily::Expr);
+    }
+}
+
 pub open spec fn concrete_empty_set_map_score_transcript(constructor: u8) -> Seq<u8> {
     seq![2u8, 1u8, 1u8, 0x80u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, constructor]
         + seq![1u8, 1u8, 0x7fu8, 0xffu8, 0xffu8, 0xffu8, 0xffu8,
@@ -7712,6 +7869,7 @@ pub enum ConcreteFrameOutcomeModel {
     Pushed { state: AdmissionState },
     ParentAccepted { state: AdmissionState },
     RootFinished { summary: ConcreteRootSummaryModel },
+    RootFinishedNoScore { summary: ConcreteNoScoreRootSummaryModel },
 }
 
 pub struct ConcreteRootSummaryModel {
@@ -7738,6 +7896,35 @@ pub open spec fn concrete_message_root_summary(
             body_id: root.body_id,
             body_bytes: root.source_bytes,
         })
+    }
+}
+
+pub struct ConcreteNoScoreRootSummaryModel {
+    pub program_type_id: u16,
+    pub family: AdmissionFamily,
+    pub kind: AdmissionReturnedKind,
+    pub body_id: u64,
+    pub ghost body_bytes: Seq<u8>,
+}
+
+#[verifier::opaque]
+pub open spec fn concrete_message_noscore_root_summary(
+    state: AdmissionState,
+) -> Option<ConcreteNoScoreRootSummaryModel> {
+    if !admission_complete_noscore_root(state) {
+        None
+    } else {
+        let root = state.frames[0];
+        match admission_root_noscore_kind(state) {
+            Some(kind) => Some(ConcreteNoScoreRootSummaryModel {
+                program_type_id: root.program_type_id,
+                family: root.family,
+                kind,
+                body_id: root.body_id,
+                body_bytes: root.source_bytes,
+            }),
+            None => None,
+        }
     }
 }
 
@@ -7798,6 +7985,13 @@ pub open spec fn concrete_message_driver_step(
                             Some(summary) => Some(ConcreteFrameOutcomeModel::RootFinished {
                                 summary,
                             }),
+                            None => None,
+                        }
+                    } else if admission_complete_noscore_root(state) {
+                        match concrete_message_noscore_root_summary(state) {
+                            Some(summary) => Some(
+                                ConcreteFrameOutcomeModel::RootFinishedNoScore { summary },
+                            ),
                             None => None,
                         }
                     } else { None },
@@ -7951,9 +8145,86 @@ pub proof fn concrete_message_driver_step_simulates(
             &&& summary.body_bytes == state.frames[0].source_bytes
             &&& state.arena[summary.score_handle as int].semantic == summary.complete
         },
+        Some(ConcreteFrameOutcomeModel::RootFinishedNoScore { summary }) => {
+            &&& admission_complete_noscore_root(state)
+            &&& !admission_complete_root(state)
+            &&& state.frames.len() == 1
+            &&& state.frames[0].score_handle.is_none()
+            &&& admission_root_noscore_kind(state) == Some(summary.kind)
+            &&& admission_root_derived_summary(state.frames[0], state.arena)
+                == Some(summary.kind)
+            &&& !admission_summary_has_score(summary.kind)
+            &&& summary.program_type_id == state.frames[0].program_type_id
+            &&& summary.family == state.frames[0].family
+            &&& summary.body_id == state.frames[0].body_id
+            &&& summary.body_bytes == state.frames[0].source_bytes
+        },
         None => true,
     },
-{}
+{
+    reveal(admission_complete_noscore_root);
+    reveal(concrete_message_noscore_root_summary);
+}
+
+pub open spec fn admission_unit_noscore_root() -> AdmissionFrameState {
+    AdmissionFrameState {
+        physical_source: 0,
+        physical_start: 0,
+        program_type_id: 7,
+        region_start: 0,
+        region_end: 0,
+        source_bytes: Seq::empty(),
+        cursor: 0,
+        slot_count: 0,
+        last_slot: None,
+        seen: Set::empty(),
+        required: Set::empty(),
+        scalar_slots: Set::empty(),
+        scalar_occurrences: Seq::empty(),
+        returns: Seq::empty(),
+        family: AdmissionFamily::Other,
+        waiting_id: None,
+        waiting_kind: 0,
+        waiting_slot: None,
+        waiting_tag: None,
+        return_id: None,
+        frame_kind: 1,
+        body_id: 0,
+        score_handle: None,
+        nested_started: 0,
+        nested_resolved: 0,
+    }
+}
+
+pub proof fn admission_unit_root_completes_without_score()
+    ensures
+        admission_root_initial(admission_unit_noscore_root()),
+        admission_state_wf(admission_initial_state(admission_unit_noscore_root())),
+        concrete_message_driver_step(
+            admission_initial_state(admission_unit_noscore_root()),
+            ConcreteFrameActionModel::Complete,
+        ) == Some(ConcreteFrameOutcomeModel::RootFinishedNoScore {
+            summary: ConcreteNoScoreRootSummaryModel {
+                program_type_id: 7,
+                family: AdmissionFamily::Other,
+                kind: AdmissionReturnedKind::Unit,
+                body_id: 0,
+                body_bytes: Seq::empty(),
+            },
+        }),
+{
+    let root = admission_unit_noscore_root();
+    let state = admission_initial_state(root);
+    reveal(admission_root_derived_summary);
+    reveal(admission_complete_noscore_root);
+    reveal(concrete_message_noscore_root_summary);
+    assert(admission_root_initial(root));
+    admission_initial_wf(root);
+    assert(admission_slots_complete(root));
+    assert(admission_root_noscore_kind(state) == Some(AdmissionReturnedKind::Unit));
+    assert(admission_complete_noscore_root(state));
+    assert(!admission_complete_root(state));
+}
 
 pub proof fn concrete_message_driver_preserves_wf_and_arena(
     state: AdmissionState, action: ConcreteFrameActionModel,

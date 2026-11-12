@@ -704,6 +704,7 @@ proofs_rpb3_admission_cursor=(
   concrete_message_push_indexed_source_anchor_exact
   concrete_message_push_indexed_rejects_wrong_source
   concrete_message_push_simulates
+  admission_root_summary_coheres_with_child_edges
   concrete_empty_set_map_parent_pop_is_reachable
   concrete_empty_eset_expr_tag22_is_source_derived
   concrete_empty_emap_expr_tag23_is_source_derived
@@ -715,6 +716,7 @@ proofs_rpb3_admission_cursor=(
   concrete_message_driver_indexed_continue_anchor_exact
   concrete_message_driver_preserves_par_source_trace
   concrete_message_driver_step_simulates
+  admission_unit_root_completes_without_score
   concrete_message_driver_preserves_wf_and_arena
   admission_aux_advance_is_separate
   admission_aux_advance_preserves_wf
@@ -1337,6 +1339,7 @@ proofs_rpb3_map_frame_refinement=(
   integrated_new_map_push_uses_fresh_child
   integrated_initial_is_well_formed
   integrated_root_finish_returns_derived_summary
+  integrated_unit_root_finishes_without_score
   integrated_driver_preserves_wf
   integrated_new_map_child_body_id_is_driver_assigned
   integrated_replay_preserves_wf
@@ -2522,7 +2525,9 @@ for proof in admission_indexed_field_child_source_exact \
   admission_canonical_path_push_indexed_preserves_wf \
   admission_canonical_path_return_indexed_preserves_wf \
   admission_canonical_path_root_source_derives_initial_wf \
-  admission_canonical_path_empty_root_witness_is_initial; do
+  admission_canonical_path_empty_root_witness_is_initial \
+  admission_root_summary_coheres_with_child_edges \
+  admission_unit_root_completes_without_score; do
   if ! rg -q "^pub proof fn ${proof}\\(" "$model_dir/rpb3_admission_cursor.rs"; then
     echo "rpb3-admission-cursor: missing admission proof $proof" >&2
     exit 1
@@ -2531,7 +2536,8 @@ done
 for proof in map_admission_value_push_indexed_source_anchor_exact \
   map_admission_value_push_indexed_rejects_wrong_source \
   map_admission_value_accept_pop_source_anchor_exact \
-  map_admission_entry_complete_source_anchor_exact; do
+  map_admission_entry_complete_source_anchor_exact \
+  integrated_unit_root_finishes_without_score; do
   if ! rg -q "^pub proof fn ${proof}\\(" \
     "$model_dir/rpb3_map_frame_refinement.rs"; then
     echo "rpb3-admission-cursor: missing map-frame proof $proof" >&2

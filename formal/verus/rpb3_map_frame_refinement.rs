@@ -1642,6 +1642,7 @@ pub enum IntegratedAdmissionOutcome {
         state: IntegratedAdmissionState,
     },
     RootFinished { root_summary: admission::ConcreteRootSummaryModel },
+    RootFinishedNoScore { root_summary: admission::ConcreteNoScoreRootSummaryModel },
 }
 
 pub open spec fn integrated_admission_driver_step(
@@ -1720,6 +1721,11 @@ pub open spec fn integrated_admission_driver_step(
                             Some(IntegratedAdmissionOutcome::RootFinished {
                                 root_summary: summary,
                             }),
+                        Some(admission::ConcreteFrameOutcomeModel::RootFinishedNoScore {
+                            summary,
+                        }) => Some(IntegratedAdmissionOutcome::RootFinishedNoScore {
+                            root_summary: summary,
+                        }),
                         },
                     }
                 }
@@ -1859,6 +1865,7 @@ pub open spec fn integrated_outcome_wf(outcome: IntegratedAdmissionOutcome) -> b
         IntegratedAdmissionOutcome::MapEntryCompleted { state, .. } =>
             integrated_admission_wf(state),
         IntegratedAdmissionOutcome::RootFinished { .. } => true,
+        IntegratedAdmissionOutcome::RootFinishedNoScore { .. } => true,
     }
 }
 
@@ -1875,6 +1882,7 @@ pub open spec fn integrated_nonterminal_state(
         | IntegratedAdmissionOutcome::MapValueAccepted { state }
         | IntegratedAdmissionOutcome::MapEntryCompleted { state, .. } => Some(state),
         IntegratedAdmissionOutcome::RootFinished { .. } => None,
+        IntegratedAdmissionOutcome::RootFinishedNoScore { .. } => None,
     }
 }
 
@@ -1914,7 +1922,8 @@ pub open spec fn integrated_replay_finishes_root(
         Some(prior) => match integrated_admission_driver_step(
             prior, actions[actions.len() - 1],
         ) {
-            Some(IntegratedAdmissionOutcome::RootFinished { .. }) => true,
+            Some(IntegratedAdmissionOutcome::RootFinished { .. })
+            | Some(IntegratedAdmissionOutcome::RootFinishedNoScore { .. }) => true,
             _ => false,
         },
     }
@@ -1936,6 +1945,41 @@ pub proof fn integrated_root_finish_returns_derived_summary(
         _ => true,
     },
 {}
+
+pub proof fn integrated_unit_root_finishes_without_score()
+    ensures
+        integrated_admission_initial(admission::admission_unit_noscore_root()).is_some(),
+        integrated_admission_driver_step(
+            integrated_admission_initial(admission::admission_unit_noscore_root()).unwrap(),
+            IntegratedAdmissionAction::Message {
+                action: admission::ConcreteFrameActionModel::Complete,
+            },
+        ) == Some(IntegratedAdmissionOutcome::RootFinishedNoScore {
+            root_summary: admission::ConcreteNoScoreRootSummaryModel {
+                program_type_id: 7,
+                family: admission::AdmissionFamily::Other,
+                kind: admission::AdmissionReturnedKind::Unit,
+                body_id: 0,
+                body_bytes: Seq::empty(),
+            },
+        }),
+        integrated_replay_finishes_root(
+            admission::admission_unit_noscore_root(),
+            seq![IntegratedAdmissionAction::Message {
+                action: admission::ConcreteFrameActionModel::Complete,
+            }],
+        ),
+{
+    let root = admission::admission_unit_noscore_root();
+    admission::admission_unit_root_completes_without_score();
+    integrated_initial_is_well_formed(root);
+    let actions = seq![IntegratedAdmissionAction::Message {
+        action: admission::ConcreteFrameActionModel::Complete,
+    }];
+    assert(actions.subrange(0, 0) =~= Seq::<IntegratedAdmissionAction>::empty());
+    assert(integrated_replay_from_root(root, actions.subrange(0, 0))
+        == integrated_admission_initial(root));
+}
 
 pub proof fn integrated_driver_preserves_wf(
     state: IntegratedAdmissionState, action: IntegratedAdmissionAction,

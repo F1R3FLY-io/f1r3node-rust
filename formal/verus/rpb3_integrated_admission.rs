@@ -1169,6 +1169,7 @@ pub open spec fn product_map_regions(
         | map::IntegratedAdmissionOutcome::MapEntryCompleted { .. } =>
             Some(before.indexed_regions.drop_last()),
         map::IntegratedAdmissionOutcome::RootFinished { .. } => None,
+        map::IntegratedAdmissionOutcome::RootFinishedNoScore { .. } => None,
         _ => Some(before.indexed_regions),
     }
 }
@@ -1186,6 +1187,7 @@ pub open spec fn product_map_epm_frames(
         | map::IntegratedAdmissionOutcome::MapEntryCompleted { .. } =>
             Some(before.epm_frames.drop_last()),
         map::IntegratedAdmissionOutcome::RootFinished { .. } => None,
+        map::IntegratedAdmissionOutcome::RootFinishedNoScore { .. } => None,
         _ => Some(before.epm_frames),
     }
 }
@@ -3668,6 +3670,7 @@ pub proof fn product_map_step_preserves_exact(
             | map::IntegratedAdmissionOutcome::MapParScored { .. } =>
                 product_map_steady_preserves_exact(before, after, action, outcome),
             map::IntegratedAdmissionOutcome::RootFinished { .. } => assert(false),
+            map::IntegratedAdmissionOutcome::RootFinishedNoScore { .. } => assert(false),
         },
     }
 }
