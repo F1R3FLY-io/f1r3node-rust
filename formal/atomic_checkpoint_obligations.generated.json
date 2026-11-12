@@ -29,7 +29,7 @@
   "config_sha256": "cadaf269a7a99cd2ebdb7864028aceadcf57466925da7ee59adeb7a5ac0585c1",
   "model": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.tla",
   "model_sha256": "414692c6550cb700f6772b05db5f14c67edf26b11300d90a8288460a360bcd98",
-  "module_sha256": "7ca16e3240a1313efaf576cff35afe1676641c6c67afc231d960416539642fb1",
+  "module_sha256": "d3cbca00b88112aaae53ce19bb23bf1b21134d53635b7ecdab8f2ad1585822b6",
   "non_vacuity_witnesses": [
     {
       "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthorityUnverifiedBaseRefusalWitness.cfg",

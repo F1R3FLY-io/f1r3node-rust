@@ -324,14 +324,6 @@ impl RSpaceStateAuthority {
         Ok(authority)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only unit tests open a durable state authority until \
-                      rspace-select-durable-backend selects it per store prefix"
-        )
-    )]
     pub(crate) fn durable(
         directory: impl Into<PathBuf>,
         recovery: DurableLimits,

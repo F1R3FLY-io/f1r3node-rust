@@ -10212,6 +10212,292 @@ byte.
 | OG-41 | Only an empty directory becomes a store. A directory without a store file becomes a store at the store-genesis root with exactly the genesis files, and a directory that holds a store opens without genesis. After a crash at any genesis step of the backend's first open, a directory left without a store file becomes the store, a partial store is refused with `Recovery` and left unchanged without genesis, and a store whose catalog slot was written opens at the store-genesis root. | `only_an_empty_directory_becomes_a_store_at_the_store_genesis_root` |
 | OG-46 | A waiter yields its thread. On a current-thread runtime, a task that waits for the owner mutex while another task holds the guard across an await lets that task run on the same thread, and both complete with the owner's current root within a 30 s watchdog. | `a_task_waiting_for_the_owner_mutex_yields_its_thread` |
 
+### Durable backend selection per store prefix (2026-11-12)
+
+The durable backend of the previous section has a constructor and, until
+this slice, no production caller. This slice, leaf G12 of the operation gate
+(task 12421), lets a caller tell a store manager, per store prefix and before
+the prefix is first used, that the prefix's RSpace state lives in the durable
+store instead of LMDB. No production code makes that call yet: the node's
+call is task `rspace-node-durable-backend-switch`.
+
+Three terms are used below.
+
+- A **store manager** is an implementation of the trait
+  `KeyValueStoreManager` in
+  [`key_value_store_manager.rs`](../../../rspace++/src/rspace/shared/key_value_store_manager.rs).
+  It hands out named key-value stores and state authorities. There are three:
+  `LmdbDirStoreManager` in
+  [`lmdb_dir_store_manager.rs`](../../../rspace++/src/rspace/shared/lmdb_dir_store_manager.rs),
+  which maps store names to LMDB environments below one directory, called
+  the *manager directory* here; `LmdbStoreManager`, the manager of one LMDB
+  environment; and `InMemoryStoreManager`.
+- A **store prefix** names one RSpace state of a manager.
+  `state_authority(prefix)` returns the prefix's state authority,
+  `r_space_stores()` uses the prefix `rspace` and `eval_stores()` the prefix
+  `eval`, and `<prefix>-history`, `<prefix>-roots` and `<prefix>-cold` are
+  the store names of the authority's three legacy facets.
+- The **first use** of a prefix is the first call that makes the manager
+  build the prefix's authority. That call is `state_authority`, which
+  `r_space_stores`, `eval_stores` and `get_stores` make, and which `store`
+  makes for a store name that the authority serves.
+
+**The selection.** The public enum `RSpaceBackendSelection` stands beside the
+trait. It has two values and no payload, so it names no crate-private type:
+
+| Value | The prefix's state authority |
+|---|---|
+| `Legacy` | The authority that the manager builds without a selection: the LMDB one for `LmdbDirStoreManager` and `LmdbStoreManager`, the in-memory one for `InMemoryStoreManager`. |
+| `Durable` | The durable backend, over a directory that the manager derives from the prefix. |
+
+The trait gains the method
+`select_rspace_backend(&mut self, db_prefix, selection) -> Result<(), heed::Error>`.
+Its default implementation accepts `Legacy`, changing nothing, and refuses
+`Durable` with an `InvalidInput` error. `InMemoryStoreManager` and
+`LmdbStoreManager` keep the default, so a manager without a durable backend
+cannot be told to use one. `LmdbDirStoreManager` overrides it.
+
+**One record per prefix, fixed at first use.** `LmdbDirStoreManager` keeps
+the selections in `StoreState::backend_selections`, a map from prefix to
+`RSpaceBackendSelection`, under the same mutex as its cache of authorities.
+The backend of a prefix is fixed for the life of the manager: a prefix has at
+most one record, and no call changes or removes a record. A prefix is in one
+of three states:
+
+```text
+                  select(p, s)                    first use of p
+ ┌───────────┐ ────────────────▶ ┌───────────┐ ──────────────────▶ ┌──────────────────┐
+ │ no record │                   │ record s  │                     │ record s         │
+ │           │                   │           │ ◀────────────────── │ cached authority │
+ └─────┬─────┘                   └───────────┘       shutdown      └────────▲─────────┘
+       │                                                                    │
+       └────────────────────────────────────────────────────────────────────┘
+         first use of p without a record: the legacy authority is built
+         and s = Legacy is recorded, in one critical section
+
+ p   a store prefix          s   a value of RSpaceBackendSelection
+ ──▶ a call that changes the state of p
+```
+
+In the two states with a record, `select(p, s)` with the recorded value is
+accepted and changes nothing, and `select(p, s)` with the other value is
+refused. Neither is drawn, because neither leaves its state. `shutdown` drops
+the cached authority and keeps the record, so the next use builds an
+authority of the same backend.
+
+**The three refusals.** `LmdbDirStoreManager::select_rspace_backend` refuses
+with `heed::Error::Io` of kind `InvalidInput`, as the manager's mapping
+refusals do, each with its own message:
+
+| # | Refused selection | Message |
+|---|---|---|
+| 1 | `Durable` for the prefix `eval`. This slice keeps the `eval` prefix on the legacy backend. | `the durable RSpace backend cannot be selected for the eval prefix` |
+| 2 | `Durable` for a prefix that is not exactly one normal path component: the empty prefix, `.`, `..`, a prefix with a separator, or an absolute path. The prefix becomes a directory name, so any other prefix would place the store outside the prefix's own directory, or in another prefix's. | `durable RSpace prefix "<prefix>" is not exactly one normal path component` |
+| 3 | A selection that differs from the prefix's record, whether a selection or a first use wrote that record. | `RSpace backend of prefix <prefix> is fixed as <recorded> and cannot become <selection>` |
+
+Refusals 1 and 2 depend on the prefix alone and are decided before the state
+is read. Refusal 2 matches on `Path::new(prefix).components()`: the prefix is
+accepted if and only if there is exactly one component, it is a `Normal`
+component, and it equals the whole prefix. The equality is needed because
+`components()` drops a trailing separator, so `rspace/` has the single
+component `rspace` and would name the directory of the prefix `rspace`.
+Refusal 3 is decided under the state mutex before the only write of the
+method, the insert of a new record. A refused selection therefore records
+nothing and creates nothing.
+
+Refusal 3 is why first use writes a record. `shutdown` empties the cache of
+authorities, but an RSpace may still hold the authority that it was given.
+Without the record, a prefix that was used on LMDB could be selected
+`Durable` after a `shutdown`, and one process would then hold two backends
+for one prefix.
+
+**First use of a durable prefix.** `state_authority(prefix)` holds the state
+mutex from its first statement to its last. For a prefix whose record is
+`Durable` it does the following:
+
+1. Return the cached authority if there is one.
+2. Resolve and check the mapping with `resolve_mappings`, exactly as the
+   manager does before it opens an LMDB authority or an ordinary database:
+   for every prefix whose LMDB authority it has opened, and for `rspace`
+   and `eval` when the mapping has a row of theirs. An invalid mapping is
+   therefore refused before anything is created. The durable prefix is not
+   added to that request, so it needs no LMDB rows, and no LMDB environment
+   of it is opened.
+3. Create the directory `<manager directory>/<prefix>/durable` with
+   `create_dir_all` if it is missing; the backend itself refuses a missing
+   directory. The last component is the constant
+   `DURABLE_RSPACE_DIRECTORY_NAME`, which task
+   `rspace-node-backend-data-dir-refusal` reads. An I/O failure is returned
+   as `heed::Error::Io`.
+4. Build `RSpaceStateAuthority::durable` over that directory with
+   `DurableLimits::UNBOUNDED`, `LogPackDecodeLimits::UNBOUNDED` and
+   `DurableAdmissionLimitsV1::UNBOUNDED`. The constructor does no I/O; the
+   store is created or recovered by the first `create_history_repo`, as the
+   previous section describes.
+5. Cache the authority in `StoreState::authorities`, as the LMDB authority
+   is cached, and return it.
+
+One manager therefore has one authority per durable prefix, and with it one
+owner slot. With the node's mapping of store names to LMDB environments, the
+directories below the manager directory are:
+
+```text
+ <manager directory>
+  ├─ rspace/
+  │   ├─ history/   LMDB environment of rspace-history and rspace-roots
+  │   ├─ cold/      LMDB environment of rspace-cold
+  │   └─ durable/   durable store of the prefix rspace:
+  │                 catalog, packs, indexes and writer lock
+  └─ eval/
+      ├─ history/   LMDB environment of eval-history and eval-roots
+      └─ cold/      LMDB environment of eval-cold
+```
+
+With `Durable` recorded for `rspace`, the manager opens no LMDB environment
+of that prefix; with `Legacy` recorded, it never creates `durable`. The
+`eval` prefix has no `durable` directory, by refusal 1.
+
+**Open limits.** `DurableLimits` gains the constant `UNBOUNDED`, whose ten
+limits are `NonZeroU64::MAX`, in
+[`limits.rs`](../../../rspace++/src/rspace/persistence/durable/limits.rs),
+in the form of `LogPackDecodeLimits::UNBOUNDED` and
+`DurableAdmissionLimitsV1::UNBOUNDED`. The manager opens every durable store
+with these three constants, because a limit must never bind on a state that
+the runtime itself reached: a ceiling would refuse to reopen a store that the
+node wrote. `DurableLimits::new` stays the only other constructor, and the
+persistence module still exports `DurableLimitConfig` to the rest of the
+crate in test builds only.
+
+**Store names.** A store name of a durable prefix, `<prefix>-history`,
+`<prefix>-roots` or `<prefix>-cold`, is refused by the backend's own facet
+refusal: `store` asks the prefix's authority for the facet, and the durable
+arm returns `AuthorityBackendMismatch`. It arrives as `heed::Error::Io`, and
+a caller recovers it from the I/O error's inner error with `downcast_ref`.
+There is no LMDB fallback. For `rspace` and `eval` the manager always routed
+these names to the authority. For any other prefix it routed them only once
+the prefix's LMDB authority had been opened; it now also routes them when
+the prefix's record is `Durable`, so that a mapped LMDB database with such a
+name is not opened beside the durable store.
+
+**`shutdown`.** No statement of `shutdown` changes. It already empties
+`StoreState::authorities`, so it drops the durable authority with the
+others, and once no caller holds that authority its owner slot is dropped
+and the writer lease is released. `backend_selections` is not emptied.
+
+**The dead-code expectation.** `RSpaceStateAuthority::durable` now has a
+production caller, so its `cfg_attr(not(test), expect(dead_code))` is
+removed.
+
+**Cost.** A selection is one hash lookup and at most one insert. The first
+use of a durable prefix is one `resolve_mappings`, one `create_dir_all` and
+the construction of the authority; a later use is one hash lookup and one
+`Arc` clone. `store` takes the state mutex a second time only for a name
+with one of the three facet suffixes whose prefix is neither `rspace`, `eval`
+nor a prefix whose LMDB authority has been opened.
+
+**Not in this slice.**
+
+- No production code selects `Durable`.
+- The constructor is called in the form it has in the previous section;
+  task `rspace-hard-checkpoint-durable-wiring` extends it to the limits of a
+  checkpoint publication.
+- The manager does not compare the durable directory with the LMDB
+  environment directories of the mapping. A mapping with an environment
+  named `<prefix>/durable` would share the directory of that prefix's
+  durable store. The node's mapping has no such environment.
+- For a prefix other than `rspace` and `eval`, a store name that was handed
+  out as an ordinary database before the prefix had an authority is not a
+  first use, as before this slice.
+
+No persisted byte, record kind, root, identity or wire message changes. The
+files of a durable store are those of the previous section; only the
+directory name `durable` below a prefix is new.
+
+**Tests.** The module
+[`durable_backend_selection.rs`](../../../rspace++/tests/persistence/durable_backend_selection.rs)
+builds every `LmdbDirStoreManager` over a fresh trial directory, with the
+node's mapping for `rspace` and `eval` (history and roots in the environment
+`<prefix>/history`, cold in `<prefix>/cold`) and the same three rows for a
+third prefix, `scope`. The constructor returns an opaque
+`impl KeyValueStoreManager`, so the tests use the trait's methods only. An
+LMDB environment that was opened leaves `data.mdb` in its directory, which is
+how a test tells that an LMDB authority was or was not opened. No test waits
+or sleeps.
+
+1. `a_durable_prefix_has_one_authority_and_one_owner_slot_per_manager`
+   (OG-16) selects `Durable` for `rspace`. Two `r_space_stores()` hold the
+   same authority (`Arc::ptr_eq`), and it has the durable route.
+   `create_history_repo` succeeds on both stores; had the second opened the
+   directory again, it would have met the first one's writer lease, as the
+   committed control of the previous section shows. Both authorities return
+   the same owner slot (`Arc::ptr_eq`), and both repositories are at the
+   slot's published root. The catalog file is in `rspace/durable` below the
+   manager directory, the constant is compared with the literal `durable`,
+   and every file below the manager directory lies in that directory. No
+   accessor exposes the limits of a built backend, so the test shows that
+   the store opens with the limits that the manager passes; that these are
+   the unbounded constants is the manager's one call of the constructor.
+2. `the_backend_of_a_prefix_is_fixed_at_its_first_use` (OG-17) uses `rspace`
+   without a selection on three fresh managers: through `r_space_stores()`,
+   through `state_authority` and through `store` with `rspace-history`. Each
+   time the LMDB environment exists afterwards, `Durable` is refused with
+   message 3, the set of files below the manager directory is unchanged,
+   `rspace/durable` does not exist, and `state_authority` returns an
+   authority with the legacy route, the same `Arc` as before where the test
+   holds one. After `shutdown`, with the old authority still held, the
+   refusal is the same and the prefix reopens on the legacy backend without
+   a durable directory. On a fourth manager `Durable` is selected first: the
+   first use builds a durable authority and its directory and opens no LMDB
+   environment, `Legacy` is refused with message 3 and the cached authority
+   stays, and after `shutdown` the refusal is the same and the prefix
+   reopens on the durable backend.
+3. `a_durable_selection_is_refused_for_eval_and_for_a_prefix_that_is_not_one_path_component`
+   (OG-18) requires message 1 for `eval` and message 2 for the empty prefix,
+   `.`, `..`, `rspace/history`, `rspace/` and an absolute path. The manager
+   directory then has no entry. A first use of each of the six prefixes is
+   refused by the mapping, which has no row for them, so no durable
+   selection was recorded; the manager directory still has no entry, and no
+   `durable` directory exists beside it, where the prefix `..` would have
+   placed one. `eval_stores()` then returns an authority with the legacy
+   route that serves its history facet, `eval/history/data.mdb` exists and
+   `eval/durable` does not.
+4. `a_manager_without_a_durable_backend_accepts_only_the_legacy_selection`
+   runs the default implementation on `InMemoryStoreManager`: `Legacy` is
+   accepted and `Durable` is refused with the default's message, before and
+   after the first use, and the authority stays the same in-memory one. It
+   is bound to no ID.
+5. `a_differing_selection_is_refused_and_an_equal_one_changes_nothing`
+   selects `Durable` twice, is refused `Legacy` with message 3, finds the
+   first use durable, selects `Durable` again and finds the cached authority
+   unchanged; it does the same with the two values exchanged, where the
+   manager directory has no entry before the first use; and on a third
+   manager it uses the prefix without a selection and is then accepted
+   `Legacy`. It is bound to no ID.
+6. `a_store_name_of_a_durable_prefix_is_refused_by_the_backend_facet`
+   selects `Durable` for `rspace` and for `scope`, which has LMDB rows in the
+   mapping. Each of the six store names is refused with `heed::Error::Io`
+   whose inner error is the `AuthorityBackendMismatch` of its facet.
+   Afterwards no file exists below the manager directory, both durable
+   directories exist, and no LMDB environment directory of either prefix
+   exists. It is bound to no ID.
+7. `shutdown_releases_the_writer_lease_of_a_durable_prefix` opens the durable
+   store through one manager. A second manager over the same directory is
+   refused with `Recovery` holding `Startup(Io(WriterLockContended))`, so
+   the first manager's authority holds the lease. After `shutdown` of the
+   first manager, the second opens the store at the same root. It is bound
+   to no ID.
+8. `the_unbounded_durable_limits_are_the_limits_of_the_largest_configuration`
+   requires `DurableLimits::new` of a configuration whose ten fields are
+   `u64::MAX` to equal `DurableLimits::UNBOUNDED`. It is bound to no ID.
+
+**The OG rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| OG-16 | One authority per durable prefix. After `Durable` is selected for `rspace`, every `r_space_stores()` of one manager holds the same authority, `create_history_repo` on two of them shares one owner slot at one published root, and every file that the manager writes lies in `<manager directory>/rspace/durable`. The store opens with the limits that the manager passes, `DurableLimits::UNBOUNDED`. | `a_durable_prefix_has_one_authority_and_one_owner_slot_per_manager` |
+| OG-17 | The backend is fixed at first use. Once a prefix is used without a selection, through `r_space_stores`, `state_authority` or a store name, `Durable` is refused, no file or directory changes and the cached authority stays; after `shutdown` the refusal is the same and the prefix reopens on the legacy backend. A selection before the first use takes effect, and the other selection is refused afterwards, also after `shutdown`. | `the_backend_of_a_prefix_is_fixed_at_its_first_use` |
+| OG-18 | Unsafe durable prefixes are refused. `Durable` is refused for `eval` and for a prefix that is not one normal path component: the empty prefix, `.`, `..`, a prefix with an inner or a trailing separator, and an absolute path. Nothing is recorded and no directory is created, at the selection or at a later use, and `eval_stores()` returns the LMDB authority. | `a_durable_selection_is_refused_for_eval_and_for_a_prefix_that_is_not_one_path_component` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -10492,6 +10778,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | OG-15 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12420): the typed refusals of the legacy-only authority methods by the durable backend. No model states a property of Rust method results or error types. |
 | OG-41 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12420): the backend runs genesis only over a directory without a store file, and refuses a partial store left by a crash in its own genesis. As for SG-01 and SG-03, no model creates the first generation. |
 | OG-46 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12420): a task that waits for the owner's mutex yields its runtime thread. No model represents a runtime thread or the poll of a task. |
+| OG-16 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12421): one store manager gives a durable store prefix one state authority, and with it one owner slot, and keeps the store in the prefix's `durable` directory. None of the models that this matrix cites has a store manager or a store prefix. |
+| OG-17 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12421): the backend of a store prefix is fixed at its first use and stays fixed across a shutdown of the manager. None of the models that this matrix cites has a backend selection. The caller-authority model `RSpaceCallerAuthority.v`, which this matrix does not cite, carries the backend as a field of an owner's domain, and each of its three owner transitions keeps that domain. |
+| OG-18 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12421): a durable selection is refused for the `eval` prefix and for a prefix that is not one normal path component. None of the models that this matrix cites has a store prefix or a directory name. |
 
 ## Generator discipline
 
@@ -11475,6 +11764,41 @@ this slice, and `rustfmt --check` passes on its Rust files. The PathMap,
 workspace-regression, atomic-checkpoint and affine-import registries hash
 files that change, so those registries are regenerated with this slice. No
 persisted byte, record kind, root, identity or wire message changed.
+
+The 2026-11-12 durable backend selection slice of task 7931 (task 12421)
+adds OG-16, OG-17 and OG-18, so the catalog/derivation/binding registry now
+contains **277** IDs. The manifest test's executable sources gain
+`durable_backend_selection.rs`. On an export of the candidate tree, the
+eight tests of the new module passed in debug and in release together with
+the seven tests of the durable authority backend, the ten scope-layout
+tests of `LmdbDirStoreManager` and the manifest test (26 passed, none
+ignored), and the whole library test target passed in both profiles with
+1006 tests (996 passed, 10 ignored). Three controls were each applied to
+the export's `lmdb_dir_store_manager.rs`, run against the same 26 tests in
+debug with `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` and removed:
+
+- Without the `Legacy` record that the first use of a prefix writes, OG-17
+  was the only test to fail: `Durable` was accepted for a prefix that
+  `r_space_stores()` had opened on LMDB.
+- With a prefix accepted whenever its path has one normal component, the
+  comparison with the whole prefix removed, OG-18 was the only test to
+  fail: `Durable` was accepted for the prefix `rspace/`.
+- With the durable authority returned but not cached, OG-16 failed because
+  two `r_space_stores()` held two authorities, and three more tests failed
+  with it: OG-17 and the test of equal selections, which found another
+  authority than the one they held, and the `shutdown` test, whose second
+  manager was not refused because the first manager's authority, and with
+  it the writer lease, had been dropped with its `RSpaceStore`.
+
+Each faulted file was restored from its saved copy and compared byte for
+byte. Clippy of `rspace_plus_plus` with every target lists the same
+findings for the candidate as for its base, none in the files of this slice
+and none for the library without tests, and `rustfmt --check` passes on its
+Rust files. The PathMap, workspace-regression and affine-import registries
+hash files that change, so those registries are regenerated with this
+slice. No persisted byte, record kind, root, identity or wire message
+changed; the directory name `durable` below a selected prefix is the only
+new name on disk. See the durable backend selection section.
 
 ## Caller-authority contract (2026-09-06)
 

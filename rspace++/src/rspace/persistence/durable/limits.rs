@@ -121,6 +121,19 @@ pub struct DurableLimits {
 }
 
 impl DurableLimits {
+    pub const UNBOUNDED: Self = Self {
+        live_packs: NonZeroU64::MAX,
+        pack_bytes: NonZeroU64::MAX,
+        transactions: NonZeroU64::MAX,
+        object_records: NonZeroU64::MAX,
+        total_scan_bytes: NonZeroU64::MAX,
+        total_physical_read_bytes: NonZeroU64::MAX,
+        index_bytes: NonZeroU64::MAX,
+        index_records: NonZeroU64::MAX,
+        full_byte_comparison_bytes: NonZeroU64::MAX,
+        aggregate_full_byte_comparison_bytes: NonZeroU64::MAX,
+    };
+
     pub fn new(config: DurableLimitConfig) -> Result<Self, DurableLimitError> {
         Ok(Self {
             live_packs: nonzero(DurableLimitKind::LivePacks, config.max_live_packs)?,

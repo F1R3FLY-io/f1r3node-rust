@@ -9,8 +9,9 @@ use shared::rust::ByteBuffer;
 use shared::rust::store::key_value_store::{KeyValueStore, KeyValueStoreMutation, KvStoreError};
 use tokio::sync::Mutex;
 
-use super::key_value_store_manager::KeyValueStoreManager;
+use super::key_value_store_manager::{KeyValueStoreManager, RSpaceBackendSelection};
 use super::lmdb_store_manager::LmdbStoreManager;
+use crate::rspace::persistence::{DurableAdmissionLimitsV1, DurableLimits, LogPackDecodeLimits};
 use crate::rspace::state::rspace_state_authority::{LmdbAuthorityLayout, RSpaceStateAuthority};
 
 /**
@@ -35,6 +36,8 @@ impl Db {
 pub const MB: usize = 1024 * 1024;
 pub const GB: usize = 1024 * MB;
 pub const TB: usize = 1024 * GB;
+
+pub const DURABLE_RSPACE_DIRECTORY_NAME: &str = "durable";
 
 #[derive(Clone)]
 pub struct LmdbEnvConfig {
@@ -73,6 +76,7 @@ struct StoreState {
     authorities: HashMap<String, Arc<RSpaceStateAuthority>>,
     authority_prefixes: BTreeSet<String>,
     ordinary_opened: BTreeSet<PhysicalSlot>,
+    backend_selections: HashMap<String, RSpaceBackendSelection>,
 }
 
 type PhysicalSlot = (PathBuf, String);
@@ -95,6 +99,19 @@ struct ResolvedAuthority {
 
 fn mapping_error(message: impl Into<String>) -> heed::Error {
     heed::Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into()))
+}
+
+fn require_durable_prefix(db_prefix: &str) -> Result<(), heed::Error> {
+    let mut components = Path::new(db_prefix).components();
+    match (db_prefix, components.next(), components.next()) {
+        ("eval", _, _) => {
+            Err(mapping_error("the durable RSpace backend cannot be selected for the eval prefix"))
+        }
+        (_, Some(Component::Normal(name)), None) if name == db_prefix => Ok(()),
+        _ => Err(mapping_error(format!(
+            "durable RSpace prefix {db_prefix:?} is not exactly one normal path component"
+        ))),
+    }
 }
 
 pub(crate) fn resolve_lmdb_environment(path: &Path) -> Result<PathBuf, heed::Error> {
@@ -209,6 +226,16 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
         } else {
             None
         };
+        let authority_role = match (authority_role, db_name.rsplit_once('-')) {
+            (None, Some((prefix, domain @ ("history" | "roots" | "cold")))) => {
+                let state = self.managers_state.lock().await;
+                match state.backend_selections.get(prefix) {
+                    Some(RSpaceBackendSelection::Durable) => Some((prefix, domain)),
+                    Some(RSpaceBackendSelection::Legacy) | None => None,
+                }
+            }
+            (role, _) => role,
+        };
         if let Some((prefix, domain)) = authority_role {
             let authority = self.state_authority(prefix).await?;
             let inner = match domain {
@@ -273,6 +300,29 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
         if let Some(authority) = state.authorities.get(db_prefix) {
             return Ok(Arc::clone(authority));
         }
+        if let Some(RSpaceBackendSelection::Durable) =
+            state.backend_selections.get(db_prefix).copied()
+        {
+            self.resolve_mappings(
+                state.authority_prefixes.iter().cloned(),
+                &state.ordinary_opened,
+            )?;
+            let directory = self
+                .dir_path
+                .join(db_prefix)
+                .join(DURABLE_RSPACE_DIRECTORY_NAME);
+            std::fs::create_dir_all(&directory)?;
+            let authority = RSpaceStateAuthority::durable(
+                directory,
+                DurableLimits::UNBOUNDED,
+                LogPackDecodeLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+            );
+            state
+                .authorities
+                .insert(db_prefix.to_owned(), Arc::clone(&authority));
+            return Ok(authority);
+        }
         let prefixes = state
             .authority_prefixes
             .iter()
@@ -294,7 +344,35 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
             .authorities
             .insert(db_prefix.to_string(), Arc::clone(&authority));
         state.authority_prefixes.insert(db_prefix.to_owned());
+        state
+            .backend_selections
+            .entry(db_prefix.to_owned())
+            .or_insert(RSpaceBackendSelection::Legacy);
         Ok(authority)
+    }
+
+    async fn select_rspace_backend(
+        &mut self,
+        db_prefix: &str,
+        selection: RSpaceBackendSelection,
+    ) -> Result<(), heed::Error> {
+        if let RSpaceBackendSelection::Durable = selection {
+            require_durable_prefix(db_prefix)?;
+        }
+        let mut state = self.managers_state.lock().await;
+        match state.backend_selections.get(db_prefix).copied() {
+            Some(recorded) if recorded == selection => Ok(()),
+            Some(recorded) => Err(mapping_error(format!(
+                "RSpace backend of prefix {db_prefix} is fixed as {recorded:?} and cannot become \
+                 {selection:?}"
+            ))),
+            None => {
+                state
+                    .backend_selections
+                    .insert(db_prefix.to_owned(), selection);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -444,6 +522,7 @@ impl LmdbDirStoreManager {
                 authorities: HashMap::new(),
                 authority_prefixes: BTreeSet::new(),
                 ordinary_opened: BTreeSet::new(),
+                backend_selections: HashMap::new(),
             })),
         }
     }

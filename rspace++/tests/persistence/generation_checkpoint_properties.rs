@@ -745,6 +745,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("transfer_import_staging.rs"),
         include_str!("../hot_store/cross_base_capture.rs"),
         include_str!("durable_authority_backend.rs"),
+        include_str!("durable_backend_selection.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {

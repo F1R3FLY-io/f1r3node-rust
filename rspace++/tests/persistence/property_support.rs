@@ -449,6 +449,12 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("OG-15", "legacy_only_authority_methods_refuse_the_durable_backend"),
     ("OG-41", "only_an_empty_directory_becomes_a_store_at_the_store_genesis_root"),
     ("OG-46", "a_task_waiting_for_the_owner_mutex_yields_its_thread"),
+    ("OG-16", "a_durable_prefix_has_one_authority_and_one_owner_slot_per_manager"),
+    ("OG-17", "the_backend_of_a_prefix_is_fixed_at_its_first_use"),
+    (
+        "OG-18",
+        "a_durable_selection_is_refused_for_eval_and_for_a_prefix_that_is_not_one_path_component",
+    ),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {
