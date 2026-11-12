@@ -8580,6 +8580,131 @@ missing.
 |---|---|---|
 | TX-01 | Exact closure, once, parent-first. For retained durable states that are deep (a chain of 200 node levels), wide (a Node256 and a Node48 branch) and shared (an object with descendants that one node references twice, and objects shared across states), the pages of an export session carry exactly the closure of the state's manifest, every object once, in the parent-first export order of transfer version 1 and within the page limits. The imported objects form a structurally closed state, and the session records exactly the closure's objects whose retained reference count is not 1. | `pages_carry_exactly_the_closure_once_parent_first_for_deep_wide_and_shared_states` |
 
+### Durable history repository (2026-11-11)
+
+Task 14294 implements `HistoryRepository` over the durable journal owner, so
+that a caller can reset RSpace's history to a durable state named by its root.
+Its code is
+[`durable_history_repository.rs`](../../../rspace++/src/rspace/history/durable_history_repository.rs).
+The trait gains one provided method, `empty_root()`, whose default,
+`RadixHistory::empty_root_node_hash()`, keeps the LMDB repository's value.
+
+**A repository value is a view.** `DurableHistoryRepositoryV1<P>` holds the
+shared owner, an `Arc<std::sync::Mutex<DurableRSpaceAuthorityV1<P>>>`, and the
+retained state that the view is based on: that state's `DurableStateRootV1`
+and a lazy `DurableViewReaderV1` of it, which holds its own generation lease.
+The mutex is the standard library's because every method of the trait is
+synchronous and RSpace calls them inside its asynchronous methods, where a
+tokio mutex can be taken neither by blocking nor, under contention, by trying.
+
+- `root()` is the view's root.
+- `contains_verified_root(root)` resolves the root against the owner's current
+  core. It answers `false` for `UnknownRootError`, passes every other error
+  on, and refuses a hash of another length with `InvalidRootHash`, as the LMDB
+  repository does. `contains_root` is the trait's default, which delegates to
+  it.
+- `empty_root()` is the store-genesis state: the manifest of three empty
+  namespace roots at schema epoch 1, of the store's semantic profile, without
+  a legacy history root. `DurableStateRootV1::store_genesis` computes it
+  without reading the store.
+
+**Reset.** `reset(root)` takes these steps:
+
+1. Convert the `Blake2b256Hash` to a `DurableStateRootV1`. A hash of another
+   length is `InvalidRootHash`.
+2. Lock the owner's mutex. A poisoned mutex is `KvStoreError`.
+3. Resolve the root against the owner's current core, as the durable state
+   roots section above describes: one probe of the closure ledger and one
+   manifest read of at most 241 bytes. A root that the ledger does not count
+   is `UnknownRootError`.
+4. Acquire one lease on the core's catalog generation, an insertion into the
+   in-memory lease registry.
+5. Release the mutex, and return a new view with the same owner, exporter,
+   importer and genesis root, whose reader reads the resolved namespace roots.
+
+The owner's current core decides, not the core that the view was made from:
+only the current ledger counts the states published after the view was made,
+and it still counts every earlier state, because each publication's retention
+manifest retains its base. The owner gains three read-only methods for this,
+`current_root()`, `resolve(root)` and `resolve_read_handle(root)`; the last
+resolves and leases under one lock. The cost does not depend on the number of
+retained states or on the size of any state. By the decision of 2026-11-11, a
+reset is local: it writes nothing, syncs nothing and records no activation. An
+activation write belongs to the RSpace wiring through `activate_retained`, not
+to the repository.
+
+**What the repository refuses.** The operations that belong to the LMDB
+authority, and those whose durable implementations have not landed, refuse
+with the operation gate's typed mismatch (OG-12):
+
+| Operation | Refusal |
+|---|---|
+| `checkpoint`, `do_checkpoint`, `get_history_reader`, `get_history_reader_struct` | `HistoryError::BackendMismatch(History)` |
+| `checkpoint_at`, `current_authority_root` | `HistoryError::BackendMismatch(Roots)` |
+| the exporter's `get_page` and `get_history_items` | `StateExportError::BackendMismatch(History)` |
+| the exporter's `get_data_items` | `StateExportError::BackendMismatch(Cold)` |
+| the importer's `begin_import` and `get_history_item` | `StateImportError::BackendMismatch(History)` |
+
+An empty request is refused too. The exporter's `get_root` answers the owner's
+current root, the analogue of the LMDB exporter's authority root. There is no
+`Option` backend, no dummy history and no LMDB fallback. No persisted byte,
+record kind, file, root or wire message changes.
+
+**The tests.**
+
+- `every_view_resets_to_every_retained_root_and_reads_that_states_contents`
+  runs three seeded scripts and 24 generated ones. A script is one to three
+  batches of datum puts and takes and continuation installs and withdrawals,
+  with their joins, and the owner publishes each batch. A model records each
+  state's contents, and two roots of a script are equal exactly when their
+  modelled contents are. Every view, the one made at the store genesis and one
+  made after each publication, resets to every recorded root through
+  `reset_view` and through the trait's `reset`: the new view's root is the
+  target, its lazy reads equal the target's modelled contents, and
+  `contains_root` answers `true`. Coverage counters require resets to retained
+  predecessors, to other contents and from superseded views, and states after
+  a removal, with a repeated datum, with both orders of a channel pair, with
+  two continuations on one group, and back at the store genesis. The seeds
+  alone reach every counter.
+- `an_unknown_root_is_refused_and_changes_no_file` asks three views of one
+  store, at the genesis, at a retained state and at the current state, about
+  five roots: a digest absent from the store, the LMDB radix empty root,
+  another store's published state root, the shared empty trie node, and a
+  retained state's data-bag node. Every reset is refused with
+  `UnknownRootError`, `contains_root` and `contains_verified_root` answer
+  `false`, and hashes of 0, 31 and 33 bytes are refused with `InvalidRootHash`.
+  The store directory keeps every entry's name, length and modification time,
+  its own modification time and the bytes of its catalog, packs and indexes,
+  and every view keeps its root and its reads.
+- `reset_performs_no_write_and_no_sync_under_every_directory_failpoint` makes
+  the same resets, from two views to four roots (the current state, a retained
+  state, the genesis and an absent digest), once with no failpoint armed and
+  once in a fresh thread for each of the 16 directory failpoints. Every armed
+  run gives the unarmed outcomes, roots and reads included, and its failpoint
+  is still armed afterwards: arming it again panics with "durable I/O
+  failpoint already armed". The store directory is unchanged, as above. A
+  liveness control then arms `PhysicalWrite` in a fresh thread, and an owner
+  publication in that thread fails with the injected error and clears the
+  failpoint. `sync_data` and `set_len` have no failpoint, so for them the
+  directory image is the only witness.
+- Three further tests are not registered. `empty_root` is the fixture's
+  initial state, differs from the radix empty root that the LMDB repository
+  keeps, and stays resettable after a publication, where it reads empty. Every
+  refused operation in the table above returns its typed mismatch and changes
+  no file. The exporter's root follows the owner's publications while a view
+  keeps its own root.
+
+The red control resolves against the current state only: `reset_view` refuses
+every root except the owner's current one with `UnknownRootError`.
+
+**The HR rows.** HR is the durable history repository's family.
+
+| ID | Required property | Test |
+|---|---|---|
+| HR-01 | Reset to a retained root. From any view of a store, made at the store genesis or after any publication, a reset to any root that the store started from or published gives a view at that root whose lazy reads return exactly that state's contents, and the repository reports that it contains the root. Two roots of one store are equal exactly when their contents are. | `every_view_resets_to_every_retained_root_and_reads_that_states_contents` |
+| HR-02 | Unknown roots are refused without effect. A digest absent from the store, another store's state root, the LMDB radix empty root, and the digest of an object of this store that is not a current or retained state are refused with `UnknownRootError` from every view, and the repository reports that it contains none of them; a hash of another length is refused with `InvalidRootHash`. No file of the store directory changes, and every view keeps its root and its reads. | `an_unknown_root_is_refused_and_changes_no_file` |
+| HR-03 | Reset is local. A reset, accepted or refused, reaches none of the 16 directory failpoints, so it performs no write and no sync through them, gives the same outcome with any one of them armed, and leaves the store directory unchanged. | `reset_performs_no_write_and_no_sync_under_every_directory_failpoint` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -8838,6 +8963,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-04 | `CrashRetryAuthority` | `EXEC_ONLY` | P | Partially entailed (task 12437): `PublicationBeforeReclamation` implies the invariant, and `Crash` and `Recover` leave `catalog` and `oldPresent` unchanged. The executable refinement obligation is that a process crash at each of the 18 publication points or after publication, a recovery, a second crash and a second recovery never delete an old file while the catalog selects the old generation. The crash is simulated inside the test process: the writer, every lease and the registry handle are dropped, and the process-wide registry of a directory whose packs were retired stays. Loss of unsynchronized writes on power failure is not simulated. |
 | GC-05 | `OperationRootRoleQuotient` | `EXEC_ONLY` | P | Partially entailed (task 12437): the invariant states that the reader, export and import tokens have their roles, are not WAL ids, need the same object closure and the exact generation, and need no WAL bytes. The store realizes each role as a `RetainedRootRegistryV1` row with a generation lease on the exact admitted generation. The executable refinement obligation is that the role changes no closure seed, revision, lease identity, release, reclamation deferral or store byte. Reclamation does not consult the process-local `RetainedRootRegistryV1`, so the generation lease realizes `exactGeneration`; registration writes no durable byte and pins nothing beyond the exact generation, which realizes the false `walBytes`. |
 | TX-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14302): the closure, every object once and parent-first, carried by the pages of a pinned export of a retained durable state. `RSpaceDagStateTransfer.tla` states the transfer contract over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents canonical objects, the export order or the page layout. |
+| HR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the contents that a view reset to a retained root reads. No model represents a durable view, its reset or its lazy reader's results. |
+| HR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the refusal, from every view, of roots that the owner's current ledger does not count, with no change to the store directory. No model states a lookup of a retained state by its manifest digest. |
+| HR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): a reset reaches no directory failpoint and changes no file. The failpoints are a test seam of the Rust I/O layer, which no model represents. |
 
 ## Generator discipline
 
@@ -9577,6 +9705,34 @@ workspace-regression registry hashes the manifest test's file and the
 persistence test module, both of which change, so it was regenerated, and the
 PathMap aggregate takes its new manifest digest. No persisted byte, record
 kind, root, identity or wire message changed.
+
+The 2026-11-11 durable history repository slice of task 7931 (task 14294)
+adds HR-01 to HR-03, the first HR rows, so the catalog/derivation/binding
+registry now contains **255** IDs. On an export of the candidate tree, which
+already holds the durable state root, empty durable store genesis, direct
+manifest identity, GC protection and durable state transfer export slices,
+the six tests of the new file passed in debug and in release together with
+the generation-checkpoint manifest test, and the whole library test target
+passed with 954 tests in both profiles (10 ignored). HR-01 checks three
+seeded scripts, with 7 states and 36 resets, and 24 generated ones, which
+each run draws afresh, and the seeded scripts alone reach every coverage
+counter. One production control made `reset_view` refuse every root but the
+owner's current one with `UnknownRootError`, which is a reset that resolves
+against the current state only. It made exactly two of the six tests fail.
+HR-01 failed at its first reset of a view to a retained state that was no
+longer current, and the unregistered genesis test failed because the
+store-genesis root was refused after a publication. HR-02, HR-03 and the
+other two tests passed: HR-02 asks only about roots that no state of the
+store has, and HR-03 compares each armed run with an unarmed run of the same
+repository. Clippy of `rspace_plus_plus` with every target lists no finding
+in the files of this slice, and `rustfmt --check` passes on its Rust files.
+The workspace-regression registry hashes three files that change, the
+manifest test's file, the persistence test module and `persistence/mod.rs`,
+so it was regenerated, and the PathMap aggregate takes its new manifest
+digest. A reset of this slice resolves its root and takes its read handle
+under the owner's lock; task `rspace-reset-durable-wiring` requires that a
+view-local reset does not take that lock. No persisted byte, record kind,
+root, identity or wire message changed.
 
 ## Caller-authority contract (2026-09-06)
 

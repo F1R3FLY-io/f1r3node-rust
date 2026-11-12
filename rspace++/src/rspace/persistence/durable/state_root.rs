@@ -5,7 +5,10 @@ use crate::rspace::errors::RootError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::persistence::canonical::OBJECT_DIGEST_LEN;
 use crate::rspace::persistence::closure::StructuralClosureLedgerV1;
-use crate::rspace::persistence::manifest::SEMANTIC_MANIFEST_MAX_CANONICAL_LEN;
+use crate::rspace::persistence::manifest::{
+    SEMANTIC_MANIFEST_MAX_CANONICAL_LEN, SEMANTIC_SCHEMA_EPOCH_V1, SemanticStateManifestV1,
+};
+use crate::rspace::persistence::object::CanonicalDagNode;
 use crate::rspace::persistence::{
     GenerationLeaseError, ImmutableObjectStore, ObjectDigest, ObjectRefV1, SemanticProfile,
     SemanticRoots, SemanticStateManifestView,
@@ -18,6 +21,18 @@ impl DurableStateRootV1 {
     pub(crate) const fn of_manifest(manifest: ObjectRefV1) -> Self { Self(manifest.digest()) }
 
     pub(crate) const fn digest(self) -> ObjectDigest { self.0 }
+
+    pub(crate) fn store_genesis<P: SemanticProfile>() -> Self {
+        let empty = CanonicalDagNode::empty().object_ref();
+        let roots = SemanticRoots {
+            data_bag: empty,
+            continuation_map: empty,
+            join_bag: empty,
+        };
+        let manifest = SemanticStateManifestV1::new(SEMANTIC_SCHEMA_EPOCH_V1, P::ID, roots, None)
+            .expect("the store-genesis manifest of three empty namespace roots is canonical");
+        Self::of_manifest(manifest.object_ref())
+    }
 }
 
 impl Display for DurableStateRootV1 {

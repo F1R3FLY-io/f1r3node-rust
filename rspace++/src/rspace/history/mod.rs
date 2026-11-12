@@ -8,6 +8,15 @@ pub(crate) mod roots_store;
 pub use roots_store::CurrentRoot;
 pub mod cold_store;
 pub mod history_repository_impl;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only unit tests construct the durable history repository until task \
+                  rspace-authority-durable-backend returns it from create_history_repo"
+    )
+)]
+pub(crate) mod durable_history_repository;
 
 // PartialEq needed here for testing purposes
 #[derive(Debug, PartialEq, Clone)]

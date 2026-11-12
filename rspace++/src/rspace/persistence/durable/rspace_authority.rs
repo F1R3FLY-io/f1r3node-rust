@@ -15,8 +15,14 @@ use super::admission::{
 use super::io::DurableWriterLeaseV1;
 use super::publication::{IncrementalPublicationErrorV1, publish_trusted_incremental_v1};
 use super::startup::recover_physical_from_lease_v1;
-use super::{CatalogSlotV1, DurableAuthorityViewV1, DurableObjectReadErrorV1};
-use crate::rspace::errors::RSpaceError;
+use super::state_root::{
+    DurableStateReadHandleErrorV1, DurableStateRootV1, ResolvedDurableStateV1,
+};
+use super::{
+    CatalogSlotV1, DurableAuthorityViewV1, DurableObjectReadErrorV1, DurableViewReadHandleV1,
+    require_shareable_read_handle,
+};
+use crate::rspace::errors::{RSpaceError, RootError};
 use crate::rspace::hot_store::{
     CapturedHotJournalV1, HotStore, mutation_batch_from_observation,
     stage_pending_continuation_sources,
@@ -337,6 +343,36 @@ where P::Channel: Clone + Hash + Eq
             } => generation_lease.key(),
             OwnerLifecycleV1::Closed { generation } => *generation,
         }
+    }
+
+    pub(crate) fn current_root(&self) -> DurableStateRootV1 {
+        DurableStateRootV1::of_manifest(self.source.authority().slot().state().manifest())
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        root: DurableStateRootV1,
+    ) -> Result<ResolvedDurableStateV1, RootError> {
+        self.source.resolve(root)
+    }
+
+    pub(crate) fn resolve_read_handle(
+        &self,
+        root: DurableStateRootV1,
+    ) -> Result<(ResolvedDurableStateV1, DurableViewReadHandleV1<P>), DurableStateReadHandleErrorV1>
+    {
+        const { require_shareable_read_handle::<DurableViewReadHandleV1<P>>() };
+        let resolved = self
+            .resolve(root)
+            .map_err(DurableStateReadHandleErrorV1::Root)?;
+        let lease = self
+            .registry
+            .acquire(GenerationLeaseKeyV1::from_catalog(self.source.authority().slot()))?;
+        Ok((resolved, DurableViewReadHandleV1 {
+            core: Arc::clone(&self.source),
+            manifest: resolved.manifest(),
+            _lease: lease,
+        }))
     }
 
     pub(crate) fn attach(

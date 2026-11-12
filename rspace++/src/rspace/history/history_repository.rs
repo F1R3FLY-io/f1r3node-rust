@@ -8,6 +8,7 @@ use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::history::history::HistoryInstances;
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
+use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::roots_store::CurrentRoot;
 use crate::rspace::hot_store_action::HotStoreAction;
 use crate::rspace::hot_store_trie_action::HotStoreTrieAction;
@@ -65,6 +66,8 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
     ) -> Result<RSpaceHistoryReaderImpl<C, P, A, K>, HistoryError>;
 
     fn root(&self) -> Blake2b256Hash;
+
+    fn empty_root(&self) -> Blake2b256Hash { RadixHistory::empty_root_node_hash() }
 
     fn contains_verified_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError>;
 

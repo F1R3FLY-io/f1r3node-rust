@@ -50,7 +50,10 @@ pub(crate) use durable::{
     INDEX_RECORD_LEN_V1, IndexFormatError, IndexGenerationV1, ObjectIndexFileViewV1,
     ObjectIndexHeaderV1, ObjectLocationV1, PACK_HEADER_LEN_V1, PackFormatError, PackHeaderV1,
 };
-pub(crate) use durable::{DurableAuthorityViewV1, DurableObjectReadErrorV1};
+pub(crate) use durable::{
+    DurableAuthorityViewV1, DurableObjectReadErrorV1, DurableRSpaceAuthorityV1,
+    DurableStateReadHandleErrorV1, DurableStateRootV1, DurableViewReaderV1,
+};
 pub(crate) use manifest::AcceleratorManifestView;
 #[cfg(test)]
 pub(crate) use manifest::{

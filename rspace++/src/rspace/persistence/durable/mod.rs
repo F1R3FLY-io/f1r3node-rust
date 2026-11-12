@@ -135,17 +135,14 @@ pub(crate) use startup::{
     DurableStoreGenesisErrorV1, DurableStoreGenesisStepV1, arm_durable_store_genesis_failpoint,
     create_empty_store_v1, start_durable_store_genesis_trace, take_durable_store_genesis_trace,
 };
+pub(crate) use state_root::{DurableStateReadHandleErrorV1, DurableStateRootV1};
 #[cfg(test)]
-pub(crate) use state_root::{
-    DurableStateReadHandleErrorV1, DurableStateRootV1, ResolvedDurableStateV1,
-    resolve_retained_state,
-};
+pub(crate) use state_root::{ResolvedDurableStateV1, resolve_retained_state};
 #[cfg(test)]
 pub(crate) use transfer_export::{
     DurableExportSessionV1, TransferBindingV1, TransferExportErrorV1, TransferPageFormatErrorV1,
     TransferPageLimitsV1, TransferPageViewV1, TransferTokenV1,
 };
-#[cfg(test)]
 pub(crate) use view_reader::DurableViewReaderV1;
 
 /// Restart-recovered semantic authority exposed as a read-only view.

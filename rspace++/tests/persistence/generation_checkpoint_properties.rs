@@ -400,7 +400,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
         "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI", "SW", "OG", "VR", "DI", "SG",
-        "GC", "TX",
+        "GC", "TX", "HR",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -714,6 +714,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("checkpoint_wal.rs"),
         include_str!("cow_reachability_ledger_properties.rs"),
         include_str!("durable_catalog.rs"),
+        include_str!("durable_history_repository.rs"),
         include_str!("durable_publication.rs"),
         include_str!("durable_read_handle.rs"),
         include_str!("durable_recovery.rs"),

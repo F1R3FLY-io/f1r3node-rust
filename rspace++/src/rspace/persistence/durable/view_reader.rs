@@ -17,14 +17,6 @@ pub(crate) struct DurableViewReaderV1<P: SemanticProfile> {
 }
 
 impl<P: SemanticProfile> DurableViewReaderV1<P> {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only unit tests read through a durable view reader until task 12399 \
-                      bootstraps the hot store from it"
-        )
-    )]
     pub(crate) fn new(handle: DurableViewReadHandleV1<P>, roots: SemanticRoots) -> Self {
         Self {
             handle,
