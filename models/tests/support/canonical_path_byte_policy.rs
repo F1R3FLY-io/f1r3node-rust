@@ -6,7 +6,7 @@ fn origin(index: usize) -> CanonicalByteProvenance {
     CanonicalByteProvenance::new(3 + (index % 7) as u32, 17 + index * 11)
 }
 
-fn populated(bytes: &[u8]) -> (CanonicalBytesArena, CanonicalBytesHandle) {
+fn populated(bytes: &[u8]) -> (CanonicalBytesArena<'_>, CanonicalBytesHandle) {
     let mut arena = CanonicalBytesArena::new();
     let mut handle = arena.empty();
     for (index, byte) in bytes.iter().copied().enumerate() {

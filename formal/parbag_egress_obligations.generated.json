@@ -1406,7 +1406,7 @@
     "formal/verus/rspace_canonical_egress.rs": "92897d041c846ba513d875ea0b1c986ab0841880779107ab3abade4b1bc6c997",
     "models/Cargo.toml": "2cbb1425f54dfd37599dbb5298c6449ed7761419b77dc4dd43af21bf1640fc53",
     "models/tests/par_protobuf_stack_safety.rs": "991d21786b1e463da13a1c6d84b7edcbc83d92f90c9c4bde7bcfc105de65bb35",
-    "models/tests/protobuf_encoder_space.rs": "29484d06eee89826cdacbdb716cd5e888c9c961e661e3afdac93d513e6eb7fe0"
+    "models/tests/protobuf_encoder_space.rs": "9e5464f3fe646b8c97e13ef8496c58c58b993d56190d86389ee3f3b8a9a9533b"
   },
   "tlc": [
     {

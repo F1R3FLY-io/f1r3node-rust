@@ -28,8 +28,7 @@
 //! divergence produced the regression, and a claim measured for one and not the other is how
 //! that divergence survived.
 
-use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, Expr, New, Par};
+use models::rhoapi::{EList, New, Par};
 use models::rust::rhoapi_ext::EPathMap;
 use models::rust::rholang::protobuf_encoder::{
     frame_size, len_table_size, op_size, try_visit_par_slots,

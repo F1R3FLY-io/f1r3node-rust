@@ -12,7 +12,7 @@ fn origin(index: usize) -> CanonicalByteProvenance {
 fn frozen(
     bytes: &[u8],
 ) -> (
-    CanonicalBytesArena,
+    CanonicalBytesArena<'_>,
     CanonicalBytesHandle,
     OwnedIndexedByteRegion,
 ) {

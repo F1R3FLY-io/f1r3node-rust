@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use pathmap::utils::BitMask;
 use pathmap::zipper::{Zipper, ZipperForking};
 use proptest::prelude::*;
 

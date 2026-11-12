@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use super::support::encode;
 use crate::rspace::persistence::{
-    CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore, ImmutableObjectStore,
-    MutableObjectStore, ObjectAdmission, ObjectDigest, ObjectRefV1,
+    CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore, MutableObjectStore,
+    ObjectAdmission, ObjectDigest, ObjectRefV1,
 };
 
 #[test]
