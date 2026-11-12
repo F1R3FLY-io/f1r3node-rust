@@ -202,7 +202,13 @@ impl F1r3flyServer {
 
         tracing::info!("F1r3fly server listening on {}", self.bind_addr);
 
-        Ok(self.incoming_from(TcpListenerStream::new(listener)))
+        Ok(self.incoming_from_listener(listener))
+    }
+
+    /// Serve from a listener the caller already bound, so the caller knows
+    /// the port before the server starts and no other process can take it.
+    pub fn incoming_from_listener(self, listener: TcpListener) -> F1r3flyIncoming {
+        self.incoming_from(TcpListenerStream::new(listener))
     }
 
     fn incoming_from<S>(self, mut tcp_listener_stream: S) -> F1r3flyIncoming
