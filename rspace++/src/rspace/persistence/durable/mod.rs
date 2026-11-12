@@ -27,6 +27,7 @@ mod reclaim;
 mod recovery;
 mod rspace_authority;
 mod startup;
+mod view_reader;
 
 pub(crate) use admission::{
     AdmittedCheckpointSourceV1, DurableAdmissionErrorV1, DurableAdmissionLimitsV1,
@@ -116,6 +117,8 @@ pub(crate) use startup::{
 };
 #[cfg(test)]
 pub(crate) use startup::{DurableStartupHookPointV1, arm_durable_startup_hook};
+#[cfg(test)]
+pub(crate) use view_reader::DurableViewReaderV1;
 
 /// Restart-recovered semantic authority exposed as a read-only view.
 ///
@@ -246,51 +249,14 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     where
         P::Datum: Clone + ColdStoreDecode + RhoPathEncode + serde::Serialize,
     {
-        let roots = self.semantic_roots()?;
-        let prefix = RhoPathV1::datum_prefix(channel);
-        let mut result = Vec::new();
-        self.writer.verified_state().visit_endpoints_under_prefix(
-            roots.data_bag,
-            &prefix,
+        data_for_channel_at(
+            self.verified_state(),
+            &self.semantic_roots()?,
+            channel,
             max_steps,
             max_endpoints,
-            |path, endpoint| {
-                let (datum, multiplicity) =
-                    crate::rspace::persistence::semantic::decode_data_endpoint::<P::Datum>(
-                        path, endpoint,
-                    )
-                    .map_err(ClosureError::Format)?;
-                let count = multiplicity.get();
-                let next = result.len() as u64 + count;
-                if next > max_values {
-                    return Err(ClosureError::Format(
-                        crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
-                            resource: "durable data materialization",
-                            limit: max_values,
-                            attempted: next,
-                        },
-                    ));
-                }
-                let count = usize::try_from(count).map_err(|_| {
-                    ClosureError::Format(
-                        crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
-                            field: "durable data multiplicity",
-                            value: multiplicity.get(),
-                        },
-                    )
-                })?;
-                result.try_reserve(count).map_err(|_| {
-                    ClosureError::Format(
-                        crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
-                            requested: count as u64,
-                        },
-                    )
-                })?;
-                result.extend(std::iter::repeat_n(datum, count));
-                Ok(())
-            },
-        )?;
-        Ok(result)
+            max_values,
+        )
     }
 
     /// Decode authenticated continuation records for one exact ordered
@@ -312,28 +278,14 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
         P::Pattern: Clone + ColdStoreDecode + StableHashSerialize,
         P::Continuation: Clone + ColdStoreDecode + StableHashSerialize,
     {
-        let roots = self.semantic_roots()?;
-        let prefix = RhoPathV1::continuation_prefix(channels);
-        let state = self.verified_state();
-        let mut result = Vec::new();
-        state.visit_endpoints_under_prefix(
-            roots.continuation_map,
-            &prefix,
+        continuations_for_channels_at(
+            self.verified_state(),
+            &self.semantic_roots()?,
+            channels,
             max_steps,
             max_endpoints,
-            |path, endpoint| {
-                result.push(crate::rspace::persistence::semantic::decode_continuation_endpoint::<
-                    P::Channel,
-                    P::Pattern,
-                    P::Continuation,
-                    _,
-                >(
-                    state.object_store(), path, endpoint, max_payload_bytes
-                )?);
-                Ok(())
-            },
-        )?;
-        Ok(result)
+            max_payload_bytes,
+        )
     }
 
     /// Decode authenticated JoinBag records for one indexed channel.  Each
@@ -349,51 +301,14 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     where
         P::Channel: Clone + ColdStoreDecode,
     {
-        let roots = self.semantic_roots()?;
-        let prefix = RhoPathV1::join_prefix(channel);
-        let mut result = Vec::new();
-        self.writer.verified_state().visit_endpoints_under_prefix(
-            roots.join_bag,
-            &prefix,
+        joins_for_channel_at(
+            self.verified_state(),
+            &self.semantic_roots()?,
+            channel,
             max_steps,
             max_endpoints,
-            |path, endpoint| {
-                let (join, multiplicity) =
-                    crate::rspace::persistence::semantic::decode_join_endpoint::<P::Channel>(
-                        path, endpoint,
-                    )
-                    .map_err(ClosureError::Format)?;
-                let count = multiplicity.get();
-                let next = result.len() as u64 + count;
-                if next > max_values {
-                    return Err(ClosureError::Format(
-                        crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
-                            resource: "durable join materialization",
-                            limit: max_values,
-                            attempted: next,
-                        },
-                    ));
-                }
-                let count = usize::try_from(count).map_err(|_| {
-                    ClosureError::Format(
-                        crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
-                            field: "durable join multiplicity",
-                            value: multiplicity.get(),
-                        },
-                    )
-                })?;
-                result.try_reserve(count).map_err(|_| {
-                    ClosureError::Format(
-                        crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
-                            requested: count as u64,
-                        },
-                    )
-                })?;
-                result.extend(std::iter::repeat_with(|| join.clone()).take(count));
-                Ok(())
-            },
-        )?;
-        Ok(result)
+            max_values,
+        )
     }
 
     /// Enumerate the authenticated DataBag without converting it through a
@@ -547,6 +462,156 @@ impl<P: SemanticProfile> DurableViewReadHandleV1<P> {
             .semantic_manifest()
             .map(|manifest| manifest.roots())
     }
+}
+
+fn data_for_channel_at<P: SemanticProfile, E: Copy>(
+    state: VerifiedDagState<'_, DurableIndexedObjectStoreV1, P, E>,
+    roots: &SemanticRoots,
+    channel: &P::Channel,
+    max_steps: u64,
+    max_endpoints: u64,
+    max_values: u64,
+) -> Result<Vec<crate::rspace::internal::Datum<P::Datum>>, ClosureError<DurableObjectReadErrorV1>>
+where
+    P::Datum: Clone + ColdStoreDecode + RhoPathEncode + serde::Serialize,
+{
+    let prefix = RhoPathV1::datum_prefix(channel);
+    let mut result = Vec::new();
+    state.visit_endpoints_under_prefix(
+        roots.data_bag,
+        &prefix,
+        max_steps,
+        max_endpoints,
+        |path, endpoint| {
+            let (datum, multiplicity) =
+                crate::rspace::persistence::semantic::decode_data_endpoint::<P::Datum>(
+                    path, endpoint,
+                )
+                .map_err(ClosureError::Format)?;
+            let count = multiplicity.get();
+            let next = result.len() as u64 + count;
+            if next > max_values {
+                return Err(ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
+                        resource: "durable data materialization",
+                        limit: max_values,
+                        attempted: next,
+                    },
+                ));
+            }
+            let count = usize::try_from(count).map_err(|_| {
+                ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
+                        field: "durable data multiplicity",
+                        value: multiplicity.get(),
+                    },
+                )
+            })?;
+            result.try_reserve(count).map_err(|_| {
+                ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
+                        requested: count as u64,
+                    },
+                )
+            })?;
+            result.extend(std::iter::repeat_n(datum, count));
+            Ok(())
+        },
+    )?;
+    Ok(result)
+}
+
+fn continuations_for_channels_at<P: SemanticProfile, E: Copy>(
+    state: VerifiedDagState<'_, DurableIndexedObjectStoreV1, P, E>,
+    roots: &SemanticRoots,
+    channels: &[P::Channel],
+    max_steps: u64,
+    max_endpoints: u64,
+    max_payload_bytes: u64,
+) -> Result<
+    Vec<crate::rspace::internal::WaitingContinuation<P::Pattern, P::Continuation>>,
+    ClosureError<DurableObjectReadErrorV1>,
+>
+where
+    P::Channel: Clone + RhoPathEncode,
+    P::Pattern: Clone + ColdStoreDecode + StableHashSerialize,
+    P::Continuation: Clone + ColdStoreDecode + StableHashSerialize,
+{
+    let prefix = RhoPathV1::continuation_prefix(channels);
+    let mut result = Vec::new();
+    state.visit_endpoints_under_prefix(
+        roots.continuation_map,
+        &prefix,
+        max_steps,
+        max_endpoints,
+        |path, endpoint| {
+            result.push(crate::rspace::persistence::semantic::decode_continuation_endpoint::<
+                P::Channel,
+                P::Pattern,
+                P::Continuation,
+                _,
+            >(state.object_store(), path, endpoint, max_payload_bytes)?);
+            Ok(())
+        },
+    )?;
+    Ok(result)
+}
+
+fn joins_for_channel_at<P: SemanticProfile, E: Copy>(
+    state: VerifiedDagState<'_, DurableIndexedObjectStoreV1, P, E>,
+    roots: &SemanticRoots,
+    channel: &P::Channel,
+    max_steps: u64,
+    max_endpoints: u64,
+    max_values: u64,
+) -> Result<Vec<Vec<P::Channel>>, ClosureError<DurableObjectReadErrorV1>>
+where
+    P::Channel: Clone + ColdStoreDecode,
+{
+    let prefix = RhoPathV1::join_prefix(channel);
+    let mut result = Vec::new();
+    state.visit_endpoints_under_prefix(
+        roots.join_bag,
+        &prefix,
+        max_steps,
+        max_endpoints,
+        |path, endpoint| {
+            let (join, multiplicity) =
+                crate::rspace::persistence::semantic::decode_join_endpoint::<P::Channel>(
+                    path, endpoint,
+                )
+                .map_err(ClosureError::Format)?;
+            let count = multiplicity.get();
+            let next = result.len() as u64 + count;
+            if next > max_values {
+                return Err(ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
+                        resource: "durable join materialization",
+                        limit: max_values,
+                        attempted: next,
+                    },
+                ));
+            }
+            let count = usize::try_from(count).map_err(|_| {
+                ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
+                        field: "durable join multiplicity",
+                        value: multiplicity.get(),
+                    },
+                )
+            })?;
+            result.try_reserve(count).map_err(|_| {
+                ClosureError::Format(
+                    crate::rspace::persistence::CanonicalFormatError::AllocationFailure {
+                        requested: count as u64,
+                    },
+                )
+            })?;
+            result.extend(std::iter::repeat_with(|| join.clone()).take(count));
+            Ok(())
+        },
+    )?;
+    Ok(result)
 }
 
 const fn require_shareable_read_handle<T: Send + Sync + 'static>() {}

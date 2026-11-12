@@ -710,6 +710,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("durable_read_handle.rs"),
         include_str!("durable_recovery.rs"),
         include_str!("durable_rspace_authority.rs"),
+        include_str!("durable_view_reader.rs"),
         include_str!("generation_checkpoint_properties.rs"),
         include_str!("incremental_reachability_properties.rs"),
         include_str!("owner_checkpoint_view.rs"),

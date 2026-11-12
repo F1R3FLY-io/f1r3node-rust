@@ -2567,7 +2567,7 @@ pub(crate) enum DurableHotStoreBootstrapError {
     },
 }
 
-struct ClosedDurableHistoryReader;
+pub(crate) struct ClosedDurableHistoryReader;
 
 impl<C: Clone, P: Clone, A: Clone, K: Clone> HistoryReaderBase<C, P, A, K>
     for ClosedDurableHistoryReader

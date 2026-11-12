@@ -7678,6 +7678,143 @@ these properties, and each adds its OG rows when it lands.
 | `SpawnSharesOwner` | None yet | Leaf G19 adds its row when spawn attaches through the owner |
 | `PendingResolves`, `NeverReconciledByOtherView` | None yet | The owner's handling of another view's record is decided with the view layer, as the row for `ReconcileFirst` in the checkpoint views section records |
 
+### Lazy durable view reader (2026-11-11)
+
+The [generation-leased read handle](#generation-leased-durable-read-handle-2026-11-01)
+keeps a durable generation readable after the owner has taken over, but it
+reads nothing beyond the semantic roots. This slice, the second leaf of the
+view seam (task 12396), reads channel state through such a handle, one key at
+a time. `DurableViewReaderV1`, in
+[`view_reader.rs`](../../../rspace++/src/rspace/persistence/durable/view_reader.rs),
+implements `HistoryReaderBase`, the trait through which the hot store reads
+channel state that it does not hold in memory. A reader holds three parts:
+
+| Part | What it provides |
+|---|---|
+| A `DurableViewReadHandleV1` | The shared core of one generation, that is, its pinned object index and open pack handles, and the lease that keeps the generation from reclamation. |
+| Explicit `SemanticRoots` | The namespace roots of the state that the reader reads: the generation's current state or any state that the generation retains. |
+| `DurableHotStoreBootstrapLimits` | The startup budgets of [`hot_store.rs`](../../../rspace++/src/rspace/hot_store.rs). `new` leaves them unbounded, so that they never bind on a state that the legacy store accepts; `with_limits` sets them. |
+
+Each call visits one prefix of one namespace and decodes the records under
+it:
+
+| Method | Namespace root | Prefix | Budgets |
+|---|---|---|---|
+| `get_data_canonical(channel)` | `data_bag` | `RhoPathV1::datum_prefix(channel)` | Steps and endpoints. |
+| `get_continuations_canonical(channels)` | `continuation_map` | `RhoPathV1::continuation_prefix(channels)` | Steps, endpoints, and the source payload bytes of each continuation. |
+| `get_joins_canonical(channel)` | `join_bag` | `RhoPathV1::join_prefix(channel)` | Steps, endpoints and join occurrences. |
+
+The budgets have no field for datum occurrences, and the eager bootstrap
+binds none, so the data read passes an unbounded occurrence limit. Expanding
+a datum's multiplicity still fails with a typed allocation error when the
+memory cannot be reserved, except in one case inherited from the view, which
+is described after the rulings below. The reader reads no manifest after it
+is built: its results depend only on its roots and on the immutable objects
+of its generation, so a successor that the owner publishes later cannot
+change them.
+
+**One decode path.** The bodies of the view's `data_for_channel`,
+`continuations_for_channels` and `joins_for_channel` in
+[`mod.rs`](../../../rspace++/src/rspace/persistence/durable/mod.rs) moved
+unchanged into the private functions `data_for_channel_at`,
+`continuations_for_channels_at` and `joins_for_channel_at`, which take the
+verified state and the roots as arguments. The view methods keep their
+signatures and pass their own verified state and the roots of their
+manifest; the reader passes its handle's shared core and its pinned roots.
+A data or join record expands to as many values as its multiplicity, and a
+continuation record loads its source blob through the pinned index, which
+checks the blob's length and digest before the blob is decoded.
+
+**Rulings D1 and D2** (pgmcp note 27611) fix two choices:
+
+- D1, literal groups. A receive group is read at the prefix of its channels in
+  the given order. `(a,b)` and `(b,a)` are therefore different groups, and a
+  group that repeats a channel, such as `(a,a)`, is a group of its own. In the
+  RhoPathV1 key, a zero byte inside a channel frame is written `00 FF`, each
+  frame ends with `00 00`, and the group ends with `00 01`, so no group's
+  prefix is a prefix of another group's records: reading `(c,a)` does not see
+  the records of `(c,a,b)`. There is no alias resolution, key map or facet.
+- D2, fail closed. A read or limit error panics with the typed error, as the
+  legacy history reader's `.expect` calls do. An empty `Vec` means only that
+  the authenticated prefix holds no record.
+
+**A gap in D2, inherited from the view.** The data read counts the values
+that it has expanded with `result.len() as u64 + count`. The hot store
+accepts, and the owner publishes, a channel whose datum multiplicities sum
+past `u64::MAX`, for instance one record of multiplicity 1 and one of
+multiplicity `u64::MAX`. When the larger record is visited second, the sum
+overflows. A build with overflow checks, such as the debug test profile,
+then panics with Rust's untyped "attempt to add with overflow", in the view's
+`data_for_channel` and in the reader alike. A release build wraps the sum and
+fails at the allocation with the typed `AllocationFailure`. Both fail closed,
+but only the release build panics with a typed error. The join read counts
+occurrences in the same way. This slice moved the bodies unchanged and does
+not change the count.
+
+`ClosedDurableHistoryReader`, the reader that the eager bootstrap installs in
+the hot store and that answers every query with an empty `Vec`, is now
+`pub(crate)`, so that a test can put the same query to both readers. Only
+unit tests construct the new reader until task 12399 bootstraps the hot store
+from it. The RhoPathV1 key grammar is unchanged, and no persisted byte, root
+or wire message changes.
+
+**Tests.** The module
+[`durable_view_reader.rs`](../../../rspace++/tests/persistence/durable_view_reader.rs)
+builds each durable state by putting records into the hot store of a fresh
+durable owner, publishing them and recovering a view of the published state:
+
+1. `lazy_reads_equal_the_eager_enumerations_of_every_key` (VR-02) uses the
+   channels `a`, `b` and `c`, the values `v0` to `v2` and the bodies `k0` and
+   `k1`. A state puts up to seven data and up to five continuations on the
+   groups `(a)`, `(b)`, `(a,b)`, `(b,a)`, `(a,a)` and `(c,a,b)`, each
+   continuation with a join for every distinct channel of its group. Three
+   seeded states and 64 generated ones are checked. For each state, the eager
+   enumerations must equal the records put, so that neither side is empty by
+   accident. The reader's results for every channel, for the six groups and
+   for the unstored groups `(c)`, `(c,a)` and `(a,b,c)` must equal the eager
+   `data_entries`, `continuation_entries` and `join_entries` restricted to
+   that key, with multiplicities expanded, in the same order. The test
+   asserts that each of these cases occurred: an empty state, a channel with
+   two datum records, a datum of multiplicity two, a group with two
+   continuations, both orders of one pair, a group that repeats a channel, a
+   stored group that extends the probed group `(c,a)`, and a channel that is
+   in only one of the data and join namespaces.
+2. `lazy_reads_return_the_pinned_state_after_a_successor_is_published`
+   (VR-03) takes a reader from a recovered view before
+   `into_rspace_authority`. The owner then publishes and acknowledges a
+   successor that removes and adds records in all three namespaces. The
+   reader must return the old state's eager enumerations while the owner
+   holds the successor and after the owner is torn down. The successor's
+   enumerations must differ from them in every namespace, and a reader on the
+   successor's generation with the old roots, which the successor retains,
+   must return the old state too.
+3. `a_receive_group_is_read_only_at_its_literal_ordered_prefix` (VR-07)
+   publishes records under `(a,b)` only, under `(b,a)` only, and under both
+   with different bodies. Each group must return exactly its own records,
+   and `(a)`, `(b)` and `(a,a)` must return none.
+4. `a_corrupted_continuation_source_panics_with_its_typed_error_where_the_closed_reader_is_empty`
+   flips the last byte of a continuation's source blob in its pack file after
+   the view has admitted the generation. `ClosedDurableHistoryReader` returns
+   an empty `Vec` for the group. The view's own read returns the typed
+   `DigestMismatch` whose expected digest is the reference's and whose actual
+   digest is that of the corrupted bytes, and the reader panics with exactly
+   that error in its message.
+5. `every_reader_limit_binds_its_read_and_panics_with_the_typed_error` finds,
+   for each read and each budget that applies to it, the least budget with
+   which the view's own read succeeds. The reader must return the unbounded
+   result at that budget, and must panic one below it, with the view's typed
+   error at that budget in its message.
+
+Tests 4 and 5 check ruling D2 and are bound to no ID.
+
+**The VR rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| VR-02 | Lazy reads equal the eager enumerations. For a published durable state, a `DurableViewReaderV1` over a read handle and the state's own roots returns, for every channel, the datums of the eager `data_entries` on that channel; for every ordered channel group, the continuations of the eager `continuation_entries` under exactly that group; and, for every channel, the joins of the eager `join_entries` on that channel; with multiplicities expanded and in the eager order. A key without records returns an empty `Vec`. | `lazy_reads_equal_the_eager_enumerations_of_every_key` |
+| VR-03 | Pinned reads. A reader built from a durable view's read handle and that view's roots before `into_rspace_authority` returns the view's state while the owner holds a published successor and after the owner is torn down, although the successor's state differs in the data, continuation and join namespaces. A reader on the successor's generation with the retained predecessor's roots returns the predecessor's state. | `lazy_reads_return_the_pinned_state_after_a_successor_is_published` |
+| VR-07 | Literal ordered groups. A continuation read visits only the prefix of its channels in the given order. With records under `(a,b)` only, reading `(b,a)` returns an empty `Vec`; with records under `(b,a)` only, reading `(a,b)` returns an empty `Vec`; with records under both, each group returns exactly its own. A group that repeats a channel of the pair, and either channel alone, return none. | `a_receive_group_is_read_only_at_its_literal_ordered_prefix` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -7920,6 +8057,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | OG-12 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result types of the legacy facet accessors and the conversion of an unavailable facet into each caller's error type. No model states a property of Rust accessor results or error types. |
 | OG-39 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result of the RSpace constructors when the history repository refuses the store. No model states a property of Rust constructor results or panics. |
 | VR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12397): the lease count, lease key activity and reclamation decision of a durable read handle across a successor and owner teardown. It witnesses the caller registry's CA-21, `pinned_generation_cannot_be_reclaimed`, and CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite: listing `RSpaceCallerAuthority.v` among its Rocq sources would oblige a row here for every capstone of that file. |
+| VR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the per-key results of a lazy durable reader against the eager enumerations of the same published state. No model states a property of the reader's Rust results, and both sides decode through the same functions. |
+| VR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the results of a lazy durable reader after a successor is published, after owner teardown, and on the successor's generation with the retained predecessor's roots. Like VR-01, it witnesses the caller registry's CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite, for the reason given at VR-01. |
+| VR-07 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the literal ordered prefix of a continuation read, ruling D1. This matrix cites no model of RhoPathV1 group prefixes, and no model states a property of the reader's Rust results. |
 
 ## Generator discipline
 
@@ -8451,6 +8591,39 @@ takes its new manifest digest. No persisted byte, root, identity or wire
 message changed. See the durable owner checkpoint views section and pgmcp
 artifacts 1610 and 1611 for the gate and measurement logs, and 1612 for the
 full output of the first control.
+
+The 2026-11-11 lazy durable view reader slice of task 12398 adds VR-02, VR-03
+and VR-07, so the catalog/derivation/binding registry now contains **239**
+IDs. In a worker copy of the candidate tree, the five tests of the new module
+passed in debug and in release, and so did VR-01, the 20 durable owner tests,
+the 17 durable startup tests and the manifest test. VR-02 checked the three
+seeded states and 64 generated ones, and the seeded states alone covered
+every case that the test requires. Three production faults were each applied
+to the worker copy, run against the new module and removed, and each made
+the predicted tests fail:
+
+- The reader reading the roots of its handle's own generation instead of the
+  roots it was given made VR-03, and only VR-03, fail among the five tests: a
+  reader on the successor's generation, given the predecessor's roots, did
+  not return the predecessor's state.
+- Sorting a group's channels before its prefix is built made VR-07 fail,
+  because reading `(b,a)` with records under `(a,b)` only returned the
+  `(a,b)` continuation, and made VR-03 fail at its first comparison, because
+  its pinned state holds a `(b,a)` record. The corrupted-source and limit
+  tests passed. VR-02 was skipped in this run, so that its property runner
+  would not persist a regression file into the tree.
+- The reader's continuation read answering an empty `Vec` on any error, as
+  `ClosedDurableHistoryReader` does, instead of panicking made the
+  corrupted-source and limit tests, and only them, fail: the reader returned
+  an empty `Vec` for the corrupted group, and an empty result with a step
+  budget one below the requirement.
+
+Each faulted file was restored and compared byte for byte with its saved
+copy. A temporary test, run once in debug and once in release and then
+removed, showed the overflow gap described in the lazy durable view reader
+section. Clippy of `rspace_plus_plus` with every target and warnings denied
+lists no finding in the files of this slice, and `rustfmt --check` passes on
+its Rust files. No persisted byte, root, identity or wire message changed.
 
 ## Caller-authority contract (2026-09-06)
 

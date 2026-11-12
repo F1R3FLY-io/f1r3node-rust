@@ -16,6 +16,7 @@ mod durable_read_handle;
 mod durable_recovery;
 mod durable_rspace_authority;
 mod durable_startup;
+mod durable_view_reader;
 mod index_codec;
 mod incremental_prepare_streaming_properties;
 mod incremental_reachability_properties;
