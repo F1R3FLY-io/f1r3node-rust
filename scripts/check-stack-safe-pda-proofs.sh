@@ -2436,9 +2436,69 @@ if record_replay_skip_reset_mutant="$({
   exit 1
 fi
 printf '%s\n' "$record_replay_skip_reset_mutant"
-if ! grep -q 'Invariant ReplayCommitRequiresReactivation is violated' \
+if ! grep -q 'Invariant ReplayPreparationUsesRecordedBase is violated' \
     <<<"$record_replay_skip_reset_mutant"; then
-  echo "stack-safe-pda: record/replay skip-reset mutant failed without ReplayCommitRequiresReactivation" >&2
+  echo "stack-safe-pda: record/replay skip-reset mutant failed without ReplayPreparationUsesRecordedBase" >&2
+  exit 1
+fi
+if record_replay_reset_moves_authority_mutant="$({
+  tlc_run "$tla_metadir" \
+    RSpaceRecordReplayAuthorityLifecycleResetMovesAuthorityMutant.cfg \
+    RSpaceRecordReplayAuthorityLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$record_replay_reset_moves_authority_mutant"
+  echo "stack-safe-pda: record/replay reset-moves-authority mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$record_replay_reset_moves_authority_mutant"
+if ! grep -q 'Action property ReplayResetLeavesAuthorityUnchanged is violated' \
+    <<<"$record_replay_reset_moves_authority_mutant"; then
+  echo "stack-safe-pda: record/replay reset-moves-authority mutant failed without the action property ReplayResetLeavesAuthorityUnchanged" >&2
+  exit 1
+fi
+if record_replay_foreign_commit_while_reset="$({
+  tlc_run "$tla_metadir" \
+    RSpaceRecordReplayAuthorityLifecycleForeignCommitWhileResetWitness.cfg \
+    RSpaceRecordReplayAuthorityLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$record_replay_foreign_commit_while_reset"
+  echo "stack-safe-pda: record/replay foreign commit while the replayer is reset was unreachable" >&2
+  exit 1
+fi
+printf '%s\n' "$record_replay_foreign_commit_while_reset"
+if ! grep -q 'Invariant NeverForeignCommitWhileReplayReset is violated' \
+    <<<"$record_replay_foreign_commit_while_reset"; then
+  echo "stack-safe-pda: record/replay foreign-commit-while-reset witness failed without NeverForeignCommitWhileReplayReset" >&2
+  exit 1
+fi
+if record_replay_foreign_commit_while_prepared="$({
+  tlc_run "$tla_metadir" \
+    RSpaceRecordReplayAuthorityLifecycleForeignCommitWhilePreparedWitness.cfg \
+    RSpaceRecordReplayAuthorityLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$record_replay_foreign_commit_while_prepared"
+  echo "stack-safe-pda: record/replay foreign commit while the replayer is prepared was unreachable" >&2
+  exit 1
+fi
+printf '%s\n' "$record_replay_foreign_commit_while_prepared"
+if ! grep -q 'Invariant NeverForeignCommitWhileReplayPrepared is violated' \
+    <<<"$record_replay_foreign_commit_while_prepared"; then
+  echo "stack-safe-pda: record/replay foreign-commit-while-prepared witness failed without NeverForeignCommitWhileReplayPrepared" >&2
+  exit 1
+fi
+if record_replay_commit_across_foreign_commit="$({
+  tlc_run "$tla_metadir" \
+    RSpaceRecordReplayAuthorityLifecycleReplayCommitAcrossForeignCommitWitness.cfg \
+    RSpaceRecordReplayAuthorityLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$record_replay_commit_across_foreign_commit"
+  echo "stack-safe-pda: record/replay commit after a foreign commit that followed the replay reset was unreachable" >&2
+  exit 1
+fi
+printf '%s\n' "$record_replay_commit_across_foreign_commit"
+if ! grep -q 'Invariant NeverReplayCommitAcrossForeignCommit is violated' \
+    <<<"$record_replay_commit_across_foreign_commit"; then
+  echo "stack-safe-pda: record/replay commit-across-foreign-commit witness failed without NeverReplayCommitAcrossForeignCommit" >&2
   exit 1
 fi
 tlc_run "$tla_metadir" \

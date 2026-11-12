@@ -35,17 +35,17 @@ const REPLAY_BINDINGS: [Binding; 13] = [
     ),
     (
         "RR-07",
-        "SkipResetIsRejectedWithoutAuthorityMutation",
+        "ReplayResetLeavesAuthorityUnchanged",
         "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
     ),
     (
         "RR-08",
-        "ReplayCommitRequiresReactivation",
+        "ReplayCommitPublishesSuccessorOfRecordedBase",
         "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
     ),
     (
         "RR-09",
-        "ReplayPreparationUsesFreshExactBase",
+        "ReplayPreparationUsesRecordedBase",
         "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
     ),
     (
@@ -67,6 +67,29 @@ const REPLAY_BINDINGS: [Binding; 13] = [
         "RR-13",
         "ReplayLifecycleEventuallyCompletes",
         "epathmap_heavy_record_then_replay_reproduces_the_log",
+    ),
+];
+
+const REPLAY_PROPERTY_IDS: [&str; 3] = ["RR-07", "RR-10", "RR-13"];
+
+const REPLAY_WITNESSES: [(&str, &str); 3] = [
+    (
+        "NeverForeignCommitWhileReplayReset",
+        include_str!(
+            "../../formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleForeignCommitWhileResetWitness.cfg"
+        ),
+    ),
+    (
+        "NeverForeignCommitWhileReplayPrepared",
+        include_str!(
+            "../../formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleForeignCommitWhilePreparedWitness.cfg"
+        ),
+    ),
+    (
+        "NeverReplayCommitAcrossForeignCommit",
+        include_str!(
+            "../../formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleReplayCommitAcrossForeignCommitWitness.cfg"
+        ),
     ),
 ];
 
@@ -196,6 +219,13 @@ fn configured_obligations(config: &str) -> BTreeSet<&str> {
         .collect()
 }
 
+fn configured_with_directive<'a>(config: &'a str, directive: &str) -> BTreeSet<&'a str> {
+    config
+        .lines()
+        .filter_map(|line| line.strip_prefix(directive)?.strip_prefix(' '))
+        .collect()
+}
+
 fn verify_bindings(config: &str, bindings: &[Binding], sources: &str, catalog: &str) {
     let configured = configured_obligations(config);
     let mapped = bindings
@@ -235,6 +265,60 @@ fn verify_bindings(config: &str, bindings: &[Binding], sources: &str, catalog: &
         assert!(
             sources.contains(&format!("fn {target}(")),
             "formal row {id} names missing executable property {target}",
+        );
+    }
+}
+
+fn verify_obligation_kinds(config: &str, bindings: &[Binding], property_ids: &[&str]) {
+    let invariants = configured_with_directive(config, "INVARIANT");
+    let properties = configured_with_directive(config, "PROPERTY");
+    for id in property_ids {
+        assert!(
+            bindings.iter().any(|(bound, _, _)| bound == id),
+            "property row {id} must be a formal binding",
+        );
+    }
+    for (id, symbol, _) in bindings {
+        let (kind, expected, other) = if property_ids.contains(id) {
+            ("PROPERTY", &properties, &invariants)
+        } else {
+            ("INVARIANT", &invariants, &properties)
+        };
+        assert!(
+            expected.contains(symbol) && !other.contains(symbol),
+            "formal row {id} must be configured as {kind} {symbol}",
+        );
+    }
+}
+
+fn verify_witnesses(config: &str, model: &str, witnesses: &[(&str, &str)], catalog: &str) {
+    let base = configured_obligations(config);
+    for (statement, witness) in witnesses {
+        let obligations = witness
+            .lines()
+            .filter(|line| line.starts_with("INVARIANT") || line.starts_with("PROPERTY"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            obligations,
+            [format!("INVARIANT {statement}")],
+            "witness {statement} must be its configuration's only obligation",
+        );
+        assert!(
+            witness.lines().any(|line| line == "SPECIFICATION Spec"),
+            "witness {statement} must check the lifecycle specification",
+        );
+        assert!(
+            !base.contains(statement),
+            "witness {statement} must not be a base obligation",
+        );
+        assert_eq!(
+            model.matches(&format!("\n{statement} ==")).count(),
+            1,
+            "witness {statement} must be defined exactly once",
+        );
+        assert!(
+            catalog.contains(&format!("`{statement}`")),
+            "catalog must cite witness {statement}",
         );
     }
 }
@@ -298,12 +382,18 @@ fn every_workspace_regression_formal_obligation_has_an_executable_property() {
     let ffi_sources =
         include_str!("../../rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs");
 
-    verify_bindings(
+    let replay_config = include_str!(
+        "../../formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.cfg"
+    );
+
+    verify_bindings(replay_config, &REPLAY_BINDINGS, &replay_sources, catalog);
+    verify_obligation_kinds(replay_config, &REPLAY_BINDINGS, &REPLAY_PROPERTY_IDS);
+    verify_witnesses(
+        replay_config,
         include_str!(
-            "../../formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.cfg"
+            "../../formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.tla"
         ),
-        &REPLAY_BINDINGS,
-        &replay_sources,
+        &REPLAY_WITNESSES,
         catalog,
     );
     verify_bindings(

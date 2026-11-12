@@ -5,27 +5,45 @@ EXTENDS Integers, Naturals, TLC
 Lifecycle refinement for recording and replaying the same RSpace transition
 through one shared atomic checkpoint authority.
 
-The recorder starts at B and publishes T.  The replayer is then required to
-reactivate the known base B, freshly prepare B -> T at B's new generation,
-and only then publish T.  A replay attempted directly after the recorder's
-publication is stale even though its desired target is already T: authority
-is the exact (root, generation) pair, not target-root equality.
+The recorder starts at B and publishes T.  A foreign commit may then publish
+F once: before the replayer resets, while it is reset, or while it is
+prepared.  The replayer resets its own view to the recorded base B, which
+changes no authority variable, prepares B -> T from that base, and publishes
+T, the successor of its recorded base, at the current generation plus one,
+whichever of T and F is current.  Reset does not reactivate B, and the
+replay commit does not require B to be current.
 
-The control trace deliberately attempts the forbidden skip-reset transition
-and records its rejection without authority mutation before proceeding with
-the valid reset/prepare/replay lifecycle.  SkipResetAcceptanceMutantSpec is
-the negative control: it accepts that stale replay and must violate
-ReplayCommitRequiresReactivation.
+The replayer's reset and preparation write nothing to the shared authority,
+but a foreign commit may move the authority while the replayer is reset or
+prepared.  ReplayResetLeavesAuthorityUnchanged and
+ReplayPreparationLeavesAuthorityUnchanged are therefore action properties of
+the replayer's own reset and preparation steps, not comparisons with a
+snapshot held for a whole phase.  A step is the replayer's reset (or
+preparation) when it sets the replayer's own flag, whichever action takes it.
+
+SkipResetMutantSpec is the first negative control: the replayer skips the
+reset and prepares from the current root instead of its recorded base, and
+must violate ReplayPreparationUsesRecordedBase.  ResetMovesAuthorityMutantSpec
+is the second: the replayer's reset moves the current root back to B, and
+must violate the action property ReplayResetLeavesAuthorityUnchanged.  The
+three Never... statements are reachability witnesses, each of which must be
+violated.
 ***************************************************************************)
 
-Roots == {"B", "T"}
-Phases == {"initial", "played", "skip-rejected", "reset", "prepared", "complete"}
-HistoryKeys == {"h-B", "h-T"}
-ColdKeys == {"c-B", "c-T"}
-Values == {"v-B", "v-T"}
+Roots == {"B", "T", "F"}
+Phases == {"initial", "played", "reset", "prepared", "complete"}
+HistoryKeys == {"h-B", "h-T", "h-F"}
+ColdKeys == {"c-B", "c-T", "c-F"}
+Values == {"v-B", "v-T", "v-F"}
 
-RootHistory(root) == IF root = "B" THEN {"h-B"} ELSE {"h-T"}
-RootCold(root) == IF root = "B" THEN {"c-B"} ELSE {"c-T"}
+RootHistory(root) == CASE
+    root = "B" -> {"h-B"}
+    [] root = "T" -> {"h-T"}
+    [] root = "F" -> {"h-F"}
+RootCold(root) == CASE
+    root = "B" -> {"c-B"}
+    [] root = "T" -> {"c-T"}
+    [] root = "F" -> {"c-F"}
 Keys(objects) == {pair[1] : pair \in objects}
 ContentImmutable(objects) ==
     \A left, right \in objects:
@@ -36,27 +54,23 @@ Complete(root, history, cold) ==
 
 VARIABLES phase, currentRoot, generation, activationCount,
           verifiedRoots, historyObjects, coldObjects,
-          playHistory, playCold, playTarget,
-          skipResetAttempted, skipResetAccepted,
-          rejectionRoot, rejectionGeneration, rejectionActivationCount,
-          rejectionVerifiedRoots, rejectionHistory, rejectionCold,
-          replayResetObserved, resetRoot, resetGeneration,
-          replayPrepared, replayBaseRoot, replayBaseGeneration, replayTarget,
-          prepareRoot, prepareGeneration, prepareActivationCount,
-          prepareVerifiedRoots, prepareHistory, prepareCold,
-          replayCommitted
+          recordedBase, playHistory, playCold, playTarget, foreignPublished,
+          replayResetObserved, replayViewRoot, resetRoot,
+          replayPrepared, replayBaseRoot, replayTarget, prepareRoot,
+          replayCommitted, commitRoot, commitGeneration
 
 vars == <<phase, currentRoot, generation, activationCount,
           verifiedRoots, historyObjects, coldObjects,
-          playHistory, playCold, playTarget,
-          skipResetAttempted, skipResetAccepted,
-          rejectionRoot, rejectionGeneration, rejectionActivationCount,
-          rejectionVerifiedRoots, rejectionHistory, rejectionCold,
-          replayResetObserved, resetRoot, resetGeneration,
-          replayPrepared, replayBaseRoot, replayBaseGeneration, replayTarget,
-          prepareRoot, prepareGeneration, prepareActivationCount,
-          prepareVerifiedRoots, prepareHistory, prepareCold,
-          replayCommitted>>
+          recordedBase, playHistory, playCold, playTarget, foreignPublished,
+          replayResetObserved, replayViewRoot, resetRoot,
+          replayPrepared, replayBaseRoot, replayTarget, prepareRoot,
+          replayCommitted, commitRoot, commitGeneration>>
+
+AuthorityVars == <<currentRoot, generation, activationCount, verifiedRoots,
+                   historyObjects, coldObjects>>
+
+ForeignHistory == IF foreignPublished THEN {<<"h-F", "v-F">>} ELSE {}
+ForeignCold == IF foreignPublished THEN {<<"c-F", "v-F">>} ELSE {}
 
 Init ==
     /\ phase = "initial"
@@ -66,36 +80,25 @@ Init ==
     /\ verifiedRoots = {"B"}
     /\ historyObjects = {<<"h-B", "v-B">>}
     /\ coldObjects = {<<"c-B", "v-B">>}
+    /\ recordedBase = currentRoot
     /\ playHistory = historyObjects
     /\ playCold = coldObjects
     /\ playTarget = "T"
-    /\ skipResetAttempted = FALSE
-    /\ skipResetAccepted = FALSE
-    /\ rejectionRoot = currentRoot
-    /\ rejectionGeneration = generation
-    /\ rejectionActivationCount = activationCount
-    /\ rejectionVerifiedRoots = verifiedRoots
-    /\ rejectionHistory = historyObjects
-    /\ rejectionCold = coldObjects
+    /\ foreignPublished = FALSE
     /\ replayResetObserved = FALSE
+    /\ replayViewRoot = currentRoot
     /\ resetRoot = currentRoot
-    /\ resetGeneration = generation
     /\ replayPrepared = FALSE
     /\ replayBaseRoot = currentRoot
-    /\ replayBaseGeneration = generation
     /\ replayTarget = "T"
     /\ prepareRoot = currentRoot
-    /\ prepareGeneration = generation
-    /\ prepareActivationCount = activationCount
-    /\ prepareVerifiedRoots = verifiedRoots
-    /\ prepareHistory = historyObjects
-    /\ prepareCold = coldObjects
     /\ replayCommitted = FALSE
+    /\ commitRoot = currentRoot
+    /\ commitGeneration = generation
 
 PlayCommit ==
     /\ phase = "initial"
-    /\ currentRoot = "B"
-    /\ generation = 0
+    /\ recordedBase \in verifiedRoots
     /\ historyObjects' = historyObjects \union {<<"h-T", "v-T">>}
     /\ coldObjects' = coldObjects \union {<<"c-T", "v-T">>}
     /\ verifiedRoots' = verifiedRoots \union {"T"}
@@ -105,107 +108,74 @@ PlayCommit ==
     /\ playHistory' = historyObjects'
     /\ playCold' = coldObjects'
     /\ phase' = "played"
-    /\ UNCHANGED <<playTarget, skipResetAttempted, skipResetAccepted,
-                    rejectionRoot, rejectionGeneration, rejectionActivationCount,
-                    rejectionVerifiedRoots, rejectionHistory, rejectionCold,
-                    replayResetObserved, resetRoot,
-                    resetGeneration, replayPrepared, replayBaseRoot,
-                    replayBaseGeneration, replayTarget, prepareRoot,
-                    prepareGeneration, prepareActivationCount,
-                    prepareVerifiedRoots, prepareHistory, prepareCold,
-                    replayCommitted>>
+    /\ UNCHANGED <<recordedBase, playTarget, foreignPublished,
+                    replayResetObserved, replayViewRoot, resetRoot,
+                    replayPrepared, replayBaseRoot, replayTarget, prepareRoot,
+                    replayCommitted, commitRoot, commitGeneration>>
 
-RejectSkipReset ==
-    /\ phase = "played"
-    /\ currentRoot = "T"
-    /\ skipResetAttempted' = TRUE
-    /\ skipResetAccepted' = FALSE
-    /\ rejectionRoot' = currentRoot
-    /\ rejectionGeneration' = generation
-    /\ rejectionActivationCount' = activationCount
-    /\ rejectionVerifiedRoots' = verifiedRoots
-    /\ rejectionHistory' = historyObjects
-    /\ rejectionCold' = coldObjects
-    /\ phase' = "skip-rejected"
-    /\ UNCHANGED <<currentRoot, generation, activationCount, verifiedRoots,
-                    historyObjects, coldObjects, playHistory, playCold,
-                    playTarget, replayResetObserved, resetRoot,
-                    resetGeneration, replayPrepared, replayBaseRoot,
-                    replayBaseGeneration, replayTarget, prepareRoot,
-                    prepareGeneration, prepareActivationCount,
-                    prepareVerifiedRoots, prepareHistory, prepareCold,
-                    replayCommitted>>
-
-ReactivateReplayBase ==
-    /\ phase = "skip-rejected"
-    /\ "B" \in verifiedRoots
-    /\ currentRoot' = "B"
+ForeignCommit ==
+    /\ phase \in {"played", "reset", "prepared"}
+    /\ ~foreignPublished
+    /\ historyObjects' = historyObjects \union {<<"h-F", "v-F">>}
+    /\ coldObjects' = coldObjects \union {<<"c-F", "v-F">>}
+    /\ verifiedRoots' = verifiedRoots \union {"F"}
+    /\ currentRoot' = "F"
     /\ generation' = generation + 1
     /\ activationCount' = activationCount + 1
-    /\ replayResetObserved' = TRUE
-    /\ resetRoot' = "B"
-    /\ resetGeneration' = generation'
-    /\ phase' = "reset"
-    /\ UNCHANGED <<verifiedRoots, historyObjects, coldObjects, playHistory,
-                    playCold, playTarget, skipResetAttempted,
-                    skipResetAccepted, rejectionRoot, rejectionGeneration,
-                    rejectionActivationCount, rejectionVerifiedRoots,
-                    rejectionHistory, rejectionCold, replayPrepared,
-                    replayBaseRoot, replayBaseGeneration, replayTarget,
-                    prepareRoot, prepareGeneration, prepareActivationCount,
-                    prepareVerifiedRoots, prepareHistory, prepareCold,
-                    replayCommitted>>
+    /\ foreignPublished' = TRUE
+    /\ UNCHANGED <<phase, recordedBase, playHistory, playCold, playTarget,
+                    replayResetObserved, replayViewRoot, resetRoot,
+                    replayPrepared, replayBaseRoot, replayTarget, prepareRoot,
+                    replayCommitted, commitRoot, commitGeneration>>
 
-FreshReplayPrepare ==
+ReplayReset ==
+    /\ phase = "played"
+    /\ recordedBase \in verifiedRoots
+    /\ replayResetObserved' = TRUE
+    /\ replayViewRoot' = recordedBase
+    /\ resetRoot' = currentRoot
+    /\ phase' = "reset"
+    /\ UNCHANGED <<currentRoot, generation, activationCount, verifiedRoots,
+                    historyObjects, coldObjects, recordedBase, playHistory,
+                    playCold, playTarget, foreignPublished, replayPrepared,
+                    replayBaseRoot, replayTarget, prepareRoot,
+                    replayCommitted, commitRoot, commitGeneration>>
+
+ReplayPrepare ==
     /\ phase = "reset"
-    /\ currentRoot = "B"
-    /\ generation = resetGeneration
     /\ replayPrepared' = TRUE
-    /\ replayBaseRoot' = currentRoot
-    /\ replayBaseGeneration' = generation
+    /\ replayBaseRoot' = replayViewRoot
     /\ replayTarget' = playTarget
     /\ prepareRoot' = currentRoot
-    /\ prepareGeneration' = generation
-    /\ prepareActivationCount' = activationCount
-    /\ prepareVerifiedRoots' = verifiedRoots
-    /\ prepareHistory' = historyObjects
-    /\ prepareCold' = coldObjects
     /\ phase' = "prepared"
     /\ UNCHANGED <<currentRoot, generation, activationCount, verifiedRoots,
-                    historyObjects, coldObjects, playHistory, playCold,
-                    playTarget, skipResetAttempted, skipResetAccepted,
-                    rejectionRoot, rejectionGeneration, rejectionActivationCount,
-                    rejectionVerifiedRoots, rejectionHistory, rejectionCold,
-                    replayResetObserved, resetRoot,
-                    resetGeneration, replayCommitted>>
+                    historyObjects, coldObjects, recordedBase, playHistory,
+                    playCold, playTarget, foreignPublished,
+                    replayResetObserved, replayViewRoot, resetRoot,
+                    replayCommitted, commitRoot, commitGeneration>>
 
 ReplayCommit ==
     /\ phase = "prepared"
     /\ replayPrepared
-    /\ currentRoot = replayBaseRoot
-    /\ generation = replayBaseGeneration
-    /\ replayTarget = playTarget
-    /\ replayTarget \in verifiedRoots
+    /\ replayBaseRoot \in verifiedRoots
     /\ Complete(replayTarget, historyObjects, coldObjects)
+    /\ verifiedRoots' = verifiedRoots \union {replayTarget}
     /\ currentRoot' = replayTarget
     /\ generation' = generation + 1
     /\ activationCount' = activationCount + 1
+    /\ commitRoot' = currentRoot
+    /\ commitGeneration' = generation
     /\ replayCommitted' = TRUE
     /\ phase' = "complete"
-    /\ UNCHANGED <<verifiedRoots, historyObjects, coldObjects, playHistory,
-                    playCold, playTarget, skipResetAttempted,
-                    skipResetAccepted, rejectionRoot, rejectionGeneration,
-                    rejectionActivationCount, rejectionVerifiedRoots,
-                    rejectionHistory, rejectionCold, replayResetObserved,
-                    resetRoot, resetGeneration, replayPrepared,
-                    replayBaseRoot, replayBaseGeneration, replayTarget,
-                    prepareRoot, prepareGeneration, prepareActivationCount,
-                    prepareVerifiedRoots, prepareHistory, prepareCold>>
+    /\ UNCHANGED <<historyObjects, coldObjects, recordedBase, playHistory,
+                    playCold, playTarget, foreignPublished,
+                    replayResetObserved, replayViewRoot, resetRoot,
+                    replayPrepared, replayBaseRoot, replayTarget, prepareRoot>>
 
 Done == phase = "complete" /\ UNCHANGED vars
 
-Next == PlayCommit \/ RejectSkipReset \/ ReactivateReplayBase \/
-        FreshReplayPrepare \/ ReplayCommit \/ Done
+Next == PlayCommit \/ ForeignCommit \/ ReplayReset \/ ReplayPrepare \/
+        ReplayCommit \/ Done
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 TypeInvariant ==
@@ -216,14 +186,14 @@ TypeInvariant ==
     /\ verifiedRoots \subseteq Roots
     /\ historyObjects \subseteq HistoryKeys \X Values
     /\ coldObjects \subseteq ColdKeys \X Values
+    /\ recordedBase \in Roots
+    /\ foreignPublished \in BOOLEAN
+    /\ replayViewRoot \in Roots
     /\ replayBaseRoot \in Roots
-    /\ replayBaseGeneration \in Nat
     /\ resetRoot \in Roots
-    /\ resetGeneration \in Nat
-    /\ rejectionActivationCount \in Nat
-    /\ rejectionVerifiedRoots \subseteq Roots
-    /\ prepareActivationCount \in Nat
-    /\ prepareVerifiedRoots \subseteq Roots
+    /\ prepareRoot \in Roots
+    /\ commitRoot \in Roots
+    /\ commitGeneration \in Nat
 
 CurrentRootIsVerified == currentRoot \in verifiedRoots
 
@@ -240,75 +210,95 @@ NoUnpublishedCheckpointObjects ==
 
 GenerationAdvancesExactlyOnActivation == generation = activationCount
 
-SkipResetIsRejectedWithoutAuthorityMutation ==
-    phase = "skip-rejected" =>
-        /\ skipResetAttempted
-        /\ ~skipResetAccepted
-        /\ currentRoot = rejectionRoot
-        /\ generation = rejectionGeneration
-        /\ activationCount = rejectionActivationCount
-        /\ verifiedRoots = rejectionVerifiedRoots
-        /\ historyObjects = rejectionHistory
-        /\ coldObjects = rejectionCold
+ReplayResetStep == ~replayResetObserved /\ replayResetObserved'
 
-ReplayCommitRequiresReactivation ==
-    replayCommitted => replayResetObserved /\ ~skipResetAccepted
+ReplayPreparationStep == ~replayPrepared /\ replayPrepared'
 
-ReplayPreparationUsesFreshExactBase ==
+ReplayResetLeavesAuthorityUnchanged ==
+    [][ReplayResetStep => UNCHANGED AuthorityVars]_vars
+
+ReplayCommitPublishesSuccessorOfRecordedBase ==
+    replayCommitted =>
+        /\ replayResetObserved
+        /\ replayBaseRoot = recordedBase
+        /\ replayTarget = playTarget
+        /\ currentRoot = replayTarget
+        /\ generation = commitGeneration + 1
+
+ReplayPreparationUsesRecordedBase ==
     replayPrepared =>
         /\ replayResetObserved
-        /\ replayBaseRoot = resetRoot
-        /\ replayBaseGeneration = resetGeneration
+        /\ replayBaseRoot = recordedBase
 
 ReplayPreparationLeavesAuthorityUnchanged ==
-    phase = "prepared" =>
-        /\ currentRoot = prepareRoot
-        /\ generation = prepareGeneration
-        /\ activationCount = prepareActivationCount
-        /\ verifiedRoots = prepareVerifiedRoots
-        /\ historyObjects = prepareHistory
-        /\ coldObjects = prepareCold
+    [][ReplayPreparationStep => UNCHANGED AuthorityVars]_vars
 
 ReplayTargetMatchesPlay ==
     replayCommitted => currentRoot = playTarget /\ replayTarget = playTarget
 
 ReplayReusesAuthenticatedPlayClosure ==
-    phase \in {"played", "skip-rejected", "reset", "prepared", "complete"} =>
-        /\ historyObjects = playHistory
-        /\ coldObjects = playCold
+    phase \in {"played", "reset", "prepared", "complete"} =>
+        /\ historyObjects = playHistory \union ForeignHistory
+        /\ coldObjects = playCold \union ForeignCold
 
 ReplayLifecycleEventuallyCompletes == <>replayCommitted
 
 (***************************************************************************
-Negative control: wrongly accept replay directly after B -> T, using the
-replayer's stale B@0 base without reactivation or a fresh preparation.
+Reachability witnesses.  Only ForeignCommit publishes F, so the first two
+are a foreign commit while the replayer is reset and while it is prepared,
+and the third is a replay commit made with F current after a reset made
+with T current.  Each must be violated.
 ***************************************************************************)
-AcceptSkipResetMutant ==
+NeverForeignCommitWhileReplayReset ==
+    ~(phase = "reset" /\ resetRoot = "T" /\ currentRoot = "F")
+
+NeverForeignCommitWhileReplayPrepared ==
+    ~(phase = "prepared" /\ prepareRoot = "T" /\ currentRoot = "F")
+
+NeverReplayCommitAcrossForeignCommit ==
+    ~(replayCommitted /\ resetRoot = "T" /\ commitRoot = "F")
+
+(***************************************************************************
+Negative control 1: skip the reset and prepare from the current root (T, or
+F after the foreign commit) instead of the recorded base B.
+***************************************************************************)
+SkipResetPrepareFromCurrentMutant ==
     /\ phase = "played"
-    /\ currentRoot = "T"
-    /\ skipResetAttempted' = TRUE
-    /\ skipResetAccepted' = TRUE
     /\ replayPrepared' = TRUE
-    /\ replayBaseRoot' = "B"
-    /\ replayBaseGeneration' = 0
+    /\ replayBaseRoot' = currentRoot
     /\ replayTarget' = playTarget
-    /\ replayCommitted' = TRUE
-    /\ currentRoot' = playTarget
+    /\ prepareRoot' = currentRoot
+    /\ phase' = "prepared"
+    /\ UNCHANGED <<currentRoot, generation, activationCount, verifiedRoots,
+                    historyObjects, coldObjects, recordedBase, playHistory,
+                    playCold, playTarget, foreignPublished,
+                    replayResetObserved, replayViewRoot, resetRoot,
+                    replayCommitted, commitRoot, commitGeneration>>
+
+SkipResetMutantNext == Next \/ SkipResetPrepareFromCurrentMutant
+SkipResetMutantSpec == Init /\ [][SkipResetMutantNext]_vars
+
+(***************************************************************************
+Negative control 2: the replayer's reset activates the recorded base B on the
+shared authority, moving the current root and advancing the generation,
+instead of only attaching the replayer's own view to B.
+***************************************************************************)
+ResetMovesAuthorityMutant ==
+    /\ phase = "played"
+    /\ recordedBase \in verifiedRoots
+    /\ currentRoot' = recordedBase
     /\ generation' = generation + 1
     /\ activationCount' = activationCount + 1
-    /\ phase' = "complete"
-    /\ UNCHANGED <<verifiedRoots, historyObjects, coldObjects, playHistory,
-                    playCold, playTarget, rejectionRoot, rejectionGeneration,
-                    rejectionActivationCount, rejectionVerifiedRoots,
-                    rejectionHistory, rejectionCold, replayResetObserved,
-                    resetRoot, resetGeneration, prepareRoot, prepareGeneration,
-                    prepareActivationCount, prepareVerifiedRoots,
-                    prepareHistory, prepareCold>>
+    /\ replayResetObserved' = TRUE
+    /\ replayViewRoot' = recordedBase
+    /\ resetRoot' = currentRoot
+    /\ phase' = "reset"
+    /\ UNCHANGED <<verifiedRoots, historyObjects, coldObjects, recordedBase,
+                    playHistory, playCold, playTarget, foreignPublished,
+                    replayPrepared, replayBaseRoot, replayTarget, prepareRoot,
+                    replayCommitted, commitRoot, commitGeneration>>
 
-SkipResetAcceptanceMutantNext ==
-    PlayCommit \/ AcceptSkipResetMutant \/ ReactivateReplayBase \/
-    FreshReplayPrepare \/ ReplayCommit \/ Done
-SkipResetAcceptanceMutantSpec ==
-    Init /\ [][SkipResetAcceptanceMutantNext]_vars
+ResetMovesAuthorityMutantNext == Next \/ ResetMovesAuthorityMutant
+ResetMovesAuthorityMutantSpec == Init /\ [][ResetMovesAuthorityMutantNext]_vars
 
 =============================================================================

@@ -39,8 +39,28 @@ FAMILIES = {
 CONTROLS = {
     "RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg": (
         "mutant",
-        "ReplayCommitRequiresReactivation",
-        "SkipResetAcceptanceMutantSpec",
+        "ReplayPreparationUsesRecordedBase",
+        "SkipResetMutantSpec",
+    ),
+    "RSpaceRecordReplayAuthorityLifecycleResetMovesAuthorityMutant.cfg": (
+        "action_mutant",
+        "ReplayResetLeavesAuthorityUnchanged",
+        "ResetMovesAuthorityMutantSpec",
+    ),
+    "RSpaceRecordReplayAuthorityLifecycleForeignCommitWhileResetWitness.cfg": (
+        "non_vacuity_witness",
+        "NeverForeignCommitWhileReplayReset",
+        "Spec",
+    ),
+    "RSpaceRecordReplayAuthorityLifecycleForeignCommitWhilePreparedWitness.cfg": (
+        "non_vacuity_witness",
+        "NeverForeignCommitWhileReplayPrepared",
+        "Spec",
+    ),
+    "RSpaceRecordReplayAuthorityLifecycleReplayCommitAcrossForeignCommitWitness.cfg": (
+        "non_vacuity_witness",
+        "NeverReplayCommitAcrossForeignCommit",
+        "Spec",
     ),
     "RSpaceStateImportFfiBoundaryExposeMutant.cfg": (
         "mutant",
@@ -326,17 +346,40 @@ def extract(sources, control_names):
             == 1,
             f"missing or duplicate control specification: {name}",
         )
-        directive = "PROPERTY" if kind == "liveness_mutant" else "INVARIANT"
+        directive = (
+            "PROPERTY" if kind in ("liveness_mutant", "action_mutant") else "INVARIANT"
+        )
         require(
             re.search(rf"(?m)^{directive} {re.escape(symbol)}$", contents) is not None,
             f"stale control obligation: {name}",
         )
+        if kind == "non_vacuity_witness":
+            require(
+                parse_config(contents, name) == [("INVARIANT", symbol)],
+                f"witness target mismatch: {name}",
+            )
+            require(
+                len(
+                    re.findall(
+                        rf"(?m)^{re.escape(symbol)}[ \t]*==",
+                        sources[f"{TLA_DIR}/{stem}.tla"],
+                    )
+                )
+                == 1,
+                f"missing or duplicate witness statement: {name}",
+            )
+            base_obligations = parse_config(sources[f"{TLA_DIR}/{stem}.cfg"], stem)
+            require(
+                symbol not in {obligation for _, obligation in base_obligations},
+                f"witness statement is a base obligation: {name}",
+            )
         require(name in runner, f"control absent from proof runner: {name}")
-        expected_output = (
-            "Temporal properties were violated"
-            if kind == "liveness_mutant"
-            else f"Invariant {symbol} is violated"
-        )
+        if kind == "liveness_mutant":
+            expected_output = "Temporal properties were violated"
+        elif kind == "action_mutant":
+            expected_output = f"Action property {symbol} is violated"
+        else:
+            expected_output = f"Invariant {symbol} is violated"
         if name.startswith("RSpaceStateImportFfiBoundary") and kind == "mutant":
             require(
                 f"{name}:{symbol}" in runner
@@ -441,6 +484,64 @@ def self_test(sources, controls):
         controls - {"RSpaceStateImportFfiBoundaryExposeMutant.cfg"},
         "missing or unregistered",
     )
+    replay_model = f"{TLA_DIR}/RSpaceRecordReplayAuthorityLifecycle.tla"
+    replay_config = f"{TLA_DIR}/RSpaceRecordReplayAuthorityLifecycle.cfg"
+    reset_moves = (
+        f"{TLA_DIR}/RSpaceRecordReplayAuthorityLifecycleResetMovesAuthorityMutant.cfg"
+    )
+    reset_witness = (
+        "RSpaceRecordReplayAuthorityLifecycleForeignCommitWhileResetWitness.cfg"
+    )
+    across_witness = (
+        f"{TLA_DIR}/"
+        "RSpaceRecordReplayAuthorityLifecycleReplayCommitAcrossForeignCommitWitness.cfg"
+    )
+    altered = dict(sources)
+    altered[reset_moves] = sources[reset_moves].replace(
+        "PROPERTY ReplayResetLeavesAuthorityUnchanged",
+        "INVARIANT ReplayResetLeavesAuthorityUnchanged",
+        1,
+    )
+    reject(altered, controls, "stale control obligation")
+    altered = dict(sources)
+    altered[RUNNER] = sources[RUNNER].replace(
+        "Action property ReplayResetLeavesAuthorityUnchanged is violated", "", 1
+    )
+    reject(altered, controls, "control outcome unchecked in proof runner")
+    altered = dict(sources)
+    reject(altered, controls - {reset_witness}, "missing or unregistered")
+    altered = dict(sources)
+    altered[replay_model] = sources[replay_model].replace(
+        "NeverForeignCommitWhileReplayPrepared ==",
+        "NeverForeignCommitWhileReplayPreparedRenamed ==",
+        1,
+    )
+    reject(altered, controls, "missing or duplicate witness statement")
+    altered = dict(sources)
+    altered[across_witness] = sources[across_witness] + "INVARIANT TypeInvariant\n"
+    reject(altered, controls, "witness target mismatch")
+    altered = dict(sources)
+    altered[RUNNER] = sources[RUNNER].replace(
+        "Invariant NeverReplayCommitAcrossForeignCommit is violated", "", 1
+    )
+    reject(altered, controls, "control outcome unchecked in proof runner")
+    altered = dict(sources)
+    altered[replay_config] = sources[replay_config].replace(
+        "PROPERTY ReplayLifecycleEventuallyCompletes",
+        "INVARIANT NeverForeignCommitWhileReplayReset",
+        1,
+    )
+    altered[BINDINGS] = sources[BINDINGS].replace(
+        '"ReplayLifecycleEventuallyCompletes"',
+        '"NeverForeignCommitWhileReplayReset"',
+        1,
+    )
+    altered[CATALOG] = sources[CATALOG].replace(
+        "| RR-13 | `ReplayLifecycleEventuallyCompletes` |",
+        "| RR-13 | `NeverForeignCommitWhileReplayReset` |",
+        1,
+    )
+    reject(altered, controls, "witness statement is a base obligation")
 
 
 def main():

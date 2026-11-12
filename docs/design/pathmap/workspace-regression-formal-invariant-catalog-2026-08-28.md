@@ -126,19 +126,22 @@ authoritative root-catalog publication. Parser totality is included because the 
 panic-policy gate found an ordinary
 property test using `catch_unwind` as its assertion mechanism.
 
-This report does not weaken exact `(root, generation)` compare-and-swap authority, make panics part
-of a public API contract, or claim that `catch_unwind` contains abort-mode panics, native stack
-overflow, out-of-memory abort, or foreign faults.
+This report does not weaken the checkpoint authority, which since 2026-11-12 publishes the successor
+of a checkpoint's own verified base in one atomic publication, whatever root is current, and whose
+generation counts publications; nor does it make panics part of a public API contract, or claim that
+`catch_unwind` contains abort-mode panics, native stack overflow, out-of-memory abort, or foreign
+faults.
 
 ## Formal evidence before executable changes
 
 | Model | Control result | Required negative controls |
 |---|---|---|
-| `formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.tla` | SANY pass; TLC 7 generated / 6 distinct states, depth 6 | skip-reset acceptance violates `ReplayCommitRequiresReactivation` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.tla` | SANY pass; TLC 18 generated / 14 distinct states, depth 6; the action properties `ReplayResetLeavesAuthorityUnchanged` and `ReplayPreparationLeavesAuthorityUnchanged` hold on every step; `ReplayLifecycleEventuallyCompletes` passes under weak fairness | skipping the reset and preparing from the current root violates `ReplayPreparationUsesRecordedBase`; a reset that moves the current root violates the action property `ReplayResetLeavesAuthorityUnchanged`; separate witnesses reach a foreign commit while the replayer is reset (`NeverForeignCommitWhileReplayReset`) and while it is prepared (`NeverForeignCommitWhileReplayPrepared`), and a replay commit made with `F` current after a reset made with `T` current (`NeverReplayCommitAcrossForeignCommit`) |
 | `formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundary.tla` | SANY pass; TLC 6,586 generated / 4,661 distinct states, depth 20; `EveryStartedCallReturns` passes under phase fairness | early capability exposure violates `CapabilityOutputRequiresEncodedSuccess`; escaped unwind violates `NoOrdinaryUnwindEscapesBoundary`; publication misclassification violates `PublicationResponseIsTruthful`; usable staged-open violates `StageEncodingFailurePoisonsMutatedOpen`; duplicate in-call publication violates `PublicationIsMonotoneAndUnique`; removing fairness violates `EveryStartedCallReturns`; a separate witness reaches two legal sequential publications |
 
 `scripts/check-stack-safe-pda-proofs.sh` runs both controls and requires each mutant to fail for its
-assigned invariant. A control-only result is not sufficient evidence.
+assigned invariant or property, and each witness to be violated. A control-only result is not
+sufficient evidence.
 
 ## Record/replay authority model
 
@@ -148,35 +151,58 @@ The bounded lifecycle is deliberately narrow and complete:
 
 ```text
 B@g0 --play prepare/commit--> T@g1
-T@g1 --skip-reset replay attempt--> reject with no authority mutation
-T@g1 --activate known B--> B@g2
-B@g2 --fresh replay prepare/commit--> T@g3
+T@g1 --optional foreign commit, at most once--> F@g2
+     (before the replay reset, while the replayer is reset, or while it is prepared)
+replay reset step: the replay view attaches to the recorded base B; authority unchanged
+replay prepare step: B -> T, from the recorded base B; authority unchanged
+T@g1 --replay commit of T from base B--> T@g2
+F@g2 --replay commit of T from base B--> T@g3
 ```
 
-Target-root equality is not authority. A plan prepared at `B@g0` cannot be reused at `B@g2`, and a
-replay history still positioned at `B@g0` cannot commit while the shared authority is at `T@g1`.
+Reset is local to the replaying view: it attaches the view to the recorded base `B` and writes
+nothing to the shared authority. The replay names its own verified base `B` and publishes its
+successor `T` at the current generation plus one, whichever of `T` and `F` is current; it does not
+reactivate `B` first and is not refused because the play already made `T` current. A foreign
+commit may move the shared authority while the replayer is reset or prepared, so
+`ReplayResetLeavesAuthorityUnchanged` and `ReplayPreparationLeavesAuthorityUnchanged` are action
+properties of the replayer's own reset and preparation steps (the steps that set its reset and
+preparation flags), not comparisons with a snapshot held for the whole phase.
 
 ### Exhaustive invariant and property mapping
 
 | ID | Formal invariant/property | Executable property family | Required observation | Status before test correction |
 |---|---|---|---|---|
-| RR-01 | `TypeInvariant` | `memory_checkpoint_publishes_all_namespaces_together`; `target_equal_replay_requires_reactivation_and_reuses_exact_object_closure` | roots, generations, object namespaces, and lifecycle states remain typed | PASS |
+| RR-01 | `TypeInvariant` | `memory_checkpoint_publishes_all_namespaces_together`; `target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure` | roots, generations, object namespaces, and lifecycle states remain typed | PASS |
 | RR-02 | `CurrentRootIsVerified` | `memory_checkpoint_publishes_all_namespaces_together`; LMDB success/reopen cases | every selected current root has verified membership | PASS |
 | RR-03 | `VerifiedRootsHaveCompleteClosure` | `missing_or_malformed_cold_leaf_leaves_exact_pre_state`; reopen family | verified roots have complete history and typed cold closure | PASS |
 | RR-04 | `ContentKeysAreImmutable` | `immutable_collision_leaves_exact_pre_state`; idempotent same-value case | same key cannot acquire a different value; same key/value is idempotent | PASS |
-| RR-05 | `NoUnpublishedCheckpointObjects` | success, collision, missing-leaf, and stale-conflict snapshots | failed or partial checkpoint objects are not externally visible | PASS |
-| RR-06 | `GenerationAdvancesExactlyOnActivation` | no-op, success, reset/reactivation, and ABA cases | generation advances once per activation and never for prepare/no-op/refusal | PASS |
-| RR-07 | `SkipResetIsRejectedWithoutAuthorityMutation` | `target_equal_replay_requires_reactivation_and_reuses_exact_object_closure`; `same_generation_plans_conflict_without_partial_visibility` | target-equal stale replay is rejected and current root, generation, activation count, verified-root catalog, history objects, and cold objects remain exact | PASS |
-| RR-08 | `ReplayCommitRequiresReactivation` | `target_equal_replay_requires_reactivation_and_reuses_exact_object_closure`; `epathmap_heavy_record_then_replay_reproduces_the_log` | replay commit is preceded by reset/reactivation and never by accepted skip-reset | PASS |
-| RR-09 | `ReplayPreparationUsesFreshExactBase` | `target_equal_replay_requires_reactivation_and_reuses_exact_object_closure`; `aba_root_reactivation_does_not_revive_an_old_plan` | replay prepares only after reset and binds the new `(B, generation)` pair | PASS |
-| RR-10 | `ReplayPreparationLeavesAuthorityUnchanged` | `target_equal_replay_requires_reactivation_and_reuses_exact_object_closure`; `preparing_checkpoint_leaves_authority_byte_for_byte_unchanged` | preparation alone changes no current root, generation, activation count, verified-root catalog, history namespace, or cold namespace | PASS |
+| RR-05 | `NoUnpublishedCheckpointObjects` | `plans_from_one_base_both_publish_without_partial_visibility`; success, collision, and missing-leaf snapshots | failed or partial checkpoint objects are not externally visible | PASS |
+| RR-06 | `GenerationAdvancesExactlyOnActivation` | `no_op_writes_nothing_and_does_not_advance_generation`; success, two-plans-from-one-base, replay, and ABA cases | generation advances once per publication (play, foreign commit, replay) and never for reset, preparation, no-op, or refusal | PASS |
+| RR-07 | `ReplayResetLeavesAuthorityUnchanged` | `target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure`; `spawn_attaches_the_source_view_root_without_writing_the_shared_authority` | action property: the replay reset step attaches the replay view to the recorded base and leaves current root, generation, activation count, verified-root catalog, history objects, and cold objects exact; a foreign commit while the replayer is reset may still move them | PASS |
+| RR-08 | `ReplayCommitPublishesSuccessorOfRecordedBase` | `target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure`; `epathmap_heavy_record_then_replay_reproduces_the_log`; `views_reset_to_different_roots_both_checkpoint` | after its reset, the replay commit publishes the play's target from the recorded base at the current generation plus one, whether the play's target or a foreign root is current, without reactivating the base | PASS |
+| RR-09 | `ReplayPreparationUsesRecordedBase` | `target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure`; `a_plan_publishes_the_successor_of_its_own_base_after_root_aba` | replay prepares only after its reset, from the recorded base `B`, not from the current root | PASS |
+| RR-10 | `ReplayPreparationLeavesAuthorityUnchanged` | `target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure`; `preparing_checkpoint_leaves_authority_byte_for_byte_unchanged` | action property: the replay preparation step changes no current root, generation, activation count, verified-root catalog, history namespace, or cold namespace; a foreign commit while the replayer is prepared may still change them | PASS |
 | RR-11 | `ReplayTargetMatchesPlay` | EPathMap replay root equality | replay publishes the same target root as play | PASS |
-| RR-12 | `ReplayReusesAuthenticatedPlayClosure` | `target_equal_replay_requires_reactivation_and_reuses_exact_object_closure` plus EPathMap event-log exhaustion | after removing only the expected current-root/generation record, replay has byte-identical history, cold, and verified-root namespaces and introduces no unreachable object | PASS |
-| RR-13 | `ReplayLifecycleEventuallyCompletes` | EPathMap test reaches replay checkpoint and final equality assertions | valid reset/fresh-prepare replay is live, not merely safe | PASS |
+| RR-12 | `ReplayReusesAuthenticatedPlayClosure` | `target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure` plus EPathMap event-log exhaustion | the replay adds no history or cold object: after removing only the expected current-root/generation record, replay has byte-identical history, cold, and verified-root namespaces and introduces no unreachable object | PASS |
+| RR-13 | `ReplayLifecycleEventuallyCompletes` | EPathMap test reaches replay checkpoint and final equality assertions | valid reset/prepare/replay is live, not merely safe | PASS |
 
-The executable correction must therefore capture the initial root, checkpoint play, reactivate the
-known initial root through `reset`, rig and evaluate replay, checkpoint replay, and compare it with
-the saved play root. Permitting a stale or idempotent target-root commit is forbidden.
+The executable test therefore captures the initial root, checkpoints play, resets the replay view
+to the captured root (which writes nothing to the shared authority), rigs and evaluates replay,
+checkpoints replay, and compares it with the saved play root. The replay checkpoint publishes the
+play's target from the recorded base at the next generation, even though play already made that
+target current.
+
+Three reachability witnesses show that the model covers a foreign commit between the replay reset
+and the replay commit; each is an invariant that the proof runner requires TLC to report violated.
+`NeverForeignCommitWhileReplayReset` and `NeverForeignCommitWhileReplayPrepared` reach a foreign
+commit while the replayer is reset and while it is prepared, and
+`NeverReplayCommitAcrossForeignCommit` reaches a replay commit made with `F` current after a reset
+made with `T` current. The executable counterparts are
+`views_reset_to_different_roots_both_checkpoint`, in which a view reset to its base checkpoints the
+successor of that base after another view published, and
+`plans_from_one_base_both_publish_without_partial_visibility` and
+`a_plan_publishes_the_successor_of_its_own_base_after_root_aba`, in which a prepared plan publishes
+the successor of its own base after the current root moved.
 
 ## State-import FFI boundary model
 

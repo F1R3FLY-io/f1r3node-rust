@@ -14506,6 +14506,10 @@ the result. A stronger authority property snapshots the current root, generation
 count, verified-root catalog, history namespace, and cold-object namespace. It proves a stale
 target-equal attempt changes none of them, preparation remains byte-for-byte private, and the fresh
 replay reproduces the exact authenticated play closure apart from the expected current-root record.
+This replay protocol was superseded on 2026-11-12 by the view-local reset; the section
+"Record/replay authority model" of
+`docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md` describes the
+current model.
 
 The FFI control explores 6,586 generated / 4,661 distinct states to depth 20 and proves fair
 completion through `EveryStartedCallReturns`. Five safety mutants expose early capability output,

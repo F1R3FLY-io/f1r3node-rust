@@ -1,10 +1,34 @@
 {
   "controls": [
     {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleForeignCommitWhilePreparedWitness.cfg",
+      "expected_obligation": "NeverForeignCommitWhileReplayPrepared",
+      "kind": "non_vacuity_witness",
+      "specification": "Spec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleForeignCommitWhileResetWitness.cfg",
+      "expected_obligation": "NeverForeignCommitWhileReplayReset",
+      "kind": "non_vacuity_witness",
+      "specification": "Spec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleReplayCommitAcrossForeignCommitWitness.cfg",
+      "expected_obligation": "NeverReplayCommitAcrossForeignCommit",
+      "kind": "non_vacuity_witness",
+      "specification": "Spec"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleResetMovesAuthorityMutant.cfg",
+      "expected_obligation": "ReplayResetLeavesAuthorityUnchanged",
+      "kind": "action_mutant",
+      "specification": "ResetMovesAuthorityMutantSpec"
+    },
+    {
       "config": "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg",
-      "expected_obligation": "ReplayCommitRequiresReactivation",
+      "expected_obligation": "ReplayPreparationUsesRecordedBase",
       "kind": "mutant",
-      "specification": "SkipResetAcceptanceMutantSpec"
+      "specification": "SkipResetMutantSpec"
     },
     {
       "config": "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryDuplicatePublicationMutant.cfg",
@@ -281,9 +305,9 @@
       },
       {
         "classification": "executable_refinement",
-        "formal_kind": "INVARIANT",
+        "formal_kind": "PROPERTY",
         "id": "RR-07",
-        "symbol": "SkipResetIsRejectedWithoutAuthorityMutation",
+        "symbol": "ReplayResetLeavesAuthorityUnchanged",
         "target": "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
         "target_source": "rspace++/tests/state/atomic_state_authority.rs"
       },
@@ -291,7 +315,7 @@
         "classification": "executable_refinement",
         "formal_kind": "INVARIANT",
         "id": "RR-08",
-        "symbol": "ReplayCommitRequiresReactivation",
+        "symbol": "ReplayCommitPublishesSuccessorOfRecordedBase",
         "target": "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
         "target_source": "rspace++/tests/state/atomic_state_authority.rs"
       },
@@ -299,13 +323,13 @@
         "classification": "executable_refinement",
         "formal_kind": "INVARIANT",
         "id": "RR-09",
-        "symbol": "ReplayPreparationUsesFreshExactBase",
+        "symbol": "ReplayPreparationUsesRecordedBase",
         "target": "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
         "target_source": "rspace++/tests/state/atomic_state_authority.rs"
       },
       {
         "classification": "executable_refinement",
-        "formal_kind": "INVARIANT",
+        "formal_kind": "PROPERTY",
         "id": "RR-10",
         "symbol": "ReplayPreparationLeavesAuthorityUnchanged",
         "target": "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
@@ -339,10 +363,14 @@
   },
   "source_sha256": {
     "Cargo.toml": "a844d5954934063d27770b6c5e48b5af8e6273d235e12a9f5871d493e5003dae",
-    "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md": "cc72fa6bf31244fcb6b61c011209bf063b12c37599b9c1a96e90caaad78298f6",
-    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.cfg": "e0db6e472c7e81869d38db0489c18311306cc9c1b54f40ca4a2a2678714db0dc",
-    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.tla": "acec8e9788712614d5bec9b01d83598b65bfb10004ad2a6ac7fd59bd992146a9",
-    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg": "0b68e1905d2d3c8365c0c37938b96b69cefbae16067e44876e2efbd6d47ca5f0",
+    "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md": "d9ac6b5edfa441eebb0f97aa4c2ea5979c7a7f0c380f09b75da09a1bcc474498",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.cfg": "7750f87604fbd59fd0a4a4dcf9ce2bd0d396d6a4dc7525d867b5c79163d4f193",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.tla": "a5e53f6a66d1c3a1e06566b74adaba0bd74975c7217f2b175634d596dbd7a131",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleForeignCommitWhilePreparedWitness.cfg": "637cd1fc5da5a8fae670193cec2c74c150f773459426b9bec8c8cea10021cbb8",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleForeignCommitWhileResetWitness.cfg": "51f3ca86c81a2472dee58b7bb97fc04f9296275a728960cb6c484a2a401a61f1",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleReplayCommitAcrossForeignCommitWitness.cfg": "118162d792202fb6f9c4c198873a79124bd0415cbdafd9ef07a959eccb4b88e6",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleResetMovesAuthorityMutant.cfg": "293f236a62a7c995347d83cc84252b412a8d3b2360302975e23f79f97734bcad",
+    "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg": "9a201374994aab4cc7346a6c8c0190c7ddeccc3506fb228021134571d59a93eb",
     "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundary.cfg": "525f1b543a773b26f96ef7847b81c417930907504d1374ae7dc172e21a8ed797",
     "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundary.tla": "18cc81b173ba9eac8d843a5bb93dbcb83c33e1421956745f91271040c0b92437",
     "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryDuplicatePublicationMutant.cfg": "c6dc3f31dcdfd8ff20b75678e8b692d2d98210cc774c4436b50df383a87382ce",
@@ -362,6 +390,6 @@
     "rspace++/tests/persistence/mod.rs": "86cee2be3d4135e02ccb4c6951bdabb12cc93c049cb603b76b9a067e09a0215a",
     "rspace++/tests/state/atomic_state_authority.rs": "d33603450549c6cacb1b03366bccdf31762e2ad2d95aa1325d6b7914b9fccb1c",
     "shared/Cargo.toml": "eb329b1f634d0cfbc623f9a28007d221b4f6100cb6d12638023072d73dd229c0",
-    "shared/tests/workspace_regression_formal_bindings.rs": "6a47ced8855822a629354f3bf8b588196ce2b9453ba82333f834468c9b148248"
+    "shared/tests/workspace_regression_formal_bindings.rs": "0cc934d3b6d274c80df8bf3b093afffd3e7d3a8cc0f3cb983dac5d67e0f05946"
   }
 }
