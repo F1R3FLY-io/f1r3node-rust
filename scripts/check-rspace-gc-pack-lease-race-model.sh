@@ -20,6 +20,13 @@ metadir="$(tlc_metadir rspace-gc-pack-lease-race)"
 sha256sum RSpaceGcPackLeaseRace.tla RSpaceGcPackLeaseRace*.cfg \
   "$repo_root/scripts/check-rspace-gc-pack-lease-race-model.sh"
 
+for invariant in PinnedReadReturnsAdmittedBytes DeadProcessHoldsNothing; do
+  if ! rg -q "^[[:space:]]+${invariant}\$" RSpaceGcPackLeaseRace.cfg; then
+    echo "gc-pack-lease-race: baseline does not check $invariant" >&2
+    exit 1
+  fi
+done
+
 baseline_log="$evidence_dir/baseline.log"
 if ! tlc_run "$metadir" RSpaceGcPackLeaseRace.cfg RSpaceGcPackLeaseRace.tla -cleanup >"$baseline_log" 2>&1; then
   cat "$baseline_log"
@@ -69,4 +76,47 @@ if ! rg -Fq 'Invariant OlderEpochPackSafe is violated' "$mutant_log" ||
   exit 1
 fi
 
-echo "gc-pack-lease-race: baseline, older-epoch witness, and exact-key-only mutant passed"
+# A foreign unlink: one process closes its owner while a read handle stays,
+# another process opens the store, retires the range in its own registry and
+# removes an entry that the handle still covers.
+foreign_unlink_order() {
+  awk '
+    /^State [0-9]+: <CloseOwner / && !closed { closed = NR }
+    /^State [0-9]+: <OpenStore / && closed && !opened { opened = NR }
+    /^State [0-9]+: <RetireFirst / && opened && !retired { retired = NR }
+    /^State [0-9]+: <DeleteFirst / && retired { deleted = NR }
+    END { exit !(closed && opened > closed && retired > opened && deleted > retired) }
+  ' "$1"
+}
+
+reopen_log="$evidence_dir/path-reopen-mutant.log"
+if tlc_run "$metadir" RSpaceGcPackLeaseRacePathReopenMutant.cfg RSpaceGcPackLeaseRace.tla -cleanup >"$reopen_log" 2>&1; then
+  cat "$reopen_log"
+  echo "gc-pack-lease-race: path-reopen mutant unexpectedly passed" >&2
+  exit 1
+fi
+if ! rg -Fq 'Invariant PinnedReadReturnsAdmittedBytes is violated' "$reopen_log" ||
+   ! rg -Fq 'The behavior up to this point is:' "$reopen_log" ||
+   ! foreign_unlink_order "$reopen_log" ||
+   rg -q '^/\\ rewritten = \{[^}]' "$reopen_log"; then
+  cat "$reopen_log"
+  echo "gc-pack-lease-race: path-reopen mutant missed the read by name after a foreign unlink" >&2
+  exit 1
+fi
+
+rewrite_log="$evidence_dir/rewrite-in-place-mutant.log"
+if tlc_run "$metadir" RSpaceGcPackLeaseRaceRewriteInPlaceMutant.cfg RSpaceGcPackLeaseRace.tla -cleanup >"$rewrite_log" 2>&1; then
+  cat "$rewrite_log"
+  echo "gc-pack-lease-race: rewrite-in-place mutant unexpectedly passed" >&2
+  exit 1
+fi
+if ! rg -Fq 'Invariant PinnedReadReturnsAdmittedBytes is violated' "$rewrite_log" ||
+   ! rg -Fq 'The behavior up to this point is:' "$rewrite_log" ||
+   ! foreign_unlink_order "$rewrite_log" ||
+   ! rg -q '^/\\ rewritten = \{[^}]' "$rewrite_log"; then
+  cat "$rewrite_log"
+  echo "gc-pack-lease-race: rewrite-in-place mutant missed the read of rewritten bytes" >&2
+  exit 1
+fi
+
+echo "gc-pack-lease-race: baseline, older-epoch witness, exact-key-only mutant, path-reopen mutant, and rewrite-in-place mutant passed"
