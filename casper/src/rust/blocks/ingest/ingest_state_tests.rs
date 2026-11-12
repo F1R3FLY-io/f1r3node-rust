@@ -289,6 +289,73 @@ fn a_held_block_above_the_anchor_stays_held_for_validation_when_the_node_request
 }
 
 #[test]
+fn a_block_below_the_anchor_awaiting_a_state_root_is_admitted_as_settled_history_when_requested() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    let root = Blake2b256Hash::new(b"root");
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 40, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(9),
+            outcome: WorkOutcome::AwaitingState(root.clone()),
+        },
+        0,
+        &dag,
+    );
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+    assert!(
+        !fetches(&tick(&mut s, 0, &[], &dag)).contains(&FetchAction::FetchStateRoot(root)),
+        "settled history awaits no state root, so the root is no longer fetched"
+    );
+}
+
+#[test]
+fn a_block_below_the_anchor_requested_during_its_validation_is_admitted_as_settled_history_when_the_attempt_has_no_verdict(
+) {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    let root = Blake2b256Hash::new(b"root");
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 40, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(9),
+            outcome: WorkOutcome::AwaitingState(root.clone()),
+        },
+        0,
+        &dag,
+    );
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+    assert!(!fetches(&tick(&mut s, 0, &[], &dag)).contains(&FetchAction::FetchStateRoot(root)));
+}
+
+#[test]
+fn a_block_that_settled_history_admission_declined_stays_held_for_validation_when_requested_again()
+{
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    s.handle(received(meta(9, 40, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(9),
+            outcome: WorkOutcome::NotSettledHistory,
+        },
+        0,
+        &dag,
+    );
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
+}
+
+#[test]
 fn no_block_is_admitted_as_settled_history_before_casper_is_attached() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);

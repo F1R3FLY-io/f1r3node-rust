@@ -677,9 +677,25 @@ impl IngestState {
             self.finish_insert(hash, now_ms, stores);
             return;
         }
-        let Some(meta) = self.tracker.meta(hash) else {
+        if !self.tracker.contains(hash) {
             return;
-        };
+        }
+        let no_verdict = matches!(
+            outcome,
+            WorkOutcome::AwaitingBlock(_) | WorkOutcome::AwaitingState(_) | WorkOutcome::Failed
+        );
+        if no_verdict {
+            if let Some(departure) = self.tracker.settle_if_vouched(hash) {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    block = %short(hash),
+                    "Block vouched for during its validation; it is admitted as settled history"
+                );
+                self.released(departure);
+                return;
+            }
+        }
+        let meta = self.tracker.meta(hash).expect("the block is held");
         let facts = citation(meta);
         match outcome {
             WorkOutcome::Settled => {}
@@ -781,8 +797,7 @@ impl IngestState {
     }
 
     /// A held block vouched for after it was held is admitted as settled
-    /// history instead of validated, if it is at or below the anchor and its
-    /// validation has not started.
+    /// history instead of validated, if it is at or below the anchor.
     fn vouch_for_held(&mut self, hash: &BlockHash) {
         let Some(height) = self.tracker.meta(hash).map(|meta| meta.height) else {
             return;
@@ -790,17 +805,14 @@ impl IngestState {
         if !self.at_or_below_anchor(height) {
             return;
         }
-        if let Some(unwaited) = self.tracker.admit_settled_instead(hash) {
+        if let Some(departure) = self.tracker.vouch(hash) {
             tracing::debug!(
                 target: LOG_TARGET,
                 block = %short(hash),
                 height,
                 "Block vouched for while held; it is admitted as settled history"
             );
-            self.released(Departure {
-                unwaited,
-                ..Departure::default()
-            });
+            self.released(departure);
         }
     }
 
