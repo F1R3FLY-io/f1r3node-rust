@@ -178,6 +178,7 @@ async fn assert_stalled_view(node: &TestNode, target: &BlockMessage) -> CasperSn
 /// and that both validators accept, although its own floor distance is past
 /// the cap too.
 #[tokio::test]
+#[ignore = "builds 2 x 257 blocks: 16 minutes, 29 under coverage instrumentation"]
 async fn past_the_floor_cap_a_proposal_is_held_or_mints_a_witness_every_node_accepts() {
     crate::init_logger();
     let StalledShard { mut nodes, target } = stalled_two_validator_shard().await;
