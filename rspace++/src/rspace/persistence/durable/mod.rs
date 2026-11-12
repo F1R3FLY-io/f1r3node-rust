@@ -114,9 +114,9 @@ pub(crate) use recovery::{
     CatalogPackProviderV1, DurableReadAt, IncrementalLayoutTranscriptV1, RecoveryError,
     replay_catalog_authorized_pack_chain, scan_catalog_authorized_pack_chain,
 };
-pub(crate) use rspace_authority::DurableRSpaceAuthorityV1;
 #[cfg(test)]
 pub(crate) use rspace_authority::hooks as journal_owner_hooks;
+pub(crate) use rspace_authority::{DurablePublishedCoreV1, DurableRSpaceAuthorityV1};
 #[cfg(test)]
 pub(crate) use rspace_authority::{
     DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError, JournalPublicationPhaseV1,

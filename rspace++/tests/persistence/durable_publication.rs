@@ -5523,7 +5523,7 @@ fn assert_appoints(writer: &AdmittedWriter, oracle: &RetentionOracle) {
 
 /// Seal, prepare and publish one data successor. The returned writer is the
 /// published successor as cold admission adopted it.
-fn publish_data_successor(writer: AdmittedWriter, identity: &str) -> AdmittedWriter {
+pub(super) fn publish_data_successor(writer: AdmittedWriter, identity: &str) -> AdmittedWriter {
     let mutation = data_batch(writer.catalog().state(), identity);
     let sealed = writer
         .seal_transaction(

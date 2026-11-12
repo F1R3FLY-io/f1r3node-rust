@@ -7,6 +7,7 @@ pub(crate) enum JournalOwnerHookPoint {
     BeforeSuccessorPin,
     AfterSuccessorPin,
     AfterAcknowledgement,
+    AfterPublishedCoreLoad,
 }
 
 thread_local! {
@@ -27,11 +28,15 @@ pub(crate) fn arm(
     point: JournalOwnerHookPoint,
     hook: impl FnOnce() + 'static,
 ) -> JournalOwnerHookGuard {
+    rearm(point, hook);
+    JournalOwnerHookGuard
+}
+
+pub(crate) fn rearm(point: JournalOwnerHookPoint, hook: impl FnOnce() + 'static) {
     HOOK.with(|slot| {
         assert!(slot.borrow().is_none(), "a journal owner hook is already armed");
         *slot.borrow_mut() = Some((point, Box::new(hook)));
     });
-    JournalOwnerHookGuard
 }
 
 pub(crate) fn run(point: JournalOwnerHookPoint) {

@@ -1,17 +1,23 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::panic::catch_unwind;
+use std::panic::{catch_unwind, resume_unwind};
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::SystemTime;
+use std::rc::Rc;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::time::{Duration, SystemTime};
 
 use proptest::prelude::*;
 use tokio::sync::RwLock;
 
+use super::checkpoint_wal::fixture as checkpoint_source_fixture;
+use super::durable_publication::{install_checkpoint_image, publish_data_successor};
+use super::durable_recovery::{checkpoint_image_from_source, limits};
 use super::durable_rspace_authority::{
     Profile, Store, fixture, poll_checkpoint_with, publication_limits, store_files,
 };
+use super::support::{PersistenceTrialDir, TestSemanticProfile, trial_scratch};
 use crate::rspace::errors::{AuthorityBackendMismatch, HistoryError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::CurrentRoot;
@@ -20,10 +26,18 @@ use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::internal::{Datum, WaitingContinuation};
-use crate::rspace::persistence::durable::{
-    DurableIoFailpointV1, DurableRSpaceAuthorityV1, DurableStateRootV1, arm_durable_io_failpoint,
+use crate::rspace::persistence::durable::journal_owner_hooks::{
+    self, JournalOwnerHookGuard, JournalOwnerHookPoint,
 };
-use crate::rspace::persistence::{CanonicalDagNode, ObjectDigest};
+use crate::rspace::persistence::durable::{
+    DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoFailpointV1, DurablePublishedCoreV1,
+    DurableRSpaceAuthorityV1, DurableStateRootV1, SemanticallyAdmittedDurableWriterV1,
+    arm_durable_io_failpoint, index_file_name, pack_file_name,
+};
+use crate::rspace::persistence::{
+    CanonicalDagNode, DurableStateReadHandleErrorV1, GenerationLeaseError, GenerationLeaseKeyV1,
+    IndexGenerationV1, LogPackDecodeLimits, ObjectDigest, PackId,
+};
 use crate::rspace::shared::trie_exporter::StateExportError;
 use crate::rspace::state::import_session::{
     StateImportError, StateImportPublicationMode, StateImportSpec,
@@ -48,6 +62,7 @@ const GENERATED_SCRIPTS: u32 = 24;
 const MAX_BATCHES: usize = 3;
 const MAX_BATCH_STEPS: usize = 6;
 const ABSENT_DIGEST: [u8; 32] = [0xA5; 32];
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
 const ARMED_FAILPOINT_REFUSAL: &str = "durable I/O failpoint already armed";
 const DIRECTORY_FAILPOINTS: [DurableIoFailpointV1; 16] = [
     DurableIoFailpointV1::PhysicalWrite,
@@ -350,7 +365,8 @@ fn lock(owner: &SharedOwner) -> MutexGuard<'_, DurableRSpaceAuthorityV1<Profile>
 }
 
 fn repository(owner: &SharedOwner) -> Repository {
-    Repository::new(Arc::clone(owner)).expect("a repository view at the owner's current state")
+    let published = lock(owner).published_core();
+    Repository::new(published).expect("a repository view at the owner's current state")
 }
 
 fn publish(owner: &SharedOwner, gate: &Arc<RwLock<()>>, hot: &Store) -> Blake2b256Hash {
@@ -694,12 +710,14 @@ fn an_unknown_root_is_refused_and_changes_no_file() {
         }
         publish(&foreign_owner, &foreign_gate, &foreign_hot)
     };
-    let retained_data_bag = lock(&owner)
-        .resolve(
+    let published = lock(&owner).published_core();
+    let retained_data_bag = published
+        .read_handle(Some(
             DurableStateRootV1::try_from(&retained_root)
                 .expect("a published durable state root is 32 bytes"),
-        )
+        ))
         .expect("the retained state resolves")
+        .0
         .roots()
         .data_bag
         .digest();
@@ -1014,5 +1032,266 @@ fn the_exporter_root_follows_the_owners_current_state() {
         (before, after, genesis.root()),
         (genesis.empty_root(), published, genesis.empty_root()),
         "the exporter's root follows the owner while a view keeps the state it was made at"
+    );
+}
+
+#[test]
+fn a_reset_completes_while_a_publication_holds_the_owner_mutex() {
+    let (_scratch, hot, gate, owner) = fixture();
+    let owner = Arc::new(Mutex::new(owner));
+    let mut contents = Contents::default();
+    let genesis_root = repository(&owner).root();
+    apply(&hot, &mut contents, Step::put("a", "v0"));
+    let predecessor_root = publish(&owner, &gate, &hot);
+    let predecessor_contents = contents.clone();
+    apply(&hot, &mut contents, Step::install(&["a", "b"], "k0"));
+    let published = lock(&owner).published_core();
+    let (prepared_signal, prepared) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
+
+    let (during, view, successor_root) = std::thread::scope(|scope| {
+        let (owner, gate, hot) = (&owner, &gate, &hot);
+        let publication = scope.spawn(move || {
+            let mut held = lock(owner);
+            let _hook =
+                journal_owner_hooks::arm(JournalOwnerHookPoint::AfterPreparation, move || {
+                    prepared_signal
+                        .send(())
+                        .expect("the test thread awaits the prepared publication");
+                    if let Err(RecvTimeoutError::Timeout) = released.recv_timeout(RELEASE_TIMEOUT) {
+                        panic!("the test thread did not release the publication within 30 s");
+                    }
+                });
+            poll_checkpoint_with(&mut held, gate, hot, publication_limits())
+                .expect("the held publication completes once released")
+        });
+        prepared
+            .recv_timeout(RELEASE_TIMEOUT)
+            .expect("the publication reaches its preparation while it holds the owner mutex");
+        let held_before_reads = matches!(owner.try_lock(), Err(TryLockError::WouldBlock));
+        let view = Repository::new(published.clone())
+            .expect("a repository view built from the published core");
+        let current = view
+            .reset_view(&predecessor_root)
+            .expect("a reset to the current root");
+        let retained = view
+            .reset_view(&genesis_root)
+            .expect("a reset to a retained predecessor");
+        let during = (
+            held_before_reads,
+            view.root(),
+            (current.root(), snapshot(current.reader())),
+            (retained.root(), snapshot(retained.reader())),
+            (view.contains_root(&predecessor_root), view.contains_root(&genesis_root)),
+            view.exporter().get_root(),
+            matches!(owner.try_lock(), Err(TryLockError::WouldBlock)),
+        );
+        drop(release);
+        let successor = publication
+            .join()
+            .unwrap_or_else(|payload| resume_unwind(payload));
+        (during, view, Blake2b256Hash::from(DurableStateRootV1::of_manifest(successor.manifest())))
+    });
+
+    assert_eq!(
+        during,
+        (
+            true,
+            predecessor_root.clone(),
+            (predecessor_root.clone(), predecessor_contents),
+            (genesis_root, Contents::default()),
+            (Ok(true), Ok(true)),
+            Ok(predecessor_root.clone()),
+            true,
+        ),
+        "while a publication holds the owner mutex, a view built from the published core must \
+         reset to the current root and to a retained predecessor and report the predecessor's \
+         roots"
+    );
+    assert_ne!(successor_root, predecessor_root, "the held publication moves the current state");
+    let successor = view
+        .reset_view(&successor_root)
+        .expect("a reset to the successor's root after the release");
+    assert_eq!(
+        (view.exporter().get_root(), successor.root(), snapshot(successor.reader())),
+        (Ok(successor_root.clone()), successor_root.clone(), contents),
+        "after the release the exporter must answer the successor's root and a reset to it must \
+         read the successor's contents"
+    );
+    assert_eq!(Blake2b256Hash::from(lock(&owner).current_root()), successor_root);
+}
+
+fn installed_test_store(prefix: &str) -> PersistenceTrialDir {
+    let directory = trial_scratch(prefix);
+    install_checkpoint_image(
+        directory.path(),
+        &checkpoint_image_from_source(checkpoint_source_fixture()),
+    );
+    directory
+}
+
+fn admitted_test_writer(root: &Path) -> SemanticallyAdmittedDurableWriterV1<TestSemanticProfile> {
+    DurableDirectoryV1::open(root)
+        .expect("open the installed durable directory")
+        .recover_and_admit_v1::<TestSemanticProfile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .expect("cold admission of the installed checkpoint")
+}
+
+fn generation_checkpoint(
+    writer: SemanticallyAdmittedDurableWriterV1<TestSemanticProfile>,
+) -> SemanticallyAdmittedDurableWriterV1<TestSemanticProfile> {
+    writer
+        .publish_generation_checkpoint_v1(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .expect("a generation checkpoint reclaims the unleased first generation")
+}
+
+fn generation_files(key: GenerationLeaseKeyV1) -> Vec<String> {
+    (key.first_live_pack()..=key.active_pack())
+        .map(|pack| pack_file_name(PackId::new(pack).expect("a catalog pack id")))
+        .chain([index_file_name(
+            IndexGenerationV1::new(key.index_generation()).expect("a catalog index generation"),
+        )])
+        .collect()
+}
+
+fn count_published_core_loads(loads: Rc<Cell<u32>>) {
+    loads.set(loads.get() + 1);
+    match loads.get() {
+        3 => panic!("the published core was loaded a third time"),
+        _ => journal_owner_hooks::rearm(JournalOwnerHookPoint::AfterPublishedCoreLoad, move || {
+            count_published_core_loads(loads)
+        }),
+    }
+}
+
+fn arm_published_core_loads(
+    first_load: impl FnOnce() + 'static,
+) -> (Rc<Cell<u32>>, JournalOwnerHookGuard) {
+    let loads = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&loads);
+    let guard =
+        journal_owner_hooks::arm(JournalOwnerHookPoint::AfterPublishedCoreLoad, move || {
+            first_load();
+            count_published_core_loads(counted);
+        });
+    (loads, guard)
+}
+
+#[test]
+fn a_read_retries_on_the_published_successor_when_its_core_is_reclaimed_before_its_lease() {
+    let scratch = installed_test_store("published-core-retry-");
+    let writer = admitted_test_writer(scratch.path());
+    let first_key = GenerationLeaseKeyV1::from_catalog(writer.catalog());
+    let first_root = DurableStateRootV1::of_manifest(writer.catalog().state().manifest());
+    let registry = writer.generation_leases();
+    let published =
+        DurablePublishedCoreV1::detached_for_test(writer.shared_core(), registry.clone());
+    let successor = Rc::new(Cell::new(None));
+    let (installer, recorded) = (published.clone(), Rc::clone(&successor));
+    let (loads, hook) = arm_published_core_loads(move || {
+        let advanced =
+            publish_data_successor(generation_checkpoint(writer), "published-core-successor");
+        recorded.set(Some((
+            GenerationLeaseKeyV1::from_catalog(advanced.catalog()),
+            DurableStateRootV1::of_manifest(advanced.catalog().state().manifest()),
+        )));
+        installer.install_for_test(advanced.shared_core());
+    });
+
+    let (resolved, handle) = published
+        .read_handle(None)
+        .expect("the read retries on the published successor");
+    let observed_loads = loads.get();
+    drop(hook);
+    let (successor_key, successor_root) = successor
+        .get()
+        .expect("the first load installs a successor");
+
+    assert_ne!(successor_root, first_root, "the successor's current state differs");
+    assert!(
+        successor_key.first_live_pack() > first_key.active_pack(),
+        "the successor starts a fresh pack range: {first_key:?} {successor_key:?}"
+    );
+    assert_eq!(
+        resolved.root(),
+        successor_root,
+        "the read must return the published successor's current state"
+    );
+    assert_eq!(observed_loads, 2, "the read loads the first core and then its successor");
+    assert_eq!(
+        (registry.active_lease_count_for_test(), registry.has_active(successor_key)),
+        (1, Ok(true)),
+        "the registry must hold exactly the read's lease, on the successor's key"
+    );
+    assert_eq!(
+        generation_files(first_key)
+            .into_iter()
+            .filter(|name| scratch.path().join(name).exists())
+            .collect::<Vec<_>>(),
+        Vec::<String>::new(),
+        "the first core's generation is reclaimed"
+    );
+    assert!(
+        generation_files(successor_key)
+            .iter()
+            .all(|name| scratch.path().join(name).exists()),
+        "the successor's generation is present"
+    );
+    assert_eq!(
+        handle
+            .semantic_roots()
+            .expect("read the successor's roots through the handle"),
+        resolved.roots()
+    );
+    drop(handle);
+    let (superseded, _) = published
+        .read_handle(Some(first_root))
+        .expect("the successor retains the first core's state");
+    assert_eq!(
+        (superseded.root(), registry.active_lease_count_for_test()),
+        (first_root, 0),
+        "the first core's state stays retained and a dropped handle releases its lease"
+    );
+}
+
+#[test]
+fn a_read_refused_on_a_reclaimed_core_without_a_successor_reloads_once() {
+    let scratch = installed_test_store("published-core-refusal-");
+    let writer = admitted_test_writer(scratch.path());
+    let first_key = GenerationLeaseKeyV1::from_catalog(writer.catalog());
+    let first_root = DurableStateRootV1::of_manifest(writer.catalog().state().manifest());
+    let registry = writer.generation_leases();
+    let published =
+        DurablePublishedCoreV1::detached_for_test(writer.shared_core(), registry.clone());
+    let checkpointed = generation_checkpoint(writer);
+    let (loads, _hook) = arm_published_core_loads(|| {});
+
+    let refusal = published.read_handle(None).err();
+
+    assert_ne!(GenerationLeaseKeyV1::from_catalog(checkpointed.catalog()), first_key);
+    assert_eq!(
+        (refusal, loads.get(), registry.active_lease_count_for_test()),
+        (
+            Some(DurableStateReadHandleErrorV1::GenerationLease(GenerationLeaseError::Retired(
+                first_key
+            ))),
+            1,
+            0,
+        ),
+        "a read on a retired core without a successor must return the refusal after one load and \
+         keep no lease"
+    );
+    assert_eq!(
+        published.current_root(),
+        first_root,
+        "the current root reads only the published catalog slot"
     );
 }

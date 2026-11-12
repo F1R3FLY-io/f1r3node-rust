@@ -62,12 +62,11 @@ pub(crate) use durable::{
 #[cfg(test)]
 pub(crate) use durable::{
     DurableAdmissionLimitsV1, DurableAuthorityViewV1, DurableObjectReadErrorV1,
-    DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError, TrustedSuccessorPolicyV1,
-    create_empty_store_v1, recover_read_authority,
+    DurableRSpaceAuthorityV1, DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError,
+    TrustedSuccessorPolicyV1, create_empty_store_v1, recover_read_authority,
 };
 pub(crate) use durable::{
-    DurableRSpaceAuthorityV1, DurableStateReadHandleErrorV1, DurableStateRootV1,
-    DurableViewReaderV1,
+    DurablePublishedCoreV1, DurableStateReadHandleErrorV1, DurableStateRootV1, DurableViewReaderV1,
 };
 pub(crate) use manifest::AcceleratorManifestView;
 #[cfg(test)]

@@ -8590,19 +8590,18 @@ The trait gains one provided method, `empty_root()`, whose default,
 `RadixHistory::empty_root_node_hash()`, keeps the LMDB repository's value.
 
 **A repository value is a view.** `DurableHistoryRepositoryV1<P>` holds the
-shared owner, an `Arc<std::sync::Mutex<DurableRSpaceAuthorityV1<P>>>`, and the
-retained state that the view is based on: that state's `DurableStateRootV1`
-and a lazy `DurableViewReaderV1` of it, which holds its own generation lease.
-The mutex is the standard library's because every method of the trait is
-synchronous and RSpace calls them inside its asynchronous methods, where a
-tokio mutex can be taken neither by blocking nor, under contention, by trying.
+owner's published core, a `DurablePublishedCoreV1<P>`, and the retained state
+that the view is based on: that state's `DurableStateRootV1` and a lazy
+`DurableViewReaderV1` of it, which holds its own generation lease. Since task
+14358 a view holds no reference to the owner, and none of its methods takes
+the owner's mutex; "The published core" below explains why that is safe.
 
 - `root()` is the view's root.
-- `contains_verified_root(root)` resolves the root against the owner's current
-  core. It answers `false` for `UnknownRootError`, passes every other error
-  on, and refuses a hash of another length with `InvalidRootHash`, as the LMDB
-  repository does. `contains_root` is the trait's default, which delegates to
-  it.
+- `contains_verified_root(root)` takes a read handle for the root from the
+  published core, as a reset does, and drops it. It answers `false` for
+  `UnknownRootError`, passes every other error on, and refuses a hash of
+  another length with `InvalidRootHash`, as the LMDB repository does.
+  `contains_root` is the trait's default, which delegates to it.
 - `empty_root()` is the store-genesis state: the manifest of three empty
   namespace roots at schema epoch 1, of the store's semantic profile, without
   a legacy history root. `DurableStateRootV1::store_genesis` computes it
@@ -8612,26 +8611,110 @@ tokio mutex can be taken neither by blocking nor, under contention, by trying.
 
 1. Convert the `Blake2b256Hash` to a `DurableStateRootV1`. A hash of another
    length is `InvalidRootHash`.
-2. Lock the owner's mutex. A poisoned mutex is `KvStoreError`.
-3. Resolve the root against the owner's current core, as the durable state
-   roots section above describes: one probe of the closure ledger and one
-   manifest read of at most 241 bytes. A root that the ledger does not count
-   is `UnknownRootError`.
-4. Acquire one lease on the core's catalog generation, an insertion into the
-   in-memory lease registry.
-5. Release the mutex, and return a new view with the same owner, exporter,
-   importer and genesis root, whose reader reads the resolved namespace roots.
+2. Pin the published core: load the newest core from the cell, then acquire
+   one lease on that core's catalog generation, an insertion into the
+   in-memory lease registry. If the registry refuses the generation as
+   retired, reload and retry as "The published core" below describes. A
+   refused lease is `KvStoreError` with the refusal's text.
+3. Resolve the root against the pinned core, as the durable state roots
+   section above describes: one probe of the closure ledger and one manifest
+   read of at most 241 bytes. A root that the ledger does not count is
+   `UnknownRootError`, and the lease is released.
+4. Return a new view with the same published core, exporter, importer and
+   genesis root, whose reader holds the lease and reads the resolved namespace
+   roots.
 
-The owner's current core decides, not the core that the view was made from:
-only the current ledger counts the states published after the view was made,
+The newest published core decides, not the core that the view was made from:
+only the newest ledger counts the states published after the view was made,
 and it still counts every earlier state, because each publication's retention
-manifest retains its base. The owner gains three read-only methods for this,
-`current_root()`, `resolve(root)` and `resolve_read_handle(root)`; the last
-resolves and leases under one lock. The cost does not depend on the number of
-retained states or on the size of any state. By the decision of 2026-11-11, a
-reset is local: it writes nothing, syncs nothing and records no activation. An
-activation write belongs to the RSpace wiring through `activate_retained`, not
-to the repository.
+manifest retains its base. The owner keeps `current_root()` and hands out the
+cell through `published_core()`. Its former `resolve(root)` and
+`resolve_read_handle(root)`, which resolved and leased under the owner's
+mutex, are removed. The cost does not depend on the number of retained states
+or on the size of any state. By the decision of 2026-11-11, a reset is local:
+it writes nothing, syncs nothing and records no activation. An activation
+write belongs to the RSpace wiring through `activate_retained`, not to the
+repository.
+
+**The published core (task 14358).** A checkpoint holds the owner's mutex
+across its difference walk and its durable writes, so a reset that locked the
+owner waited for a whole publication. `DurablePublishedCoreV1<P>`, next to the
+owner in
+[`rspace_authority.rs`](../../../rspace++/src/rspace/persistence/durable/rspace_authority.rs),
+is a cell that readers consult instead. It has two fields:
+
+| Field | Type | Role |
+|---|---|---|
+| `core` | `Arc<std::sync::RwLock<Arc<DurableAuthorityCoreV1<P>>>>` | The newest admitted core. Every clone of the cell shares it. |
+| `registry` | `GenerationLeaseRegistryV1` | The owner's lease registry, which leases and retires generations. |
+
+The lock guards only the inner `Arc`. It is held to clone that `Arc` or to
+swap in a new one, never across a pack read, a lease operation or a
+publication, so a reader waits at most for one pointer swap. It is the
+standard library's lock because every method of the trait is synchronous and
+RSpace calls them inside its asynchronous methods. Neither critical section
+can panic, so a poisoned lock still holds a whole `Arc`, and the cell uses it
+as it is. A compile-time assertion requires the cell to be
+`Send + Sync + 'static` for every semantic profile.
+
+The owner is the only writer. `from_view_with` builds the cell from the
+admitted core and the owner's registry. `reconcile`, when re-admission finds
+the predecessor, and `acknowledge_successor` install the new core directly
+before they make it the owner's `source`; in `acknowledge_successor` both come
+before the owner replaces its own generation pin. `install` swaps the `Arc`
+under the write lock and drops the superseded `Arc` after the lock is
+released.
+
+Readers use three operations:
+
+- `current_root()` reads the catalog slot of the loaded core: no lease and no
+  pack read. The exporter's `get_root` answers it.
+- `pin()` loads the core and then acquires the lease of exactly that core's
+  catalog generation. On a `Retired` refusal it loads the cell again. If the
+  reloaded core has the refused lease key, `pin` returns the refusal;
+  otherwise it retries with the reloaded core. Any other refusal is returned.
+- `read_handle(target)` pins first, then resolves `target`, or the pinned
+  core's own current root when there is none, against the pinned core, and
+  builds a `DurableViewReadHandleV1` from that core, the resolved manifest and
+  the lease. A refused root drops the lease.
+
+Two orders make the cell safe without the owner's mutex:
+
+1. A reader holds its generation lease before it reads any pack. The only way
+   from the cell to a core that `read_handle` reads is `pin`, which returns
+   the core together with its lease. Reclamation deletes a generation's packs
+   and index only after `retire_pack_range_if_unleased` found no lease on the
+   generation's range, and the registry then refuses every later lease on
+   that range. A pinned generation is therefore never reclaimed, and a retired
+   one is never pinned. This registry rule is the only validity check; the
+   garbage-collection algorithm is unchanged.
+2. The owner installs a core before it releases the pin of the core that it
+   replaces. While the owner pins a generation, that generation cannot be
+   retired, so by the time a reader is refused a retired generation the cell
+   already holds a newer core, and the reader's reload finds it instead of
+   returning a spurious refusal.
+
+HR-05 builds the interleaving in which a successor generation is installed
+between a reader's load and its lease:
+
+```text
+reader (pin)                   cell           lease registry          store directory
+────────────                   ────           ──────────────          ───────────────
+load ────────────────────────▶ first core
+                                              retire first range ───▶ delete its pack and index
+                               successor ◀─── install (fresh range, different state)
+acquire first key ──────────────────────────▶ refused: Retired
+reload ──────────────────────▶ successor      keys differ: retry
+acquire successor key ──────────────────────▶ lease granted
+resolve and read ───────────────────────────────────────────────────▶ successor's packs
+```
+
+A retry happens only when the reloaded core's lease key differs from the
+refused key, so one `pin` retries at most once for each install that happens
+during it. Cost: `current_root` is one read-lock acquisition and one `Arc`
+increment; `pin` adds one registry insertion under the registry's mutex and,
+for each retry, one more load; `install` is one write-lock acquisition and
+one pointer swap; a clone of the cell is two `Arc` increments.
 
 **What the repository refuses.** The operations that belong to the LMDB
 authority, and those whose durable implementations have not landed, refuse
@@ -8645,10 +8728,10 @@ with the operation gate's typed mismatch (OG-12):
 | the exporter's `get_data_items` | `StateExportError::BackendMismatch(Cold)` |
 | the importer's `begin_import` and `get_history_item` | `StateImportError::BackendMismatch(History)` |
 
-An empty request is refused too. The exporter's `get_root` answers the owner's
-current root, the analogue of the LMDB exporter's authority root. There is no
-`Option` backend, no dummy history and no LMDB fallback. No persisted byte,
-record kind, file, root or wire message changes.
+An empty request is refused too. The exporter's `get_root` answers the
+published core's current root, the analogue of the LMDB exporter's authority
+root. There is no `Option` backend, no dummy history and no LMDB fallback. No
+persisted byte, record kind, file, root or wire message changes.
 
 **The tests.**
 
@@ -8687,6 +8770,40 @@ record kind, file, root or wire message changes.
   publication in that thread fails with the injected error and clears the
   failpoint. `sync_data` and `set_len` have no failpoint, so for them the
   directory image is the only witness.
+- `a_reset_completes_while_a_publication_holds_the_owner_mutex` (HR-04)
+  publishes one state over the store genesis and stages a second batch. A
+  second thread locks the owner's mutex and runs the publication, whose
+  `AfterPreparation` hook signals the test thread and then waits at most 30 s
+  for a release. Meanwhile the test thread, which never locks the owner, sees
+  the mutex held, builds a repository from the published core, resets it to
+  the current root and to the store genesis, reads both views, and calls
+  `contains_root` for both roots and the exporter's `get_root`; the mutex is
+  still held afterwards. Every call returns, with the published predecessor's
+  roots and contents. After the release and the join, the exporter answers
+  the successor's root, and a reset to it reads the successor's contents.
+- `a_read_retries_on_the_published_successor_when_its_core_is_reclaimed_before_its_lease`
+  (HR-05) builds a detached cell (`detached_for_test`) over the core of a
+  freshly admitted writer. The test-only hook point `AfterPublishedCoreLoad`
+  runs between a load and its lease. At its first firing the hook publishes a
+  generation checkpoint, which reclaims the first core's unleased generation,
+  publishes one data successor in the fresh generation, and installs that
+  successor's core with `install_for_test`. `read_handle(None)` returns the
+  successor's current state, which differs from the first core's; the hook
+  fired exactly twice; while the handle lives, the registry holds exactly one
+  lease, on the successor's key, whose first pack lies above the first core's
+  active pack; the first generation's pack and index files are absent and the
+  successor's are present; and the handle reads the successor's roots. The
+  successor still retains the first core's state, and once the handles are
+  dropped no lease remains. The hook re-arms itself at each firing and panics
+  at a third. It re-arms through `rearm`, which arms without a guard, because
+  the guard that `arm` returns clears the slot when it is dropped. The hook
+  point is not one of the owner's publication points.
+- `a_read_refused_on_a_reclaimed_core_without_a_successor_reloads_once`
+  (HR-06) retires and reclaims the published core's generation with a
+  generation checkpoint and installs nothing. With the same self-re-arming
+  hook, `read_handle(None)` returns `GenerationLease(Retired(key))` with the
+  first core's key after exactly one firing and leaves no lease, and
+  `current_root()` still answers the first core's root.
 - Three further tests are not registered. `empty_root` is the fixture's
   initial state, differs from the radix empty root that the LMDB repository
   keeps, and stays resettable after a publication, where it reads empty. Every
@@ -8697,6 +8814,17 @@ record kind, file, root or wire message changes.
 The red control resolves against the current state only: `reset_view` refuses
 every root except the owner's current one with `UnknownRootError`.
 
+Task 14358 adds five red controls, each a temporary fault that was then
+removed; the verification record states what each one did.
+
+| Fault | Test that fails |
+|---|---|
+| The test thread locks the owner's mutex before its first read. | HR-04, with its 30 s timeout message: the publication really holds the mutex during the reads. |
+| `pin` returns the first `Retired` refusal without reloading. | HR-05, with the lease refusal. |
+| `read_handle` picks its root before it pins. | HR-05, because the superseded root is returned. |
+| `pin` retries without comparing the reloaded key with the refused key. | HR-06, whose hook panics at its third firing. |
+| `acknowledge_successor` does not install. | HR-01, which refuses the root just published. |
+
 **The HR rows.** HR is the durable history repository's family.
 
 | ID | Required property | Test |
@@ -8704,6 +8832,9 @@ every root except the owner's current one with `UnknownRootError`.
 | HR-01 | Reset to a retained root. From any view of a store, made at the store genesis or after any publication, a reset to any root that the store started from or published gives a view at that root whose lazy reads return exactly that state's contents, and the repository reports that it contains the root. Two roots of one store are equal exactly when their contents are. | `every_view_resets_to_every_retained_root_and_reads_that_states_contents` |
 | HR-02 | Unknown roots are refused without effect. A digest absent from the store, another store's state root, the LMDB radix empty root, and the digest of an object of this store that is not a current or retained state are refused with `UnknownRootError` from every view, and the repository reports that it contains none of them; a hash of another length is refused with `InvalidRootHash`. No file of the store directory changes, and every view keeps its root and its reads. | `an_unknown_root_is_refused_and_changes_no_file` |
 | HR-03 | Reset is local. A reset, accepted or refused, reaches none of the 16 directory failpoints, so it performs no write and no sync through them, gives the same outcome with any one of them armed, and leaves the store directory unchanged. | `reset_performs_no_write_and_no_sync_under_every_directory_failpoint` |
+| HR-04 | A reset does not wait for a publication. While another thread holds the owner's mutex in the middle of a publication, a repository built from the published core resets to the current root and to a retained predecessor, and answers `contains_root` and the exporter's `get_root`; every call returns, with the published predecessor's roots and contents. After the publication is acknowledged, the exporter answers the successor's root and a reset to it succeeds. | `a_reset_completes_while_a_publication_holds_the_owner_mutex` |
+| HR-05 | A read retries on the published successor. When the generation of the core that a read loaded is reclaimed before the read leases it, and a successor with a fresh pack range and a different current state has been installed, the read is refused once, reloads, and returns the successor's current state through a handle that holds the registry's only lease, on the successor's key. The reclaimed pack and index files are absent. | `a_read_retries_on_the_published_successor_when_its_core_is_reclaimed_before_its_lease` |
+| HR-06 | A refused read without a successor stops. When the published core's generation is retired and no newer core is installed, a read returns the registry's `Retired` refusal for that core's key after one load and holds no lease. | `a_read_refused_on_a_reclaimed_core_without_a_successor_reloads_once` |
 
 ### Retained state endpoint difference (2026-11-12)
 
@@ -9275,6 +9406,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | HR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the contents that a view reset to a retained root reads. No model represents a durable view, its reset or its lazy reader's results. |
 | HR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the refusal, from every view, of roots that the owner's current ledger does not count, with no change to the store directory. No model states a lookup of a retained state by its manifest digest. |
 | HR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): a reset reaches no directory failpoint and changes no file. The failpoints are a test seam of the Rust I/O layer, which no model represents. |
+| HR-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14358): a reset completes while another thread holds the owner's mutex. No model represents the owner's mutex, a thread or the published-core cell. |
+| HR-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14358): the reload and retry of `pin` after a `Retired` refusal, when a successor generation was installed between the load and the lease. No model states the published-core cell or the order of a load and a lease. |
+| HR-06 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14358): `pin` returns the `Retired` refusal when the reloaded core has the refused key. No model states the published-core cell or its retry. |
 | DF-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14347): the endpoint difference of two retained states turns the from state into the to state. This matrix cites no model of the canonical radix DAG's endpoints or of a walk over two states, and no model states a property of the walk's Rust results. |
 | DF-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14347): the walk reads exactly the node occurrences that the two states do not share. No model in this matrix counts the reads of a walk over a radix DAG. |
 | DF-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14347): the literal ordered group path of a continuation endpoint, ruling D1, as VR-07 states it for a continuation read. This matrix cites no model of RhoPathV1 group prefixes. |
@@ -10130,6 +10264,41 @@ test's file, and the RMP2 registry hashes `data_index.rs`; all three change,
 so both registries were regenerated, and the PathMap aggregate takes their
 new manifest digests. No persisted record kind, byte layout, magic number or
 file name is new. See the lazy durable hot-store bootstrap section.
+
+The 2026-11-12 published-core slice of task 7931 (task 14358) adds HR-04 to
+HR-06, so the catalog/derivation/binding registry now contains **265** IDs,
+and it removes the limit that the durable history repository paragraph above
+records: a view-local reset no longer takes the owner's mutex. Before any
+code was written, `prepare_unpublished_successor_artifacts`, its only caller
+chain (`publish_generation_checkpoint_v1` through
+`prepare_and_write_successor_generation`) and `truncate_incremental_pack`
+were read to confirm that neither touches a pack range that a published core
+authorizes: the cleanup removes only the pack and the index one past those
+of the catalog on disk, and truncation shortens only that catalog's active
+pack, and only down to its durable tail, which no older core exceeds. On an
+export of the candidate tree, which already holds the retained state
+difference and lazy durable hot-store bootstrap slices, the nine tests of
+the repository file passed in debug and in release together with the owner,
+owner checkpoint view, owner incarnation and generation-checkpoint property
+tests (60 passed, 1 ignored), and the whole library test target passed in
+both profiles with 979 tests (969 passed, 10 ignored). Five red controls
+were each applied to the export, run against their named test in debug and
+removed, and each made exactly that test fail. The test thread locking the
+owner's mutex before its first read made HR-04 fail after 30 s with its
+timeout message. `pin` returning the first `Retired` refusal without
+reloading made HR-05 fail with that refusal, for the key with epoch 1 and
+packs 1 to 1. `read_handle` picking its root before it pins made HR-05
+receive the superseded root, which the successor still retains. `pin`
+retrying without comparing the reloaded key with the refused one made
+HR-06's hook panic at its third firing. `acknowledge_successor` without the
+install made HR-01 refuse the root just published with `UnknownRootError`.
+Each faulted file was restored from the candidate tree. Clippy of
+`rspace_plus_plus` with every target lists no finding in the files of this
+slice, and `rustfmt --check` passes on its Rust files. The
+workspace-regression registry hashes `persistence/mod.rs`, which changes, so
+it was regenerated, and the PathMap aggregate takes its new manifest digest.
+No persisted byte, record kind, root, identity or wire message changed, and
+the garbage-collection algorithm is unchanged.
 
 ## Caller-authority contract (2026-09-06)
 

@@ -322,6 +322,12 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("HR-01", "every_view_resets_to_every_retained_root_and_reads_that_states_contents"),
     ("HR-02", "an_unknown_root_is_refused_and_changes_no_file"),
     ("HR-03", "reset_performs_no_write_and_no_sync_under_every_directory_failpoint"),
+    ("HR-04", "a_reset_completes_while_a_publication_holds_the_owner_mutex"),
+    (
+        "HR-05",
+        "a_read_retries_on_the_published_successor_when_its_core_is_reclaimed_before_its_lease",
+    ),
+    ("HR-06", "a_read_refused_on_a_reclaimed_core_without_a_successor_reloads_once"),
     ("JR-01", "constructor_refuses_foreign_or_invalidated_hot_authority_without_losing_its_view"),
     ("JR-02", "invalidated_base_cannot_release_old_recovery_or_report_ready"),
     ("JR-03", "a_stale_capture_is_rejected_before_publication_even_when_its_journal_bytes_match"),

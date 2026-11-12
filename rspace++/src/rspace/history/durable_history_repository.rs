@@ -1,5 +1,5 @@
 use std::hash::Hash;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use shared::rust::ByteVector;
 
@@ -13,8 +13,8 @@ use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hot_store_action::HotStoreAction;
 use crate::rspace::hot_store_trie_action::HotStoreTrieAction;
 use crate::rspace::persistence::{
-    DurableRSpaceAuthorityV1, DurableStateReadHandleErrorV1, DurableStateRootV1,
-    DurableViewReaderV1, SemanticProfile,
+    DurablePublishedCoreV1, DurableStateReadHandleErrorV1, DurableStateRootV1, DurableViewReaderV1,
+    SemanticProfile,
 };
 use crate::rspace::shared::trie_exporter::{
     AuthenticatedTraversalPage, KeyHash, NodePath, StateExportError, TrieExporter, Value,
@@ -22,8 +22,6 @@ use crate::rspace::shared::trie_exporter::{
 use crate::rspace::state::import_session::{StateImportError, StateImportSession, StateImportSpec};
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
 use crate::rspace::state::rspace_importer::RSpaceImporter;
-
-type SharedDurableOwnerV1<P> = Arc<Mutex<DurableRSpaceAuthorityV1<P>>>;
 
 type DurableHistoryRepositoryObjectV1<P> = Box<
     dyn HistoryRepository<
@@ -39,7 +37,7 @@ type DurableHistoryRepositoryObjectV1<P> = Box<
 pub(crate) struct DurableHistoryRepositoryV1<P: SemanticProfile>
 where P::Channel: Clone + Hash + Eq
 {
-    owner: SharedDurableOwnerV1<P>,
+    published: DurablePublishedCoreV1<P>,
     root: DurableStateRootV1,
     genesis: DurableStateRootV1,
     reader: DurableViewReaderV1<P>,
@@ -50,18 +48,15 @@ where P::Channel: Clone + Hash + Eq
 impl<P: SemanticProfile> DurableHistoryRepositoryV1<P>
 where P::Channel: Clone + Hash + Eq
 {
-    pub(crate) fn new(owner: SharedDurableOwnerV1<P>) -> Result<Self, HistoryError> {
-        let (root, reader) = {
-            let current = lock_owner(&owner)?;
-            pinned_state(&current, current.current_root())?
-        };
+    pub(crate) fn new(published: DurablePublishedCoreV1<P>) -> Result<Self, HistoryError> {
+        let (root, reader) = pinned_state(&published, None)?;
         Ok(Self {
             exporter: Arc::new(DurableRSpaceExporterV1 {
-                owner: Arc::clone(&owner),
+                published: published.clone(),
             }),
             importer: Arc::new(DurableRSpaceImporterV1),
             genesis: DurableStateRootV1::store_genesis::<P>(),
-            owner,
+            published,
             root,
             reader,
         })
@@ -69,12 +64,9 @@ where P::Channel: Clone + Hash + Eq
 
     pub(crate) fn reset_view(&self, root: &Blake2b256Hash) -> Result<Self, HistoryError> {
         let target = DurableStateRootV1::try_from(root)?;
-        let (root, reader) = {
-            let current = lock_owner(&self.owner)?;
-            pinned_state(&current, target)?
-        };
+        let (root, reader) = pinned_state(&self.published, Some(target))?;
         Ok(Self {
-            owner: Arc::clone(&self.owner),
+            published: self.published.clone(),
             root,
             genesis: self.genesis,
             reader,
@@ -86,28 +78,18 @@ where P::Channel: Clone + Hash + Eq
     pub(crate) fn reader(&self) -> &DurableViewReaderV1<P> { &self.reader }
 }
 
-fn lock_owner<P: SemanticProfile>(
-    owner: &Mutex<DurableRSpaceAuthorityV1<P>>,
-) -> Result<MutexGuard<'_, DurableRSpaceAuthorityV1<P>>, RootError>
-where P::Channel: Clone + Hash + Eq {
-    owner
-        .lock()
-        .map_err(|_| RootError::KvStoreError("durable RSpace owner lock poisoned".to_owned()))
+fn history_error(refusal: DurableStateReadHandleErrorV1) -> HistoryError {
+    match refusal {
+        DurableStateReadHandleErrorV1::Root(error) => HistoryError::RootError(error),
+        lease => HistoryError::RootError(RootError::KvStoreError(lease.to_string())),
+    }
 }
 
 fn pinned_state<P: SemanticProfile>(
-    owner: &DurableRSpaceAuthorityV1<P>,
-    root: DurableStateRootV1,
-) -> Result<(DurableStateRootV1, DurableViewReaderV1<P>), HistoryError>
-where
-    P::Channel: Clone + Hash + Eq,
-{
-    let (resolved, handle) = owner
-        .resolve_read_handle(root)
-        .map_err(|refusal| match refusal {
-            DurableStateReadHandleErrorV1::Root(error) => HistoryError::RootError(error),
-            lease => HistoryError::RootError(RootError::KvStoreError(lease.to_string())),
-        })?;
+    published: &DurablePublishedCoreV1<P>,
+    target: Option<DurableStateRootV1>,
+) -> Result<(DurableStateRootV1, DurableViewReaderV1<P>), HistoryError> {
+    let (resolved, handle) = published.read_handle(target).map_err(history_error)?;
     Ok((resolved.root(), DurableViewReaderV1::new(handle, resolved.roots())))
 }
 
@@ -178,10 +160,10 @@ where P::Channel: Clone + Hash + Eq
 
     fn contains_verified_root(&self, root: &Blake2b256Hash) -> Result<bool, HistoryError> {
         let target = DurableStateRootV1::try_from(root)?;
-        match lock_owner(&self.owner)?.resolve(target) {
+        match self.published.read_handle(Some(target)) {
             Ok(_) => Ok(true),
-            Err(RootError::UnknownRootError(_)) => Ok(false),
-            Err(error) => Err(HistoryError::RootError(error)),
+            Err(DurableStateReadHandleErrorV1::Root(RootError::UnknownRootError(_))) => Ok(false),
+            Err(refusal) => Err(history_error(refusal)),
         }
     }
 }
@@ -189,15 +171,13 @@ where P::Channel: Clone + Hash + Eq
 struct DurableRSpaceExporterV1<P: SemanticProfile>
 where P::Channel: Clone + Hash + Eq
 {
-    owner: SharedDurableOwnerV1<P>,
+    published: DurablePublishedCoreV1<P>,
 }
 
 impl<P: SemanticProfile> RSpaceExporter for DurableRSpaceExporterV1<P>
 where P::Channel: Clone + Hash + Eq
 {
-    fn get_root(&self) -> Result<KeyHash, RootError> {
-        Ok(lock_owner(&self.owner)?.current_root().into())
-    }
+    fn get_root(&self) -> Result<KeyHash, RootError> { Ok(self.published.current_root().into()) }
 }
 
 impl<P: SemanticProfile> TrieExporter for DurableRSpaceExporterV1<P>

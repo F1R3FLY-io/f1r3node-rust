@@ -22,7 +22,7 @@ use super::{
     CatalogSlotV1, DurableAuthorityViewV1, DurableObjectReadErrorV1, DurableViewReadHandleV1,
     require_shareable_read_handle,
 };
-use crate::rspace::errors::{RSpaceError, RootError};
+use crate::rspace::errors::RSpaceError;
 use crate::rspace::hot_store::{
     CapturedHotJournalV1, HotStore, mutation_batch_from_observation,
     stage_pending_continuation_sources,
@@ -209,12 +209,117 @@ type OwnerHotStoreV1<P> = Arc<
     >,
 >;
 
+pub(crate) struct DurablePublishedCoreV1<P: SemanticProfile> {
+    core: Arc<std::sync::RwLock<Arc<DurableAuthorityCoreV1<P>>>>,
+    registry: GenerationLeaseRegistryV1,
+}
+
+impl<P: SemanticProfile> Clone for DurablePublishedCoreV1<P> {
+    fn clone(&self) -> Self {
+        Self {
+            core: Arc::clone(&self.core),
+            registry: self.registry.clone(),
+        }
+    }
+}
+
+impl<P: SemanticProfile> DurablePublishedCoreV1<P> {
+    fn new(core: Arc<DurableAuthorityCoreV1<P>>, registry: GenerationLeaseRegistryV1) -> Self {
+        const { require_shareable_read_handle::<Self>() };
+        Self {
+            core: Arc::new(std::sync::RwLock::new(core)),
+            registry,
+        }
+    }
+
+    fn install(&self, successor: Arc<DurableAuthorityCoreV1<P>>) {
+        let superseded = {
+            let mut published = match self.core.write() {
+                Ok(published) => published,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            std::mem::replace(&mut *published, successor)
+        };
+        drop(superseded);
+    }
+
+    fn load(&self) -> Arc<DurableAuthorityCoreV1<P>> {
+        let published = match self.core.read() {
+            Ok(published) => published,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        Arc::clone(&published)
+    }
+
+    fn pin(
+        &self,
+    ) -> Result<(Arc<DurableAuthorityCoreV1<P>>, GenerationLeaseV1), GenerationLeaseError> {
+        let mut core = self.load();
+        loop {
+            #[cfg(test)]
+            hooks::run(hooks::JournalOwnerHookPoint::AfterPublishedCoreLoad);
+            match self
+                .registry
+                .acquire(GenerationLeaseKeyV1::from_catalog(core.authority().slot()))
+            {
+                Ok(lease) => return Ok((core, lease)),
+                Err(GenerationLeaseError::Retired(refused)) => {
+                    let reloaded = self.load();
+                    if GenerationLeaseKeyV1::from_catalog(reloaded.authority().slot()) == refused {
+                        return Err(GenerationLeaseError::Retired(refused));
+                    }
+                    core = reloaded;
+                }
+                Err(refusal) => return Err(refusal),
+            }
+        }
+    }
+
+    pub(crate) fn current_root(&self) -> DurableStateRootV1 {
+        DurableStateRootV1::of_manifest(self.load().authority().slot().state().manifest())
+    }
+
+    pub(crate) fn read_handle(
+        &self,
+        target: Option<DurableStateRootV1>,
+    ) -> Result<(ResolvedDurableStateV1, DurableViewReadHandleV1<P>), DurableStateReadHandleErrorV1>
+    {
+        let (core, lease) = self.pin()?;
+        let root = target.unwrap_or_else(|| {
+            DurableStateRootV1::of_manifest(core.authority().slot().state().manifest())
+        });
+        let resolved = core
+            .resolve(root)
+            .map_err(DurableStateReadHandleErrorV1::Root)?;
+        Ok((resolved, DurableViewReadHandleV1 {
+            core,
+            manifest: resolved.manifest(),
+            _lease: lease,
+        }))
+    }
+}
+
+#[cfg(test)]
+impl<P: SemanticProfile> DurablePublishedCoreV1<P> {
+    pub(crate) fn detached_for_test(
+        core: Arc<DurableAuthorityCoreV1<P>>,
+        registry: GenerationLeaseRegistryV1,
+    ) -> Self {
+        Self::new(core, registry)
+    }
+
+    pub(crate) fn install_for_test(&self, core: Arc<DurableAuthorityCoreV1<P>>) {
+        self.install(core);
+    }
+}
+
 pub(crate) struct DurableRSpaceAuthorityV1<P: SemanticProfile>
 where P::Channel: Clone + Hash + Eq
 {
     lifecycle: OwnerLifecycleV1,
     registry: GenerationLeaseRegistryV1,
     source: Arc<DurableAuthorityCoreV1<P>>,
+    published: DurablePublishedCoreV1<P>,
     pending: Option<Box<PendingJournalPublicationV1<P>>>,
 }
 
@@ -278,6 +383,8 @@ where P::Channel: Clone + Hash + Eq
         } = view;
         let (lease, source) = writer.into_parts();
         let registry = lease.generation_leases();
+        let source = source.into_core();
+        let published = DurablePublishedCoreV1::new(Arc::clone(&source), registry.clone());
         Ok(Self {
             lifecycle: OwnerLifecycleV1::Live {
                 incarnation,
@@ -285,7 +392,8 @@ where P::Channel: Clone + Hash + Eq
                 generation_lease: _generation_lease,
             },
             registry,
-            source: source.into_core(),
+            source,
+            published,
             pending: None,
         })
     }
@@ -349,31 +457,7 @@ where P::Channel: Clone + Hash + Eq
         DurableStateRootV1::of_manifest(self.source.authority().slot().state().manifest())
     }
 
-    pub(crate) fn resolve(
-        &self,
-        root: DurableStateRootV1,
-    ) -> Result<ResolvedDurableStateV1, RootError> {
-        self.source.resolve(root)
-    }
-
-    pub(crate) fn resolve_read_handle(
-        &self,
-        root: DurableStateRootV1,
-    ) -> Result<(ResolvedDurableStateV1, DurableViewReadHandleV1<P>), DurableStateReadHandleErrorV1>
-    {
-        const { require_shareable_read_handle::<DurableViewReadHandleV1<P>>() };
-        let resolved = self
-            .resolve(root)
-            .map_err(DurableStateReadHandleErrorV1::Root)?;
-        let lease = self
-            .registry
-            .acquire(GenerationLeaseKeyV1::from_catalog(self.source.authority().slot()))?;
-        Ok((resolved, DurableViewReadHandleV1 {
-            core: Arc::clone(&self.source),
-            manifest: resolved.manifest(),
-            _lease: lease,
-        }))
-    }
+    pub(crate) fn published_core(&self) -> DurablePublishedCoreV1<P> { self.published.clone() }
 
     pub(crate) fn attach(
         &self,
@@ -558,6 +642,7 @@ where P::Channel: Clone + Hash + Eq
             .expect("reconciliation retains its capture");
         if actual == pending.predecessor {
             hot.validate_journal_authority(actual, &self.registry)?;
+            self.published.install(Arc::clone(&successor));
             self.source = successor;
             self.pending = None;
             return self.state(&hot);
@@ -631,6 +716,7 @@ where P::Channel: Clone + Hash + Eq
         else {
             unreachable!("acknowledgement preserves its admitted successor");
         };
+        self.published.install(Arc::clone(&successor));
         self.source = successor;
         *current_pin = generation_lease.expect("successor pin precedes acknowledgement");
         drop(permit);
