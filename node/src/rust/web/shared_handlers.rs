@@ -323,6 +323,9 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                     (StatusCode::SERVICE_UNAVAILABLE, "history_incomplete")
                 }
                 ProposeRefusal::MissingBlock => (StatusCode::SERVICE_UNAVAILABLE, "missing_block"),
+                ProposeRefusal::FloorDistanceHold => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "floor_distance_hold")
+                }
             };
             return (status, kind, cause.to_string());
         }
@@ -353,6 +356,13 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
         // the same request may succeed once it has. 503 tells the caller to
         // retry; the 500 class would say the node is broken.
         BlockNotHeld(..) => (S::SERVICE_UNAVAILABLE, "block_not_held", err.to_string()),
+
+        // A hold until finality advances, not a node fault.
+        FloorDistanceExceeded { .. } => (
+            S::SERVICE_UNAVAILABLE,
+            "floor_distance_hold",
+            err.to_string(),
+        ),
 
         SigningError(_) => internal("signing_error"),
         KvStoreError(_) => internal("kv_store_error"),
@@ -831,6 +841,11 @@ mod tests {
                     ProposeRefusal::MissingBlock,
                     StatusCode::SERVICE_UNAVAILABLE,
                     "missing_block",
+                ),
+                (
+                    ProposeRefusal::FloorDistanceHold,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "floor_distance_hold",
                 ),
             ];
             for (refusal, status, kind) in cases {

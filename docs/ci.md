@@ -10,7 +10,7 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | Static check | Reads files and history. It runs no program under test. |
 | Script test | Runs a behavioral test of a CI, release, or soak script. It needs no Rust build. |
 | Soak harness test | Builds the `casper-soak` harness and runs the real soak driver, also in Docker containers. |
-| Unit test | Runs `cargo test` for a crate. |
+| Unit test | Runs the tests of a crate once under `cargo llvm-cov` and records the line coverage of that run. |
 | Build | Builds a release artifact or a Docker image. |
 | Integration test | Runs a node network on ephemeral runners. |
 | Setup | Resolves the target commit and the run decisions for the other jobs. |
@@ -29,17 +29,26 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | `markdown_link_check` | Markdown Link Check | Static check | `build_base` |
 | `test` | Test (*crate*) | Unit test | `build_base`, `static_checks` |
 | `test_casper` | Test (casper *n*/2) | Unit test | `build_base`, `static_checks` |
-| `coverage` | Coverage (*crate*) | Unit test | `build_base`, `static_checks` |
-| `coverage_summary` | Coverage Summary | Gate | `build_base`, `coverage` |
+| `coverage_summary` | Coverage Summary | Gate | `build_base`, `test`, `test_casper` |
 | `test_casper_gate` | Test Gate (casper) | Gate | `test_casper`, `coverage_summary` |
-| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests`, `soak_harness_tests` |
+| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests` |
 | `integration_tests_amd64` | Integration Gate (amd64) | Gate | `build_base`, `pipeline` |
 | `integration_tests_arm64` | Integration Gate (arm64) | Gate | `build_base`, `pipeline` |
 | `notify_queue_failure` | Notify Queue Failure | Notification | `pipeline`, both integration gates |
 | `release_docker_image` | Release Docker Image | Build | the checks above |
 | `release_packages` | Release Packages | Build | the checks above |
 
-The Integration Pipeline waits for all three of Static Checks, Script Tests, and Soak Harness Tests. A failed inexpensive check therefore does not start ephemeral OCI runners.
+The Integration Pipeline waits for Static Checks and Script Tests. A failed inexpensive check therefore does not start ephemeral OCI runners. Script Tests covers the runner launch, tagging, and reclaim scripts that the pipeline uses.
+
+The Integration Pipeline does not wait for Soak Harness Tests. That job tests only the casper-soak tool, which the pipeline does not run, and it takes approximately 18 minutes. The merge queues and the release jobs still require it.
+
+### Unit tests and coverage
+
+Each Test job runs the tests of its crate one time, under `cargo llvm-cov`, with `.github/scripts/run-crate-tests.sh`. The job writes the line coverage of that run as an lcov file and uploads it as the `coverage-<crate>` artifact. The two casper shards upload `coverage-casper-1` and `coverage-casper-2`. The job writes the report before the doctests run, so doctests do not count toward coverage.
+
+On a pull request, Coverage Summary reads these files with `.github/scripts/coverage-summary.sh`. The script counts each source line of a crate one time, from the `DA` records of the lcov files. A line is covered when any shard ran it. Each crate and the workspace must have at least 80% line coverage. Test Gate (casper) fails when Coverage Summary fails.
+
+The `DA` count can be different from the line totals that `cargo llvm-cov report --json` prints. Across the crates, it gives a result from 0.03 points lower to 1.8 points higher. The script uses the `DA` count because the shards of one crate can be merged line by line only from those records.
 
 ### Static Checks
 
@@ -51,7 +60,9 @@ The Integration Pipeline waits for all three of Static Checks, Script Tests, and
 
 ### Commit Policy
 
-The job verifies the commit identities of pull request commits (pull requests only). It reads the pull request head SHA, so it has no cache step. A cache step in the same job is the pattern that the CodeQL rule `actions/cache-poisoning/poisonable-step` reports. The step fetches commit objects only. It runs the commit identity checker and reads the denied identities list from the base commit, so a pull request cannot weaken its own check. Before these files reach the base branch, the step uses the copies in the pull request.
+The job verifies commit identities in pull requests. It reads the pull request head SHA, so it has no cache step. A cache step in the same job matches the CodeQL rule `actions/cache-poisoning/poisonable-step`. The step fetches commit objects only.
+
+Ordinary pull requests use the base commit's checker and denied identities list. Before these files reach the base branch, the step uses the copies in the pull request. Approved workflow transfers can use verified source policy as described below.
 
 `.github/scripts/commit-policy-exemptions.sh` lists the exempt commits: the commits of a human pull request author, and the contributor commits of an imported fork pull request. The step runs the base copy of that script.
 
@@ -65,19 +76,28 @@ Approved branch transfers can also use source history to ratify identities. This
 | `ca-canary` | `backmerge/ca-release-*` | `ca-release` |
 | `ca-release` | `promote/ca-release-*` | `ca-canary` |
 
-The base copy of `.github/scripts/commit-policy-source.sh` validates each transfer. Both PR repositories must match the workflow repository. The API head must match the event head. The source must be protected.
+The base copy of `.github/scripts/commit-policy-source.sh` normally validates each transfer. Both PR repositories must match the workflow repository. The API head must match the event head. The source must be protected.
 
 After validation, the checker finds all merge bases between the PR head and the protected source tip. Those shared ancestors add accepted source authors to the ratified set. This supports snapshots and later base updates. PR-only commits and later source commits cannot ratify identities absent from shared history. Denied identities and forbidden trailers still fail. Ordinary feature PRs and forks retain their existing checks.
 
-If the base commit lacks the source validator, the job uses target-only ratification and reports a notice. It never executes the PR copy of the source validator. A trusted validator failure stops the job.
+Workflow transfers can install policy when the target lacks the source validator. This also replaces the older checker used by such targets. The PR author must be `f1r3node-promotion[bot]`, with account type `Bot`. The temporary head must match an approved route above.
 
-The policy files must reach a target branch before that branch can use source ratification. A merge into `dev` alone does not update the checker on `ca-canary`.
+Before loading source code, inline workflow checks verify both repositories, branch names, commit SHAs, and the author against the event. The source branch must be protected. The job selects a common ancestor of the event head and the captured source tip as the policy revision. This revision belongs to accepted source history and the transferred history.
+
+The job loads the source validator, checker, and exemption script from that verified revision. It combines the target and source denied lists. Target history and shared source history both ratify identities. A missing policy file or failed validator stops the job. Unmerged head edits and later source policy cannot replace the selected policy.
+
+Targets with the source validator retain their existing policy. Other PRs into targets without the validator use target-only ratification and report a notice. They never execute a PR copy of the source validator. A trusted validator failure stops the job.
+
+After this fix reaches `dev`, the normal promotion workflow can transfer its policy into `ca-canary`. No separate policy-only PR or force push is required. An existing sync needs the updated CI workflow in its head before it can use this behavior.
 
 ### Script Tests
 
 The job runs these script tests:
 
 - Commit trailer check
+- Commit Policy exemptions
+- Commit Policy source history
+- Commit Policy bootstrap
 - Pre-push hook
 - Stack CI gate
 - Image publish tags
@@ -104,7 +124,7 @@ The job runs these script tests:
 
 ### Casper crash backtraces
 
-The `Test (casper N/2)` and `Coverage (casper)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The `Test (casper N/2)` jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
+The `Test (casper N/2)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
 
 ### Soak Harness Tests
 

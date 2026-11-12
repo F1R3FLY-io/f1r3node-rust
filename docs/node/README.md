@@ -19,15 +19,15 @@ main()
        node_runtime::start()
          -> NodeIdentifier from TLS certificate
          -> setup_node_program()
-              -> Initialize LMDB stores (block, DAG, casper buffer, deploy, eval, play, replay, reporting)
+              -> Initialize LMDB stores (block, DAG, deploy, eval, play, replay, reporting)
               -> Create RuntimeManager (play/replay) with history
               -> Create Estimator, ValidatorIdentity
-              -> Create block processor queue (mpsc::unbounded_channel)
+              -> Start block ingest (intake, owner, validation workers, request sender)
               -> Create proposer queue (oneshot channels)
               -> Create API services and server instances
          -> Spawn concurrent tasks via JoinSet:
               CasperLoop, UpdateForkChoiceLoop, EngineInit, CasperLaunch,
-              BlockProcessorInstance, ProposerInstance, HeartbeatProposer, ServersInstances
+              BlockIngest, ProposerInstance, HeartbeatProposer, ServersInstances
          -> Monitor tasks, graceful shutdown on SIGTERM/SIGINT
   -> ELSE (CLI subcommand):
        run_cli() -> route to deploy/propose/repl/keygen/status/etc.
@@ -373,20 +373,7 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 
 ## Runtime Instances
 
-**`BlockProcessorInstance`** -- Receives blocks, validates, applies to DAG. Semaphore-bounded parallelism. Re-queues on `FinalizationInProgress`.
-
-### Block-processing bounds (compiled constants)
-
-The former `F1R3_*` block-processing env vars are gone — every bound is a
-named constant with a single definition. Current values:
-
-| Constant | Value | Purpose |
-|----------|------:|---------|
-| `MAX_BLOCKS_IN_PROCESSING` | `512` | Cap on concurrently in-flight blocks (one shared set; all admission gates use this one constant). **When the cap is hit, incoming blocks are dropped with a warn log** (they are re-fetched via the missing-dependency path later). |
-| `MALLOC_TRIM_INTERVAL_BLOCKS` | `64` | Linux/glibc only: `malloc_trim(0)` after every 64 processed blocks to return freed arena memory to the OS. |
-| `MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. |
-| `VALIDATION_ERROR_QUARANTINE_MS` | `120000` | Pacing of hard-validation-failure retries; a separate constant from the missing-dependency quarantine (they no longer alias). |
-| `VALIDATION_ERROR_ATTEMPTS_MAX` | `32` | Cap on hard validation `Err`s per buffered block (typed outcomes — duplicate, malformed, missing-dependency — never count). At the cap the block is purged from the buffer with a warn; only a fresh peer delivery brings it back. |
+**`BlockIngest`** -- Takes received blocks into the DAG: intake, one owner of what the node holds and needs, validation workers, and a request sender. The node supervises its tasks as one critical task. See [Block ingest](../casper/BLOCK_INGEST.md) for the flow, the bounds and the metrics.
 
 **`ProposerInstance`** -- Dequeues proposal requests. Non-blocking locking (try_lock). 5-minute timeout for stuck proposals. Min-interval between proposals is 250ms (hardcoded).
 
@@ -395,8 +382,8 @@ named constant with a single definition. Current values:
 | HOCON key | Default | Purpose |
 |-----------|--------:|---------|
 | `heartbeat.enabled` | `true` | Enable the heartbeat proposer. It drives block and finalization cadence across validators, so multi-validator deployments leave it on; a single-node dev shard may set `false` and rely on `autopropose` or operator-triggered proposes |
-| `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
-| `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
+| `heartbeat.check-interval` | 3s | How often the loop evaluates its decision tree |
+| `heartbeat.max-lfb-age` | 3s | LFB age threshold above which stale-LFB recovery may fire |
 | `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals; gates every routine lane (never the stale-recovery lane, which paces on the interval below) |
 | `heartbeat.stale-recovery-min-interval` | derived: 1.5 × `check-interval` | Pacing for stale-LFB recovery and the pending-deploy backstop: both the LFB's age and the validator's own silence must exceed it — at most one recovery proposal per validator per interval. The derived value opens on the second tick after a validator's own block; an explicit value must exceed `check-interval` (startup fails otherwise) |
 | `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; widens lag caps only — never bypasses the cooldown |

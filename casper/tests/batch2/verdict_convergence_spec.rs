@@ -214,6 +214,7 @@ async fn stage_contest() -> (Vec<TestNode>, String, Bytes, usize, &'static str) 
                 .await
                 .expect("dag")
                 .contains(&block.block_hash)
+                .unwrap()
             {
                 continue;
             }
@@ -688,6 +689,7 @@ async fn verdict_must_not_freeze_during_reinstatement_transient() {
             .await
             .expect("dag")
             .contains(&b.block_hash)
+            .unwrap()
         {
             nodes[0]
                 .process_block((*b).clone())

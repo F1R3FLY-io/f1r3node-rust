@@ -16,7 +16,7 @@ cargo-fuzz = true
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"] }
-block-storage = { path = "../block-storage" }
+block-storage = { path = "../block-storage", features = ["test-internals"] }
 casper = { path = "../casper" }
 crypto = { path = "../crypto" }
 dashmap = "6.1"

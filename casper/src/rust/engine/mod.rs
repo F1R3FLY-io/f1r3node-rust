@@ -1,6 +1,5 @@
 pub mod approve_block_protocol;
 pub mod block_approver_protocol;
-pub mod block_retriever;
 pub mod casper_launch;
 pub mod engine;
 pub mod engine_cell;
@@ -12,7 +11,6 @@ pub mod lfs_block_requester;
 pub mod lfs_horizon_requester;
 pub mod lfs_tuple_space_requester;
 pub mod multi_parent_casper;
-pub mod peer_scoring;
 pub mod running;
 pub mod runtime_state_requester;
 pub mod snapshot_chunk_retriever;
