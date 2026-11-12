@@ -45,6 +45,15 @@ pub enum CasperError {
     /// (`FloorOfView::IncompatibilityHold`). Typed so that regime split is a
     /// match, not a string search. Carries the full preformatted detail.
     IncompatibleFinalizedFork(String),
+    /// A multi-parent merge whose floor distance (highest parent minus the
+    /// derived floor) exceeds the cap. Deterministic from the block's own
+    /// parents and justifications; on propose it is a hold, not a fault.
+    FloorDistanceExceeded {
+        distance: i64,
+        cap: i64,
+        floor_block: i64,
+        parents: usize,
+    },
     Other(String),
 }
 
@@ -72,6 +81,17 @@ impl fmt::Display for CasperError {
             // violation: ... — incompatible finalized fork"), and harness
             // forbidden-log patterns key on that text — print it verbatim.
             CasperError::IncompatibleFinalizedFork(detail) => write!(f, "{}", detail),
+            CasperError::FloorDistanceExceeded {
+                distance,
+                cap,
+                floor_block,
+                parents,
+            } => write!(
+                f,
+                "floor distance {} exceeds cap {} (parents={}, floor block #{}); a merge this \
+                 wide is refused until finality advances",
+                distance, cap, parents, floor_block
+            ),
             CasperError::Other(error) => write!(f, "Other error: {}", error),
         }
     }

@@ -182,6 +182,9 @@ Apply these settings in your harness's personal configuration. Do not commit the
 - Keep commit messages clean and professional
 - Every commit author and `Co-authored-by` trailer must be ratified. GitHub lists each co-author email that maps to an account in the contributors graph.
 - An email is ratified when it authored a commit in the base branch history. Only accepted pull requests reach that history. A `Co-authored-by` trailer never ratifies an email.
+- For an approved branch sync, shared source history also ratifies identities after Commit Policy verifies source protection and common ancestry. Forks receive no source-history trust.
+- Supported routes are `dev` to `master`, `master` to `dev`, `dev` to `ca-canary`, and both directions between `ca-canary` and `ca-release`. Temporary branch names must match the route.
+- If the target lacks the source validator, a transfer PR from `f1r3node-promotion[bot]` can install source policy. Inline checks must first verify the event metadata and source protection. Policy code must come from accepted source history shared with the PR head. Both target and source denied lists apply.
 - The CI `Commit Policy` job checks every commit author and co-author. A pull request cannot ratify its own identities.
 - The `.githooks/commit-msg` hook checks co-authors only, so a first-time contributor can commit locally. Both reject `Claude-Session` trailers.
 - An outside contributor's own commits in their own pull request pass. Maintainer review decides their acceptance. Only a human account gets this exemption. A bot or app account does not.

@@ -134,13 +134,22 @@ impl EquivocationDetector {
         block_store: &KeyValueBlockStore,
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
+        post_state_bonds: &[Bond],
+        slashable: &HashSet<Validator>,
     ) -> Result<ValidBlockProcessing, KvStoreError> {
         // P4-5: per-block hot path; demote info!→debug! per slashing audit.
         tracing::debug!("Calculate checkNeglectedEquivocationsWithUpdate");
 
-        let outcome =
-            Self::check_neglected_equivocation(block, dag, block_store, genesis, block_dag_storage)
-                .await?;
+        let outcome = Self::check_neglected_equivocation(
+            block,
+            dag,
+            block_store,
+            genesis,
+            block_dag_storage,
+            post_state_bonds,
+            slashable,
+        )
+        .await?;
 
         // P2-15: the outcome enum makes the detect/record/oblivious decision
         // a first-class value. Callers convert it to a validation verdict;
@@ -174,27 +183,30 @@ impl EquivocationDetector {
     /// The entire `tracker.data()` → decide → `tracker.add(...)` flow runs
     /// inside the `access_equivocations_tracker` closure to preserve Bug #2
     /// / T-9.2 atomicity.
+    ///
+    /// A block owes a slash only where it may issue one: the equivocator is in
+    /// `slashable` (the block is authorized to slash it) and still holds stake
+    /// in the block's post-state, so a block that carries the slash owes
+    /// nothing.
     async fn check_neglected_equivocation(
         block: &BlockMessage,
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
+        post_state_bonds: &[Bond],
+        slashable: &HashSet<Validator>,
     ) -> Result<NeglectedEquivocationOutcome, KvStoreError> {
-        // C14 / Perf-6: hoist `latest_messages` and `bonds` out of the
-        // per-equivocation-record loop. Both are computed solely from
-        // `block`; recomputing them inside the loop is O(B+J) work per
-        // record, for total O((B+J)·|records|). Hoisting collapses
-        // this to O(B+J+|records|·setup) and removes a per-iteration
-        // BTreeMap construction.
         let latest_messages = Self::to_latest_message_hashes(&block.justifications);
-        let bonds = proto_util::bonds(block);
 
         block_dag_storage.access_equivocations_tracker(|tracker| {
             let equivocations = tracker.data()?;
             let mut canonical_child_cache = CanonicalChildCache::new();
             let mut recorded: Vec<EquivocationRecord> = Vec::new();
             for equivocation_record in equivocations {
+                if !slashable.contains(&equivocation_record.equivocator) {
+                    continue;
+                }
                 let status = Self::get_equivocation_discovery_status(
                     dag,
                     block_store,
@@ -202,7 +214,7 @@ impl EquivocationDetector {
                     genesis,
                     &mut canonical_child_cache,
                     &latest_messages,
-                    &bonds,
+                    post_state_bonds,
                 )?;
                 match status {
                     EquivocationDiscoveryStatus::EquivocationNeglected => {
@@ -236,9 +248,6 @@ impl EquivocationDetector {
         })
     }
 
-    // C14 / Perf-6: `block` is no longer needed here — `latest_messages`
-    // and `bonds` (both derived from `block`) are precomputed once
-    // by the caller (`check_neglected_equivocation`) and passed in.
     fn get_equivocation_discovery_status(
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
@@ -646,7 +655,10 @@ mod tests {
         let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
         let block_metadata_index = Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store)));
 
-        let mut dag = KeyValueDagRepresentation {
+        let mut dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set: imbl::HashSet::new(),
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -667,19 +679,23 @@ mod tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
 
         for (index, block) in blocks.iter().enumerate() {
             let block_number = index as i64;
-            dag.dag_set.insert(block.block_hash.clone());
-            dag.block_number_map
+            dag.fixture_mut().dag_set.insert(block.block_hash.clone());
+            dag.fixture_mut()
+                .block_number_map
                 .insert(block.block_hash.clone(), block_number);
-            dag.height_map
+            dag.fixture_mut()
+                .height_map
                 .entry(block_number)
                 .or_default()
                 .insert(block.block_hash.clone());
             if let Some(self_parent) = EquivocationDetector::creator_justification_hash(block) {
-                dag.self_justification_map
+                dag.fixture_mut()
+                    .self_justification_map
                     .insert(block.block_hash.clone(), self_parent);
             }
             dag.block_metadata_index

@@ -86,6 +86,15 @@ fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
     EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
 }
 
+/// The parameters validity rules fork on, as genesis baked them into PoS.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsensusParameters {
+    pub max_parent_depth: i32,
+    pub deploy_lifespan: i64,
+    pub min_phlo_price: TokenAmount,
+    pub epoch_length: i32,
+}
+
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
 }
@@ -1568,14 +1577,13 @@ impl RuntimeOps {
         })
     }
 
-    /// The on-chain consensus parameters `(max-parent-depth, deploy-lifespan,
-    /// min-phlo-price)` baked into the PoS contract at `start_hash`. Returns
-    /// `None` when the contract does not expose the getter (a chain whose
-    /// genesis predates the parameters).
+    /// The on-chain consensus parameters baked into the PoS contract at
+    /// `start_hash`. Returns `None` when the contract does not expose the
+    /// getter (a chain whose genesis predates the parameters).
     pub async fn get_consensus_parameters(
         &mut self,
         start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, TokenAmount)>, CasperError> {
+    ) -> Result<Option<ConsensusParameters>, CasperError> {
         // STRICT query — same rationale as the protocol-FTT read: a runtime
         // failure must fail startup, never degrade into the local-config arm.
         let pars = self
@@ -1613,7 +1621,7 @@ impl RuntimeOps {
         };
 
         match pars[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 3 => {
+            Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 4 => {
                 let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
                 let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
                 let min_phlo = match tuple.ps[2]
@@ -1625,6 +1633,8 @@ impl RuntimeOps {
                         .map_err(|error| bad(&format!("minPhloPrice: {error}")))?,
                     _ => return Err(bad("non-BigInt minPhloPrice")),
                 };
+                let epoch_length =
+                    int_at(tuple, 3).ok_or_else(|| bad("non-integer epochLength"))?;
                 // RANGE GATES at the single read choke point. The parent-spread
                 // rule takes mpd as i32 (i32::MAX = depth check disabled); a
                 // window of zero or less inverts the expiry and repeat rules;
@@ -1641,9 +1651,20 @@ impl RuntimeOps {
                         "deployLifespan out of range [1, i32::MAX]: {lifespan}"
                     )));
                 }
-                Ok(Some((mpd as i32, lifespan, min_phlo)))
+                // Epochs divide block numbers; zero or less has no epoch.
+                if !(1..=i32::MAX as i64).contains(&epoch_length) {
+                    return Err(bad(&format!(
+                        "epochLength out of range [1, i32::MAX]: {epoch_length}"
+                    )));
+                }
+                Ok(Some(ConsensusParameters {
+                    max_parent_depth: mpd as i32,
+                    deploy_lifespan: lifespan,
+                    min_phlo_price: min_phlo,
+                    epoch_length: epoch_length as i32,
+                }))
             }
-            other => Err(bad(&format!("expected a 3-tuple, got {other:?}"))),
+            other => Err(bad(&format!("expected a 4-tuple, got {other:?}"))),
         }
     }
 
