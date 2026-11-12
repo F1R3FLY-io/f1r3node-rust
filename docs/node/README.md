@@ -382,8 +382,8 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 | HOCON key | Default | Purpose |
 |-----------|--------:|---------|
 | `heartbeat.enabled` | `true` | Enable the heartbeat proposer. It drives block and finalization cadence across validators, so multi-validator deployments leave it on; a single-node dev shard may set `false` and rely on `autopropose` or operator-triggered proposes |
-| `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
-| `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
+| `heartbeat.check-interval` | 3s | How often the loop evaluates its decision tree |
+| `heartbeat.max-lfb-age` | 3s | LFB age threshold above which stale-LFB recovery may fire |
 | `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals; gates every routine lane (never the stale-recovery lane, which paces on the interval below) |
 | `heartbeat.stale-recovery-min-interval` | derived: 1.5 × `check-interval` | Pacing for stale-LFB recovery and the pending-deploy backstop: both the LFB's age and the validator's own silence must exceed it — at most one recovery proposal per validator per interval. The derived value opens on the second tick after a validator's own block; an explicit value must exceed `check-interval` (startup fails otherwise) |
 | `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; widens lag caps only — never bypasses the cooldown |

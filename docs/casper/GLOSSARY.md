@@ -507,7 +507,10 @@ the window closes, and it terminates `Expired` if it never lands. The
 same window bounds the repeat-deploy ancestor scan
 (`expiration_threshold`) and the record view of the
 [prior-rejection count](#prior-rejection-count): records older than
-`deploy_lifespan` do not count.
+`deploy_lifespan` do not count. The scan goes below the tip window only
+for a block that carries a deploy older than that window, because the
+expiry check reads the floor clock. The scan then stops at the lowest
+height that a live copy of the deploy can occupy.
 
 **Preferred usage.** Use for the block-height validity window and the
 scan bounds derived from it.
@@ -570,13 +573,16 @@ because the repeat-deploy ancestor scan reads block bodies without a
 validity qualifier. Every insert records a block's carriers before the
 block becomes DAG-visible, and a persisted height watermark names the
 height since which that has held on this database. For a scan window
-that starts at or above the watermark, an index absence is a proof of no
+that starts at or above the watermark and at or above the prune cutoff,
+an index absence is a proof of no
 prior inclusion, so validation skips the ancestor scan for that
 signature. An index hit is not a verdict: the hit routes to window and
 parent-scope verification, because a fork-only inclusion must not
 invalidate a legal re-inclusion. An index read failure grants no proof,
 and validation falls back to the unchanged ancestor scan. Entries below
-the expiration window are pruned on floor advances.
+the node's own expiration window are pruned on LFB advances. Each prune
+records its cutoff before it removes an entry, and validation reads the
+cutoff again after its probes.
 
 The index is a deterministic cache of on-chain block bodies, not a new
 consensus input. The predicate it serves is unchanged: the signature

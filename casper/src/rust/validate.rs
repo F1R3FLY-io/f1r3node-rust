@@ -659,7 +659,27 @@ impl Validate {
 
         // Calculate max block number and earliest acceptable block number
         let max_block_number = proto_util::max_block_number_metadata(&init_parents);
-        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
+        let tip_scan_start = max_block_number + 1 - expiration_threshold as i64;
+        let oldest_valid_after = block
+            .body
+            .deploys
+            .iter()
+            .map(|pd| pd.deploy.data.valid_after_block_number)
+            .min();
+        let earliest_block_number = match (floor_ctx, oldest_valid_after) {
+            (Some(ctx), Some(oldest_valid_after)) => {
+                match crate::rust::util::deploy_window::repeat_scan_start(
+                    tip_scan_start,
+                    ctx.floor.block_number,
+                    expiration_threshold as i64,
+                    oldest_valid_after,
+                ) {
+                    Ok(start) => start,
+                    Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+                }
+            }
+            _ => tip_scan_start,
+        };
 
         // Latest canonical dispositions within the block's parent scope,
         // over the same expiration window the ancestor scan uses, from the
@@ -735,17 +755,27 @@ impl Validate {
         // which is the window and parent-scope verification (a fork-only
         // carrier must not poison this block). Any read failure keeps the
         // sig in the scan: unreadable index state is no information, never
-        // an absence proof.
+        // an absence proof. Pruning follows the node's own LFB, so a window
+        // can also start below the prune cutoff (a deep start, or a late
+        // block's tip window); the index engages only at or above both
+        // bounds. A prune walk runs concurrently and records its cutoff
+        // before removing rows, so the cutoff is re-read after probing and a
+        // moved cutoff discards the absences.
         let index_read_failures = metrics::counter!(
             REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC,
             "source" => CASPER_METRICS_SOURCE
         );
+        let index_start = earliest_block_number.max(0);
+        let covers_window = |cutoff: Option<i64>| cutoff.is_none_or(|c| c <= index_start);
         let watermark_start = Instant::now();
-        let watermark_result = s.dag.carrier_index_watermark();
+        let index_bounds = s
+            .dag
+            .carrier_index_watermark()
+            .and_then(|w| Ok((w, s.dag.carrier_index_prune_cutoff()?)));
         metrics::histogram!(REPEAT_DEPLOY_CARRIER_WATERMARK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(watermark_start.elapsed().as_secs_f64());
-        let deploy_key_set: HashSet<Vec<u8>> = match watermark_result {
-            Ok(Some(w)) if w <= earliest_block_number.max(0) => {
+        let deploy_key_set: HashSet<Vec<u8>> = match index_bounds {
+            Ok((Some(w), cutoff)) if w <= index_start && covers_window(cutoff) => {
                 metrics::counter!(REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .increment(1);
                 let row_reads = metrics::counter!(
@@ -763,7 +793,7 @@ impl Validate {
                 let probes_start = Instant::now();
                 let mut probe_failed = false;
                 let scan_set: HashSet<Vec<u8>> = deploy_key_set
-                    .into_iter()
+                    .iter()
                     .filter(|sig| {
                         if probe_failed {
                             return true;
@@ -791,10 +821,34 @@ impl Validate {
                             }
                         }
                     })
+                    .cloned()
                     .collect();
                 metrics::histogram!(REPEAT_DEPLOY_CARRIER_PROBES_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(probes_start.elapsed().as_secs_f64());
-                scan_set
+                match s.dag.carrier_index_prune_cutoff() {
+                    Ok(cutoff) if covers_window(cutoff) => scan_set,
+                    Ok(cutoff) => {
+                        tracing::debug!(
+                            target: "f1r3fly.casper",
+                            "repeat-deploy carrier-index prune cutoff moved to {:?} above scan start {} \
+                             while probing block {}; falling back to the ancestor scan",
+                            cutoff,
+                            index_start,
+                            PrettyPrinter::build_string_bytes(&block.block_hash),
+                        );
+                        deploy_key_set
+                    }
+                    Err(e) => {
+                        index_read_failures.increment(1);
+                        tracing::warn!(
+                            "repeat-deploy carrier-index prune cutoff read failed for block {}; \
+                             falling back to the ancestor scan: {}",
+                            PrettyPrinter::build_string_bytes(&block.block_hash),
+                            e,
+                        );
+                        deploy_key_set
+                    }
+                }
             }
             Ok(_) => {
                 metrics::counter!(REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -804,7 +858,7 @@ impl Validate {
             Err(e) => {
                 index_read_failures.increment(1);
                 tracing::warn!(
-                    "repeat-deploy carrier-index watermark read failed for block {}; \
+                    "repeat-deploy carrier-index bounds read failed for block {}; \
                      falling back to the ancestor scan: {}",
                     PrettyPrinter::build_string_bytes(&block.block_hash),
                     e,

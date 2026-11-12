@@ -21,7 +21,7 @@ pub async fn handle_ping<T>(
     _metrics: Option<()>,
 ) -> Result<(), CommError>
 where
-    T: super::kademlia_rpc::KademliaRPC,
+    T: super::kademlia_rpc::KademliaRPC + Send + Sync + 'static,
 {
     metrics::counter!("handle_ping", "source" => METRICS_SOURCE).increment(1);
 
@@ -41,7 +41,7 @@ pub async fn handle_lookup<T>(
     _metrics: Option<()>,
 ) -> Result<Vec<PeerNode>, CommError>
 where
-    T: super::kademlia_rpc::KademliaRPC,
+    T: super::kademlia_rpc::KademliaRPC + Send + Sync + 'static,
 {
     metrics::counter!("handle_lookup", "source" => METRICS_SOURCE).increment(1);
 
