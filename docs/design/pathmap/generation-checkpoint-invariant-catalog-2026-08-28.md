@@ -7098,7 +7098,7 @@ Nothing in production calls `attach` or `validate_attachment` yet.
 |---|---|
 | `CloseOwner` requires `Quiescent`, sets `live` to false and increments the incarnation. | `close` refuses while a publication is pending, and replaces the live state, incarnation included, with `Closed`. |
 | `ReopenOwner` takes the incarnation that `FreshIncarnation` allows: one more than the value `CloseOwner` left. | A new owner draws the next value of the shared counter. That value is greater than every incarnation an earlier owner held in the process, so it differs from each of them, which is all `incarnationOk` needs. It need not be exactly one more, because every owner in the process draws from the same counter. |
-| `CheckRequest` refuses a foreign permit with `refused-permit`, then a stale incarnation with `refused-incarnation`, and has no base refusal. | `validate_attachment` returns `StaleIncarnation` before `StaleBase`. `StaleBase` belongs to the same-base entry point [`checkpoint_view`](#durable-owner-checkpoint-views-under-caller-held-permits-2026-11-01), which publishes only from the owner's current slot; `checkpoint_view_from_base`, which task `rspace-owner-cross-base-checkpoint` is to add, is to use it only when the view's base is current. |
+| `CheckRequest` refuses a foreign permit with `refused-permit`, then a stale incarnation with `refused-incarnation`, and has no base refusal. | `validate_attachment` returns `StaleIncarnation` before `StaleBase`. `StaleBase` belongs to the same-base entry point [`checkpoint_view`](#durable-owner-checkpoint-views-under-caller-held-permits-2026-11-01), which publishes only from the owner's current slot; `checkpoint_view_from_base`, which task `rspace-owner-cross-base-checkpoint` adds, uses it only when the view's base is current. |
 | `StaleIncarnationRefused`: a caller that publishes or acknowledges holds an attachment from the live owner's own session. The mutants `CloseNoBump` and `ReopenReusesIncarnation` violate it. | OG-06 and OG-07, and the red control that gives each owner a counter of its own. |
 | The witness `NeverRefusedRetainedIncarnation` is violated: a live owner refuses an attachment kept from an earlier session. | OG-07 observes that refusal in each of its three cycles. |
 
@@ -7355,7 +7355,7 @@ mutex is held, which is `LockOrder`.
 | `PermitProvenance`: a pending record holds its own view's permit. `ForeignPermitMutant` violates it. | Check 1 admits only a guard of `gate`, and the record keeps that guard. OG-09, and the red control without check 1. |
 | `NoViewMutationWhilePending`: while a record exists, its view's gate is marked pending. | The record owns the guard, so the gate stays held while the record exists. OG-09's second owner and the unbound test observe the gate still held after a refusal. |
 | `CapturedPredecessorIsOwnerRoot`: a captured record's predecessor is the owner's root. `CaptureAtViewBaseMutant` violates it. | The capture takes its predecessor from the owner's current slot. OG-10. |
-| `CheckRequest` has no base refusal: a checkpoint from another base publishes the successor of its own base, a case that the witness `NeverPublishedAcrossBases` reaches. | Check 4, `StaleBase`, has no counterpart in the model. It belongs to the same-base entry point `checkpoint_view`, which publishes only from the owner's current slot; `checkpoint_view_from_base`, which task `rspace-owner-cross-base-checkpoint` is to add, is to use `checkpoint_view` only when the view's base is current. OG-10 observes the refusal, and the red control without the base comparison of `validate_attachment` makes OG-10 fail. |
+| `CheckRequest` has no base refusal: a checkpoint from another base publishes the successor of its own base, a case that the witness `NeverPublishedAcrossBases` reaches. | Check 4, `StaleBase`, has no counterpart in the model. It belongs to the same-base entry point `checkpoint_view`, which publishes only from the owner's current slot; `checkpoint_view_from_base`, which task `rspace-owner-cross-base-checkpoint` adds, uses `checkpoint_view` only when the view's base is current. OG-10 observes the refusal, and the red control without the base comparison of `validate_attachment` makes OG-10 fail. |
 | `LockOrder`: no view holds the mutex while it waits to take its gate again. `RetakeGateMutant` violates it. | The owner takes no gate. OG-11, and the red control that takes the gate again. |
 
 **Relation to the legacy repository.** OG-10 asks that a stale base be refused
@@ -7832,7 +7832,7 @@ protocol evidence, not a proof of the Rust owner.
   comparison of whole slots that include the generation. That refusal belongs
   to the same-base entry point `checkpoint_view`, which publishes only from the
   owner's current slot. The cross-base entry point `checkpoint_view_from_base`,
-  which task `rspace-owner-cross-base-checkpoint` is to add, is to use
+  which task `rspace-owner-cross-base-checkpoint` adds, uses
   `checkpoint_view` only when the view's base is current; from another base it
   publishes the successor of the view's base, as
   [Retained state endpoint difference (2026-11-12)](#retained-state-endpoint-difference-2026-11-12)
@@ -7870,7 +7870,7 @@ that no test binds.
 | `StaleIncarnationRefused`, `NeverRefusedRetainedIncarnation` | OG-06 and OG-07 | G07, in [owner incarnations](#durable-owner-incarnations-and-close-2026-11-01) |
 | `PermitProvenance`, `NoViewMutationWhilePending` | OG-09 | G08, in [checkpoint views](#durable-owner-checkpoint-views-under-caller-held-permits-2026-11-01) |
 | `CapturedPredecessorIsOwnerRoot` | OG-10 | G08, in the same section |
-| `PublishedSuccessorIsOfViewBase`, `NeverPublishedAcrossBases` | None yet | Leaf G15, `rspace-hard-checkpoint-durable-wiring`, adds their row when it routes the hard checkpoint through the owner |
+| `PublishedSuccessorIsOfViewBase`, `NeverPublishedAcrossBases` | XB-01, whose seeded scenarios must publish from another base | Task 14349, in [cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12); leaf G15, `rspace-hard-checkpoint-durable-wiring`, adds the regression on the hard checkpoint path when it routes that path through the owner |
 | `OwnerRootIsLastPublication` | None yet | Leaf G17, `rspace-reset-durable-wiring`, adds its row when the durable reset becomes view-local |
 | `LockOrder` | OG-11 | G08, in the same section; leaf G15 adds the regression on the hard checkpoint path when it routes that path through the owner |
 | `AckOnce` | JO-13 | G08 migrated the owner's acknowledgement tests |
@@ -9377,8 +9377,8 @@ states. Its caller is the owner's cross-base checkpoint
 local to the runtime view and writes nothing, and a checkpoint publishes the
 view's successor from the store's current state, so the owner asks the walk,
 under its mutex, for every endpoint whose value differs between the current
-state and the view's base. Until that caller lands, only the tests call the
-walk.
+state and the view's base. That caller is `checkpoint_view_from_base` of the
+[cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12).
 
 **Interface.** `visit_state_difference(store, from, to, limits, visit)` takes
 one object store through which both states are readable (the caller holds the
@@ -9685,8 +9685,9 @@ capture from which such a publication starts,
 `HotStore::capture_cross_base_journal`. Its caller is the owner's cross-base
 checkpoint (task `rspace-owner-cross-base-checkpoint`), which also uses the walk
 of the [retained state endpoint
-difference](#retained-state-endpoint-difference-2026-11-12); until that task
-lands, only tests call the capture.
+difference](#retained-state-endpoint-difference-2026-11-12), in
+`checkpoint_view_from_base` of the
+[cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12).
 
 **Terms.**
 
@@ -10536,6 +10537,338 @@ or sleeps.
 | OG-17 | The backend is fixed at first use. Once a prefix is used without a selection, through `r_space_stores`, `state_authority` or a store name, `Durable` is refused, no file or directory changes and the cached authority stays; after `shutdown` the refusal is the same and the prefix reopens on the legacy backend. A selection before the first use takes effect, and the other selection is refused afterwards, also after `shutdown`. | `the_backend_of_a_prefix_is_fixed_at_its_first_use` |
 | OG-18 | Unsafe durable prefixes are refused. `Durable` is refused for `eval` and for a prefix that is not one normal path component: the empty prefix, `.`, `..`, a prefix with an inner or a trailing separator, and an absolute path. Nothing is recorded and no directory is created, at the selection or at a later use, and `eval_stores()` returns the LMDB authority. | `a_durable_selection_is_refused_for_eval_and_for_a_prefix_that_is_not_one_path_component` |
 
+### Cross-base view checkpoint through the durable owner (2026-11-12)
+
+Under ruling Q1, option A (user, 2026-11-12), a reset is local to the runtime
+view and writes nothing, as on `dev`, and a checkpoint names its own base
+state and publishes that state's successor in one durable transaction,
+whatever the store's current state is. This slice (task 14349,
+`rspace-owner-cross-base-checkpoint`) adds the owner's entry point for such a
+checkpoint, `DurableRSpaceAuthorityV1::checkpoint_view_from_base` in
+[`rspace_authority.rs`](../../../rspace++/src/rspace/persistence/durable/rspace_authority.rs).
+It joins the two slices that were written for it: the capture of the
+[cross-base hot-store journal capture](#cross-base-hot-store-journal-capture-2026-11-12)
+and the walk of the
+[retained state endpoint difference](#retained-state-endpoint-difference-2026-11-12).
+It writes existing record kinds only: one incremental prepare and commit pair
+(kinds 1 and 2 of
+[`codec.rs`](../../../rspace++/src/rspace/persistence/wal/codec.rs)) and one
+catalog compare-and-swap. No persisted record kind, byte layout, magic number
+or file is new. No runtime method calls the entry point yet. The leaves that
+route the hard checkpoint, the reset and the spawn through the owner do that,
+and until they land only the tests call it.
+
+**Terms.**
+
+| Term | Meaning |
+|---|---|
+| Endpoint | A key of one of the three semantic namespaces (data, continuations, joins) together with its value: a multiplicity for a datum or a join, a content reference for a continuation, or absent. |
+| Current state $`C`$ | The state of the catalog's current slot while the caller holds the owner's mutex. |
+| Base $`X`$ | The retained state that a view reads: the state it was created at, reset to, spawned from or last checkpointed to. |
+| Journal $`J`$ | The transitions that the view's hot store recorded against $`X`$ and has not published, each from an endpoint's value in $`X`$ to its value in the view. A journal is empty when it holds no transition; steps that cancel each other leave none. |
+| Successor $`X + J`$ | The state whose endpoints are those of $`X`$ with $`J`$ applied. |
+| Same-base path | The existing `checkpoint_view`. It publishes $`J`$ on the current slot, to which the view's store is bound. |
+| Cross-base path | The new path. It publishes on $`C`$ one batch that turns $`C`$ into $`X + J`$. |
+| Twin store | In the tests, a second store that is built to the contents of $`X`$ and publishes $`J`$ while $`X`$ is its current state. |
+
+**Interface.**
+
+- `ViewBaseV1 { incarnation, state }`, with `new`, `incarnation()` and
+  `state()`, is what a durable view records when it is created, reset,
+  spawned or checkpointed: the incarnation of the owner that it attached to
+  and the `ResolvedDurableStateV1` of its base.
+- `ViewCheckpointLimitsV1 { publication, difference }` holds the publication
+  limits of `checkpoint_view` and the `StateDifferenceLimits` of the walk.
+- `checkpoint_view_from_base(permit, view, gate, hot, limits)` returns the
+  `ResolvedDurableStateV1` of the state that the view reads afterwards. As
+  for `checkpoint_view`, the caller holds the owner's mutex and passes the
+  write permit of the view's own gate.
+- `DurableRSpaceTransactionError` gains three variants. `Root(RootError)` is
+  the refusal of a base that the store does not retain.
+  `Inheritance { current, base }` holds the schema epoch, the profile and the
+  legacy-history root of the two manifests, as `ManifestInheritanceV1`.
+  `Rebase(ClosureError<DurableObjectReadErrorV1>)` is a refusal while the
+  batch is rebased: an object of the two states that cannot be read, a limit
+  of the walk, or an endpoint that cannot precede the journal.
+- `RSpaceMutationBatchV1::precede_endpoint(namespace, path, before, after)`
+  in [`mutation.rs`](../../../rspace++/src/rspace/persistence/mutation.rs)
+  places one transition in front of the batch's own transition at the same
+  endpoint, as **Rebased batch** below defines.
+
+**Decision sequence.** The owner decides in this order, and the first row
+that applies ends the call.
+
+| Row | Condition | Outcome | Written |
+|---|---|---|---|
+| 1 | `permit` is not a write guard of `gate`. | `ForeignPermit` | Nothing |
+| 2 | The owner is closed. | `Closed` | Nothing |
+| 3 | `view.incarnation()` is not the owner's incarnation. | `Attachment(StaleIncarnation { attached, current })` | Nothing |
+| 4 | A publication record is pending. | `Unresolved(phase)` | Nothing |
+| 5 | `require_retained` does not count the root of `view.state()`. | `Root(UnknownRootError)` | Nothing |
+| 6 | The manifest of $`X`$ is the manifest of $`C`$. | The same-base path: `bind_journal_authority` with the current slot, `attach`, `checkpoint_view`, and `resolve` of the state reached. | As `checkpoint_view` writes |
+| 7 | The manifests of $`C`$ and $`X`$ differ in schema epoch, profile or legacy-history root. | `Inheritance { current, base }` | Nothing |
+| 8 | `capture_cross_base_journal` refuses the store. | `Journal(JournalConflict)` | Nothing |
+| 9 | The journal is empty. | $`X`$ | Nothing |
+| 10 | The walk, or an endpoint that it visits, is refused. | `Rebase` | Nothing |
+| 11 | The rebased batch is empty. | `resolve` of $`C`$ | Nothing |
+| 12 | Otherwise. | The cross-base publication, and `resolve` of the successor. | One prepare and commit pair, one catalog compare-and-swap |
+
+Rows 1 to 5 and row 7 are decided before the journal is read. The refusals of
+rows 1 to 5, 7, 8 and 10 leave the store files, the journal, the owner and the
+view's gate as they were.
+
+Row 6 binds the view's store to the current slot whenever the store's
+recorded state is the current state. That covers a detached store, which a
+lazy view holds, and also a store that is still bound to an earlier slot of
+the same state: a later publication of another view can return the store to
+a state that it held before, and the bound store of that state then publishes
+through the same-base path as well.
+
+Row 7 exists because a rewrite inherits the schema epoch, the profile and the
+legacy-history root of the state that it rewrites
+([`rewrite.rs`](../../../rspace++/src/rspace/persistence/rewrite.rs)). A
+successor published on $`C`$ therefore carries those three fields of $`C`$.
+If they differed from those of $`X`$, the published manifest would not be the
+manifest of $`X + J`$, and its root would depend on the current state. The
+row follows row 6 because equal manifests have equal fields.
+
+Rows 9 and 11 leave the view's store as it was, journal included. Row 11
+returns the current state, which then holds the endpoints of $`X + J`$; a
+caller that continues from the returned state takes a store of that state.
+
+```text
+ checkpoint_view_from_base(permit, view = (incarnation, X), gate, hot, limits)
+                                  │
+        ┌─────────────────────────▼─────────────────────────┐
+        │ permit of gate, owner live, incarnation current,  │ no
+        │ no record pending, X retained ?          rows 1-5 ├────▶ refusal
+        └─────────────────────────┬─────────────────────────┘
+                                  │ yes
+        ┌─────────────────────────▼─────────────────────────┐
+        │ manifest(X) = manifest(C) ?                 row 6 │
+        └──────────┬─────────────────────────────┬──────────┘
+               yes │                             │ no
+ ┌─────────────────▼──────────────┐ ┌────────────▼───────────────────────┐
+ │ bind hot to the current slot,  │ │ epoch, profile and legacy root of  │ no
+ │ attach, checkpoint_view        │ │ C equal to those of X ?      row 7 ├────▶ Inheritance
+ └─────────────────┬──────────────┘ └────────────┬───────────────────────┘
+                   │                             │ yes
+                   │                ┌────────────▼───────────────────────┐
+                   │                │ capture J with origin X on the     │ empty
+                   │                │ current slot             rows 8, 9 ├────▶ X
+                   │                └────────────┬───────────────────────┘
+                   │                ┌────────────▼───────────────────────┐
+                   │                │ batch := J on C; the walk from C   │ empty
+                   │                │ to X precedes it       rows 10, 11 ├────▶ C
+                   │                └────────────┬───────────────────────┘
+                   │                ┌────────────▼───────────────────────┐
+                   │                │ prepare and commit pair, catalog   │
+                   │                │ compare-and-swap, acknowledgement  │
+                   │                └────────────┬───────────────────────┘
+                   ▼                             ▼
+        resolve(state reached)          resolve(X + J)            row 12
+```
+
+**Rebased batch.** For an endpoint $`e`$, write $`c(e)`$ and $`x(e)`$ for its
+values in $`C`$ and in $`X`$, absent included. Where $`J`$ names $`e`$, its
+transition is $`b_J(e) \to a_J(e)`$ with $`b_J(e) \ne a_J(e)`$. The journal
+was recorded against $`X`$, so $`b_J(e) = x(e)`$. The value of $`e`$ in the
+successor is
+
+```math
+s(e) =
+\begin{cases}
+a_J(e) & \text{if } J \text{ names } e, \\
+x(e) & \text{otherwise.}
+\end{cases}
+```
+
+The rebased batch holds the transition $`c(e) \to s(e)`$ for exactly the
+endpoints with $`c(e) \ne s(e)`$. Every before value is then the value in the
+state that the transaction rewrites, as its compare-and-swap requires, and
+applying the batch to $`C`$ gives $`s(e)`$ at every endpoint, which are the
+endpoints of $`X + J`$.
+
+The owner builds this batch in two steps. It first builds the journal's own
+batch on the state version of $`C`$ with `mutation_batch_from_observation`;
+its transitions are $`x(e) \to a_J(e)`$. The walk `visit_state_difference`
+from $`C`$ to $`X`$ then visits exactly the endpoints with
+$`c(e) \ne x(e)`$, each with both values, and the visitor calls
+`precede_endpoint` with $`c(e)`$ and $`x(e)`$. The four cases give the
+required transition:
+
+| $`J`$ names $`e`$ | The walk visits $`e`$ | Entry of the batch | Reason |
+|---|---|---|---|
+| No | No | None | $`c = x = s`$ |
+| No | Yes | $`c \to x`$ | $`s = x \ne c`$ |
+| Yes | No | $`x \to a_J`$, the journal's own | $`c = x`$ and $`s = a_J \ne x`$ |
+| Yes | Yes | $`c \to a_J`$, dropped when $`c = a_J`$ | $`s = a_J`$ |
+
+`precede_endpoint` refuses a journal transition that does not start at the
+base's value with `DiscontinuousCount` or `DiscontinuousContent`, and an
+endpoint value of a kind that the namespace cannot hold with the endpoint
+policy error. A refusal poisons the batch, and the owner reports it as
+`Rebase`.
+
+The canonical DAG of a set of endpoints is unique, and row 7 has made the
+three inherited fields equal, so the manifest that the transaction seals is
+the manifest of $`X + J`$: its root is the root that a twin store returns.
+
+**Continuation sources.** The after value of a continuation is the reference
+of a canonical source object, and the transaction stages the canonical bytes
+of every after source that it writes. The cross-base path stages them for
+exactly the continuation entries that the rebased batch keeps. If the
+journal recorded the entry's after reference, the bytes are the journal's.
+Otherwise the entry restores a continuation of $`X`$ that $`C`$ lacks, and
+the bytes are read from the store, which retains $`X`$. The staged reference
+must equal the entry's, or the transaction is refused with a digest mismatch.
+An entry that the rebase dropped stages nothing.
+
+**Algorithm.** The chunks in angle brackets are defined below the main part.
+
+```text
+checkpoint_view_from_base(permit, view, gate, hot, limits):   -- owner mutex held
+    ⟨refuse before the journal is read: rows 1 to 5⟩
+    current := the catalog's current slot
+    if manifest(view.state) = manifest(current.state):
+        ⟨publish on the same base: row 6⟩
+    ⟨refuse an uninheritable manifest: row 7⟩
+    captured := hot.capture_cross_base_journal(manifest(view.state), current, registry)
+    batch := mutation_batch_from_observation(current.state, captured.observation)
+    if the journal is empty: return view.state                     -- row 9
+    visit_state_difference(store, roots(current.state), roots(view.state),
+                           limits.difference,
+                           (namespace, path, c, x) ↦
+                               batch.precede_endpoint(namespace, path, c, x))
+    if batch is empty: return resolve(current.state)               -- row 11
+    ⟨publish the rebased batch: row 12⟩
+
+⟨refuse before the journal is read: rows 1 to 5⟩ ≡
+    if permit is not a write guard of gate:  refuse ForeignPermit
+    if the owner is closed:                  refuse Closed
+    if view.incarnation ≠ the incarnation:   refuse StaleIncarnation
+    if a record is pending:                  refuse Unresolved(phase)
+    if not require_retained(view.state):     refuse Root
+
+⟨publish on the same base: row 6⟩ ≡
+    hot.bind_journal_authority(current)
+    attachment := attach(hot)
+    reached := checkpoint_view(permit, attachment, gate, hot, limits.publication)
+    return resolve(reached)
+
+⟨refuse an uninheritable manifest: row 7⟩ ≡
+    if (schema epoch, profile, legacy root) of current.state
+           ≠ (schema epoch, profile, legacy root) of view.state:
+        refuse Inheritance
+
+⟨publish the rebased batch: row 12⟩ ≡
+    pending := { permit, hot, captured, predecessor = current,
+                 anchor = RetainedBase, phase = Captured }
+    publish_captured(hot, limits.publication, batch)   -- prepare, commit, swap
+    reached := acknowledge_successor()                 -- pin, acknowledge, install
+    return resolve(reached)
+```
+
+**Publication and reconciliation.** The pending record of a cross-base
+publication is the record of `checkpoint_view` with one more field, the
+anchor `PendingJournalAnchorV1`, which is `CurrentSlot` for the same-base
+path and `RetainedBase` for the cross-base path. `publish_captured` takes the
+rebased batch instead of building the journal's batch, and the rest of the
+publication is unchanged: `prepare_transaction`,
+`publish_trusted_incremental_v1` and `acknowledge_successor`, which pins the
+successor's generation, has the hot store clear its journal and bind itself
+to the successor's slot, and installs the successor.
+
+The store of a cross-base publication is not bound to the current slot: a
+lazy view's store is detached, and a bound store is bound to the slot of its
+own base. Wherever the same-base path requires the binding, the cross-base
+path therefore checks the capture itself:
+
+| Check | `CurrentSlot` record | `RetainedBase` record |
+|---|---|---|
+| Before a refused capture is dropped | `validate_journal_authority` with the current slot | `validate_pending_journal` with the capture |
+| `reconcile`, before the physical recovery | `validate_journal_authority` with the current slot | `validate_pending_journal` with the capture |
+| `reconcile`, when the recovered slot is the predecessor | `validate_journal_authority` with the recovered slot; the result is `state(hot)` | `validate_pending_journal` with the capture; the result is the owner's quiescent state |
+
+Nothing persisted tells the two kinds of record apart, and nothing needs to.
+The pair on disk is an ordinary incremental prepare and commit, and the
+anchor lives only in the pending record in memory, which a process crash
+discards together with the view.
+
+**Cost.** The difference walk runs under the owner's mutex, so the current
+state cannot move between the walk and the compare-and-swap. It reads only
+the node occurrences that $`C`$ and $`X`$ do not share, as DF-02 states, and
+the transaction rewrites only the paths of the batch's endpoints. The bytes
+that a cross-base checkpoint appends therefore do not grow with the endpoints
+that the two states share, as XB-02 measures.
+
+**The two rules of the capture.** When the cross-base capture landed, two of
+its properties were recorded for this slice to confirm (tracker note 28240).
+
+1. *Equal states.* `capture_cross_base_journal` does not itself refuse a
+   publication base whose state is the capture's origin. The owner never
+   passes one: its only call of that capture follows the return of row 6, so
+   the origin and the current state differ there. The test
+   `a_base_equal_to_the_current_state_publishes_through_the_same_base_path`
+   shows the same from outside. It observes the binding of the view's store
+   when the owner has captured the journal. A detached store at the current
+   state is by then bound to the current slot, which only
+   `bind_journal_authority` does. A journal that was recorded at another
+   state is refused with the binding's message when the named base is the
+   current state, and with the capture's origin message when the named base
+   is another retained state.
+2. *Anchoring.* A same-base capture is anchored by its binding and by its
+   origin, and a cross-base capture by its origin alone. The owner relies on
+   both rules. Row 12 relies on the second: the store is not bound to the
+   publication base, as the same test observes for a detached store and for a
+   bound store at a superseded slot, and the capture must still validate in
+   `publish_captured`, in the checks of the table above and in the
+   acknowledgement. Row 6 relies on the first through `checkpoint_view`,
+   which is why it binds the store before it attaches. The origin comparison
+   of the cross-base capture is what refuses a `ViewBaseV1` that names
+   another state than the one the journal was recorded against.
+
+**The XB rows.** XB is the cross-base checkpoint family. Every test opens its
+stores through the fixture of the durable RSpace authority tests. A step puts
+or takes a datum over channels `a`, `b` and `c` and values `v0` and `v1`, or
+installs or withdraws a continuation over the groups `(a)`, `(a,b)`, `(b,a)`
+and `(c,a,b)` and the bodies `k0` and `k1`. A lazy view is a hot store over a
+`DurableViewReaderV1` of its base, detached from every catalog slot, as the
+runtime's views are; the bound store is the store that the fixture binds to
+the catalog.
+
+| ID | Required property | Test |
+|---|---|---|
+| XB-01 | Root and contents of the successor. Four seeded scenarios and then 24 generated ones each publish batches from the bound store, then checkpoint lazy views, each at one of the states published so far, and finally checkpoint the bound store from the state at which it last published. For every checkpoint, a twin store built to the base's contents reaches the base's root, the returned root is the root that the twin returns for the same journal, and the returned state reads the base's contents with the journal applied. A publishing checkpoint advances the generation and the catalog epoch by one to the returned state, acknowledges the journal and leaves the view's store bound to the successor. A checkpoint whose successor is its base or the current state returns that state and leaves the catalog slot, the current state and the journal unchanged. Every state published so far still reads its own contents, and two states have equal roots exactly when their contents are equal. The seeded scenarios alone must show every class: publications on the cross-base and on the same-base path; a journal without effect at a superseded base; a successor equal to the current state and one equal to an earlier state; the bound store published from a superseded state, and rebound at a later slot of its own state; a datum whose journal transition is rebased on a third current value, one whose transition is dropped because the current state already holds its after value, and one restored to the base's value; a continuation dropped in the same way, one restored with its source read from the store, one removed, and one staged from the journal; a join dropped and a join restored. | `a_view_checkpoint_from_any_retained_base_returns_the_twin_stores_root` |
+| XB-02 | One record pair and one compare-and-swap. A lazy view at a superseded base checkpoints a journal that takes one datum and puts another, while the current state differs from the base in two data, one continuation and its two joins. A walk limited to one object read is first refused with `Rebase`, with the store directory unchanged and the gate returned. The checkpoint then runs exactly the phases of one trusted incremental publication, with no cold admission and no index construction. It creates and removes no file. The active pack and its index are appended in place and end at the catalog's durable tails. The appended pack bytes are exactly one incremental prepare record and the incremental commit record that the successor's slot names; the commit verifies the prepare and the slot verifies the commit; the receipt runs from the previous current state to the returned successor; sequence, generation and catalog epoch advance by one; and the catalog image is the previous image with the successor written to its inactive slot. The recorded batch is exactly the rebased batch: every before is the previous current state's value, the journal's endpoints end at the journal's values and the other differing endpoints at the base's. The source of the restored continuation is not written again. The successor, the previous current state and the base each still read their own contents. With 96 shared data instead of one, the previous current state is larger and the appended pack and index bytes are equal. | `a_cross_base_checkpoint_appends_one_record_pair_and_swaps_the_catalog_once` |
+| XB-03 | No effect, no write. Four views are checkpointed: an empty journal at a superseded base, a journal from the genesis state whose successor is the current state, an empty journal at the current state, and a journal at a superseded base whose steps cancel each other. They return the base, the current state, the current state and the base. Each of the 16 failpoints of the durable directory I/O layer is then armed in its own thread: the four outcomes are unchanged and the failpoint is still armed afterwards, so no write, length change, sync, replacement or directory sync of the store was attempted. The directory image, with the length and modification time of every entry, the catalog slot, the current state, the journals and the gate are as before. As the liveness control, a publishing view checkpoint with the physical-write failpoint armed trips and clears it; `reconcile` then returns the previous current state, and the retried checkpoint publishes the twin store's root one generation later. | `an_empty_journal_and_an_unchanged_current_state_write_and_sync_nothing` |
+| XB-04 | Refusals precede the first write. Each refusal of rows 1 to 5 and row 7 is observed twice, with the view's store and with a store of another lease registry, whose journal the owner cannot capture: a call that passes those rows is refused by that store's journal. The two refusals are equal, so the journal was not read, and both leave the directory image, the journal, the owner's root, generation key, pending terminal and phase unchanged, reach no capture and no publication phase, and return the permit. The cases are a permit of another gate; a base that the store does not retain, resolved in a second store; a pending record, left by a publication stopped after its catalog sync, which refuses another view's checkpoint as unresolved until `reconcile` reaches its terminal, after which that view publishes; a closed owner; an attachment of the closed owner's incarnation at the reopened owner, after which the same journal publishes the twin store's root under the new incarnation; a current manifest with a legacy-history root against a base without one; and a current manifest of one profile against a retained base of another profile. | `every_refusal_precedes_the_first_write_and_changes_nothing` |
+| XB-05 | Crash at every owner hook point. For each `JournalOwnerHookPoint`, a lazy view at a superseded base checkpoints a journal while a hook at that point copies the store files and stops the owner's task by a panic. A store recovered from the copy is at the previous current state, with files equal byte for byte to those before the call, for the points after the capture and after the preparation, and at the exact successor that the twin store returns, one generation later, for the points before and after the successor's pin and after the acknowledgement. The gate stays held by the pending record. `reconcile` then completes the record at that same state without writing, releases the gate, and leaves the journal intact before the write and acknowledged after it. A retry publishes the successor where the previous state was recovered. In every case the store settles on the successor, which reads the base's contents with the journal applied, with the view's store bound to it and every earlier state still readable. The hook point after the published-core load is not on the checkpoint's path: the checkpoint completes with the hook still armed, the next read handle stops there, and the copy recovers the successor. | `a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor` |
+
+Two more tests bind no ID.
+`a_base_equal_to_the_current_state_publishes_through_the_same_base_path` is
+the test of row 6 that **The two rules of the capture** describes. It
+checkpoints a lazy view at a superseded base, a lazy view at the current
+state and the bound store at a superseded slot, and requires each returned
+root to be its twin store's. It records whether the view's store is bound to
+the catalog's current slot, and to the slot at which the bound store last
+published, before the call, when the journal has been captured and after the
+call. `a_difference_endpoint_precedes_a_journal_transition_exactly` checks
+`precede_endpoint` against the table of **Rebased batch** for every pair of a
+current and a base value and every journal transition, over the counts 0 to 3
+in the data and join namespaces and over an absent and two present contents
+in the continuation namespace. It also requires the refusal of a journal
+transition that does not start at the base's value, of an endpoint value of
+the wrong kind and of a path that is no key of its namespace, and that a
+refused call poisons the batch.
+
+The red controls change the visitor of the walk in `rspace_authority.rs`.
+Passing the base's value as both values of every visited endpoint keeps the
+journal's own before values, which are the base's. Skipping every visited
+endpoint that the journal does not name publishes the journal on the current
+state without the rest of the difference. Each makes XB-01 fail in its seeded
+scenarios.
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -10819,6 +11152,11 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | OG-16 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12421): one store manager gives a durable store prefix one state authority, and with it one owner slot, and keeps the store in the prefix's `durable` directory. None of the models that this matrix cites has a store manager or a store prefix. |
 | OG-17 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12421): the backend of a store prefix is fixed at its first use and stays fixed across a shutdown of the manager. None of the models that this matrix cites has a backend selection. The caller-authority model `RSpaceCallerAuthority.v`, which this matrix does not cite, carries the backend as a field of an owner's domain, and each of its three owner transitions keeps that domain. |
 | OG-18 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12421): a durable selection is refused for the `eval` prefix and for a prefix that is not one normal path component. None of the models that this matrix cites has a store prefix or a directory name. |
+| XB-01 | `PublishedSuccessorIsOfViewBase` | `EXEC_ONLY` | P | Partially entailed (task 14349): the invariant requires the target of a pending record to be `Succ(base, view)`, a function of the record's own base and view and not of the owner's root, and the owner's root to be that target once the record awaits its acknowledgement; `CheckRequest` captures no record for a target equal to the owner's root and moves the view's base there. The model's roots are three abstract values. The executable refinement obligation is that the state which `checkpoint_view_from_base` reaches is that function of the view's base and journal alone, whatever state is current: its root is the root that a twin store returns, which is built to the base's contents and checkpointed while the base is its current state, and it reads the base's contents with the journal applied; and that a successor equal to the current state is returned without a publication. Publishing the journal on the current state without the difference, the second red control, is the executable form of the model's fault "publish-on-current". The model has no endpoints, no difference walk and no rebased batch. |
+| XB-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): the bytes of a cross-base publication: one incremental prepare and commit pair whose batch is the rebased batch, one catalog compare-and-swap, and an append that does not grow with the endpoints that the two states share. The owner model gives a pending record a base and a predecessor, but it has no batch, no record bytes and no catalog image. |
+| XB-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): a view checkpoint whose journal is empty, or whose rebased batch is empty, attempts no directory write and no sync. In the owner model `CheckRequest` captures no record for a target equal to the owner's root, but the model has no empty journal, since `Succ` never returns its base, and no directory I/O to count. |
+| XB-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): each refusal of the cross-base entry point is decided before the journal is read and changes nothing. The owner model refuses a foreign permit and a stale incarnation in `CheckRequest`, but it has no journal read, no first write, no unretained base and no manifest fields; the order of the refusals is a property of the Rust entry point. |
+| XB-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): an owner task that stops at each `JournalOwnerHookPoint` of a cross-base checkpoint leaves store files that recover the previous current state or the exact successor, and `reconcile` completes the record. The owner model resolves a pending record in `ReconcilePending` by comparing the owner's root with the record's predecessor, as `reconcile` compares the recovered slot with it, but the model has no store files, no hook points and no recovery of a copy. |
 
 ## Generator discipline
 
@@ -11837,6 +12175,38 @@ hash files that change, so those registries are regenerated with this
 slice. No persisted byte, record kind, root, identity or wire message
 changed; the directory name `durable` below a selected prefix is the only
 new name on disk. See the durable backend selection section.
+
+The 2026-11-12 cross-base view checkpoint slice of task 14349 adds XB-01 to
+XB-05, the first XB rows, so the catalog/derivation/binding registry now
+contains **282** IDs. The manifest test's family list gains `XB`, and its
+executable sources gain `owner_cross_base_checkpoint.rs`. On an export of the
+candidate tree, which already holds the durable backend selection slice, the
+seven tests of the new module, the four owner checkpoint view tests and the
+manifest test passed in debug and in release (12 passed), and the whole
+library test target passed in both profiles with 1014 tests (1004 passed, 10
+ignored). The four seeded scenarios of XB-01 show by themselves every class
+that the test requires. Two controls were each applied to the visitor of the
+difference walk in the export's `rspace_authority.rs`, run against the new
+module in debug with `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` and removed.
+Each made the same six tests of the module fail, XB-01 to XB-05 and the test
+of the same-base path, while the test of `precede_endpoint` passed:
+
+- Passing the base's value as both values of every visited endpoint, so that
+  every before is the base's, made XB-01 fail at a seeded scenario: the
+  rewrite's compare-and-swap refused the transaction at a datum whose count is
+  2 in the current state and 1 in the base.
+- Skipping every visited endpoint that the journal does not name, which
+  publishes the journal on the current state without the rest of the
+  difference, made XB-01 fail at a seeded scenario: the transaction was
+  refused because a continuation that the journal installs had no join in the
+  target state, the joins of the base not having been restored.
+
+Each faulted file was restored from the candidate tree, and the export was
+compared with it after the runs. Clippy of `rspace_plus_plus` with every
+target lists no finding in the files of this slice, and `rustfmt --check`
+passes on its Rust files. The obligation registries that hash a file of this
+slice are regenerated with it. No persisted record kind, byte layout, magic
+number or file name is new. See the cross-base view checkpoint section.
 
 ## Caller-authority contract (2026-09-06)
 

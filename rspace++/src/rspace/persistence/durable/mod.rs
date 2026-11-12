@@ -132,6 +132,8 @@ pub(crate) use rspace_authority::{
     OwnerIncarnationExhaustedV1, ViewAttachmentRefusalV1,
 };
 #[cfg(test)]
+pub(crate) use rspace_authority::{ViewBaseV1, ViewCheckpointLimitsV1};
+#[cfg(test)]
 pub(crate) use startup::{
     DurableStartupErrorV1, IndexBindingDispositionV1, PhysicallyRecoveredDurableWriterV1,
     recover_physical_from_lease_v1, recover_physical_with_lease_v1,

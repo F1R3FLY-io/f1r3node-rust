@@ -455,6 +455,11 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
         "OG-18",
         "a_durable_selection_is_refused_for_eval_and_for_a_prefix_that_is_not_one_path_component",
     ),
+    ("XB-01", "a_view_checkpoint_from_any_retained_base_returns_the_twin_stores_root"),
+    ("XB-02", "a_cross_base_checkpoint_appends_one_record_pair_and_swaps_the_catalog_once"),
+    ("XB-03", "an_empty_journal_and_an_unchanged_current_state_write_and_sync_nothing"),
+    ("XB-04", "every_refusal_precedes_the_first_write_and_changes_nothing"),
+    ("XB-05", "a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

@@ -10,7 +10,8 @@ pub(crate) mod hooks;
 
 use super::admission::{
     DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableAuthorityCoreV1,
-    DurableTransactionPreparationError, TrustedSuccessorPolicyV1, admit_physical_source,
+    DurableIndexedObjectStoreV1, DurableTransactionPreparationError, TrustedSuccessorPolicyV1,
+    admit_physical_source,
 };
 use super::io::DurableWriterLeaseV1;
 use super::publication::{IncrementalPublicationErrorV1, publish_trusted_incremental_v1};
@@ -22,16 +23,20 @@ use super::{
     CatalogSlotV1, DurableAuthorityViewV1, DurableObjectReadErrorV1, DurableViewReadHandleV1,
     require_shareable_read_handle,
 };
-use crate::rspace::errors::RSpaceError;
+use crate::rspace::errors::{RSpaceError, RootError};
 use crate::rspace::hot_store::{
-    CapturedHotJournalV1, HotStore, mutation_batch_from_observation,
+    CapturedHotJournalV1, HotStore, PendingDeltas, mutation_batch_from_observation,
     stage_pending_continuation_sources,
 };
+use crate::rspace::persistence::difference::{StateDifferenceLimits, visit_state_difference};
+use crate::rspace::persistence::manifest::LegacyHistoryRoot;
 use crate::rspace::persistence::mutation::{MutationBatchViewV1, MutationError};
 use crate::rspace::persistence::{
-    CanonicalEncode, DagTransactionError, DagTransactionLimits, DurableLimits,
-    GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseRegistryV1, GenerationLeaseV1,
-    LogPackDecodeLimits, LogPackFormatError, OpenDagTransaction, SemanticProfile, StateVersionV1,
+    CanonicalEncode, CanonicalFormatError, ClosureError, DagTransactionError, DagTransactionLimits,
+    DurableLimits, GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseRegistryV1,
+    GenerationLeaseV1, LogPackDecodeLimits, LogPackFormatError, OpenDagTransaction,
+    RSpaceMutationBatchV1, SemanticProfile, SemanticProfileId, SemanticStateManifestView,
+    StateVersionV1,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -41,6 +46,12 @@ pub(crate) struct DurableRSpacePublicationLimitsV1 {
     pub wal: LogPackDecodeLimits,
     pub admission: DurableAdmissionLimitsV1,
     pub trusted: TrustedSuccessorPolicyV1,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ViewCheckpointLimitsV1 {
+    pub publication: DurableRSpacePublicationLimitsV1,
+    pub difference: StateDifferenceLimits,
 }
 
 #[derive(Debug)]
@@ -68,6 +79,12 @@ pub(crate) enum DurableRSpaceTransactionError {
     IncarnationExhausted(OwnerIncarnationExhaustedV1),
     ForeignPermit,
     Attachment(ViewAttachmentRefusalV1),
+    Root(RootError),
+    Inheritance {
+        current: ManifestInheritanceV1,
+        base: ManifestInheritanceV1,
+    },
+    Rebase(ClosureError<DurableObjectReadErrorV1>),
 }
 
 impl From<MutationError> for DurableRSpaceTransactionError {
@@ -117,6 +134,10 @@ impl From<ViewAttachmentRefusalV1> for DurableRSpaceTransactionError {
             refusal => Self::Attachment(refusal),
         }
     }
+}
+
+impl From<ClosureError<DurableObjectReadErrorV1>> for DurableRSpaceTransactionError {
+    fn from(error: ClosureError<DurableObjectReadErrorV1>) -> Self { Self::Rebase(error) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,6 +193,50 @@ impl ViewAttachmentV1 {
     pub(crate) const fn incarnation(&self) -> OwnerIncarnationV1 { self.incarnation }
 
     pub(crate) const fn base(&self) -> CatalogSlotV1 { self.base }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ViewBaseV1 {
+    incarnation: OwnerIncarnationV1,
+    state: ResolvedDurableStateV1,
+}
+
+impl ViewBaseV1 {
+    pub(crate) const fn new(
+        incarnation: OwnerIncarnationV1,
+        state: ResolvedDurableStateV1,
+    ) -> Self {
+        Self { incarnation, state }
+    }
+
+    pub(crate) const fn incarnation(&self) -> OwnerIncarnationV1 { self.incarnation }
+
+    pub(crate) const fn state(&self) -> ResolvedDurableStateV1 { self.state }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ManifestInheritanceV1 {
+    schema_epoch: u64,
+    profile_id: SemanticProfileId,
+    legacy_history_root: Option<LegacyHistoryRoot>,
+}
+
+impl ManifestInheritanceV1 {
+    fn of(manifest: SemanticStateManifestView) -> Self {
+        Self {
+            schema_epoch: manifest.schema_epoch(),
+            profile_id: manifest.profile_id(),
+            legacy_history_root: manifest.legacy_history_root(),
+        }
+    }
+
+    pub(crate) const fn schema_epoch(&self) -> u64 { self.schema_epoch }
+
+    pub(crate) const fn profile_id(&self) -> SemanticProfileId { self.profile_id }
+
+    pub(crate) const fn legacy_history_root(&self) -> Option<LegacyHistoryRoot> {
+        self.legacy_history_root
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -331,7 +396,14 @@ where P::Channel: Clone + Hash + Eq
     captured: CapturedHotJournalV1,
     predecessor: CatalogSlotV1,
     expected: Option<CatalogSlotV1>,
+    anchor: PendingJournalAnchorV1,
     phase: PendingJournalPhaseV1<P>,
+}
+
+#[derive(Clone, Copy)]
+enum PendingJournalAnchorV1 {
+    CurrentSlot,
+    RetainedBase,
 }
 
 enum PendingJournalPhaseV1<P: SemanticProfile> {
@@ -438,6 +510,44 @@ where P::Channel: Clone + Hash + Eq
         hot.validate_journal_authority(self.source.authority().slot(), &self.registry)
     }
 
+    fn validate_unpublished(&self, hot: &OwnerHotStoreV1<P>) -> Result<(), RSpaceError> {
+        match self.pending.as_deref() {
+            Some(PendingJournalPublicationV1 {
+                anchor: PendingJournalAnchorV1::RetainedBase,
+                captured,
+                ..
+            }) => hot.validate_pending_journal(captured),
+            Some(_) | None => self.validate_base(hot),
+        }
+    }
+
+    fn resolve_state(
+        &self,
+        state: StateVersionV1,
+    ) -> Result<ResolvedDurableStateV1, DurableRSpaceTransactionError> {
+        self.source
+            .resolve(DurableStateRootV1::of_manifest(state.manifest()))
+            .map_err(DurableRSpaceTransactionError::Root)
+    }
+
+    fn inheritable_current_manifest(
+        &self,
+        base: &ResolvedDurableStateV1,
+    ) -> Result<SemanticStateManifestView, DurableRSpaceTransactionError> {
+        let verified = self.source.verified_state();
+        let current = verified.semantic_manifest()?;
+        let retained =
+            SemanticStateManifestView::parse(verified.load_object(base.manifest())?.as_ref())
+                .map_err(ClosureError::<DurableObjectReadErrorV1>::Format)?;
+        match (ManifestInheritanceV1::of(current), ManifestInheritanceV1::of(retained)) {
+            (inherited, required) if inherited == required => Ok(current),
+            (inherited, required) => Err(DurableRSpaceTransactionError::Inheritance {
+                current: inherited,
+                base: required,
+            }),
+        }
+    }
+
     pub(crate) fn pending_terminal(&self) -> Option<CatalogSlotV1> {
         self.pending.as_ref().and_then(|pending| pending.expected)
     }
@@ -537,11 +647,12 @@ where P::Channel: Clone + Hash + Eq
             captured,
             predecessor,
             expected: None,
+            anchor: PendingJournalAnchorV1::CurrentSlot,
             phase: PendingJournalPhaseV1::Captured,
         }));
         #[cfg(test)]
         hooks::run(hooks::JournalOwnerHookPoint::AfterCapture);
-        let publication = self.publish_captured(hot, limits);
+        let publication = self.publish_captured(hot, limits, None);
         if let (Err(_), Some(JournalPublicationPhaseV1::Captured)) =
             (&publication, self.pending_phase())
         {
@@ -552,30 +663,125 @@ where P::Channel: Clone + Hash + Eq
         self.acknowledge_successor()
     }
 
+    pub(crate) async fn checkpoint_view_from_base(
+        &mut self,
+        permit: OwnedRwLockWriteGuard<()>,
+        view: ViewBaseV1,
+        gate: &Arc<RwLock<()>>,
+        hot: &OwnerHotStoreV1<P>,
+        limits: ViewCheckpointLimitsV1,
+    ) -> Result<ResolvedDurableStateV1, DurableRSpaceTransactionError> {
+        if !Arc::ptr_eq(OwnedRwLockWriteGuard::rwlock(&permit), gate) {
+            return Err(DurableRSpaceTransactionError::ForeignPermit);
+        }
+        let OwnerLifecycleV1::Live { incarnation, .. } = self.lifecycle else {
+            return Err(DurableRSpaceTransactionError::Closed);
+        };
+        if view.incarnation != incarnation {
+            return Err(ViewAttachmentRefusalV1::StaleIncarnation {
+                attached: view.incarnation,
+                current: incarnation,
+            }
+            .into());
+        }
+        if let Some(phase) = self.pending_phase() {
+            return Err(DurableRSpaceTransactionError::Unresolved(phase));
+        }
+        self.source
+            .require_retained(&view.state)
+            .map_err(DurableRSpaceTransactionError::Root)?;
+        let predecessor = self.source.authority().slot();
+        if view.state.manifest() == predecessor.state().manifest() {
+            hot.bind_journal_authority(predecessor)?;
+            let attachment = self.attach(hot)?;
+            let reached = self
+                .checkpoint_view(permit, attachment, gate, hot, limits.publication)
+                .await?;
+            return self.resolve_state(reached);
+        }
+        let current = self.inheritable_current_manifest(&view.state)?;
+        let captured =
+            hot.capture_cross_base_journal(view.state.manifest(), predecessor, &self.registry)?;
+        let mut mutation =
+            match mutation_batch_from_observation(predecessor.state(), captured.observation()) {
+                Ok(mutation) => mutation,
+                Err(MutationError::EmptyBatch) => return Ok(view.state),
+                Err(error) => return Err(error.into()),
+            };
+        visit_state_difference(
+            self.source.verified_state().object_store(),
+            current.roots(),
+            view.state.roots(),
+            limits.difference,
+            |namespace, path, current_value, base_value| {
+                mutation
+                    .precede_endpoint(namespace, path, current_value, base_value)
+                    .map_err(rebase_refusal)
+            },
+        )?;
+        if mutation.is_empty() {
+            return self.resolve_state(predecessor.state());
+        }
+        self.pending = Some(Box::new(PendingJournalPublicationV1 {
+            permit,
+            hot: Arc::clone(hot),
+            captured,
+            predecessor,
+            expected: None,
+            anchor: PendingJournalAnchorV1::RetainedBase,
+            phase: PendingJournalPhaseV1::Captured,
+        }));
+        #[cfg(test)]
+        hooks::run(hooks::JournalOwnerHookPoint::AfterCapture);
+        let publication = self.publish_captured(hot, limits.publication, Some(mutation));
+        if let (Err(_), Some(JournalPublicationPhaseV1::Captured)) =
+            (&publication, self.pending_phase())
+        {
+            self.validate_unpublished(hot)?;
+            self.pending = None;
+        }
+        publication?;
+        let reached = self.acknowledge_successor()?;
+        self.resolve_state(reached)
+    }
+
     fn publish_captured(
         &mut self,
         hot: &OwnerHotStoreV1<P>,
         limits: DurableRSpacePublicationLimitsV1,
+        rebased: Option<RSpaceMutationBatchV1>,
     ) -> Result<(), DurableRSpaceTransactionError> {
         let pending = self.pending.as_mut().expect("checkpoint owns its capture");
         hot.validate_pending_journal(&pending.captured)?;
         let observation = pending.captured.observation();
-        let mutation =
-            match mutation_batch_from_observation(pending.predecessor.state(), observation) {
-                Ok(mutation) => mutation,
-                Err(MutationError::EmptyBatch) => {
-                    self.validate_base(hot)?;
-                    self.pending = None;
-                    return Ok(());
-                }
-                Err(error) => return Err(error.into()),
-            };
+        let mutation = match rebased.map_or_else(
+            || mutation_batch_from_observation(pending.predecessor.state(), observation),
+            Ok,
+        ) {
+            Ok(mutation) => mutation,
+            Err(MutationError::EmptyBatch) => {
+                self.validate_base(hot)?;
+                self.pending = None;
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
         let plan = mutation.plan()?;
         let bytes = plan.try_canonical_bytes()?;
         let view = MutationBatchViewV1::parse(&bytes)?;
         let mut transaction =
             OpenDagTransaction::new(self.source.verified_state(), view, limits.transaction)?;
-        stage_pending_continuation_sources(&mut transaction, &observation.pending)?;
+        match pending.anchor {
+            PendingJournalAnchorV1::CurrentSlot => {
+                stage_pending_continuation_sources(&mut transaction, &observation.pending)?;
+            }
+            PendingJournalAnchorV1::RetainedBase => stage_rebased_continuation_sources(
+                &mut transaction,
+                view,
+                &observation.pending,
+                &self.source,
+            )?,
+        }
         let sealed = transaction.seal()?;
         let OwnerLifecycleV1::Live { lease, .. } = &mut self.lifecycle else {
             return Err(DurableRSpaceTransactionError::Closed);
@@ -623,7 +829,7 @@ where P::Channel: Clone + Hash + Eq
         if let PendingJournalPhaseV1::AwaitingAck { .. } = pending.phase {
             return self.acknowledge_successor();
         }
-        self.validate_base(&hot)?;
+        self.validate_unpublished(&hot)?;
         let OwnerLifecycleV1::Live { lease, .. } = &mut self.lifecycle else {
             return Err(DurableRSpaceTransactionError::Closed);
         };
@@ -641,11 +847,22 @@ where P::Channel: Clone + Hash + Eq
             .as_mut()
             .expect("reconciliation retains its capture");
         if actual == pending.predecessor {
-            hot.validate_journal_authority(actual, &self.registry)?;
+            let anchor = pending.anchor;
+            match anchor {
+                PendingJournalAnchorV1::CurrentSlot => {
+                    hot.validate_journal_authority(actual, &self.registry)?;
+                }
+                PendingJournalAnchorV1::RetainedBase => {
+                    hot.validate_pending_journal(&pending.captured)?;
+                }
+            }
             self.published.install(Arc::clone(&successor));
             self.source = successor;
             self.pending = None;
-            return self.state(&hot);
+            return match anchor {
+                PendingJournalAnchorV1::CurrentSlot => self.state(&hot),
+                PendingJournalAnchorV1::RetainedBase => self.quiescent_state(),
+            };
         }
         if pending.expected != Some(actual) {
             return Err(DurableRSpaceTransactionError::UnexpectedTerminal {
@@ -722,4 +939,49 @@ where P::Channel: Clone + Hash + Eq
         drop(permit);
         self.state(&hot)
     }
+}
+
+fn rebase_refusal(refusal: MutationError) -> ClosureError<DurableObjectReadErrorV1> {
+    ClosureError::Format(match refusal {
+        MutationError::Canonical(format) => format,
+        refusal => CanonicalFormatError::SemanticCoherence {
+            detail: format!(
+                "a state-difference endpoint cannot precede the view's journal: {refusal}"
+            ),
+        },
+    })
+}
+
+fn stage_rebased_continuation_sources<P: SemanticProfile>(
+    transaction: &mut OpenDagTransaction<'_, '_, DurableIndexedObjectStoreV1, P>,
+    mutation: MutationBatchViewV1<'_>,
+    journal: &PendingDeltas,
+    current: &DurableAuthorityCoreV1<P>,
+) -> Result<(), DurableRSpaceTransactionError> {
+    let verified = current.verified_state();
+    for entry in mutation.continuations() {
+        let Some(expected) = entry.transition.after() else {
+            continue;
+        };
+        let journalled = match (&journal.continuation_content, &journal.continuation_source_bytes) {
+            (Some(transitions), Some(sources)) => transitions
+                .get(entry.key)
+                .filter(|transition| transition.after() == Some(expected))
+                .and_then(|_| sources.get(entry.key).cloned()),
+            (Some(_), None) | (None, Some(_)) | (None, None) => None,
+        };
+        let canonical = match journalled {
+            Some(canonical) => canonical,
+            None => Arc::from(verified.load_object(expected)?),
+        };
+        let (staged, _) = transaction.stage_continuation_source(canonical)?;
+        if staged != expected {
+            return Err(DagTransactionError::from(CanonicalFormatError::DigestMismatch {
+                expected: expected.digest(),
+                actual: staged.digest(),
+            })
+            .into());
+        }
+    }
+    Ok(())
 }

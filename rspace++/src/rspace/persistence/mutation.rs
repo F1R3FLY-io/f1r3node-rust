@@ -22,7 +22,7 @@ use super::canonical::{
     checked_len, checked_sum, parse_envelope, write_envelope_header, write_u64,
 };
 use super::manifest::SemanticNamespace;
-use super::object::{CanonicalBlob, CanonicalBlobKind};
+use super::object::{CanonicalBlob, CanonicalBlobKind, EndpointValue};
 use crate::rspace::bag::{Bag, BagDelta};
 use crate::rspace::rho_path::{RhoPathError, RhoPathStreamValidatorV1, RhoPathV1};
 
@@ -1226,6 +1226,40 @@ impl RSpaceMutationBatchV1 {
         Ok(())
     }
 
+    pub(crate) fn precede_endpoint(
+        &mut self,
+        namespace: SemanticNamespace,
+        path: &[u8],
+        before: EndpointValue,
+        after: EndpointValue,
+    ) -> Result<(), MutationError> {
+        if self.poisoned {
+            return Err(MutationError::PoisonedBatch);
+        }
+        let result = validate_key(namespace, path).and_then(|()| match namespace {
+            SemanticNamespace::DataBag => precede_count(
+                &mut self.data,
+                path,
+                endpoint_count(namespace, before)?,
+                endpoint_count(namespace, after)?,
+            ),
+            SemanticNamespace::ContinuationMap => precede_content(
+                &mut self.continuations,
+                path,
+                endpoint_content(namespace, before)?,
+                endpoint_content(namespace, after)?,
+            ),
+            SemanticNamespace::JoinBag => precede_count(
+                &mut self.joins,
+                path,
+                endpoint_count(namespace, before)?,
+                endpoint_count(namespace, after)?,
+            ),
+        });
+        self.poisoned |= result.is_err();
+        result
+    }
+
     /// Produce an immutable, preflighted streaming plan.  No semantic-state
     /// scan, entry projection, or sort occurs.
     pub fn plan(&self) -> Result<MutationBatchPlanV1, MutationError> {
@@ -1618,6 +1652,96 @@ fn record_content(
         None => {}
     }
     Ok(())
+}
+
+fn precede_count(
+    map: &mut PathMap<CountTransition>,
+    path: &[u8],
+    before: u64,
+    after: u64,
+) -> Result<(), MutationError> {
+    match map.get(path).copied() {
+        Some(existing) => {
+            if existing.before != after {
+                return Err(MutationError::DiscontinuousCount {
+                    expected: after,
+                    actual: existing.before,
+                });
+            }
+            if existing.after == before {
+                map.remove(path);
+            } else {
+                map.insert(path, CountTransition::new(before, existing.after)?);
+            }
+        }
+        None if before != after => {
+            map.insert(path, CountTransition::new(before, after)?);
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+fn precede_content(
+    map: &mut PathMap<ContentTransition>,
+    path: &[u8],
+    before: Option<ObjectRefV1>,
+    after: Option<ObjectRefV1>,
+) -> Result<(), MutationError> {
+    match map.get(path).copied() {
+        Some(existing) => {
+            if existing.before != after {
+                return Err(MutationError::DiscontinuousContent {
+                    expected: after,
+                    actual: existing.before,
+                });
+            }
+            if existing.after == before {
+                map.remove(path);
+            } else {
+                map.insert(path, ContentTransition::new(before, existing.after)?);
+            }
+        }
+        None if before != after => {
+            map.insert(path, ContentTransition::new(before, after)?);
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+fn endpoint_count(
+    namespace: SemanticNamespace,
+    endpoint: EndpointValue,
+) -> Result<u64, MutationError> {
+    match endpoint {
+        EndpointValue::Absent => Ok(0),
+        EndpointValue::Multiplicity(count) => Ok(count.get()),
+        EndpointValue::ValueFree | EndpointValue::Unit | EndpointValue::Content(_) => {
+            Err(CanonicalFormatError::EndpointPolicy {
+                namespace: namespace.name(),
+                endpoint: endpoint.name(),
+            }
+            .into())
+        }
+    }
+}
+
+fn endpoint_content(
+    namespace: SemanticNamespace,
+    endpoint: EndpointValue,
+) -> Result<Option<ObjectRefV1>, MutationError> {
+    match endpoint {
+        EndpointValue::Absent => Ok(None),
+        EndpointValue::Content(reference) => Ok(Some(reference)),
+        EndpointValue::ValueFree | EndpointValue::Unit | EndpointValue::Multiplicity(_) => {
+            Err(CanonicalFormatError::EndpointPolicy {
+                namespace: namespace.name(),
+                endpoint: endpoint.name(),
+            }
+            .into())
+        }
+    }
 }
 
 fn validate_key(namespace: SemanticNamespace, path: &[u8]) -> Result<(), MutationError> {

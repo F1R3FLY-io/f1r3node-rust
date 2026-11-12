@@ -9,14 +9,6 @@ mod canonical;
 mod checkpoint;
 mod checksum;
 mod closure;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only unit tests walk a state difference until the owner's cross-base checkpoint \
-                  (rspace-owner-cross-base-checkpoint) publishes a successor through it"
-    )
-)]
 mod difference;
 #[expect(
     clippy::result_large_err,
