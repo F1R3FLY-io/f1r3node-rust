@@ -108,6 +108,8 @@ mod rpb3_no_score_child_eof_coverage;
 mod rpb3_score_finish_groups;
 #[cfg(rpb3_live_push)]
 mod rpb3_score_finish_unique;
+#[cfg(rpb3_live_push)]
+mod rpb3_finish_handle_transcript;
 
 use {
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,

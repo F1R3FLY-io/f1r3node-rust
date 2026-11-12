@@ -89,6 +89,7 @@ source_files=(
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
   "$model_dir/rpb3_epm_live_handoff.rs"
+  "$model_dir/rpb3_finish_handle_transcript.rs"
   "$model_dir/rpb3_score_finish_unique.rs"
   "$model_dir/rpb3_score_finish_groups.rs"
   "$model_dir/rpb3_no_score_child_eof_coverage.rs"
@@ -1261,6 +1262,74 @@ proofs_rpb3_ezipper_source_refinement=(
   ezipper_scored_constructor_transcript_exact
   ezipper_complete_route_preserves_source_and_score
 )
+proofs_rpb3_finish_handle_transcript=(
+  handle_facts_from_agreement
+  top_handle_from_agreement
+  attach_agreement_holds
+  attach_agreement_everywhere
+  handle_after_raw_par
+  handle_after_cost_atom_absent
+  handle_after_cost_atom_bytes
+  handle_after_cost_bound
+  handle_after_cost_atom_bound_forward
+  handle_after_cost_signature
+  handle_after_cost_region
+  handle_after_cost_token_stack
+  handle_after_bundle
+  handle_after_if
+  handle_after_send
+  handle_after_match_component
+  handle_after_absent_specialized
+  handle_after_absent_connective
+  handle_after_receive_bind
+  handle_after_match_case
+  handle_after_bool_oneof
+  handle_after_expr_atom
+  handle_after_expr_numeric
+  handle_after_expr_big_rational
+  handle_after_expr_fixed_point
+  handle_after_sys_auth_token
+  handle_after_new_empty_collections
+  handle_after_new_one_injection
+  handle_after_new_one_absent_injection
+  handle_after_new_one_uri
+  handle_after_new_collections
+  handle_after_expr_payload_forward
+  handle_after_expr_structural
+  handle_after_evar
+  handle_after_ordered_sequence
+  handle_after_emethod
+  handle_after_emap_finish
+  handle_after_connective_not
+  handle_after_connective_varref
+  handle_after_connective_collection
+  handle_after_unforgeable_bytes
+  handle_after_receive_present_condition
+  handle_after_receive_absent_condition
+  handle_after_nonsemantic
+  handle_after_var
+  handle_after_epathmap_owner
+  handle_after_ezipper
+  handle_routed_group_1
+  handle_routed_group_2
+  handle_routed_group_3
+  handle_routed_group_4
+  handle_routed_group_5
+  handle_routed_group_6
+  handle_after_selected_finish
+  handle_after_epm_source_finish
+  handle_after_product_epm_finish
+  child_return_carries_handle
+  pre_pop_return_carries_handle
+  eof_score_child_carries_handle
+  root_return_from_top_handle
+  runtime_eof_finish_facts
+  runtime_epathmap_eof_finish_facts
+  live_root_score_has_top_handle
+  live_child_score_has_top_handle
+  live_root_complete_carries_handle
+  handle_owner_witness
+)
 proofs_rpb3_finish_macro_refinement=(
   modeled_finish_preserves_score_shape
   modeled_root_return_matches_pre_pop
@@ -2367,6 +2436,7 @@ gated_modules=(
   rpb3_epm_unwind_event_lift
   rpb3_epm_unwind_product_lift
   rpb3_ezipper_source_refinement
+  rpb3_finish_handle_transcript
   rpb3_finish_macro_refinement
   rpb3_generated_descriptor_projection
   rpb3_generic_message_eof_source_refinement
@@ -4780,6 +4850,39 @@ fi
 if ! rg -q '^verification results:: 9 verified, 0 errors' "$epm_live_handoff_log"; then
   cat "$epm_live_handoff_log"
   echo "rpb3-admission-cursor: EPathMap live handoff module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_finish_handle_transcript[@]}"; do
+  proof_log="$evidence_dir/finish-handle-transcript-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_finish_handle_transcript --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: finish top-handle facts $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: finish top-handle facts $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+finish_handle_transcript_log="$evidence_dir/finish-handle-transcript-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_finish_handle_transcript \
+  "$integrated_source" \
+  >"$finish_handle_transcript_log" 2>&1; then
+  cat "$finish_handle_transcript_log"
+  echo "rpb3-admission-cursor: finish top-handle facts module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 66 verified, 0 errors' "$finish_handle_transcript_log"; then
+  cat "$finish_handle_transcript_log"
+  echo "rpb3-admission-cursor: finish top-handle facts module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do
