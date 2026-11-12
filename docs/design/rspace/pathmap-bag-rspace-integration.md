@@ -5021,7 +5021,7 @@ after the new state is refused. The model is
 `formal/tlaplus/stack_safe_pda/RSpaceRPB3CanonicalAdmissionPublication.tla`; its baseline
 configuration, `formal/tlaplus/stack_safe_pda/RSpaceRPB3CanonicalAdmissionPublication.cfg`, lists
 ten invariants, which are conditions that the TLC model checker verifies in every reachable state
-of the model. `bash scripts/check-rpb3-publication-model.sh` runs that check and then three mutant
+of the model. `bash scripts/check-rpb3-publication-model.sh` runs that check and then four mutant
 configurations, each of which adds one faulty step and must be reported as violating one named
 invariant.
 

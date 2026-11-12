@@ -20,6 +20,7 @@ cd "$model_dir"
 metadir="$(tlc_metadir rpb3-publication)"
 sha256sum "$model.tla" "$model.cfg" \
   "${model}MalformedMutant.cfg" "${model}UnsealedMutant.cfg" "${model}ObservationMutant.cfg" \
+  "${model}PartialClosureMutant.cfg" \
   "$repo_root/scripts/check-rpb3-publication-model.sh"
 
 baseline_invariants=(
@@ -71,7 +72,8 @@ fi
 for mutant in \
   'Malformed:MalformedAdmissionMutantSpec:MalformedInputCannotBeAdmitted:AdmitMalformedMutant' \
   'Unsealed:UnsealedImportMutantSpec:PublicationRequiresAdmissionAndSeal:PublishUnsealedImportMutant' \
-  'Observation:WrongObservationMutantSpec:PublicationMatchesTypedOracle:PublishWrongObservationMutant'
+  'Observation:WrongObservationMutantSpec:PublicationMatchesTypedOracle:PublishWrongObservationMutant' \
+  'PartialClosure:PartialClosureMutantSpec:EveryKnownRootHasCompleteClosureAndExactObservation:PublishPartialClosureMutant'
 do
   IFS=: read -r variant specification invariant action <<<"$mutant"
   config="${model}${variant}Mutant.cfg"
@@ -99,4 +101,4 @@ do
   fi
 done
 
-echo "rpb3-publication: baseline passed ($states) and three mutants violated their invariants; logs in $evidence_dir"
+echo "rpb3-publication: baseline passed ($states) and four mutants violated their invariants; logs in $evidence_dir"

@@ -337,8 +337,27 @@ PublishWrongObservationMutant ==
                     candidateObservation, previousHistory, previousCold,
                     previousKnown, previousCurrent, previousGeneration>>
 
+PublishPartialClosureMutant ==
+    /\ phase = "accepted"
+    /\ mode = "checkpoint"
+    /\ generation < MaxGeneration
+    /\ phase' = "published"
+    /\ historyObjects' = historyObjects \cup {candidateRoot}
+    /\ knownRoots' = knownRoots \cup {candidateRoot}
+    /\ currentRoot' = candidateRoot
+    /\ generation' = generation + 1
+    /\ activationCount' = activationCount + 1
+    /\ rootObservations' =
+        [rootObservations EXCEPT ![candidateRoot] = candidateObservation]
+    /\ requestPublicationCount' = 1
+    /\ UNCHANGED <<input, mode, admitted, sealed, candidateRoot,
+                    candidateObservation, coldObjects, previousHistory,
+                    previousCold, previousKnown, previousCurrent,
+                    previousGeneration>>
+
 MalformedAdmissionMutantSpec == Init /\ [][Next \/ AdmitMalformedMutant]_vars
 UnsealedImportMutantSpec == Init /\ [][Next \/ PublishUnsealedImportMutant]_vars
 WrongObservationMutantSpec == Init /\ [][Next \/ PublishWrongObservationMutant]_vars
+PartialClosureMutantSpec == Init /\ [][Next \/ PublishPartialClosureMutant]_vars
 
 =============================================================================
