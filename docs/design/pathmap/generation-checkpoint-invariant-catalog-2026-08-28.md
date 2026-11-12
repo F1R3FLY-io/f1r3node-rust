@@ -8184,6 +8184,112 @@ store creates do not block genesis.
 | SG-02 | Deterministic empty state. Two stores created independently in two directories have different store identities and the same empty-state manifest digest, which equals the digest of an independently encoded manifest with the three empty roots and no legacy history root. | `independently_created_empty_stores_share_the_empty_state_manifest_digest` |
 | SG-03 | Crash-safe genesis. The injection points are taken from a traced genesis run and each is exercised once. A crash at a point stops genesis there; recovery then either fails without changing the directory or opens exactly the genesis state, and it opens exactly when the point follows the catalog slot write. A second genesis then refuses the directory, listing exactly the store files present, and changes nothing; only a crash before the first create leaves no store file, and then the second genesis creates the store. Every torn catalog-slot prefix from 0 to 335 bytes likewise opens exactly the genesis state or no authority, and both outcomes occur. | `a_crash_at_any_genesis_write_or_sync_point_never_opens_a_different_state` |
 
+### GC protection invariants as executable properties (2026-11-11)
+
+Task 12437 binds five invariants of the GC protection model
+[`RSpaceGcProtection.tla`](../../../formal/tlaplus/stack_safe_pda/RSpaceGcProtection.tla)
+to executable properties: `TypeInvariant`, `PublicationBeforeReclamation`,
+`ExactOldPinsProtected`, `CrashRetryAuthority` and
+`OperationRootRoleQuotient`, the five that are fully meaningful at runtime
+today. Their state is the catalog selection, the files of the superseded
+("old") generation, the reclamation intent `reclaim.v1`, the generation leases
+of `GenerationLeaseRegistryV1` and the operation roots of
+`RetainedRootRegistryV1`. The model's other 13 base invariants are bound
+later; the leaf GC13 then adds the model's two base configurations,
+`RSpaceGcProtection.cfg` and `RSpaceGcProtectionKnown.cfg`, to the
+configurations whose invariants `model_property_manifest_is_unique_and_exhaustive`
+requires in the derivation matrix. Until then that test only reads the
+model's source, so every GC row must cite a symbol that the model defines.
+
+The manifest test used to take a base invariant only from a line that starts
+with the word `INVARIANT` and a space. Both GC configurations list their 18
+base invariants in one `INVARIANTS` block, one name per indented line, so that
+rule would find none of them. The test now parses each base configuration
+with `tlc_config_invariants`, a tokenizer and statement parser for the TLC
+configuration language: the statements `CONSTANT(S)`, `CONSTRAINT(S)`,
+`ACTION_CONSTRAINT(S)`, `INVARIANT(S)`, `INIT`, `NEXT`, `VIEW`, `SYMMETRY`,
+`SPECIFICATION`, `PROPERTY`, `PROPERTIES`, `TYPE`, `TYPE_CONSTRAINT` and
+`CHECK_DEADLOCK`, line comments `\*`, nested block comments `(* *)`, string
+literals, and constant assignments and substitutions. It returns every name
+listed after `INVARIANT` or `INVARIANTS`, or the line and kind of the first
+defect. Its tests cover 24 accepted layouts, 21 malformed inputs with their
+line and defect, 256 generated layouts, and both GC configurations, each of
+which must yield exactly the 18 base invariants, in order, all defined by the
+model.
+
+**Refinement mapping.** The executable properties observe the store and the
+process at many points and map each observation to a state of the model. The
+old generation is the one that the catalog selects when a trial begins.
+
+| Model variable | Observed implementation state |
+|---|---|
+| `catalog` | The key of the slot that `CatalogSelectionV1::select` chooses from `catalog.v1`. The old generation's key is `"old"`. The key of its checkpoint successor is `"new"`: the next catalog epoch, the old active pack plus one as first live and active pack, and the next index generation. Any other key, or no selection, is outside the type. |
+| `oldPresent` | Every pack of the old live range and the old index exist with the bytes they held when the trial began. If none of them exists, the old generation is absent; any other combination is outside the type. |
+| `reclaimIntent` | `reclaim.v1` decodes to exactly the pair old and successor, and the catalog selects the successor. An intent written before the catalog swap maps to `FALSE`; startup removes it, which is a stutter step. |
+| `oldPins`, `newPins` | The `GenerationLeaseV1` tokens that the trial holds. A lease on the old generation's packs and index, at the old epoch or, as an alias, at another one, is an old pin; a lease on exactly the successor's key is a new pin; any other key is outside the type. |
+| `phase = "crashed"` | From a simulated process crash, which drops the writer, every lease and the process's registry handle, until the next recovery returns. |
+| Reader, export and import pins | Rows of kinds `Reader`, `Export` and `Import` in `RetainedRootRegistryV1`, each with a generation lease on the exact admitted generation. |
+
+**Trial engine.** GC-01 to GC-04 evaluate their invariants over one shared,
+deterministic sample of 76 trials. Each trial runs in its own thread, because
+the publication hooks and failpoints are thread-local, and in its own store
+directory. The interruption is none or a failpoint at one of the 18 points of
+`FORMAL_PUBLICATION_PHASE_ORDER`, and the process then survives or crashes.
+For each interruption and each of these two aftermaths there are two trials:
+one with no pin, and one with churn pins whose prelude rotates with the
+interruption over an exact pin, an alias pin, both, and none. The size of the
+fixture's retained union (two to four objects) and the number of earlier
+publications (zero or one) rotate with the trial's position. A trial:
+
+1. installs the fixture, admits the store, publishes the earlier generations,
+   records the old key, its alias at the previous epoch, the successor key
+   and the old files' bytes, takes its prelude pins and observes;
+2. publishes with a hook at every point up to the interruption. In a churn
+   trial each hook takes one pin (the old exact key at even points; at odd
+   points the successor once the catalog selects it, otherwise the alias) and
+   releases the oldest churn pin when three are held. Every hook then
+   observes. Old pins are tried whether or not the old generation is present,
+   and a `Retired` refusal is accepted exactly when it is absent;
+3. if the process survives an interruption, probes the store, that is reads
+   the intent under a freshly taken writer lock and, if there is one, sends
+   `reclaim_reclamation_candidate` with the slot selected on disk, and then
+   re-admits the store with every pin held. If the process crashes, the trial
+   recovers, crashes again, recovers again and retakes its prelude pins;
+4. publishes again, with hooks, when the catalog still selects the old
+   generation;
+5. drops the writer and releases its pins one at a time, observing and
+   probing after each release;
+6. settles: it re-admits the store, tries to pin the old exact and alias keys,
+   and requires the successor's catalog, no old file, no intent and no pin.
+
+A trial halts, and every GC test then fails, when an admission, a recovery or
+an uninterrupted publication is refused, when a failpoint does not interrupt
+publication at its point, when a probe cannot take the writer lock or read
+the intent, when a reclamation request fails other than with
+`CatalogAuthorityChanged`, when a re-admitted writer does not share the pins'
+registry, when the registry refuses a pin that the model enables, when the
+trial does not settle, or when it panics. Each test first evaluates its
+invariant on every observation, then refuses halted trials, then requires the
+cases that make it non-vacuous.
+
+GC-05 runs 16 cases generated from a fixed seed. A case chooses the fixture
+size, zero or one earlier publication, and one to four operations, each with
+a role, a root among the store's objects and a release point: before
+publication, after publication or after a restart. Each case runs four times
+in fresh directories: once with no operation, the control, and three times
+with the roles rotated, so that every operation takes each of the three roles
+once.
+
+**The GC rows.** GC is the garbage-collection protection family.
+
+| ID | Required property | Test |
+|---|---|---|
+| GC-01 | Typed protection state (`TypeInvariant`). In every observed state of the 76 trials, the catalog selects exactly the old or the successor key; the old generation is wholly present with its original bytes or wholly absent; `reclaim.v1` is absent or names exactly the old generation and the successor; every held lease pins the old generation, at its epoch or as an alias, or exactly the successor; the held leases have pairwise distinct ids; the registry counts as many active leases as are held and reports every held key active; and no release is refused. Old and new pins held together, an alias pin, a crashed state and a release are each observed. | `catalog_selection_and_generation_pins_stay_typed_through_publication_and_crash` |
+| GC-02 | Publication before reclamation (`PublicationBeforeReclamation`). In every observed state, if the old generation is not wholly present, the catalog selects the successor. A reclamation request sent while the catalog selects the old generation, with an intent written before the swap and no old pin held, is observed refused with `CatalogAuthorityChanged`; the successor's catalog is observed with the old generation present at `AfterCatalogSlotWrite` or `AfterCatalogFileSyncBeforeDirectorySync`; and an absent old generation is observed. | `old_generation_is_reclaimed_only_after_the_successor_is_published` |
+| GC-03 | Exact old pins protect (`ExactOldPinsProtected`). In every observed state, if a lease on the old generation, exact or alias, is held, the old generation is wholly present. Observed: an old pin held while the catalog selects the successor and the intent is pending; a reclamation request deferred by a pin; old pins taken only at `AfterCatalogSlotWrite` or `AfterCatalogFileSyncBeforeDirectorySync` keeping the old generation through the publication's own reclamation step (seen at `AfterCatalogDirectorySync`); and a pin on the reclaimed generation refused with `Retired`. | `exact_old_generation_pins_defer_reclamation_until_released` |
+| GC-04 | Crash keeps retry authority (`CrashRetryAuthority`). In every state observed from a process crash, at any of the 18 publication points or after a completed publication, until the recovery that follows returns, if the catalog selects the old generation, the old generation is wholly present. Observed: crashes with the catalog on the old generation before and after the intent is written, a crash after the catalog swap, and a second crash after a recovery of the old generation's authority. Every crashed trial then recovers, publishes again if the catalog still selects the old generation, and settles. | `crash_before_publication_keeps_the_old_generation_for_retry` |
+| GC-05 | Operation roots share one protection (`OperationRootRoleQuotient`). Reader, export and import roots, each registered in `RetainedRootRegistryV1` with a generation lease on the exact admitted generation, yield the same closure seeds, registry revisions, root and lease identities, snapshot currency, release results, old-generation presence and final store bytes under the three rotations of the roles, while the registry's rows record the roles. The seeds are the retention manifest's roots plus the roots of the operations not yet released; registration writes no durable byte; publication keeps the old generation exactly while an operation still holds it, the first restart keeps it exactly while an operation to be released after that restart holds it, and the second restart finds it reclaimed; the final directory and catalog slot equal the control's. Observed: a root registered twice, an operation root that the manifest already seeds, every release point, and an old generation kept across publication. | `reader_export_and_import_roots_share_one_protection_quotient` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -8436,6 +8542,11 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | SG-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14292): the files, catalog slot, recovered state and empty namespaces of a store that `create_empty_store_v1` creates. The publication model and its Rocq theory start from an admitted old generation (phase `OldAdmitted`, selected authority `old`), so no model creates the first generation. |
 | SG-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14292): the empty state's manifest digest depends only on the schema, the profile and the empty root, not on the store identity. No model states a property of manifest bytes. |
 | SG-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14292): crash safety of genesis at each create, write and sync point and at every torn catalog-slot prefix. The crash selection that `raw_slot_recovery_selects_old_complete_new_or_rejects` states maps a torn slot to the old authority, and a genesis directory has none: there a torn slot selects no authority, and the next genesis refuses the directory. |
+| GC-01 | `TypeInvariant` | `EXEC_ONLY` | P | Partially entailed (task 12437): `TypeInvariant` types `catalog` as `"old"` or `"new"` and the two pin sets as disjoint sets of pin tokens. Under the refinement mapping of the GC protection section, every observed state realizes these conjuncts and gives the Boolean variables `oldPresent` and `reclaimIntent` a value: the catalog selects exactly the old or the successor key, the old generation is never partly present, `reclaim.v1` names no other pair, and every held lease has its own id and is active in the registry. `phase` is observed only as crashed or not; the conjuncts on `copied`, `durable`, `oldDurable`, the overlap witnesses and the WAL window are not observed, and later leaves bind the invariants over them. |
+| GC-02 | `PublicationBeforeReclamation` | `EXEC_ONLY` | P | Partially entailed (task 12437): in the model only `Reclaim` makes `oldPresent` false, and it requires `reclaimIntent`, which only `Publish` sets, in the same step that sets `catalog` to `"new"`. The executable refinement obligation is the store's order and guard: the intent is written before the catalog slot, the in-publication reclamation follows the catalog's file and directory synchronization, `reclaim_reclamation_candidate` refuses a candidate whose successor the passed slot does not select, and startup removes an intent written before the swap. |
+| GC-03 | `ExactOldPinsProtected` | `EXEC_ONLY` | P | Partially entailed (task 12437): `AcquireOldPin` requires `oldPresent`, and `Reclaim` requires `oldPins = {}`. The executable refinement obligation is that publication, startup and an explicit request all reclaim through `reclaim_reclamation_candidate`, which retires the old pack range only while no lease overlaps it, so that a lease on an older-epoch alias protects the same files, and that `acquire` then refuses a lease on the retired range with `Retired`. |
+| GC-04 | `CrashRetryAuthority` | `EXEC_ONLY` | P | Partially entailed (task 12437): `PublicationBeforeReclamation` implies the invariant, and `Crash` and `Recover` leave `catalog` and `oldPresent` unchanged. The executable refinement obligation is that a process crash at each of the 18 publication points or after publication, a recovery, a second crash and a second recovery never delete an old file while the catalog selects the old generation. The crash is simulated inside the test process: the writer, every lease and the registry handle are dropped, and the process-wide registry of a directory whose packs were retired stays. Loss of unsynchronized writes on power failure is not simulated. |
+| GC-05 | `OperationRootRoleQuotient` | `EXEC_ONLY` | P | Partially entailed (task 12437): the invariant states that the reader, export and import tokens have their roles, are not WAL ids, need the same object closure and the exact generation, and need no WAL bytes. The store realizes each role as a `RetainedRootRegistryV1` row with a generation lease on the exact admitted generation. The executable refinement obligation is that the role changes no closure seed, revision, lease identity, release, reclamation deferral or store byte. Reclamation does not consult the process-local `RetainedRootRegistryV1`, so the generation lease realizes `exactGeneration`; registration writes no durable byte and pins nothing beyond the exact generation, which realizes the false `walBytes`. |
 
 ## Generator discipline
 
@@ -9082,6 +9193,70 @@ workspace-regression registry hashes the manifest test's file, which
 changes, so it was regenerated, and the PathMap aggregate takes its new
 manifest digest. No production code, persisted byte, record kind, root or
 wire message changed.
+
+The 2026-11-11 GC protection slice of task 12437 adds GC-01 to GC-05, the
+first GC rows, so the catalog/derivation/binding registry now contains
+**251** IDs. The manifest test's family list gains `GC`, its TLA+ sources gain
+`RSpaceGcProtection.tla`, and it now reads its base configurations with
+`tlc_config_invariants`. The four base configurations that it reads hold 51
+single-name `INVARIANT` lines and no other invariant statement, so it requires
+exactly the names that it required before; the two GC configurations, which
+it does not read yet, each yield the model's 18 base invariants. On an export
+of the candidate tree, the five tests of the new file, the four parser tests,
+the rest of the generation-checkpoint property module with the manifest test,
+and the durable publication module passed in debug and in release (79 tests,
+one of them ignored), and the whole library test target passed in debug and
+in release with 940 tests (10 ignored). Six controls were each applied to the
+export, run against that selection in debug and removed:
+
+- Citing `ReclamationAfterPublication` instead of
+  `PublicationBeforeReclamation` in the GC-02 derivation row made the manifest
+  test, and only it, fail with `derivation row GC-02 cites missing TLA+ symbol
+  ReclamationAfterPublication`.
+- Leaving the generation lease counter unchanged by an acquisition gave every
+  lease of a registry the same id. GC-01 failed by its invariant at the first
+  hook of a trial with an exact prelude pin and churn: two held pins had id 1
+  and the registry counted one lease. GC-03 failed by its invariant, because
+  old pins were held after the old generation was deleted, GC-05 failed
+  because a release was refused, and two durable publication tests failed as
+  well.
+- Removing the relation guard of `reclaim_reclamation_candidate` let a
+  reclamation request delete the old generation while the catalog still
+  selected it. GC-02 failed by its invariant in the trial that is interrupted
+  at `AfterArtifactDirectorySync`, survives and holds no pin; GC-01, GC-03 and
+  GC-04 failed because that trial's next admission was refused.
+- Removing the overlap test from `retire_pack_range_if_unleased`, so that no
+  lease defers reclamation, made GC-03 fail by its invariant (a publication
+  deleted the old generation while an exact prelude pin and a pin taken at
+  `AfterCatalogFileSyncBeforeDirectorySync` were held) and GC-05 fail (the old
+  generation was gone after publication although an operation held it).
+  GC-01, GC-02 and GC-04 passed, and seven durable publication tests of lease
+  deferral failed.
+- Answering an intent written before the catalog swap as one whose successor
+  the catalog selects made GC-04 fail by its invariant: after a crash at
+  `AfterArtifactDirectorySync`, the first recovery deleted the old generation
+  under the old catalog and was then refused, so the crashed state was
+  observed without the old generation. GC-02 failed by its invariant, because
+  a reclamation request after the same interruption deleted it; GC-01 and
+  GC-03 failed through a refused re-admission, and six durable publication
+  tests failed as well.
+- Dropping import roots from the retained-root snapshot made GC-05, and only
+  it, fail: the rotation in which the operation is an import changed the
+  protection record.
+
+Each faulted file was restored from the candidate tree, and the export then
+equalled that tree again. The controls ran with
+`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`: without it, a failing durable
+publication property runner of the second control appends a line to the
+tracked file
+`rspace++/proptest-regressions/persistence/durable_publication.txt`. Clippy of
+`rspace_plus_plus` with every target lists no finding in the files of this
+slice, and `rustfmt --check` passes on its Rust files. The
+workspace-regression registry hashes the manifest test's file and the
+persistence test module, both of which change, so it was regenerated, and the
+PathMap aggregate takes its new manifest digest. No production code,
+persisted record kind, byte layout, magic number or file name changed. See
+the GC protection invariants as executable properties section.
 
 ## Caller-authority contract (2026-09-06)
 

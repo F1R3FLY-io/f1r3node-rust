@@ -62,3 +62,5 @@ mod wal_codec;
 #[cfg(windows)]
 mod windows_durable_authority;
 mod durable_store_genesis;
+#[cfg(unix)]
+mod gc_protection_properties;

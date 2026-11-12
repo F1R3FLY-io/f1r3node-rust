@@ -415,6 +415,11 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("SG-01", "an_empty_store_reopens_at_generation_one_with_empty_namespaces"),
     ("SG-02", "independently_created_empty_stores_share_the_empty_state_manifest_digest"),
     ("SG-03", "a_crash_at_any_genesis_write_or_sync_point_never_opens_a_different_state"),
+    ("GC-01", "catalog_selection_and_generation_pins_stay_typed_through_publication_and_crash"),
+    ("GC-02", "old_generation_is_reclaimed_only_after_the_successor_is_published"),
+    ("GC-03", "exact_old_generation_pins_defer_reclamation_until_released"),
+    ("GC-04", "crash_before_publication_keeps_the_old_generation_for_retry"),
+    ("GC-05", "reader_export_and_import_roots_share_one_protection_quotient"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

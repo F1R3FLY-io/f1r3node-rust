@@ -400,6 +400,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
         "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI", "SW", "OG", "VR", "DI", "SG",
+        "GC",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -472,6 +473,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla"),
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceCompaction.tla"),
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntent.tla"),
+        include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceGcProtection.tla"),
     ]
     .concat();
     let tla_configs = [
@@ -548,15 +550,15 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         }
     }
 
-    for invariant in tla_configs
-        .iter()
-        .flat_map(|config| config.lines())
-        .filter_map(|line| line.strip_prefix("INVARIANT "))
-    {
-        assert!(
-            cited_tla.contains(invariant),
-            "base TLA+ invariant {invariant} is absent from the exhaustive derivation matrix",
-        );
+    for config in tla_configs {
+        for invariant in tlc_config_invariants(config)
+            .expect("a base TLC configuration follows the TLC configuration grammar")
+        {
+            assert!(
+                cited_tla.contains(invariant),
+                "base TLA+ invariant {invariant} is absent from the exhaustive derivation matrix",
+            );
+        }
     }
     for capstone in rocq_source.lines().filter_map(|line| {
         line.trim()
@@ -735,6 +737,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("../hot_store/journal_commit.rs"),
         include_str!("../state/atomic_state_authority.rs"),
         include_str!("durable_store_genesis.rs"),
+        include_str!("gc_protection_properties.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {
@@ -752,5 +755,511 @@ fn model_property_manifest_is_unique_and_exhaustive() {
                 .is_some_and(|(family, _)| family == *required_family)),
             "formal property family {required_family} is unrepresented"
         );
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TlcConfigDefect {
+    UnterminatedComment,
+    UnterminatedString,
+    UnexpectedCharacter,
+    ExpectedKeyword,
+    MissingOperand,
+    RepeatedKeyword,
+    ExpectedBoolean,
+    InvalidInvariantName,
+    MalformedConstant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TlcConfigError {
+    line: usize,
+    defect: TlcConfigDefect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TlcTokenKind {
+    Word,
+    Text,
+    Mark,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TlcToken<'a> {
+    image: &'a str,
+    kind: TlcTokenKind,
+    line: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TlcStatement {
+    SingleValue,
+    Invariants,
+    OtherNames,
+    Constants,
+    CheckDeadlock,
+}
+
+fn tlc_statement(image: &str) -> Option<TlcStatement> {
+    match image {
+        "INIT" | "NEXT" | "SPECIFICATION" | "VIEW" | "SYMMETRY" | "TYPE" | "TYPE_CONSTRAINT" => {
+            Some(TlcStatement::SingleValue)
+        }
+        "INVARIANT" | "INVARIANTS" => Some(TlcStatement::Invariants),
+        "PROPERTY" | "PROPERTIES" | "CONSTRAINT" | "CONSTRAINTS" | "ACTION_CONSTRAINT" |
+        "ACTION_CONSTRAINTS" => Some(TlcStatement::OtherNames),
+        "CONSTANT" | "CONSTANTS" => Some(TlcStatement::Constants),
+        "CHECK_DEADLOCK" => Some(TlcStatement::CheckDeadlock),
+        _ => None,
+    }
+}
+
+fn tlc_config_tokens(config: &str) -> Result<Vec<TlcToken<'_>>, TlcConfigError> {
+    let bytes = config.as_bytes();
+    let mut tokens = Vec::new();
+    let mut line = 1_usize;
+    let mut cursor = 0_usize;
+    while let Some(&byte) = bytes.get(cursor) {
+        let start = cursor;
+        let kind = match (byte, bytes.get(cursor + 1).copied()) {
+            (b'\n', _) => {
+                line += 1;
+                cursor += 1;
+                None
+            }
+            (b' ' | b'\t' | b'\r' | 0x0c, _) => {
+                cursor += 1;
+                None
+            }
+            (b'\\', Some(b'*')) => {
+                cursor = bytes[cursor..]
+                    .iter()
+                    .position(|&candidate| candidate == b'\n')
+                    .map_or(bytes.len(), |offset| cursor + offset);
+                None
+            }
+            (b'(', Some(b'*')) => {
+                let opened = line;
+                let mut depth = 1_usize;
+                cursor += 2;
+                while depth > 0 {
+                    match (bytes.get(cursor).copied(), bytes.get(cursor + 1).copied()) {
+                        (Some(b'('), Some(b'*')) => {
+                            depth += 1;
+                            cursor += 2;
+                        }
+                        (Some(b'*'), Some(b')')) => {
+                            depth -= 1;
+                            cursor += 2;
+                        }
+                        (Some(b'\n'), _) => {
+                            line += 1;
+                            cursor += 1;
+                        }
+                        (Some(_), _) => cursor += 1,
+                        (None, _) => {
+                            return Err(TlcConfigError {
+                                line: opened,
+                                defect: TlcConfigDefect::UnterminatedComment,
+                            });
+                        }
+                    }
+                }
+                None
+            }
+            (b'"', _) => {
+                cursor += 1;
+                loop {
+                    match (bytes.get(cursor).copied(), bytes.get(cursor + 1).copied()) {
+                        (Some(b'"'), _) => {
+                            cursor += 1;
+                            break;
+                        }
+                        (Some(b'\\'), Some(escaped)) if escaped != b'\n' => cursor += 2,
+                        (Some(b'\n') | None, _) => {
+                            return Err(TlcConfigError {
+                                line,
+                                defect: TlcConfigDefect::UnterminatedString,
+                            });
+                        }
+                        (Some(_), _) => cursor += 1,
+                    }
+                }
+                Some(TlcTokenKind::Text)
+            }
+            (b'<', Some(b'-')) => {
+                cursor += 2;
+                Some(TlcTokenKind::Mark)
+            }
+            (b'=' | b'!' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b',', _) => {
+                cursor += 1;
+                Some(TlcTokenKind::Mark)
+            }
+            (word, _) if word.is_ascii_alphanumeric() || word == b'_' => {
+                cursor += bytes[cursor..]
+                    .iter()
+                    .take_while(|candidate| {
+                        candidate.is_ascii_alphanumeric() || **candidate == b'_'
+                    })
+                    .count();
+                Some(TlcTokenKind::Word)
+            }
+            _ => {
+                return Err(TlcConfigError {
+                    line,
+                    defect: TlcConfigDefect::UnexpectedCharacter,
+                });
+            }
+        };
+        if let Some(kind) = kind {
+            tokens.push(TlcToken {
+                image: &config[start..cursor],
+                kind,
+                line,
+            });
+        }
+    }
+    Ok(tokens)
+}
+
+fn tlc_config_value_end(tokens: &[TlcToken<'_>], start: usize) -> Option<usize> {
+    let image = |position: usize| tokens.get(position).map(|token| token.image);
+    match (image(start)?, image(start + 1)) {
+        ("{", Some("}")) => Some(start + 2),
+        ("{", _) => {
+            let mut position = start + 1;
+            loop {
+                position = tlc_config_value_end(tokens, position)?;
+                match image(position)? {
+                    "," => position += 1,
+                    "}" => return Some(position + 1),
+                    _ => return None,
+                }
+            }
+        }
+        _ => Some(start + 1),
+    }
+}
+
+fn tlc_config_constant_end(tokens: &[TlcToken<'_>], start: usize) -> Result<usize, TlcConfigError> {
+    let image = |position: usize| tokens.get(position).map(|token| token.image);
+    let malformed = TlcConfigError {
+        line: tokens[start].line,
+        defect: TlcConfigDefect::MalformedConstant,
+    };
+    let mut position = start + 1;
+    while image(position) == Some("!") {
+        match image(position + 1) {
+            Some(_) => position += 2,
+            None => return Err(malformed),
+        }
+    }
+    match (image(position), image(position + 1)) {
+        (Some("<-"), Some("[")) => {
+            match (image(position + 2), image(position + 3), image(position + 4)) {
+                (Some(_), Some("]"), Some(_)) => Ok(position + 5),
+                _ => Err(malformed),
+            }
+        }
+        (Some("<-"), Some(_)) => Ok(position + 2),
+        (Some("<-"), None) | (None, _) => Err(malformed),
+        (Some(first), _) => {
+            if first == "(" {
+                position += 1;
+                loop {
+                    position = tlc_config_value_end(tokens, position).ok_or(malformed)?;
+                    match image(position) {
+                        Some(",") => position += 1,
+                        _ => break,
+                    }
+                }
+                match image(position) {
+                    Some(")") => position += 1,
+                    _ => return Err(malformed),
+                }
+            }
+            match (image(position), image(position + 1), image(position + 2), image(position + 3)) {
+                (Some("="), Some("["), Some(_), Some("]")) => {
+                    tlc_config_value_end(tokens, position + 4).ok_or(malformed)
+                }
+                (Some("="), Some("["), _, _) => Err(malformed),
+                (Some("="), _, _, _) => tlc_config_value_end(tokens, position + 1).ok_or(malformed),
+                _ => Err(malformed),
+            }
+        }
+    }
+}
+
+fn tlc_config_invariants(config: &str) -> Result<Vec<&str>, TlcConfigError> {
+    let tokens = tlc_config_tokens(config)?;
+    let mut invariants = Vec::new();
+    let mut single_valued = BTreeSet::new();
+    let mut position = 0_usize;
+    while let Some(keyword) = tokens.get(position) {
+        let refusal = |defect| TlcConfigError {
+            line: keyword.line,
+            defect,
+        };
+        position += 1;
+        match tlc_statement(keyword.image) {
+            None => return Err(refusal(TlcConfigDefect::ExpectedKeyword)),
+            Some(TlcStatement::SingleValue) => match tokens.get(position) {
+                None => return Err(refusal(TlcConfigDefect::MissingOperand)),
+                Some(_) if single_valued.insert(keyword.image) => position += 1,
+                Some(_) => return Err(refusal(TlcConfigDefect::RepeatedKeyword)),
+            },
+            Some(TlcStatement::CheckDeadlock) => {
+                match tokens.get(position).map(|token| token.image) {
+                    None => return Err(refusal(TlcConfigDefect::MissingOperand)),
+                    Some("TRUE" | "FALSE") if single_valued.insert(keyword.image) => position += 1,
+                    Some("TRUE" | "FALSE") => {
+                        return Err(refusal(TlcConfigDefect::RepeatedKeyword));
+                    }
+                    Some(_) => return Err(refusal(TlcConfigDefect::ExpectedBoolean)),
+                }
+            }
+            Some(TlcStatement::Invariants) => {
+                while let Some(name) = tokens
+                    .get(position)
+                    .filter(|token| tlc_statement(token.image).is_none())
+                {
+                    match (name.kind, name.image.bytes().any(|byte| byte.is_ascii_alphabetic())) {
+                        (TlcTokenKind::Word, true) => invariants.push(name.image),
+                        _ => {
+                            return Err(TlcConfigError {
+                                line: name.line,
+                                defect: TlcConfigDefect::InvalidInvariantName,
+                            });
+                        }
+                    }
+                    position += 1;
+                }
+            }
+            Some(TlcStatement::OtherNames) => {
+                position += tokens[position..]
+                    .iter()
+                    .take_while(|token| tlc_statement(token.image).is_none())
+                    .count();
+            }
+            Some(TlcStatement::Constants) => {
+                while tokens
+                    .get(position)
+                    .is_some_and(|token| tlc_statement(token.image).is_none())
+                {
+                    position = tlc_config_constant_end(&tokens, position)?;
+                }
+            }
+        }
+    }
+    Ok(invariants)
+}
+
+#[test]
+fn tlc_configuration_grammar_yields_the_declared_invariants() {
+    let cases: [(&str, &[&str]); 24] = [
+        ("INVARIANT TypeOK", &["TypeOK"]),
+        ("INVARIANT A B C\n", &["A", "B", "C"]),
+        ("INVARIANT\n    A\n    B\n", &["A", "B"]),
+        ("INVARIANTS A\nB\n\n\tC\r\n", &["A", "B", "C"]),
+        ("INVARIANTS\n  A\nINVARIANT B\nINVARIANTS C D", &["A", "B", "C", "D"]),
+        ("INVARIANT A\nINIT Init\nNEXT Next\nINVARIANT B", &["A", "B"]),
+        ("INVARIANTS A B PROPERTIES Live Fair INVARIANT C", &["A", "B", "C"]),
+        ("CONSTRAINT Bound\nACTION_CONSTRAINTS Step Other\nINVARIANT A\nPROPERTY Live", &["A"]),
+        ("INVARIANT A\nCONSTANTS\n  N = 3\n  S = {a, b, {c}}\n  Empty = {}\nINVARIANT B", &[
+            "A", "B",
+        ]),
+        ("INVARIANT A CHECK_DEADLOCK FALSE INVARIANT B", &["A", "B"]),
+        (
+            "SPECIFICATION Spec\nVIEW View\nSYMMETRY Perms\nTYPE T\nTYPE_CONSTRAINT C\nINVARIANT A",
+            &["A"],
+        ),
+        (
+            "\\* INVARIANT Hidden\nINVARIANT A \\* trailing INVARIANT Hidden\n(* INVARIANT (* \
+             nested *) Hidden *)\n  B",
+            &["A", "B"],
+        ),
+        ("(*\nINVARIANT Hidden\n*)INVARIANT(* tight *)A", &["A"]),
+        ("SPECIFICATION INVARIANT\nINVARIANT A", &["A"]),
+        ("CONSTANT Limit <- INVARIANT\nINVARIANT A", &["A"]),
+        ("CONSTANT Mode = INVARIANTS INVARIANT A", &["A"]),
+        ("CONSTANT Tag = \"INVARIANT (* \\\" x\"\nINVARIANT A", &["A"]),
+        ("CONSTANTS S={a,b}N=3 Op(1,{2})=x\nINVARIANT A", &["A"]),
+        ("CONSTANT N = [Mod] 3\nM <- [Mod] Replacement\nA!B!C <- D\nINVARIANT A", &["A"]),
+        ("INVARIANT\nINIT Init", &[]),
+        ("INVARIANTS", &[]),
+        ("SPECIFICATION Spec\nCHECK_DEADLOCK TRUE", &[]),
+        ("", &[]),
+        ("INVARIANT INVARIANTX INIT_ NEXT1 Type_OK 2PhaseOK _hidden", &[
+            "INVARIANTX",
+            "INIT_",
+            "NEXT1",
+            "Type_OK",
+            "2PhaseOK",
+            "_hidden",
+        ]),
+    ];
+    for (config, expected) in cases {
+        assert_eq!(tlc_config_invariants(config).as_deref(), Ok(expected), "{config:?}");
+    }
+}
+
+#[test]
+fn tlc_configuration_grammar_refuses_malformed_input() {
+    use TlcConfigDefect as Defect;
+    let cases = [
+        ("INVARIANT A\n(* open (* nested *)", 2, Defect::UnterminatedComment),
+        ("CONSTANT Tag = \"open\nINVARIANT A", 1, Defect::UnterminatedString),
+        ("INVARIANT A; B", 1, Defect::UnexpectedCharacter),
+        ("INVARIANT A\n  \u{2227} B", 2, Defect::UnexpectedCharacter),
+        ("TypeOK", 1, Defect::ExpectedKeyword),
+        ("SPECIFICATION Spec Extra", 1, Defect::ExpectedKeyword),
+        ("\n\nINIT", 3, Defect::MissingOperand),
+        ("CHECK_DEADLOCK", 1, Defect::MissingOperand),
+        ("INIT Init\nNEXT Next\nINIT Other", 3, Defect::RepeatedKeyword),
+        ("CHECK_DEADLOCK TRUE\nCHECK_DEADLOCK FALSE", 2, Defect::RepeatedKeyword),
+        ("CHECK_DEADLOCK maybe", 1, Defect::ExpectedBoolean),
+        ("INVARIANT 42", 1, Defect::InvalidInvariantName),
+        ("INVARIANT A,\n B", 1, Defect::InvalidInvariantName),
+        ("INVARIANT\n\"A\"", 2, Defect::InvalidInvariantName),
+        ("INVARIANT A!B", 1, Defect::InvalidInvariantName),
+        ("CONSTANT N", 1, Defect::MalformedConstant),
+        ("CONSTANT N <-", 1, Defect::MalformedConstant),
+        ("CONSTANT A!", 1, Defect::MalformedConstant),
+        ("CONSTANT\n N = {1, 2\nINVARIANT A", 2, Defect::MalformedConstant),
+        ("CONSTANT N = [Mod 3", 1, Defect::MalformedConstant),
+        ("CONSTANT Op(1, 2 = 3", 1, Defect::MalformedConstant),
+    ];
+    for (config, line, defect) in cases {
+        assert_eq!(
+            tlc_config_invariants(config),
+            Err(TlcConfigError { line, defect }),
+            "{config:?}"
+        );
+    }
+}
+
+#[test]
+fn gc_protection_base_configurations_declare_exactly_the_eighteen_base_invariants() {
+    const BASE_INVARIANTS: [&str; 18] = [
+        "TypeInvariant",
+        "PublicationBeforeReclamation",
+        "ExactOldPinsProtected",
+        "DurableExactGenerationProtected",
+        "PublishedClosureProtected",
+        "KnownPublicationClosureProtected",
+        "KnownExactGenerationProtected",
+        "OperationRootRoleQuotient",
+        "KnownWalOrthogonal",
+        "OverlapWitnessHistorySound",
+        "ActiveObjectProtection",
+        "CoupledAliasProtected",
+        "WalFrontierProtected",
+        "WalReclaimableMinimum",
+        "ObjectOnlyPinDoesNotBlockWal",
+        "WalAdmissionBounded",
+        "CrashPhaseQuiescence",
+        "CrashRetryAuthority",
+    ];
+    let model = include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceGcProtection.tla");
+    for (name, config) in [
+        (
+            "RSpaceGcProtection.cfg",
+            include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceGcProtection.cfg"),
+        ),
+        (
+            "RSpaceGcProtectionKnown.cfg",
+            include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceGcProtectionKnown.cfg"),
+        ),
+    ] {
+        assert_eq!(
+            tlc_config_invariants(config).as_deref(),
+            Ok(BASE_INVARIANTS.as_slice()),
+            "{name} does not declare exactly the eighteen base invariants",
+        );
+    }
+    for invariant in BASE_INVARIANTS {
+        assert!(
+            model.contains(&format!("{invariant} ==")),
+            "the GC protection model does not define {invariant}",
+        );
+    }
+}
+
+fn tlc_layout_case() -> impl Strategy<Value = (String, Vec<String>)> {
+    const SINGLE_VALUED: [&str; 7] =
+        ["INIT", "NEXT", "SPECIFICATION", "VIEW", "SYMMETRY", "TYPE", "TYPE_CONSTRAINT"];
+    let gap = || {
+        prop::sample::select(vec![
+            " ",
+            "\n",
+            "\n    ",
+            "\t",
+            "\r\n",
+            " \\* INVARIANT Hidden\n",
+            " (* INVARIANT (* nested *) Hidden *) ",
+        ])
+    };
+    let name = "[A-Za-z][A-Za-z0-9_]{0,6}".prop_map(|suffix| format!("Inv{suffix}"));
+    let statement = (0_usize..7, prop::collection::vec((name, gap()), 0..4), gap());
+    prop::collection::vec(statement, 0..6).prop_map(|statements| {
+        let mut config = String::new();
+        let mut expected = Vec::new();
+        let mut single_valued = SINGLE_VALUED.iter();
+        for (kind, names, keyword_gap) in statements {
+            let keyword = match kind {
+                0 => "INVARIANT",
+                1 => "INVARIANTS",
+                2 => "PROPERTIES",
+                3 => "CONSTRAINT",
+                4 => "ACTION_CONSTRAINTS",
+                5 => "CONSTANTS",
+                _ => single_valued
+                    .next()
+                    .expect("a case holds fewer statements than single-valued keywords"),
+            };
+            config.push_str(keyword);
+            config.push_str(keyword_gap);
+            match kind {
+                0..=4 => {
+                    for (name, name_gap) in names {
+                        config.push_str(&name);
+                        config.push_str(name_gap);
+                        if kind < 2 {
+                            expected.push(name);
+                        }
+                    }
+                }
+                5 => {
+                    for (entry, (name, name_gap)) in names.into_iter().enumerate() {
+                        let rendered = match entry % 3 {
+                            0 => format!("{name} = 3"),
+                            1 => format!("{name}!{name} <- INVARIANT"),
+                            _ => format!("{name}(1, {{}}) = [{name}] {{{name}, \"INVARIANT\"}}"),
+                        };
+                        config.push_str(&rendered);
+                        config.push_str(name_gap);
+                    }
+                }
+                _ => {
+                    config.push_str(
+                        names
+                            .first()
+                            .map_or("INVARIANTS", |(name, _)| name.as_str()),
+                    );
+                    config.push_str(keyword_gap);
+                }
+            }
+        }
+        (config, expected)
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn tlc_configuration_invariants_do_not_depend_on_layout((config, expected) in tlc_layout_case()) {
+        let expected = expected.iter().map(String::as_str).collect::<Vec<_>>();
+        prop_assert_eq!(tlc_config_invariants(&config), Ok(expected), "{:?}", config);
     }
 }
