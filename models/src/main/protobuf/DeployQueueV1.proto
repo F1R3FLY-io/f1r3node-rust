@@ -17,8 +17,9 @@ message WatchDeploysQuery {
 
 message DeployTransition {
   bytes deploySig = 1;
-  // The node's status vocabulary: Pending, Finalized, Failed, Expired, or
-  // `unknown` for a deploy the queue does not hold.
+  // The node's status vocabulary (Pending, Finalized, Failed, Expired),
+  // Rejected for a deploy the node refused, or `unknown` for a deploy the
+  // queue does not hold.
   string state = 2;
   // The queue's own lifecycle state: queued, submitted, in-block,
   // finalized, failed, expired, rejected.

@@ -18,8 +18,7 @@ use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_window::last_includable_block;
 use serde_json::{json, Value};
 
-/// One deployer's `number`th deploy, for lines longer than the seeds allow.
-fn numbered_deploy(valid_after: i64, number: i64) -> Signed<DeployData> {
+fn signed(valid_after: i64, number: i64, key: [u8; 32]) -> Signed<DeployData> {
     Signed::create(
         DeployData {
             term: "new x in { x!(1) }".to_string(),
@@ -32,9 +31,22 @@ fn numbered_deploy(valid_after: i64, number: i64) -> Signed<DeployData> {
             parameters: Vec::new(),
         },
         Box::new(Secp256k1),
-        PrivateKey::from_bytes(&[200; 32]),
+        PrivateKey::from_bytes(&key),
     )
     .unwrap()
+}
+
+/// The `number`th deployer's deploy, for lines longer than the seeds allow.
+/// Each deployer holds one, so no deployer's share binds.
+fn numbered_deploy(valid_after: i64, number: i64) -> Signed<DeployData> {
+    let mut key = [1u8; 32];
+    key[24..].copy_from_slice(&number.to_be_bytes());
+    signed(valid_after, number, key)
+}
+
+/// One deployer's `number`th deploy.
+fn one_deployers_deploy(valid_after: i64, number: i64) -> Signed<DeployData> {
+    signed(valid_after, number, [200; 32])
 }
 
 fn block_added(number: i64, deploy_ids: &[&[u8]]) -> Value {
@@ -134,6 +146,12 @@ async fn refusals_follow_the_node_rules() {
         accept(&queue.handle, deploy(50, "root", 4)).await,
         Err(IntakeError::DeployExpired(_))
     ));
+    // Tip 100 plus the 25-height citable depth.
+    assert!(matches!(
+        accept(&queue.handle, deploy(126, "root", 8)).await,
+        Err(IntakeError::IllegalArgument(message)) if message.contains("highest accepted block number 125")
+    ));
+    accept(&queue.handle, deploy(125, "root", 9)).await.unwrap();
     let held = deploy(95, "root", 5);
     accept(&queue.handle, held.clone()).await.unwrap();
     assert_eq!(
@@ -164,7 +182,7 @@ async fn a_refusal_from_the_node_is_terminal() {
     let node = FakeNode::new(10, 9);
     *node.deploy_answer.lock().unwrap() = (
         StatusCode::BAD_REQUEST,
-        json!({"error": "illegal_argument", "message": "Deploy was rejected because node's validator is not bonded."}),
+        json!({"error": "illegal_argument", "message": "Phlo price 1 is less than minimum price 2."}),
     );
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
@@ -176,8 +194,130 @@ async fn a_refusal_from_the_node_is_terminal() {
     })
     .await;
     let view = queue.handle.status(sig).await.unwrap().unwrap();
-    assert_eq!(view.state.status_label(), "Failed");
+    assert_eq!(view.state.status_label(), "Rejected");
     assert!(view.detail.unwrap().starts_with("illegal_argument"));
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_whose_validator_is_not_bonded_is_retried() {
+    let node = FakeNode::new(10, 9);
+    *node.deploy_answer.lock().unwrap() = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        json!({"error": "validator_not_bonded", "message": "Deploy was rejected because node's validator is not bonded."}),
+    );
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+
+    let sig = accept(&queue.handle, deploy(5, "root", 10)).await.unwrap();
+    eventually("the node refuses it", || async {
+        !node.received().is_empty()
+    })
+    .await;
+    eventually("the deploy waits in the queue", || async {
+        queue.state(&sig).await == Some(QueueState::Queued)
+    })
+    .await;
+
+    *node.deploy_answer.lock().unwrap() = (StatusCode::OK, json!("Success!"));
+    eventually("the node receives the retry", || async {
+        node.received().len() >= 2
+    })
+    .await;
+    eventually("the retry is taken", || async {
+        queue.state(&sig).await == Some(QueueState::Submitted)
+    })
+    .await;
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_deployer_cannot_take_the_room_another_needs() {
+    let node = FakeNode::new(10, 9);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+
+    // At one deploy per height, a 49-height fresh window less the 25-height
+    // depth holds 24 deploys; one deployer alone may hold half.
+    for number in 0..12 {
+        accept(&queue.handle, one_deployers_deploy(10, number))
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        accept(&queue.handle, one_deployers_deploy(10, 12)).await,
+        Err(IntakeError::DeployerShareFull {
+            held: 12,
+            limit: 12,
+            ..
+        })
+    ));
+    accept(&queue.handle, deploy(10, "root", 11)).await.unwrap();
+    queue.stop();
+}
+
+/// A queue holding one released deploy.
+async fn queue_with_a_released_deploy(seed: u8) -> (FakeNode, Queue, tempfile::TempDir, Vec<u8>) {
+    let node = FakeNode::new(10, 9);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+    let sig = accept(&queue.handle, deploy(5, "root", seed))
+        .await
+        .unwrap();
+    eventually("the deploy is released", || async {
+        queue.state(&sig).await == Some(QueueState::Submitted)
+    })
+    .await;
+    (node, queue, dir, sig)
+}
+
+/// The node's status read answers the deploy finalized; no event says so.
+fn finalize_without_an_event(node: &FakeNode) {
+    *node.deploy_status.lock().unwrap() = json!({"state": "Finalized", "rejection_count": 0,
+        "latest_block_hash": format!("{:064x}", 11)});
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lag_in_the_event_stream_reads_the_verdicts_it_lost() {
+    let (node, queue, _dir, sig) = queue_with_a_released_deploy(12).await;
+    finalize_without_an_event(&node);
+    node.emit(json!({"event": "stream-lagged", "schema-version": 1, "payload": {"skipped": 3}}));
+    eventually("the lost verdict is read", || async {
+        queue.state(&sig).await == Some(QueueState::Finalized)
+    })
+    .await;
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_event_stream_reconnects_and_reads_the_verdicts_it_lost() {
+    let (node, queue, _dir, sig) = queue_with_a_released_deploy(13).await;
+    finalize_without_an_event(&node);
+    node.disconnect.send(()).unwrap();
+    eventually("the verdict is read after the reconnect", || async {
+        queue.state(&sig).await == Some(QueueState::Finalized)
+    })
+    .await;
+    assert!(queue.handle.snapshot().await.unwrap().connected);
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_event_is_skipped_and_the_link_stays_up() {
+    let (node, queue, _dir, sig) = queue_with_a_released_deploy(14).await;
+    // The status read stays Pending, so only the event that follows the
+    // unreadable one can finalize the deploy. A dropped link would lose it.
+    node.events
+        .send(r#"{"event":"block-added","payload":{}}"#.to_string())
+        .unwrap();
+    node.emit(finalized_verdict(&sig, 11));
+    eventually("the event after the unreadable one arrives", || async {
+        queue.state(&sig).await == Some(QueueState::Finalized)
+    })
+    .await;
     queue.stop();
 }
 
@@ -244,7 +384,7 @@ async fn release_waits_for_released_deploys_to_settle() {
 }
 
 /// A queue at tip 10 with full blocks large enough that the window, not
-/// the ceiling, binds, holding `count` deploys of one deployer.
+/// the ceiling, binds, holding `count` deploys.
 async fn queue_with_backlog(count: i64) -> (FakeNode, Queue, tempfile::TempDir) {
     let node = FakeNode::new(10, 9);
     node.status.lock().unwrap()["maxUserDeploysPerBlock"] = json!(128);

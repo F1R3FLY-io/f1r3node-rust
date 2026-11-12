@@ -116,8 +116,6 @@ pub fn parse_event(text: &str) -> Result<NodeEvent, serde_json::Error> {
 enum LinkError {
     #[error("websocket: {0}")]
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
-    #[error("node event does not parse: {0}")]
-    Parse(#[from] serde_json::Error),
     #[error("node status: {0}")]
     Status(String),
     #[error("deploy queue engine has stopped")]
@@ -161,7 +159,18 @@ async fn link_once(
             Message::Close(_) => return Ok(()),
             _ => continue,
         };
-        let event = parse_event(text.as_str())?;
+        let event = match parse_event(text.as_str()) {
+            Ok(event) => event,
+            Err(e) => {
+                metrics::counter!("deploy_queue.node_events_unreadable").increment(1);
+                tracing::warn!(
+                    target: "deploy_queue::link",
+                    error = %e,
+                    "skipped a node event that does not parse; resynchronizing in-flight deploys"
+                );
+                NodeEvent::Lagged { skipped: 1 }
+            }
+        };
         match event {
             NodeEvent::Running if !connected => connected = announce(node, commands).await?,
             NodeEvent::Ignored => {}

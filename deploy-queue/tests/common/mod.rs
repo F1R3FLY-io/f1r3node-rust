@@ -30,12 +30,16 @@ pub struct FakeNode {
     pub deploy_answer: Arc<Mutex<(StatusCode, Value)>>,
     pub deploy_status: Arc<Mutex<Value>>,
     received: Arc<Mutex<Vec<DeployRequest>>>,
-    events: broadcast::Sender<String>,
+    /// Text frames for every open event stream.
+    pub events: broadcast::Sender<String>,
+    /// Closes every open event stream, as a node restart would.
+    pub disconnect: broadcast::Sender<()>,
 }
 
 impl FakeNode {
     pub fn new(tip: i64, lfb: i64) -> Self {
         let (events, _) = broadcast::channel(256);
+        let (disconnect, _) = broadcast::channel(4);
         Self {
             status: Arc::new(Mutex::new(status_body(tip, lfb))),
             deploy_answer: Arc::new(Mutex::new((StatusCode::OK, json!("Success!")))),
@@ -44,6 +48,7 @@ impl FakeNode {
             )),
             received: Arc::new(Mutex::new(Vec::new())),
             events,
+            disconnect,
         }
     }
 
@@ -93,13 +98,29 @@ async fn take_deploy(State(node): State<FakeNode>, Json(request): Json<DeployReq
 
 async fn events(State(node): State<FakeNode>, upgrade: WebSocketUpgrade) -> Response {
     let events = node.events.subscribe();
-    upgrade.on_upgrade(move |socket| forward(socket, events))
+    let disconnect = node.disconnect.subscribe();
+    upgrade.on_upgrade(move |socket| forward(socket, events, disconnect))
 }
 
-async fn forward(mut socket: WebSocket, mut events: broadcast::Receiver<String>) {
-    while let Ok(event) = events.recv().await {
-        if socket.send(Message::Text(event.into())).await.is_err() {
-            return;
+async fn forward(
+    mut socket: WebSocket,
+    mut events: broadcast::Receiver<String>,
+    mut disconnect: broadcast::Receiver<()>,
+) {
+    loop {
+        tokio::select! {
+            event = events.recv() => {
+                let Ok(event) = event else {
+                    return;
+                };
+                if socket.send(Message::Text(event.into())).await.is_err() {
+                    return;
+                }
+            }
+            _ = disconnect.recv() => {
+                let _ = socket.send(Message::Close(None)).await;
+                return;
+            }
         }
     }
 }

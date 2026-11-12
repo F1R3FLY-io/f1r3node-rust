@@ -404,7 +404,7 @@ mod tests {
             detail: Some("illegal_argument: x".to_string()),
         });
         let body = serde_json::to_value(status).unwrap();
-        assert_eq!(body["state"], "Failed");
+        assert_eq!(body["state"], "Rejected");
         assert_eq!(body["queue_state"], "rejected");
         assert!(body["latest_block_hash"].is_null());
     }

@@ -11,7 +11,6 @@ pub mod http;
 pub mod intake;
 pub mod node;
 pub mod pace;
-pub mod ready;
 pub mod record;
 pub mod store;
 pub mod window;

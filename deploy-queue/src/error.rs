@@ -21,6 +21,15 @@ pub enum IntakeError {
          retry in {retry_after_secs}s"
     )]
     QueueFull { retry_after_secs: u64 },
+    #[error(
+        "deploy queue is full for this deployer: it holds {held} of the {limit} deploys one \
+         deployer may hold, so that other deployers keep room; retry in {retry_after_secs}s"
+    )]
+    DeployerShareFull {
+        held: usize,
+        limit: usize,
+        retry_after_secs: u64,
+    },
     #[error("deploy queue is not connected to its node; retry in {retry_after_secs}s")]
     NodeUnavailable { retry_after_secs: u64 },
     #[error("deploy queue is shutting down")]
@@ -37,6 +46,7 @@ impl IntakeError {
             | IntakeError::DeployExpired(_) => StatusCode::BAD_REQUEST,
             IntakeError::Duplicate(_) => StatusCode::CONFLICT,
             IntakeError::QueueFull { .. }
+            | IntakeError::DeployerShareFull { .. }
             | IntakeError::NodeUnavailable { .. }
             | IntakeError::Stopped => StatusCode::SERVICE_UNAVAILABLE,
             IntakeError::Store(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -49,7 +59,9 @@ impl IntakeError {
             IntakeError::RholangBadTerm(_) => "rholang_bad_term",
             IntakeError::DeployExpired(_) => "deploy_expired",
             IntakeError::Duplicate(_) => "duplicate_deploy",
-            IntakeError::QueueFull { .. } => "deploy_queue_full",
+            IntakeError::QueueFull { .. } | IntakeError::DeployerShareFull { .. } => {
+                "deploy_queue_full"
+            }
             IntakeError::NodeUnavailable { .. } => "node_unavailable",
             IntakeError::Stopped => "deploy_queue_stopped",
             IntakeError::Store(_) => "queue_store_error",
@@ -59,6 +71,9 @@ impl IntakeError {
     pub fn retry_after_secs(&self) -> Option<u64> {
         match self {
             IntakeError::QueueFull { retry_after_secs }
+            | IntakeError::DeployerShareFull {
+                retry_after_secs, ..
+            }
             | IntakeError::NodeUnavailable { retry_after_secs } => Some(*retry_after_secs),
             _ => None,
         }

@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use heed::EnvOpenOptions;
+use shared::rust::blocking::in_blocking;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 
@@ -47,18 +48,24 @@ impl QueueStore {
         })
     }
 
-    /// Stores a new record; false when the signature is already held.
-    pub fn insert_new(&self, sig: &Sig, record: &QueueRecord) -> Result<bool, StoreError> {
-        Ok(self.kv.put_one_if_absent(sig.clone(), encode(record)?)?)
-    }
-
-    pub fn put(&self, sig: &Sig, record: &QueueRecord) -> Result<(), StoreError> {
-        Ok(self.kv.put_one(sig.clone(), encode(record)?)?)
-    }
-
-    pub fn remove(&self, sigs: Vec<Sig>) -> Result<(), StoreError> {
-        self.kv.delete(sigs)?;
-        Ok(())
+    /// Deletes every signature in `removes`, then writes every record in
+    /// `puts`, in one transaction: all of them are durable, or none.
+    pub fn commit(&self, puts: &[(&Sig, &QueueRecord)], removes: &[Sig]) -> Result<(), StoreError> {
+        let encoded = puts
+            .iter()
+            .map(|(sig, record)| Ok(((*sig).clone(), encode(record)?)))
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        in_blocking(|| {
+            let mut writer = self.kv.env.write_txn()?;
+            for sig in removes {
+                self.kv.db.delete(&mut writer, sig)?;
+            }
+            for (sig, bytes) in &encoded {
+                self.kv.db.put(&mut writer, sig, bytes)?;
+            }
+            writer.commit()?;
+            Ok(())
+        })
     }
 
     pub fn load(&self) -> Result<Vec<(Sig, QueueRecord)>, StoreError> {
@@ -94,6 +101,7 @@ mod tests {
             accepted_at_ms: 0,
             state: QueueState::Queued,
             submitted_at_height: None,
+            last_sent_height: None,
             submissions: 0,
             rejection_count: 0,
             latest_block_hash: None,
@@ -103,17 +111,16 @@ mod tests {
     }
 
     #[test]
-    fn records_survive_a_reopen_and_insert_refuses_a_held_sig() {
+    fn a_commit_writes_and_deletes_together_and_survives_a_reopen() {
         let dir = tempfile::tempdir().unwrap();
         {
             let store = QueueStore::open(dir.path()).unwrap();
-            assert!(store.insert_new(&vec![1], &record(1)).unwrap());
-            assert!(!store.insert_new(&vec![1], &record(2)).unwrap());
+            store
+                .commit(&[(&vec![1], &record(1)), (&vec![2], &record(3))], &[])
+                .unwrap();
             let mut submitted = record(1);
             submitted.state = QueueState::Submitted;
-            store.put(&vec![1], &submitted).unwrap();
-            assert!(store.insert_new(&vec![2], &record(3)).unwrap());
-            store.remove(vec![vec![2]]).unwrap();
+            store.commit(&[(&vec![1], &submitted)], &[vec![2]]).unwrap();
         }
         let store = QueueStore::open(dir.path()).unwrap();
         let loaded = store.load().unwrap();

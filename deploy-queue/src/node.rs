@@ -88,6 +88,13 @@ impl NodeStatus {
                 max_parent_depth
             ));
         }
+        if max_parent_depth == i32::MAX {
+            return Err(
+                "node reports an unbounded max parent depth: the queue needs the citable \
+                 depth to know when no block can carry a deploy any more"
+                    .to_string(),
+            );
+        }
         Ok(Some(ChainSnapshot {
             shard: ShardValues {
                 shard_id: self.shard_id.clone(),
@@ -303,6 +310,14 @@ mod tests {
             }
         ));
         assert!(matches!(
+            classify_submit(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &body("validator_not_bonded"),
+                None
+            ),
+            SubmitOutcome::Retry { .. }
+        ));
+        assert!(matches!(
             classify_submit(StatusCode::INTERNAL_SERVER_ERROR, "not json", None),
             SubmitOutcome::Retry { .. }
         ));
@@ -338,5 +353,17 @@ mod tests {
         let chain = status.chain().unwrap().unwrap();
         assert_eq!((chain.tip, chain.lfb), (43, 40));
         assert_eq!(chain.shard.max_parent_depth, 25);
+    }
+
+    #[test]
+    fn an_unbounded_max_parent_depth_is_refused() {
+        let status: NodeStatus = serde_json::from_str(&format!(
+            r#"{{"shardId":"root","minPhloPrice":"1","lastFinalizedBlockNumber":40,
+                "latestBlockNumber":43,"deployLifespan":300,
+                "maxUserDeploysPerBlock":4,"maxParentDepth":{}}}"#,
+            i32::MAX
+        ))
+        .unwrap();
+        assert!(status.chain().is_err());
     }
 }

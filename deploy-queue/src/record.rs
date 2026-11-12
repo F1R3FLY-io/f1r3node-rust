@@ -33,13 +33,14 @@ impl QueueState {
         )
     }
 
-    /// The node's deploy-status vocabulary, so a client reading the queue
-    /// sees the same states it would read from a node.
+    /// The node's deploy-status vocabulary, plus `Rejected`, which only a
+    /// queue answers.
     pub fn status_label(self) -> &'static str {
         match self {
             QueueState::Queued | QueueState::Submitted | QueueState::InBlock => "Pending",
             QueueState::Finalized => "Finalized",
-            QueueState::Failed | QueueState::Rejected => "Failed",
+            QueueState::Failed => "Failed",
+            QueueState::Rejected => "Rejected",
             QueueState::Expired => "Expired",
         }
     }
@@ -68,8 +69,10 @@ pub struct QueueRecord {
     pub sequence: u64,
     pub accepted_at_ms: i64,
     pub state: QueueState,
-    /// The tip height when the deploy was last sent to the node.
+    /// The tip height when the queue released the deploy to the node.
     pub submitted_at_height: Option<i64>,
+    /// The tip height when the deploy was last sent or resent to the node.
+    pub last_sent_height: Option<i64>,
     pub submissions: u32,
     pub rejection_count: u32,
     pub latest_block_hash: Option<Vec<u8>>,
@@ -89,6 +92,7 @@ impl QueueRecord {
             accepted_at_ms,
             state: QueueState::Queued,
             submitted_at_height: None,
+            last_sent_height: None,
             submissions: 0,
             rejection_count: 0,
             latest_block_hash: None,
@@ -162,7 +166,7 @@ mod tests {
             (QueueState::InBlock, "Pending"),
             (QueueState::Finalized, "Finalized"),
             (QueueState::Failed, "Failed"),
-            (QueueState::Rejected, "Failed"),
+            (QueueState::Rejected, "Rejected"),
             (QueueState::Expired, "Expired"),
         ] {
             assert_eq!(state.status_label(), label);

@@ -4,7 +4,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_request::DeployRequest;
-use models::rust::deploy_window::{is_open, last_includable_block};
+use models::rust::deploy_window::{
+    is_open, is_too_far_ahead, last_includable_block, too_far_ahead_message,
+};
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -14,7 +16,6 @@ use crate::node::{
     ChainSnapshot, NodeDeployStatus, NodeError, NodeHttp, ShardValues, SubmitOutcome,
 };
 use crate::pace::Pace;
-use crate::ready::ReadyQueue;
 use crate::record::{DeployView, QueueRecord, QueueState, Sig};
 use crate::store::{QueueStore, StoreError};
 use crate::window::ReleaseWindow;
@@ -28,6 +29,8 @@ const UNTIMED_RETRY_SECS: u64 = 5;
 const NODE_UNAVAILABLE_RETRY_SECS: u64 = 5;
 const TRANSITION_BUFFER: usize = 4096;
 pub const COMMAND_BUFFER: usize = 1024;
+/// Commands handled before their changes are committed together.
+const COMMIT_BATCH: usize = 256;
 
 const ALL_STATES: [QueueState; 7] = [
     QueueState::Queued,
@@ -159,16 +162,53 @@ enum UnplacedPending {
     Expire,
 }
 
-/// The single owner of the queue's state. Every change is written to the
-/// store before it is acknowledged or broadcast.
+/// Where a record sits in the engine's indexes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct IndexKeys {
+    released: Option<(i64, u64)>,
+    resend: Option<(i64, u64)>,
+    decided: Option<(i64, u64)>,
+    holder: Option<Vec<u8>>,
+}
+
+impl IndexKeys {
+    fn of(record: &QueueRecord) -> Self {
+        let sequence = record.sequence;
+        let state = record.state;
+        Self {
+            released: matches!(state, QueueState::Submitted | QueueState::InBlock)
+                .then_some(record.submitted_at_height)
+                .flatten()
+                .map(|height| (height, sequence)),
+            resend: (state == QueueState::Submitted)
+                .then_some(record.last_sent_height)
+                .flatten()
+                .map(|height| (height, sequence)),
+            decided: state
+                .is_terminal()
+                .then_some(record.decided_at_height)
+                .flatten()
+                .map(|height| (height, sequence)),
+            holder: (!state.is_terminal()).then(|| record.deployer.clone()),
+        }
+    }
+}
+
+type Effect = Box<dyn FnOnce() + Send>;
+type IntakeResult = Result<Sig, IntakeError>;
+
+/// The single owner of the queue's state. Changes are committed to the
+/// store in batches; nothing is acknowledged, broadcast or sent to the node
+/// before the change behind it is committed.
 pub struct Engine {
     store: QueueStore,
     node: NodeHttp,
     commands: mpsc::Sender<Command>,
     records: HashMap<Sig, QueueRecord>,
     counts: HashMap<QueueState, usize>,
-    /// Queued deploys whose window is open, in release order.
-    ready: ReadyQueue,
+    /// Queued deploys whose window is open, by (last includable block,
+    /// sequence): released earliest deadline first.
+    ready: BTreeMap<(i64, u64), Sig>,
     /// Queued deploys not yet valid, by (valid after, sequence).
     waiting: BTreeMap<(i64, u64), Sig>,
     /// Every placed queued deploy, by (last includable block, sequence).
@@ -177,17 +217,30 @@ pub struct Engine {
     /// which no block can include them, sequence).
     closed: BTreeMap<(i64, u64), Sig>,
     closed_checking: HashSet<Sig>,
+    /// Released deploys, by (release height, sequence).
+    released_index: BTreeMap<(i64, u64), Sig>,
+    /// Submitted deploys, by (height last sent, sequence).
+    resend_index: BTreeMap<(i64, u64), Sig>,
+    /// Terminal deploys, by (height decided, sequence).
+    decided_index: BTreeMap<(i64, u64), Sig>,
+    /// Deploys each deployer holds that have no verdict yet.
+    held_by_deployer: HashMap<Vec<u8>, usize>,
     chain: Option<ChainSnapshot>,
     connected: bool,
     pace: Option<Pace>,
     window: Option<ReleaseWindow>,
-    /// Tip at which a released deploy was last re-sent to the node, while
-    /// it stays released.
-    resent_at: HashMap<Sig, i64>,
     next_sequence: u64,
     retry_at: Option<Instant>,
     retry_delay: Duration,
     transitions: broadcast::Sender<Transition>,
+    /// Records changed since the last commit.
+    dirty: HashSet<Sig>,
+    /// Records deleted since the last commit.
+    removed: Vec<Sig>,
+    /// Intake answers waiting for the commit of what they acknowledge.
+    intake_replies: Vec<(oneshot::Sender<IntakeResult>, IntakeResult)>,
+    /// Broadcasts, replies and node requests waiting for the commit.
+    effects: Vec<Effect>,
 }
 
 impl Engine {
@@ -219,69 +272,125 @@ impl Engine {
             in_block = counts[&QueueState::InBlock],
             "deploy queue loaded its store"
         );
-        Ok(Self {
+        let mut engine = Self {
             store,
             node,
             commands,
-            records,
+            records: HashMap::new(),
             counts,
-            ready: ReadyQueue::default(),
+            ready: BTreeMap::new(),
             waiting: BTreeMap::new(),
             expiry: BTreeMap::new(),
             closed: BTreeMap::new(),
             closed_checking: HashSet::new(),
+            released_index: BTreeMap::new(),
+            resend_index: BTreeMap::new(),
+            decided_index: BTreeMap::new(),
+            held_by_deployer: HashMap::new(),
             chain: None,
             connected: false,
             pace: None,
             window: None,
-            resent_at: HashMap::new(),
             next_sequence,
             retry_at: None,
             retry_delay: RETRY_FLOOR,
             transitions,
-        })
+            dirty: HashSet::new(),
+            removed: Vec::new(),
+            intake_replies: Vec::new(),
+            effects: Vec::new(),
+        };
+        for (sig, record) in records {
+            engine.reindex(&sig, None, Some(IndexKeys::of(&record)));
+            engine.records.insert(sig, record);
+        }
+        Ok(engine)
     }
 
-    /// Runs until the command channel closes. A store failure stops the
-    /// engine: the queue's contract is that what it acknowledged is durable.
+    /// Runs until the command channel closes. Each pass handles the commands
+    /// already waiting, up to a batch, and commits their changes in one
+    /// transaction. A store failure stops the engine: the queue's contract
+    /// is that what it acknowledged is durable.
     pub async fn run(mut self, mut commands: mpsc::Receiver<Command>) -> Result<(), StoreError> {
         loop {
             let retry_at = self.retry_at;
             tokio::select! {
                 command = commands.recv() => match command {
-                    Some(command) => self.handle(command)?,
-                    None => return Ok(()),
+                    Some(command) => {
+                        self.handle(command)?;
+                        for _ in 1..COMMIT_BATCH {
+                            let Ok(command) = commands.try_recv() else {
+                                break;
+                            };
+                            self.handle(command)?;
+                        }
+                    }
+                    None => return self.commit(),
                 },
                 _ = wait_until(retry_at) => {
                     self.retry_at = None;
                     self.release()?;
                 }
             }
+            self.commit()?;
             self.publish_gauges();
         }
     }
 
+    /// Commits every change since the last commit, then answers, broadcasts
+    /// and sends what waited for it.
+    fn commit(&mut self) -> Result<(), StoreError> {
+        if !self.dirty.is_empty() || !self.removed.is_empty() {
+            let puts: Vec<(&Sig, &QueueRecord)> = self
+                .dirty
+                .iter()
+                .map(|sig| {
+                    self.records
+                        .get_key_value(sig)
+                        .expect("a dirty record is held; a deleted one leaves the dirty set")
+                })
+                .collect();
+            if let Err(e) = self.store.commit(&puts, &self.removed) {
+                for (reply, _) in self.intake_replies.drain(..) {
+                    let _ = reply.send(Err(IntakeError::Store(e.to_string())));
+                }
+                return Err(e);
+            }
+            self.dirty.clear();
+            self.removed.clear();
+        }
+        for (reply, result) in self.intake_replies.drain(..) {
+            // A client that hung up does not undo an accepted deploy.
+            let _ = reply.send(result);
+        }
+        for effect in self.effects.drain(..) {
+            effect();
+        }
+        Ok(())
+    }
+
+    fn after_commit(&mut self, effect: impl FnOnce() + Send + 'static) {
+        self.effects.push(Box::new(effect));
+    }
+
     fn handle(&mut self, command: Command) -> Result<(), StoreError> {
         match command {
-            Command::Intake { deploy, reply } => match self.intake(deploy) {
-                Ok(result) => {
-                    match &result {
-                        Ok(_) => metrics::counter!("deploy_queue.accepted").increment(1),
-                        Err(refusal) => {
-                            metrics::counter!("deploy_queue.refused", "reason" => refusal.kind())
-                                .increment(1)
-                        }
+            Command::Intake { deploy, reply } => {
+                let result = self.intake(deploy)?;
+                match &result {
+                    Ok(_) => metrics::counter!("deploy_queue.accepted").increment(1),
+                    Err(refusal) => {
+                        metrics::counter!("deploy_queue.refused", "reason" => refusal.kind())
+                            .increment(1)
                     }
-                    // A client that hung up does not undo an accepted deploy.
-                    let _ = reply.send(result);
                 }
-                Err(e) => {
-                    let _ = reply.send(Err(IntakeError::Store(e.to_string())));
-                    return Err(e);
-                }
-            },
+                self.intake_replies.push((reply, result));
+            }
             Command::Status { sig, reply } => {
-                let _ = reply.send(self.records.get(&sig).map(QueueRecord::view));
+                let view = self.records.get(&sig).map(QueueRecord::view);
+                self.after_commit(move || {
+                    let _ = reply.send(view);
+                });
             }
             Command::Watch { sigs, reply } => {
                 let current = sigs
@@ -291,13 +400,16 @@ impl Engine {
                         (sig, view)
                     })
                     .collect();
-                let _ = reply.send(WatchStart {
-                    current,
-                    updates: self.transitions.subscribe(),
+                let updates = self.transitions.subscribe();
+                self.after_commit(move || {
+                    let _ = reply.send(WatchStart { current, updates });
                 });
             }
             Command::Snapshot { reply } => {
-                let _ = reply.send(self.snapshot());
+                let snapshot = self.snapshot();
+                self.after_commit(move || {
+                    let _ = reply.send(snapshot);
+                });
             }
             Command::Connected(chain) => self.on_connected(chain)?,
             Command::Disconnected => {
@@ -307,7 +419,7 @@ impl Engine {
             Command::Node(event) => self.on_event(event)?,
             Command::Submitted { sig, outcome } => self.on_submitted(sig, outcome)?,
             Command::Resynced { sig, result } => self.on_resynced(sig, result)?,
-            Command::ClosedChecked { sig, result } => self.on_closed_checked(sig, result)?,
+            Command::ClosedChecked { sig, result } => self.on_closed_checked(sig, result),
         }
         Ok(())
     }
@@ -356,27 +468,68 @@ impl Engine {
                 valid_after, next_block, shard.deploy_lifespan
             ))));
         }
+        if is_too_far_ahead(valid_after, chain.tip, shard.max_parent_depth) {
+            return Ok(Err(IntakeError::IllegalArgument(too_far_ahead_message(
+                valid_after,
+                chain.tip,
+                shard.max_parent_depth,
+            ))));
+        }
 
-        // A deploy is accepted when every deploy ahead of it, queued or
-        // released, settles early enough that it still lands inside its own
-        // window with the citable depth to spare. The rate is the slower of
-        // what the shard has been settling and what the release window now
-        // lets through, so a window just cut tightens intake at once. The
-        // depth covers a pace that slows after the deploy was accepted.
+        // The rate is the slower of what the shard has been settling and what
+        // the release window now lets through, so a window just cut tightens
+        // intake at once. The depth covers a pace that slows after a deploy
+        // was accepted.
         let pace = self.pace.as_ref().expect("a connected engine has a pace");
         let rate = match self.window.as_ref().and_then(ReleaseWindow::release_rate) {
             Some(releasable) => pace.settled_per_height().min(releasable),
             None => pace.settled_per_height(),
         };
         let depth = citable_depth(shard);
-        let ahead = self.ready.len() + self.waiting.len() + self.released();
-        let releasable_from = valid_after.max(chain.tip);
+        let fresh_span = last_includable(chain.tip, shard.deploy_lifespan) - chain.tip;
+
+        let deployer = deploy.pk.bytes.to_vec();
+        let (held, others) = match self.held_by_deployer.get(&deployer) {
+            Some(&held) => (held, self.held_by_deployer.len() - 1),
+            None => (0, self.held_by_deployer.len()),
+        };
+        let limit = deployer_limit(capacity(rate, fresh_span, depth), others);
+        if held >= limit {
+            let excess = (held + 1 - limit) * (others + 1);
+            let retry_after_secs = heights_to_settle(excess, rate)
+                .and_then(|heights| pace.seconds_for(heights))
+                .unwrap_or(UNTIMED_RETRY_SECS);
+            return Ok(Err(IntakeError::DeployerShareFull {
+                held,
+                limit,
+                retry_after_secs,
+            }));
+        }
+
         let last = last_includable(valid_after, shard.deploy_lifespan);
-        let wait = heights_to_settle(ahead + 1, rate);
-        let fits = wait.is_some_and(|heights| releasable_from + heights + depth <= last);
-        if !fits {
-            let fresh_span = last_includable(chain.tip, shard.deploy_lifespan) - chain.tip;
-            let retry_after_secs = wait
+        let key = (last, self.next_sequence);
+        let slot = |record: &QueueRecord, last: i64| Slot {
+            releasable_from: record.valid_after.max(chain.tip),
+            last,
+        };
+        let admitted = admits(
+            self.released(),
+            self.expiry.range(..key).count(),
+            Slot {
+                releasable_from: valid_after.max(chain.tip),
+                last,
+            },
+            self.expiry
+                .range(key..)
+                .map(|((last, _), sig)| slot(&self.records[sig], *last)),
+            rate,
+            depth,
+        );
+        if !admitted {
+            // A deploy signed again now has the latest deadline of all, so
+            // it waits behind every deploy held.
+            let ahead = self.released() + self.expiry.len();
+            let retry_after_secs = heights_to_settle(ahead + 1, rate)
                 .and_then(|heights| {
                     pace.seconds_for(heights_until_a_fresh_window_fits(
                         heights, depth, fresh_span,
@@ -387,13 +540,12 @@ impl Engine {
         }
 
         let record = QueueRecord::new(&deploy, self.next_sequence, now_ms);
-        if !self.store.insert_new(&sig, &record)? {
-            return Ok(Err(IntakeError::Duplicate(sig)));
-        }
         self.next_sequence += 1;
         self.enter(QueueState::Queued);
+        self.reindex(&sig, None, Some(IndexKeys::of(&record)));
         self.records.insert(sig.clone(), record);
-        self.place(&sig, false);
+        self.dirty.insert(sig.clone());
+        self.place(&sig);
         self.emit(&sig);
         self.release()?;
         Ok(Ok(sig))
@@ -467,7 +619,7 @@ impl Engine {
                         if hash.is_some() {
                             record.latest_block_hash = hash;
                         }
-                    })?;
+                    });
                 }
                 self.observe_tip(number)?;
             }
@@ -503,7 +655,7 @@ impl Engine {
                         state,
                         Some((verdict.rejection_count, block_hash)),
                         None,
-                    )?;
+                    );
                 }
             }
             NodeEvent::Lagged { skipped } => {
@@ -540,7 +692,7 @@ impl Engine {
                 self.spawn_status_read(sig.clone());
             }
             SubmitOutcome::Expired(message) => {
-                self.decide(&sig, QueueState::Expired, None, Some(message))?;
+                self.decide(&sig, QueueState::Expired, None, Some(message));
             }
             SubmitOutcome::Rejected { kind, message } => {
                 tracing::warn!(
@@ -555,7 +707,7 @@ impl Engine {
                     QueueState::Rejected,
                     None,
                     Some(format!("{}: {}", kind, message)),
-                )?;
+                );
             }
             SubmitOutcome::Retry {
                 reason,
@@ -576,8 +728,9 @@ impl Engine {
                 self.update(&sig, |record| {
                     record.state = QueueState::Queued;
                     record.submitted_at_height = None;
-                })?;
-                self.place(&sig, true);
+                    record.last_sent_height = None;
+                });
+                self.place(&sig);
                 self.retry_at = Some(Instant::now() + delay);
                 self.retry_delay = (self.retry_delay * 2).min(RETRY_CEILING);
             }
@@ -597,7 +750,7 @@ impl Engine {
             return Ok(());
         }
         match result {
-            Ok(status) => self.adopt(&sig, status, UnplacedPending::KeepWaiting)?,
+            Ok(status) => self.adopt(&sig, status, UnplacedPending::KeepWaiting),
             Err(e) => tracing::warn!(
                 target: "deploy_queue::engine",
                 sig = %hex::encode(&sig),
@@ -608,21 +761,17 @@ impl Engine {
         self.release()
     }
 
-    fn on_closed_checked(
-        &mut self,
-        sig: Sig,
-        result: Result<NodeDeployStatus, NodeError>,
-    ) -> Result<(), StoreError> {
+    fn on_closed_checked(&mut self, sig: Sig, result: Result<NodeDeployStatus, NodeError>) {
         self.closed_checking.remove(&sig);
         let queued = self
             .records
             .get(&sig)
             .is_some_and(|record| record.state == QueueState::Queued);
         if !queued {
-            return Ok(());
+            return;
         }
         match result {
-            Ok(status) => self.adopt(&sig, status, UnplacedPending::Expire)?,
+            Ok(status) => self.adopt(&sig, status, UnplacedPending::Expire),
             Err(e) => tracing::warn!(
                 target: "deploy_queue::engine",
                 sig = %hex::encode(&sig),
@@ -630,16 +779,10 @@ impl Engine {
                 "closed-window check failed; the next finalization retries it"
             ),
         }
-        Ok(())
     }
 
     /// Takes the node's answer for a deploy the queue has lost track of.
-    fn adopt(
-        &mut self,
-        sig: &Sig,
-        status: NodeDeployStatus,
-        unplaced_pending: UnplacedPending,
-    ) -> Result<(), StoreError> {
+    fn adopt(&mut self, sig: &Sig, status: NodeDeployStatus, unplaced_pending: UnplacedPending) {
         let block_hash = status
             .latest_block_hash
             .as_deref()
@@ -665,7 +808,7 @@ impl Engine {
                     None,
                     Some("validity window closed before the queue released the deploy".into()),
                 ),
-                None => Ok(()),
+                None => {}
             },
             other => {
                 tracing::error!(
@@ -674,7 +817,6 @@ impl Engine {
                     state = %other,
                     "the node answered a deploy state the queue does not know"
                 );
-                Ok(())
             }
         }
     }
@@ -691,7 +833,7 @@ impl Engine {
         let shard = &chain.shard;
         let limit = self.released_limit();
         while self.released() < limit {
-            let Some(sig) = self.ready.pop() else {
+            let Some((_, sig)) = self.ready.pop_first() else {
                 break;
             };
             // A deploy with less window left than the shard takes to include
@@ -728,11 +870,7 @@ impl Engine {
 
     /// Release height of the longest-waiting released deploy.
     fn oldest_unsettled_release(&self) -> Option<i64> {
-        self.records
-            .values()
-            .filter(|record| matches!(record.state, QueueState::Submitted | QueueState::InBlock))
-            .filter_map(|record| record.submitted_at_height)
-            .min()
+        self.released_index.keys().next().map(|(height, _)| *height)
     }
 
     fn release_open(&self) -> bool {
@@ -747,12 +885,12 @@ impl Engine {
     fn submit(&mut self, sig: &Sig, tip: i64) -> Result<(), StoreError> {
         let request = self.request_for(sig)?;
         self.remove_expiry(sig);
-        self.resent_at.remove(sig);
         self.update(sig, |record| {
             record.state = QueueState::Submitted;
             record.submitted_at_height = Some(tip);
+            record.last_sent_height = Some(tip);
             record.submissions += 1;
-        })?;
+        });
         self.spawn_submit(sig.clone(), request);
         Ok(())
     }
@@ -767,13 +905,15 @@ impl Engine {
         Ok(DeployRequest::from_signed(&deploy))
     }
 
-    fn spawn_submit(&self, sig: Sig, request: DeployRequest) {
+    fn spawn_submit(&mut self, sig: Sig, request: DeployRequest) {
         let node = self.node.clone();
         let commands = self.commands.clone();
-        tokio::spawn(async move {
-            let outcome = node.submit(&request).await;
-            // The engine stopping ends the process; the outcome has no reader.
-            let _ = commands.send(Command::Submitted { sig, outcome }).await;
+        self.after_commit(move || {
+            tokio::spawn(async move {
+                let outcome = node.submit(&request).await;
+                // The engine stopping ends the process; the outcome has no reader.
+                let _ = commands.send(Command::Submitted { sig, outcome }).await;
+            });
         });
     }
 
@@ -807,9 +947,14 @@ impl Engine {
         }
         let became_valid = self.waiting.split_off(&(number + 1, 0));
         let valid_now = std::mem::replace(&mut self.waiting, became_valid);
-        for sig in valid_now.into_values() {
-            let deployer = self.records[&sig].deployer.clone();
-            self.ready.push_back(&deployer, sig);
+        let lifespan = self
+            .chain
+            .as_ref()
+            .map(|chain| chain.shard.deploy_lifespan)
+            .expect("the tip moved on a known chain");
+        for ((valid_after, sequence), sig) in valid_now {
+            self.ready
+                .insert((last_includable(valid_after, lifespan), sequence), sig);
         }
         self.close_expired(number);
         self.resubmit_stale(number)?;
@@ -834,9 +979,11 @@ impl Engine {
             self.closed_checking.insert(sig.clone());
             let node = self.node.clone();
             let commands = self.commands.clone();
-            tokio::spawn(async move {
-                let result = node.deploy_status(&sig).await;
-                let _ = commands.send(Command::ClosedChecked { sig, result }).await;
+            self.after_commit(move || {
+                tokio::spawn(async move {
+                    let result = node.deploy_status(&sig).await;
+                    let _ = commands.send(Command::ClosedChecked { sig, result }).await;
+                });
             });
         }
     }
@@ -844,25 +991,20 @@ impl Engine {
     /// Asks the node about every deploy it may hold, after a gap in the
     /// event stream (a reconnect or a lag).
     fn resync(&mut self) {
-        let in_flight: Vec<Sig> = self
-            .records
-            .iter()
-            .filter(|(_, record)| {
-                matches!(record.state, QueueState::Submitted | QueueState::InBlock)
-            })
-            .map(|(sig, _)| sig.clone())
-            .collect();
+        let in_flight: Vec<Sig> = self.released_index.values().cloned().collect();
         for sig in in_flight {
             self.spawn_status_read(sig);
         }
     }
 
-    fn spawn_status_read(&self, sig: Sig) {
+    fn spawn_status_read(&mut self, sig: Sig) {
         let node = self.node.clone();
         let commands = self.commands.clone();
-        tokio::spawn(async move {
-            let result = node.deploy_status(&sig).await;
-            let _ = commands.send(Command::Resynced { sig, result }).await;
+        self.after_commit(move || {
+            tokio::spawn(async move {
+                let result = node.deploy_status(&sig).await;
+                let _ = commands.send(Command::Resynced { sig, result }).await;
+            });
         });
     }
 
@@ -879,25 +1021,16 @@ impl Engine {
         // The release height stays put: it is what a verdict's settle delay
         // is measured from.
         let stale: Vec<Sig> = self
-            .records
-            .iter()
-            .filter(|(sig, record)| {
-                let last_sent = self
-                    .resent_at
-                    .get(*sig)
-                    .copied()
-                    .or(record.submitted_at_height);
-                record.state == QueueState::Submitted
-                    && last_sent.is_some_and(|height| tip - height > depth)
-            })
-            .map(|(sig, _)| sig.clone())
+            .resend_index
+            .range(..(tip - depth, 0))
+            .map(|(_, sig)| sig.clone())
             .collect();
         for sig in stale {
             let request = self.request_for(&sig)?;
-            self.resent_at.insert(sig.clone(), tip);
             self.update(&sig, |record| {
+                record.last_sent_height = Some(tip);
                 record.submissions += 1;
-            })?;
+            });
             metrics::counter!("deploy_queue.resubmissions").increment(1);
             self.spawn_submit(sig, request);
         }
@@ -912,23 +1045,19 @@ impl Engine {
             return Ok(());
         };
         let done: Vec<Sig> = self
-            .records
-            .iter()
-            .filter(|(_, record)| {
-                record
-                    .decided_at_height
-                    .is_some_and(|height| tip - height > lifespan)
-            })
-            .map(|(sig, _)| sig.clone())
+            .decided_index
+            .range(..(tip - lifespan, 0))
+            .map(|(_, sig)| sig.clone())
             .collect();
-        if done.is_empty() {
-            return Ok(());
-        }
-        self.store.remove(done.clone())?;
         for sig in done {
-            if let Some(record) = self.records.remove(&sig) {
-                self.discount(record.state);
-            }
+            let record = self
+                .records
+                .remove(&sig)
+                .expect("the decided index names held records");
+            self.reindex(&sig, Some(IndexKeys::of(&record)), None);
+            self.discount(record.state);
+            self.dirty.remove(&sig);
+            self.removed.push(sig);
         }
         Ok(())
     }
@@ -947,7 +1076,7 @@ impl Engine {
             .collect();
         queued.sort();
         for (_, sig) in queued {
-            self.place(&sig, false);
+            self.place(&sig);
         }
         if let Some(tip) = self.chain.as_ref().map(|chain| chain.tip) {
             self.close_expired(tip);
@@ -955,32 +1084,34 @@ impl Engine {
     }
 
     /// Files a queued deploy: ready if its window has opened, waiting if not.
-    fn place(&mut self, sig: &Sig, at_front: bool) {
+    fn place(&mut self, sig: &Sig) {
         let chain = self
             .chain
             .as_ref()
             .expect("deploys are placed once the chain is known");
         let record = &self.records[sig];
-        let key = (record.valid_after, record.sequence);
+        let sequence = record.sequence;
         let last = last_includable(record.valid_after, chain.shard.deploy_lifespan);
-        let waiting = record.valid_after > chain.tip;
-        let deployer = record.deployer.clone();
-        self.expiry.insert((last, key.1), sig.clone());
-        if waiting {
-            self.waiting.insert(key, sig.clone());
-        } else if at_front {
-            self.ready.push_front(&deployer, sig.clone());
+        self.expiry.insert((last, sequence), sig.clone());
+        if record.valid_after > chain.tip {
+            self.waiting
+                .insert((record.valid_after, sequence), sig.clone());
         } else {
-            self.ready.push_back(&deployer, sig.clone());
+            self.ready.insert((last, sequence), sig.clone());
         }
     }
 
     /// Removes a queued deploy from every placement index.
     fn unplace(&mut self, sig: &Sig) {
         let record = &self.records[sig];
-        let (valid_after, sequence, deployer) =
-            (record.valid_after, record.sequence, record.deployer.clone());
-        self.ready.remove(&deployer, sig);
+        let (valid_after, sequence) = (record.valid_after, record.sequence);
+        let lifespan = self
+            .chain
+            .as_ref()
+            .map(|chain| chain.shard.deploy_lifespan)
+            .expect("deploys are placed once the chain is known");
+        self.ready
+            .remove(&(last_includable(valid_after, lifespan), sequence));
         self.waiting.remove(&(valid_after, sequence));
         self.remove_expiry(sig);
         self.closed.retain(|_, held| held != sig);
@@ -1013,10 +1144,9 @@ impl Engine {
             .expect("deploys close once the chain is known");
         let depth = i64::from(chain.shard.max_parent_depth);
         let record = &self.records[sig];
-        let (valid_after, sequence, deployer) =
-            (record.valid_after, record.sequence, record.deployer.clone());
+        let (valid_after, sequence) = (record.valid_after, record.sequence);
         let last = last_includable(valid_after, chain.shard.deploy_lifespan);
-        self.ready.remove(&deployer, sig);
+        self.ready.remove(&(last, sequence));
         self.waiting.remove(&(valid_after, sequence));
         self.expiry.remove(&(last, sequence));
         self.closed.insert((last + depth, sequence), sig.clone());
@@ -1031,7 +1161,7 @@ impl Engine {
         state: QueueState,
         node: Option<(u32, Option<Vec<u8>>)>,
         detail: Option<String>,
-    ) -> Result<(), StoreError> {
+    ) {
         let tip = self
             .chain
             .as_ref()
@@ -1041,7 +1171,6 @@ impl Engine {
         if before == QueueState::Queued {
             self.unplace(sig);
         }
-        self.resent_at.remove(sig);
         if matches!(before, QueueState::Submitted | QueueState::InBlock) {
             if let Some(pace) = self.pace.as_mut() {
                 pace.record_settled(1);
@@ -1072,38 +1201,76 @@ impl Engine {
                     record.latest_block_hash = block_hash;
                 }
             }
-        })?;
+        });
         metrics::counter!("deploy_queue.terminal", "state" => state.name()).increment(1);
-        Ok(())
     }
 
-    fn update(
-        &mut self,
-        sig: &Sig,
-        change: impl FnOnce(&mut QueueRecord),
-    ) -> Result<(), StoreError> {
+    fn update(&mut self, sig: &Sig, change: impl FnOnce(&mut QueueRecord)) {
         let record = self
             .records
             .get_mut(sig)
             .expect("updates name a record the engine holds");
-        let before = record.state;
+        let before = (record.state, IndexKeys::of(record));
         change(record);
-        let after = record.state;
-        self.store.put(sig, record)?;
-        if before != after {
-            self.discount(before);
-            self.enter(after);
+        let after = (record.state, IndexKeys::of(record));
+        self.dirty.insert(sig.clone());
+        if before.0 != after.0 {
+            self.discount(before.0);
+            self.enter(after.0);
+        }
+        if before.1 != after.1 {
+            self.reindex(sig, Some(before.1), Some(after.1));
         }
         self.emit(sig);
-        Ok(())
     }
 
-    fn emit(&self, sig: &Sig) {
-        let view = self.records[sig].view();
-        // No watcher is listening when the send finds no receiver.
-        let _ = self.transitions.send(Transition {
+    fn reindex(&mut self, sig: &Sig, before: Option<IndexKeys>, after: Option<IndexKeys>) {
+        if let Some(keys) = before {
+            if let Some(key) = keys.released {
+                self.released_index.remove(&key);
+            }
+            if let Some(key) = keys.resend {
+                self.resend_index.remove(&key);
+            }
+            if let Some(key) = keys.decided {
+                self.decided_index.remove(&key);
+            }
+            if let Some(deployer) = keys.holder {
+                let held = self
+                    .held_by_deployer
+                    .get_mut(&deployer)
+                    .expect("a holder's deploys are counted");
+                *held -= 1;
+                if *held == 0 {
+                    self.held_by_deployer.remove(&deployer);
+                }
+            }
+        }
+        if let Some(keys) = after {
+            if let Some(key) = keys.released {
+                self.released_index.insert(key, sig.clone());
+            }
+            if let Some(key) = keys.resend {
+                self.resend_index.insert(key, sig.clone());
+            }
+            if let Some(key) = keys.decided {
+                self.decided_index.insert(key, sig.clone());
+            }
+            if let Some(deployer) = keys.holder {
+                *self.held_by_deployer.entry(deployer).or_insert(0) += 1;
+            }
+        }
+    }
+
+    fn emit(&mut self, sig: &Sig) {
+        let transition = Transition {
             sig: sig.clone(),
-            view,
+            view: self.records[sig].view(),
+        };
+        let transitions = self.transitions.clone();
+        self.after_commit(move || {
+            // No watcher is listening when the send finds no receiver.
+            let _ = transitions.send(transition);
         });
     }
 
@@ -1175,6 +1342,53 @@ fn heights_to_settle(deploys: usize, rate: f64) -> Option<i64> {
     (rate > 0.0).then(|| (deploys as f64 / rate).ceil() as i64)
 }
 
+/// A queued deploy as admission sees it: the first height it can be
+/// released at and the last height a block can include it.
+#[derive(Debug, Clone, Copy)]
+struct Slot {
+    releasable_from: i64,
+    last: i64,
+}
+
+/// Whether the deploy at `position` in release order settles, at `rate`
+/// a height, with `depth` heights to spare before its window closes.
+fn lands(slot: Slot, position: usize, rate: f64, depth: i64) -> bool {
+    heights_to_settle(position, rate)
+        .is_some_and(|heights| slot.releasable_from + heights + depth <= slot.last)
+}
+
+/// Whether a new deploy may join the queue. Release takes the earliest
+/// deadline first, so the deploy waits behind every released deploy and the
+/// `earlier` queued deploys whose deadline comes first, and every queued
+/// deploy in `later` moves back one place. It is admitted when it lands and
+/// no later deploy that lands now would stop landing.
+fn admits(
+    released: usize,
+    earlier: usize,
+    new: Slot,
+    later: impl Iterator<Item = Slot>,
+    rate: f64,
+    depth: i64,
+) -> bool {
+    let position = released + earlier + 1;
+    lands(new, position, rate, depth)
+        && later.enumerate().all(|(index, slot)| {
+            let without = position + index;
+            !lands(slot, without, rate, depth) || lands(slot, without + 1, rate, depth)
+        })
+}
+
+/// Deploys the queue can hold: what settles at `rate` a height in a fresh
+/// window, less the depth kept to spare.
+fn capacity(rate: f64, fresh_span: i64, depth: i64) -> usize {
+    (rate * (fresh_span - depth).max(0) as f64).floor() as usize
+}
+
+/// The most one deployer may hold while `others` deployers hold deploys: an
+/// equal share that keeps room for one more deployer, and never less than
+/// one deploy.
+fn deployer_limit(capacity: usize, others: usize) -> usize { (capacity / (others + 2)).max(1) }
+
 /// Heights until a deploy signed now would fit: the line ahead, `wait`
 /// heights long, must shrink until it and the depth fit a fresh window of
 /// `fresh_span` heights. A refused deploy's own window only closes while
@@ -1238,5 +1452,96 @@ mod tests {
     fn a_line_that_fits_a_fresh_window_retries_after_one_height() {
         // Refused only because its own window was signed long ago.
         assert_eq!(heights_until_a_fresh_window_fits(10, 25, 299), 1);
+    }
+
+    fn slot(releasable_from: i64, last: i64) -> Slot {
+        Slot {
+            releasable_from,
+            last,
+        }
+    }
+
+    #[test]
+    fn admission_refuses_a_deploy_that_would_push_a_landing_deploy_out() {
+        assert!(!admits(0, 0, slot(0, 1), [slot(0, 1)].into_iter(), 1.0, 0));
+        assert!(admits(0, 0, slot(0, 1), [slot(0, 2)].into_iter(), 1.0, 0));
+    }
+
+    #[test]
+    fn admission_ignores_a_deploy_that_already_misses_its_window() {
+        assert!(admits(0, 0, slot(0, 1), [slot(0, 0)].into_iter(), 1.0, 0));
+    }
+
+    #[test]
+    fn admission_counts_released_and_earlier_deploys_ahead() {
+        assert!(admits(2, 3, slot(0, 6), std::iter::empty(), 1.0, 0));
+        assert!(!admits(2, 3, slot(0, 5), std::iter::empty(), 1.0, 0));
+    }
+
+    /// Admits each height's arrivals, then releases one deploy a height,
+    /// earliest deadline first, settling it at the next height. Panics when
+    /// an admitted deploy settles with less than `depth` heights to spare.
+    fn simulate(
+        arrivals: impl Fn(i64) -> Vec<i64>,
+        heights: i64,
+        lifespan: i64,
+        depth: i64,
+    ) -> (usize, usize) {
+        let mut queue: BTreeMap<(i64, u64), i64> = BTreeMap::new();
+        let (mut sequence, mut admitted, mut refused) = (0u64, 0, 0);
+        for tip in 0..heights {
+            for valid_after in arrivals(tip) {
+                let last = valid_after + lifespan - 1;
+                let key = (last, sequence);
+                sequence += 1;
+                let new = slot(valid_after.max(tip), last);
+                let later = queue
+                    .range(key..)
+                    .map(|((last, _), valid_after)| slot((*valid_after).max(tip), *last));
+                if admits(0, queue.range(..key).count(), new, later, 1.0, depth) {
+                    queue.insert(key, valid_after);
+                    admitted += 1;
+                } else {
+                    refused += 1;
+                }
+            }
+            if let Some(((last, _), _)) = queue.pop_first() {
+                assert!(
+                    tip + 1 + depth <= last,
+                    "a deploy admitted with deadline {last} settled at {}",
+                    tip + 1
+                );
+            }
+        }
+        (admitted, refused)
+    }
+
+    #[test]
+    fn one_deployers_batch_and_later_single_deploys_all_land() {
+        let arrivals = |tip: i64| match tip {
+            0 => vec![0; 200],
+            1..=268 => vec![tip],
+            _ => Vec::new(),
+        };
+        assert_eq!(simulate(arrivals, 600, 300, 25), (468, 0));
+    }
+
+    #[test]
+    fn under_sustained_overload_every_admitted_deploy_lands() {
+        let (admitted, refused) = simulate(|tip| vec![tip; 3], 800, 300, 25);
+        assert!(
+            refused > 0,
+            "three a height against one settling must refuse"
+        );
+        assert!(admitted > 0);
+    }
+
+    #[test]
+    fn one_deployer_keeps_room_for_another() {
+        assert_eq!(deployer_limit(274, 0), 137);
+        assert_eq!(deployer_limit(274, 2), 68);
+        assert_eq!(deployer_limit(0, 5), 1);
+        assert_eq!(capacity(2.0, 299, 25), 548);
+        assert_eq!(capacity(1.0, 20, 25), 0);
     }
 }

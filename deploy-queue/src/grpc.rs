@@ -82,9 +82,8 @@ fn state_proto(state: QueueState) -> DeployFinalizationStateProto {
             DeployFinalizationStateProto::DeployStatePending
         }
         QueueState::Finalized => DeployFinalizationStateProto::DeployStateFinalized,
-        QueueState::Failed | QueueState::Rejected => {
-            DeployFinalizationStateProto::DeployStateFailed
-        }
+        QueueState::Failed => DeployFinalizationStateProto::DeployStateFailed,
+        QueueState::Rejected => DeployFinalizationStateProto::DeployStateRejected,
         QueueState::Expired => DeployFinalizationStateProto::DeployStateExpired,
     }
 }
@@ -121,7 +120,9 @@ impl DeployService for QueueGrpc {
                 | IntakeError::DeployExpired(_)
                 | IntakeError::Duplicate(_)),
             ) => deploy_error(error.to_string()),
-            Err(error @ IntakeError::QueueFull { .. }) => Err(with_retry_after(
+            Err(
+                error @ (IntakeError::QueueFull { .. } | IntakeError::DeployerShareFull { .. }),
+            ) => Err(with_retry_after(
                 Status::resource_exhausted(error.to_string()),
                 &error,
             )),
