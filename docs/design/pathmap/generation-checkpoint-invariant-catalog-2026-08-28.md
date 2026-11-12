@@ -12565,9 +12565,10 @@ algorithm or dependency is changed by this proof/test checkpoint.
 
 ### Exhaustive caller capstone extraction
 
-The table below has 30 rows, CA-01 to CA-30. `RSpaceCallerAuthority.v` has 44
-`Print Assumptions` commands, one per capstone: each row names one of them, and the
-capstones without a row are named after the table. **Contract** means
+The table below has 44 rows, CA-01 to CA-44, one per capstone. A capstone is a
+statement on which `RSpaceCallerAuthority.v` runs a `Print Assumptions` command: the
+file has 44 such commands, each on a different statement, and every row names one of
+them. **Contract** means
 the abstract lemma and controls pass; **legacy witness** means an actual pre-cutover
 caller test passes. Neither means the planned durable caller implementation is
 already verified. New caller IDs are separate from the existing publication
@@ -12606,40 +12607,20 @@ written on 2026-09-06).
 | CA-28 | `payload_transfer_never_transfers_mutation_authority` | Old-permit restore control; 7932 validates fresh receiver permits and rejects stale writer/receipt resurrection. |
 | CA-29 | `rebased_journal_reconstructs_exact_restored_count` | `caller_contract_count_rebase_is_exact_over_full_u64_domain` checks the scalar refinement; complete trie/journal reconstruction remains 7931. |
 | CA-30 | `rebased_journal_has_no_underflow_or_intermediate_overflow` | The same arbitrary-u64 property uses checked subtraction/addition; production checked arithmetic and all-domain reconstruction remain mandatory. |
-
-The capstones without a row form three groups:
-
-- The LMDB authority scope-isolation capstones
-  `resolved_namespace_encoding_is_injective`,
-  `rejected_scope_performs_no_database_open`,
-  `disjoint_physical_footprints_preserve_other_content`,
-  `migration_primary_source_uses_literal_cold_name`, `every_scope_invariant_is_bound`
-  and `scope_invariant_catalog_is_unique_complete_and_exact` state that resolved names
-  whose lengths fit their length fields and whose physical names hold no zero byte
-  encode injectively into the migration namespace, that a scope that is not admitted
-  opens no database, that a write to one physical footprint leaves a disjoint
-  footprint unchanged, that the migration's cold source is the resolved cold name in
-  the cold mapping's environment, and that the catalog of scope invariants is
-  duplicate-free, complete and of the stated length, with the statement bound to each
-  invariant proved.
-- The count-domain journal-rebase capstones `rebased_counts_apply_to_target`,
-  `rebased_counts_are_disjoint`, `rebased_counts_bounded`,
-  `rebase_is_zero_outside_overlay_domain` and
-  `same_base_rebase_is_identity_for_exact_journals` state that, at every key, the
-  addition and removal recomputed against a base rebuild the overlay count (the
-  captured count, or the base count where none was captured), are never both nonzero,
-  neither underflow the base count nor pass a limit that bounds the base and captured
-  counts, are zero where no count was captured, and equal an exact journal of the
-  capture base when the receiving base equals that base.
-- The five-journal soft-restore refinement capstones
-  `rebased_journals_refine_soft_restore`,
-  `soft_restore_refinement_determines_the_journals` and
-  `every_legacy_overlay_has_a_permitted_restore` state, for hot values that hold data,
-  continuation and join counts and an optional content reference, that the five
-  journals recomputed against the receiving history satisfy the journal refinement
-  defined for those values, that any journals satisfying it equal them at every key,
-  and that every payload therefore has a permitted restore under an authorized permit,
-  an attached view and an authenticated receiving history.
+| CA-31 | `resolved_namespace_encoding_is_injective` | LMDB witness `scope_layout_namespace_matches_framed_reference` in `rspace++/tests/state/atomic_state_authority.rs`. A layout is an authority's logical prefix with its history, roots and cold database names, and its migration namespace is the byte string computed from those four names. For generated layouts an independent decoder recovers the four names from the namespace, appending a character to any one name changes the namespace, and the default `rspace` and `eval` layouts keep their prefix as namespace, which differs from each generated one. |
+| CA-32 | `rejected_scope_performs_no_database_open` | LMDB witness `scope_layout_preflight_refuses_before_open` in `rspace++/tests/state/atomic_state_authority.rs`: sixteen invalid database mappings, each tried once by acquiring the authority and once by opening an ordinary store, are refused, and the directory that would hold the LMDB environments is never created. The cases include each ground on which the model refuses a mapping except a name whose length does not fit its length field, which a Rust length cannot reach. |
+| CA-33 | `disjoint_physical_footprints_preserve_other_content` | LMDB witnesses `scope_layout_generated_mutations_preserve_other_scopes` and `scope_layout_disjoint_checkpoints_and_reopen` in `rspace++/tests/state/atomic_state_authority.rs`: two authorities keep differently named databases in one LMDB environment. In the first test every generated checkpoint committed to one authority leaves the whole history, roots and cold contents of the other unchanged; in the second a checkpoint of each leaves the other's roots unchanged, and neither cold store holds the other's leaf. |
+| CA-34 | `migration_primary_source_uses_literal_cold_name` | LMDB witness `scope_layout_named_migration_and_marker_binding` in `rspace++/tests/state/atomic_state_authority.rs`, in its run with overriding names: the cold mapping names a second LMDB environment and the database name `payloads`, and the legacy cold leaf is migrated from the database of that name in that environment, whose contents stay unchanged. The authority's cold store then holds that leaf's bytes, not the other bytes that a database `db` of the same environment holds under the same key. |
+| CA-35 | `every_scope_invariant_is_bound` | LMDB witnesses in `rspace++/tests/state/atomic_state_authority.rs`: the five tests of CA-31 to CA-34 with `scope_layout_independent_names_and_reopen`, `scope_layout_scoped_migration_ignores_ambient_sources` and `scope_layout_ordinary_literal_and_alias_routing`. The model names twenty scope invariants (`scope_invariant_id`), and this theorem proves the statement bound to each. The table under [Executable scope bindings and current evidence](#executable-scope-bindings-and-current-evidence) assigns every invariant to one or two of these eight tests and names the one refusal that no test input can reach. The statement bound to `IndependentNameResolution` has two parts. A database mapping has a logical identifier and may carry a name override: with an override, the override is the database name; without one, the logical identifier is. These tests assert the first part only, because every mapping they open carries an override: `rspace-scope-layout-absent-override-name-test` must show that a mapping without a name override opens the database named by its logical identifier. |
+| CA-36 | `scope_invariant_catalog_is_unique_complete_and_exact` | The LMDB witnesses of CA-35 in `rspace++/tests/state/atomic_state_authority.rs` bind the statements of the catalog's entries, with the limits named there. That the catalog (`scope_invariant_catalog`) has no duplicate, holds every invariant and has twenty entries is a property of the model's own list: no Rust source holds a list of the scope invariants, so no test corresponds to it. The first table under [Resolved LMDB scope isolation](#resolved-lmdb-scope-isolation-2026-09-07) extracts the catalog, one row per entry in its order. |
+| CA-37 | `rebased_counts_apply_to_target` | Contract. No Rust code recomputes a soft checkpoint's journals against a receiving history yet: a soft-checkpoint revert restores the captured journals unchanged (`restore_pending_deltas`), and the property test of CA-29 and CA-30 takes one pair of counts at a time, not a journal over keys. `rspace-hotstore-journal-rebase` must show that the addition and removal recomputed against the receiving history, applied to its count, give the overlay count at every key: the captured count, or the receiving count where none was captured, with a captured empty count distinct from a missing one. |
+| CA-38 | `rebased_counts_are_disjoint` | Contract, as CA-37. `rspace-hotstore-journal-rebase` must show that no key of a recomputed count journal has both an addition and a removal. |
+| CA-39 | `rebased_counts_bounded` | Contract, as CA-37. `rspace-hotstore-journal-rebase` must show that at every key the removal does not exceed the receiving count and that, with checked arithmetic, the addition and every intermediate and restored count stay within `u64`. |
+| CA-40 | `rebase_is_zero_outside_overlay_domain` | Contract, as CA-37. `rspace-hotstore-journal-rebase` must show that a key without a captured count gets no delta, so that the rebase reads the receiving history once for each key of the captured payload and never scans the store. |
+| CA-41 | `same_base_rebase_is_identity_for_exact_journals` | Contract, as CA-37. `rspace-hotstore-journal-rebase` must show that a payload of `create_soft_checkpoint`, rebased onto the history it was captured over, reproduces the captured journals exactly. |
+| CA-42 | `rebased_journals_refine_soft_restore` | Contract, as CA-37. `rspace-hotstore-journal-rebase` must show that the five journals recomputed against the receiving history, applied to it, give the overlay: exact count deltas for data, continuations and joins, a content transition exactly where the continuation content differs, and source bytes exactly for a transition that has a target, taken from the overlay's record. |
+| CA-43 | `soft_restore_refinement_determines_the_journals` | Contract, as CA-37. `rspace-hotstore-journal-rebase` must show that its tests reject other journals: a verbatim copy of the captured journals and Rust versions of the rejected designs that `RSpaceCallerAuthorityMutants.v` refutes must each fail one of them. |
+| CA-44 | `every_legacy_overlay_has_a_permitted_restore` | Contract. `rspace-hotstore-journal-rebase` must compute the journals of every payload with no new refusal, and `rspace-soft-revert-durable-rebase` must rebase on every durable revert and install the restored store only after the rebase succeeds. The legacy witness of CA-23 restores every generated payload without refusal, but through the revert that copies the captured journals, and it asserts nothing about a journal. |
 
 `RSpaceCallerAuthorityMutants.v` holds the controls and has 51 `Print Assumptions`
 commands, one per control. The normal proof runner pins both files: it requires
