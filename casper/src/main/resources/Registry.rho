@@ -572,18 +572,16 @@ in {
           hashCh,
           verifyCh,
           deployData(`rho:deploy:data`),
-          deployDataCh,
-          deployerIdOps(`rho:system:deployerId:ops`),
-          deployerPubKeyCh
+          deployDataCh
       in {
         deployData!(*deployDataCh) |
 
-        for(@timestamp, @deployerId, _ <- deployDataCh) {
-          deployerIdOps!("pubKeyBytes", deployerId, *deployerPubKeyCh) |
-
-          for(@deployerPubKey <- deployerPubKeyCh) {
-            blake2b256!((timestamp, deployerPubKey, version).toByteArray(), *hashCh)
-          }
+        // `rho:deploy:data` returns the deployer's pubkey as ByteArray
+        // (see system_processes::get_deploy_data). It's used here as nonce
+        // material in the signed hash; the actual authentication is the
+        // `secpVerify!` check below against the caller-supplied `pubKeyBytes`.
+        for(@timestamp, @deployerPubKey, _ <- deployDataCh) {
+          blake2b256!((timestamp, deployerPubKey, version).toByteArray(), *hashCh)
         } |
 
         for (@hash <- hashCh) {
