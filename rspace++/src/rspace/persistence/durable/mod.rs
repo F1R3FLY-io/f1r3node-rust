@@ -27,6 +27,7 @@ mod reclaim;
 mod recovery;
 mod rspace_authority;
 mod startup;
+mod state_root;
 mod view_reader;
 
 pub(crate) use admission::{
@@ -118,6 +119,11 @@ pub(crate) use startup::{
 #[cfg(test)]
 pub(crate) use startup::{DurableStartupHookPointV1, arm_durable_startup_hook};
 #[cfg(test)]
+pub(crate) use state_root::{
+    DurableStateReadHandleErrorV1, DurableStateRootV1, ResolvedDurableStateV1,
+    resolve_retained_state,
+};
+#[cfg(test)]
 pub(crate) use view_reader::DurableViewReaderV1;
 
 /// Restart-recovered semantic authority exposed as a read-only view.
@@ -188,10 +194,51 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     pub(crate) fn read_handle(&self) -> Result<DurableViewReadHandleV1<P>, GenerationLeaseError> {
         const { require_shareable_read_handle::<DurableViewReadHandleV1<P>>() };
         let lease = self.acquire_generation_lease()?;
+        let core = self.writer.shared_core();
         Ok(DurableViewReadHandleV1 {
-            core: self.writer.shared_core(),
+            manifest: core.verified_state().version().manifest(),
+            core,
             _lease: lease,
         })
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests take a read handle at a resolved state until task 14294 \
+                      resets the durable history repository through it"
+        )
+    )]
+    pub(crate) fn read_handle_at(
+        &self,
+        resolved: &state_root::ResolvedDurableStateV1,
+    ) -> Result<DurableViewReadHandleV1<P>, state_root::DurableStateReadHandleErrorV1> {
+        const { require_shareable_read_handle::<DurableViewReadHandleV1<P>>() };
+        let core = self.writer.shared_core();
+        core.require_retained(resolved)
+            .map_err(state_root::DurableStateReadHandleErrorV1::Root)?;
+        let lease = self.acquire_generation_lease()?;
+        Ok(DurableViewReadHandleV1 {
+            core,
+            manifest: resolved.manifest(),
+            _lease: lease,
+        })
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests resolve a durable state root until task 14294 reads the \
+                      durable history repository through it"
+        )
+    )]
+    pub(crate) fn resolve(
+        &self,
+        root: state_root::DurableStateRootV1,
+    ) -> Result<state_root::ResolvedDurableStateV1, crate::rspace::errors::RootError> {
+        self.writer.shared_core().resolve(root)
     }
 
     pub(crate) fn state(&self) -> crate::rspace::persistence::StateVersionV1 {
@@ -442,6 +489,7 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
 
 pub(crate) struct DurableViewReadHandleV1<P: SemanticProfile> {
     core: std::sync::Arc<admission::DurableAuthorityCoreV1<P>>,
+    manifest: crate::rspace::persistence::ObjectRefV1,
     _lease: GenerationLeaseV1,
 }
 
@@ -457,10 +505,10 @@ impl<P: SemanticProfile> DurableViewReadHandleV1<P> {
     pub(crate) fn semantic_roots(
         &self,
     ) -> Result<SemanticRoots, ClosureError<DurableObjectReadErrorV1>> {
-        self.core
-            .verified_state()
-            .semantic_manifest()
-            .map(|manifest| manifest.roots())
+        let manifest = self.core.verified_state().load_object(self.manifest)?;
+        crate::rspace::persistence::SemanticStateManifestView::parse(&manifest)
+            .map(crate::rspace::persistence::SemanticStateManifestView::roots)
+            .map_err(ClosureError::Format)
     }
 }
 

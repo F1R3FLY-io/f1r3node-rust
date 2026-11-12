@@ -7815,6 +7815,125 @@ Tests 4 and 5 check ruling D2 and are bound to no ID.
 | VR-03 | Pinned reads. A reader built from a durable view's read handle and that view's roots before `into_rspace_authority` returns the view's state while the owner holds a published successor and after the owner is torn down, although the successor's state differs in the data, continuation and join namespaces. A reader on the successor's generation with the retained predecessor's roots returns the predecessor's state. | `lazy_reads_return_the_pinned_state_after_a_successor_is_published` |
 | VR-07 | Literal ordered groups. A continuation read visits only the prefix of its channels in the given order. With records under `(a,b)` only, reading `(b,a)` returns an empty `Vec`; with records under `(b,a)` only, reading `(a,b)` returns an empty `Vec`; with records under both, each group returns exactly its own. A group that repeats a channel of the pair, and either channel alone, return none. | `a_receive_group_is_read_only_at_its_literal_ordered_prefix` |
 
+### Durable state roots (2026-11-11)
+
+Task 7931 lets a caller name a durable state by a root and read it back. By
+the user's ruling of 2026-11-11, the durable state root is the DAG's own
+identity: no LMDB root is reproduced, and no mapping table from another kind
+of root is kept. This slice, task 14293, defines that root and resolves it to
+a retained state. Its code is
+[`state_root.rs`](../../../rspace++/src/rspace/persistence/durable/state_root.rs).
+
+**The root.** `DurableStateRootV1` is the 32-byte digest of the state's
+`SemanticStateManifestV1`, the digest in the manifest's `object_ref()`. That
+digest is the Blake2b-256 hash of the manifest's canonical bytes, so the root
+already is a Blake2b-256 value. It converts to a `Blake2b256Hash` by copying
+the 32 bytes, and back by checking the length and copying again; nothing is
+hashed a second time. A `Blake2b256Hash` of any other length is refused with
+`RootError::InvalidRootHash`.
+
+A manifest holds the schema epoch, the semantic profile, the three namespace
+roots and an optional legacy history root. The namespace roots are the
+digests of canonical radix DAGs, and a canonical radix DAG is a function of
+the set of endpoints it holds, not of the order in which they were inserted.
+The legacy history root is different: it records where an imported state came
+from, which is provenance and not content. Two manifests with the same
+namespace roots and different legacy roots have different digests.
+
+**Resolution.** `DurableAuthorityCoreV1::resolve(root)`, and the view's
+`resolve`, which delegates to it, take these steps:
+
+1. Look the digest up once in the admitted core's closure ledger
+   (`StructuralClosureLedgerV1::counts_semantic_root`). Unless its current or
+   its retained count is positive, refuse with `RootError::UnknownRootError`.
+   No object is read. A root that only the metadata domain counts, such as a
+   retention V2 anchor, is not a state and is refused here.
+2. Read the object once, bounded by `SEMANTIC_MANIFEST_MAX_CANONICAL_LEN`
+   (241 bytes). A store error is `KvStoreError`. An absent object is
+   `CorruptRootCatalog`, because the admitted ledger and the object index
+   disagree.
+3. Parse it as a semantic manifest, which hashes the bytes again, and require
+   that hash to be the root. A parse failure or another digest is
+   `CorruptRootCatalog`.
+4. Refuse a manifest that carries a legacy history root with
+   `UnknownRootError`. Such a manifest is not a durable RSpace state, and
+   refusing it makes every resolvable root a function of the contents alone.
+5. Refuse a manifest of another semantic profile with `UnknownRootError`.
+   Cold admission checks the profile of the current state only, so without
+   this step a retained manifest of another profile would be read under this
+   profile's types.
+6. Return the manifest's reference and its `SemanticRoots`.
+
+The cost is one probe of the ledger's 32-byte key, one index lookup, one
+positional read of at most 241 bytes and one Blake2b-256 of those bytes. It
+does not depend on the number of retained states or on the size of any
+state, and nothing is enumerated. The object reads are measured: a counting
+store observes exactly one read per resolution, of the resolved manifest, for
+retained states of 1, 16 and 256 datums, the largest of which has a closure of
+more than 256 objects, and no read for a refused digest. The single ledger
+probe is read from the code, not measured.
+
+**Read handles at a resolved state.** `DurableAuthorityViewV1::read_handle_at`
+takes a resolved state, probes this view's ledger once more, so that a state
+resolved in another store is refused unless this store also retains it, and
+then acquires a lease on the view's catalog generation exactly as
+`read_handle` does. A refusal takes no lease. The handle now records the
+manifest it reads: `read_handle` records the view's current manifest, which
+keeps its behavior, and `read_handle_at` records the resolved one.
+
+No persisted byte, record kind, root or wire message changes, and no table is
+added.
+
+**The tests.**
+
+- `durable_state_root_is_a_function_of_contents_across_insertion_orders_and_reopen`
+  builds the same seven insertions (three datums, two continuations on one
+  channel pair, and the pair's two joins) in fourteen fresh stores. Eight
+  schedules insert them in one checkpoint: the seven rotations and the
+  reverse. Six schedules publish three units, one checkpoint per unit, in
+  every order of the units; their first states have three distinct roots.
+  Every final root is equal. Each store is reopened, and the recovered root
+  is the published one and resolves to the same roots in every store.
+- `every_retained_state_resolves_to_its_own_roots_and_nothing_else_resolves`
+  installs a checkpoint followed by an incremental successor whose retention
+  manifest no longer retains the checkpoint state, so the checkpoint's
+  manifest stays in the object index but leaves the ledger. The owner then
+  publishes two more states. After a reopen, each of the three retained
+  states resolves to exactly the roots that the view reported while it was
+  current. Seven digests are refused: one absent from the store, and six that
+  name objects in the store (the empty trie node, a data-bag node, both V1
+  retention manifests, the current retention anchor, and the unretained
+  checkpoint manifest, which parses as a manifest of this profile without a
+  legacy root).
+- `states_that_differ_in_one_endpoint_have_different_roots` publishes, in one
+  store, a datum, a second copy of that datum, a continuation and a join, one
+  per state. Each pair of consecutive states differs in exactly one endpoint,
+  only that endpoint's namespace root differs, and the state roots differ.
+- `a_manifest_with_a_legacy_history_root_does_not_resolve` installs one store
+  whose two historical manifests carry legacy roots, and one whose current
+  manifest carries one. Every such manifest is retained and parses with its
+  legacy root, and every one is refused with the legacy-root reason; the
+  current manifest without a legacy root resolves.
+- Four further tests cover the rest of the slice: the `Blake2b256Hash`
+  conversion for every length from 0 to 64 bytes, the measured reads of
+  resolution, refusal of a retained manifest of another profile, and
+  `read_handle_at`. That test requires one lease per handle, each handle
+  reading its own state's roots after the view is dropped, no lease for a
+  refused foreign state, and no lease left once the handles are dropped.
+
+The red control resolves by object-index presence instead of the ledger's
+root count. It accepts the unretained checkpoint manifest, which fails the
+second test.
+
+**The DI rows.** DI is the durable state identity family.
+
+| ID | Required property | Test |
+|---|---|---|
+| DI-01 | Content-determined root. The same contents, built by every insertion order and checkpoint schedule exercised, publish one durable state root, and each store recovers that root on reopen and resolves it to the same semantic roots. | `durable_state_root_is_a_function_of_contents_across_insertion_orders_and_reopen` |
+| DI-02 | Exact resolution of retained states. In a store that retains several states, each resolves to exactly its own manifest and semantic roots. An absent digest, and the digest of every object in the store that is not a current or retained manifest, including a manifest that the ledger no longer retains, is refused with `UnknownRootError`. | `every_retained_state_resolves_to_its_own_roots_and_nothing_else_resolves` |
+| DI-03 | One endpoint, another root. Two states that differ in exactly one endpoint, whether added or changed in multiplicity, have different durable state roots, and only that endpoint's namespace root differs. | `states_that_differ_in_one_endpoint_have_different_roots` |
+| DI-04 | Legacy provenance does not resolve. A retained manifest that carries a legacy history root, current or historical, is refused with `UnknownRootError` for that reason, while a manifest without one resolves. | `a_manifest_with_a_legacy_history_root_does_not_resolve` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -8060,6 +8179,10 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | VR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the per-key results of a lazy durable reader against the eager enumerations of the same published state. No model states a property of the reader's Rust results, and both sides decode through the same functions. |
 | VR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the results of a lazy durable reader after a successor is published, after owner teardown, and on the successor's generation with the retained predecessor's roots. Like VR-01, it witnesses the caller registry's CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite, for the reason given at VR-01. |
 | VR-07 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the literal ordered prefix of a continuation read, ruling D1. This matrix cites no model of RhoPathV1 group prefixes, and no model states a property of the reader's Rust results. |
+| DI-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): equality of the durable state root across insertion orders, checkpoint schedules and reopen. No model represents the canonical encoding of a state's contents or the digest of its manifest. |
+| DI-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): resolution of a digest against the admitted ledger's current and retained root counts, and the refusal of every other digest. No model states a lookup of a retained state by its manifest digest. |
+| DI-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): different roots for states that differ in one endpoint. The property rests on the canonical encoding and on Blake2b-256 over it, which no model represents. |
+| DI-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): the refusal of manifests that carry a legacy history root. No model represents legacy provenance. |
 
 ## Generator discipline
 
@@ -8624,6 +8747,27 @@ removed, showed the overflow gap described in the lazy durable view reader
 section. Clippy of `rspace_plus_plus` with every target and warnings denied
 lists no finding in the files of this slice, and `rustfmt --check` passes on
 its Rust files. No persisted byte, root, identity or wire message changed.
+
+The 2026-11-11 durable state root slice of task 7931 (task 14293) adds DI-01
+to DI-04, the first DI rows, so the catalog/derivation/binding registry now
+contains **243** IDs. On an export of the candidate tree, which already holds
+the lazy durable view reader slice, the eight tests of the new file, the five
+tests of the lazy reader, VR-01, the 20 durable owner tests and the 17 durable
+startup tests (each family has one more, ignored, test) and the manifest test
+passed in debug and in release, and the whole library test target passed with
+923 tests in both profiles (10 ignored). One production control removed the
+ledger probe from resolution and decided by object-index presence instead. It
+made exactly two of the eight tests fail. DI-02 reported the unretained
+checkpoint manifest as resolved, while the other six candidates stayed
+refused. The unbound measurement test observed its own unretained manifest
+resolve after one object read, against the required refusal with no read. The
+resolver was then restored from the candidate tree, and the eight tests
+passed again. Clippy of `rspace_plus_plus` with every target lists no finding
+in the files of this slice, and `rustfmt --check` passes on its Rust files.
+The workspace-regression registry hashes the manifest test's file and the
+persistence test module, both of which change, so it was regenerated, and the
+PathMap aggregate takes its new manifest digest. No persisted byte, record
+kind, root, identity or wire message changed.
 
 ## Caller-authority contract (2026-09-06)
 

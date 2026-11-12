@@ -355,6 +355,19 @@ impl StructuralClosureLedgerV1 {
         self.inventories[domain.index()]
     }
 
+    pub(crate) fn counts_semantic_root(&self, digest: ObjectDigest) -> bool {
+        let current = ClosureDomainV1::Current.index();
+        let retained = ClosureDomainV1::Retained.index();
+        match self
+            .roots
+            .get_val_at(digest.as_bytes())
+            .map(|counts| (counts[current], counts[retained]))
+        {
+            None | Some((0, 0)) => false,
+            Some(_) => true,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn count(&self, domain: ClosureDomainV1, digest: ObjectDigest) -> u64 {
         self.states

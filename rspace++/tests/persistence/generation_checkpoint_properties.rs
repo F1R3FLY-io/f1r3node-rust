@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI", "SW", "OG", "VR",
+        "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI", "SW", "OG", "VR", "DI",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -710,6 +710,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("durable_read_handle.rs"),
         include_str!("durable_recovery.rs"),
         include_str!("durable_rspace_authority.rs"),
+        include_str!("durable_state_root.rs"),
         include_str!("durable_view_reader.rs"),
         include_str!("generation_checkpoint_properties.rs"),
         include_str!("incremental_reachability_properties.rs"),
