@@ -101,10 +101,31 @@ impl<T: KademliaRPC> KademliaStore<T> {
     /// Records an RPC the peer itself sent. An address suppressed after
     /// eviction is admitted again only if this node can reach it: contact
     /// proves the peer reaches this node, not the reverse. Each suppressed
-    /// address is probed at most once per `REPROBE_INTERVAL`.
-    pub async fn record_contact(&self, peer_node: &PeerNode) -> Result<(), CommError> {
-        if self.claim_probe(peer_node)? && matches!(self.rpc.ping(peer_node).await, Ok(true)) {
-            self.lift_suppression(peer_node)?;
+    /// address is probed at most once per `REPROBE_INTERVAL`, in the
+    /// background, so the peer's own RPC is answered without waiting on a
+    /// ping that may run to its timeout.
+    pub async fn record_contact(self: &Arc<Self>, peer_node: &PeerNode) -> Result<(), CommError>
+    where T: Send + Sync + 'static {
+        if self.claim_probe(peer_node)? {
+            let store = Arc::clone(self);
+            let peer = peer_node.clone();
+            tokio::spawn(async move {
+                if !matches!(store.rpc.ping(&peer).await, Ok(true)) {
+                    return;
+                }
+                let admitted = match store.lift_suppression(&peer) {
+                    Ok(()) => store.update_last_seen(&peer).await,
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = admitted {
+                    tracing::warn!(
+                        target: "f1r3fly.comm.discovery",
+                        peer = %peer.to_address(),
+                        %error,
+                        "a returning peer answered the reachability probe but could not be readmitted"
+                    );
+                }
+            });
         }
         self.update_last_seen(peer_node).await
     }
