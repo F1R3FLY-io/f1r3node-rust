@@ -720,6 +720,10 @@ impl TransportLayer for GrpcTransportClient {
         best_effort("stream", peers, results)
     }
 
+    fn queued_stream_bytes(&self) -> usize {
+        self.cache.iter().map(|entry| entry.value().len()).sum()
+    }
+
     /// Disconnect from a peer, shutting down any gRPC channels
     async fn disconnect(&self, peer: &PeerNode) -> Result<(), CommError> {
         self.clear_dns_failure(peer).await;
@@ -804,6 +808,19 @@ mod tests {
     fn new_accepts_normal_and_too_low_timeouts() {
         client(Duration::from_secs(5));
         client(Duration::from_millis(1));
+    }
+
+    #[test]
+    fn queued_stream_bytes_sums_the_unsent_packets() {
+        let client = client(Duration::from_secs(5));
+        assert_eq!(client.queued_stream_bytes(), 0);
+
+        client.cache.insert("a".to_string(), vec![0; 10]);
+        client.cache.insert("b".to_string(), vec![0; 32]);
+        assert_eq!(client.queued_stream_bytes(), 42);
+
+        client.cache.remove("a");
+        assert_eq!(client.queued_stream_bytes(), 32);
     }
 
     #[test]

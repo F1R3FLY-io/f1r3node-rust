@@ -74,6 +74,8 @@ pub trait TransportLayer {
 
     async fn stream_mult(&self, peers: &[PeerNode], blob: &Blob) -> Result<(), CommError>;
 
+    fn queued_stream_bytes(&self) -> usize { 0 }
+
     /// Disconnect from a peer, shutting down any gRPC channels
     async fn disconnect(&self, peer: &PeerNode) -> Result<(), CommError>;
 

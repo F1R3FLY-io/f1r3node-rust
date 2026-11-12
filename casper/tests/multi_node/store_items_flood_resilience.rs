@@ -16,6 +16,7 @@
 
 use casper::rust::engine::lfs_tuple_space_requester::PAGE_SIZE;
 use casper::rust::engine::running::STORE_ITEMS_REQUEST_MAX_PAGE;
+use casper::rust::engine::state_export_limiter::MAX_PENDING_REQUESTS_PER_PEER;
 use casper::rust::protocol::{casper_message_from_proto, to_casper_message_proto};
 use comm::rust::p2p::packet_handler::PacketHandler;
 use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
@@ -137,5 +138,51 @@ async fn hostile_store_items_request_is_dropped_without_overloading_the_node() {
             CasperMessage::StoreItemsMessage(_)
         ),
         "the post-flood answer must be a StoreItemsMessage"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_store_items_flood_from_one_peer_is_bounded() {
+    crate::init_logger();
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone_with_state_exporter(genesis)
+        .await
+        .unwrap();
+
+    let attacker = attacker_peer();
+    let network = node.tle.test_network();
+    let root = Blake2b256Hash::from_bytes_prost(&node.genesis.body.state.post_state_hash);
+    let packet = store_items_request_packet(&root, 0, PAGE_SIZE);
+
+    let flood = (0..400).map(|_| node.packet_handler.handle_packet(&attacker, &packet));
+    for result in futures::future::join_all(flood).await {
+        result.expect("a flooded request must not error");
+    }
+
+    let answered = network.peer_queue(&attacker).unwrap();
+    assert!(
+        !answered.is_empty() && answered.len() <= MAX_PENDING_REQUESTS_PER_PEER,
+        "400 concurrent requests from one peer must produce between 1 and {} responses, got {}",
+        MAX_PENDING_REQUESTS_PER_PEER,
+        answered.len()
+    );
+    assert!(answered.iter().all(|response| matches!(
+        decode_response(response),
+        CasperMessage::StoreItemsMessage(_)
+    )));
+    network.clear(&attacker).unwrap();
+
+    node.packet_handler
+        .handle_packet(&attacker, &packet)
+        .await
+        .unwrap();
+    assert_eq!(
+        network.peer_queue(&attacker).unwrap().len(),
+        1,
+        "the node must still serve the peer after the flood"
     );
 }
