@@ -3449,8 +3449,8 @@ ordering, and bounded native-stack use.
 
 ## Consensus and compatibility invariants
 
-- Candidate order remains a total order derived from canonical candidate bytes and existing tie semantics.
-- Play and replay select the same COMM and leave byte-identical post-state roots.
+- Candidate order is a function of the state: within one state, the order of every read, and with it a selector's choice, the results and the cost, is determined by that state (the read-order condition of [Correctness criterion: the Rho calculus](#correctness-criterion-the-rho-calculus)). No particular order is required; the order may differ from the existing canonical candidate order and from LMDB mode as long as the criterion holds.
+- Play and replay of one event log perform the same COMMs and end on byte-identical post-state roots of the backend (the replay conditions of [Correctness criterion: the Rho calculus](#correctness-criterion-the-rho-calculus)); replay performs the COMM that each logged event names, whichever of the COMMs enabled at that point play chose ([Claim 3: replay and the canonical selection](#claim-3-replay-and-the-canonical-selection)). No root, byte, candidate order or COMM choice of LMDB mode is required.
 - Persistent produces and consumes preserve reuse semantics.
 - Peek reservations observe data without consuming multiplicity.
 - Multi-channel joins reserve atomically and roll back without leaking decrements.
@@ -3459,7 +3459,1192 @@ ordering, and bounded native-stack use.
 - There is no artificial term-depth, receive-arity, expression-width, or traversal-depth limit.
 - Clone and Drop remain bounded in native-stack use for adversarially deep paths and terms.
 
-The old and new implementations remain simultaneously executable in differential tests until these invariants are proved. The old implementation may remain only as a test oracle after the production switch.
+The old and new implementations remain executable side by side in differential tests while the obligations of [Correctness criterion: the Rho calculus](#correctness-criterion-the-rho-calculus) are being established. The test oracle is the eager reference of that section (tasks 14305 to 14311), not the old implementation: a difference between the two implementations is a defect only when the new one breaks the criterion, for example by firing a COMM that is not enabled or by resting where a COMM is enabled. A different choice among enabled COMMs, a different candidate order, or roots that differ from the old implementation's are not defects. Until the ruling of 2026-11-11 these invariants required one candidate order derived from canonical candidate bytes and existing tie semantics, the same COMM in play and replay with byte-identical post-state roots, and the old implementation as the test oracle after the production switch.
+
+## Correctness criterion: the Rho calculus
+
+This section states when the PathMap durable backend of RSpace is correct. It defines the
+criterion, five obligations that a backend must meet, the eight labels that task 7932 asks every
+witness to name, and three claims. It changes no code. The only proofs it adds are paper proofs,
+marked as such; none of them is mechanised. For every claim, label and obligation it says which
+artefact at the base commit proves it, which only tests it, and which only states it. The base
+commit is the parent of the commit that adds this section to the repository; every "at the base
+commit" statement and every recorded search holds on that tree.
+
+The owner set the criterion on 2026-11-11. The three rulings, quoted exactly:
+
+> "I never approved identical LMDB behavior, what needs bisimilarity is F1r3node/Rholang with the new PathMap backend, not PathMap with LMDB! Bisimilarity must take nondeterminism into account!"
+
+> "We are not re-implementing LMDB in PathMap, we are replacing the RSpace backend implementation with PathMap from LMDB."
+
+> "(a,b) and (b,a) should have different prefixes and the order of iteration may absolutely diverge from the behavior of LMDB so long as it honors Rho Calculus; do not go out of your way to make it behave identically to LMDB so long, which will introduce unnecessary complexity, as long as its Rho Calculus correctness is not compromised! We need maximum performance (time and space) and process equivalence / bisimilarity should respect the native nondeterminism of Rho Calculus!"
+
+On 2026-11-12 the owner added a fourth ruling, quoted exactly:
+
+> "the main thing is that the rholang/f1r3lang interpreter continues to behave as expected with the new pathmap backend, not that the behavior of the pathmap backend is identical to that of the lmdb backend. They can differ at the backend level without changing the expected behavior of the interpreter."
+
+Three consequences of the rulings shape the rest of the section.
+
+1. LMDB mode is not a reference. No root, byte, candidate order or COMM choice of LMDB mode is
+   required of the PathMap backend.
+2. Nondeterminism is part of the semantics that the rulings name: when an operation can complete
+   several COMMs, each of them is a correct outcome. A backend is judged by whether every outcome it
+   produces is a correct one and whether every correct outcome stays available to it, not by whether
+   it makes the same choice as another backend. The rulings of 2026-11-11 name the Rho calculus
+   (Meredith and Radestock 2005), and the ruling of 2026-11-12 the expected behaviour of the
+   interpreter. Claim 1 below compares a backend with an eager reference, and claim 2 compares that
+   reference with the calculus. The reading that this report applies to the rulings, which is the
+   report's reading and not the owner's words, takes as the reference Rholang's eager reduction as
+   the interpreter realises it; it is stated in
+   [Which semantics the criterion names](#which-semantics-the-criterion-names).
+3. An ordered channel list is literal: a receive on (a, b) and a receive on (b, a) wait under
+   different key prefixes.
+
+Passages of this report written before the rulings that still require the existing candidate
+order, COMM choice or roots, namely the [audit closure rule](#audit-closure-rule) and the rows
+`Candidate order` and `Checkpoint and reset` of the
+[observable contract matrix](#observable-contract-matrix), are not restated by this section; where
+they conflict with it, the rulings govern. The
+[consensus and compatibility invariants](#consensus-and-compatibility-invariants) are restated under
+this criterion.
+
+Every claim, label and obligation below carries one of four status words.
+
+| Status | Meaning |
+|---|---|
+| Proved | A named theorem of the Rocq proof assistant under `formal/rocq` states it, or a paper proof in this section does. |
+| Model-checked | A named TLA+ invariant (Lamport 1994) states it, and the named finite configuration lists it for the TLC model checker (Yu, Manolios and Lamport 1999), which checks it in every reachable state of that configuration. Larger configurations are not covered. |
+| Tested | A named test checks instances of it. The store the test runs on is named. |
+| Stated | No artefact at the base commit proves, model-checks or tests it. |
+
+This section did not compile the Rocq files, run TLC or run any test. At the base commit it checked
+that every cited theorem, invariant, test and code item exists under the cited name (see
+[Recorded searches](#recorded-searches)). For the three Rocq files whose theorems it cites,
+`RSpaceCommit.v`, `TwoLevelRSpaceMatchTransaction.v` and `RSpaceDirectManifestIdentity.v`, it also
+checked that each cited declaration lies outside comments, that each cited theorem ends in `Qed`,
+that the three files are listed in `formal/rocq/stack_safe_pda/_CoqProject`, and that neither they
+nor any file they import from that project contains `Admitted`, `admit`, `Axiom`, `Parameter`,
+`Conjecture` or `Abort` outside comments. The imported files do use the standard library's axiom of
+functional extensionality (in `Bag.v`, for example) and section hypotheses (in `SpatialMatcher.v`);
+which axioms a cited theorem rests on is what `Print Assumptions` reports, and this section did not
+run it. For the TLA+ model `RSpaceBagCommit`, `formal/rocq/stack_safe_pda/README.md` records a TLC
+run of 710,528 distinct states reaching depth 5.
+
+The diagram shows the three systems the claims compare and where each claim sits.
+
+```text
+┌───────────────────────────────┐    claim 2    ┌───────────────────────────────┐
+│ Rho calculus (rho_step):      │ ◀───────────▶ │ eager reference: an           │
+│ any enabled COMM may fire     │               │ operation fires any member    │
+└───────────────────────────────┘               │ of its enabled set and        │
+                                                │ rests only when that set      │
+                                                │ is empty                      │
+                                                └───────────────────────────────┘
+                                                                ▲
+                                                                │ claim 1, under the
+                                                                │ backend's obligations
+                                                                ▼
+                                                ┌───────────────────────────────┐
+                                                │ PathMap durable backend       │
+                                                │ ┌──────┐ event log ┌──────┐   │
+                                                │ │ play │ ────────▶ │replay│   │
+                                                │ └──────┘           └──────┘   │
+                                                └───────────────────────────────┘
+                                                  claim 3: replay performs the
+                                                  COMM that its log names
+```
+
+Legend: boxes are the systems the claims compare; a two-headed arrow is a comparison of two systems
+and carries the number of the claim that states it; the arrow inside the backend box carries the
+event log that play writes for replay.
+
+### Terms and symbols
+
+The table defines the terms of this section. Each definition uses only terms defined above it or
+in [Terms and notation](#terms-and-notation).
+
+| Term | Meaning |
+|---|---|
+| Name | A Rholang name, used as a channel. In the implementation a name is a `Par` value, the Rust representation of a process. Two names are equal when `Par::eq` holds (`models/src/rust/par.rs:1102`): the same components and the same `connective_used` flag. `Par::eq` ignores the root `locally_free` summary, the bit set that records which variables occur free in the term. |
+| Datum | A send at rest: a channel, a value (the list of processes sent) and a persistence flag. A persistent datum, written with `!!` in Rholang, stays after it is used. |
+| Ordered channel list | The channels of a receive in the order of its binds, written $`\vec{c} = (c_1, \dots, c_n)`$. Two lists are equal only when they hold equal names in the same order. |
+| Continuation | A receive at rest: an ordered channel list $`\vec{c}`$, patterns $`p_1, \dots, p_n`$, an optional guard (the `where` clause), a body, a persistence flag and a set of peeked positions. Position $`i`$ reads from channel $`c_i`$ with pattern $`p_i`$. A peeked position reads its datum without consuming it; [The eager reference](#the-eager-reference) says how. |
+| Contents | $`S = (D, K)`$. $`D(c)`$ is the multiset of data resting on channel $`c`$ and $`K(\vec{c})`$ the multiset of continuations waiting on the ordered channel list $`\vec{c}`$. A multiset counts repeated occurrences. |
+| Pending terms | $`T`$, the multiset of terms that the interpreter holds and has not yet evaluated. |
+| Root | A 32-byte digest that names one recorded contents. |
+| Recorded roots | $`H`$, a finite map from roots to the contents recorded at them. $`\operatorname{dom} H`$ is the set of recorded roots. |
+| Configuration | $`\kappa = (T, S, H)`$: pending terms, contents and recorded roots. |
+| Operation | A request to the tuple space: a produce (from evaluating a send), a consume (from evaluating a receive) or an install (the bootstrap placement of a system continuation). |
+| Selection | For a continuation on $`\vec{c}`$, one datum occurrence for each position $`i`$, taken from those on channel $`c_i`$: the resting data $`D(c_i)`$ and, when a produce arrives, its datum. A non-persistent occurrence fills at most one position. |
+| Admissible | Said of a selection whose datum at every position $`i`$ matches the pattern $`p_i`$ under Rholang's matcher, and whose combined bindings the guard, if there is one, accepts. |
+| Rendezvous | A continuation together with an admissible selection. |
+| COMM event | The record of a rendezvous in the event log: the `COMM` struct of `rspace++/src/rspace/trace/event.rs`, which holds the consume reference, the produce references, the peeked positions and the repetition counts of the produces. |
+| Class | $`[e]`$, the set of rendezvous whose COMM event is $`e`$. |
+| Enabled set | $`E(S, \mathit{op})`$: the COMM events of the rendezvous that the arriving operation $`\mathit{op}`$ completes with items resting in $`S`$; the arriving datum or continuation takes part in each of them. $`E(S)`$: the COMM events of the rendezvous among the resting items of $`S`$ alone. |
+| Play, replay | Play executes deploys and writes an event log (`RSpace`). Replay re-executes a block from its event log (`ReplayRSpace`). |
+| Backend | The storage under `RSpace` and `ReplayRSpace`: the PathMap durable backend, or the existing radix-history store. |
+| Hot store | The in-memory store through which `RSpace` reads and changes the contents (`HotStore` and `HotStoreState` in `rspace++/src/rspace/hot_store.rs`); the backend loads it and records its contents at roots. |
+| In-memory store | `RSpace` and `ReplayRSpace` over `InMemoryStoreManager`: the radix-history store over in-memory key-value stores. Every cited test that runs `RSpace` or the interpreter runs on it. |
+| Key profile | The byte layout of the store's keys: RhoPathV1 ([RhoPathV1 key model](#rhopathv1-key-model)) or the proposed RhoPathV2 ([`rhopath-v2-wire-grammar.md`](rhopath-v2-wire-grammar.md)). |
+| Canonical candidate order | The total order on candidates defined in `rspace++/src/rspace/candidate_order.rs`; it depends only on the candidates' canonical bytes. Continuations are sorted by the BLAKE2b-256 digest (Aumasson et al. 2013) of their ordering bytes, then by those bytes, then, for byte-identical repetitions only, by store index (`order_candidates_with_index`). Data are sorted by a digest and then by their canonical identity bytes (`RSpaceDataIndex::ordered_channel_entries`). |
+| Selector | A function that picks one member of every non-empty enabled set. Play in `RSpace` uses one today: it tries the waiting continuations in a fixed canonical order and, for a continuation, takes the lexicographically least admissible selection, comparing selections position by position in the continuation's bind order and each position by the canonical candidate order (`extract_guarded_data_candidates` in `rspace++/src/rspace/space_matcher.rs`). |
+
+### Configurations and their decoding
+
+A configuration is everything that the interpreter and the tuple space hold between two steps. Its
+decoding is the Rholang process it stands for: the pending terms in parallel with one send for
+every resting datum and one receive for every resting continuation. The calculus sees a
+configuration only through its decoding.
+
+```math
+\operatorname{dec}(T, S, H) \;=\; t_1 \mid \cdots \mid t_m \;\mid\; \operatorname{send}(d_1) \mid \cdots \mid \operatorname{send}(d_a) \;\mid\; \operatorname{recv}(k_1) \mid \cdots \mid \operatorname{recv}(k_b)
+```
+
+Here $`t_1, \dots, t_m`$ are the occurrences of the pending terms, $`d_1, \dots, d_a`$ those of the
+resting data, $`k_1, \dots, k_b`$ those of the resting continuations, and $`\mid`$ is parallel
+composition. The order of the components does not matter, because parallel composition is
+commutative and associative up to structural equivalence; the empty composition is the stopped
+process `Nil`. The recorded roots $`H`$ do not appear: they are bookkeeping of the store, not part
+of the process. The table gives $`\operatorname{send}`$ and $`\operatorname{recv}`$ in schematic
+Rholang, where `c`, `c1` and `c2` stand for channels, `v` for a value, `p1` and `p2` for patterns,
+`P` for a body and `g` for a guard.
+
+| Resting item | Its decoding |
+|---|---|
+| Datum on `c` with value `v`, not persistent | `c!(v)` |
+| Datum on `c` with value `v`, persistent | `c!!(v)` |
+| Continuation on `(c1, c2)` with patterns `p1`, `p2` and body `P`, not persistent | `for(p1 <- c1 & p2 <- c2){P}` |
+| The same continuation, persistent | `for(p1 <= c1 & p2 <= c2){P}` |
+| The same continuation, peeking | `for(p1 <<- c1 & p2 <<- c2){P}` |
+| The same continuation with guard `g` | `for(p1 <- c1 & p2 <- c2 where g){P}` |
+
+Lists of other lengths decode in the same way, with one bind per position. A join lists its binds
+with `&` inside one receipt. Receipts separated by `;` are not a join: the normalizer turns them
+into nested receives (`rholang/src/rust/interpreter/compiler/normalizer/processes/p_input_normalizer.rs`).
+Rholang's reducer marks every position of a peeking receive as peeked
+(`rholang/src/rust/interpreter/reduce.rs`); the RSpace interface accepts any set of peeked
+positions.
+
+```text
+ configuration (T, S, H)                               decoded process
+┌──────────────────────────────────────────┐
+│ pending terms T                          │ ──────▶  t1 | t2 | ...
+├──────────────────────────────────────────┤
+│ contents S                               │
+│   data D: channel ↦ multiset of data     │ ──────▶  c!(v) | c!!(w) | ...
+│   continuations K: ordered channel       │ ──────▶  for(p1 <- c1 & p2 <- c2){P} | ...
+│   list ↦ multiset of continuations       │
+├──────────────────────────────────────────┤
+│ recorded roots H: root ↦ contents        │ ──────▶  not decoded
+└──────────────────────────────────────────┘
+```
+
+Legend: the box lists the parts of a configuration; each arrow shows what one part contributes to
+the decoded process; `|` is parallel composition and `↦` reads "maps to".
+
+### Steps and labels
+
+A step changes a configuration. Which steps count as visible depends on who observes them: the
+calculus observes only COMMs, while the obligations below also need the result that the store
+returns. The section therefore uses two views of the same steps.
+
+- **Calculus view.** A step is visible exactly when it is a COMM, that is, one application of the
+  COMM rule to the decoded process. Every other step is internal: a term coming to rest (a pending
+  send or receive becomes a resting one, so the decoding does not change), journal writes, soft and
+  hard checkpoints, activation (making a recorded root the current one), reopen (closing and
+  opening the store), compaction (rewriting stored objects without changing what they denote) and
+  transfer (export and import of recorded states). A reset replaces the contents by those recorded
+  at a root; it is not a step of the calculus, and claim 2 compares runs between resets.
+- **Store view.** The visible labels are those of the Rocq model planned by task 14305
+  (`rspace-eager-reference-rocq`): an operation with its result, a checkpoint with the root it
+  returns, and a reset to a root.
+
+```math
+\ell \;::=\; \mathit{op} \mapsto \mathsf{Rested} \;\mid\; \mathit{op} \mapsto \mathsf{Fired}(e) \;\mid\; \mathsf{checkpoint} \mapsto r \;\mid\; \mathsf{reset}(r)
+```
+
+Here $`\mathit{op}`$ is an operation, $`e`$ the COMM event it fired and $`r`$ a root. In the store
+view the remaining steps are of two kinds: interpreter steps, written $`\iota`$, which rewrite
+pending terms that are neither sends nor receives (`new`, `match`, expressions), and internal steps
+of the backend, written $`\tau`$. For a backend state $`s`$, $`s \xrightarrow{\ell} s'`$ is a visible
+step, $`s \xrightarrow{\iota} s'`$ an interpreter step, $`s \xrightarrow{\tau} s'`$ an internal step,
+and $`s \xrightarrow{\tau^{*}} s''`$ a sequence of zero or more internal steps.
+
+| Step | Effect on the configuration | Calculus view | Store view |
+|---|---|---|---|
+| Interpreter step on a term that is neither a send nor a receive | rewrites pending terms | internal | $`\iota`$, the same on every backend |
+| Operation that completes no COMM | the datum or continuation comes to rest | internal | $`\mathit{op} \mapsto \mathsf{Rested}`$ |
+| Operation that completes a COMM | one COMM; the continuation's body becomes pending | visible | $`\mathit{op} \mapsto \mathsf{Fired}(e)`$ |
+| Hard checkpoint | records the root of the contents | internal | $`\mathsf{checkpoint} \mapsto r`$ |
+| Reset to a recorded root | the contents become those recorded at the root | not a calculus step | $`\mathsf{reset}(r)`$ |
+| Soft checkpoint | records a snapshot of the contents without a root | internal | $`\tau`$ |
+| Revert to a soft checkpoint | the contents become the snapshot | not a calculus step | treated as a reset to the snapshot |
+| Clear | the contents become empty | not a calculus step | treated as a reset to the empty contents |
+| Journal, activation, reopen, compaction, transfer | none on the contents or the recorded roots | internal | $`\tau`$ |
+
+A process kill is not a step of either view. What a store must present after a kill and a reopen
+is the subject of task 14311 (`rspace-durable-restart-lifecycle`, rows RL-01 and RL-02).
+
+### Labels C1 to C4 and K1 to K4
+
+Task 7932 requires that "C1 to C4 and K1 to K4 each name their witness". The repository did not
+define the labels before this section. C1 to C4 describe the tuple space; K1 to K4 describe what
+consensus needs from it. None of them compares a backend with LMDB mode.
+
+| Label | Definition |
+|---|---|
+| C1, COMM soundness | Every COMM pairs one continuation on an ordered channel list $`(c_1, \dots, c_n)`$ with exactly one datum per position, the pattern $`p_i`$ matching the datum taken from channel $`c_i`$ and the guard accepting the bindings. Non-persistent data and a non-persistent continuation are consumed exactly once, persistent items remain, and the data that a peeking receive takes are available again after the COMM. |
+| C2, COMM completeness at rest | After every produce, consume or install returns, no rendezvous is enabled: $`E(S) = \emptyset`$. The executable oracle is `enabled_rendezvous()` (`RSpace::enabled_rendezvous`, `ReplayRSpace::enabled_rendezvous`). |
+| C3, ordered channel lists are literal | (a, b) and (b, a) are different ordered channel lists, stored under different key prefixes; a continuation stored for one is never returned for the other. |
+| C4, channel identity | The backend identifies channels exactly as the active production key profile does (RhoPathV1 at the base commit). How each profile relates to name equality is stated in [Channel identity per key profile](#channel-identity-per-key-profile). |
+| K1, roots | The state root is a function of the contents alone. |
+| K2, replay | Replay is fully determined by the event log, so a validator reaches the proposer's post-state root. |
+| K3, play then replay | Play followed by replay of the log that play produced agree on roots and results. |
+| K4, read order | Within one state, the order of every read is a function of that state, so a selector's choice, the results and the cost do not depend on timing. No particular order is required. |
+
+Which obligation carries each label to a backend is stated after the obligations below, and which
+artefact witnesses each label is in [Evidence and gaps](#evidence-and-gaps).
+
+### The eager reference
+
+The eager reference is the tuple space (Gelernter 1985), together with the interpreter, against
+which the criterion judges a backend. It does what Rholang's tuple-space semantics allows and
+nothing more: it has no candidate order, no selector, no hash order and no key profile, it compares
+channels by name equality, and it never sorts a channel list. Its root function $`\rho`$, which
+maps contents to roots, is the backend's. Task 14305 owns its Rocq model and task 14306
+(`rspace-executable-reference-tuplespace`) its executable form; neither exists at the base commit.
+
+The reference takes one step at a time. A step first picks any pending term: the order of
+evaluation is open, and an implementation's scheduler resolves it. A term that is neither a send nor
+a receive takes an interpreter step. A send or a receive becomes an operation, and the reference
+computes the operation's enabled set by exhaustive enumeration with Rholang's matcher. The
+pseudocode follows the literate style of Knuth (1984): every line carries its reason as a comment.
+
+```pseudocode
+reference_step(T, S, H):
+    t := any pending term of T                 // the evaluation order is open
+    T := T - {t}
+    if t is neither a send nor a receive:
+        return (T + interpret(t), S, H) with label iota
+    op := operation(t)                         // produce for a send, consume for a receive
+    E := enabled(S, op)                        // every COMM event that op completes with resting items
+    if E is empty:
+        return (T, rest(S, op), H) with label (op -> Rested)
+    e := any member of E                       // open choice: no member is preferred
+    sel := canonical_selection(e)              // one selection per COMM event (claim 3)
+    S := perform(S, sel)                       // C1: consumes what sel uses; persistent items stay
+    T := T + {body(sel)}                       // the continuation's body with the bindings of sel
+    if sel peeks:
+        T := T + sends_again(sel)              // a peek reads its data: they are sent again
+    if op is persistent:
+        T := T + {t}                           // a persistent operation is issued again
+    return (T, S, H) with label (op -> Fired(e))
+```
+
+An operation rests only when its enabled set is empty; `rest` then adds the arriving datum or
+continuation to the contents. Otherwise the reference fires any member of the set; no member is
+preferred. `canonical_selection` is defined under claim 3: a COMM event can stand for several
+selections that bind differently only when a channel list repeats a channel, and the reference
+performs every event through one of them. `perform` applies the selection as C1 requires: it
+removes every resting non-persistent datum occurrence that the selection uses, and the continuation
+if it was resting and is not persistent; persistent items stay, and the arriving datum or
+continuation does not come to rest. `body(sel)` is the continuation's body with the bindings that the
+patterns of the selection produce.
+
+Two kinds of item are issued again after a COMM, both as the reducer does it. A peeking receive reads
+its data without consuming them: `perform` removes the non-persistent data of the selection as for
+any other COMM, and `sends_again(sel)` issues each of them again as a pending, non-persistent send
+(`produce_peeks` in `rholang/src/rust/interpreter/reduce.rs`, whose comment reads "to preserve peek
+semantics (data should remain after peek read)"). A persistent operation that fires is issued again
+(`continue_produce_process` and `continue_consume_process` in the same file), so a persistent
+operation also rests only when it enables nothing.
+
+Checkpoints and resets act only on the contents and the recorded roots.
+
+```pseudocode
+checkpoint(T, S, H):
+    r := rho(S)                                // the backend's root function
+    return (T, S, H + {r -> S}) with label (checkpoint -> r)
+
+reset(T, S, H, r):
+    require r in dom(H)
+    return (T, H(r), H) with label reset(r)    // the contents recorded at r
+```
+
+The flow of one operation through the reference, and the place where play and replay make their
+choice, is shown below.
+
+```text
+                    ┌────────────────────────────────┐
+                    │ a pending send or receive is   │
+                    │ evaluated: the operation op    │
+                    └───────────────┬────────────────┘
+                                    ▼
+                    ┌────────────────────────────────┐
+                    │ compute the enabled set: every │
+                    │ COMM event that op completes   │
+                    │ with resting items             │
+                    └───────────────┬────────────────┘
+                           empty    │  not empty
+            ┌───────────────────────┴───────────────────────┐
+            ▼                                               ▼
+┌───────────────────────┐                   ┌───────────────────────────────┐
+│ rest: the datum or    │                   │ choose any member e: play     │
+│ continuation joins S  │                   │ takes its selector's member   │
+│ label: op ↦ Rested    │                   │ or a named one; replay takes  │
+└───────────────────────┘                   │ the member its log names      │
+                                            └───────────────┬───────────────┘
+                                                            ▼
+                                            ┌───────────────────────────────┐
+                                            │ perform the canonical         │
+                                            │ selection of e (C1); the      │
+                                            │ body, peeked data and a       │
+                                            │ persistent op become pending  │
+                                            │ label: op ↦ Fired(e)          │
+                                            └───────────────────────────────┘
+```
+
+Legend: boxes are actions of the reference on one operation; arrows give their order; the two
+branches are labelled with the condition on the enabled set that selects them.
+
+Because the reference fires whenever it can, it never leaves two resting items that could react.
+
+**Lemma CC-1 (rest states).** In every configuration that the reference reaches from empty contents
+and no recorded root, $`E(S) = \emptyset`$.
+
+*Proof.* $`E(S)`$ is empty exactly when no rendezvous exists among the resting items of $`S`$. The
+proof is by induction on the number of steps. Empty contents hold no rendezvous. Assume that no
+rendezvous exists among the resting items of any configuration before the step, and consider the
+step.
+
+- Interpreter step or checkpoint: $`S`$ does not change.
+- Rest: $`S' = S + \{x\}`$, where $`x`$ is the arriving datum or continuation, and the step is
+  taken only when $`E(S, \mathit{op}) = \emptyset`$. A rendezvous among the items of $`S'`$ either
+  uses $`x`$, and is then completed by $`\mathit{op}`$ with items resting in $`S`$, so that its COMM
+  event lies in $`E(S, \mathit{op})`$, or does not use $`x`$, and is then a rendezvous among the
+  items of $`S`$. Neither exists.
+- Fire: `perform` only removes resting occurrences, and everything the step issues (the body, data
+  sent again after a peek, a persistent operation) is pending, not resting. Hence $`S'`$ is
+  contained in $`S`$ as a multiset. Admissibility depends only on the items of a selection, so a
+  rendezvous among the items of $`S'`$ is a rendezvous among the items of $`S`$, and none exists.
+- Reset to $`r`$: $`S' = H(r)`$ is the contents of an earlier configuration, recorded there by a
+  checkpoint, and by the induction hypothesis no rendezvous exists among its items. Revert and clear
+  are the same case with the snapshot of an earlier configuration and with the empty contents.
+
+In every case no rendezvous exists among the resting items after the step, so
+$`E(S') = \emptyset`$. ∎
+
+### Obligations O1 to O5
+
+The obligations are what a backend must meet for claim 1. They are stated in the store view. A
+backend state $`s`$ has an abstraction $`\pi(s) = (T(s), S(s), H(s))`$: its pending terms, the
+contents read back through the backend, and its recorded roots with the contents recorded at them.
+The abstraction plays the part of a refinement mapping (Abadi and Lamport 1991): the first three
+obligations relate the backend's steps to the reference's through it. A step of the eager reference
+is written $`\kappa \xrightarrow{\ell}_{\mathrm{ref}} \kappa'`$, and $`\rho`$ is the root function
+that the reference shares with the backend. The first column of the table gives the wording of task
+14304; the second states the obligation precisely.
+
+| Obligation | Wording | Precise statement |
+|---|---|---|
+| O1 | Internal steps preserve contents and recorded roots. | $`s \xrightarrow{\tau} s' \implies \pi(s') = \pi(s)`$. |
+| O2 | Every visible step is a reference step with the same label and result. | $`s \xrightarrow{\ell} s' \implies \pi(s) \xrightarrow{\ell}_{\mathrm{ref}} \pi(s')`$. |
+| O3 | Every reference result is available. | $`\pi(s) \xrightarrow{\ell}_{\mathrm{ref}} \kappa' \implies \exists\, s'', s'.\; s \xrightarrow{\tau^{*}} s'' \xrightarrow{\ell} s' \,\land\, \pi(s') = \kappa'`$. |
+| O4 | Reset to a recorded root yields its contents. | $`r \in \operatorname{dom} H(s) \implies \exists\, s'.\; s \xrightarrow{\mathsf{reset}(r)} s' \,\land\, S(s') = H(s)(r)`$. |
+| O5 | Equal contents give equal roots and different contents different roots. | Every checkpoint of a state $`s`$ returns $`\rho(S(s))`$, and $`S_1 \neq S_2 \implies \rho(S_1) \neq \rho(S_2)`$ for all contents that the backend records. |
+
+O1 also covers the parts of $`\pi(s)`$ other than contents and recorded roots: an internal step of
+the backend leaves the pending terms alone, so the precise statement asks for all of $`\pi(s)`$.
+O2 and O3 speak of whole steps: the evaluation of a pending send or receive together with what the
+store does with it. O3 therefore also asks that the backend can evaluate any pending send or
+receive next, as the reference can; in Rholang that freedom belongs to the interpreter's scheduling,
+which every backend shares.
+
+Claim 1 also needs one condition on the setup rather than on the backend: both sides run the same
+interpreter. Written (I), it says that for every backend state $`s`$, each step
+$`s \xrightarrow{\iota} s'`$ gives $`\pi(s) \xrightarrow{\iota}_{\mathrm{ref}} \pi(s')`$, each step
+$`\pi(s) \xrightarrow{\iota}_{\mathrm{ref}} \kappa'`$ has a step $`s \xrightarrow{\iota} s'`$ with
+$`\pi(s') = \kappa'`$, and interpreter steps change neither the contents nor the recorded roots.
+
+O4 follows from O2 and O3 up to internal steps. It is listed separately because the durable backend
+has no reset operation at the base commit (searches below). On 2026-11-12 the owner decided how its
+reset is to work. The question on reset put to the owner, numbered Q1, recommended one option, and
+the owner's answer, quoted exactly, was "For Q1, go with your recommendation." In this report's
+words, the recommended option is this: a reset is local to the runtime and writes nothing durable,
+and a checkpoint names its own base, the state it builds on, and publishes its successor in one
+durable transaction. Task 14294 (`rspace-durable-history-repository`) adds the operation: its
+`reset(root)` returns a view at the resolved state and writes nothing. O4 asks that the contents of
+that view be those recorded at the root.
+
+The second half of O5 cannot hold as a mathematical fact: a 256-bit digest of unbounded contents has
+collisions. It holds under the assumption that nobody finds a BLAKE2b-256 collision (Aumasson et al.
+2013); the durable objects, and with them the roots, are BLAKE2b-256 digests (`canonical_digest` in
+`rspace++/src/rspace/persistence/canonical.rs`). A formal model may take $`\rho`$ injective as the
+idealisation of that assumption. O5 is what lets the reference use the backend's roots: because
+$`\rho`$ is a function, the reference's checkpoint label is the backend's; because it is injective,
+the reference never records two different contents under one root.
+
+The labels of [Labels C1 to C4 and K1 to K4](#labels-c1-to-c4-and-k1-to-k4) relate to the reference
+and to the obligations as follows.
+
+- C1 holds for every COMM of the reference, by the definitions of `perform` and `sends_again`; O2
+  carries it to a backend.
+- C2 holds for the reference by Lemma CC-1; O2 carries it to a backend, which rests only where the
+  reference rests.
+- C3 is part of the reference's state, which keys continuations by ordered channel lists. A backend
+  that returned a continuation stored for (a, b) to a request for (b, a) would take a step that the
+  reference does not take, and O2 would fail.
+- C4 fixes which channels a backend treats as one. The reference compares channels by name
+  equality, and the two agree exactly when the key profile identifies equal names.
+- K1 is the first half of O5.
+- K2 rests on claim 3 at every operation of a block, and on K1 for the root.
+- K3 is K2 for the log that play wrote; its root half is K1 applied to equal contents.
+- K4 is not required by the calculus. Consensus needs it so that every node computes the same choice
+  and the same cost from the same state.
+
+### Claims
+
+The claims are numbered 1 to 3. They are not the labels C1 to C4. Under the reading that this
+report applies ([Which semantics the criterion names](#which-semantics-the-criterion-names)), claim 1
+is the whole criterion for a backend, and claim 2 is not an obligation on a backend.
+
+| Claim | Systems compared | Strength | Status |
+|---|---|---|---|
+| 1 | PathMap backend against the eager reference, internal steps hidden | Branching bisimilar when the choice is left open; with a fixed selector, a refinement that resolves the choice. | Stated for the PathMap backend. Proved on paper in this section for any backend that meets (I) and O1 to O5 (Theorems CC-2 and CC-3); not mechanised (task 14305). Whether the PathMap backend meets them is not established (tasks 14306 to 14311). |
+| 2 | Eager reference plus interpreter against `rho_step` (`formal/rocq/cost_accounted_rho/theories/RhoReduction.v:68`) | Weak barbed bisimilar on the fragment without patterns and joins; with pattern matching, only soundness and progress hold in general. | Stated. The counterexample with patterns is proved on paper (Proposition CC-4); task 14309 is to witness it on Rholang runs. |
+| 3 | Replay against the event log | Replay performs the logged COMM whichever member it is; selections that build one COMM event are resolved by one canonical rule. | Proved in a Rocq model and tested on the in-memory store for the member that play's selector takes; stated for every other member and for the durable backend (task 14308). |
+
+#### Claim 1: the backend against the eager reference
+
+Branching bisimilarity (van Glabbeek and Weijland 1996) compares two systems whose internal steps
+are hidden, while still requiring that an internal step decides no choice that the other system
+cannot match. Let $`\mathcal{R}`$ be a relation between the states of two labelled transition
+systems with internal steps, and say that a relation has the transfer property when, whenever
+$`p \mathrel{\mathcal{R}} q`$ and $`p \xrightarrow{\alpha} p'`$, either
+
+1. $`\alpha`$ is internal and $`p' \mathrel{\mathcal{R}} q`$, or
+2. there are $`q''`$ and $`q'`$ with $`q \xrightarrow{\tau^{*}} q'' \xrightarrow{\alpha} q'`$,
+   $`p \mathrel{\mathcal{R}} q''`$ and $`p' \mathrel{\mathcal{R}} q'`$.
+
+$`\mathcal{R}`$ is a branching bisimulation when both $`\mathcal{R}`$ and its inverse have the
+transfer property, and two states are branching bisimilar when some branching bisimulation relates
+them. Here the internal steps are the backend's $`\tau`$ steps; the reference has none, and
+$`\iota`$ steps and the store-view labels are visible on both sides.
+
+A backend leaves the choice open when every member of every enabled set can be fired from the same
+state: in play by naming it (`RSpace::process_match_found` fires a named member of
+`enabled_rendezvous()`), and in replay by a log that names it (claim 3). A backend with a fixed
+selector fires, in play, the member $`f(S, \mathit{op}) \in E(S, \mathit{op})`$ that a function
+$`f`$ picks.
+
+**Theorem CC-2 (the obligations give branching bisimilarity).** Let a backend satisfy (I) and O1 to
+O5, and let the eager reference use the backend's root function. Then the relation
+$`\mathcal{R}`$ that relates every reachable backend state $`s`$ to $`\pi(s)`$ is a branching
+bisimulation. Hence every reachable backend state is branching bisimilar to its abstraction.
+
+*Proof.* The transfer property is checked for $`\mathcal{R}`$ and for its inverse, and within each
+for every kind of step.
+
+$`\mathcal{R}`$, backend steps. Let $`s \mathrel{\mathcal{R}} \pi(s)`$ and $`s \xrightarrow{\alpha} s'`$.
+
+- $`\alpha = \tau`$. By O1, $`\pi(s') = \pi(s)`$, so $`s' \mathrel{\mathcal{R}} \pi(s)`$: clause 1.
+- $`\alpha = \iota`$. By (I), $`\pi(s) \xrightarrow{\iota}_{\mathrm{ref}} \pi(s')`$. Clause 2 holds
+  with $`q'' = \pi(s)`$, reached by zero internal steps, and $`q' = \pi(s')`$.
+- $`\alpha = \ell`$ visible. By O2, $`\pi(s) \xrightarrow{\ell}_{\mathrm{ref}} \pi(s')`$. Clause 2
+  holds with $`q'' = \pi(s)`$ and $`q' = \pi(s')`$.
+
+In each case $`s'`$ is reachable because $`s`$ is.
+
+The inverse of $`\mathcal{R}`$, reference steps. Let $`\pi(s) \xrightarrow{\alpha}_{\mathrm{ref}} \kappa'`$.
+The reference has no internal steps, so $`\alpha`$ is $`\iota`$ or visible.
+
+- $`\alpha = \iota`$. By (I), there is $`s'`$ with $`s \xrightarrow{\iota} s'`$ and
+  $`\pi(s') = \kappa'`$. Clause 2 holds with $`q'' = s`$, reached by zero internal steps, and
+  $`q' = s'`$: $`s \mathrel{\mathcal{R}} \pi(s)`$ and $`s' \mathrel{\mathcal{R}} \kappa'`$.
+- $`\alpha = \ell`$ visible. By O3 there are $`s''`$ and $`s'`$ with
+  $`s \xrightarrow{\tau^{*}} s'' \xrightarrow{\ell} s'`$ and $`\pi(s') = \kappa'`$. O1, applied to
+  each internal step from $`s`$ to $`s''`$, gives $`\pi(s'') = \pi(s)`$. So
+  $`s'' \mathrel{\mathcal{R}} \pi(s)`$ and $`s' \mathrel{\mathcal{R}} \kappa'`$, which is clause 2.
+  The states $`s''`$ and $`s'`$ are reachable because $`s`$ is.
+
+O4 is the case $`\ell = \mathsf{reset}(r)`$ of the two visible cases. O5 makes the reference well
+defined with the backend's roots: in the cases $`\ell = \mathsf{checkpoint} \mapsto r`$ it makes the
+reference's root $`\rho(S)`$ the root that the backend returns, and it keeps $`H`$ a function from
+roots to contents. Every case satisfies clause 1 or clause 2, so $`\mathcal{R}`$ is a branching
+bisimulation. ∎
+
+**Theorem CC-3 (a fixed selector gives a refinement, not a bisimulation).** Let a backend satisfy
+(I), O1, O2 and O5, and let it fire in play the member $`f(S, \mathit{op})`$ of a selector $`f`$.
+
+1. Every run of the backend from a state $`s`$ is matched by a run of the reference from
+   $`\pi(s)`$ with the same sequence of $`\iota`$ steps and visible labels. In particular the backend
+   rests an operation only when its enabled set is empty.
+2. If an operation $`\mathit{op}`$ of a pending term of a backend state $`s`$ has two different
+   members in $`E(S(s), \mathit{op})`$, then $`s`$ and $`\pi(s)`$ are not branching bisimilar.
+
+*Proof.* Part 1. The three cases for backend steps in the proof of Theorem CC-2 use only (I), O1 and
+O2. By induction on the length of a backend run, a $`\tau`$ step keeps the abstraction, and an
+$`\iota`$ step or a visible step from a state $`s_k`$ to $`s_{k+1}`$ is a reference step with the
+same label from $`\pi(s_k)`$ to $`\pi(s_{k+1})`$. A label $`\mathit{op} \mapsto \mathsf{Rested}`$ is a
+reference label only when the enabled set is empty, by the definition of the reference.
+
+Part 2. Write $`\kappa = \pi(s)`$ and $`S = S(s)`$, and let $`e`$ be a member of
+$`E(S, \mathit{op})`$ other than $`f(S, \mathit{op})`$. Suppose a branching bisimulation
+$`\mathcal{B}`$ relates $`s`$ and $`\kappa`$. The reference has the step
+$`\kappa \xrightarrow{\mathit{op} \mapsto \mathsf{Fired}(e)}_{\mathrm{ref}} \kappa'`$, because the
+pending term of $`\mathit{op}`$ may be evaluated next and $`e`$ is a member of its enabled set. The
+inverse of $`\mathcal{B}`$ has the transfer property, and the label is visible, so there must be
+$`s \xrightarrow{\tau^{*}} s'' \xrightarrow{\mathit{op} \mapsto \mathsf{Fired}(e)} s'`$. By O1,
+$`S(s'') = S`$, so every step of $`s''`$ that fires $`\mathit{op}`$ fires
+$`f(S, \mathit{op}) \neq e`$, and no step of $`s''`$ carries the label
+$`\mathit{op} \mapsto \mathsf{Fired}(e)`$. Hence no branching bisimulation relates $`s`$ and
+$`\kappa`$. ∎
+
+Such states are reachable. From empty contents, let the pending terms be `c!(1)`, `c!(2)` and
+`for(@y <- c){P}`, and consider a backend run that evaluates the two sends before the receive. Every
+run does so when the receive belongs to a later deploy than the sends, because
+`play_deploys_for_state` (`casper/src/rust/rholang/runtime.rs`) evaluates the deploys of a block one
+after another, awaiting each before it starts the next (by reading). Each send then completes no
+COMM, so by O2 its step is a rest, and the run reaches a state in which both data rest and the
+receive is pending. The receive's operation has two members in its enabled set, the COMM with the
+datum 1 and the COMM with the datum 2, and part 2 applies.
+
+Status: Theorems CC-2 and CC-3 are paper proofs in this section; task 14305 is to mechanise them in
+Rocq. For the PathMap backend, claim 1 is stated: the durable backend is not wired into `RSpace` at
+the base commit (`rspace++/src/rspace/hot_store.rs`: "until task 7931 wires it into RSpace"), and
+whether it meets (I) and O1 to O5 is the subject of tasks 14306 to 14311
+([Evidence and gaps](#evidence-and-gaps)). Below the `RSpace` seam, tests of the durable store
+check parts of O1, O4 and O5 on examples, and theorems of a Rocq model of the durable store prove
+parts of O4 and O5 for that model; the same table lists them.
+
+#### Claim 2: the eager reference against the calculus
+
+`rho_step` (`formal/rocq/cost_accounted_rho/theories/RhoReduction.v`) is the reduction relation of
+the pure Rho calculus over the syntax of `RhoSyntax.v`: the stopped process, input, output, parallel
+composition, dereference and replication (`PNil`, `PInput`, `POutput`, `PPar`, `PDeref`,
+`PReplicate`). Its COMM rule `rs_comm` reduces an input and an output on the same channel and
+substitutes the quoted sent process for the bound name:
+
+```math
+\mathtt{for}(y \leftarrow x)\,P \;\mid\; x!(Q) \;\longrightarrow\; P\{@Q/y\}
+```
+
+The other rules close reduction under parallel composition, structural equivalence and
+replication. An input binds one name variable; there are no patterns and no joins.
+
+A barb is what an observer sees of a process without interacting with it. $`P \downarrow x`$ holds
+when $`P`$ has an input or an output on $`x`$ that is reached through parallel composition and
+replication only (`barb` in `RhoReduction.v`). $`P \Downarrow x`$ holds when $`P`$ reaches by zero or
+more steps a process with an input or an output on a name structurally equivalent to $`x`$
+(`weak_barb_input` and `weak_barb_output` in
+`formal/rocq/cost_accounted_rho/theories/WeakBarbedEquiv.v`). A weak barbed bisimulation (Milner and
+Sangiorgi 1992) between two systems is a relation $`\mathcal{R}`$ such that both $`\mathcal{R}`$
+and its inverse satisfy, whenever $`P \mathrel{\mathcal{R}} Q`$: (a) $`P \downarrow x`$ implies
+$`Q \Downarrow x`$; (b) whenever $`P \to P'`$, there is $`Q'`$ with $`Q \to^{*} Q'`$ and
+$`P' \mathrel{\mathcal{R}} Q'`$. Two states are weakly barbed bisimilar when such a relation relates
+them. A configuration $`\kappa`$ of the reference is observed through its decoding: its barbs are
+those of $`\operatorname{dec}(\kappa)`$, and its steps are the steps of the reference other than
+resets, reverts and clears, because claim 2 compares runs between resets.
+
+With patterns the calculus is extended by Rholang's matcher. Write $`\to_{\mathrm{m}}`$ for the
+relation whose COMM rule reduces `for(p <- x){P} | x!(v)` to $`P`$ with the bindings of the match
+whenever the value `v` matches the pattern `p`, closed under parallel composition and structural
+equivalence as `rho_step` is. $`\to_{\mathrm{m}}`$ is not defined in `RhoReduction.v`; it is the
+relation that the soundness and progress statements below and the counterexample refer to.
+
+Claim 2, as task 14304 words it, has two parts.
+
+- On the fragment without patterns and joins, a configuration of the eager reference and its
+  decoding under `rho_step` are weakly barbed bisimilar. The fragment consists of the configurations
+  whose terms the syntax of `RhoSyntax.v` expresses, so every receive binds one name and matches
+  every send on its channel. The claim relies on the open evaluation order of the reference: an
+  arriving term must be able to wait while another pending term is evaluated first.
+- With pattern matching, only soundness and progress hold in general. Soundness: every COMM of the
+  reference is a step of $`\to_{\mathrm{m}}`$ on the decoded process. Progress: the reference rests
+  only when the arriving term completes no COMM, and at rest no COMM is enabled among the resting
+  items (Lemma CC-1).
+
+Status: stated. `rho_step`, `barb`, `weak_barb_input` and `weak_barb_output` exist, but no artefact
+relates the eager reference to `rho_step`. A proof would be the task
+`rho-eager-machine-calculus-rocq`. The criterion does not require it, because claim 2 is not an
+obligation on a backend ([Which semantics the criterion names](#which-semantics-the-criterion-names));
+the task has not been created and would be created only at the owner's request.
+
+With patterns, bisimilarity fails. Start from contents in which `x!(1)` and `for(@2 <- x){P}` rest:
+the datum 1 does not match the pattern `@2`, so neither has fired. Let the terms `x!(2)` and
+`for(@y <- x){Q}` arrive.
+
+```text
+resting:   x!(1)  and  for(@2 <- x){P}       neither matches the other
+arriving:  x!(2)  and  for(@y <- x){Q}
+
+eager: x!(2) evaluated first     eager: for(@y <- x){Q} first     calculus: a third run
+────────────────────────────     ─────────────────────────────    ─────────────────────────────
+x!(2) meets for(@2 <- x){P}      for(@y <- x){Q} meets x!(1)      x!(2) meets for(@y <- x){Q}
+  ──▶ P runs                       ──▶ Q runs with y = 1            ──▶ Q runs with y = 2
+for(@y <- x){Q} meets x!(1)      x!(2) meets for(@2 <- x){P}      x!(1) and for(@2 <- x){P}
+  ──▶ Q runs with y = 1            ──▶ P runs                       stay: 1 does not match @2
+end: P and Q with y = 1          end: P and Q with y = 1          end: Q with y = 2, x!(1) and
+                                                                       for(@2 <- x){P}
+```
+
+Legend: each column is one run from the same configuration; `──▶` is one COMM followed by the term
+it starts. The two eager columns are the only eager runs, because whichever term arrives first finds
+its resting partner and fires at once. The third column is a run of $`\to_{\mathrm{m}}`$ that no
+eager run produces: the arriving send and the arriving receive react with each other.
+
+**Proposition CC-4 (eager matching with patterns is not weakly barbed bisimilar to the calculus).**
+Take $`P`$ and $`Q`$ to be `Nil`, and let $`\kappa_0`$ be the configuration with the two arriving
+terms pending and the two resting items above. Then $`\kappa_0`$ and
+$`\operatorname{dec}(\kappa_0)`$ under $`\to_{\mathrm{m}}`$ are not weakly barbed bisimilar.
+
+*Proof.* Every run of the reference from $`\kappa_0`$ fires as in one of the two eager columns,
+possibly interleaved with interpreter steps on the `Nil` bodies and with checkpoints, which add no
+term and change no contents. So every configuration reachable from $`\kappa_0`$ can continue to a
+configuration $`\kappa_{\mathrm{end}}`$ with no pending term and empty contents, and every
+configuration reachable from $`\kappa_{\mathrm{end}}`$ also has no pending term and empty contents;
+its decoding is `Nil`, which has no barb. Hence $`\kappa_{\mathrm{end}} \Downarrow x`$ does not hold.
+In the calculus, $`\operatorname{dec}(\kappa_0)`$ reduces by the third column to
+$`X`$ = `x!(1) | for(@2 <- x){Nil}`, which takes no step, because 1 does not match `@2`, and has the
+barb $`X \downarrow x`$. Suppose a weak barbed bisimulation $`\mathcal{R}`$ relates
+$`\operatorname{dec}(\kappa_0)`$ and $`\kappa_0`$. By (b), the step to $`X`$ is matched by some
+$`\kappa`$ reachable from $`\kappa_0`$ with $`X \mathrel{\mathcal{R}} \kappa`$. Follow a run from
+$`\kappa`$ to $`\kappa_{\mathrm{end}}`$. By (b) for the inverse of $`\mathcal{R}`$, each of its steps
+is matched by zero or more steps of $`X`$, which can only be zero, so
+$`X \mathrel{\mathcal{R}} \kappa_{\mathrm{end}}`$. Then (a), applied to the barb
+$`X \downarrow x`$, requires $`\kappa_{\mathrm{end}} \Downarrow x`$, which does not hold. ∎
+
+The divergence comes from firing on arrival, which every RSpace backend does, LMDB mode included. As
+Rholang deploys on public names, the case reads `@"x"!(1) | for (@2 <- @"x") { @"p"!(0) }` followed
+by `@"x"!(2) | for (@y <- @"x") { @"q"!(y) }`; task 14309 (`rholang-durable-outcome-set-witness`,
+row OS-04) is to record on the durable backend that every run ends in the eager outcome and that the
+calculus outcome is not reached.
+
+#### Which semantics the criterion names
+
+The rulings of 2026-11-11 name "Rho Calculus" and its "native nondeterminism", and the ruling of
+2026-11-12 asks that the interpreter "continues to behave as expected" with the new backend. The
+name "Rho Calculus" admits two readings.
+
+- **Eager reading.** The semantics is Rholang's eager tuple-space reduction: an operation fires one
+  of the COMMs it enables and rests only when none is enabled.
+- **Calculus reading.** The semantics is the calculus in which any enabled COMM may fire, extended
+  with Rholang's matcher.
+
+The reading that this report applies is the following. It is the report's reading of the rulings,
+not the owner's words.
+
+- The criterion is the eager reading.
+- The reference is Rholang's eager reduction as the interpreter realises it. The eager reference of
+  this section models it.
+- Claim 1 is the whole criterion for a backend.
+- Claim 2 keeps its content and its status. It describes how the language relates to the calculus
+  and is not an obligation on a backend.
+- The counterexample of Proposition CC-4 is a property of the language on every backend. It comes
+  from firing on arrival, which `RSpace` does above every backend, and no change confined to the
+  storage backend removes it.
+
+O1 to O5, claim 1 and claim 3 do not depend on the reading. The reading decides whether claim 2 is
+part of the criterion, and under the reading applied here it is not.
+
+#### Claim 3: replay and the canonical selection
+
+The event log records COMM events, and replay re-executes a block from it. At each operation replay
+must perform the COMM that the log names, whichever member of the enabled set play chose. Replay in
+`ReplayRSpace` does four things:
+
+1. it keeps, for each position, only the data that the logged COMM lists, with the logged repetition
+   counts (`ReplayRSpace::matches`);
+2. it orders them by the canonical candidate order, as play does;
+3. it runs the guard-aware search that play runs (`extract_guarded_data_candidates` in
+   `rspace++/src/rspace/space_matcher.rs`) and takes the lexicographically least admissible
+   selection (`ReplayRSpace::run_matcher_consume`);
+4. it refuses a COMM that it builds but the log does not contain, with `BugFoundError`
+   (`ReplayRSpace::try_handle_match`).
+
+`COMM::new` sorts the produce references of a COMM by channel hash, produce hash and persistence
+(`rspace++/src/rspace/trace/event.rs`), so the event does not record which position received which
+datum. Each produce reference records the hash of its channel, so when the channels of a
+continuation are pairwise distinct the event still determines which datum went to which position, up
+to identical data. Two selections that build the same event but bind differently therefore need a
+channel list that repeats a channel. For example, let a continuation on (c, c) have patterns `@x` and
+`@y` and body `P`, and let `c!(1)` and `c!(2)` rest. The selections that give `x` the value 1 and `y`
+the value 2, and the reverse, build the same COMM event but run `P` with different bindings.
+
+**Definition (canonical selection).** For a COMM event $`e`$, the canonical selection is the
+lexicographically least admissible selection, positions in the continuation's bind order and each
+position in the canonical candidate order, among the selections that use only data that
+`ReplayRSpace::matches` keeps for $`e`$. It is the selection that replay performs.
+
+Play must perform the canonical selection of whatever event it fires. If it performed another
+member of the class, replay would build the same event, pass the check against the log and bind the
+other way, which diverges the post-state silently; the documentation of
+`ReplayRSpace::run_matcher_consume` describes this defect. Play's present selector already meets
+the rule.
+
+**Lemma CC-5 (play's selector performs canonical selections).** If play's selector fires the COMM
+event $`e`$ through the selection $`\sigma`$, then $`\sigma`$ is the canonical selection of $`e`$,
+judged on the state from which play fired $`e`$.
+
+*Proof.* By the definition of the selector, $`\sigma`$ is the least admissible selection of its
+continuation. Because $`\sigma`$ builds $`e`$, every datum of $`\sigma`$ is one that the filter of
+$`e`$ keeps. Every admissible selection that uses only data the filter keeps is in particular an
+admissible selection, so $`\sigma`$ is not greater than any of them, and $`\sigma`$ is one of them.
+Hence $`\sigma`$ is the least of them, which is the canonical selection of $`e`$. ∎
+
+With this rule the members of an enabled set are COMM events, as the eager reference has them, and
+every member is performed through its canonical selection. The rule removes choice only inside a
+class, that is, only for a continuation whose channel list repeats a channel. Such a list needs a
+join, which lies outside the fragment of claim 2. The Rholang normalizer refuses a join whose binds
+have channels that normalize to equal terms (`ReceiveOnSameChannelsError`); whether a repeated list
+reaches the tuple space at run time, through channel variables bound to equal names, is not
+established here. The RSpace interface accepts such lists, and the tests
+`a_receive_taking_two_data_from_one_channel_removes_both` and
+`play_and_replay_agree_when_the_guard_permutes_a_repeated_channel` build them directly.
+
+Status of claim 3:
+
+- Proved in a Rocq model: `replay_subsequence_preserves_first_admissible_bindings`
+  (`formal/rocq/stack_safe_pda/theories/RSpaceCommit.v`) shows that if the first admissible
+  candidate of a list is kept by a filter, it is also the first admissible candidate of the filtered
+  list. The lemma covers one candidate list; the extension to the lexicographic search over several
+  positions is argued in the documentation of `ReplayRSpace::run_matcher_consume`, not proved.
+  `play_replay_same_ticket_same_result` (same file) shows that two accepted match transitions from
+  the same inputs, the ticket among them, publish the same outcome; its proof rewrites with
+  `transition_is_deterministic`.
+- Proved in a Rocq model, for play's selector: `certified_acceptance_is_first_lexicographically_admissible`
+  (`formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceMatchTransaction.v`) shows that a certified
+  acceptance of the modelled match search is the selection that the recursive search oracle returns,
+  the lexicographically first admissible one. By Lemma CC-5 it is the canonical selection of the
+  event it builds.
+- Tested on the in-memory store, for the member that play's selector takes:
+  `play_and_replay_agree_on_a_guarded_selection` and
+  `play_and_replay_agree_when_the_guard_permutes_a_repeated_channel` (the class case) record a COMM
+  in play, replay its log, and check the same selection and the same post-state root.
+  `t6_play_and_replay_enumerate_identically` checks that play and replay enumerate the same enabled
+  set in the same order from one state.
+- Stated: replay of a member other than the selector's, the refusal of a logged COMM that is not
+  enabled, and every part of the claim on the durable backend. Task 14308
+  (`rspace-durable-replay-every-choice`, rows RP-01 to RP-05) is to test them; its body calls this
+  claim "claim C3", which here means claim 3, not the label C3.
+
+### Channel identity per key profile
+
+Contents are keyed by channel, so the key profile decides which channels the store treats as one.
+Under the decoding, two equal names are one channel of the calculus. If the store kept a datum on
+one of them and a continuation on the other under different keys, the decoded process would have an
+enabled COMM that the store never fires.
+
+For a `Par` value, `impl RhoPathEncode for Par` (`models/src/rust/rspace_path.rs`) defines two byte
+strings. The identity is `stable_hash_bytes()`, the bincode encoding, whose field program
+`PAR_PROGRAM` (`models/src/rust/rholang/bincode_schema.rs`) writes the components, an empty root
+`locally_free` and `connective_used`; the identity therefore ignores the root `locally_free`, as
+`Par::eq` does. The structure is `encode_trie_path` (`models/src/rust/canonical_path.rs`). It takes
+its escape arm for every `Par` that `eval_stable_par` rejects, which includes every `Par` with a
+non-empty root `locally_free`, and the escape arm writes the protobuf encoding, which keeps
+`locally_free` (`models/src/rust/rholang/protobuf_schema.rs`: "`locally_free` is NOT blanked
+here"). The section
+[ChannelImageV2 logical channel identity](#channelimagev2-logical-channel-identity) records the same
+mismatch. RCI2, the channel image of RhoPathV2, is defined in [Terms and notation](#terms-and-notation).
+The table compares the keys that the two profiles build; both key builders, `RhoPathV1` and
+`RhoPathV2`, are defined in `rspace++/src/rspace/rho_path.rs`.
+
+| | RhoPathV1, active at the base commit | RhoPathV2, not active |
+|---|---|---|
+| Datum key of a datum on channel $`c`$ | `RHP\x01`, the datum kind, a frame with the structure of $`c`$ and one with its identity (`RhoPathV1::datum_prefix`), then the datum's own frames | `RHP\x02`, the datum kind, a frame with the RCI2 image of $`c`$, then frames with the datum's structure and identity (`RhoPathV2::datum_key`) |
+| Continuation prefix of $`(c_1, \dots, c_n)`$ | `RHP\x01`, the continuation kind, a version byte, a frame with the identity of each channel in order, a group end (`RhoPathV1::continuation_prefix`) | `RHP\x02`, the continuation kind, a version byte, the count $`n`$ as eight big-endian bytes, a frame with the RCI2 image of each channel in order, a group end (`RhoPathV2::continuation_prefix`) |
+| Join prefix of $`c`$ | `RHP\x01`, the join kind, a version byte, a frame with the identity of $`c`$, a group end (`RhoPathV1::join_prefix`) | `RHP\x02`, the join kind, a frame with the RCI2 image of $`c`$, a group end (`RhoPathV2::join_prefix`) |
+| Agreement with name equality | continuation and join keys agree; datum keys are finer, because their structure frame also separates root `locally_free` | every key agrees, as far as the RCI2 image does |
+| (a, b) against (b, a) | different prefixes | different prefixes |
+| Evidence | by reading the code above; the tests below check single values | by reading; `image_is_exactly_a_function_of_par_equality` over a test corpus |
+
+Can two terms that are equal names reach the store under different keys?
+
+- **RhoPathV1.** For datum keys, yes, if a channel with a non-empty root `locally_free` reaches a
+  produce or a consume. No test at the base commit establishes or refutes that the interpreter ever
+  presents such a channel. If it did, a produce on one name would still find continuations waiting
+  on the other, because continuation keys agree, but a datum resting under one name would be
+  invisible to a consume on the other: the COMM would be missed exactly when the datum rests first,
+  a failure of C2 measured by name equality. The hot store's data index keys data the same way
+  (`RSpaceDataIndex::ordered_channel_entries` reads under `RhoPathV1::datum_prefix`), so the
+  question applies to the present store as well as to the durable backend. The durable admission
+  check `validate_data_key` (`rspace++/src/rspace/persistence/semantic.rs`) recomputes the structure
+  frame from the decoded channel and refuses a key whose frame differs ("channel structure disagrees
+  with decoded channel"). By reading, it refuses every datum key built from a channel with a
+  non-empty root `locally_free`; no test checks this.
+- **RhoPathV2.** No, as far as the RCI2 image is a function of name equality. Every key carries only
+  the RCI2 image of each channel. `image_is_exactly_a_function_of_par_equality`
+  (`models/tests/channel_image_v2.rs`) checks, for every value of its test corpus, that changing only
+  the root `locally_free` leaves the image unchanged and that flipping `connective_used` changes it.
+  RhoPathV2 is not active: outside tests and benchmarks, its key functions are called only by the
+  adapters of `models/src/rust/rspace_path.rs` and by `OrderedReceiveView::admit_rci2_v2`
+  (`rspace++/src/rspace/ordered_receive.rs`), and nothing calls those (searches below). Its
+  activation is task 6021.
+
+Supporting tests, each on one value: `equality_hashing_and_ordering_ignore_only_root_locally_free`
+(`models/tests/pathmap_par.rs`) checks that `Par` equality, ordering and hashing do not distinguish
+a different root `locally_free`, and
+`paired_identity_keeps_structural_image_separate_from_legacy_digest`
+(`models/tests/channel_image_v2.rs`) checks that the image and the legacy digest of the identity do
+not distinguish it either. The durable backend reads continuations through
+`RhoPathV1::continuation_prefix` in `continuations_for_channels_at`
+(`rspace++/src/rspace/persistence/durable/mod.rs`), to which the view's `continuations_for_channels`
+and the `get_continuations_canonical` method of the durable view reader `DurableViewReaderV1`
+(`rspace++/src/rspace/persistence/durable/view_reader.rs`) both delegate.
+
+The durable backend uses RhoPathV1 at the base commit. A measurement of both key grammars (pgmcp
+experiment 487, 2026-11-12) gave, by its pre-registered rule, the outcome that the key grammar
+becomes a parameter of the store's semantic profile (the identifier of the types and encodings of a
+store, which every state of the store records), and that the choice between the grammars is
+made at cutover with a workload benchmark. The owner expects RhoPathV2 to prove superior. This
+section therefore describes both profiles, and C3 and C4 are stated for whichever profile is active.
+Both keep ordered channel lists literal, so C3 does not separate them.
+
+### Cost
+
+Cost here means the consensus cost of a deploy. `RuntimeBudget::total_cost`
+(`rholang/src/rust/interpreter/accounting/mod.rs`) reports it as the number of committed
+`BillableKind::Comm` events, because `RuntimeBudget::consensus_cost_unit` counts 1 for that kind and
+0 for every other kind (`Reduction`, `Primitive`, `Substitution`). The reducer reserves one such
+event at the start of every evaluated send and every evaluated receive
+(`self.metering.reserve_comm(send_eval_cost())` and
+`self.metering.reserve_comm(receive_eval_cost())` in `rholang/src/rust/interpreter/reduce.rs`;
+`reserve_comm` in `rholang/src/rust/interpreter/metering.rs`); outside tests these are its only
+callers (searches below). On the in-memory store, `consensus_cost_excludes_per_op_gas`
+(`rholang/tests/accounting/cost_accounting_spec.rs`) checks that a deploy of one send costs 1
+whether the value sent is a literal or an arithmetic expression that charges many primitive
+operations.
+
+Which sends and receives a run evaluates depends on which continuation bodies run, that is, on the
+members fired. Two runs that fire different members of one enabled set can cost different amounts.
+Cost is therefore observable only along one log: a validator that replays the log performs the same
+members (claim 3) and, by reading of the reducer, evaluates the same sends and receives. On the
+in-memory store,
+`concurrent_rspace_architecture_repro_play_replay_costs_must_match_for_interacting_bodies`
+(`rholang/tests/concurrent_rspace_architecture_repro_spec.rs`) checks that play and replay of one
+term whose bodies interact charge the same, and
+`concurrent_rspace_architecture_repro_comm_cost_must_be_trigger_order_independent` (same file)
+checks that one COMM costs the same whether the send or the receive comes first in the term. Task
+14309 (row OS-03) is to compare the cost of play and replay on the durable backend.
+
+Candidate visit order, recorded as required: at the base commit, by reading, no charged quantity
+depends on the order in which candidates are visited, except through the member that a selector
+fires.
+
+- The matcher charges nothing: `rholang/src/rust/interpreter/matcher/list_match.rs` says "there is
+  no cost accounting anywhere in this module", and no file of the matcher directory refers to the
+  metering except that comment (searches below).
+- RSpace charges nothing: `RSpace::enabled_rendezvous` documents "Costs matcher time, not
+  phlogiston", and no file under `rspace++/src` refers to the metering (searches below).
+- Guards are evaluated once for every complete assignment that the search tries, so the number of
+  guard evaluations does depend on the visit order. They are evaluated by `guard_passes`
+  (`rholang/src/rust/interpreter/matcher/match.rs`), which receives only the guard and the bound
+  values and has no access to the metering, so the evaluations are not charged.
+- The member that a selector fires decides which bodies run, and with them which sends and
+  receives are charged. K4 requires that member to be a function of the state. The present selector
+  visits candidates in the canonical candidate order, which
+  `the_canonical_candidate_order_is_a_pure_function_of_the_candidates` tests to be a function of the
+  candidates (row K4 of [Evidence and gaps](#evidence-and-gaps)).
+- The diagnostic substitution weight, the encoded length of the substituted term
+  (`substitute_and_charge` in `rholang/src/rust/interpreter/substitute.rs`), depends on the member,
+  not on the visit order, and counts 0 towards the consensus cost. A comment in the same file still
+  says that changing it would be "a consensus fork"; the accounting code read here does not bear
+  that out, and this section does not resolve the difference.
+- `RuntimeBudget::cost_trace_digest` is called only from tests and from two fuzz targets under
+  `fuzz/fuzz_targets` (searches below), so it is not consensus-visible at the base commit.
+
+This section found no test that checks the statements of this list (searches below); the test
+named in the list checks the candidate order, not the cost.
+
+### Evidence and gaps
+
+The table maps every label and obligation to the artefacts that exist at the base commit and to the
+tasks that close the gap. "In-memory" names the store of the test; "sealed DAG" names tests that
+drive durable transactions directly, without `RSpace`. "Durable store" names tests that run the
+durable backend on a store in a scratch directory, also without `RSpace`: they publish contents from
+a hot store through the backend's single writer (`DurableRSpaceAuthorityV1`), install a hand-built
+checkpoint image, or create an empty store (`create_empty_store_v1`), and read the result through a
+view that they recover from the directory (`recover_read_authority`); the channels they write are
+strings, and the tests of an empty store write none. DI-01 to DI-04, VR-02, VR-03, VR-07, SG-01 and
+SG-02 are the IDs that these tests carry in
+[`generation-checkpoint-invariant-catalog-2026-08-28.md`](../pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md).
+
+| Label | Artefacts at the base commit | Status | Gap, and the task that closes it |
+|---|---|---|---|
+| C1 | `certified_acceptance_has_exact_channel_vector` (`TwoLevelRSpaceMatchTransaction.v`): the channels of the selected candidates are the requested channels, position by position. `CommittedMultiplicityAndArrivalAreExact` (`RSpaceBagCommit.tla`, configuration `RSpaceBagCommit.cfg` with two keys and counts from 0 to 2). In-memory: `t5_a_named_non_least_selection_fires_exactly_itself` (the named datum is consumed and the continuation removed), `a_receive_taking_two_data_from_one_channel_removes_both`, `persistent_produce_should_be_available_for_multiple_matches` (one persistent datum fills both positions of a receive on (c, c)), `producing_then_consuming_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (RSpace alone removes peeked data), `eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_proceed` (through the reducer, the peeked data are on the channel again in both arrival orders). | Proved in a Rocq model; model-checked; tested in-memory. Not tested on the durable backend. | 14306 (RC-01, in-memory first), 14307 (RC-01 to RC-03 on the durable backend), 14310 (JO-01). |
+| C2 | Oracle `enabled_rendezvous()` (`RSpace::enabled_rendezvous`, `ReplayRSpace::enabled_rendezvous`, `enumerate_enabled_rendezvous`). In-memory, on planted states: `t2_the_enumeration_is_complete` (every datum a bind can match is enumerated, and a guard removes exactly the data it rejects), `t8_a_join_enumerates_its_cross_product`, `t7_teeth_an_unsatisfiable_state_enumerates_to_nothing`. Lemma CC-1 for the reference. | Oracle tested in-memory. An empty enabled set after operations is asserted only by t7, in states where nothing can fire; no test asserts it after operations that could fire (searches below). Proved on paper for the reference; stated for every backend. | 14306 (RC-02), 14307, 14310 (JO-02); 14305 for the Rocq model. |
+| C3 | Key grammar: `RhoPathV1::continuation_prefix` and `RhoPathV2::continuation_prefix` frame the channels in the given order; `continuations_for_channels_at` reads by `RhoPathV1::continuation_prefix(channels)`. Durable store: `a_receive_group_is_read_only_at_its_literal_ordered_prefix` (VR-07: with continuations stored under (a, b), under (b, a) or under both, a read of (a, b), (b, a), (a), (b) or (a, a) returns exactly the continuations stored under that list). Sealed DAG: `ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not` stores a continuation under (a, b) and another under (b, a); both insertion orders give the same DAG version and manifest roots, while the legacy radix history returns the latest continuation for both lists. | Holds by construction of the keys, by reading. Tested on the durable store, below the `RSpace` seam (VR-07). Not tested through `RSpace` on the durable backend. | 14310 (JO-03 and its red control), 14306 (RC-04). |
+| C4 | `impl PartialEq for Par`, `impl RhoPathEncode for Par`, `RhoPathV1::datum_prefix`, `PAR_PROGRAM`, `eval_stable_par`; `equality_hashing_and_ordering_ignore_only_root_locally_free`, `paired_identity_keeps_structural_image_separate_from_legacy_digest`, `image_is_exactly_a_function_of_par_equality`. | The durable backend uses RhoPathV1, by reading. RhoPathV1 datum keys separate equal names that differ in root `locally_free`, by reading, untested; whether such a name reaches a produce or a consume is not established. | No task is named here. The choice between the key grammars is made at cutover with a workload benchmark (pgmcp experiment 487), and a witness of C4 for the chosen profile follows it. |
+| K1 | The durable state root (`DurableStateRootV1`) is the digest of the state's semantic manifest (`SemanticStateManifestV1`), which holds the schema epoch, the semantic profile and three namespace roots, the roots of the data, of the continuations and of the joins. Durable store: `durable_state_root_is_a_function_of_contents_across_insertion_orders_and_reopen` (DI-01: fourteen stores build one contents of seven items, three data, two continuations and two joins, in eleven insertion orders, eight stores with one checkpoint and six with one checkpoint for each of three units taken in every order; all publish one durable state root, and each reopened store recovers that root and resolves it to the same namespace roots). `independently_created_empty_stores_share_the_empty_state_manifest_digest` (SG-02, the empty contents: two stores that `create_empty_store_v1` creates in two directories, each with its own store identifier, record the same manifest digest, and with it the same durable state root, which equals the digest of the manifest of the empty contents as the test encodes it; both stores reopen at the same state). A manifest can also carry a `legacy_history_root`; `resolve_retained_state` refuses a root whose manifest carries one (`a_manifest_with_a_legacy_history_root_does_not_resolve`, DI-04, on stores installed from hand-built checkpoint images). Rocq model of the durable store (`RSpaceDirectManifestIdentity.v`), to whose theorems the catalog binds DI-01 to DI-04 as partially entailed, with executable obligations that the Rust code refines the model: a digest is an injective code, so the collision resistance of BLAKE2b-256 is part of the model and not proved, and the namespace roots are opaque numbers. `direct_root_is_function_of_semantic_roots`: two stores of one semantic profile whose current manifests have schema epoch 1, that profile and no legacy history root have equal published roots, the digests of their current manifests, exactly when their current namespace roots are equal; nothing else of the two stores enters. `direct_resolution_is_exact` and `direct_and_preserved_sessions_cannot_resolve_each_other`: no manifest that carries a legacy history root resolves in any store of the model. Sealed DAG: `ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not` (two insertion orders, same version and roots) and `same_base_and_payload_seal_to_identical_objects` (same base and payload, identical objects). `validate_node_shape` refuses non-canonical node shapes. In-memory: `clear_should_reset_to_the_same_hash_on_multiple_runs` (after a clear, the checkpoint root is the empty root again). | Proved in a Rocq model for the step from the namespace roots to the root (`direct_root_is_function_of_semantic_roots`). Tested on examples: on the durable store, below the `RSpace` seam, for one contents across insertion orders, checkpoint schedules and reopen (DI-01) and for the empty contents across two independently created stores (SG-02); on sealed DAGs; and, for the empty contents, in-memory. Not established in general: the model treats the namespace roots as opaque, and the catalog leaves to executable obligations that each namespace root is a function of the items it holds and that the Rust code refines the model. | 14307 (LC-03), 14308 (RP-03). |
+| K2 | `ReplayRSpace::run_matcher_consume`, `ReplayRSpace::matches`, `ReplayRSpace::try_handle_match`; `replay_subsequence_preserves_first_admissible_bindings` (`RSpaceCommit.v`); `certified_acceptance_is_first_lexicographically_admissible` (`TwoLevelRSpaceMatchTransaction.v`: a certified acceptance of the modelled match search is the lexicographically first admissible selection, by Lemma CC-5 the canonical selection of its event). In-memory: `play_and_replay_agree_on_a_guarded_selection`, `play_and_replay_agree_when_the_guard_permutes_a_repeated_channel`, `t6_play_and_replay_enumerate_identically`. Through the interpreter, in-memory: `epathmap_heavy_record_then_replay_reproduces_the_log`. | Proved in a Rocq model for one candidate list and for the modelled search of play's selector; tested in-memory, for the member that play's selector takes. Stated for other members and on the durable backend. | 14308 (RP-01 to RP-05). |
+| K3 | `play_replay_same_ticket_same_result` with `transition_is_deterministic` (`RSpaceCommit.v`); `PlayReplayTraceEquivalent` (`RSpaceBagCommit.tla`, the same configuration as C1). In-memory: `play_and_replay_agree_on_a_guarded_selection`, `creating_a_comm_event_with_peek_consume_first_should_replay_correctly` (a peek COMM replays to the same root), `picking_n_continuations_from_m_persistent_waiting_continuations_should_replay_correctly`. Through the interpreter, in-memory: `epathmap_heavy_record_then_replay_reproduces_the_log` (logs and checkpoint roots compared). | Proved in a Rocq model for one accepted transition; model-checked; tested in-memory. Not tested on the durable backend. | 14307 (LC-04), 14310 (JO-05), 14309 (OS-03). |
+| K4 | In-memory: `t4_the_enumeration_is_deterministic` (the enumeration does not depend on the order in which channels were written, and repeats identically), `the_canonical_candidate_order_is_a_pure_function_of_the_candidates`. Replay's COMM order: `distinct_projection_is_canonical_across_all_insertion_orders`, `comm_order_is_total_and_consistent_with_identity`. Durable store: `lazy_reads_equal_the_eager_enumerations_of_every_key` (VR-02: for 3 seeded and 64 generated published states, the view's eager enumerations return the contents written, and each per-key read of the durable view reader returns, in the same order, what the eager enumeration of the same state returns for that key). | Tested in-memory and on the ordering functions. On the durable store, below the `RSpace` seam, the per-key reads agree, in order, with the eager enumerations of the same state (VR-02); that this order is a function of the state is not tested there. | 12399 (`rspace-hotstore-from-durable-reader`, VR-04). |
+| O1 | None at the RSpace seam: the durable backend is not wired into `RSpace`. Durable store, reopen at a published state: in DI-01 each reopened store recovers the root published before it was closed and resolves it to the same namespace roots; in `every_retained_state_resolves_to_its_own_roots_and_nothing_else_resolves` (DI-02) every state recorded before a reopen resolves to its own namespace roots after it; in `an_empty_store_reopens_at_generation_one_with_empty_namespaces` (SG-01) a store that `create_empty_store_v1` creates opens from its directory at the state that its creation published, whose manifest is that of the empty contents, and its three namespaces enumerate nothing. | Stated at the `RSpace` seam. Below it, reopen at a published state is tested on examples (DI-01, DI-02, SG-01). | 14307 (LC-01), 14311 (RL-01, RL-02). |
+| O2 | No executable reference exists. The C1 evidence covers single COMMs; `t2_the_enumeration_is_complete` covers the oracle. | Stated. | 14306 (RC-01, in-memory), 14307 (durable backend), 14305 (Rocq). |
+| O3 | In-memory: `t5_a_named_non_least_selection_fires_exactly_itself` (play fires a named member other than the selector's through `RSpace::process_match_found`). | Tested for one named member in play. Replay of every member is not tested. | 14308 (RP-01, RP-05), 14305. |
+| O4 | In-memory: `reset_should_change_the_state_of_the_store_and_reset_the_trie_updates_log` (no change survives a reset to an earlier root), `revert_to_soft_checkpoint_should_revert_the_state_of_the_store_to_the_given_checkpoint` (no change survives a revert), `clear_should_reset_to_the_same_hash_on_multiple_runs`. The durable backend has no reset operation (searches below). Durable store, the resolution of a recorded root and reads at it: DI-02 (each of three retained states resolves to exactly its own manifest and namespace roots, and seven digests that name no retained state are refused, among them a manifest that is still indexed but no longer retained); `read_handle_at_leases_the_view_generation_and_reads_the_resolved_state` (a read handle that the view issues at each of two resolved states reads that state's namespace roots, and a state resolved in another store is refused); `lazy_reads_return_the_pinned_state_after_a_successor_is_published` (VR-03: a reader given the roots of a published state returns that state while the writer holds a published successor and after the writer is torn down, and so does a reader on a view recovered after the successor was published, given the same roots). Rocq model of the durable store (row K1): `direct_resolution_is_exact`: on a store that counts as naming a state exactly the roots of its current and retained states, each of whose manifests has schema epoch 1 and is stored under its own digest, the root of each such state resolves after one read to that state's namespace roots when its manifest has the store's profile and no legacy history root, and to a refusal otherwise, and every other root is refused with no read. | Tested in-memory. On the durable store, below the `RSpace` seam, the resolution of a retained root and reads at its roots are tested (DI-02, VR-03); the resolution is proved in the Rocq model (`direct_resolution_is_exact`). The reset itself is stated: the operation does not exist at the base commit. | 14294 (`rspace-durable-history-repository`: `reset(root)` returns a view at the resolved state and writes nothing), 14307 (LC-02), 14311 (RL-01). |
+| O5 | Equal contents: as K1. Different contents: `states_that_differ_in_one_endpoint_have_different_roots` (DI-03, durable store: from a state with one datum, one continuation and one join, four checkpoints each change one endpoint, namely a new datum, that datum's multiplicity from 1 to 2, a new continuation and a new join, and each changes the durable state root and, of the three namespace roots, only that endpoint's). The roots are BLAKE2b-256 digests (`canonical_digest`). Rocq model of the durable store (row K1): by `direct_root_is_function_of_semantic_roots`, two stores of one semantic profile whose current manifests have schema epoch 1, that profile and no legacy history root, and whose current namespace roots differ, have different published roots. | Equal contents: as row K1. Different contents: tested on the four single-endpoint differences of DI-03, on the durable store, below the `RSpace` seam; proved in the Rocq model for different namespace roots (`direct_root_is_function_of_semantic_roots`); in general stated, and true at best under collision resistance. | 14307 (LC-03), 14308 (RP-03). |
+
+Some existing artefacts pin the present selector or the legacy store. This section marks them as
+regressions of the present implementation, not acceptance evidence for this criterion; a correct
+backend that chooses differently may fail them.
+
+- Selector regression: `t1_the_enumeration_head_is_the_selector_choice` checks that the first
+  member of the enumeration is the selection that `consume` takes; it pins the selector.
+- Selector regression: `certified_acceptance_is_first_lexicographically_admissible`, read as a
+  statement about which member play fires, pins the selector. Read as a statement about the
+  selection inside one class, it remains evidence for the canonical selection of claim 3 (row K2).
+- Store regression: the two legacy roots that
+  `ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not` asserts in hexadecimal
+  pin the radix-history store.
+
+### Recorded searches
+
+Every cited theorem, invariant, test and code item was found at the base commit by the fixed-string
+search on its line below, run from the repository root with ripgrep. A line that prints nothing
+means that the cited name does not exist under that name; a cited name replaced by one that does
+not exist therefore makes its search print nothing.
+
+```bash
+# Formal models
+rg -n -F 'Inductive name : Type :=' formal/rocq/cost_accounted_rho/theories/RhoSyntax.v
+rg -n -F 'PReplicate : proc -> proc' formal/rocq/cost_accounted_rho/theories/RhoSyntax.v
+rg -n -F 'Inductive rho_step :' formal/rocq/cost_accounted_rho/theories/RhoReduction.v
+rg -n -F '| rs_comm :' formal/rocq/cost_accounted_rho/theories/RhoReduction.v
+rg -n -F 'Inductive barb :' formal/rocq/cost_accounted_rho/theories/RhoReduction.v
+rg -n -F 'Definition weak_barb_input (' formal/rocq/cost_accounted_rho/theories/WeakBarbedEquiv.v
+rg -n -F 'Definition weak_barb_output (' formal/rocq/cost_accounted_rho/theories/WeakBarbedEquiv.v
+rg -n -F 'Theorem transition_is_deterministic :' formal/rocq/stack_safe_pda/theories/RSpaceCommit.v
+rg -n -F 'Theorem play_replay_same_ticket_same_result :' formal/rocq/stack_safe_pda/theories/RSpaceCommit.v
+rg -n -F 'Lemma replay_subsequence_preserves_first_admissible_bindings :' formal/rocq/stack_safe_pda/theories/RSpaceCommit.v
+rg -n -F 'Corollary certified_acceptance_has_exact_channel_vector :' formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceMatchTransaction.v
+rg -n -F 'Theorem certified_acceptance_is_first_lexicographically_admissible :' formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceMatchTransaction.v
+rg -n -F 'Theorem direct_root_is_function_of_semantic_roots :' formal/rocq/stack_safe_pda/theories/RSpaceDirectManifestIdentity.v
+rg -n -F 'Theorem direct_resolution_is_exact :' formal/rocq/stack_safe_pda/theories/RSpaceDirectManifestIdentity.v
+rg -n -F 'Theorem direct_and_preserved_sessions_cannot_resolve_each_other :' formal/rocq/stack_safe_pda/theories/RSpaceDirectManifestIdentity.v
+rg -n -F 'theories/RSpaceCommit.v' formal/rocq/stack_safe_pda/_CoqProject
+rg -n -F 'theories/TwoLevelRSpaceMatchTransaction.v' formal/rocq/stack_safe_pda/_CoqProject
+rg -n -F 'theories/RSpaceDirectManifestIdentity.v' formal/rocq/stack_safe_pda/_CoqProject
+rg -n -F 'apply functional_extensionality' formal/rocq/stack_safe_pda/theories/Bag.v
+rg -n -F 'CommittedMultiplicityAndArrivalAreExact ==' formal/tlaplus/stack_safe_pda/RSpaceBagCommit.tla
+rg -n -F 'PlayReplayTraceEquivalent ==' formal/tlaplus/stack_safe_pda/RSpaceBagCommit.tla
+rg -n -F 'Bags == [Keys -> 0..MaxCount]' formal/tlaplus/stack_safe_pda/RSpaceBagCommit.tla
+rg -n -F 'INVARIANT CommittedMultiplicityAndArrivalAreExact' formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg
+rg -n -F 'INVARIANT PlayReplayTraceEquivalent' formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg
+rg -n -F 'Keys = {key0, key1}' formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg
+rg -n -F 'MaxCount = 2' formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg
+rg -n -F 'The checked model has 710,528 distinct states and reaches depth 5.' formal/rocq/stack_safe_pda/README.md
+# Tests
+rg -n -F 'fn t1_the_enumeration_head_is_the_selector_choice(' rspace++/tests/enabled_rendezvous_spec.rs
+rg -n -F 'fn t2_the_enumeration_is_complete(' rspace++/tests/enabled_rendezvous_spec.rs
+rg -n -F 'fn t4_the_enumeration_is_deterministic(' rspace++/tests/enabled_rendezvous_spec.rs
+rg -n -F 'fn t5_a_named_non_least_selection_fires_exactly_itself(' rspace++/tests/enabled_rendezvous_spec.rs
+rg -n -F 'fn t6_play_and_replay_enumerate_identically(' rspace++/tests/enabled_rendezvous_spec.rs
+rg -n -F 'fn t7_teeth_an_unsatisfiable_state_enumerates_to_nothing(' rspace++/tests/enabled_rendezvous_spec.rs
+rg -n -F 'fn t8_a_join_enumerates_its_cross_product(' rspace++/tests/enabled_rendezvous_spec.rs
+rg -n -F 'InMemoryStoreManager::new()' rspace++/tests/enabled_rendezvous_spec.rs
+rg -n -F 'fn a_receive_taking_two_data_from_one_channel_removes_both(' rspace++/tests/guarded_matching_tests.rs
+rg -n -F 'fn play_and_replay_agree_on_a_guarded_selection(' rspace++/tests/guarded_matching_tests.rs
+rg -n -F 'fn play_and_replay_agree_when_the_guard_permutes_a_repeated_channel(' rspace++/tests/guarded_matching_tests.rs
+rg -n -F 'fn the_canonical_candidate_order_is_a_pure_function_of_the_candidates(' rspace++/tests/guarded_matching_tests.rs
+rg -n -F 'InMemoryStoreManager::new()' rspace++/tests/guarded_matching_tests.rs
+rg -n -F 'fn distinct_projection_is_canonical_across_all_insertion_orders(' rspace++/tests/replay_comm_order.rs
+rg -n -F 'fn comm_order_is_total_and_consistent_with_identity(' rspace++/tests/replay_comm_order.rs
+rg -n -F 'fn persistent_produce_should_be_available_for_multiple_matches(' rspace++/tests/storage_actions_test.rs
+rg -n -F 'fn producing_then_consuming_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data(' rspace++/tests/storage_actions_test.rs
+rg -n -F 'fn reset_should_change_the_state_of_the_store_and_reset_the_trie_updates_log(' rspace++/tests/storage_actions_test.rs
+rg -n -F 'fn revert_to_soft_checkpoint_should_revert_the_state_of_the_store_to_the_given_checkpoint(' rspace++/tests/storage_actions_test.rs
+rg -n -F 'fn clear_should_reset_to_the_same_hash_on_multiple_runs(' rspace++/tests/storage_actions_test.rs
+rg -n -F 'InMemoryStoreManager::new()' rspace++/tests/storage_actions_test.rs
+rg -n -F 'fn creating_a_comm_event_with_peek_consume_first_should_replay_correctly(' rspace++/tests/replay_rspace_tests.rs
+rg -n -F 'fn picking_n_continuations_from_m_persistent_waiting_continuations_should_replay_correctly(' rspace++/tests/replay_rspace_tests.rs
+rg -n -F 'InMemoryStoreManager::new()' rspace++/tests/replay_rspace_tests.rs
+rg -n -F 'fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_proceed(' rholang/tests/reduce_spec.rs
+rg -n -F 'InMemoryStoreManager::new()' rholang/tests/reduce_spec.rs
+rg -n -F 'fn epathmap_heavy_record_then_replay_reproduces_the_log(' rholang/tests/epathmap_replay_equivalence_spec.rs
+rg -n -F 'InMemoryStoreManager::new()' rholang/tests/epathmap_replay_equivalence_spec.rs
+rg -n -F 'fn ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not(' rspace++/tests/persistence/transaction_sealing.rs
+rg -n -F 'fn same_base_and_payload_seal_to_identical_objects(' rspace++/tests/persistence/transaction_sealing.rs
+rg -n -F 'fn durable_state_root_is_a_function_of_contents_across_insertion_orders_and_reopen(' rspace++/tests/persistence/durable_state_root.rs
+rg -n -F 'fn every_retained_state_resolves_to_its_own_roots_and_nothing_else_resolves(' rspace++/tests/persistence/durable_state_root.rs
+rg -n -F 'fn states_that_differ_in_one_endpoint_have_different_roots(' rspace++/tests/persistence/durable_state_root.rs
+rg -n -F 'fn a_manifest_with_a_legacy_history_root_does_not_resolve(' rspace++/tests/persistence/durable_state_root.rs
+rg -n -F 'fn read_handle_at_leases_the_view_generation_and_reads_the_resolved_state(' rspace++/tests/persistence/durable_state_root.rs
+rg -n -F 'install_checkpoint_image(scratch.path(), &checkpoint_image_from_source(source));' rspace++/tests/persistence/durable_state_root.rs
+rg -n -F 'recover_read_authority::<P>(' rspace++/tests/persistence/durable_state_root.rs
+rg -n -F 'fn lazy_reads_equal_the_eager_enumerations_of_every_key(' rspace++/tests/persistence/durable_view_reader.rs
+rg -n -F 'fn lazy_reads_return_the_pinned_state_after_a_successor_is_published(' rspace++/tests/persistence/durable_view_reader.rs
+rg -n -F 'fn a_receive_group_is_read_only_at_its_literal_ordered_prefix(' rspace++/tests/persistence/durable_view_reader.rs
+rg -n -F 'recover_read_authority::<Profile>(' rspace++/tests/persistence/durable_view_reader.rs
+rg -n -F 'fn an_empty_store_reopens_at_generation_one_with_empty_namespaces(' rspace++/tests/persistence/durable_store_genesis.rs
+rg -n -F 'fn independently_created_empty_stores_share_the_empty_state_manifest_digest(' rspace++/tests/persistence/durable_store_genesis.rs
+rg -n -F 'recover_read_authority::<Profile>(' rspace++/tests/persistence/durable_store_genesis.rs
+rg -n -F 'pub(super) type Profile = RSpaceSemanticProfile<String, String, String, String>;' rspace++/tests/persistence/durable_rspace_authority.rs
+rg -n -F 'HotStoreInstances::create_from_durable(&view, DurableHotStoreBootstrapLimits::default())' rspace++/tests/persistence/durable_rspace_authority.rs
+rg -n -F 'pub(super) fn poll_checkpoint_with(' rspace++/tests/persistence/durable_rspace_authority.rs
+rg -n -F 'owner: &mut DurableRSpaceAuthorityV1<Profile>,' rspace++/tests/persistence/durable_rspace_authority.rs
+rg -n -F 'type Channel = String;' rspace++/tests/persistence/support.rs
+rg -n -F 'mod durable_state_root;' rspace++/tests/persistence/mod.rs
+rg -n -F 'mod durable_view_reader;' rspace++/tests/persistence/mod.rs
+rg -n -F 'mod durable_store_genesis;' rspace++/tests/persistence/mod.rs
+rg -n -F '("VR-02", "lazy_reads_equal_the_eager_enumerations_of_every_key"),' rspace++/tests/persistence/property_support.rs
+rg -n -F '("VR-03", "lazy_reads_return_the_pinned_state_after_a_successor_is_published"),' rspace++/tests/persistence/property_support.rs
+rg -n -F '("VR-07", "a_receive_group_is_read_only_at_its_literal_ordered_prefix"),' rspace++/tests/persistence/property_support.rs
+rg -n -F '("DI-01", "durable_state_root_is_a_function_of_contents_across_insertion_orders_and_reopen"),' rspace++/tests/persistence/property_support.rs
+rg -n -F '("DI-02", "every_retained_state_resolves_to_its_own_roots_and_nothing_else_resolves"),' rspace++/tests/persistence/property_support.rs
+rg -n -F '("DI-03", "states_that_differ_in_one_endpoint_have_different_roots"),' rspace++/tests/persistence/property_support.rs
+rg -n -F '("DI-04", "a_manifest_with_a_legacy_history_root_does_not_resolve"),' rspace++/tests/persistence/property_support.rs
+rg -n -F '("SG-01", "an_empty_store_reopens_at_generation_one_with_empty_namespaces"),' rspace++/tests/persistence/property_support.rs
+rg -n -F '("SG-02", "independently_created_empty_stores_share_the_empty_state_manifest_digest"),' rspace++/tests/persistence/property_support.rs
+rg -n -F '| DI-01 | Content-determined root.' docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md
+rg -n -F '| VR-07 | Literal ordered groups.' docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md
+rg -n -F '| SG-01 | Empty store genesis.' docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md
+rg -n -F '| SG-02 | Deterministic empty state.' docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md
+rg -n -F '| DI-01 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_root_is_function_of_semantic_roots`, `RSpaceDirectManifestIdentity.direct_resolution_is_exact` | P | Partially entailed (task 14301):' docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md
+rg -n -F '| DI-02 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_resolution_is_exact` | P | Partially entailed (task 14301):' docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md
+rg -n -F '| DI-03 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_root_is_function_of_semantic_roots` | P | Partially entailed (task 14301):' docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md
+rg -n -F '| DI-04 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_resolution_is_exact`, `RSpaceDirectManifestIdentity.direct_and_preserved_sessions_cannot_resolve_each_other` | P | Partially entailed (task 14301):' docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md
+rg -n -F 'The executable refinement obligations are that the canonical radix DAG makes each namespace root a function of the endpoints it holds' docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md
+rg -n -F 'fn image_is_exactly_a_function_of_par_equality(' models/tests/channel_image_v2.rs
+rg -n -F 'fn paired_identity_keeps_structural_image_separate_from_legacy_digest(' models/tests/channel_image_v2.rs
+rg -n -F 'fn equality_hashing_and_ordering_ignore_only_root_locally_free(' models/tests/pathmap_par.rs
+# Code
+rg -n -F 'impl PartialEq for Par {' models/src/rust/par.rs
+rg -n -F 'impl RhoPathEncode for Par {' models/src/rust/rspace_path.rs
+rg -n -F 'fn rho_path_structure(&self) -> Vec<u8> { encode_trie_path(self) }' models/src/rust/rspace_path.rs
+rg -n -F 'fn rho_path_identity(&self) -> Vec<u8> { self.stable_hash_bytes() }' models/src/rust/rspace_path.rs
+rg -n -F 'fn eval_stable_par(root: &Par)' models/src/rust/pathmap_crate_type_mapper.rs
+rg -n -F 'if !root.locally_free().is_empty() || root.connective_used() {' models/src/rust/pathmap_crate_type_mapper.rs
+rg -n -F 'pub fn encode_trie_path(par: &Par)' models/src/rust/canonical_path.rs
+rg -n -F 'is NOT blanked here' models/src/rust/rholang/protobuf_schema.rs
+rg -n -F 'pub static PAR_PROGRAM' models/src/rust/rholang/bincode_schema.rs
+rg -n -F 'impl StableHashSerialize for Par {' models/src/rust/event_hash_bytes.rs
+rg -n -F 'pub struct RhoPathV1;' rspace++/src/rspace/rho_path.rs
+rg -n -F 'pub struct RhoPathV2;' rspace++/src/rspace/rho_path.rs
+rg -n -F 'const MAGIC: [u8; 4] = *b"RHP\x01";' rspace++/src/rspace/rho_path.rs
+rg -n -F 'pub fn datum_prefix<C: RhoPathEncode>(channel: &C)' rspace++/src/rspace/rho_path.rs
+rg -n -F 'fn continuation_prefix<C: RhoPathEncode>(channels: &[C])' rspace++/src/rspace/rho_path.rs
+rg -n -F 'fn join_prefix<C: RhoPathEncode>(channel: &C)' rspace++/src/rspace/rho_path.rs
+rg -n -F 'pub const MAGIC: [u8; 4] = *b"RHP\x02";' rspace++/src/rspace/rho_path.rs
+rg -n -F 'pub fn datum_key(' rspace++/src/rspace/rho_path.rs
+rg -n -F 'pub fn continuation_prefix(channels: &[&[u8]])' rspace++/src/rspace/rho_path.rs
+rg -n -F 'pub fn join_prefix(channel: &[u8])' rspace++/src/rspace/rho_path.rs
+rg -n -F 'pub struct OrderedReceiveView' rspace++/src/rspace/ordered_receive.rs
+rg -n -F 'pub fn admit_rci2_v2(' rspace++/src/rspace/ordered_receive.rs
+rg -n -F 'fn validate_data_key<C, A, E>(' rspace++/src/rspace/persistence/semantic.rs
+rg -n -F 'channel structure disagrees with decoded channel' rspace++/src/rspace/persistence/semantic.rs
+rg -n -F 'fn continuations_for_channels(' rspace++/src/rspace/persistence/durable/mod.rs
+rg -n -F 'fn continuations_for_channels_at<P: SemanticProfile, E: Copy>(' rspace++/src/rspace/persistence/durable/mod.rs
+rg -n -F 'let prefix = RhoPathV1::continuation_prefix(channels);' rspace++/src/rspace/persistence/durable/mod.rs
+rg -n -F 'pub(crate) fn resolve(' rspace++/src/rspace/persistence/durable/mod.rs
+rg -n -F 'pub(crate) fn read_handle_at(' rspace++/src/rspace/persistence/durable/mod.rs
+rg -n -F 'pub(crate) struct DurableViewReaderV1<P: SemanticProfile> {' rspace++/src/rspace/persistence/durable/view_reader.rs
+rg -n -F 'impl<P: SemanticProfile> HistoryReaderBase<P::Channel, P::Pattern, P::Datum, P::Continuation>' rspace++/src/rspace/persistence/durable/view_reader.rs
+rg -n -F 'fn get_continuations_canonical(' rspace++/src/rspace/persistence/durable/view_reader.rs
+rg -n -F 'continuations_for_channels_at(' rspace++/src/rspace/persistence/durable/view_reader.rs
+rg -n -F 'pub(crate) struct DurableStateRootV1(ObjectDigest);' rspace++/src/rspace/persistence/durable/state_root.rs
+rg -n -F 'pub(crate) const fn of_manifest(manifest: ObjectRefV1) -> Self { Self(manifest.digest()) }' rspace++/src/rspace/persistence/durable/state_root.rs
+rg -n -F 'pub(crate) fn resolve_retained_state<' rspace++/src/rspace/persistence/durable/state_root.rs
+rg -n -F 'names a manifest with a legacy history provenance root' rspace++/src/rspace/persistence/durable/state_root.rs
+rg -n -F 'pub(crate) fn create_empty_store_v1<P: SemanticProfile>(' rspace++/src/rspace/persistence/durable/startup.rs
+rg -n -F 'schema_epoch: u64,' rspace++/src/rspace/persistence/manifest.rs
+rg -n -F 'profile_id: SemanticProfileId,' rspace++/src/rspace/persistence/manifest.rs
+rg -n -F 'fn validate_node_shape(' rspace++/src/rspace/persistence/object.rs
+rg -n -F 'pub struct SemanticStateManifestV1 {' rspace++/src/rspace/persistence/manifest.rs
+rg -n -F 'legacy_history_root: Option<LegacyHistoryRoot>,' rspace++/src/rspace/persistence/manifest.rs
+rg -n -F 'fn canonical_digest(&self) -> ObjectDigest {' rspace++/src/rspace/persistence/canonical.rs
+rg -n -F 'let mut sink = DigestSink(Blake2b::<U32>::new());' rspace++/src/rspace/persistence/canonical.rs
+rg -n -F 'until task 7931 wires it into RSpace' rspace++/src/rspace/hot_store.rs
+rg -n -F 'pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + Send {' rspace++/src/rspace/hot_store.rs
+rg -n -F 'pub struct HotStoreState<C, P, A, K>' rspace++/src/rspace/hot_store.rs
+rg -n -F 'pub struct COMM {' rspace++/src/rspace/trace/event.rs
+rg -n -F '.cmp(&b.channel_hash)' rspace++/src/rspace/trace/event.rs
+rg -n -F 'pub fn enabled_rendezvous(&self)' rspace++/src/rspace/rspace.rs
+rg -n -F 'Costs matcher time, not phlogiston' rspace++/src/rspace/rspace.rs
+rg -n -F 'pub fn process_match_found(' rspace++/src/rspace/rspace.rs
+rg -n -F 'pub fn enabled_rendezvous(&self)' rspace++/src/rspace/replay_rspace.rs
+rg -n -F 'fn run_matcher_consume(' rspace++/src/rspace/replay_rspace.rs
+rg -n -F 'fn matches(&self, comm: &COMM' rspace++/src/rspace/replay_rspace.rs
+rg -n -F 'fn try_handle_match(' rspace++/src/rspace/replay_rspace.rs
+rg -n -F 'was not contained in the trace' rspace++/src/rspace/replay_rspace.rs
+rg -n -F 'fn enumerate_enabled_rendezvous(' rspace++/src/rspace/space_matcher.rs
+rg -n -F 'fn extract_guarded_data_candidates(' rspace++/src/rspace/space_matcher.rs
+rg -n -F 'pub fn order_candidates_with_index<D>(' rspace++/src/rspace/candidate_order.rs
+rg -n -F 'pub fn ordered_channel_entries<C, A>(' rspace++/src/rspace/data_index.rs
+rg -n -F 'ReceiveOnSameChannelsError' rholang/src/rust/interpreter/compiler/normalizer/processes/p_input_normalizer.rs
+rg -n -F 'BTreeSet::from_iter((0..sources.len() as i32).collect::<Vec<i32>>())' rholang/src/rust/interpreter/reduce.rs
+rg -n -F 'pub async fn play_deploys_for_state(' casper/src/rust/rholang/runtime.rs
+rg -n -F 'res.push(self.play_deploy_with_cost_accounting(deploy).await?);' casper/src/rust/rholang/runtime.rs
+rg -n -F 'async fn produce_peeks(' rholang/src/rust/interpreter/reduce.rs
+rg -n -F 'to preserve peek semantics (data should remain after peek read).' rholang/src/rust/interpreter/reduce.rs
+rg -n -F 'async fn continue_produce_process(' rholang/src/rust/interpreter/reduce.rs
+rg -n -F 'async fn continue_consume_process(' rholang/src/rust/interpreter/reduce.rs
+rg -n -F 'self.metering.reserve_comm(send_eval_cost())' rholang/src/rust/interpreter/reduce.rs
+rg -n -F 'self.metering.reserve_comm(receive_eval_cost())' rholang/src/rust/interpreter/reduce.rs
+rg -n -F 'pub fn reserve_comm(' rholang/src/rust/interpreter/metering.rs
+rg -n -F 'fn guard_passes(condition: &Par, bound_pars: &[Par]) -> bool {' rholang/src/rust/interpreter/matcher/match.rs
+rg -n -F 'pub fn substitute_and_charge<A>(' rholang/src/rust/interpreter/substitute.rs
+rg -n -F 'consensus fork, not a performance regression' rholang/src/rust/interpreter/substitute.rs
+rg -n -F 'pub struct RuntimeBudget {' rholang/src/rust/interpreter/accounting/mod.rs
+rg -n -F 'pub enum BillableKind {' rholang/src/rust/interpreter/accounting/mod.rs
+rg -n -F 'fn consensus_cost_unit(kind: &BillableKind)' rholang/src/rust/interpreter/accounting/mod.rs
+rg -n -F 'BillableKind::Comm => 1,' rholang/src/rust/interpreter/accounting/mod.rs
+rg -n -F 'pub fn total_cost(&self) -> Cost {' rholang/src/rust/interpreter/accounting/mod.rs
+rg -n -F 'async fn consensus_cost_excludes_per_op_gas(' rholang/tests/accounting/cost_accounting_spec.rs
+rg -n -F 'async fn concurrent_rspace_architecture_repro_play_replay_costs_must_match_for_interacting_bodies(' rholang/tests/concurrent_rspace_architecture_repro_spec.rs
+rg -n -F 'async fn concurrent_rspace_architecture_repro_comm_cost_must_be_trigger_order_independent(' rholang/tests/concurrent_rspace_architecture_repro_spec.rs
+rg -n -F 'pub fn cost_trace_digest(&self)' rholang/src/rust/interpreter/accounting/mod.rs
+rg -n -F 'there is no cost accounting anywhere in' rholang/src/rust/interpreter/matcher/list_match.rs
+```
+
+The statements of absence above rest on these searches, run from the same root. A search cannot
+show what a match means, so each comment states what reading the matches showed at the base commit.
+The searches over the whole tree leave out `formal/verus`, whose Rust files are Verus proofs, not
+code or tests of the node.
+
+```bash
+# Emptiness of the enabled set is asserted only inside t7_teeth_an_unsatisfiable_state_enumerates_to_nothing.
+rg -n -F 'enabled_rendezvous()' --glob '*.rs' --glob '!formal/verus/**' .
+# Only resets of instrumentation counters; the durable backend has no reset of its state.
+rg -n 'fn reset' rspace++/src/rspace/persistence
+# Only the adapters rho_path_v2_* of models/src/rust/rspace_path.rs (their definitions and the RhoPathV2 calls inside them) and the RhoPathV2 parse in admit_rci2_v2 of rspace++/src/rspace/ordered_receive.rs.
+rg -n -e 'RhoPathV2::' -e 'rho_path_v2_' --glob '*.rs' --glob '!**/tests/**' --glob '!**/benches/**' --glob '!formal/verus/**' .
+# Outside tests and benchmarks, only the definition of admit_rci2_v2.
+rg -n -F 'admit_rci2_v2' --glob '*.rs' --glob '!**/tests/**' --glob '!**/benches/**' --glob '!formal/verus/**' .
+# Outside tests, only the definition and comments in accounting/mod.rs, the test module of metering.rs, and assertions in two fuzz targets.
+rg -n -F 'cost_trace_digest' --glob '*.rs' --glob '!formal/verus/**' .
+# Only the two calls in reduce.rs, the definition in metering.rs, and calls in the test module of metering.rs.
+rg -n -F 'reserve_comm(' --glob '*.rs' --glob '!**/tests/**' --glob '!formal/verus/**' .
+# Names that tie cost to guards, candidates, selections or order: the two guarded-search tests count matcher calls, not charges; the others concern record indexes, the order of evaluation or of reservation, deploy merging, a matcher query that ignores cost metadata, encoding, pretty-printing, the demand traversal of delta_sigma.rs, or the order in which a durable read meets a channel's records while it sums their multiplicities (durable_view_reader.rs), not the candidate visit order.
+rg -n -i -e 'visit.order' -e 'fn [a-z0-9_]*(guard|candidate|selection|order)[a-z0-9_]*cost' -e 'fn [a-z0-9_]*cost[a-z0-9_]*(guard|candidate|selection|order)' --glob '*.rs' rholang rspace++ casper models node
+# Only the comment in list_match.rs; nothing under rspace++/src.
+rg -n -e 'metering' -e 'reserve_cost' -e 'reserve_comm' -e 'reserve_substitution' rholang/src/rust/interpreter/matcher rspace++/src
+# No match: none of the three cited theorem files contains these words.
+rg -n -w -e Admitted -e admit -e Axiom -e Parameter -e Conjecture -e Abort formal/rocq/stack_safe_pda/theories/RSpaceCommit.v formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceMatchTransaction.v formal/rocq/stack_safe_pda/theories/RSpaceDirectManifestIdentity.v
+```
+
+Cited works: M. Abadi and L. Lamport, "The existence of refinement mappings", *Theoretical Computer
+Science* 82(2):253–284, 1991,
+[doi:10.1016/0304-3975(91)90224-P](https://doi.org/10.1016/0304-3975(91)90224-P); J.-P. Aumasson,
+S. Neves, Z. Wilcox-O'Hearn and C. Winnerlein, "BLAKE2: simpler, smaller, fast as MD5", *Applied
+Cryptography and Network Security (ACNS 2013)*, Lecture Notes in Computer Science, 119–135, 2013,
+[doi:10.1007/978-3-642-38980-1_8](https://doi.org/10.1007/978-3-642-38980-1_8); D. Gelernter,
+"Generative communication in Linda", *ACM Transactions on Programming Languages and Systems*
+7(1):80–112, 1985, [doi:10.1145/2363.2433](https://doi.org/10.1145/2363.2433); D. E. Knuth,
+"Literate programming", *The Computer Journal* 27(2):97–111, 1984,
+[doi:10.1093/comjnl/27.2.97](https://doi.org/10.1093/comjnl/27.2.97); L. Lamport, "The temporal
+logic of actions", *ACM Transactions on Programming Languages and Systems* 16(3):872–923, 1994,
+[doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726); L. G. Meredith and M. Radestock,
+"A reflective higher-order calculus", *Electronic Notes in Theoretical Computer Science*
+141(5):49–67, 2005, [doi:10.1016/j.entcs.2005.05.016](https://doi.org/10.1016/j.entcs.2005.05.016);
+R. Milner and D. Sangiorgi, "Barbed bisimulation", *Automata, Languages and Programming (ICALP
+1992)*, Lecture Notes in Computer Science, 685–695, 1992,
+[doi:10.1007/3-540-55719-9_114](https://doi.org/10.1007/3-540-55719-9_114); R. J. van Glabbeek and
+W. P. Weijland, "Branching time and abstraction in bisimulation semantics", *Journal of the ACM*
+43(3):555–600, 1996, [doi:10.1145/233551.233556](https://doi.org/10.1145/233551.233556); Y. Yu,
+P. Manolios and L. Lamport, "Model checking TLA+ specifications", *Correct Hardware Design and
+Verification Methods (CHARME 1999)*, Lecture Notes in Computer Science 1703, 54–66, 1999,
+[doi:10.1007/3-540-48153-2_6](https://doi.org/10.1007/3-540-48153-2_6).
 
 ## Scientific evaluation
 
