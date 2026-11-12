@@ -1665,6 +1665,10 @@ rocq_compile_with_closed_count theories/UnaryEListConstructionMutants.v 14 \
   "unary-EList encoding, metadata and refusal controls"
 rocq_check_modules "unary-EList construction" \
   StackSafePDA.UnaryEListConstruction StackSafePDA.UnaryEListConstructionMutants
+rocq_compile_with_closed_count \
+  theories/RhoPathV1Datum.v 21 \
+  "the exact RhoPath V1 datum-key schema and partition"
+epathmap_score_proofs
 rocq_reject_placeholders theories/SingletonMapConstruction.v
 rocq_compile_with_closed_count theories/SingletonMapConstruction.v 18 \
   "fixed-key singleton EPathMap construction and checked publication"
@@ -1830,12 +1834,8 @@ rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceCheckpointMutants.v 3 \
   "the RBA1 codec, streaming, and compatibility causal controls"
 rocq_compile_with_closed_count \
-  theories/RhoPathV1Datum.v 21 \
-  "the exact RhoPath V1 datum-key schema and partition"
-rocq_compile_with_closed_count \
   theories/RhoPathV2.v 4 \
   "the RhoPath V2 outer-grammar capstones"
-epathmap_score_proofs
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceContinuationAuthority.v 54 \
   "the exact two-level RSpace continuation and join authority"
