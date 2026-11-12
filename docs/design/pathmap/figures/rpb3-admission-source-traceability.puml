@@ -1,0 +1,175 @@
+@startuml rpb3-admission-source-traceability
+skinparam backgroundColor #FAFCFF
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ParticipantBorderColor #455A64
+skinparam ParticipantFontColor #102A43
+skinparam SequenceGroupBorderColor #455A64
+skinparam SequenceGroupBackgroundColor #F4F7FA
+title RPB3 protobuf admission: production, formal model, and executable witnesses
+
+participant "Canonical\nprotobuf bytes" as Bytes #DDEBF7
+participant "MessageFrame\nand driver" as Driver #C8E6C9
+participant "Semantic reducer\nand score arena" as Reducer #B2DFDB
+participant "Verus admission\nand score bridge" as Bridge #E1BEE7
+participant "Indexed region\nsource proof" as Indexed #D6EAF8
+participant "Indexed scalar\nsource proof" as Scalar #F3E5F5
+participant "Verus finish\nselector" as Selector #D1C4E9
+participant "Verus runtime\nEOF driver" as Runtime #DCCEF1
+participant "Live CanonicalPath\ntrace and terminal" as PathLive #E8D9F5
+participant "Live product and\nintegrated dispatcher" as Dispatcher #B39DDB
+participant "Rocq recursive\nreferences" as Rocq #FFCC80
+participant "Generated properties\nand source trace" as Tests #FFF2CC
+
+group Production path
+Bytes -[#1565C0]> Driver : indexed fields and (source ID, offset) anchors
+Driver -[#2E7D32]> Driver : observe fields; push and accept children
+Driver -[#2E7D32]> Driver : path root push retains exact indexed request view
+Driver -[#2E7D32]> Driver : EOF: borrow message prestate; require cursor at body end
+Driver -[#2E7D32]> Driver : path EOF: retain reducer result, indexed view, and checked stats
+Driver -[#2E7D32]> Driver : EPathMap EOF: indexed cursor image and checked stats; box source once
+Driver -[#2E7D32]> Driver : valid contiguous UTF-8: std scan; malformed or fragmented: indexed scan
+Driver -[#2E7D32]> Reducer : finish using retained semantic slots and score arena
+Reducer -[#00897B]> Driver : typed summary; bounded score handle
+Driver -[#2E7D32]> Driver : check nondecreasing score count and summary kind
+Driver -[#2E7D32]> Driver : map EOF: returned key has same indexed view
+Driver -[#2E7D32]> Driver : Complete: capture exact child result and suspended parent
+Driver -[#2E7D32]> Driver : pop one; score and resolution counts unchanged
+Driver -[#2E7D32]> Driver : Message stores exact typed occurrence; Map stores exact Par
+Driver -[#2E7D32]> Driver : EPathMap Push checks wait ID/kind, indexed child view, and descriptor
+Driver -[#2E7D32]> Driver : CanonicalPath Push checks wait ID/kind, indexed view, and descriptor
+Driver -[#2E7D32]> Driver : pushed Message/Map/EPathMap/CanonicalPath has fresh state
+Driver -[#2E7D32]> Driver : EPathMap return binds selected indexed child view, ID, and resolution
+Driver -[#2E7D32]> Driver : accept clears wait; checked resolution increment can overflow
+Driver -[#2E7D32]> Driver : root Complete checks retained source before empty-stack return
+Driver -[#2E7D32]> Driver : emit one borrowed checked event for each successful driver step
+end
+
+group Formal path
+Bytes -[#1565C0]> Indexed : Borrowed, Frozen, Composed position images
+Indexed -[#1565C0]> Bridge : 10 verified conditional backing/subview proofs
+Bridge -[#7B1FA2]> Scalar : indexed byte image gives field-start source ID and offset
+Scalar -[#7B1FA2]> Bridge : 10 root-init/scalar proofs; conditional ContinueIndexed poststate
+Bridge -[#7B1FA2]> Selector : 40 modeled branches in October, 43 after the gap closures; ESet tag 22 and EMap tag 23
+Selector -[#673AB7]> Bridge : unique result, or None on conflict/absence
+Bridge -[#7B1FA2]> Bridge : source-step, frame anchors, prefix shape
+Bridge -[#7B1FA2]> Bridge : EPathMap receipt; scored and absent-PathMap EZipper summaries
+Bridge -[#7B1FA2]> Bridge : Message PathMap field dispatches indexed kind-3 EPathMap Push
+Bridge -[#7B1FA2]> Bridge : EPathMap-origin terminal Value/Edge selects Push source action
+Bridge -[#7B1FA2]> Bridge : batch chunks expand to indexed scalar Push prefix, 6 verified
+Bridge -[#7B1FA2]> Bridge : source-selected live EpmPush dispatches checked child storage and cursor
+Bridge -[#7B1FA2]> Bridge : source-observed EPathMap End dispatches live EpmEnd action
+Bridge -[#7B1FA2]> Bridge : terminal source guards construct full EpmEnd live poststate, 1 verified
+Bridge -[#7B1FA2]> Bridge : MapKey successor derived from wire field and UTF-8 scan
+Bridge -[#673AB7]> Bridge : MapKey full-source computed Continue, 4 verified; guards remain
+Bridge -[#673AB7]> Runtime : selected score finish
+Runtime -[#673AB7]> Runtime : or derive bounded no-score child summary
+Runtime -[#673AB7]> Runtime : child pop and parent accept
+Runtime -[#673AB7]> Runtime : observed Message child Complete checks EOF, IDs,
+Runtime -[#673AB7]> Runtime : return kind, score handle, one pop, and cleared wait
+Runtime -[#673AB7]> Runtime : RootComplete: exact pre-pop score, root return, zero frames
+Runtime -[#673AB7]> Runtime : empty nested EPathMap Complete factored into
+Runtime -[#673AB7]> Runtime : 6 private + 2 public focused passing proofs
+Bridge -[#7B1FA2]> PathLive : kind-4 root and retained indexed child Push/Return
+PathLive -[#673AB7]> PathLive : arbitrary finite trace preserves root image and waits
+PathLive -[#673AB7]> PathLive : actual Continue, ContinueIndexed, MapKey, MessageChildScore lifts
+PathLive -[#673AB7]> PathLive : nested MessagePush and MapValuePush child-image lifts
+PathLive -[#673AB7]> PathLive : nested MessageChildComplete and MapValueAccept lifts
+PathLive -[#673AB7]> PathLive : nested MapEntryFinish lift
+PathLive -[#673AB7]> PathLive : final EOF plus reducer value selects empty terminal stack
+PathLive -[#673AB7]> PathLive : stats read/traversed checked-add failures exclude Complete
+PathLive -[#673AB7]> PathLive : retained terminal source + root pop guards select Complete
+PathLive -[#673AB7]> PathLive : guarded EpmEnd then CanonicalPath NestedEpm1 return, 3 verified
+Bridge -[#673AB7]> Bridge : nested EPathMap resolution success/overflow branches
+Bridge -[#673AB7]> Bridge : EPathMap terminal End/stats selector, 3 verified; extraction open
+end
+
+group Executable witnesses
+Reducer -[#C49000]> Tests : score entries, failure/retry, and finish trace
+Driver -[#C49000]> Tests : actual body, summary, and key bytes
+Driver -[#C49000]> Tests : same checked event binds each recorded step and action class
+Driver -[#C49000]> Tests : scored child pops and absent-PathMap no-score pop
+Driver -[#C49000]> Tests : finite EOF, key-view, pop, and parent-return traces
+Driver -[#C49000]> Tests : independent scalar anchor/value trace; fragmented Send 1/1
+Driver -[#C49000]> Tests : nested Send active-frame sequence, full bytes/anchors, 16 cases
+Driver -[#C49000]> Tests : fragmented EPathMap outer-frame sequence, nonmessage Complete, 16 cases
+Driver -[#C49000]> Tests : CanonicalPath root, child return, and deferred-error properties
+Driver -[#C49000]> Tests : nested EPathMap resolution counter success/overflow property
+Driver -[#C49000]> Tests : actual nested EPathMap driver pop, accept, and overflow
+Driver -[#C49000]> Tests : EPathMap Push wrong view/kind/descriptor/cursor controls
+Driver -[#C49000]> Tests : MapKey UTF-8 and indexed anchors across three backings
+Driver -[#C49000]> Tests : Empty/Set/Map terminal images; Map pop, root Complete, overflow, 2 x 32 cases
+Driver -[#C49000]> Tests : 64 KiB opaque EPathMap and component stack test, 1/1
+Indexed -[#C49000]> Tests : four indexed position properties passed
+Indexed -[#C49000]> Tests : UTF-8 fast/fallback exact parity, 64 generated cases
+Tests -[#C49000]> Tests : replay scores; check set/map identity and Expr refusal
+end
+
+group Found after the October audit: nine gaps closed in the Verus model, one bound of the Rocq references
+Runtime -[#7B1FA2]> Dispatcher : live RootComplete takes the runtime root return; integrated_step (added 2026-11-09) adds CanonicalPath and ACT arms
+Driver -[#6D4C41]> Dispatcher : G1 a root without a score completes: GL9, GL10, GL11 CLOSED
+Driver -[#6D4C41]> Runtime : G1b a scored root outside the ten component families returns: GL1 CLOSED
+Driver -[#6D4C41]> Runtime : G1c a root returns without a reachability premise: GL1 CLOSED
+Reducer -[#6D4C41]> Selector : G2 a Var is always scored: GL2, GL6 CLOSED
+Reducer -[#6D4C41]> Selector : G3 an EZipper is scored with a PathMap, unscored without: GL4, GL5, GL6, GL12, GL12f CLOSED
+Reducer -[#6D4C41]> Runtime : G4 an incomplete EMap has no score: GL5, GL8 CLOSED
+Driver -[#6D4C41]> Dispatcher : G5 a raw-Par or nested EPathMap child returns into a waiting EPathMap parent: P1-L1 to P1-L8c CLOSED
+Reducer -[#6D4C41]> Selector : G6 an accepted EPathMap owner is scored: GL3, GL6, GL7 CLOSED
+Driver -[#6D4C41]> Dispatcher : G7 an EPathMap frame is built inside its push: P1-L9 CLOSED
+note over Selector,Dispatcher #EFEBE9
+  CLOSED: every closing leaf has landed, so the model has a step
+  for the production behaviour. It is not a refinement proof;
+  the OPEN arrows below still stand.
+end note
+Selector -[#C62828,dashed]> Dispatcher : follow-up witnesses for G3 (EZipper score trace) and for G5 and G7 (path-invariant cases) PENDING
+Bytes -[#7B1FA2]> Rocq : recursive mixed reference equals the independent oracle; ACTree03 keys are opaque
+Driver -[#C62828,dashed]> Rocq : EPM1 key-path grammar (EmptyPath refusal of an empty key) NOT MODELLED
+end
+
+Driver -[#C62828,dashed]> Scalar : universal Rust scalar Continue projection OPEN
+Driver -[#C62828,dashed]> Indexed : universal Rust API binding for indexed regions OPEN
+Driver -[#C62828,dashed]> Bridge : universal source-to-model EOF macro-step OPEN
+Driver -[#C62828,dashed]> Bridge : complete checked-event to global product-action projection OPEN
+Driver -[#C62828,dashed]> PathLive : universal child-step and reducer-EOF extraction OPEN
+note over Indexed,Runtime #FFEBEE
+  Indexed-region 10/0 and scalar/root 10/0 passed standalone Verus;
+  their Rust API and ghost pre/post bindings remain unproved.
+  Production evidence: four indexed position properties; final-source
+  r20 admission 134 passed (one ignored), CostTokenStack 5/5,
+  indexed protobuf 44/44; UTF-8 parity focused 1/1 (64 cases),
+  terminal focused 1/1, and post-fix 64 KiB focused 1/1.
+  EPathMap terminal 3/0, End selector 1/0, and MapKey full-source 4/0 passed focused
+  Verus; EPathMap-origin Push source action passed 1/0;
+  its live dispatch module passed 2/0 and integrated preservation 1/0;
+  guarded EpmEnd to NestedEpm1 return passed 3/0.
+  Push transport prefix passed 6/0 with a constrained linked-state witness.
+  Fresh-frame source: admission 135 passed (one ignored),
+  field-cursor property 1/1, CostTokenStack admission 5/5.
+  All retain source-extraction premises. The r13 gate
+  passed with five expected-failure causal mutants. Later source
+  changes require a final exact-commit gate.
+  The original one-entry EPathMap fixture had no nonmessage Continue/Push;
+  new Map-key and nested CanonicalPath fixtures cover finite examples only.
+  Universal Rust-to-formal binding is still open.
+end note
+
+legend bottom
+|= Color |= Meaning |
+|<#C8E6C9>| production frame and explicit-stack control |
+|<#B2DFDB>| production semantic score construction |
+|<#E1BEE7>| formal admission and score state |
+|<#D6EAF8>| conditional indexed backing and position proof |
+|<#F3E5F5>| focused verified, conditional scalar source proof |
+|<#D1C4E9>| formal deterministic score selection |
+|<#DCCEF1>| formal EOF and child-return control |
+|<#E8D9F5>| conditional live CanonicalPath trace and terminal proof |
+|<#B39DDB>| formal live product and integrated dispatcher |
+|<#FFCC80>| Rocq recursive references: independent oracle and recursive reference |
+|<#FFF2CC>| executable property and differential evidence |
+|<#FFEBEE>| open source-refinement boundary |
+|<#EFEBE9>| meaning of CLOSED for the gaps found after the October audit |
+|<#6D4C41>| arrow: a gap between production and the Verus model, closed |
+|<#C62828>| dashed arrow: open, pending, or not modelled |
+endlegend
+@enduml
