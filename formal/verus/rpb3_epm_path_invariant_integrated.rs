@@ -56,6 +56,23 @@
 //!   which is the kind of the new focused Obligation frame; without that check
 //!   the Start-edge case fails. With the Continue action the edge opens no
 //!   wait, so the started obligation does not await resolution.
+//!
+//! Finally, the file proves that the EPathMap return and handoff actions of
+//! `integrated_step` preserve the invariant, and with the cases above that
+//! every integrated action does (`integrated_step_preserves_epm_paths_wf`):
+//! - EpmRawParReturn pops the raw-Par child's slot and replaces the parent
+//!   frame, which waits on a RawParEscape obligation, by its `accept_child`
+//!   successor. The obligation arm of `accept_child` resolves the awaited
+//!   Obligation frame (`resolve_parser_obligation`) and clears the pending
+//!   obligation, and `parser_resolve_frames` and `parser_escape_wf_resolve`
+//!   give the parser clauses. Without that pending reset the case fails at
+//!   clause (b).
+//! - EpmNestedReturn pops the slot of the nested EPathMap child, whose End is
+//!   part of the return, and replaces the parent frame by its `accept_child`
+//!   successor under the child's Epm1 summary
+//!   (`epm_frame_path_wf_accept_child`).
+//! - EpmHandoff fills the empty top slot with the initial EPathMap frame
+//!   (`epm_frame_path_wf_initial`).
 
 use vstd::prelude::*;
 
@@ -71,6 +88,8 @@ use crate::{
     rpb3_epm_batch_cursor_composition as batch,
     rpb3_epm_batch_cursor_source_extraction as act_source,
     rpb3_epm_frame_path_invariant as frame_path,
+    rpb3_epm_live_handoff as handoff,
+    rpb3_epm_obligation_return_live as obligation_return,
     rpb3_epm_parser_escape_invariant as escape,
     rpb3_epm_push_live_action_refinement as push_live,
     rpb3_epm_push_source_action_refinement as push_source,
@@ -2071,6 +2090,333 @@ pub proof fn integrated_live_keeps_epm_paths_wf(
             }
         },
         _ => {},
+    }
+}
+
+/// An EpmRawParReturn step pops the raw-Par child's slot and replaces the
+/// parent slot. The prestate's parent slot holds the frame of its linked
+/// parent, which waits on an obligation (`epm_obligation_before_accept`), and
+/// the poststate's parent slot holds that frame's `accept_child` successor
+/// under the derived summary (`linked_epm_child_return`).
+pub proof fn live_epm_raw_par_return_parent_frames(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        obligation_return::live_runtime_epm_raw_par_return_step(before, after),
+    ensures
+        ({
+            let frames = before.source.product.epm_frames;
+            let prior = integrated::product_linked_parent(before.source.product).unwrap();
+            let next = integrated::product_linked_top(after.source.product).unwrap();
+            let derived = obligation_return::epm_obligation_derived(before.source.product).unwrap();
+            &&& frames.len() > 1
+            &&& frames[frames.len() - 2] == Some(prior.epm)
+            &&& frame_path::epm_waits_on_obligation(prior.epm)
+            &&& epm::accept_child(
+                prior.epm,
+                next.epm,
+                prior.admission.frames.last().return_id,
+                derived.summary,
+            )
+            &&& after.source.product.epm_frames == frames.drop_last().update(
+                frames.len() - 2,
+                Some(next.epm),
+            )
+        }),
+{
+    reveal(obligation_return::live_runtime_epm_raw_par_return_step);
+    let product = before.source.product;
+    let prior = integrated::product_linked_parent(product).unwrap();
+    let next = integrated::product_linked_top(after.source.product).unwrap();
+    let derived = obligation_return::epm_obligation_derived(product).unwrap();
+    assert(obligation_return::epm_obligation_before_accept(
+        prior.epm,
+        epm::PathObligationKind::RawParEscape,
+    ));
+    assert(integrated::product_epm_child_return_step(
+        product,
+        after.source.product,
+        derived.summary,
+        derived.admission_summary,
+        None,
+    ));
+    assert(epm::linked_epm_child_return(
+        prior,
+        next,
+        derived.summary,
+        derived.admission_summary,
+        product.epm_frames.last(),
+        None,
+    ));
+}
+
+/// EpmRawParReturn case. The parent frame waits on an obligation, so the
+/// obligation arm of `accept_child` gives its successor: no pending
+/// obligation and no wait, the restore checkpoints, the path bytes and the
+/// cursor kept, the gate agreeing with the parser, and the parser resolved by
+/// `resolve_parser_obligation`. `parser_resolve_frames` gives clause (b), the
+/// obligation layout and the root potential bound, and
+/// `parser_escape_wf_resolve` the escape invariant of the resolved parser.
+/// Without the pending reset of that arm the case fails at clause (b).
+pub proof fn live_epm_raw_par_return_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        obligation_return::live_runtime_epm_raw_par_return_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    hide(parser::resolve_parser_obligation);
+    live_epm_raw_par_return_parent_frames(before, after);
+    let frames = before.source.product.epm_frames;
+    let parent = frames.len() - 2;
+    let prior = integrated::product_linked_parent(before.source.product).unwrap();
+    let next = integrated::product_linked_top(after.source.product).unwrap();
+    let summary = obligation_return::epm_obligation_derived(before.source.product).unwrap().summary;
+    let frame = prior.epm;
+    let resolved = next.epm;
+    assert(epm_slot_path_wf(frames[parent]));
+    assert(frame_path::epm_frame_path_wf(frame));
+    match frame.wait {
+        Some(epm::EpmWait::Obligation { id, .. }) => {
+            let image = frame.path.parser;
+            let resolution = epm::parser_resolution(summary);
+            assert(frame.path.pending.is_some());
+            assert(image.focus.stack.len() > 0);
+            frame_path::parser_resolve_frames(image, id, resolution);
+            escape::parser_escape_wf_resolve(image, id, resolution);
+            assert(resolved.path.parser == parser::resolve_parser_obligation(image, id, resolution));
+            assert(frame_path::epm_pending_matches_focus(
+                resolved.path.pending,
+                resolved.path.parser,
+            ));
+            assert(resolved.path.restore == frame.path.restore);
+            assert(resolved.path.path_bytes == frame.path.path_bytes);
+            assert(resolved.cursor == frame.cursor);
+            assert(resolved.wait.is_none());
+            assert(frame_path::epm_path_escape_wf(resolved.path));
+            assert(frame_path::epm_restore_wf(resolved.path));
+            assert(frame_path::epm_path_length_bounds(resolved));
+            assert(frame_path::epm_frame_path_wf(resolved));
+        },
+        _ => {},
+    }
+    let popped = frames.subrange(0, frames.len() - 1);
+    epm_frames_paths_wf_prefix(frames, frames.len() - 1);
+    assert(after.source.product.epm_frames == popped.update(parent, Some(resolved)));
+    epm_frames_paths_wf_update(popped, parent, resolved);
+}
+
+/// EpmNestedReturn case: the slot of the returning nested EPathMap child is
+/// popped, and the parent frame, which waits on a NestedEpm1 obligation, is
+/// replaced by its `accept_child` successor under the child's Epm1 summary
+/// (`linked_epm_child_return`), which keeps the invariant
+/// (`epm_frame_path_wf_accept_child`). The child's End frame is part of the
+/// return and is not stored.
+pub proof fn live_epm_nested_return_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        obligation_return::live_runtime_epm_nested_return_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    hide(epm::event_step);
+    reveal(obligation_return::live_runtime_epm_nested_return_step);
+    let old = before.source.product;
+    let new = after.source.product;
+    let frames = old.epm_frames;
+    let parent = frames.len() - 2;
+    let derived = obligation_return::epm_obligation_derived(old).unwrap();
+    assert(integrated::product_epm_child_return_step(
+        old,
+        new,
+        derived.summary,
+        derived.admission_summary,
+        derived.nested_after,
+    ));
+    let prior = integrated::product_linked_parent(old).unwrap();
+    let next = integrated::product_linked_top(new).unwrap();
+    assert(epm::linked_epm_child_return(
+        prior,
+        next,
+        derived.summary,
+        derived.admission_summary,
+        frames.last(),
+        derived.nested_after,
+    ));
+    let return_id = prior.admission.frames.last().return_id.unwrap();
+    assert(epm::accept_child(prior.epm, next.epm, Some(return_id), derived.summary));
+    assert(frames[parent] == Some(prior.epm));
+    assert(epm_slot_path_wf(frames[parent]));
+    frame_path::epm_frame_path_wf_accept_child(
+        prior.epm,
+        next.epm,
+        Some(return_id),
+        derived.summary,
+    );
+    let popped = frames.subrange(0, frames.len() - 1);
+    epm_frames_paths_wf_prefix(frames, frames.len() - 1);
+    assert(new.epm_frames == popped.update(parent, Some(next.epm)));
+    epm_frames_paths_wf_update(popped, parent, next.epm);
+}
+
+/// EpmHandoff case: the top slot, which holds no frame, receives the initial
+/// EPathMap frame that `linked_map_epm_handoff` builds
+/// (`initial_epm_candidate`), and every other slot is kept. The initial frame
+/// satisfies the invariant (`epm_frame_path_wf_initial`).
+pub proof fn live_epm_handoff_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    backing: epm::IndexedBackingImage,
+    plan: Option<epm::ActPlanImage>,
+    validated: Option<epm::ValidatedActPlanImage>,
+)
+    requires
+        product_epm_paths_wf(before),
+        handoff::live_runtime_epm_handoff_step(before, after, backing, plan, validated),
+    ensures
+        product_epm_paths_wf(after),
+{
+    reveal(handoff::live_runtime_epm_handoff_step);
+    let old = before.source.product;
+    let new = after.source.product;
+    let frames = old.epm_frames;
+    assert(integrated::product_epm_handoff_step(old, new, backing, plan, validated));
+    let linked = epm::linked_map_epm_handoff(
+        old.bridge.admission,
+        old.indexed_regions,
+        backing,
+        plan,
+        validated,
+    ).unwrap();
+    let snapshot = epm::indexed_backing_project(backing).unwrap();
+    let prefix = epm::epm_prefix_from_bytes(snapshot.bytes).unwrap();
+    assert(linked.epm == epm::initial_epm_candidate(backing, snapshot, prefix, plan, validated));
+    frame_path::epm_frame_path_wf_initial(backing, snapshot, prefix, plan, validated);
+    assert(new.epm_frames == frames.update(frames.len() - 1, Some(linked.epm)));
+    epm_frames_paths_wf_update(frames, frames.len() - 1, linked.epm);
+}
+
+/// EpmRawParReturn case of `integrated_step`: the action runs from an active
+/// product to an active product by `live_runtime_epm_raw_par_return_step`.
+pub proof fn integrated_epm_raw_par_return_keeps_epm_paths_wf(
+    before: dispatcher::IntegratedState,
+    after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        integrated_epm_paths_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action is EpmRawParReturn,
+    ensures
+        integrated_epm_paths_wf(after),
+{
+    match (before, after) {
+        (
+            dispatcher::IntegratedState::Active { product },
+            dispatcher::IntegratedState::Active { product: next },
+        ) => {
+            live_epm_raw_par_return_keeps_epm_paths_wf(product, next);
+        },
+        _ => {},
+    }
+}
+
+/// EpmNestedReturn case of `integrated_step`: the action runs from an active
+/// product to an active product by `live_runtime_epm_nested_return_step`.
+pub proof fn integrated_epm_nested_return_keeps_epm_paths_wf(
+    before: dispatcher::IntegratedState,
+    after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        integrated_epm_paths_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action is EpmNestedReturn,
+    ensures
+        integrated_epm_paths_wf(after),
+{
+    match (before, after) {
+        (
+            dispatcher::IntegratedState::Active { product },
+            dispatcher::IntegratedState::Active { product: next },
+        ) => {
+            live_epm_nested_return_keeps_epm_paths_wf(product, next);
+        },
+        _ => {},
+    }
+}
+
+/// EpmHandoff case of `integrated_step`: the action runs from an active
+/// product to an active product by `live_runtime_epm_handoff_step`.
+pub proof fn integrated_epm_handoff_keeps_epm_paths_wf(
+    before: dispatcher::IntegratedState,
+    after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        integrated_epm_paths_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action is EpmHandoff,
+    ensures
+        integrated_epm_paths_wf(after),
+{
+    match (before, after, action) {
+        (
+            dispatcher::IntegratedState::Active { product },
+            dispatcher::IntegratedState::Active { product: next },
+            dispatcher::IntegratedAction::EpmHandoff { backing, plan, validated },
+        ) => {
+            live_epm_handoff_keeps_epm_paths_wf(product, next, backing, plan, validated);
+        },
+        _ => {},
+    }
+}
+
+/// Every action of `integrated_step` preserves the invariant: one integrated
+/// case per action, for Live, CanonicalPath, ActForward, ActUnwind,
+/// EpmRawParReturn, EpmNestedReturn and EpmHandoff.
+pub proof fn integrated_step_preserves_epm_paths_wf(
+    before: dispatcher::IntegratedState,
+    after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        integrated_epm_paths_wf(before),
+        dispatcher::integrated_step(before, after, action),
+    ensures
+        integrated_epm_paths_wf(after),
+{
+    hide(dispatcher::integrated_step);
+    hide(integrated_epm_paths_wf);
+    match action {
+        dispatcher::IntegratedAction::Live { .. } => {
+            integrated_live_keeps_epm_paths_wf(before, after, action);
+        },
+        dispatcher::IntegratedAction::CanonicalPath { .. } => {
+            integrated_canonical_path_keeps_epm_paths_wf(before, after, action);
+        },
+        dispatcher::IntegratedAction::ActForward { .. } => {
+            integrated_act_forward_keeps_epm_paths_wf(before, after, action);
+        },
+        dispatcher::IntegratedAction::ActUnwind { .. } => {
+            integrated_act_unwind_keeps_epm_paths_wf(before, after, action);
+        },
+        dispatcher::IntegratedAction::EpmRawParReturn => {
+            integrated_epm_raw_par_return_keeps_epm_paths_wf(before, after, action);
+        },
+        dispatcher::IntegratedAction::EpmNestedReturn => {
+            integrated_epm_nested_return_keeps_epm_paths_wf(before, after, action);
+        },
+        dispatcher::IntegratedAction::EpmHandoff { .. } => {
+            integrated_epm_handoff_keeps_epm_paths_wf(before, after, action);
+        },
     }
 }
 

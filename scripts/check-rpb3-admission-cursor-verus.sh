@@ -1236,6 +1236,14 @@ proofs_rpb3_epm_path_invariant_integrated=(
   live_epm_finish_accept_keeps_epm_paths_wf
   live_runtime_product_step_keeps_epm_paths_wf
   integrated_live_keeps_epm_paths_wf
+  live_epm_raw_par_return_parent_frames
+  live_epm_raw_par_return_keeps_epm_paths_wf
+  live_epm_nested_return_keeps_epm_paths_wf
+  live_epm_handoff_keeps_epm_paths_wf
+  integrated_epm_raw_par_return_keeps_epm_paths_wf
+  integrated_epm_nested_return_keeps_epm_paths_wf
+  integrated_epm_handoff_keeps_epm_paths_wf
+  integrated_step_preserves_epm_paths_wf
 )
 proofs_rpb3_epm_push_live_action_refinement=(
   epm_push_live_action_is_checked
@@ -4800,7 +4808,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: EPathMap path invariant integrated module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 42 verified, 0 errors' "$epm_path_invariant_integrated_log"; then
+if ! rg -q '^verification results:: 50 verified, 0 errors' "$epm_path_invariant_integrated_log"; then
   cat "$epm_path_invariant_integrated_log"
   echo "rpb3-admission-cursor: EPathMap path invariant integrated module did not verify" >&2
   exit 1
