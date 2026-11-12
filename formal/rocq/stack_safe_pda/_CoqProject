@@ -10,6 +10,8 @@ theories/RSpaceCallerAuthority.v
 theories/RSpaceCallerAuthorityMutants.v
 theories/RSpaceConsensusIdentity.v
 theories/RSpaceConsensusIdentityMutants.v
+theories/RSpaceDirectManifestIdentity.v
+theories/RSpaceDirectManifestIdentityMutants.v
 theories/GenerationCheckpointPublication.v
 theories/PathExactIncrementalClosure.v
 theories/IncrementalLedgerTrial.v

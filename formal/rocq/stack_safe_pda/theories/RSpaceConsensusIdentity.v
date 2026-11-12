@@ -35,8 +35,12 @@ Proof.
   cbn in first, second; congruence.
 Qed.
 
+(* DirectManifestV1 is the durable store's own identity, the digest of its
+   semantic manifest (RSpaceDirectManifestIdentity.v); the coupled bridge below
+   never checks or resolves it. *)
 Inductive identity_version :=
 | PreservedLegacyV1
+| DirectManifestV1
 | DirectManifestEpoch (epoch : nat)
 | UnknownVersion (tag : nat).
 

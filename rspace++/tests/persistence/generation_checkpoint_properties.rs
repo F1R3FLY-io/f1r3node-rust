@@ -496,6 +496,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("../../../formal/rocq/stack_safe_pda/theories/RetentionV2Editor.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/ExactStateShapeSummary.v"),
+        include_str!("../../../formal/rocq/stack_safe_pda/theories/RSpaceDirectManifestIdentity.v"),
     ]
     .concat();
     let mut cited_tla = BTreeSet::new();
@@ -607,6 +608,11 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     assert!(
         formal_gate.contains("theories/ExactStateShapeSummary.v"),
         "the integrated formal gate does not compile the shape summary theory cited by TS rows",
+    );
+    assert!(
+        formal_gate.contains("theories/RSpaceDirectManifestIdentity.v"),
+        "the integrated formal gate does not compile the direct manifest identity theory cited by \
+         DI rows",
     );
     assert!(
         formal_gate.contains("check-rspace-trusted-history-model.sh"),

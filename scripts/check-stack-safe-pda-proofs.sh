@@ -1116,6 +1116,14 @@ rocq_compile_with_closed_count theories/RSpaceConsensusIdentityMutants.v 10 \
   "the consensus-identity nonvacuity witness and negative controls"
 rocq_check_modules "RSpace consensus-identity contract" \
   StackSafePDA.RSpaceConsensusIdentity StackSafePDA.RSpaceConsensusIdentityMutants
+rocq_reject_placeholders theories/RSpaceDirectManifestIdentity.v \
+  theories/RSpaceDirectManifestIdentityMutants.v
+rocq_compile_with_closed_count theories/RSpaceDirectManifestIdentity.v 3 \
+  "the durable direct manifest identity capstones"
+rocq_compile_with_closed_count theories/RSpaceDirectManifestIdentityMutants.v 10 \
+  "the direct manifest identity nonvacuity witnesses and negative controls"
+rocq_check_modules "RSpace direct manifest identity contract" \
+  StackSafePDA.RSpaceDirectManifestIdentity StackSafePDA.RSpaceDirectManifestIdentityMutants
 rocq_reject_placeholders theories/EPM1.v
 rocq_compile_with_closed_count theories/EPM1.v 7 "EPM1 mode and positional-marker regressions"
 rocq_check_modules "EPM1 mode contracts" StackSafePDA.EPM1

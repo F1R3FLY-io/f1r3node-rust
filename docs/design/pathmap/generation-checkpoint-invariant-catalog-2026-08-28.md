@@ -7956,6 +7956,131 @@ second test.
 | DI-03 | One endpoint, another root. Two states that differ in exactly one endpoint, whether added or changed in multiplicity, have different durable state roots, and only that endpoint's namespace root differs. | `states_that_differ_in_one_endpoint_have_different_roots` |
 | DI-04 | Legacy provenance does not resolve. A retained manifest that carries a legacy history root, current or historical, is refused with `UnknownRootError` for that reason, while a manifest without one resolves. | `a_manifest_with_a_legacy_history_root_does_not_resolve` |
 
+### Direct manifest identity contract (2026-11-11)
+
+Task 14301 states the durable state root of the section above as a consensus
+identity and proves its properties in
+[`RSpaceDirectManifestIdentity.v`](../../../formal/rocq/stack_safe_pda/theories/RSpaceDirectManifestIdentity.v).
+An *identity version* names a kind of consensus root, and a *session* is a
+caller that names roots of one identity version. The type `identity_version`
+of
+[`RSpaceConsensusIdentity.v`](../../../formal/rocq/stack_safe_pda/theories/RSpaceConsensusIdentity.v)
+gains the version `DirectManifestV1` beside `PreservedLegacyV1`. LMDB mode
+keeps the preserved legacy identity of the contract of task 7941 below, and
+durable mode uses the direct manifest identity. No other definition or proof
+of that file changes, and its 28 capstones still compile closed.
+
+**What is modelled.** A *durable store* is an admitted durable authority
+core: its semantic profile, its current manifest, the manifests of the
+earlier states it retains, its catalog generation, its closure ledger and its
+object store. A manifest holds the fields that the canonical bytes of a
+`SemanticStateManifestV1` encode: the schema epoch, the profile, the three
+namespace roots and the optional legacy history root. A manifest is *durable*
+for a profile when its schema epoch is V1, its profile is that profile and it
+has no legacy history root. The *published root* of a store is the digest of
+its current manifest. The function `resolve_direct` follows the six steps of
+resolution listed above, which `DurableAuthorityCoreV1::resolve` takes
+through `resolve_retained_state`, and records the digests whose objects it
+read. A store is *coherent* when its ledger counts exactly the digests of
+its current and retained manifests and each of those manifests, of schema
+epoch V1, is stored under its own digest. Cold admission and the closure
+ledger establish coherence; the object store may also hold other objects,
+among them manifests that the ledger no longer retains.
+
+**The digest abstraction.** A digest is modelled as an injective code. Write
+$`\langle a, b\rangle`$ for the code of a pair of natural numbers $`a`$ and
+$`b`$: an injective map from pairs of natural numbers to natural numbers,
+built from the Cantor pairing of the Rocq standard library and made opaque,
+so that a proof uses its injectivity and never computes a code. A manifest
+$`m`$ with schema epoch $`e`$, profile $`p`$, namespace roots $`d`$, $`k`$
+and $`j`$ (data bag, continuation map and join bag) and legacy history root
+code $`\ell`$, which is $`0`$ when the manifest has no legacy root and
+$`h + 1`$ when its legacy root is $`h`$, has the digest
+
+```math
+\operatorname{digest}(m) = \langle 0, \langle e, \langle p, \langle \langle d, \langle k, j\rangle\rangle, \ell\rangle\rangle\rangle\rangle .
+```
+
+The legacy root of a frozen history is a code $`\langle 1, c\rangle`$, where
+$`c`$ is the code of the history. The first component of each code is its
+digest domain, which models the domain tag of the canonical envelope, so no
+manifest digest is a legacy root. Two equal manifest digests have equal
+manifests: the collision resistance of Blake2b-256 enters here, as part of
+the abstraction and not as a theorem. The namespace roots are opaque
+numbers, and that the root of a canonical radix DAG is a function of the set
+of endpoints it holds is an executable obligation.
+
+**The theorems.**
+
+1. `direct_root_is_function_of_semantic_roots`: two stores of one profile
+   whose current manifests are durable for it have equal published roots
+   exactly when their current namespace roots are equal, whatever their
+   retained histories, catalog generations, ledgers and objects.
+2. `direct_resolution_is_exact`: a resolution reads at most one object, the
+   one stored under the root, and only when the ledger counts the root. It
+   answers a state exactly when that object is a manifest that is durable for
+   the store's profile and whose digest is the root, and the answer is that
+   digest and that manifest's namespace roots. On a coherent store, the root
+   of each current or retained state gets that state's own outcome after one
+   read, and every other root is refused as unknown with no read.
+3. `direct_and_preserved_sessions_cannot_resolve_each_other`: with the legacy
+   root as its frozen root, the coupled bridge of task 7941 refuses every
+   session of the direct version and never checks a binding of that version.
+   A root that a preserved session resolves is refused by every coherent
+   durable store with no read, a root that a durable store resolves is
+   resolved by no preserved session, and no manifest that carries a legacy
+   history root resolves in any durable store.
+
+Each theorem is followed by `Print Assumptions`, which reports it closed
+under the global context. The companion
+[`RSpaceDirectManifestIdentityMutants.v`](../../../formal/rocq/stack_safe_pda/theories/RSpaceDirectManifestIdentityMutants.v)
+instantiates every part of the three theorems in a concrete store whose
+premises hold. The store retains its current state, an earlier state, an
+imported state with a legacy history root and a state of another profile,
+and it also stores a manifest that its ledger no longer retains and a
+retention anchor that its ledger counts in the metadata domain only. Two
+controls are proved as negations. The red control,
+`history_chained_root_is_not_a_function_of_semantic_roots`, refutes a root
+that also digests the retained history: the witness store and a store
+rebuilt from its current state alone have equal namespace roots and
+different chained roots. The second,
+`presence_resolution_answers_a_state_the_store_no_longer_retains`, refutes
+resolution by object presence, the production control of the section above:
+it answers the unretained manifest. The proof runner rejects placeholders in
+both files, requires 3 and 10 closed-context reports, and checks both with
+`coqchk`.
+
+**Derivation of the DI rows.** The derivation matrix moves DI-01 to DI-04
+from E to P. Each row cites the theorems that entail its property at the
+model's level and names the executable refinement obligations:
+
+- DI-01 cites theorems 1 and 2. Equal namespace roots give one published
+  root, and a coherent store resolves that root to those roots. The
+  obligations are that the canonical radix DAG makes each namespace root a
+  function of the endpoints it holds, across insertion orders and checkpoint
+  schedules; that reopen recovers the published current manifest and a
+  coherent ledger; and that Blake2b-256 over the canonical bytes refines the
+  injective code.
+- DI-02 cites theorem 2, whose coherent case is the property. The obligations
+  are that `resolve_retained_state` refines `resolve_direct` and that cold
+  admission and the closure ledger make the admitted core coherent.
+- DI-03 cites theorem 1, whose injective direction gives different published
+  roots to durable states with different namespace roots. That two states
+  which differ in one endpoint differ in exactly that endpoint's namespace
+  root is the canonical radix DAG obligation.
+- DI-04 cites theorems 2 and 3. Only a durable manifest, which has no legacy
+  history root, is answered, so no manifest with one resolves in any store,
+  and on a coherent store a retained one is refused for its legacy provenance
+  while a retained durable manifest of the store's profile resolves. The
+  obligations are that the parse keeps the legacy history root and that the
+  resolver checks it before the profile and reports it as `UnknownRootError`
+  for that reason.
+
+**Scope of the preserved legacy contract.** The preserved legacy
+consensus-identity contract below now governs LMDB mode. Its scope paragraph,
+its rows CI-10, CI-13, CI-19, CI-20 and CI-28, and LM-12 record what does not
+apply in durable mode; no CI row changes its ID, capstone or meaning.
+
 ### Empty durable store genesis (2026-11-11)
 
 Task 14292 adds the production constructor of a fresh durable store. Before
@@ -8304,10 +8429,10 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | VR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the per-key results of a lazy durable reader against the eager enumerations of the same published state. No model states a property of the reader's Rust results, and both sides decode through the same functions. |
 | VR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the results of a lazy durable reader after a successor is published, after owner teardown, and on the successor's generation with the retained predecessor's roots. Like VR-01, it witnesses the caller registry's CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite, for the reason given at VR-01. |
 | VR-07 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the literal ordered prefix of a continuation read, ruling D1. This matrix cites no model of RhoPathV1 group prefixes, and no model states a property of the reader's Rust results. |
-| DI-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): equality of the durable state root across insertion orders, checkpoint schedules and reopen. No model represents the canonical encoding of a state's contents or the digest of its manifest. |
-| DI-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): resolution of a digest against the admitted ledger's current and retained root counts, and the refusal of every other digest. No model states a lookup of a retained state by its manifest digest. |
-| DI-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): different roots for states that differ in one endpoint. The property rests on the canonical encoding and on Blake2b-256 over it, which no model represents. |
-| DI-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): the refusal of manifests that carry a legacy history root. No model represents legacy provenance. |
+| DI-01 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_root_is_function_of_semantic_roots`, `RSpaceDirectManifestIdentity.direct_resolution_is_exact` | P | Partially entailed (task 14301): the published root of a store whose current manifest is durable for its profile is a function of the current namespace roots, whatever the store's retained history, catalog generation, ledger and objects, and a coherent store resolves that root to those roots. The executable refinement obligations are that the canonical radix DAG makes each namespace root a function of the endpoints it holds, across insertion orders and checkpoint schedules; that reopen recovers the published current manifest and a coherent ledger; and that Blake2b-256 over the manifest's canonical bytes refines the model's injective code. |
+| DI-02 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_resolution_is_exact` | P | Partially entailed (task 14301): on a coherent store, the root of each current or retained state gets that state's own outcome after one read, and every other root, including the digest of a manifest that the ledger no longer retains, is refused as unknown with no read. The executable refinement obligations are that `resolve_retained_state` refines `resolve_direct` (one ledger probe, one bounded read, the parse and the digest check, then steps 4 to 6) and that cold admission and the closure ledger make the admitted core coherent. |
+| DI-03 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_root_is_function_of_semantic_roots` | P | Partially entailed (task 14301): the injective direction of the theorem gives different published roots to stores of one profile whose durable current manifests have different namespace roots. That two states which differ in one endpoint differ in exactly that endpoint's namespace root is the executable refinement obligation; it rests on the canonical encoding and on Blake2b-256 over it, which the model abstracts as an injective code. |
+| DI-04 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_resolution_is_exact`, `RSpaceDirectManifestIdentity.direct_and_preserved_sessions_cannot_resolve_each_other` | P | Partially entailed (task 14301): a resolution answers only a manifest that is durable for the store's profile, which has no legacy history root, so no manifest that carries one resolves in any store; on a coherent store a retained manifest that carries one is refused as unknown for its legacy provenance, and a retained durable manifest resolves. The executable refinement obligations are that the parse keeps the legacy history root and that the resolver checks it before the profile and reports it as `UnknownRootError` for that reason. |
 | SG-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14292): the files, catalog slot, recovered state and empty namespaces of a store that `create_empty_store_v1` creates. The publication model and its Rocq theory start from an admitted old generation (phase `OldAdmitted`, selected authority `old`), so no model creates the first generation. |
 | SG-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14292): the empty state's manifest digest depends only on the schema, the profile and the empty root, not on the store identity. No model states a property of manifest bytes. |
 | SG-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14292): crash safety of genesis at each create, write and sync point and at every torn catalog-slot prefix. The crash selection that `raw_slot_recovery_selects_old_complete_new_or_rejects` states maps a torn slot to the old authority, and a genesis directory has none: there a torn slot selects no authority, and the next genesis refuses the directory. |
@@ -8940,6 +9065,24 @@ PathMap aggregate takes its new manifest digest. No persisted record kind,
 byte layout, magic number or file name is new. See the empty durable store
 genesis section.
 
+The 2026-11-11 direct manifest identity slice (task 14301) adds no ID, so the
+catalog/derivation/binding registry still contains **246** IDs, and it binds
+DI-01 to DI-04 to the three theorems of `RSpaceDirectManifestIdentity.v` as
+class P. On an export of the candidate tree, the dependency closure of the
+new theories was compiled, and the runner's consensus-identity block and the
+new block after it were evaluated from the runner's own text: the four files
+printed the required 28, 10, 3 and 10 closed-context reports, and `coqchk`
+checked both pairs of modules. One fault replaced the published root by a
+root that also digests the retained history. The theory then failed to
+compile, first in the proof of `direct_root_is_function_of_semantic_roots`,
+and the companion file proves the negation of that property for the same
+root. The manifest test passed in debug, and `rustfmt --check` passes on its
+file. The full proof runner was not run for this slice. The
+workspace-regression registry hashes the manifest test's file, which
+changes, so it was regenerated, and the PathMap aggregate takes its new
+manifest digest. No production code, persisted byte, record kind, root or
+wire message changed.
+
 ## Caller-authority contract (2026-09-06)
 
 **Status: verified abstract contract; legacy caller observations exercised; durable
@@ -9101,6 +9244,16 @@ caller refinement and activation remain required.** Task 7941 owns this contract
 It selects preserved legacy history/post-state identity, not direct semantic-manifest
 identity or a new consensus epoch. Tasks 7942 and 7931 implement and qualify the bridge.
 
+**Scope in durable mode (2026-11-11).** This contract governs LMDB mode. By the user's
+ruling of 2026-11-11, durable mode publishes the direct manifest identity
+`DirectManifestV1` of the direct manifest identity contract above instead. CI-10 therefore
+holds in LMDB mode only, and CI-13, CI-19, CI-20 and CI-28, which concern coupled bindings
+and aliases, are not selected in durable mode, nor is LM-12 where it cites them. The
+coupled bridge, `rspace-consensus-bridge-construction`, is deferred and not deleted,
+together with `rspace-owner-alias-catalog`, `rspace-catalog-coupled-reference` and
+`rspace-owner-coupled-binding-publication`. Every CI row keeps its ID, capstone and
+meaning.
+
 ### Evidence and the rejected projection hypothesis
 
 The legacy group hash sorts individual channel hashes, while RhoPath continuation
@@ -9198,17 +9351,17 @@ reported as a completed bridge implementation.
 | CI-07 | `checked_root_comes_from_frozen_compatibility` | Frozen serializer/root goldens and manifest-as-root formal control; future 7942 derives roots from actual coupled compatibility state. |
 | CI-08 | `absent_exact_authentication_refuses` | Missing-facet control; future 7942 deletes/truncates each binding/facet dependency without fallback. |
 | CI-09 | `absent_refinement_refuses` | False-refinement control; future 7942 rejects invented certificates while proving all supported successful transitions construct valid ones. |
-| CI-10 | `direct_manifest_identity_is_not_activated` | Formal version separation; future 7942 rejects unapproved direct-manifest consensus identities. |
+| CI-10 | `direct_manifest_identity_is_not_activated` | Formal version separation; future 7942 rejects unapproved direct-manifest consensus identities. Holds in LMDB mode only: durable mode activates the direct manifest identity `DirectManifestV1` (DI-01 to DI-04), which the coupled bridge never checks or resolves (`direct_and_preserved_sessions_cannot_resolve_each_other`). |
 | CI-11 | `unknown_binding_version_is_not_activated` | Formal unsupported tag; future 7942 varies every unsupported bridge version. |
 | CI-12 | `mixed_session_cannot_resolve` | Formal session mismatch; future 7942/7938–7940 qualify peer negotiation, resume and unknown identities. |
-| CI-13 | `alias_requires_appointed_retained_coupled_target` | Reuses caller alias contract; future 7931/7942 resolve only owner-appointed retained coupled targets. |
+| CI-13 | `alias_requires_appointed_retained_coupled_target` | Reuses caller alias contract; future 7931/7942 resolve only owner-appointed retained coupled targets. Not selected in durable mode, where a root resolves to its own retained manifest through no alias (DI-02); deferred with the coupled bridge `rspace-consensus-bridge-construction` and `rspace-owner-alias-catalog`. |
 | CI-14 | `unappointed_provenance_cannot_resolve` | Generated manifest test shows provenance changes exact manifest bytes; future 7942 forbids using that hint as an alias certificate. |
 | CI-15 | `alias_resolution_identifies_one_exact_binding` | Reuses exact singleton alias resolution and functional binding lookup; future 7942 injects ambiguous and conflicting aliases. |
 | CI-16 | `unretained_binding_cannot_resolve` | Formal retained-membership guard; future 7942/7943–7944 test removed aliases and retained closures. |
 | CI-17 | `equivalent_checked_bindings_preserve_root_and_reads` | Exact compatibility-byte equivalence theorem; future 7942 compares concrete canonical reads/roots across provenance variants. |
 | CI-18 | `replacement_preserves_coupled_observations_and_exact_pin` | Formal replacement relation; future 7943–7944 keep old leased targets readable through atomic representative replacement. |
-| CI-19 | `publication_selects_one_binding_and_exposes_legacy_root` | Positive publication witness and manifest-as-root control; future 7931/7942 exercise actual checkpoint acknowledgement/root APIs. |
-| CI-20 | `completed_publication_is_closed_under_selection` | Prepublication-only lookup control; future 7931 immediately authenticates and uses the acknowledged successor. |
+| CI-19 | `publication_selects_one_binding_and_exposes_legacy_root` | Positive publication witness and manifest-as-root control; future 7931/7942 exercise actual checkpoint acknowledgement/root APIs. Not selected in durable mode, where a publication exposes the digest of its manifest and no legacy root (DI-01); deferred with the coupled bridge `rspace-consensus-bridge-construction` and `rspace-owner-coupled-binding-publication`. |
+| CI-20 | `completed_publication_is_closed_under_selection` | Prepublication-only lookup control; future 7931 immediately authenticates and uses the acknowledged successor. Not selected in durable mode, where a publication selects no coupled binding; deferred with the coupled bridge `rspace-consensus-bridge-construction`, `rspace-catalog-coupled-reference` and `rspace-owner-coupled-binding-publication`. |
 | CI-21 | `completed_publication_has_a_usable_equivalent_alias` | Positive publication witness; future 7942 resolves every acknowledged external root after commit and restart. |
 | CI-22 | `publication_requires_refined_transition_not_just_semantic_admission` | Explicit transition premise; future 7942 differentially generates successful/refused legacy and coupled operations, including ordered aliases. |
 | CI-23 | `publication_invalidates_old_permit` | Reuses caller generation rules; future 7931/7932 reject stale operations even when the legacy root returns to an old value. |
@@ -9216,7 +9369,7 @@ reported as a completed bridge implementation.
 | CI-25 | `missing_recovery_binding_cannot_fall_back` | Missing-facet and restart-reauthentication controls; future 7942 refuses missing selected authority rather than falling back to provenance or LMDB. |
 | CI-26 | `recovered_owner_rejects_every_observable_permit` | Raw-reopen incarnation control; future 7931/7932 retain old handles across multiple restarts and reject each obsolete incarnation. |
 | CI-27 | `recovered_owner_has_a_usable_equivalent_alias` | Positive recovery witness; future 7932/7942 immediately reset/read/export using recovered legacy roots. |
-| CI-28 | `same_semantic_manifest_does_not_imply_coupled_equivalence` | Distinct-facet formal witness plus the coherent DAG/legacy fixture; future 7942 never overwrites identity mappings solely by manifest equality. |
+| CI-28 | `same_semantic_manifest_does_not_imply_coupled_equivalence` | Distinct-facet formal witness plus the coherent DAG/legacy fixture; future 7942 never overwrites identity mappings solely by manifest equality. Not selected in durable mode, which keeps no compatibility facet and gives durable states with equal namespace roots one root (DI-01); deferred with the coupled bridge `rspace-consensus-bridge-construction` and `rspace-owner-alias-catalog`. |
 
 The companion `RSpaceConsensusIdentityMutants.v` contains three positive witnesses
 (checked binding, completed publication, checked restart) and seven negative controls.
@@ -9327,7 +9480,7 @@ Actual retained-root DAG import, shadow ownership and cutover remain tasks 7934�
 | LM-09 | Activation is generation-bound; stale/failing/no-op operations have exact effects | Same model's `TypeInvariant`, `GenerationAdvancesExactlyOnActivation`, `CommitUsesExactBase`, `FailedCommitLeavesAuthorityUnchanged`, `NoOpLeavesAuthorityUnchanged`; existing atomic-state suite and root-only control. |
 | LM-10 | Import stages privately, seals once and publishes through its exact capability | Existing `RSpaceAffineImportLifecycle.tla`, import-session/state tests and the new real-LMDB rollback destination; no claim of process-persistent staging. |
 | LM-11 | Legacy namespace adoption preserves exact validated source identity | Existing `legacy_state_migration.rs` tests cover split/v2/eval, namespace-bound markers, divergent sources and malformed records; their same-process retry is not subprocess evidence. |
-| LM-12 | Physical migration does not silently replace legacy consensus identity | CI-01..CI-28 and the #7941 ordered-alias fixtures remain binding for 7934–7936; metadata/provenance is not a legacy-root certificate. |
+| LM-12 | Physical migration does not silently replace legacy consensus identity | CI-01..CI-28 and the #7941 ordered-alias fixtures remain binding for 7934–7936; metadata/provenance is not a legacy-root certificate. In durable mode, CI-10 holds for LMDB mode only, and the cited CI-13, CI-19, CI-20 and CI-28 are not selected; they are deferred with the coupled bridge `rspace-consensus-bridge-construction`. |
 
 The unchanged atomic model was rerun: 357 states generated, 127 distinct states,
 complete depth seven, no remaining queue or invariant failure. Its split-publication,
