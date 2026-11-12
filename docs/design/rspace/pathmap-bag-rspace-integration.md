@@ -3574,7 +3574,7 @@ in [Terms and notation](#terms-and-notation).
 | Root | A 32-byte digest that names one recorded contents. |
 | Recorded roots | $`H`$, a finite map from roots to the contents recorded at them. $`\operatorname{dom} H`$ is the set of recorded roots. |
 | Configuration | $`\kappa = (T, S, H)`$: pending terms, contents and recorded roots. |
-| Operation | A request to the tuple space: a produce (from evaluating a send), a consume (from evaluating a receive) or an install (the bootstrap placement of a system continuation). |
+| Operation | A request to the tuple space: a produce (from evaluating a send), a consume (from evaluating a receive) or an install (the placement, by the runtime and never by a Rholang term, of the continuation of a system process, a process built into the interpreter such as the one that serves `rho:io:stdout`). An install never completes a COMM; [The eager reference](#the-eager-reference) says why. |
 | Selection | For a continuation on $`\vec{c}`$, one datum occurrence for each position $`i`$, taken from those on channel $`c_i`$: the resting data $`D(c_i)`$ and, when a produce arrives, its datum. A non-persistent occurrence fills at most one position. |
 | Admissible | Said of a selection whose datum at every position $`i`$ matches the pattern $`p_i`$ under Rholang's matcher, and whose combined bindings the guard, if there is one, accepts. |
 | Rendezvous | A continuation together with an admissible selection. |
@@ -3674,7 +3674,7 @@ and $`s \xrightarrow{\tau^{*}} s''`$ a sequence of zero or more internal steps.
 |---|---|---|---|
 | Interpreter step on a term that is neither a send nor a receive | rewrites pending terms | internal | $`\iota`$, the same on every backend |
 | Operation that completes no COMM | the datum or continuation comes to rest | internal | $`\mathit{op} \mapsto \mathsf{Rested}`$ |
-| Operation that completes a COMM | one COMM; the continuation's body becomes pending | visible | $`\mathit{op} \mapsto \mathsf{Fired}(e)`$ |
+| Produce or consume that completes a COMM | one COMM; the continuation's body becomes pending | visible | $`\mathit{op} \mapsto \mathsf{Fired}(e)`$ |
 | Hard checkpoint | records the root of the contents | internal | $`\mathsf{checkpoint} \mapsto r`$ |
 | Reset to a recorded root | the contents become those recorded at the root | not a calculus step | $`\mathsf{reset}(r)`$ |
 | Soft checkpoint | records a snapshot of the contents without a root | internal | $`\tau`$ |
@@ -3750,6 +3750,101 @@ removes every resting non-persistent datum occurrence that the selection uses, a
 if it was resting and is not persistent; persistent items stay, and the arriving datum or
 continuation does not come to rest. `body(sel)` is the continuation's body with the bindings that the
 patterns of the selection produce.
+
+An install is an operation that no term issues, so `reference_step` never meets one. The runtime
+places one install for every system process: `introduce_system_process` in
+`rholang/src/rust/interpreter/rho_runtime.rs` does so when a runtime is created, and
+`restore_installs` places them again after every hard checkpoint and every reset
+(`RSpace::create_checkpoint`, `RSpace::reset` and the methods of `ReplayRSpace` with the same
+names). Each install has one channel, a catch-all pattern of the process's arity (as many free
+variables as the process takes arguments; no built-in definition adds a remainder) and no guard
+(`guard: None`). No Rholang term issues an install: the reducer
+(`rholang/src/rust/interpreter/reduce.rs`) issues only produces and consumes. Rholang code cannot
+even receive on a system channel: the address of the channel, such as `rho:io:stdout`, gives it the
+channel as a write-only bundle, a name on which it can send but not receive
+(`Definition::to_urn_map` in `rholang/src/rust/interpreter/system_processes.rs`). An install rests
+when its enabled set is empty, and the code refuses it otherwise. `RSpace::locked_install_internal`
+and `ReplayRSpace::locked_install_internal` store the continuation exactly when no resting datum
+matches its pattern, which for an install without a guard is exactly when its enabled set is
+empty; otherwise they return a `BugFoundError` whose message reads
+"RUST ERROR: Installing can be done only on startup", and `restore_installs` turns that error into
+a panic, as `introduce_system_process` does. The reference therefore gives an install the label
+$`\mathit{op} \mapsto \mathsf{Rested}`$ only, and only from contents in which its enabled set is
+empty. Task 14305's Rocq model, `formal/rocq/stack_safe_pda/theories/RSpaceEagerReference.v`,
+added after the base commit, proves both facts for its reference: `install_never_fires` (no
+reference step fires an install) and `install_rests_exactly_when_nothing_is_enabled` (an install
+rests exactly when its enabled set is empty, and has no step at all while the set has a member).
+
+The precondition of an install, that its enabled set is empty when the runtime
+places it, is a property of recorded contents. A hard checkpoint records the resting
+items but not the installed continuations, which the hot store keeps apart from the
+resting ones (`HotStore::install_continuation` and `HotStore::checkpoint_changes` in
+`rspace++/src/rspace/hot_store.rs`), so the installs that `introduce_system_process`
+or `restore_installs` places meet exactly the data recorded at a root. For play, and
+for replay of an event log that play wrote, the log that labels K2 and K3 presuppose,
+no datum that matches an installed continuation is at rest in recorded contents, so
+the precondition holds. This is an argument from the code with the citations below,
+not a mechanised proof. It goes by cases on the datum.
+
+- A non-persistent datum. In play, a produce whose datum matches the pattern of an installed
+  continuation finds that continuation among the waiting continuations of its channel, so its
+  enabled set is not empty and `RSpace::locked_produce` fires a COMM: the datum is consumed and
+  never rests, and the installed continuation, which is persistent, stays. Play's event log holds
+  the COMM, and replay of that log performs it
+  (`an_install_should_be_available_after_resetting_to_a_checkpoint` in
+  `rspace++/tests/replay_rspace_tests.rs` replays such a COMM).
+- A persistent datum. Its produce fires in the same way, and the arriving datum is
+  not stored; the reducer then issues the send again (`continue_produce_process` in
+  `rholang/src/rust/interpreter/reduce.rs`), and the send fires again. A matching persistent datum
+  therefore never rests while the install is in place, in play or in replay of play's log.
+- A datum produced before the install exists. A runtime places its installs when it is created,
+  before it evaluates any term: `create_runtime` calls `create_rho_env`, which calls
+  `introduce_system_process`, before `bootstrap_registry` and before any deploy. A datum at rest
+  when the installs are placed was therefore recorded by an earlier checkpoint and comes with the
+  state that the runtime starts from, which is the next case.
+- Data restored by a reset. A reset, and the creation of a runtime at a recorded root (the `spawn`
+  method of either space), restore the data that a checkpoint recorded at rest. The runtimes that
+  play and replay blocks place the same installs (`RuntimeManager::spawn_runtime` and
+  `RuntimeManager::spawn_replay_runtime` add no system process to the built-in ones), so a datum
+  that one of them recorded came to rest while those installs were in place, and the first two
+  cases exclude a matching one. By induction over the checkpoints, starting from the empty contents
+  of a new store, no recorded contents holds one. A revert to a soft checkpoint restores a snapshot
+  that already holds the installs and does not place them again.
+
+Task 14306's conformance driver, also added after the base commit,
+tests the first two cases on the in-memory store. Its generated programs
+(`generate_program` in `rspace++/tests/reference_tuplespace/mod.rs`)
+place unguarded installs before their sends and receives, and
+`rc_01_every_comm_is_a_member_of_the_reference_enabled_set_and_rests_only_when_it_is_empty`
+(`rspace++/tests/reference_conformance.rs`) checks after every operation of play, and of the replay
+of play's log, that the space rests only when the reference's enabled set is empty; the driver
+takes no checkpoint. Replay of an event log that play did not write is outside the statement:
+`ReplayRSpace::locked_produce` and `ReplayRSpace::locked_consume` store, without a search, an
+operation that the log binds to no COMM, so the precondition is not established there, and tracker
+item 14367 (`rspace-replay-unlogged-comm-rests-datum-on-install`) records it.
+
+For an install with a guard, the refusal would no longer coincide with a non-empty enabled
+set. `SpaceMatcher::extract_data_candidates` (`rspace++/src/rspace/space_matcher.rs`), which
+`locked_install_internal` uses, looks for matching data without consulting the guard, so once
+the guard had rejected a resting datum that the pattern matches, the enabled set would be
+empty and yet the next `restore_installs` would refuse the install and panic. The conformance
+driver avoids this case: `generate_program` generates only unguarded installs. The node
+cannot reach it, because it never installs a guarded continuation. Outside tests, the tuple
+space's `install` is called by `introduce_system_process`, which passes `guard: None`, by
+`ReportingRspace::install`, which only passes its arguments on to `ReplayRSpace::install`
+and is itself called only by `introduce_system_process`, and by the function that the
+library `rspace_plus_plus_rhotypes` exports to C callers (`pub extern "C" fn install` in
+`rspace++/libs/rspace_rhotypes/src/lib.rs`). That function installs whatever continuation it
+decodes, a guarded one included, and no code in this repository calls it.
+
+The paragraphs on installs above were added after the base commit. What the opening of
+[Correctness criterion: the Rho calculus](#correctness-criterion-the-rho-calculus) says was
+checked at the base commit, and the [Recorded searches](#recorded-searches), therefore do not
+cover the names that those paragraphs cite. The names were found by fixed-string searches on the
+tree of the commit that adds the paragraphs, and on that tree `RSpaceEagerReference.v` passed the
+checks that the opening lists for the three Rocq files it names: both cited theorems lie outside
+comments and end in `Qed`, `formal/rocq/stack_safe_pda/_CoqProject` lists the file, the file
+imports only the standard library, and it contains none of the listed words outside comments.
 
 Two kinds of item are issued again after a COMM, both as the reducer does it. A peeking receive reads
 its data without consuming them: `perform` removes the non-persistent data of the selection as for
@@ -4372,7 +4467,7 @@ SG-02 are the IDs that these tests carry in
 | Label | Artefacts at the base commit | Status | Gap, and the task that closes it |
 |---|---|---|---|
 | C1 | `certified_acceptance_has_exact_channel_vector` (`TwoLevelRSpaceMatchTransaction.v`): the channels of the selected candidates are the requested channels, position by position. `CommittedMultiplicityAndArrivalAreExact` (`RSpaceBagCommit.tla`, configuration `RSpaceBagCommit.cfg` with two keys and counts from 0 to 2). In-memory: `t5_a_named_non_least_selection_fires_exactly_itself` (the named datum is consumed and the continuation removed), `a_receive_taking_two_data_from_one_channel_removes_both`, `persistent_produce_should_be_available_for_multiple_matches` (one persistent datum fills both positions of a receive on (c, c)), `producing_then_consuming_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (RSpace alone removes peeked data), `eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_proceed` (through the reducer, the peeked data are on the channel again in both arrival orders). | Proved in a Rocq model; model-checked; tested in-memory. Not tested on the durable backend. | 14306 (RC-01, in-memory first), 14307 (RC-01 to RC-03 on the durable backend), 14310 (JO-01). |
-| C2 | Oracle `enabled_rendezvous()` (`RSpace::enabled_rendezvous`, `ReplayRSpace::enabled_rendezvous`, `enumerate_enabled_rendezvous`). In-memory, on planted states: `t2_the_enumeration_is_complete` (every datum a bind can match is enumerated, and a guard removes exactly the data it rejects), `t8_a_join_enumerates_its_cross_product`, `t7_teeth_an_unsatisfiable_state_enumerates_to_nothing`. Lemma CC-1 for the reference. | Oracle tested in-memory. An empty enabled set after operations is asserted only by t7, in states where nothing can fire; no test asserts it after operations that could fire (searches below). Proved on paper for the reference; stated for every backend. | 14306 (RC-02), 14307, 14310 (JO-02); 14305 for the Rocq model. |
+| C2 | Oracle `enabled_rendezvous()` (`RSpace::enabled_rendezvous`, `ReplayRSpace::enabled_rendezvous`, `enumerate_enabled_rendezvous`). In-memory, on planted states: `t2_the_enumeration_is_complete` (every datum a bind can match is enumerated, and a guard removes exactly the data it rejects), `t8_a_join_enumerates_its_cross_product`, `t7_teeth_an_unsatisfiable_state_enumerates_to_nothing`. Lemma CC-1 for the reference. | Oracle tested in-memory. An empty enabled set after operations is asserted only by t7, in states where nothing can fire; no test asserts it after operations that could fire (searches below). Proved on paper for the reference; stated for every backend, for play and for replay of an event log that play wrote. | 14306 (RC-02), 14307, 14310 (JO-02); 14305 for the Rocq model. |
 | C3 | Key grammar: `RhoPathV1::continuation_prefix` and `RhoPathV2::continuation_prefix` frame the channels in the given order; `continuations_for_channels_at` reads by `RhoPathV1::continuation_prefix(channels)`. Durable store: `a_receive_group_is_read_only_at_its_literal_ordered_prefix` (VR-07: with continuations stored under (a, b), under (b, a) or under both, a read of (a, b), (b, a), (a), (b) or (a, a) returns exactly the continuations stored under that list). Sealed DAG: `ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not` stores a continuation under (a, b) and another under (b, a); both insertion orders give the same DAG version and manifest roots, while the legacy radix history returns the latest continuation for both lists. | Holds by construction of the keys, by reading. Tested on the durable store, below the `RSpace` seam (VR-07). Not tested through `RSpace` on the durable backend. | 14310 (JO-03 and its red control), 14306 (RC-04). |
 | C4 | `impl PartialEq for Par`, `impl RhoPathEncode for Par`, `RhoPathV1::datum_prefix`, `PAR_PROGRAM`, `eval_stable_par`; `equality_hashing_and_ordering_ignore_only_root_locally_free`, `paired_identity_keeps_structural_image_separate_from_legacy_digest`, `image_is_exactly_a_function_of_par_equality`. | The durable backend uses RhoPathV1, by reading. RhoPathV1 datum keys separate equal names that differ in root `locally_free`, by reading, untested; whether such a name reaches a produce or a consume is not established. | No task is named here. The choice between the key grammars is made at cutover with a workload benchmark (pgmcp experiment 487), and a witness of C4 for the chosen profile follows it. |
 | K1 | The durable state root (`DurableStateRootV1`) is the digest of the state's semantic manifest (`SemanticStateManifestV1`), which holds the schema epoch, the semantic profile and three namespace roots, the roots of the data, of the continuations and of the joins. Durable store: `durable_state_root_is_a_function_of_contents_across_insertion_orders_and_reopen` (DI-01: fourteen stores build one contents of seven items, three data, two continuations and two joins, in eleven insertion orders, eight stores with one checkpoint and six with one checkpoint for each of three units taken in every order; all publish one durable state root, and each reopened store recovers that root and resolves it to the same namespace roots). `independently_created_empty_stores_share_the_empty_state_manifest_digest` (SG-02, the empty contents: two stores that `create_empty_store_v1` creates in two directories, each with its own store identifier, record the same manifest digest, and with it the same durable state root, which equals the digest of the manifest of the empty contents as the test encodes it; both stores reopen at the same state). A manifest can also carry a `legacy_history_root`; `resolve_retained_state` refuses a root whose manifest carries one (`a_manifest_with_a_legacy_history_root_does_not_resolve`, DI-04, on stores installed from hand-built checkpoint images). Rocq model of the durable store (`RSpaceDirectManifestIdentity.v`), to whose theorems the catalog binds DI-01 to DI-04 as partially entailed, with executable obligations that the Rust code refines the model: a digest is an injective code, so the collision resistance of BLAKE2b-256 is part of the model and not proved, and the namespace roots are opaque numbers. `direct_root_is_function_of_semantic_roots`: two stores of one semantic profile whose current manifests have schema epoch 1, that profile and no legacy history root have equal published roots, the digests of their current manifests, exactly when their current namespace roots are equal; nothing else of the two stores enters. `direct_resolution_is_exact` and `direct_and_preserved_sessions_cannot_resolve_each_other`: no manifest that carries a legacy history root resolves in any store of the model. Sealed DAG: `ordered_endpoint_insertions_commute_but_legacy_group_checkpoints_do_not` (two insertion orders, same version and roots) and `same_base_and_payload_seal_to_identical_objects` (same base and payload, identical objects). `validate_node_shape` refuses non-canonical node shapes. In-memory: `clear_should_reset_to_the_same_hash_on_multiple_runs` (after a clear, the checkpoint root is the empty root again). | Proved in a Rocq model for the step from the namespace roots to the root (`direct_root_is_function_of_semantic_roots`). Tested on examples: on the durable store, below the `RSpace` seam, for one contents across insertion orders, checkpoint schedules and reopen (DI-01) and for the empty contents across two independently created stores (SG-02); on sealed DAGs; and, for the empty contents, in-memory. Not established in general: the model treats the namespace roots as opaque, and the catalog leaves to executable obligations that each namespace root is a function of the items it holds and that the Rust code refines the model. | 14307 (LC-03), 14308 (RP-03). |
