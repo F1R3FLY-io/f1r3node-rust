@@ -1,8 +1,11 @@
+use std::borrow::Cow;
 use std::fmt;
 
 use pathmap::PathMap;
 
 use super::hashing::stable_hash_provider::StableHashSerialize;
+use super::persistence::SemanticNamespace;
+use super::serializers::cold_store_decode::{ColdStoreDecode, ColdStoreDecodeError};
 
 const MAGIC: [u8; 4] = *b"RHP\x01";
 const DATUM_KIND: u8 = 1;
@@ -685,7 +688,7 @@ fn rho_path_frame_step_v1(
 /// first error are exactly those of `parse_datum`, `parse_continuation`, and
 /// `parse_join`; those contiguous parsers remain the independent oracle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RhoPathStreamValidatorV1 {
+pub struct RhoPathStreamValidatorV1 {
     namespace: RhoPathNamespaceV1,
     state: RhoPathStreamStateV1,
     first_error: Option<RhoPathError>,
@@ -937,7 +940,7 @@ pub struct DatumPathView<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ContinuationPathView<'a> {
+pub struct ContinuationPathView<'a> {
     encoded_channels: &'a [u8],
     channel_count: usize,
     encoded_continuation_identity: &'a [u8],
@@ -1000,7 +1003,7 @@ impl Iterator for ContinuationChannelIdentities<'_> {
 impl ExactSizeIterator for ContinuationChannelIdentities<'_> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct JoinPathView<'a> {
+pub struct JoinPathView<'a> {
     encoded_indexed_channel_identity: &'a [u8],
     join_identity: &'a [u8],
 }
@@ -1025,6 +1028,7 @@ impl<'a> DatumPathView<'a> {
     pub const fn channel_prefix_len(&self) -> usize { self.channel_prefix_len }
 }
 
+#[derive(Clone, Copy, Default)]
 pub struct RhoPathV1;
 
 impl RhoPathV1 {
@@ -1293,6 +1297,215 @@ fn take_continuation_channels(path: &[u8]) -> Result<(usize, usize, usize), RhoP
     }
     u64::try_from(channel_count).map_err(|_| RhoPathError::PositionOverflow)?;
     Ok((channels_start, cursor, channel_count))
+}
+
+pub trait RhoPathStreamValidate {
+    fn push(&mut self, chunk: &[u8]) -> Result<(), RhoPathError>;
+    fn finish(self) -> Result<(), RhoPathError>;
+}
+
+pub trait RhoPathKeySyntax: Copy + Default + Send + Sync + 'static {
+    const MAGIC: [u8; 4];
+    type DatumView<'a>;
+    type ContinuationView<'a>;
+    type JoinView<'a>;
+    type StreamValidator: RhoPathStreamValidate;
+    fn parse_datum(path: &[u8]) -> Result<Self::DatumView<'_>, RhoPathError>;
+    fn datum_channel_prefix_len(view: &Self::DatumView<'_>) -> usize;
+    fn parse_continuation(path: &[u8]) -> Result<Self::ContinuationView<'_>, RhoPathError>;
+    fn continuation_group<'a>(view: &Self::ContinuationView<'a>) -> ReceiveChannelGroup<'a>;
+    fn parse_continuation_group(prefix: &[u8]) -> Result<ReceiveChannelGroup<'_>, RhoPathError>;
+    fn parse_join(path: &[u8]) -> Result<Self::JoinView<'_>, RhoPathError>;
+    fn join_record<'a>(view: &Self::JoinView<'a>) -> Cow<'a, [u8]>;
+    fn join_record_path(join_prefix: &[u8], join_record: &[u8]) -> Vec<u8>;
+    fn validate_key(namespace: SemanticNamespace, path: &[u8]) -> Result<(), RhoPathError>;
+    fn stream_validator(namespace: SemanticNamespace) -> Self::StreamValidator;
+}
+
+pub trait RhoPathGrammar<C>: RhoPathKeySyntax {
+    fn datum_prefix(channel: &C) -> Vec<u8>;
+    fn continuation_prefix(channels: &[C]) -> Vec<u8>;
+    fn join_prefix(channel: &C) -> Vec<u8>;
+    fn channel_field(channel: &C) -> Vec<u8>;
+}
+
+pub trait RhoPathGrammarDecode<C>: RhoPathGrammar<C> {
+    fn decode_datum_channel(view: &Self::DatumView<'_>) -> Result<C, RhoPathChannelError>;
+    fn decode_continuation_channels(
+        view: &Self::ContinuationView<'_>,
+    ) -> Result<Vec<C>, RhoPathChannelError>;
+    fn decode_join_channel(view: &Self::JoinView<'_>) -> Result<C, RhoPathChannelError>;
+    fn prefix_channel(datum_prefix: &[u8]) -> Result<C, RhoPathChannelError>;
+    fn prefix_legacy_identity(datum_prefix: &[u8]) -> Result<Vec<u8>, RhoPathChannelError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RhoPathChannelError {
+    Path(RhoPathError),
+    ColdDecode(ColdStoreDecodeError),
+    Detail(String),
+    Mismatch(&'static str),
+}
+
+impl fmt::Display for RhoPathChannelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Path(error) => fmt::Display::fmt(error, f),
+            Self::ColdDecode(error) => fmt::Display::fmt(error, f),
+            Self::Detail(detail) => f.write_str(detail),
+            Self::Mismatch(text) => f.write_str(text),
+        }
+    }
+}
+
+impl std::error::Error for RhoPathChannelError {}
+
+impl RhoPathStreamValidate for RhoPathStreamValidatorV1 {
+    fn push(&mut self, chunk: &[u8]) -> Result<(), RhoPathError> {
+        RhoPathStreamValidatorV1::push(self, chunk)
+    }
+
+    fn finish(self) -> Result<(), RhoPathError> { RhoPathStreamValidatorV1::finish(self) }
+}
+
+impl RhoPathKeySyntax for RhoPathV1 {
+    const MAGIC: [u8; 4] = MAGIC;
+    type DatumView<'a> = DatumPathView<'a>;
+    type ContinuationView<'a> = ContinuationPathView<'a>;
+    type JoinView<'a> = JoinPathView<'a>;
+    type StreamValidator = RhoPathStreamValidatorV1;
+
+    fn parse_datum(path: &[u8]) -> Result<Self::DatumView<'_>, RhoPathError> {
+        RhoPathV1::parse_datum(path)
+    }
+
+    fn datum_channel_prefix_len(view: &Self::DatumView<'_>) -> usize { view.channel_prefix_len() }
+
+    fn parse_continuation(path: &[u8]) -> Result<Self::ContinuationView<'_>, RhoPathError> {
+        RhoPathV1::parse_continuation(path)
+    }
+
+    fn continuation_group<'a>(view: &Self::ContinuationView<'a>) -> ReceiveChannelGroup<'a> {
+        ReceiveChannelGroup {
+            profile: ReceiveChannelProfile::LegacyV1,
+            encoded_channels: view.encoded_channels,
+            channel_count: view.channel_count,
+        }
+    }
+
+    fn parse_continuation_group(prefix: &[u8]) -> Result<ReceiveChannelGroup<'_>, RhoPathError> {
+        RhoPathV1::parse_continuation_group(prefix)
+    }
+
+    fn parse_join(path: &[u8]) -> Result<Self::JoinView<'_>, RhoPathError> {
+        RhoPathV1::parse_join(path)
+    }
+
+    fn join_record<'a>(view: &Self::JoinView<'a>) -> Cow<'a, [u8]> {
+        Cow::Borrowed(view.join_identity())
+    }
+
+    fn join_record_path(join_prefix: &[u8], join_record: &[u8]) -> Vec<u8> {
+        let mut output = Vec::with_capacity(join_prefix.len().saturating_add(join_record.len()));
+        output.extend_from_slice(join_prefix);
+        output.extend_from_slice(join_record);
+        output
+    }
+
+    fn validate_key(namespace: SemanticNamespace, path: &[u8]) -> Result<(), RhoPathError> {
+        match namespace {
+            SemanticNamespace::DataBag => RhoPathV1::parse_datum(path).map(|_| ()),
+            SemanticNamespace::ContinuationMap => RhoPathV1::parse_continuation(path).map(|_| ()),
+            SemanticNamespace::JoinBag => RhoPathV1::parse_join(path).map(|_| ()),
+        }
+    }
+
+    fn stream_validator(namespace: SemanticNamespace) -> Self::StreamValidator {
+        match namespace {
+            SemanticNamespace::DataBag => RhoPathStreamValidatorV1::datum(),
+            SemanticNamespace::ContinuationMap => RhoPathStreamValidatorV1::continuation(),
+            SemanticNamespace::JoinBag => RhoPathStreamValidatorV1::join(),
+        }
+    }
+}
+
+impl<C: RhoPathEncode> RhoPathGrammar<C> for RhoPathV1 {
+    fn datum_prefix(channel: &C) -> Vec<u8> { RhoPathV1::datum_prefix(channel) }
+
+    fn continuation_prefix(channels: &[C]) -> Vec<u8> { RhoPathV1::continuation_prefix(channels) }
+
+    fn join_prefix(channel: &C) -> Vec<u8> { RhoPathV1::join_prefix(channel) }
+
+    fn channel_field(channel: &C) -> Vec<u8> { channel.rho_path_identity() }
+}
+
+impl<C: RhoPathEncode + ColdStoreDecode> RhoPathGrammarDecode<C> for RhoPathV1 {
+    fn decode_datum_channel(view: &Self::DatumView<'_>) -> Result<C, RhoPathChannelError> {
+        let channel_identity = view.channel_identity();
+        let channel = decode_exact_channel::<C>(&channel_identity, "channel")?;
+        if channel.rho_path_identity() != channel_identity {
+            return Err(RhoPathChannelError::Mismatch(
+                "channel identity does not re-encode exactly",
+            ));
+        }
+        if channel.rho_path_structure() != view.channel_structure() {
+            return Err(RhoPathChannelError::Mismatch(
+                "channel structure disagrees with decoded channel",
+            ));
+        }
+        Ok(channel)
+    }
+
+    fn decode_continuation_channels(
+        view: &Self::ContinuationView<'_>,
+    ) -> Result<Vec<C>, RhoPathChannelError> {
+        let channel_identities = view.channel_identities();
+        let mut channels = Vec::with_capacity(channel_identities.len());
+        for identity in channel_identities {
+            let channel = decode_exact_channel::<C>(&identity, "continuation channel")?;
+            if channel.rho_path_identity() != identity {
+                return Err(RhoPathChannelError::Mismatch(
+                    "channel identity does not re-encode exactly",
+                ));
+            }
+            channels.push(channel);
+        }
+        Ok(channels)
+    }
+
+    fn decode_join_channel(view: &Self::JoinView<'_>) -> Result<C, RhoPathChannelError> {
+        let indexed_identity = view.indexed_channel_identity();
+        let indexed = decode_exact_channel::<C>(&indexed_identity, "indexed channel")?;
+        if indexed.rho_path_identity() != indexed_identity {
+            return Err(RhoPathChannelError::Mismatch(
+                "indexed channel does not re-encode exactly",
+            ));
+        }
+        Ok(indexed)
+    }
+
+    fn prefix_channel(datum_prefix: &[u8]) -> Result<C, RhoPathChannelError> {
+        let view =
+            RhoPathV1::parse_datum_prefix(datum_prefix).map_err(RhoPathChannelError::Path)?;
+        C::cold_decode(&view.channel_identity()).map_err(RhoPathChannelError::ColdDecode)
+    }
+
+    fn prefix_legacy_identity(datum_prefix: &[u8]) -> Result<Vec<u8>, RhoPathChannelError> {
+        RhoPathV1::parse_datum_prefix(datum_prefix)
+            .map(|view| view.channel_identity())
+            .map_err(RhoPathChannelError::Path)
+    }
+}
+
+fn decode_exact_channel<C: ColdStoreDecode>(
+    identity: &[u8],
+    label: &'static str,
+) -> Result<C, RhoPathChannelError> {
+    match C::cold_decode_prefix(identity) {
+        Ok((channel, consumed)) if consumed == identity.len() => Ok(channel),
+        Ok(_) => Err(RhoPathChannelError::Detail(format!("{label} has trailing bytes"))),
+        Err(error) => Err(RhoPathChannelError::Detail(error.to_string())),
+    }
 }
 
 pub fn encode_structural_sequence<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {

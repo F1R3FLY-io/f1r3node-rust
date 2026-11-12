@@ -460,6 +460,7 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("XB-03", "an_empty_journal_and_an_unchanged_current_state_write_and_sync_nothing"),
     ("XB-04", "every_refusal_precedes_the_first_write_and_changes_nothing"),
     ("XB-05", "a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor"),
+    ("KG-01", "v1_builders_equal_the_rhopathv1_functions_byte_for_byte"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

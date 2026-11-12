@@ -2425,7 +2425,7 @@
       "checker": "scripts/check-ordered-receive-view-obligations.py",
       "family": "ordered_receive_view",
       "manifest": "formal/ordered_receive_view_obligations.generated.json",
-      "manifest_sha256": "42b37efc7cb42698d23e5513420e306cd8a2f0f6d685ae830fc3588105551cf4",
+      "manifest_sha256": "1719c3d7ad021d126857015b065963adb678a062ddf80adddfa45f845292ce0a",
       "obligations": {
         "boundary": "Concrete witnesses assert each capstone on fixtures and generated records; the source mutants show the production checks observe each property. Neither is a formal Rust refinement proof, and the RCI2 profile is admitted only from explicit keys.",
         "mutants": {
@@ -2847,7 +2847,7 @@
           "models/tests/cold_store_records.rs": "f3139ced4e49dc91259d0666c86cd114f6c260bfa4721444bef2d060b971a1ee",
           "rholang/tests/ordered_receive_view_rholang.rs": "10191077f1417dd08700179902c088fbfff77f143dab0570ed02f003f827a413",
           "rspace++/src/rspace/ordered_receive.rs": "3b4a8a4bd5dfeaee77f55d3453a827cb99b24904f4b1f4a5432ae71f7a5c2373",
-          "rspace++/src/rspace/rho_path.rs": "fa5c037be8699102959cc84c85d4c6ab2c9ada049cadbe01dfa0e69a952e5397",
+          "rspace++/src/rspace/rho_path.rs": "de29cc40770c340e3d7ae6295b5944723653fcec2b3fbc91cb983ee5c631042c",
           "rspace++/tests/ordered_receive_view_spec.rs": "056600fdd0262df83e2a8082403f71477127ed757283a44baae103e864cd9fae",
           "scripts/generate-ordered-receive-view-mutant.py": "3d01cbaa8f4ee260f3e26f2f3f73738e9621a57cc441a39374a86d01a87de9e7"
         }
@@ -8718,7 +8718,7 @@
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "66fc88796bcf7ca4b678560a4115eee3f80eb0505544fa705dfe7f301e45163c",
+      "manifest_sha256": "8e52209fef04d6fef308bb67bb0ea9111b2588535ed12ab6127b0a941e5246ac",
       "obligations": {
         "controls": [
           {
@@ -9107,8 +9107,8 @@
           "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
           "rspace++/src/rspace/persistence/mod.rs": "3e0f7ed294a53717328665cc0a5e81dd5edf0a3081af6ca196419c8454e49449",
           "rspace++/src/rspace/state/rspace_state_authority.rs": "d3cbca00b88112aaae53ce19bb23bf1b21134d53635b7ecdab8f2ad1585822b6",
-          "rspace++/tests/persistence/generation_checkpoint_properties.rs": "d614f6375965ecc091b445c277d6c398e7477cd8876384a368b76d7b6144d589",
-          "rspace++/tests/persistence/mod.rs": "892c9fc9b4ae6cd4a977656a74b03b02e8336c81a67a83c692898ec522f28dcb",
+          "rspace++/tests/persistence/generation_checkpoint_properties.rs": "b4de801c8761c9cb663c4a13c09650147c7d3352b764ab539736d2b558dec126",
+          "rspace++/tests/persistence/mod.rs": "7e7a83c852c5903438df66ab0ac17a8272cc04737b99aed5544a9f633a631cf5",
           "rspace++/tests/state/atomic_state_authority.rs": "d33603450549c6cacb1b03366bccdf31762e2ad2d95aa1325d6b7914b9fccb1c",
           "shared/Cargo.toml": "eb329b1f634d0cfbc623f9a28007d221b4f6100cb6d12638023072d73dd229c0",
           "shared/tests/workspace_regression_formal_bindings.rs": "0cc934d3b6d274c80df8bf3b093afffd3e7d3a8cc0f3cb983dac5d67e0f05946"

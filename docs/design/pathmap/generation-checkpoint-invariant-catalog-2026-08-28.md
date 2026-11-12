@@ -10869,6 +10869,226 @@ endpoint that the journal does not name publishes the journal on the current
 state without the rest of the difference. Each makes XB-01 fail in its seeded
 scenarios.
 
+### RhoPath key grammar traits and their V1 implementation (2026-11-12)
+
+Task 14393, leaf `rspace-key-grammar-trait-v1` of the key-grammar design,
+states the RhoPath key grammar as four traits in
+[`rho_path.rs`](../../../rspace++/src/rspace/rho_path.rs) and implements them
+for `RhoPathV1`. No caller uses the traits yet. The leaves that follow
+re-point the data index, the record index, the mutation codec and the
+semantic validation to them one component at a time, and each proves byte
+identity against the V1 functions. This slice changes no call site and no
+behaviour.
+
+Three terms are used below.
+
+- A **key** is the PathMap path of one endpoint of the semantic state: a
+  datum of the data bag, a continuation of the continuation map, or a
+  membership of the join bag. These are the three values of
+  `SemanticNamespace`.
+- A **key grammar** is the rule that builds the keys of the three namespaces
+  from channels and parses a key back into its fields. `RhoPathV1` is the
+  grammar of every store today.
+- A **frame** of a byte string is its self-delimiting form: every zero byte
+  is written `00 FF`, and the two bytes `00 00` end the string. A **raw**
+  field is written as it is, so it can only be the last field of a key.
+
+The V1 keys are the following. This slice does not change them.
+
+```text
+ datum          RHP 01 │ 01 │ F(channel structure) │ F(channel identity) │ F(datum structure) │ datum identity
+                └──────────────────── datum prefix ────────────────────┘
+ continuation   RHP 01 │ 02 │ 01 │ F(channel identity) … │ 00 01 │ F(continuation identity)
+                └──────────── continuation prefix ─────────────┘
+ join           RHP 01 │ 03 │ 01 │ F(indexed channel identity) │ 00 01 │ join record
+                └─────────────────── join prefix ────────────────────┘
+```
+
+Legend: `F(x)` is the frame of `x`, and a field without `F` is raw. `RHP 01`
+is the four magic bytes `52 48 50 01`. The byte after the magic is the kind
+of the key, and the byte `01` after the kinds `02` and `03` is the collection
+version. `00 01` ends a channel group. `│` separates fields and is not a
+byte, and `…` stands for one frame per further channel of an ordered group.
+The bracket under a key marks its prefix, which is what the builder of that
+name returns.
+
+**The traits.** A grammar is a type without a value: every item is an
+associated constant, type or function, so code that is generic over a
+grammar is dispatched statically. There are three levels, each a supertrait
+of the next, and one trait for the chunked validator of a key:
+
+| Trait | What it needs | Items |
+|---|---|---|
+| `RhoPathStreamValidate` | The bytes of one key, in consecutive chunks. | `push`, `finish` |
+| `RhoPathKeySyntax` | Bytes only. It serves code that is not generic over a channel type. | The constant `MAGIC`; the associated types `DatumView`, `ContinuationView`, `JoinView` and `StreamValidator`; `parse_datum`, `datum_channel_prefix_len`, `parse_continuation`, `continuation_group`, `parse_continuation_group`, `parse_join`, `join_record`, `join_record_path`, `validate_key` and `stream_validator`. The last two take a `SemanticNamespace`. |
+| `RhoPathGrammar<C>` | A channel type `C`. | `datum_prefix`, `continuation_prefix`, `join_prefix`, `channel_field` |
+| `RhoPathGrammarDecode<C>` | A channel type that can be decoded from the bytes of a key. | `decode_datum_channel`, `decode_continuation_channels`, `decode_join_channel`, `prefix_channel`, `prefix_legacy_identity` |
+
+`RhoPathKeySyntax` requires `Copy + Default + Send + Sync + 'static`, so the
+unit struct `RhoPathV1` now derives `Clone`, `Copy` and `Default`.
+
+The decoders return `RhoPathChannelError`. Its four variants are the four
+kinds of refusal that the code they will replace produces:
+
+| Variant | It carries | Meaning |
+|---|---|---|
+| `Path` | A `RhoPathError`. | The bytes are not a datum prefix of the grammar. |
+| `ColdDecode` | A `ColdStoreDecodeError`. | The channel field of a datum prefix does not decode. |
+| `Detail` | A text. | The channel field of a key does not decode exactly. The text is the decoder's own error text, or `<label> has trailing bytes`. |
+| `Mismatch` | A fixed text. | The decoded channel does not re-encode to the bytes of the key. |
+
+`RhoPathChannelError` implements `Display`, which prints the carried error or
+text and nothing else, and `std::error::Error`.
+
+**The V1 implementation.** Each item calls the function that the callers use
+today, or repeats its statements:
+
+| Item | V1 |
+|---|---|
+| `MAGIC` | The magic of the file, `RHP 01`. |
+| `parse_datum`, `parse_continuation`, `parse_continuation_group`, `parse_join` | The `RhoPathV1` functions of the same names. The views are `DatumPathView`, `ContinuationPathView` and `JoinPathView`. |
+| `datum_channel_prefix_len` | `DatumPathView::channel_prefix_len`. |
+| `continuation_group` | The `ReceiveChannelGroup` of the view's channel frames with the profile `LegacyV1`. It is the group that `parse_continuation_group` returns for the prefix of the same key. |
+| `join_record` | The raw suffix of the key, borrowed: `JoinPathView::join_identity`. |
+| `join_record_path` | The join prefix followed by the record, unframed, as `OrderedGroupStore::record_path` builds it for the join store. |
+| `validate_key` | `parse_datum`, `parse_continuation` or `parse_join`, chosen by the namespace as `validate_key` of the mutation codec chooses. |
+| `stream_validator` | `RhoPathStreamValidatorV1::datum`, `continuation` or `join`, chosen by the namespace as `stream_key` of the mutation codec chooses. The trait's `push` and `finish` are the validator's own. |
+| `datum_prefix`, `continuation_prefix`, `join_prefix` | The `RhoPathV1` functions of the same names. |
+| `channel_field` | `RhoPathEncode::rho_path_identity`. |
+
+The decoders reproduce the inline code that later leaves delete, with the
+same order of checks and the same texts:
+
+| Decoder | Inline code | Refusals, in the order of the checks |
+|---|---|---|
+| `decode_datum_channel` | The channel part of `validate_data_key` in `semantic.rs`. | `Detail` with the decoder's error text; `Detail` with `channel has trailing bytes`; `Mismatch` with `channel identity does not re-encode exactly`; `Mismatch` with `channel structure disagrees with decoded channel`. |
+| `decode_continuation_channels` | The channel loop of `validate_continuation_record`. | For each channel in key order: `Detail` with the decoder's error text; `Detail` with `continuation channel has trailing bytes`; `Mismatch` with `channel identity does not re-encode exactly`. |
+| `decode_join_channel` | The indexed-channel part of `validate_join_key`. | `Detail` with the decoder's error text; `Detail` with `indexed channel has trailing bytes`; `Mismatch` with `indexed channel does not re-encode exactly`. |
+| `prefix_channel` | The two statements of `loaded_records` and `try_visit_loaded_records` in `data_index.rs` that turn a datum prefix into a channel. | `Path` when the prefix is not a datum prefix; `ColdDecode` when `cold_decode` refuses the channel field. Bytes after the decoded channel are accepted, as today. |
+| `prefix_legacy_identity` | The channel field that `try_visit_loaded_canonical_records` hashes. | `Path` when the prefix is not a datum prefix. |
+
+**Visibility.** A public trait that is implemented for a public type cannot
+have an associated type of lesser visibility. `RhoPathStreamValidatorV1`,
+`ContinuationPathView` and `JoinPathView` therefore become `pub`; their
+methods keep the visibility they had. Nothing outside `rho_path.rs` changes
+its visibility.
+
+**Not in this slice.**
+
+- No call site uses a trait, and `RhoPathV2` does not implement them.
+- The associated type `Representatives` of `RhoPathGrammarDecode`, the trait
+  `RhoPathChannelImage` and the associated type `KeyGrammar` of
+  `SemanticProfile` belong to later leaves of the design.
+- `validate_continuation_record` reserves its channel vector with
+  `try_reserve` and answers a failed reservation with `AllocationFailure`.
+  None of the four variants carries that refusal, and
+  `decode_continuation_channels` reserves with `Vec::with_capacity`. The
+  count that the reservation needs is
+  `continuation_group(view).channel_count()`.
+- `decode_data_endpoint_with_channel` and `decode_join_endpoint_with_channel`
+  decode a channel under the labels `data channel` and
+  `join indexed channel`, with the texts
+  `data channel identity does not re-encode exactly` and
+  `join indexed channel identity does not re-encode exactly`, and the first
+  has no structure check. The V1 decoders reproduce the texts of the three
+  validators, not these.
+
+No persisted byte, record kind, root, identity or wire message changes.
+
+**Tests.** The module
+[`kg_trait_v1.rs`](../../../rspace++/tests/persistence/kg_trait_v1.rs)
+reaches every trait item through a function that is generic over the
+grammar, and it does not import the traits. A call `RhoPathV1::name` in the
+module can therefore only be the inherent function, so the two sides of
+every comparison are the trait implementation and the code it delegates to
+or mirrors. The channel types are `String`, `u64`, `Vec<u8>`, a channel
+whose structure and identity bytes are generated independently, and a probe
+channel that test 6 describes. The generated bytes of a field favour `00`,
+`01` and `FF`, the bytes that the frames treat specially. The pure in-memory
+properties run 256 cases and the two that go through the mutation codec or
+the semantic validation run 64.
+
+1. `v1_builders_equal_the_rhopathv1_functions_byte_for_byte` (KG-01). For up
+   to four generated channels of each of the four types, the datum prefix
+   and the join prefix of every channel, and the continuation prefix of the
+   group and of the group written twice, are the bytes of
+   `RhoPathV1::datum_prefix`, `join_prefix` and `continuation_prefix`;
+   `channel_field` is `rho_path_identity()`; and `MAGIC` is the literal
+   `RHP 01` and heads every prefix.
+2. `v1_parsers_return_the_same_views_and_errors_as_rhopathv1`. The inputs
+   are arbitrary bytes, the prefix of the empty group, and a datum key, a
+   continuation key of two channels and a join key built from generated
+   fields, each with every truncation of it and with one byte changed. For
+   every input, each of the four parsers returns the view or the error of
+   the `RhoPathV1` parser; `datum_channel_prefix_len` is
+   `channel_prefix_len()`; `continuation_group` is the group that
+   `parse_continuation_group` returns for the key's own prefix; and
+   `join_record` is the raw suffix, borrowed. It is bound to no ID.
+3. `v1_validate_key_equals_the_mutation_codec_rule_for_every_namespace`. For
+   arbitrary bytes and for the three built keys, each with every truncation
+   of it and with one byte changed, and for each of the three namespaces,
+   `validate_key` returns what the mutation codec decides: a fresh
+   `RSpaceMutationBatchV1` accepts the key through `record_data`,
+   `record_continuation` or `record_join`, or refuses it with `InvalidKey`
+   for that namespace and the same `RhoPathError`. It is bound to no ID.
+4. `v1_stream_validator_through_the_trait_equals_the_inherent_validator_under_chunk_schedules`.
+   For arbitrary bytes and for each built key, a prefix of it and the key
+   with one byte changed, under four chunk schedules (generated widths,
+   single bytes, one chunk, and one chunk between two empty chunks) and for
+   each namespace, the result of every `push` and of `finish` is the result
+   of the inherent `RhoPathStreamValidatorV1`, the pushes after the first
+   error included, and the result of `finish` is the result of
+   `validate_key` for the whole bytes. It is bound to no ID.
+5. `v1_join_record_path_is_the_raw_concatenation`. For two channels and six
+   records, among them the empty record and records with zero bytes,
+   `join_record_path` is the join prefix followed by the bytes of the
+   record. The path of a non-empty record parses with `parse_join` to that
+   record and that channel, and the path of the empty record is refused with
+   `TruncatedFrame`. For a join put into an `RSpaceJoinStore`,
+   `join_record_path` of the channel's prefix and the encoded join is the
+   one path among the store's pending additions, and the store counts one
+   endpoint at it. No other test calls `join_record_path`. It is bound to no
+   ID.
+6. `v1_decoders_return_the_same_channels_and_error_texts_as_the_inline_code`.
+   A probe channel type writes a generated payload in the six forms of the
+   table below, and its decoder returns the canonical channel whenever it
+   accepts the bytes. For every form, `decode_datum_channel` returns the
+   canonical channel
+   exactly when `prepare_semantic_delta` accepts a mutation batch that holds
+   the datum key, and otherwise its text is the detail of the delta's
+   `SemanticKey` refusal; `decode_join_channel` is compared in the same way
+   through a batch that holds the join key; `decode_continuation_channels`
+   returns the channels or the detail that
+   `decode_continuation_endpoint_with_channels` returns, for a group of the
+   form alone and for the form followed by each of the six forms;
+   `prefix_channel` returns the channel or the error that `loaded_records`
+   and `try_visit_loaded_records` return for a data store that holds the
+   written channel; and the Blake2b-256 hash of `prefix_legacy_identity` is
+   the channel hash that `try_visit_loaded_canonical_records` reports. Every
+   proper truncation of the datum prefix, the prefix with one more byte, a
+   join prefix and a continuation prefix are refused by both prefix decoders
+   with `Path` and the error of `parse_datum_prefix`. The test also requires the
+   variant of every refusal to be the one in the table. It is bound to no
+   ID.
+
+| Written form of the channel | Datum key | Join key, continuation key | Datum prefix |
+|---|---|---|---|
+| Canonical. | Accepted. | Accepted. | Accepted. |
+| Alias: another encoding that decodes to the canonical channel. | `Mismatch` | `Mismatch` | Accepted, as the canonical channel. |
+| Unknown tag. | `Detail` | `Detail` | `ColdDecode` |
+| Truncated payload. | `Detail` | `Detail` | `ColdDecode` |
+| One trailing byte. | `Detail` | `Detail` | Accepted. |
+| Canonical identity under a structure that the decoded channel does not have. | `Mismatch` | Accepted. | Accepted. |
+
+The control of test 5 frames the record in the V1 `join_record_path`; the
+verification record gives its result.
+
+**The KG row.** KG is the key grammar family.
+
+| ID | Required property | Test |
+|---|---|---|
+| KG-01 | The V1 implementation of the grammar traits is `RhoPathV1`. For generated channels of four types, `datum_prefix`, `continuation_prefix` and `join_prefix` through the traits return the bytes of the `RhoPathV1` functions, `channel_field` returns `rho_path_identity()`, and `MAGIC` is `RHP 01` and heads every prefix. The parsers, `validate_key`, the stream validator, `join_record_path` and the decoders return the views, paths, channels and errors of the code that they delegate to or mirror; tests 2 to 6 of the module check them. | `v1_builders_equal_the_rhopathv1_functions_byte_for_byte` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -11157,6 +11377,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | XB-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): a view checkpoint whose journal is empty, or whose rebased batch is empty, attempts no directory write and no sync. In the owner model `CheckRequest` captures no record for a target equal to the owner's root, but the model has no empty journal, since `Succ` never returns its base, and no directory I/O to count. |
 | XB-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): each refusal of the cross-base entry point is decided before the journal is read and changes nothing. The owner model refuses a foreign permit and a stale incarnation in `CheckRequest`, but it has no journal read, no first write, no unretained base and no manifest fields; the order of the refusals is a property of the Rust entry point. |
 | XB-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): an owner task that stops at each `JournalOwnerHookPoint` of a cross-base checkpoint leaves store files that recover the previous current state or the exact successor, and `reconcile` completes the record. The owner model resolves a pending record in `ReconcilePending` by comparing the owner's root with the record's predecessor, as `reconcile` compares the recovered slot with it, but the model has no store files, no hook points and no recovery of a copy. |
+| KG-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14393): the V1 implementation of the RhoPath grammar traits returns the bytes, views and errors of the `RhoPathV1` functions that it delegates to. This matrix cites no model of RhoPathV1 keys, as DF-03 notes for its group prefixes, and no model states a property of Rust trait dispatch. |
 
 ## Generator discipline
 
@@ -12207,6 +12428,33 @@ target lists no finding in the files of this slice, and `rustfmt --check`
 passes on its Rust files. The obligation registries that hash a file of this
 slice are regenerated with it. No persisted record kind, byte layout, magic
 number or file name is new. See the cross-base view checkpoint section.
+
+The 2026-11-12 key grammar trait slice of task 14393 adds KG-01, the first
+KG row, so the catalog/derivation/binding registry now contains **283** IDs.
+The manifest test's family list gains `KG`, and its executable sources gain
+`kg_trait_v1.rs`. On an export of the candidate tree, which already holds
+the cross-base view checkpoint slice, the six tests of the new module
+passed in debug and in release together with the five tests of
+`rho_path_streaming_properties` and the manifest test (12 passed, none
+ignored), the 24 tests of the integration target `rho_path_spec` passed in
+both profiles, and the whole library test target passed in both profiles
+with 1020 tests (1010 passed, 10 ignored). One control was applied to the
+export's `rho_path.rs`, run against the six tests of the module in debug
+with `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` and removed: with the record
+framed in the V1 `join_record_path`, `append_frame` in place of the second
+`extend_from_slice`, `v1_join_record_path_is_the_raw_concatenation` was the
+only test to fail. It failed at its first comparison, for the empty record,
+whose frame is the two bytes `00 00`, with the message
+`the V1 join record path is the join prefix followed by the unframed join record`.
+The other five tests passed, because no other test and no production code
+calls `join_record_path`. The faulted file was restored from the candidate
+tree, and the export was compared with it after the runs. Clippy of
+`rspace_plus_plus` with every target lists no finding in the files of this
+slice, and `rustfmt --check` passes on its Rust files. The PathMap,
+workspace-regression and ordered-receive-view registries hash files that
+change, so those registries are regenerated with this slice. No persisted
+byte, record kind, root, identity or wire message changed. See the RhoPath
+key grammar traits section.
 
 ## Caller-authority contract (2026-09-06)
 
