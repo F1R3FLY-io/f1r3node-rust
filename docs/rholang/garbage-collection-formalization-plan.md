@@ -74,32 +74,30 @@ Target: `formal/rocq/scope_trapped_gc/` (template: `formal/rocq/rspace_guards/`)
 | 2.8 | Main theorem (invariant preservation under `→*`) | [x] | `theories/ScopeTrapped.v` §13 — `main_scope_trapped_safe` |
 | 2.9 | Sweep soundness corollary | [x] | `theories/ScopeTrapped.v` §14 — `sweep_preserves_inv` |
 | 2.10 | Capstone `MainTheorem.v` with seam-premise `Section Variable`s surfaced | [x] | `theories/MainTheorem.v` |
-| 2.11 | Zero `Admitted`, no custom `Axiom` / `Parameter` (local verification gate) | [~] | `scripts/check-scope-trapped-gc-ALL.sh` runs end-to-end under Rocq 9.3. **`rholang_scope_trapped_sweep_safe` is Closed under the global context** (axiom-free). `rholang_scope_trapped_invariant` depends on two `Admitted` lemmas (`inv'_preserved_comm`, `inv'_preserved_ext_fire`) whose proof sketches are inlined; closing them is residual tactic work. |
+| 2.11 | Zero `Admitted`, no custom `Axiom` / `Parameter` (local verification gate) | [x] | `scripts/check-scope-trapped-gc-ALL.sh` runs end-to-end under Rocq 9.3. Both capstones (`rholang_scope_trapped_invariant` and `rholang_scope_trapped_sweep_safe`) are Closed under the global context (axiom-free). |
 | 2.12 | Add to Rocq CI (whatever the project's current Rocq-build job is) | [ ] | wire into `.github/workflows/*` once 2.11 is fully axiom-free |
 
 ### Verification note
 
 The Rocq sources compile cleanly under Rocq 9.3 (Homebrew install) and
 the verification gate (`scripts/check-scope-trapped-gc-ALL.sh`) runs to
-completion. The sweep-soundness capstone is axiom-free; the invariant
-capstone currently closes through two `Admitted` lemmas whose proof
-sketches are inlined at the admit site:
+completion. Both capstones (`rholang_scope_trapped_invariant` and
+`rholang_scope_trapped_sweep_safe`) are now Closed under the global
+context (axiom-free, no `Admitted`, no custom `Axiom` / `Parameter`).
+
+The invariant capstone goes through the two preservation lemmas:
 
 - `inv'_preserved_comm` — invariant preservation under a COMM step.
   Uses `trapped_body_safe` (for trapped channel) or `parked_body_safe`
-  (for non-trapped) to bound the body re-emitted into the live
-  program. The stuck point is a handful of `apply in_cons` + `simpl`
-  disagreements against the `ds_pop_front`/`cs_pop_front` record
-  projections, not a semantic gap.
+  (for non-trapped) to bound the body re-emitted into the live program;
+  the three store-preservation sub-cases discharge via the
+  `in_ds_pop_front_in` / `in_cs_pop_front_in` helpers (every element of
+  the post-pop store was already in the pre-pop store, so each of
+  `parked_data_safe`, `parked_body_safe`, `trapped_body_safe` lifts
+  unchanged).
 - `inv'_preserved_ext_fire` — same argument restricted to the
-  non-trapped case.
-
-Both lemmas' proofs are drafted inline in the file but currently
-elided by `Admitted.` so the surrounding file compiles. Treat as
-"proof sketched, Rocq-level tactic cleanup pending." The TLA+ model
-has already machine-checked the semantic content on bounded instances;
-nothing here changes the correctness story — just the universal
-Rocq evidence remains partial.
+  non-trapped case (the step relation enforces `trapped_lit ch = false`
+  so `parked_body_safe` applies directly, no case split needed).
 
 ### Seam premises (to be enumerated in 2.1)
 

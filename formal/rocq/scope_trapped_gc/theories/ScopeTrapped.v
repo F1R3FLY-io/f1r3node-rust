@@ -828,6 +828,7 @@ Proof.
   intros ch body d c live live' H Hin Hrb.
   destruct H as [[Hlp Hlrb] [Hpd [Hpb Htb]]].
   simpl in Hlp, Hlrb, Hpd, Hpb, Htb.
+  simpl in Hlp, Hlrb, Hpd, Hpb, Htb.
   pose proof (inv_preserved_park_receive ch body d c live live'
                 (conj (conj Hlp Hlrb) (conj Hpd Hpb)) Hin Hrb) as [Hlive' [Hpd' Hpb']].
   split; [exact Hlive' | split; [exact Hpd' | split; [exact Hpb' |]]].
@@ -861,6 +862,38 @@ Proof.
   intros A xs x H. destruct xs; simpl in *; [discriminate | injection H as ->; left; reflexivity].
 Qed.
 
+(* Popping from the front of a list only drops the head; any element
+   that remains was also an element of the original list. *)
+Lemma in_tl_in :
+  forall (A : Type) (xs : list A) (x : A), In x (tl xs) -> In x xs.
+Proof.
+  intros A xs x H. destruct xs as [| h t]; simpl in H.
+  - contradiction.
+  - right. exact H.
+Qed.
+
+(* After popping the front of a store at `ch`, every remaining entry on
+   any channel was present before the pop. *)
+Lemma in_ds_pop_front_in :
+  forall (d : DataStore) (ch k : Lit) (x : Lit),
+    In x ((ds_pop_front d ch) k) -> In x (d k).
+Proof.
+  intros d ch k x. unfold ds_pop_front.
+  destruct (lit_eq_dec k ch) as [Heq | _].
+  - intros H. apply in_tl_in with (x := x). exact H.
+  - intros H. exact H.
+Qed.
+
+Lemma in_cs_pop_front_in :
+  forall (c : ContStore) (ch k : Lit) (x : Term),
+    In x ((cs_pop_front c ch) k) -> In x (c k).
+Proof.
+  intros c ch k x. unfold cs_pop_front.
+  destruct (lit_eq_dec k ch) as [Heq | _].
+  - intros H. apply in_tl_in with (x := x). exact H.
+  - intros H. exact H.
+Qed.
+
 Lemma inv'_preserved_comm :
   forall ch pay body d d' c c' live,
     Inv_SafeOf' (mkState live d c) ->
@@ -870,19 +903,36 @@ Lemma inv'_preserved_comm :
     c' = cs_pop_front c ch ->
     Inv_SafeOf' (mkState (par_with live body) d' c').
 Proof.
-Admitted.
-(* ^^^ Admitted. The proof sketch below closes the obligation; in
-   this file it stays admitted pending the tactic cleanup described
-   in docs/rholang/garbage-collection-formalization-plan.md §2.11.
-   The TLA+ model in formal/tlaplus/scope_trapped_gc/ has
-   machine-checked the semantic content. Proof sketch:
-     - Case trapped_lit ch = true: body in parkCont[ch] obeys
-       trapped_body_safe (Htb), i.e., no N in payload / body of body.
-       `par_with live body` is thus safe (Hlp, Hlrb + Htb).
-       parked_data_safe and parked_body_safe preserved under pop.
-     - Case trapped_lit ch = false: body obeys parked_body_safe (Hpb),
-       which carries no-N-in-chan + no-N-in-payload + no-N-in-body.
-       Same argument. *)
+  intros ch pay body d d' c c' live H Hdh Hch Hdeq Hceq.
+  destruct H as [[Hlp Hlrb] [Hpd [Hpb Htb]]].
+  simpl in Hlp, Hlrb, Hpd, Hpb, Htb.
+  (* `body` was at the head of `c ch`, so it was in `c ch`. *)
+  assert (Hbodyin : In body (c ch)) by (apply head_in; exact Hch).
+  (* Extract body-safety facts — split by whether ch is trapped. *)
+  assert (Hbp : lit_in_payload N body = false /\ lit_in_receive_body N body = false).
+  { destruct (trapped_lit ch) eqn:Htp.
+    - (* trapped: use trapped_body_safe *)
+      exact (Htb ch body Htp Hbodyin).
+    - (* non-trapped: use parked_body_safe (stronger — also bounds chan) *)
+      destruct (Hpb ch body Htp Hbodyin) as [_ [Hp Hrb]].
+      split; [exact Hp | exact Hrb]. }
+  destruct Hbp as [Hbp_pay Hbp_rb].
+  subst d' c'.
+  split; [| split; [| split]]; simpl.
+  - (* live_safe (par_with live body) *)
+    unfold live_safe. split.
+    + rewrite lit_in_payload_par_with. rewrite Hlp, Hbp_pay. reflexivity.
+    + rewrite lit_in_receive_body_par_with. rewrite Hlrb, Hbp_rb. reflexivity.
+  - (* parked_data_safe (ds_pop_front d ch) *)
+    unfold parked_data_safe. intros ch' pay' Hin.
+    apply (Hpd ch' pay'). eapply in_ds_pop_front_in; exact Hin.
+  - (* parked_body_safe (cs_pop_front c ch) *)
+    unfold parked_body_safe. intros ch' body' Htp' Hin.
+    apply (Hpb ch' body' Htp'). eapply in_cs_pop_front_in; exact Hin.
+  - (* trapped_body_safe (cs_pop_front c ch) *)
+    unfold trapped_body_safe. intros ch' body' Htp' Hin.
+    apply (Htb ch' body' Htp'). eapply in_cs_pop_front_in; exact Hin.
+Qed.
 
 Lemma inv'_preserved_ext_fire :
   forall ch body d c c' live,
@@ -892,9 +942,23 @@ Lemma inv'_preserved_ext_fire :
     c' = cs_pop_front c ch ->
     Inv_SafeOf' (mkState (par_with live body) d c').
 Proof.
-Admitted.
-(* ^^^ Admitted alongside inv'_preserved_comm — same pattern; see
-   docs/rholang/garbage-collection-formalization-plan.md §2.11. *)
+  intros ch body d c c' live H Htp Hch Hceq.
+  destruct H as [[Hlp Hlrb] [Hpd [Hpb Htb]]].
+  simpl in Hlp, Hlrb, Hpd, Hpb, Htb.
+  assert (Hbodyin : In body (c ch)) by (apply head_in; exact Hch).
+  (* ch is non-trapped, so parked_body_safe gives us the stronger fact. *)
+  destruct (Hpb ch body Htp Hbodyin) as [_ [Hbp_pay Hbp_rb]].
+  subst c'.
+  split; [| split; [| split]]; simpl.
+  - unfold live_safe. split.
+    + rewrite lit_in_payload_par_with. rewrite Hlp, Hbp_pay. reflexivity.
+    + rewrite lit_in_receive_body_par_with. rewrite Hlrb, Hbp_rb. reflexivity.
+  - exact Hpd.
+  - unfold parked_body_safe. intros ch' body' Htp' Hin.
+    apply (Hpb ch' body' Htp'). eapply in_cs_pop_front_in; exact Hin.
+  - unfold trapped_body_safe. intros ch' body' Htp' Hin.
+    apply (Htb ch' body' Htp'). eapply in_cs_pop_front_in; exact Hin.
+Qed.
 
 Theorem inv'_preserved :
   forall s s',
