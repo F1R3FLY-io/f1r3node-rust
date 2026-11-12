@@ -536,6 +536,36 @@ the existing formal specifications or source-traceability registries.
 | Retained-automaton/Bag product walk | `ad395c357`, `61accc170`; pgmcp `rspace-retained-set-automaton`; experiments 224, 225, 226, and 229; replication artifact 320 | an iterative synchronized zipper product intersects every retained-transition segment with the authoritative `PathMap<Multiplicity>` Bag in the same escaped byte domain; the unrelated fresh datum remains a zero-allocation byte stream; one distinct Bag key and at most one eligible non-root terminal depth use zero or one exact PathMap lookup, while multi-depth and multi-key cases retain the linear zipper product; no datum decode, Bag flattening, or occurrence expansion occurs; artifact 320 confirms 4.476× and 13.338× wins at shared/256 and shared/4,096, and records diverse-prefix wins of 1.059× and 7.803× at the same cardinalities; both cardinality-16 causal-selector cells retain fixed-cost losses, while existing end-to-end COMM measurements win at 16 because they include avoided spatial work | implemented and measured; shape-sensitive causal fixed costs and allocation/RSS comparison remain visible; no empirical cutoff is inferred from the selector-only microbenchmark |
 | Layout selection and performance verdict | pgmcp experiments 208, 224, 225, 226, and 229 | retained-receive slice passes its preregistered five-percent throughput threshold at 99% confidence; resting-data pruning is non-regressing at one entry after the structural base-case repair and passes from 16 through 4,096; the direct datum-first product wins at the preregistered shared/256 and large cells after two rejected designs; the exact-channel two-level topology removes the flat authority's prefix-replacement and relative-subtrie reconstruction costs; a clean full-workload resource matrix for the new topology remains open | topology selected on semantic/architectural grounds with prior causal measurements retained; final post-selection performance verdict remains partial |
 
+The canonical egress work, tracked as pgmcp item `rspace-trie-native-canonical-egress`, was
+delivered by the commits listed here, one entry per closed child item. Each commit was found by
+searching the history with `git log -S` for an identifier that the change introduced, or with
+`git log` for a file that it added or changed; the entry names that identifier or file.
+
+- `rspace-datum-identity-cold-store-stream`: `2d95619cf` streams resident datum identities into
+  checkpoint leaves (`rspace++/src/rspace/data_index.rs`), `583f21e44` hashes a history leaf from
+  two borrowed chunks (`rspace++/src/rspace/hashing/blake2b256_hash.rs`), and `3061b2501` streams
+  canonical DATA into the final persisted value (`rspace++/src/rspace/history/cold_store.rs`).
+- `rspace-continuation-join-native-egress`: `ba7a8b3bd` adds `CanonicalRecordPlan` and its replay
+  to `rspace++/src/rspace/record_index.rs`, and `77f6c8fe2` adds the lifecycle differential
+  `rspace++/tests/record_index/continuation_join_lifecycle_equivalence.rs`.
+- `rspace-canonical-egress-equivalence-and-formal-gates`: `9ed605a81` adds the checkpoint egress
+  and publication proofs (`formal/verus/rspace_canonical_egress.rs`), `70fae0a9d` extends them to
+  the publication of complete DATA values
+  (`formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgress.tla`), `df8e0cf81` adds `ParOwnerCensus`
+  and `CertifiedLengthTranscript` to `models/src/rust/rholang/protobuf_schema.rs` together with
+  their proofs, and `0065278e3` restores the identity insertion that release builds had removed
+  (`models/src/rust/rholang/canonical_par_identity.rs`).
+- `rspace-egress-versioned-cursor-horizon-admission`: `f108c45c0` adds the cursor protocol
+  discriminator `StoreItemsCursorProtocolProto` to `models/src/main/protobuf/CasperMessage.proto`.
+- `rspace-affine-state-authority-atomic-migration`: the same commit, `f108c45c0`, adds the affine
+  import session, `rspace++/src/rspace/state/import_session.rs`.
+- `rspace-authority-resolved-database-scope-isolation`: `64395f681` proves the scope and layout
+  contract (`formal/rocq/stack_safe_pda/theories/RSpaceCallerAuthority.v`), `52551503f` repairs
+  the adapter (`rspace++/src/rspace/shared/lmdb_dir_store_manager.rs`), `9308e7685` qualifies the
+  replay refusal that the archive test expects
+  (`casper/tests/util/rholang/async_driver_replay_archive.rs`), and `ebe2fd5b9` records the local
+  acceptance in `docs/design/pathmap/pathmap-engineering-journal-2026-08-23.md`.
+
 At `f43858ec2`, each exact channel produces a `CandidatePool`. Since `173bf4e07` and `39bc0d999`, its semantic
 membership authority is a channel-local `Bag`, obtained as a copy-on-write PathMap subtrie through a
 read zipper, while a second initially empty Bag records only speculative nonpersistent demand. Pools share a
