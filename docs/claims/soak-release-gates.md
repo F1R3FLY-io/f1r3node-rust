@@ -2,7 +2,7 @@
 
 ```yaml
 claim_id: CLAIM-SOAK-GATE-001
-status: accepted
+status: pending
 artifacts:
   - .github/scripts/report-soak-gate.sh
   - .github/scripts/ca-soak-dispatch.sh
@@ -24,7 +24,7 @@ references:
 
 ## Claim
 
-This claim covers the soaks that gate the cost-accounting release train of issue #764 and issue #791. A `ca/` pull request enters the `ca-item` queue of Mergify only with the `ca-soaked` label. `just ca-tag` tags a `ca-release` commit only when it has a successful `Soak Gate (60h)` status.
+This claim covers optional item soaks and required release soak results for the cost-accounting release train. Merges into `ca-canary` require no soak status or label. `just ca-tag` tags a `ca-release` commit only when it has a successful `Soak Gate (60h)` status.
 
 **Gate result.** A gate run posts `Soak Gate (22h)` (gate `ca-item`) or `Soak Gate (60h)` (gate `ca-release`) on the commit that it soaked, and on no other commit. The status is success only when these four conditions are true:
 
@@ -68,12 +68,13 @@ A cancelled soak posts error, and every other result posts failure. A run never 
 
 ## Obligations
 
-The maintainer accepted the claim. The two live-soak obligations stay open, so the soak tier stays pending.
+The maintainer accepted the previous claim scope. On 2026-11-10, the maintainer clarified that merges into `ca-canary` must not require a soak. This revision removes that requirement from the claim. Review of the revised claim remains pending. The two live-soak obligations stay open, so the soak tier stays pending.
 
 | Obligation | Status |
 | --- | --- |
 | Review package with the hosted run of the script tests | Done. `docs/casper/cbc-evidence/runs/soak-release-gates-20261020-02/report.json` at `7d627df83` records the tested commit `d1d691d58` and CI run 39518782040. |
-| Maintainer acceptance | Done. jltatbeach accepted the package on 2026-10-21 (PR #793, comment 6305076788). `docs/casper/cbc-evidence/runs/soak-release-gates-acceptance-20261021-01/report.json` records the acceptance. |
+| Previous claim acceptance | Done. jltatbeach accepted the previous package on 2026-10-21 (PR #793, comment 6305076788). `docs/casper/cbc-evidence/runs/soak-release-gates-acceptance-20261021-01/report.json` records that acceptance. |
+| Revised claim review | Pending. The revision removes the pre-merge canary soak requirement. |
 | First live `ca-item` gate soak after this change reaches `master` | Pending. The dispatcher runs the soak from `master`, so no gate run can start before then. |
 | First live `ca-release` gate soak | Pending. It needs the `ca-canary` and `ca-release` branches. |
 
