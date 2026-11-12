@@ -388,8 +388,13 @@ impl RSpaceStateAuthority {
         )?);
 
         if !prepared.changed() {
-            self.require_exact_current(prepared.base())?;
-            return Ok(prepared.base().clone());
+            if !self.contains_verified_root(prepared.base())? {
+                return Err(unknown_verified_root(prepared.base()).into());
+            }
+            return self
+                .current_verified_root()?
+                .ok_or_else(uninitialized_current_root)
+                .map_err(HistoryError::from);
         }
 
         let root_encoding = prepared.root_encoding().ok_or_else(|| {
@@ -426,10 +431,15 @@ impl RSpaceStateAuthority {
         match &self.backend {
             AuthorityBackend::Memory(state) => {
                 let mut state = lock_memory(state)?;
-                require_exact_base(
-                    decode_current_from_map(&state.roots)?.as_ref(),
+                require_verified_base(
+                    state
+                        .roots
+                        .get(&verified_root_key(prepared.base()))
+                        .map(Vec::as_slice),
                     prepared.base(),
                 )?;
+                let current = decode_current_from_map(&state.roots)?
+                    .ok_or_else(uninitialized_current_root)?;
                 ensure_immutable_map(&state.history, history_objects.as_ref())?;
                 ensure_immutable_map(&state.cold, cold_objects.as_ref())?;
                 let target_roots = std::iter::once(prepared.target_root().clone()).collect();
@@ -438,13 +448,12 @@ impl RSpaceStateAuthority {
                     &target_roots,
                     Some(prepared.target_root()),
                 )?;
-                let next =
-                    next_current(Some(prepared.target_root()), Some(prepared.base().generation()))?
-                        .ok_or_else(|| {
-                            RootError::CorruptRootCatalog(
-                                "local checkpoint did not derive a current root".to_string(),
-                            )
-                        })?;
+                let next = next_current(Some(prepared.target_root()), Some(current.generation()))?
+                    .ok_or_else(|| {
+                        RootError::CorruptRootCatalog(
+                            "local checkpoint did not derive a current root".to_string(),
+                        )
+                    })?;
 
                 state.history.extend(
                     history_objects
@@ -467,6 +476,14 @@ impl RSpaceStateAuthority {
             }
             AuthorityBackend::Lmdb(state) => {
                 let mut txn = state.env.write_txn().map_err(root_heed)?;
+                require_verified_base(
+                    state
+                        .roots
+                        .get(&txn, &verified_root_key(prepared.base()))
+                        .map_err(root_heed)?
+                        .as_deref(),
+                    prepared.base(),
+                )?;
                 let current = decode_current_pair(
                     state
                         .roots
@@ -478,8 +495,8 @@ impl RSpaceStateAuthority {
                         .get(&txn, &LEGACY_CURRENT_ROOT_KEY.to_vec())
                         .map_err(root_heed)?
                         .as_deref(),
-                )?;
-                require_exact_base(current.as_ref(), prepared.base())?;
+                )?
+                .ok_or_else(uninitialized_current_root)?;
                 ensure_immutable_db(state.history, &txn, history_objects.as_ref())?;
                 ensure_immutable_db(state.cold, &txn, cold_objects.as_ref())?;
                 for (key, value) in history_objects.iter() {
@@ -498,7 +515,7 @@ impl RSpaceStateAuthority {
                     &mut txn,
                     &target_roots,
                     Some(prepared.target_root()),
-                    Some(prepared.base().generation()),
+                    Some(current.generation()),
                 )?
                 .ok_or_else(|| {
                     RootError::CorruptRootCatalog(
@@ -697,10 +714,6 @@ impl RSpaceStateAuthority {
                 "root capability belongs to a different RSpace authority".to_string(),
             ))
         }
-    }
-
-    fn require_exact_current(&self, expected: &CurrentRoot) -> Result<(), RootError> {
-        require_exact_base(self.current_verified_root()?.as_ref(), expected)
     }
 
     fn get_objects(
@@ -1470,28 +1483,22 @@ fn check_generation(
     }
 }
 
-fn require_exact_base(
-    actual: Option<&CurrentRoot>,
-    expected: &CurrentRoot,
+fn unknown_verified_root(root: &Blake2b256Hash) -> RootError {
+    RootError::UnknownRootError(format!("unknown verified root: {root}"))
+}
+
+fn uninitialized_current_root() -> RootError {
+    RootError::CorruptRootCatalog("authority has no initialized current root".to_string())
+}
+
+fn require_verified_base(
+    membership: Option<&[u8]>,
+    base: &Blake2b256Hash,
 ) -> Result<(), RootError> {
-    match actual {
-        Some(actual) if actual == expected => Ok(()),
-        Some(actual) if actual.generation() != expected.generation() => {
-            Err(RootError::RootCatalogConflict {
-                expected_generation: Some(expected.generation()),
-                actual_generation: Some(actual.generation()),
-            })
-        }
-        Some(actual) => Err(RootError::CorruptRootCatalog(format!(
-            "current root changed from {} to {} without advancing generation {}",
-            expected.root(),
-            actual.root(),
-            expected.generation()
-        ))),
-        None => Err(RootError::RootCatalogConflict {
-            expected_generation: Some(expected.generation()),
-            actual_generation: None,
-        }),
+    match membership {
+        Some(value) if value == verified_root_value(base).as_slice() => Ok(()),
+        Some(_) => Err(corrupt_membership(base)),
+        None => Err(unknown_verified_root(base)),
     }
 }
 

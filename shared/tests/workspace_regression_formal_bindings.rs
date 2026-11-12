@@ -26,7 +26,7 @@ const REPLAY_BINDINGS: [Binding; 13] = [
     (
         "RR-05",
         "NoUnpublishedCheckpointObjects",
-        "same_generation_plans_conflict_without_partial_visibility",
+        "plans_from_one_base_both_publish_without_partial_visibility",
     ),
     (
         "RR-06",
@@ -36,22 +36,22 @@ const REPLAY_BINDINGS: [Binding; 13] = [
     (
         "RR-07",
         "SkipResetIsRejectedWithoutAuthorityMutation",
-        "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
     ),
     (
         "RR-08",
         "ReplayCommitRequiresReactivation",
-        "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
     ),
     (
         "RR-09",
         "ReplayPreparationUsesFreshExactBase",
-        "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
     ),
     (
         "RR-10",
         "ReplayPreparationLeavesAuthorityUnchanged",
-        "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
     ),
     (
         "RR-11",
@@ -61,7 +61,7 @@ const REPLAY_BINDINGS: [Binding; 13] = [
     (
         "RR-12",
         "ReplayReusesAuthenticatedPlayClosure",
-        "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
     ),
     (
         "RR-13",

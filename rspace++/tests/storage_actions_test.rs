@@ -1,11 +1,12 @@
 // See rspace/src/test/scala/coop/rchain/rspace/StorageActionsTests.scala
 
-use std::collections::{BTreeSet, HashSet, LinkedList};
+use std::collections::{BTreeMap, BTreeSet, HashSet, LinkedList};
 use std::hash::Hash;
 use std::sync::Arc;
 
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::hot_store_action::{
     HotStoreAction, InsertAction, InsertContinuations, InsertData,
@@ -2326,39 +2327,245 @@ async fn transferred_soft_payload_preserves_receiving_authority_and_history() {
     assert_soft_restore_uses_captured_cache_and_receiving_history(0, 1, true).await;
 }
 
-#[tokio::test]
-async fn spawn_reactivates_the_source_view_root_on_the_shared_authority() {
-    let source = create_rspace().await;
-    let channel = "caller-contract-spawn".to_string();
-    source
-        .produce(channel.clone(), "stored".to_string(), false)
+async fn create_rspace_in(
+    store_manager: &mut InMemoryStoreManager,
+) -> RSpace<String, Pattern, String, StringsCaptor> {
+    let store = store_manager
+        .r_space_stores()
         .await
-        .unwrap();
-    let checkpoint = source.create_checkpoint().await.unwrap();
-    let before = source
+        .expect("open the rspace stores");
+    RSpace::create(store, Arc::new(Box::new(StringMatch))).expect("create the rspace")
+}
+
+async fn authority_image(
+    store_manager: &mut InMemoryStoreManager,
+) -> Vec<BTreeMap<Vec<u8>, Vec<u8>>> {
+    let mut image = Vec::with_capacity(3);
+    for name in ["rspace-roots", "rspace-history", "rspace-cold"] {
+        image.push(
+            store_manager
+                .store(name.to_string())
+                .await
+                .expect("open a read-only authority view")
+                .to_map()
+                .expect("read an authority view"),
+        );
+    }
+    image
+}
+
+#[tokio::test]
+async fn spawn_attaches_the_source_view_root_without_writing_the_shared_authority() {
+    let mut store_manager = InMemoryStoreManager::new();
+    let source = create_rspace_in(&mut store_manager).await;
+    let first_channel = "caller-contract-spawn-first".to_string();
+    let second_channel = "caller-contract-spawn-second".to_string();
+    source
+        .produce(first_channel.clone(), "first".to_string(), false)
+        .await
+        .expect("produce the first datum");
+    let first_root = source
+        .create_checkpoint()
+        .await
+        .expect("first checkpoint")
+        .root;
+    source
+        .produce(second_channel.clone(), "second".to_string(), false)
+        .await
+        .expect("produce the second datum");
+    let second_root = source
+        .create_checkpoint()
+        .await
+        .expect("second checkpoint")
+        .root;
+    assert_ne!(first_root, second_root);
+    let current = source
         .get_history_repository()
         .current_authority_root()
-        .unwrap();
-    let spawned = source.spawn().unwrap();
-    let after = spawned
-        .get_history_repository()
-        .current_authority_root()
-        .unwrap();
-    assert_eq!(after.root(), &checkpoint.root);
-    assert_eq!(after.generation(), before.generation().checked_add(1).unwrap());
+        .expect("read the current root");
+    assert_eq!(current.root(), &second_root);
+    let image = authority_image(&mut store_manager).await;
+
+    source
+        .reset(&first_root)
+        .await
+        .expect("reset the source view to the first root");
     assert_eq!(
-        source
+        authority_image(&mut store_manager).await,
+        image,
+        "LV-02: reset leaves the current root, generation and catalog byte-for-byte unchanged",
+    );
+    let spawned = source.spawn().expect("spawn from the source view");
+    assert_eq!(
+        authority_image(&mut store_manager).await,
+        image,
+        "LV-02: spawn leaves the current root, generation and catalog byte-for-byte unchanged",
+    );
+
+    assert_eq!(
+        spawned
             .get_history_repository()
             .current_authority_root()
-            .unwrap(),
-        after
+            .expect("read the current root"),
+        current
     );
-    assert_eq!(spawned.get_history_repository().root(), checkpoint.root);
-    assert_eq!(spawned.get_store().get_data(&channel), vec![Datum::create(
-        &channel,
-        "stored".to_string(),
+    assert_eq!(spawned.get_history_repository().root(), first_root);
+    assert_eq!(spawned.get_store().get_data(&first_channel), vec![Datum::create(
+        &first_channel,
+        "first".to_string(),
         false
     )]);
+    assert!(spawned.get_store().get_data(&second_channel).is_empty());
+}
+
+async fn linear_chain(
+    steps: &[(&str, &str)],
+) -> (RSpace<String, Pattern, String, StringsCaptor>, Vec<Blake2b256Hash>) {
+    let space = create_rspace().await;
+    let mut roots = Vec::with_capacity(steps.len());
+    for (channel, datum) in steps {
+        space
+            .produce(channel.to_string(), datum.to_string(), false)
+            .await
+            .expect("produce on a linear chain");
+        roots.push(
+            space
+                .create_checkpoint()
+                .await
+                .expect("checkpoint a linear chain")
+                .root,
+        );
+    }
+    (space, roots)
+}
+
+fn visible_data(
+    space: &RSpace<String, Pattern, String, StringsCaptor>,
+    channels: [&str; 4],
+) -> [Vec<Datum<String>>; 4] {
+    channels.map(|channel| space.get_store().get_data(&channel.to_string()))
+}
+
+fn single_datum(channel: &str, value: &str) -> Vec<Datum<String>> {
+    vec![Datum::create(&channel.to_string(), value.to_string(), false)]
+}
+
+#[tokio::test]
+async fn views_reset_to_different_roots_both_checkpoint() {
+    let channels = ["probe-a", "probe-b", "probe-x", "probe-y"];
+    let (_, x_oracle) = linear_chain(&[("probe-a", "a"), ("probe-x", "x")]).await;
+    let (_, y_oracle) = linear_chain(&[("probe-a", "a"), ("probe-b", "b"), ("probe-y", "y")]).await;
+
+    let (source, roots) = linear_chain(&[("probe-a", "a"), ("probe-b", "b")]).await;
+    assert_ne!(roots[0], roots[1]);
+    assert_eq!((&x_oracle[..1], &y_oracle[..2]), (&roots[..1], &roots[..]));
+    let published_b = source
+        .get_history_repository()
+        .current_authority_root()
+        .expect("read the current root");
+    let view_x = source.spawn().expect("spawn view X");
+    let view_y = source.spawn().expect("spawn view Y");
+    view_x
+        .reset(&roots[0])
+        .await
+        .expect("reset view X to root A");
+    view_y
+        .reset(&roots[1])
+        .await
+        .expect("reset view Y to root B");
+    view_x
+        .produce("probe-x".to_string(), "x".to_string(), false)
+        .await
+        .expect("produce on view X");
+    assert_eq!(
+        view_x
+            .get_history_repository()
+            .current_authority_root()
+            .expect("read the current root"),
+        published_b,
+        "LV-05: view X's base is not the current root when it checkpoints",
+    );
+    let checkpoint_x = view_x
+        .create_checkpoint()
+        .await
+        .expect("LV-05: view X checkpoints from base A after view Y reset to base B");
+    view_y
+        .produce("probe-y".to_string(), "y".to_string(), false)
+        .await
+        .expect("produce on view Y");
+    let checkpoint_y = view_y
+        .create_checkpoint()
+        .await
+        .expect("LV-05: view Y checkpoints from base B after view X published");
+
+    assert_eq!(
+        (&checkpoint_x.root, &checkpoint_y.root),
+        (&x_oracle[1], &y_oracle[2]),
+        "LV-05: each view returns the root of its own base's successor",
+    );
+    assert_eq!(visible_data(&view_x, channels), [
+        single_datum("probe-a", "a"),
+        Vec::new(),
+        single_datum("probe-x", "x"),
+        Vec::new(),
+    ]);
+    assert_eq!(visible_data(&view_y, channels), [
+        single_datum("probe-a", "a"),
+        single_datum("probe-b", "b"),
+        Vec::new(),
+        single_datum("probe-y", "y"),
+    ]);
+    let current = view_y
+        .get_history_repository()
+        .current_authority_root()
+        .expect("read the current root");
+    assert_eq!(
+        (current.root(), current.generation()),
+        (&checkpoint_y.root, published_b.generation() + 2),
+        "LV-05: the current root is the last publication and each publication advanced it once",
+    );
+    let inspector = source.spawn().expect("spawn an inspecting view");
+    inspector
+        .reset(&checkpoint_x.root)
+        .await
+        .expect("view X's root is a verified root");
+    inspector
+        .reset(&checkpoint_y.root)
+        .await
+        .expect("view Y's root is a verified root");
+
+    let (source, roots) = linear_chain(&[("probe-a", "a"), ("probe-b", "b")]).await;
+    let published_b = source
+        .get_history_repository()
+        .current_authority_root()
+        .expect("read the current root");
+    let view_x = source.spawn().expect("spawn view X");
+    view_x
+        .reset(&roots[0])
+        .await
+        .expect("reset view X to root A");
+    view_x
+        .produce("probe-x".to_string(), "x".to_string(), false)
+        .await
+        .expect("produce on view X");
+    let _other = source
+        .spawn()
+        .expect("another operation spawns from the source");
+    let checkpoint_x = view_x
+        .create_checkpoint()
+        .await
+        .expect("LV-05: view X checkpoints after another spawn of the source");
+
+    assert_eq!(checkpoint_x.root, x_oracle[1]);
+    let current = view_x
+        .get_history_repository()
+        .current_authority_root()
+        .expect("read the current root");
+    assert_eq!(
+        (current.root(), current.generation()),
+        (&checkpoint_x.root, published_b.generation() + 1),
+        "LV-05: view X's checkpoint is the only publication after root B",
+    );
 }
 
 proptest! {

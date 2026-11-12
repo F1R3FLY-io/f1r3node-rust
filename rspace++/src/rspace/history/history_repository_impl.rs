@@ -620,7 +620,7 @@ where
     ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError> {
         debug!("[HistoryRepositoryImpl] reset to {}", root);
 
-        let known = self.authority.known_verified_root(root)?;
+        self.authority.known_verified_root(root)?;
         let next = {
             let history_lock = self
                 .current_history
@@ -628,7 +628,6 @@ where
                 .expect("History Repository Impl: Unable to acquire history lock");
             history_lock.reset(root)?
         };
-        self.authority.activate_known(known)?;
 
         Ok(Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(next)),

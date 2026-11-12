@@ -268,7 +268,7 @@
         "formal_kind": "INVARIANT",
         "id": "RR-05",
         "symbol": "NoUnpublishedCheckpointObjects",
-        "target": "same_generation_plans_conflict_without_partial_visibility",
+        "target": "plans_from_one_base_both_publish_without_partial_visibility",
         "target_source": "rspace++/tests/state/atomic_state_authority.rs"
       },
       {
@@ -284,7 +284,7 @@
         "formal_kind": "INVARIANT",
         "id": "RR-07",
         "symbol": "SkipResetIsRejectedWithoutAuthorityMutation",
-        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target": "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
         "target_source": "rspace++/tests/state/atomic_state_authority.rs"
       },
       {
@@ -292,7 +292,7 @@
         "formal_kind": "INVARIANT",
         "id": "RR-08",
         "symbol": "ReplayCommitRequiresReactivation",
-        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target": "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
         "target_source": "rspace++/tests/state/atomic_state_authority.rs"
       },
       {
@@ -300,7 +300,7 @@
         "formal_kind": "INVARIANT",
         "id": "RR-09",
         "symbol": "ReplayPreparationUsesFreshExactBase",
-        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target": "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
         "target_source": "rspace++/tests/state/atomic_state_authority.rs"
       },
       {
@@ -308,7 +308,7 @@
         "formal_kind": "INVARIANT",
         "id": "RR-10",
         "symbol": "ReplayPreparationLeavesAuthorityUnchanged",
-        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target": "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
         "target_source": "rspace++/tests/state/atomic_state_authority.rs"
       },
       {
@@ -324,7 +324,7 @@
         "formal_kind": "INVARIANT",
         "id": "RR-12",
         "symbol": "ReplayReusesAuthenticatedPlayClosure",
-        "target": "target_equal_replay_requires_reactivation_and_reuses_exact_object_closure",
+        "target": "target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure",
         "target_source": "rspace++/tests/state/atomic_state_authority.rs"
       },
       {
@@ -353,15 +353,15 @@
     "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryTwoPublicationsWitness.cfg": "b75d1582adc827021b915bf2d3114492892743600a1f18a79795e5447b08ba90",
     "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryUsableStagedOpenMutant.cfg": "248720144f4a3b3602af64bb2e463f04875d33ed62218ebac80b40e2a35ad2aa",
     "rholang/Cargo.toml": "7a9445c7635ce8433f0b2ec38839448b59828d144a84de3f61826c415360e321",
-    "rholang/tests/epathmap_replay_equivalence_spec.rs": "660beba8782f1e658313e6a73bae0321b1bdc2d7736d968a5a43aedb9308192d",
+    "rholang/tests/epathmap_replay_equivalence_spec.rs": "9925b245d2ebe4c6a5d9d0e1193058dcac9565168e7caa351c638c0d1f836849",
     "rspace++/libs/rspace_rhotypes/src/lib.rs": "a419f0b57104e280bd6ce584b0a4b6be9d7c74ae4b897e8bc527d4c5b16f9588",
     "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
     "rspace++/src/rspace/persistence/mod.rs": "6608ff03d94c447f4abdcdad15965a6d32691f7739183a4012238b7199540981",
-    "rspace++/src/rspace/state/rspace_state_authority.rs": "604e984c6cafdf8d1321349e17d9d505d3017beda1ab4a54e97e7dd8b4defb43",
+    "rspace++/src/rspace/state/rspace_state_authority.rs": "b58f09d024777a9396a4cd3fb77bc321859e0e6fc833a6299d8d895dda86a88c",
     "rspace++/tests/persistence/generation_checkpoint_properties.rs": "4ed1b50debb5363a64c45e7ad872e3725866a963f67a26dede6fa0b229a0568d",
     "rspace++/tests/persistence/mod.rs": "86cee2be3d4135e02ccb4c6951bdabb12cc93c049cb603b76b9a067e09a0215a",
-    "rspace++/tests/state/atomic_state_authority.rs": "53892e7697fdc0540de34100359974739633c9c790a8fe8c00c3d733350ce488",
+    "rspace++/tests/state/atomic_state_authority.rs": "d33603450549c6cacb1b03366bccdf31762e2ad2d95aa1325d6b7914b9fccb1c",
     "shared/Cargo.toml": "eb329b1f634d0cfbc623f9a28007d221b4f6100cb6d12638023072d73dd229c0",
-    "shared/tests/workspace_regression_formal_bindings.rs": "cbf69fba3ac5d18cd48fe196036768e29368ccae1ae1a0dfb354482c961e0823"
+    "shared/tests/workspace_regression_formal_bindings.rs": "6a47ced8855822a629354f3bf8b588196ce2b9453ba82333f834468c9b148248"
   }
 }

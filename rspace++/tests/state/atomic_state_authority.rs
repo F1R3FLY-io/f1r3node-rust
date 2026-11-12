@@ -4,7 +4,10 @@ use std::sync::Arc;
 use proptest::prelude::*;
 use shared::rust::test_scratch;
 
-use super::{AuthorityBackend, CURRENT_ROOT_KEY, RSpaceStateAuthority, verified_root_key};
+use super::{
+    AuthorityBackend, CURRENT_ROOT_KEY, RSpaceStateAuthority, encode_current_root,
+    verified_root_key, verified_root_value,
+};
 use crate::rspace::errors::{
     AuthorityBackendMismatch, HistoryError, HistoryRepositoryError, RootError,
 };
@@ -721,6 +724,54 @@ fn assert_root_objects_visible(
     );
 }
 
+fn facet_snapshot(authority: &Arc<RSpaceStateAuthority>) -> MemorySnapshot {
+    MemorySnapshot {
+        history: authority
+            .history_store()
+            .expect("legacy history facet")
+            .to_map()
+            .expect("history facet reads"),
+        cold: authority
+            .cold_store()
+            .expect("legacy cold facet")
+            .to_map()
+            .expect("cold facet reads"),
+        roots: authority
+            .roots_store_for_inspection()
+            .expect("legacy roots facet")
+            .to_map()
+            .expect("roots facet reads"),
+    }
+}
+
+fn expected_after_publication(
+    before: &MemorySnapshot,
+    prepared: &PreparedHistoryCheckpoint,
+    leaf: &(ColdLeafAddress, Vec<u8>),
+    published: &CurrentRoot,
+) -> MemorySnapshot {
+    let mut history = before.history.clone();
+    history.extend(
+        prepared
+            .history_objects()
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone())),
+    );
+    let mut cold = before.cold.clone();
+    cold.insert(leaf.0.encode(), leaf.1.clone());
+    let mut roots = before.roots.clone();
+    roots.insert(
+        verified_root_key(prepared.target_root()),
+        verified_root_value(prepared.target_root()),
+    );
+    roots.insert(CURRENT_ROOT_KEY.to_vec(), encode_current_root(published));
+    MemorySnapshot {
+        history,
+        cold,
+        roots,
+    }
+}
+
 #[test]
 fn memory_checkpoint_publishes_all_namespaces_together() {
     let authority = RSpaceStateAuthority::in_memory();
@@ -936,72 +987,113 @@ fn prepared_checkpoint_cannot_cross_an_authority_boundary() {
 }
 
 #[test]
-fn same_generation_plans_conflict_without_partial_visibility() {
+fn plans_from_one_base_both_publish_without_partial_visibility() {
     let authority = RSpaceStateAuthority::in_memory();
+    let base = authority
+        .current_verified_root()
+        .expect("read the current root")
+        .expect("initialized current root");
     let history = history_at_current(&authority);
-    let (cold_a, bytes_a) = data_leaf(b"winner");
-    let (cold_b, bytes_b) = data_leaf(b"stale");
-    let (_next_a, plan_a) = prepare_insert(history.as_ref(), 2, &cold_a);
-    let (_next_b, plan_b) = prepare_insert(history.as_ref(), 3, &cold_b);
-    authority
-        .commit_local_checkpoint(&plan_a, vec![(cold_a, bytes_a)], &validator())
-        .expect("winner commits");
-    let before_stale = memory_snapshot(&authority);
+    let first_leaf = data_leaf(b"first-publication");
+    let second_leaf = data_leaf(b"second-publication");
+    let (_first_next, first_plan) = prepare_insert(history.as_ref(), 2, &first_leaf.0);
+    let (_second_next, second_plan) = prepare_insert(history.as_ref(), 3, &second_leaf.0);
+    assert_eq!((first_plan.base(), second_plan.base()), (base.root(), base.root()));
+    assert_ne!(first_plan.target_root(), second_plan.target_root());
+    let before_first = memory_snapshot(&authority);
+    let first_expected = CurrentRoot::new(first_plan.target_root().clone(), base.generation() + 1);
 
-    let error = authority
-        .commit_local_checkpoint(&plan_b, vec![(cold_b, bytes_b)], &validator())
-        .expect_err("same-generation loser must conflict");
+    let first = authority
+        .commit_local_checkpoint(&first_plan, vec![first_leaf.clone()], &validator())
+        .expect("the first plan publishes the successor of its base");
 
-    assert!(matches!(error, HistoryError::RootError(RootError::RootCatalogConflict { .. })));
-    assert_eq!(memory_snapshot(&authority), before_stale);
+    assert_eq!(first, first_expected);
+    let after_first = memory_snapshot(&authority);
+    assert_eq!(
+        after_first,
+        expected_after_publication(&before_first, &first_plan, &first_leaf, &first_expected),
+        "LV-01: the first commit makes exactly its own objects and current record visible",
+    );
+    assert_ne!(
+        &authority.current_root().expect("read the current root"),
+        second_plan.base(),
+        "LV-01: the second plan's base is no longer the current root",
+    );
+    let second_expected =
+        CurrentRoot::new(second_plan.target_root().clone(), first_expected.generation() + 1);
+
+    let second = authority
+        .commit_local_checkpoint(&second_plan, vec![second_leaf.clone()], &validator())
+        .expect("the second plan from the same base also publishes");
+
+    assert_eq!(second, second_expected);
+    assert_eq!(
+        memory_snapshot(&authority),
+        expected_after_publication(&after_first, &second_plan, &second_leaf, &second_expected),
+        "LV-01: the second commit adds exactly its own objects and current record",
+    );
 }
 
 #[test]
-fn target_equal_replay_requires_reactivation_and_reuses_exact_object_closure() {
+fn target_equal_replay_publishes_from_its_recorded_base_and_reuses_exact_object_closure() {
     let authority = RSpaceStateAuthority::in_memory();
-    let initial = authority.current_verified_root().unwrap().unwrap();
-    let history = history_at_current(&authority);
-    let (cold, bytes) = data_leaf(b"target-equal-record-replay");
-    let (_play_history, play_plan) = prepare_insert(history.as_ref(), 15, &cold);
-    let (_stale_replay_history, stale_replay_plan) = prepare_insert(history.as_ref(), 15, &cold);
-
+    let recorded_base = authority
+        .current_verified_root()
+        .expect("read the current root")
+        .expect("initialized current root");
+    let leaf = data_leaf(b"target-equal-record-replay");
+    let play_history = history_at_current(&authority);
+    let (_played, play_plan) = prepare_insert(play_history.as_ref(), 15, &leaf.0);
     let play = authority
-        .commit_local_checkpoint(&play_plan, vec![(cold.clone(), bytes.clone())], &validator())
+        .commit_local_checkpoint(&play_plan, vec![leaf.clone()], &validator())
         .expect("play checkpoint");
-    assert_eq!(play_plan.target_root(), play.root());
-    assert_eq!(stale_replay_plan.target_root(), play.root());
+    assert_eq!(
+        play,
+        CurrentRoot::new(play_plan.target_root().clone(), recorded_base.generation() + 1)
+    );
     let after_play = memory_snapshot(&authority);
 
-    let error = authority
-        .commit_local_checkpoint(
-            &stale_replay_plan,
-            vec![(cold.clone(), bytes.clone())],
-            &validator(),
-        )
-        .expect_err("target equality must not authorize a stale replay base");
-    assert!(matches!(error, HistoryError::RootError(RootError::RootCatalogConflict { .. })));
+    let replay_view = legacy_fixture_repository(Arc::clone(&authority))
+        .reset(recorded_base.root())
+        .expect("reset the replay view to the recorded base");
+    assert_eq!(&replay_view.root(), recorded_base.root());
     assert_eq!(
         memory_snapshot(&authority),
         after_play,
-        "RR-07: rejected skip-reset replay must preserve every authority namespace",
+        "RR-07: resetting the replay view to its recorded base writes nothing to the authority",
     );
-
-    authority
-        .activate_known(authority.known_verified_root(initial.root()).unwrap())
-        .expect("reactivate the recorded base");
-    let reset_snapshot = memory_snapshot(&authority);
-    let fresh_history = history_at_current(&authority);
-    let (_replay_history, replay_plan) = prepare_insert(fresh_history.as_ref(), 15, &cold);
+    let replay_history: Box<dyn History> = Box::new(
+        HistoryInstances::create_authorized(replay_view.root(), Arc::clone(&authority))
+            .expect("authorized replay history at the recorded base"),
+    );
+    let (_replayed, replay_plan) = prepare_insert(replay_history.as_ref(), 15, &leaf.0);
     assert_eq!(
         memory_snapshot(&authority),
-        reset_snapshot,
-        "RR-10: fresh replay preparation must be byte-for-byte private",
+        after_play,
+        "RR-10: replay preparation must be byte-for-byte private",
     );
-    let replay = authority
-        .commit_local_checkpoint(&replay_plan, vec![(cold, bytes)], &validator())
-        .expect("fresh replay checkpoint");
-    assert_eq!(replay.root(), play.root());
+    assert_eq!(
+        (replay_plan.base(), replay_plan.target_root()),
+        (recorded_base.root(), play.root()),
+        "RR-09: the replay prepares from its recorded base and derives the play's target",
+    );
+    assert_eq!(
+        authority
+            .current_verified_root()
+            .expect("read the current root"),
+        Some(play.clone()),
+        "the recorded base is not current when the replay commits",
+    );
 
+    let replay = authority
+        .commit_local_checkpoint(&replay_plan, vec![leaf], &validator())
+        .expect("the replay publishes from its recorded base without reactivation");
+
+    assert_eq!(
+        replay,
+        CurrentRoot::new(play.root().clone(), play.generation() + 1),
+        "RR-08: the replay publishes the play's target at the next generation",
+    );
     let mut after_replay = memory_snapshot(&authority);
     let mut play_closure = after_play;
     after_replay.roots.remove(CURRENT_ROOT_KEY);
@@ -1014,28 +1106,61 @@ fn target_equal_replay_requires_reactivation_and_reuses_exact_object_closure() {
 }
 
 #[test]
-fn aba_root_reactivation_does_not_revive_an_old_plan() {
+fn a_plan_publishes_the_successor_of_its_own_base_after_root_aba() {
     let authority = RSpaceStateAuthority::in_memory();
-    let empty = authority.current_verified_root().unwrap().unwrap();
+    let empty = authority
+        .current_verified_root()
+        .expect("read the current root")
+        .expect("initialized current root");
     let history = history_at_current(&authority);
-    let (stale_cold, stale_bytes) = data_leaf(b"stale-after-aba");
-    let (_stale_next, stale_plan) = prepare_insert(history.as_ref(), 4, &stale_cold);
-    let (winner_cold, winner_bytes) = data_leaf(b"aba-winner");
-    let (_winner_next, winner_plan) = prepare_insert(history.as_ref(), 5, &winner_cold);
-    authority
-        .commit_local_checkpoint(&winner_plan, vec![(winner_cold, winner_bytes)], &validator())
+    let old_leaf = data_leaf(b"old-plan-after-aba");
+    let (_old_next, old_plan) = prepare_insert(history.as_ref(), 4, &old_leaf.0);
+    let winner_leaf = data_leaf(b"aba-winner");
+    let (_winner_next, winner_plan) = prepare_insert(history.as_ref(), 5, &winner_leaf.0);
+    let winner = authority
+        .commit_local_checkpoint(&winner_plan, vec![winner_leaf], &validator())
         .expect("advance away from empty");
-    authority
-        .activate_known(authority.known_verified_root(empty.root()).unwrap())
-        .expect("return to same root at newer generation");
-    let before_stale = memory_snapshot(&authority);
+    assert_eq!(winner, CurrentRoot::new(winner_plan.target_root().clone(), empty.generation() + 1));
+    let returned = authority
+        .activate_known(
+            authority
+                .known_verified_root(empty.root())
+                .expect("the empty root is verified"),
+        )
+        .expect("return to the same root at a newer generation");
+    assert_eq!(
+        returned,
+        CurrentRoot::new(empty.root().clone(), empty.generation() + 2),
+        "LV-03: the current root returned to the plan's base at a newer generation",
+    );
+    assert_eq!(old_plan.base(), returned.root());
+    let before_old = memory_snapshot(&authority);
+    let published_expected =
+        CurrentRoot::new(old_plan.target_root().clone(), returned.generation() + 1);
 
-    let error = authority
-        .commit_local_checkpoint(&stale_plan, vec![(stale_cold, stale_bytes)], &validator())
-        .expect_err("ABA must be rejected by generation");
+    let published = authority
+        .commit_local_checkpoint(&old_plan, vec![old_leaf.clone()], &validator())
+        .expect("a plan from a verified base publishes after the root ABA");
 
-    assert!(matches!(error, HistoryError::RootError(RootError::RootCatalogConflict { .. })));
-    assert_eq!(memory_snapshot(&authority), before_stale);
+    assert_eq!(published, published_expected);
+    assert_eq!(
+        memory_snapshot(&authority),
+        expected_after_publication(&before_old, &old_plan, &old_leaf, &published_expected),
+        "LV-03: the publication adds exactly the plan's objects and current record",
+    );
+    let published_history = history_at_current(&authority);
+    assert_eq!(
+        (
+            published_history
+                .read(history_key(4))
+                .expect("read the plan's key"),
+            published_history
+                .read(history_key(5))
+                .expect("read the winner's key"),
+        ),
+        (Some(old_leaf.0.digest().bytes()), None),
+        "LV-03: the published root is the successor of the plan's own base",
+    );
 }
 
 #[test]
@@ -1111,57 +1236,136 @@ fn same_key_same_value_is_idempotent_across_checkpoints() {
 }
 
 #[test]
-fn lmdb_success_and_stale_conflict_match_memory_atomicity() {
-    let unique = format!("rspace-authority-test-{}", std::process::id());
-    let dir = std::env::temp_dir().join(unique);
-    std::fs::create_dir_all(&dir).expect("create LMDB test directory");
+fn lmdb_plans_from_one_base_both_publish_and_failures_match_memory_atomicity() {
+    let scratch = test_scratch::acquire("rspace-authority-view-base-");
     let authority =
-        RSpaceStateAuthority::open_lmdb(&dir, "rspace", None, None, 16 * 1024 * 1024, 8)
+        RSpaceStateAuthority::open_lmdb(scratch.path(), "rspace", None, None, 16 * 1024 * 1024, 8)
             .expect("LMDB authority");
     authority
         .initialize_for_records(&validator())
         .expect("initialize LMDB authority");
+    let base = authority
+        .current_verified_root()
+        .expect("read the current root")
+        .expect("initialized current root");
     let history = history_at_current(&authority);
-    let (winner_cold, winner_bytes) = data_leaf(b"lmdb-winner");
-    let (loser_cold, loser_bytes) = data_leaf(b"lmdb-loser");
-    let (_winner_next, winner) = prepare_insert(history.as_ref(), 10, &winner_cold);
-    let (_loser_next, loser) = prepare_insert(history.as_ref(), 11, &loser_cold);
-    let current = authority
-        .commit_local_checkpoint(&winner, vec![(winner_cold.clone(), winner_bytes)], &validator())
-        .expect("LMDB atomic checkpoint");
-    assert_root_objects_visible(&authority, &current, &winner, &winner_cold);
+    let first_leaf = data_leaf(b"lmdb-first-publication");
+    let second_leaf = data_leaf(b"lmdb-second-publication");
+    let (missing_cold, _missing_bytes) = data_leaf(b"lmdb-missing-cold-leaf");
+    let (_first_next, first_plan) = prepare_insert(history.as_ref(), 10, &first_leaf.0);
+    let (_second_next, second_plan) = prepare_insert(history.as_ref(), 11, &second_leaf.0);
+    let (_missing_next, missing_plan) = prepare_insert(history.as_ref(), 16, &missing_cold);
+    let before_first = facet_snapshot(&authority);
+    let first_expected = CurrentRoot::new(first_plan.target_root().clone(), base.generation() + 1);
 
-    let history_before = authority
-        .history_store()
-        .expect("legacy history facet")
-        .to_map()
-        .unwrap();
-    let cold_before = authority
-        .cold_store()
-        .expect("legacy cold facet")
-        .to_map()
-        .unwrap();
-    let current_before = authority.current_verified_root().unwrap();
-    authority
-        .commit_local_checkpoint(&loser, vec![(loser_cold, loser_bytes)], &validator())
-        .expect_err("LMDB stale plan conflicts");
+    let first = authority
+        .commit_local_checkpoint(&first_plan, vec![first_leaf.clone()], &validator())
+        .expect("the first LMDB plan publishes");
+
+    assert_eq!(first, first_expected);
+    assert_root_objects_visible(&authority, &first, &first_plan, &first_leaf.0);
+    let after_first = facet_snapshot(&authority);
+    assert_eq!(
+        after_first,
+        expected_after_publication(&before_first, &first_plan, &first_leaf, &first_expected)
+    );
+    let second_expected =
+        CurrentRoot::new(second_plan.target_root().clone(), first_expected.generation() + 1);
+
+    let second = authority
+        .commit_local_checkpoint(&second_plan, vec![second_leaf.clone()], &validator())
+        .expect("the second LMDB plan from the same base also publishes");
+
+    assert_eq!(second, second_expected);
+    let after_second = facet_snapshot(&authority);
+    assert_eq!(
+        after_second,
+        expected_after_publication(&after_first, &second_plan, &second_leaf, &second_expected)
+    );
+
+    let error = authority
+        .commit_local_checkpoint(&missing_plan, Vec::new(), &validator())
+        .expect_err("an LMDB plan without its cold leaf fails");
+
+    assert!(matches!(error, HistoryError::ActionError(_)));
+    assert_eq!(facet_snapshot(&authority), after_second);
     assert_eq!(
         authority
-            .history_store()
-            .expect("legacy history facet")
-            .to_map()
-            .unwrap(),
-        history_before
+            .current_verified_root()
+            .expect("read the current root"),
+        Some(second_expected)
     );
-    assert_eq!(
-        authority
-            .cold_store()
-            .expect("legacy cold facet")
-            .to_map()
-            .unwrap(),
-        cold_before
-    );
-    assert_eq!(authority.current_verified_root().unwrap(), current_before);
+}
+
+#[test]
+fn a_plan_whose_base_is_not_verified_is_refused_without_writing() {
+    let scratch = test_scratch::acquire("rspace-authority-unverified-base-");
+    let lmdb =
+        RSpaceStateAuthority::open_lmdb(scratch.path(), "rspace", None, None, 16 * 1024 * 1024, 8)
+            .expect("LMDB authority");
+    lmdb.initialize_for_records(&validator())
+        .expect("initialize LMDB authority");
+    let memory_image: fn(&Arc<RSpaceStateAuthority>) -> MemorySnapshot =
+        |authority| memory_snapshot(authority.as_ref());
+    let lmdb_image: fn(&Arc<RSpaceStateAuthority>) -> MemorySnapshot = facet_snapshot;
+    let backends = [
+        (
+            "LV-06 (a) memory changed path",
+            "LV-06 (c) memory no-op path",
+            RSpaceStateAuthority::in_memory(),
+            memory_image,
+        ),
+        ("LV-06 (b) LMDB changed path", "LV-06 (c) LMDB no-op path", lmdb, lmdb_image),
+    ];
+    for (changed_case, no_op_case, authority, image) in backends {
+        let parent_leaf = data_leaf(b"unverified-base-parent");
+        let child_leaf = data_leaf(b"unverified-base-child");
+        let (successor, _uncommitted_parent_plan) =
+            prepare_insert(history_at_current(&authority).as_ref(), 17, &parent_leaf.0);
+        let base = successor.root();
+        assert!(
+            !authority
+                .contains_verified_root(&base)
+                .expect("read the base's membership"),
+            "{changed_case}: the base is an uncommitted successor, not a verified root",
+        );
+        let (_changed_next, changed_plan) = prepare_insert(successor.as_ref(), 18, &child_leaf.0);
+        let (_no_op_next, no_op_plan) = successor
+            .prepare_checkpoint(Vec::new())
+            .expect("prepare a no-op plan from the unverified base");
+        assert_eq!(
+            (changed_plan.base(), changed_plan.changed(), no_op_plan.base(), no_op_plan.changed()),
+            (&base, true, &base, false),
+        );
+        let refusal = format!("unknown verified root: {base}");
+        let before = image(&authority);
+
+        match authority.commit_local_checkpoint(
+            &changed_plan,
+            vec![parent_leaf, child_leaf],
+            &validator(),
+        ) {
+            Err(HistoryError::RootError(RootError::UnknownRootError(message))) => {
+                assert_eq!(message, refusal, "{changed_case}")
+            }
+            outcome => {
+                panic!(
+                    "{changed_case}: a plan from an unverified base was not refused: {outcome:?}"
+                )
+            }
+        }
+        assert_eq!(image(&authority), before, "{changed_case}");
+
+        match authority.commit_local_checkpoint(&no_op_plan, Vec::new(), &validator()) {
+            Err(HistoryError::RootError(RootError::UnknownRootError(message))) => {
+                assert_eq!(message, refusal, "{no_op_case}")
+            }
+            outcome => {
+                panic!("{no_op_case}: a plan from an unverified base was not refused: {outcome:?}")
+            }
+        }
+        assert_eq!(image(&authority), before, "{no_op_case}");
+    }
 }
 
 #[test]

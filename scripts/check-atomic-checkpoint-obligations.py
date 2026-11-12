@@ -38,7 +38,7 @@ BINDINGS = [
     (
         "NoUnpublishedCheckpointObjects",
         "executable_refinement",
-        "same_generation_plans_conflict_without_partial_visibility",
+        "plans_from_one_base_both_publish_without_partial_visibility",
     ),
     (
         "GenerationAdvancesExactlyOnActivation",
@@ -48,7 +48,7 @@ BINDINGS = [
     (
         "CommitUsesExactBase",
         "executable_refinement",
-        "aba_root_reactivation_does_not_revive_an_old_plan",
+        "a_plan_publishes_the_successor_of_its_own_base_after_root_aba",
     ),
     (
         "FailedCommitLeavesAuthorityUnchanged",
@@ -82,19 +82,21 @@ TEST_ASSERTIONS = {
         'expect_err("immutable history collision must fail")',
         "assert_eq!(memory_snapshot(&authority), before);",
     ),
-    "same_generation_plans_conflict_without_partial_visibility": (
-        "RootError::RootCatalogConflict { .. }",
-        "assert_eq!(memory_snapshot(&authority), before_stale);",
+    "plans_from_one_base_both_publish_without_partial_visibility": (
+        "assert_eq!(first, first_expected);",
+        "expected_after_publication(&before_first, &first_plan, &first_leaf, &first_expected)",
+        "assert_eq!(second, second_expected);",
+        "expected_after_publication(&after_first, &second_plan, &second_leaf, &second_expected)",
     ),
     "lmdb_reopen_preserves_exact_catalog_and_known_root_activation": (
         "assert_eq!(reopened.current_verified_root().unwrap(), Some(committed.clone()));",
         "assert!(reopened.contains_verified_root(empty.root()).unwrap());",
         "assert_eq!(at_empty.generation(), committed.generation() + 1);",
     ),
-    "aba_root_reactivation_does_not_revive_an_old_plan": (
-        'expect_err("ABA must be rejected by generation")',
-        "RootError::RootCatalogConflict { .. }",
-        "assert_eq!(memory_snapshot(&authority), before_stale);",
+    "a_plan_publishes_the_successor_of_its_own_base_after_root_aba": (
+        'expect("a plan from a verified base publishes after the root ABA")',
+        "assert_eq!(published, published_expected);",
+        "expected_after_publication(&before_old, &old_plan, &old_leaf, &published_expected)",
     ),
     "no_op_writes_nothing_and_does_not_advance_generation": (
         "assert_eq!(observed, current_before);",
@@ -395,8 +397,8 @@ def self_test(inputs):
             mutants,
             bindings,
             test_source.replace(
-                "assert_eq!(memory_snapshot(&authority), before_stale);",
-                "assert_eq!(memory_snapshot(&authority), memory_snapshot(&authority));",
+                "expected_after_publication(&after_first, &second_plan, &second_leaf, &second_expected)",
+                "memory_snapshot(&authority)",
                 1,
             ),
             module_source,

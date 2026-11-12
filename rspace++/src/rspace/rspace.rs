@@ -275,8 +275,6 @@ where
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
         event!(Level::DEBUG, mark = "started-create-checkpoint", "create_checkpoint");
 
-        let expected_legacy_root = self.get_history_repository().current_authority_root()?;
-
         // Get changes with span
         let changes = {
             let _changes_span =
@@ -288,8 +286,7 @@ where
         let next_history = {
             let _history_span =
                 tracing::info_span!(target: "f1r3fly.rspace", HISTORY_CHECKPOINT_SPAN).entered();
-            self.get_history_repository()
-                .checkpoint_at(&expected_legacy_root, changes)?
+            self.get_history_repository().checkpoint(changes)?
         };
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 

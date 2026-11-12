@@ -12,7 +12,6 @@ use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_action::{HistoryAction, HistoryActionTrait};
 use crate::rspace::history::radix_tree::{Node, RadixTreeImpl, empty_node, hash_node};
-use crate::rspace::history::roots_store::CurrentRoot;
 use crate::rspace::state::rspace_state_authority::RSpaceStateAuthority;
 
 /// A backend-neutral, content-derived local history checkpoint.
@@ -21,7 +20,7 @@ use crate::rspace::state::rspace_state_authority::RSpaceStateAuthority;
 /// narrow crate-private accessors, but cannot supply a claimed root digest.
 pub struct PreparedHistoryCheckpoint {
     authority: Arc<RSpaceStateAuthority>,
-    base: CurrentRoot,
+    base: Blake2b256Hash,
     target_root: Blake2b256Hash,
     root_encoding: Option<ByteVector>,
     history_objects: BTreeMap<ByteVector, ByteVector>,
@@ -30,7 +29,7 @@ pub struct PreparedHistoryCheckpoint {
 impl PreparedHistoryCheckpoint {
     pub(crate) fn authority(&self) -> &Arc<RSpaceStateAuthority> { &self.authority }
 
-    pub(crate) fn base(&self) -> &CurrentRoot { &self.base }
+    pub(crate) fn base(&self) -> &Blake2b256Hash { &self.base }
 
     pub(crate) fn target_root(&self) -> &Blake2b256Hash { &self.target_root }
 
@@ -40,7 +39,7 @@ impl PreparedHistoryCheckpoint {
         &self.history_objects
     }
 
-    pub(crate) fn changed(&self) -> bool { self.target_root != *self.base.root() }
+    pub(crate) fn changed(&self) -> bool { self.target_root != self.base }
 }
 
 pub struct RadixHistory {
@@ -211,16 +210,6 @@ impl RadixHistory {
                 "local checkpoint preparation requires an RSpace state authority".to_string(),
             )
         })?;
-        let base = authority.current_verified_root()?.ok_or_else(|| {
-            HistoryError::ActionError("RSpace authority has no current root".to_string())
-        })?;
-        if base.root() != &self.root_hash {
-            return Err(HistoryError::ActionError(format!(
-                "history root {} is stale relative to authority root {}",
-                self.root_hash,
-                base.root()
-            )));
-        }
 
         let new_root_node_opt = self.imple.make_actions(&self.root_node, actions)?;
         let (target_root, root_node, root_encoding, history_objects) = if let Some(new_root_node) =
@@ -254,7 +243,7 @@ impl RadixHistory {
         });
         let prepared = PreparedHistoryCheckpoint {
             authority: Arc::clone(authority),
-            base,
+            base: self.root_hash.clone(),
             target_root,
             root_encoding,
             history_objects,

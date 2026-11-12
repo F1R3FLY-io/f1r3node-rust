@@ -94,13 +94,10 @@ async fn epathmap_heavy_record_then_replay_reproduces_the_log() {
     let play_checkpoint = runtime.create_checkpoint().await;
 
     // ── REPLAY ───────────────────────────────────────────────────────────
-    // The play checkpoint advanced the shared atomic authority from the
-    // initial root. Reactivate that known base before replay prepares its own
-    // checkpoint; target-root equality never authorizes a stale base plan.
     replay_runtime
         .reset(&initial_root)
         .await
-        .expect("replay reset must reactivate the recorded base root");
+        .expect("replay reset must attach the replay view to the recorded base root");
 
     // `rig` indexes the recorded log by EVENT HASH; the replayed run must
     // re-derive every hash to consume it.
