@@ -9625,6 +9625,295 @@ records it returned.
 | VR-06 | A bound lazy store publishes as the eager store does. With the base in two byte-identical directories, the owner refuses a detached lazy store and accepts it after `bind_journal_authority` with its view's slot. Checkpointing the same operations through the lazy store and through the eager store then yields the same state and the same successor catalog slot, empties both journals, leaves the same records in both stores and leaves the two directories byte-identical. | `a_bound_lazy_store_checkpoints_to_the_eager_successor_slot` |
 | VR-08 | Detached journals cannot be published, and refused binds change nothing. Capture, validation, `commit_pending_deltas`, `into_rspace_authority` and `checkpoint_view` refuse a detached journal with `JournalConflict` and change no file and no journal. `bind_journal_authority` accepts exactly the slots whose state has the journal's recorded manifest, digest and encoded length alike, and refuses every slot once the journal is invalidated. A journal already bound may be bound again to another slot of the same state, which keeps its contents and its version; a bind of a bound journal to a slot of another state is refused and leaves the journal bound to its slot with the same contents and version. After a refused bind the store cannot be told apart from an identical store that did not attempt it. | `detached_journals_cannot_be_published_and_mismatched_binds_change_nothing` |
 
+### Cross-base hot-store journal capture (2026-11-12)
+
+Under ruling Q1, option A (user, 2026-11-12), a reset is local to the runtime
+view and writes nothing, and a checkpoint publishes the view's successor from
+the store's current state. The journal of a view that was reset to a retained
+state was recorded against that state, while its successor is published on the
+current catalog slot, which may hold another state. This slice (task 14348,
+`rspace-hotstore-cross-base-capture`) adds to
+[`hot_store.rs`](../../../rspace++/src/rspace/hot_store.rs) the read-only
+capture from which such a publication starts,
+`HotStore::capture_cross_base_journal`. Its caller is the owner's cross-base
+checkpoint (task `rspace-owner-cross-base-checkpoint`), which also uses the walk
+of the [retained state endpoint
+difference](#retained-state-endpoint-difference-2026-11-12); until that task
+lands, only tests call the capture.
+
+**Terms.**
+
+| Term | Meaning |
+|---|---|
+| Recorded state | The manifest that a durable journal was recorded against, as `DurableJournalStateV1::recorded_manifest` returns it: the manifest of `Detached(manifest)`, or the manifest of the state of the slot of `Bound(slot)`. An `Invalidated` journal records none. |
+| Origin | The manifest that a capture names as the recorded state of the journal it captured: the new field `CapturedHotJournalV1::origin`. |
+| Publication base | The catalog slot whose successor is to publish the captured journal: the field `base` of the capture. |
+| Same-base capture | A capture taken by `capture_pending_journal(base)`. The journal is bound to `base`, and the origin is the manifest of the state of `base`. |
+| Cross-base capture | A capture taken by `capture_cross_base_journal(origin, publication_base, registry)`. The publication base is any slot, and the origin is the journal's recorded state. |
+| $`\mathrm{Succ}(b, t)`$ | Slot $`t`$ is a successor of slot $`b`$ as far as the hot store can check it; defined under **Acknowledgement** below. |
+
+A second new private field, `kind`, records which of the two methods took a
+capture: `JournalCaptureKindV1::SameBase` or `JournalCaptureKindV1::CrossBase`.
+Neither new field is persisted.
+
+**Capture.** `capture_cross_base_journal(origin, publication_base, registry)` is
+a pure read. It holds the hot-store state read lock, and every refusal is
+`JournalConflict` and leaves the store as it was.
+
+| Durable journal | Recorded state | Result |
+|---|---|---|
+| None (a store of `create_from_hs_and_hr`) | none | Refused: the store has no durable journal authority. |
+| `Detached(m)` (a store of `create_from_durable_reader`) | $`m`$ | A capture if $`m`$ equals `origin` and `registry` is the journal's own registry; refused otherwise. |
+| `Bound(s)` | the manifest of the state of $`s`$ | A capture if that manifest equals `origin` and `registry` is the journal's own registry; refused otherwise. |
+| `Invalidated` (after `clear` or `set_state`) | none | Refused for every origin. |
+
+Two manifests are equal when their digests and their encoded lengths are, as
+for `bind_journal_authority`. The journal's own registry is one that shares
+the journal registry's lease state, as `GenerationLeaseRegistryV1::shares_registry`
+decides and `validate_journal_authority` already requires, so the owner of
+another directory cannot capture the journal. The publication base is not
+checked: it may be a slot of another state or of the origin's own state, and
+the capture is a cross-base capture either way.
+
+```text
+capture_cross_base_journal(origin, publication_base, registry):
+    hold the hot-store state read lock until the end
+    journal := the store's durable journal; if there is none, refuse
+    match (journal.registry shares registry, journal.recorded_manifest()):
+        (true, Some(recorded)) where recorded = origin:
+            return capture {
+                identity    = a fresh capture identity,
+                version     = journal.version,        -- journal identity and revision
+                base        = publication_base,
+                origin      = origin,
+                kind        = CrossBase,
+                observation = pending_observation()   -- as capture_pending_journal takes it
+            }
+        (false, _):          refuse   -- another directory authority
+        (true, Some(other)): refuse   -- recorded against another state
+        (true, None):        refuse   -- the journal was invalidated
+```
+
+`capture_pending_journal(base)` keeps its checks and its result, and now also
+sets `origin` to the manifest of the state of `base` and `kind` to `SameBase`.
+
+**Validation.** For a durable journal $`J`$ and a capture $`k`$, write
+$`\mathrm{rec}(J)`$ for the recorded state of $`J`$ (none when it is
+invalidated), $`\mathrm{ver}`$ for a journal version (journal identity and
+revision), $`\mathrm{pend}`$ for the five pending journals, and
+$`\mathrm{kind}(k)`$, $`\mathrm{base}(k)`$ and $`\mathrm{origin}(k)`$ for the
+fields of $`k`$. `matches_captured_journal`, on which `validate_pending_journal`
+and `acknowledge_pending_journal` rest, now holds exactly when
+
+```math
+\mathrm{anchored}(J, k) \;\wedge\; \mathrm{rec}(J) = \mathrm{origin}(k) \;\wedge\; \mathrm{ver}(J) = \mathrm{ver}(k) \;\wedge\; \mathrm{pend}(J) = \mathrm{pend}(k),
+```
+
+where
+
+```math
+\mathrm{anchored}(J, k) \;\iff\; \bigl(\mathrm{kind}(k) = \mathsf{SameBase} \;\Rightarrow\; J \text{ is bound to } \mathrm{base}(k)\bigr).
+```
+
+A same-base capture is therefore still anchored by the binding, as before, and
+a cross-base capture by the recorded state. A cross-base capture cannot be
+anchored by the binding, since its base is the publication slot, to which the
+journal is not bound. Dropping the binding check for every capture would
+instead change same-base validation: a same-base capture at a slot $`s`$ would
+still validate after the journal had been bound again to another slot $`s'`$
+of the same state, which is refused today. Because each capture records its
+kind, the two kinds never validate as each other. A bind changes neither the
+journals, nor the version, nor the recorded state, so a cross-base capture
+stays valid across a bind to any slot of its origin's state. Every change of
+the journals, and every `restore_pending_deltas`, `clear`, `set_state` and
+acknowledgement, advances the version, so each invalidates the captures of
+both kinds. For a capture as it was taken, the comparison of the recorded
+state with the origin cannot fail while the version still matches: the
+recorded state changes only through an acknowledgement or an invalidation,
+both of which advance the version, or through a bind, which keeps the
+manifest. The comparison states what the capture was taken against; the tests
+exercise it with captures whose origin was replaced after the capture.
+
+**Acknowledgement.** `acknowledge_pending_journal(captured, expected, admitted)`
+is unchanged. It refuses unless `expected` equals `admitted`. It answers
+`AlreadyCommitted` when the journal is bound to `expected` and carries the
+acknowledgement marker of this very capture. Otherwise, with $`k`$ the capture
+`captured`, it refuses unless `matches_captured_journal(captured)` holds, the
+pending journals are not empty and
+$`\mathrm{Succ}(\mathrm{base}(k), \mathit{expected})`$ holds, where for two
+catalog slots $`b`$ and $`t`$, with store identifier, semantic profile, catalog
+epoch, state generation and commit sequence written $`\mathrm{store}`$,
+$`\mathrm{profile}`$, $`\mathrm{epoch}`$, $`\mathrm{gen}`$ and $`\mathrm{seq}`$,
+
+```math
+\mathrm{Succ}(b, t) \;\iff\; \mathrm{store}(t) = \mathrm{store}(b) \;\wedge\; \mathrm{profile}(t) = \mathrm{profile}(b) \;\wedge\; \mathrm{epoch}(t) = \mathrm{epoch}(b) + 1 \;\wedge\; \mathrm{gen}(t) = \mathrm{gen}(b) + 1 \;\wedge\; \mathrm{seq}(t) = \mathrm{seq}(b) + 1.
+```
+
+The successor's manifest, commit digest, commit address and pack state are for
+the owner to check. For a cross-base capture $`\mathrm{base}(k)`$ is the
+publication base, so the capture is acknowledged only at the exact successor of
+its publication base. The acknowledgement then binds the journal, detached or
+bound before, to `expected`, empties its journals, records the marker and
+advances the version, as it does for a same-base capture.
+
+```text
+                     hot-store journal with recorded state O
+               Detached(O), or Bound(s) for a slot s of state O
+                                       │
+              ┌────────────────────────┴────────────────────────┐
+              ▼                                                 ▼
+ capture_pending_journal(s)                capture_cross_base_journal(O, c, registry)
+ requires Bound(s)                         requires recorded state O and the
+                                           journal's own registry; c is any slot
+              │                                                 │
+              ▼                                                 ▼
+ ┌─────────────────────────┐                       ┌─────────────────────────┐
+ │ SameBase capture        │                       │ CrossBase capture       │
+ │ base = s, origin = O    │                       │ base = c, origin = O    │
+ │ valid while Bound(s),   │                       │ valid while the journal │
+ │ same version and        │                       │ records O, same version │
+ │ same pending journals   │                       │ and same journals       │
+ └────────────┬────────────┘                       └────────────┬────────────┘
+              │ acknowledged only at t                          │ acknowledged only at t
+              │ with Succ(s, t)                                 │ with Succ(c, t)
+              ▼                                                 ▼
+ Bound(t), journals emptied,                       Bound(t), journals emptied,
+ version advanced, marker set                      version advanced, marker set
+```
+
+**Cost.** A cross-base capture costs what `capture_pending_journal` costs: one
+read lock, a constant number of comparisons, and the observation, which clones
+the five pending journals and looks up one count for each data and join
+endpoint that they name, without scanning a namespace. Validation adds one
+comparison of two `ObjectRefV1` values.
+
+**What does not change.** No persisted byte, record kind, root, identity or
+wire message changes: a capture is an in-memory value. The owner in
+[`rspace_authority.rs`](../../../rspace++/src/rspace/persistence/durable/rspace_authority.rs)
+keeps captures and hands them to `validate_pending_journal`,
+`acknowledge_pending_journal` and `validate_journal_acknowledgement` without
+naming a field, so it does not change. `InMemHotStore` is the only
+implementation of `HotStore`. The new method belongs to the public `HotStore`
+trait, which the dead-code lint does not examine; clippy of the library
+without tests reports no warning, so the method carries no
+`expect(dead_code)`, which would be unfulfilled.
+
+**Tests.** The module
+[`cross_base_capture.rs`](../../../rspace++/tests/hot_store/cross_base_capture.rs)
+is mounted in `hot_store.rs` as the journal-commit and durable-reader-bootstrap
+tests are. Its universe is the channels `a` and `b`, the values `v0` to `v2`,
+the bodies `k0` and `k1` and the groups `(a)`, `(a,b)` and `(b,a)`. A store is
+built as `create_from_durable_reader` builds one: a cache of base records, a
+journal detached at the origin manifest with a registry of its own, and
+`ClosedDurableHistoryReader`, which holds nothing. The tests build it directly,
+so that they can read the journal's base, version and marker. A generated base
+holds up to four data and up to three distinct continuations, each continuation
+with a join for every distinct channel of its group. An operation puts or
+removes a datum or a continuation, each with probability one quarter; a
+continuation is put and removed together with its joins, and a removal's index
+is drawn from 0 to 3 and reduced modulo the number of records, so that a
+removal from an empty key is refused. Catalog slots are synthetic and valid for
+`CatalogSlotV1::new`: a slot is given by its store, profile, epoch, generation,
+commit sequence and manifest. The origin's slot has epoch 1, generation 0 and
+commit sequence 1. A publication base lies one to three steps later in each of
+epoch, generation and commit sequence, and its state is one of three other
+manifests or, in a quarter of the cases, the origin's own. A journal is
+unchanged when its base, its version (journal identity and revision), its
+acknowledgement marker (capture identity, version and terminal), its five
+pending journals and the store's records all equal what they were before.
+
+1. `a_cross_base_capture_is_acknowledged_only_at_the_successor_of_its_publication_base`
+   (CB-01). A store, detached or bound to the origin's slot, applies up to
+   seven operations; a bound store also takes a same-base capture at the
+   origin's slot. It then takes a cross-base capture at a publication base
+   $`c`$, which must change nothing. Eleven wrong terminals are tried: the
+   successor of $`c`$ with another store or another profile, with the epoch,
+   the generation or the commit sequence not advanced or advanced by two; $`c`$
+   itself; the origin's slot; and the successor of the origin's slot. Each is
+   offered as the pair (wrong, wrong), (successor, wrong) and (wrong,
+   successor), and each of the 33 acknowledgements must be refused with
+   `JournalConflict` and leave the journal unchanged; the capture must still
+   validate. An empty journal must be refused at the exact successor too, with
+   nothing changed. Otherwise the acknowledgement at the exact successor must
+   commit: the journal is bound to the successor, its version is the next one,
+   its journals are empty and the records are unchanged;
+   `validate_journal_acknowledgement` accepts the capture, and a second
+   acknowledgement answers `AlreadyCommitted` and changes nothing. The journal
+   can then be captured at the successor and for publication from the
+   successor's state, but no longer from the old origin; all 33 wrong
+   acknowledgements are refused again with nothing changed; and the earlier
+   same-base capture of a bound store is refused at the successor of the
+   origin's slot. Three seeded cases and 256 generated ones are checked, and
+   detached and bound journals, a commit, a refused empty journal, a
+   publication base of the origin's own state and a refused same-base capture
+   all occur.
+2. `a_wrong_origin_or_registry_is_refused_and_a_changed_journal_fails_validation`
+   (CB-02). A store without a durable journal is refused. A store, detached or
+   bound to the origin's slot, applies up to seven operations. A cross-base
+   capture must be refused, with nothing changed, for each wrong origin
+   (another digest; the origin's digest with another encoded length; and the
+   publication base's manifest when it is not the origin) under the journal's
+   registry and under a foreign one, and for the right origin under the
+   foreign registry. The right capture changes nothing and validates. A copy of
+   it whose origin is replaced by each wrong origin must fail
+   `validate_pending_journal` and the acknowledgement at the publication base's
+   successor, with nothing changed, and so must a bound store's same-base
+   capture whose origin is replaced. Then one change is applied: a datum put;
+   a datum put and the removal of the same datum, which restores the journals
+   but advances the version; `restore_pending_deltas` of the current journals;
+   `clear`; `set_state` of the current records; the acknowledgement of a second
+   cross-base capture; or three reads and two removals at out-of-range
+   indexes. If the version advanced, the capture must fail validation and the
+   acknowledgement, with nothing changed, and an invalidated journal must
+   moreover be refused for the origin and for every wrong origin. If it did not
+   (the reads, or a second acknowledgement refused for an empty journal), the
+   capture must still validate. Seven seeded cases, one per change, and 256
+   generated ones are checked, and each wrong origin, the foreign registry,
+   replaced origins of both kinds, a mutation, a version-only change, an
+   invalidation, an acknowledgement and an unchanged journal all occur.
+3. `a_cross_base_capture_observes_what_a_same_base_capture_at_the_origin_observes`
+   (CB-03). A subject store, detached or bound to a slot of the origin, and a
+   twin bound to another slot of the origin start from the same base records
+   and take up to 15 steps, four operations for each publication on average.
+   Each operation must give both stores the same answer. At each publication,
+   and once more at the end, the subject's cross-base capture at a publication
+   base $`c`$ and the twin's same-base capture must carry equal observations,
+   that is, equal pending journals and equal data and join counts, and equal
+   revisions, with origin the current origin and bases $`c`$ and the twin's
+   slot, and both must validate. A non-empty publication is then acknowledged
+   by both stores, the subject at the successor of $`c`$ and the twin at the
+   successor of its slot, with one new manifest, which becomes the origin. At
+   the end the subject is bound to another slot of its origin's state; its
+   same-base capture there must equal its last cross-base capture, version
+   included, and that cross-base capture must still validate. Two seeded cases
+   and 256 generated ones are checked, and detached and bound subjects, a
+   non-empty journal, a comparison after an acknowledgement, a data, a
+   continuation and a join removal in an observed journal, and a publication
+   base of the origin's own state all occur.
+4. `same_base_and_cross_base_captures_of_one_journal_validate_by_their_own_rules`
+   checks the choice of the kind field and is bound to no ID. A bound store
+   with a non-empty journal takes a same-base capture at its slot and
+   cross-base captures for a publication base of another state and for its own
+   slot. All three validate, and the same-base capture and the cross-base
+   capture for the other state carry the same version and observation. After a
+   bind to another slot of the same state, the same-base capture is refused and
+   both cross-base captures still validate; a same-base capture at the old slot
+   is refused and one at the new slot is taken. The old same-base capture's
+   acknowledgement is refused with nothing changed. The cross-base capture for
+   the other state commits at its publication base's successor, answers
+   `AlreadyCommitted` when repeated, and its acknowledgement validates; the
+   acknowledgements of the new same-base capture and of the cross-base capture
+   for its own slot are then refused, and `validate_journal_acknowledgement`
+   refuses both same-base captures, which were not acknowledged.
+
+**The CB rows.** CB is the cross-base capture family.
+
+| ID | Required property | Test |
+|---|---|---|
+| CB-01 | Only at the exact successor of the publication base. A cross-base capture is acknowledged only when the expected and admitted terminals are equal and satisfy $`\mathrm{Succ}(c, t)`$ for its publication base $`c`$. At any other terminal, the publication base, the origin's slot and its successor among them, the acknowledgement is refused with `JournalConflict`, and the journal's base, version, acknowledgement marker and pending journals and the store's records are unchanged; an empty journal is refused at the exact successor as well. The acknowledgement binds the journal, detached or bound before, to the successor, empties its journals and advances its version once; it then validates, and a repeated acknowledgement answers `AlreadyCommitted`. | `a_cross_base_capture_is_acknowledged_only_at_the_successor_of_its_publication_base` |
+| CB-02 | Wrong origins and foreign registries are refused, and changed journals are stale. `capture_cross_base_journal` refuses with `JournalConflict`, and changes nothing, a store without a durable journal, an invalidated journal, an origin other than the journal's recorded state (another digest, or the same digest with another encoded length) and a registry other than the journal's own. A capture of either kind whose origin is not the journal's recorded state fails `validate_pending_journal` and the acknowledgement. A journal changed after the capture, by a mutation, a restore, `clear`, `set_state` or the acknowledgement of another capture, each of which advances the version, fails `validate_pending_journal` and the acknowledgement; reads and refused removals keep the capture valid. | `a_wrong_origin_or_registry_is_refused_and_a_changed_journal_fails_validation` |
+| CB-03 | Equal observation. On generated operations and publications, a cross-base capture carries the observation (the five pending journals and the data and join counts) and the journal revision of a same-base capture at a slot of its origin, taken from an identical store bound to that slot, and, after its own store is bound to a slot of the origin, of that store's same-base capture there. A bind to a slot of the origin keeps the cross-base capture valid. | `a_cross_base_capture_observes_what_a_same_base_capture_at_the_origin_observes` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -9897,6 +10186,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | DF-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14347): the endpoint difference of two retained states turns the from state into the to state. This matrix cites no model of the canonical radix DAG's endpoints or of a walk over two states, and no model states a property of the walk's Rust results. |
 | DF-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14347): the walk reads exactly the node occurrences that the two states do not share. No model in this matrix counts the reads of a walk over a radix DAG. |
 | DF-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14347): the literal ordered group path of a continuation endpoint, ruling D1, as VR-07 states it for a continuation read. This matrix cites no model of RhoPathV1 group prefixes. |
+| CB-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14348): the successor checks of the hot store's acknowledgement for a capture whose publication base is not the slot that the journal is bound to. The journal models of this matrix have no publication base apart from the bound catalog: `HotStoreJournalAcknowledgement` compares journals only, and `JournalOwnerReadiness` binds one registry and one catalog. |
+| CB-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14348): the refusals of a cross-base capture for a wrong origin, a foreign registry or an invalidated journal, and the staleness of a capture after a change. No journal model of this matrix has an origin. Staleness rests on the version advance whose freshness JV-01 to JV-03 state, but the refusals are properties of the Rust captures. |
+| CB-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14348): a cross-base capture and a same-base capture at its origin carry equal observations. The journal models of this matrix have no cross-base capture to compare; the property is the executable equality of two captures. |
 
 ## Generator discipline
 
@@ -10822,6 +11114,39 @@ the PathMap aggregate takes its new manifest digest. No persisted format of the
 store, record kind, root, identity or wire message changed: the staging
 directory and its frontier record are new, private to one import session and
 not authoritative, and no open of the store reads them.
+
+The 2026-11-12 cross-base hot-store journal capture slice of task 14348 adds
+CB-01 to CB-03, the first CB rows, so the catalog/derivation/binding registry
+now contains **269** IDs. The manifest test's family list gains `CB`, and its
+executable sources gain `cross_base_capture.rs`. On an export of the candidate
+tree, the four tests of the new module, the 20 durable owner tests (one more is
+ignored), the 20 journal-commit tests and the 22 tests of the
+generation-checkpoint property module passed in debug and in release, and the
+whole library test target, the manifest test included, passed in debug and in
+release with 991 tests (981 passed, 10 ignored). The seeded cases of CB-01,
+CB-02 and CB-03 cover by themselves every case that their tests require. Three
+controls were each applied to the export's `hot_store.rs`, run against the new
+module in debug with `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` and removed, and
+each made exactly one test of the module fail:
+
+- Comparing no origin in `matches_captured_journal` made CB-02 fail at a seeded
+  case: a cross-base capture whose origin had been replaced by a manifest with
+  another digest was validated.
+- Removing the five successor checks of `acknowledge_pending_journal` made
+  CB-01 fail at a seeded case: the cross-base capture was acknowledged at the
+  successor of its publication base in another store.
+- Anchoring same-base captures by their origin alone, as cross-base captures
+  are anchored, made the test of the two kinds fail: a same-base capture
+  validated after its journal had been bound to another slot of the same state.
+
+Each faulted file was restored from its saved copy and compared byte for byte.
+Clippy of `rspace_plus_plus` with every target lists no finding in the files of
+this slice and no warning for the library without tests, and
+`rustfmt --check` passes on its Rust files. The workspace-regression registry
+and the PathMap obligation registry hash the manifest test's file, which
+changes, so both are regenerated with this slice. No persisted record kind,
+byte layout, magic number or file name is new. See the cross-base hot-store
+journal capture section.
 
 ## Caller-authority contract (2026-09-06)
 

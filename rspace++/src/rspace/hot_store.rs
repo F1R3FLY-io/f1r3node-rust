@@ -139,10 +139,18 @@ impl JournalVersionV1 {
 
 struct JournalCaptureIdentityV1;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JournalCaptureKindV1 {
+    SameBase,
+    CrossBase,
+}
+
 pub struct CapturedHotJournalV1 {
     identity: Arc<JournalCaptureIdentityV1>,
     version: JournalVersionV1,
     base: CatalogSlotV1,
+    origin: ObjectRefV1,
+    kind: JournalCaptureKindV1,
     observation: PendingMutationObservation,
 }
 
@@ -444,6 +452,13 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn capture_pending_journal(
         &self,
         base: CatalogSlotV1,
+    ) -> Result<CapturedHotJournalV1, RSpaceError>;
+
+    fn capture_cross_base_journal(
+        &self,
+        origin: ObjectRefV1,
+        publication_base: CatalogSlotV1,
+        registry: &GenerationLeaseRegistryV1,
     ) -> Result<CapturedHotJournalV1, RSpaceError>;
 
     fn validate_pending_journal(&self, captured: &CapturedHotJournalV1) -> Result<(), RSpaceError>;
@@ -883,7 +898,13 @@ where
 
     fn matches_captured_journal(&self, captured: &CapturedHotJournalV1) -> bool {
         self.durable_journal.as_ref().is_some_and(|binding| {
-            binding.is_bound_to(captured.base) && binding.version.matches(&captured.version)
+            let anchored = match captured.kind {
+                JournalCaptureKindV1::SameBase => binding.is_bound_to(captured.base),
+                JournalCaptureKindV1::CrossBase => true,
+            };
+            anchored &&
+                binding.recorded_manifest() == Some(captured.origin) &&
+                binding.version.matches(&captured.version)
         }) && self.matches_pending_journal(&captured.observation.pending)
     }
 
@@ -1654,8 +1675,42 @@ where
             identity: Arc::new(JournalCaptureIdentityV1),
             version: binding.version.clone(),
             base,
+            origin: base.state().manifest(),
+            kind: JournalCaptureKindV1::SameBase,
             observation: state.pending_observation(),
         })
+    }
+
+    fn capture_cross_base_journal(
+        &self,
+        origin: ObjectRefV1,
+        publication_base: CatalogSlotV1,
+        registry: &GenerationLeaseRegistryV1,
+    ) -> Result<CapturedHotJournalV1, RSpaceError> {
+        let state = self.state.read().expect("hot store state read lock");
+        let binding = state.durable_journal.as_ref().ok_or_else(|| {
+            RSpaceError::JournalConflict("hot store has no durable journal authority".to_owned())
+        })?;
+        match (binding.registry.shares_registry(registry), binding.recorded_manifest()) {
+            (true, Some(recorded)) if recorded == origin => Ok(CapturedHotJournalV1 {
+                identity: Arc::new(JournalCaptureIdentityV1),
+                version: binding.version.clone(),
+                base: publication_base,
+                origin,
+                kind: JournalCaptureKindV1::CrossBase,
+                observation: state.pending_observation(),
+            }),
+            (false, _) => Err(RSpaceError::JournalConflict(
+                "durable journal belongs to another directory authority".to_owned(),
+            )),
+            (true, Some(_)) => Err(RSpaceError::JournalConflict(
+                "durable journal was recorded against another state than the capture's origin"
+                    .to_owned(),
+            )),
+            (true, None) => Err(RSpaceError::JournalConflict(
+                "durable journal base was invalidated and cannot be captured".to_owned(),
+            )),
+        }
     }
 
     fn validate_pending_journal(&self, captured: &CapturedHotJournalV1) -> Result<(), RSpaceError> {
@@ -2583,6 +2638,10 @@ mod journal_commit_tests;
 #[cfg(test)]
 #[path = "../../tests/hot_store/durable_reader_bootstrap.rs"]
 mod durable_reader_bootstrap_tests;
+
+#[cfg(test)]
+#[path = "../../tests/hot_store/cross_base_capture.rs"]
+mod cross_base_capture_tests;
 
 #[cfg(test)]
 #[path = "../../tests/hot_store/receive_revision_tokens.rs"]

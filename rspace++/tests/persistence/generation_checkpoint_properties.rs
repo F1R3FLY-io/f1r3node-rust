@@ -400,7 +400,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
         "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI", "SW", "OG", "VR", "DI", "SG",
-        "GC", "TX", "HR", "DF",
+        "GC", "TX", "HR", "DF", "CB",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -743,6 +743,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("state_difference.rs"),
         include_str!("../hot_store/durable_reader_bootstrap.rs"),
         include_str!("transfer_import_staging.rs"),
+        include_str!("../hot_store/cross_base_capture.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {
