@@ -60,7 +60,6 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -747,7 +746,7 @@ pub(crate) fn read_last_finalized_block(
     })
 }
 
-impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
+impl MultiParentCasperImpl {
     /// Waits for a finalizer cycle that started after this call to complete,
     /// and returns the LFB it leaves.
     pub async fn finalize(&self) -> Result<BlockMessage, CasperError> {
@@ -759,13 +758,13 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
 /// Trigger a finalization run if the new block crosses the finalization
 /// rate boundary. Free function (matches the rest of `engine/multi_parent_casper/*`
 /// module idiom — every other operation in this sub-module is a free
-/// function taking `this: &MultiParentCasperImpl<T>`).
+/// function taking `this: &MultiParentCasperImpl`).
 ///
 /// Promoted from inherent `impl` block during the engine::multi_parent_casper
 /// refactor (Phase-3+ cleanup). Caller:
 /// `block_admission::admit_handle_valid_block`.
-pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn update_last_finalized_block(
+    this: &MultiParentCasperImpl,
     new_block: &BlockMessage,
 ) -> Result<(), CasperError> {
     if this.casper_shard_conf.finalization_rate <= 0 {
