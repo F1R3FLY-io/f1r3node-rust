@@ -368,7 +368,6 @@ impl StructuralClosureLedgerV1 {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn count(&self, domain: ClosureDomainV1, digest: ObjectDigest) -> u64 {
         self.states
             .get_val_at(digest.as_bytes())

@@ -8290,6 +8290,296 @@ once.
 | GC-04 | Crash keeps retry authority (`CrashRetryAuthority`). In every state observed from a process crash, at any of the 18 publication points or after a completed publication, until the recovery that follows returns, if the catalog selects the old generation, the old generation is wholly present. Observed: crashes with the catalog on the old generation before and after the intent is written, a crash after the catalog swap, and a second crash after a recovery of the old generation's authority. Every crashed trial then recovers, publishes again if the catalog still selects the old generation, and settles. | `crash_before_publication_keeps_the_old_generation_for_retry` |
 | GC-05 | Operation roots share one protection (`OperationRootRoleQuotient`). Reader, export and import roots, each registered in `RetainedRootRegistryV1` with a generation lease on the exact admitted generation, yield the same closure seeds, registry revisions, root and lease identities, snapshot currency, release results, old-generation presence and final store bytes under the three rotations of the roles, while the registry's rows record the roles. The seeds are the retention manifest's roots plus the roots of the operations not yet released; registration writes no durable byte; publication keeps the old generation exactly while an operation still holds it, the first restart keeps it exactly while an operation to be released after that restart holds it, and the second restart finds it reclaimed; the final directory and catalog slot equal the control's. Observed: a root registered twice, an operation root that the manifest already seeds, every release point, and an old generation kept across publication. | `reader_export_and_import_roots_share_one_protection_quotient` |
 
+### Durable state transfer export (2026-11-11)
+
+Task 7939 transfers a durable state between nodes as a stream of its
+canonical objects. This slice, task 14302, builds the exporting side only: a
+session that pins one retained durable state and serves its closure as
+pages. Its code is
+[`transfer_export.rs`](../../../rspace++/src/rspace/persistence/durable/transfer_export.rs).
+Only unit tests call it until task `rspace-dag-transfer-trait-binding` serves
+its pages through the node. The importer, its persisted frontier and cold
+admission are later tasks. A page is an in-memory transfer encoding: it is
+never written to disk and has no magic number, and no persisted record, byte
+layout, root or wire message changes.
+
+**Terms.** The *closure* $`C(M)`$ of a state is the set of objects reachable
+from its semantic manifest $`M`$: the manifest, its three namespace roots,
+every DAG node below them, and every content blob that a node's endpoint
+names. The *stream* of $`M`$ is $`C(M)`$ in the export order defined below,
+and $`n = |C(M)|`$ is its length. A *position* $`q`$, with
+$`0 \le q \le n`$, is the number of leading objects of the stream that an
+importer already holds.
+
+**Opening a session.** `DurableAuthorityViewV1::open_export(root, limits)`
+takes three steps:
+
+1. Resolve the root as the durable state roots section describes, so that an
+   unknown root, a manifest with a legacy history root and a manifest of
+   another profile are refused with `UnknownRootError`, wrapped in
+   `TransferExportErrorV1::Open`.
+2. Take `read_handle_at` the resolved state. The handle is the pin. It holds
+   the admitted core of the view's generation, whose object store and closure
+   ledger never change, and one lease on that generation, which keeps
+   reclamation off its pack range (VR-01).
+3. Bind the session to the root's digest and the view's semantic profile id.
+   By ruling D1 the binding is the direct manifest root: no catalog
+   generation, store identity, bridge version or compatibility facet enters
+   it.
+
+The session holds the pin, the binding, the page limits, the traversal (a
+stack of references, a record of emitted shared objects and a cursor), one
+page buffer, the position of the buffered page, and the *served end*, the
+largest position up to which it has served.
+
+**Serving a position.** A token is a binding and a position. `page(token)`
+answers each request as follows.
+
+| Request | Answer |
+|---|---|
+| any token after `release_pin` | refused, `PinReleased` |
+| a binding other than the session's | refused, `BindingMismatch` |
+| a position beyond the served end | refused, `PositionNotServed` |
+| the position of the buffered page | the buffered page, unchanged |
+| the cursor | the next page |
+| any other position up to the served end | the page at that position; the traversal restarts at the manifest and advances to the position without copying |
+
+A session opened after a restart has served nothing, so it refuses a resume
+token of an earlier session at every position but 0. `release_pin` drops the
+handle, which returns the lease, and frees the buffers.
+
+**Page layout (transfer version 1).** Every integer is unsigned and
+little-endian. Write $`k`$ for the number of objects in a page and $`L_i`$ for
+the canonical length of its object $`i`$.
+
+| Offset | Width (bytes) | Field | Meaning |
+|---:|---:|---|---|
+| 0 | 8 | version | the transfer version, `1`; it names this layout and the export order below |
+| 8 | 32 | root | binding: the Blake2b-256 digest of the state's semantic manifest, which is the durable state root |
+| 40 | 16 | profile | binding: the `SemanticProfileId` of that manifest |
+| 56 | 8 | position | the stream position of the page's first object |
+| 64 | 8 | count | $`k`$, the number of object records that follow |
+| 72 | $`\sum_{i=1}^{k} (8 + L_i)`$ | objects | $`k`$ records; record $`i`$ is $`L_i`$ in 8 bytes followed by the $`L_i`$ canonical bytes of the object, and $`L_i \ge 32`$ |
+| $`72 + \sum_{i=1}^{k} (8 + L_i)`$ | 8 | checksum | the CRC32C of every preceding byte, in a 64-bit field whose high 32 bits are zero |
+
+A page is $`80 + \sum_{i=1}^{k} (8 + L_i)`$ bytes long. A page with
+$`k = 0`$ at position $`n`$ ends the stream. The checksum detects a torn or
+damaged page. It is not an identity: an importer authenticates every object
+by its Blake2b-256 digest against the reference that announced it.
+
+**Export order.** The order is a depth-first pre-order from the manifest. The
+manifest's children are its namespace roots in the order DataBag,
+ContinuationMap, JoinBag. A node's children are its content blob, if its
+endpoint is `Content`, and then its children by ascending edge byte. A blob
+has none. An object is emitted the first time the traversal reaches it, and
+later reaches are skipped. The order is a function of the DAG alone, so every
+session, every rewind, every catalog generation and every store that retains
+the state yields the same stream. It is parent-first: every object but the
+manifest is emitted after an object that references it.
+
+**Paging.** A page starts at the cursor and takes the next object while the
+page holds fewer than `max_page_objects` objects and the page, with that
+object's record and the checksum, stays within `max_page_bytes`. An object
+that does not fit an empty page is refused with `ObjectExceedsPage`.
+`TransferPageLimitsV1::new` refuses limits that admit no object: fewer than
+one object, or fewer than 120 bytes, the length of a page that holds one
+32-byte object.
+
+The traversal is the pushdown discipline of the closure verifier: a stack of
+references that starts with the manifest. Each page is filled as follows,
+where $`c`$ is the retained reference count defined in the next paragraph and
+`emitted_shared` is the record of emitted shared objects.
+
+```text
+fill_page(cursor):
+    write the header: version 1, root, profile, position = cursor, count = 0
+    while the stack is not empty:
+        top = the reference on top of the stack
+        if c(top) != 1 and top is in emitted_shared:
+            pop the stack and continue
+        if the page holds max_page_objects objects, or its length
+           + 8 + top.length + 8 exceeds max_page_bytes:
+            refuse with ObjectExceedsPage if the page holds no object
+            stop
+        bytes = load(top)        -- length and Blake2b-256 digest checked
+        pop the stack
+        push the references of bytes in reverse visiting order
+        if c(top) != 1: add top to emitted_shared
+        append top.length and bytes to the page; cursor = cursor + 1
+    write the count and the CRC32C of the page
+```
+
+`load` is `VerifiedDagState::load_object`, the authenticated read path, and
+the references come from `CanonicalObjectView::parse`, the existing child
+enumeration; no second parser exists.
+
+**Each object once.** Write $`U`$ for the union of the closures of all
+states that the store retains, $`r(o)`$ for the number of retained states
+whose manifest is the object $`o`$, and $`m(p, o)`$ for the number of
+references from the object $`p`$ to $`o`$, counted with multiplicity. The
+admitted closure ledger, `StructuralClosureLedgerV1`, holds for every object
+its retained-domain count
+
+```math
+c(o) \;=\; r(o) \;+\; \sum_{p \in U} m(p, o),
+```
+
+because admission credits each retained manifest once and credits the
+children of an object once per reference when the object first becomes
+active. The export records an emitted object only if $`c(o) \ne 1`$, and
+skips a stack entry only if its object is recorded.
+
+*Claim.* The stream of $`M`$ holds every object of $`C(M)`$ exactly once, in
+the order of the same traversal that records every emitted object.
+
+*Proof.* (i) Only objects of $`C(M)`$ are pushed: the manifest is the first
+entry, and every other entry is a reference of an emitted object. (ii) Every
+object of $`C(M)`$ is emitted. It is reachable from $`M`$, every reference of
+an emitted object is pushed, and an entry that reaches the top is either
+emitted or skipped, which happens only if its object was emitted before.
+(iii) No object is emitted twice. The DAG is acyclic, since the closure
+verifier refuses a cycle, so order the objects of $`C(M)`$ topologically,
+parents first, and assume that every object before $`o`$ is emitted at most
+once. If $`c(o) \ne 1`$, then $`o`$ is recorded at its first emission and
+skipped afterwards. If $`o = M`$, it is pushed only at the start, because no
+object references a manifest. Otherwise $`c(o) = 1`$ and $`o \ne M`$. Some
+$`p \in C(M) \subseteq U`$ references $`o`$, so $`r(o) = 0`$ and that single
+reference of $`p`$ is the only reference to $`o`$ in all of $`U`$. Each
+emission of $`p`$ pushes $`o`$ once, and $`p`$, which precedes $`o`$, is
+emitted at most once, so $`o`$ is pushed, and therefore emitted, at most
+once. (iv) The export and the traversal that records every object decide
+every stack entry alike. An entry of an object with $`c(o) \ne 1`$ is
+skipped by both exactly when that object was emitted before. By (iii), the
+only entry of an object with $`c(o) = 1`$ reaches the top before that object
+is emitted, so neither skips it. Both therefore emit the same sequence.
+$`\blacksquare`$
+
+**Memory.** A session holds one page buffer, whose capacity grows to at most
+`max_page_bytes` and never beyond it; the stack; the object being loaded; and
+the record of emitted shared objects. Give the manifest depth 0 and the
+namespace roots depth 1, and write $`h`$ for the largest depth at which the
+traversal expands a node of $`C(M)`$; $`h`$ is at most the number of nodes on
+the longest path below a namespace root. When the traversal expands a node at
+depth $`d`$, the stack holds at most the 2 namespace roots not yet visited, at
+most 255 unvisited children of each ancestor at depths 1 to $`d - 1`$, and the
+node's at most 256 children and its content blob, so the stack $`S`$ satisfies
+
+```math
+|S| \;\le\; 2 + 255\,(d - 1) + 257 \;=\; 255\,d + 4 \;\le\; 255\,h + 4,
+```
+
+in references of 40 bytes each. For the three shapes of the acceptance:
+
+- deep: a chain of $`h`$ binary branch nodes, like the 200 datums `a`, `aa`,
+  `aaa` and so on of the tests, leaves at most one unvisited sibling per
+  level, so $`|S| \le h + 4`$; the tests' chain visits each level's
+  terminator leaf before it descends and stays at 4 entries;
+- wide: a node of 256 children whose ancestors have no other unvisited
+  child gives $`|S| \le 2 + 257 = 259`$; the tests' node of 178 children
+  takes the stack to 180 entries;
+- shared: a shared subgraph enters the stack only through its parents'
+  children, so the bound holds unchanged, and a second entry of an emitted
+  shared object is popped without expansion.
+
+The record of emitted shared objects is a hash set with one 32-byte digest
+per emitted object whose count is not 1. It is the one deviation from "one
+page plus the traversal frontier", and exact once-only emission in a single
+pass needs it: without a record, a shared subgraph is emitted once per path
+that reaches it, which is exponential in the nesting of sharing, and
+recovering "already emitted" without memory takes a re-traversal per shared
+object. It is bounded by the number of objects of $`C(M)`$ whose count is not
+1, not by the size of the closure, and it stays empty for a state that shares
+no object within itself or with another retained state.
+
+**Cost.** Each emitted object costs one probe of the ledger's 32-byte key,
+one indexed read with the length and Blake2b-256 check, one parse and one
+copy into the page; a shared object adds one hash-set insertion. A whole
+stream is linear in $`|C(M)|`$, and a rewind to position $`q`$ loads and
+parses $`q`$ objects without copying them.
+
+**Decoding.** `TransferPageViewV1::parse(bytes, limits)` treats every length
+as untrusted. It checks, in this order, that the page is at least 80 bytes
+long (`TooShort`) and at most `max_page_bytes` (`TooLong`); that the
+checksum field's high half is zero (`ChecksumOutOfRange`) and that the
+CRC32C matches (`Checksum`); the version (`UnsupportedVersion`); that the
+count is at most `max_page_objects` (`TooManyObjects`); for each record, that
+its length field is present (`TruncatedObjectLength`), that the length is at
+least 32 (`ObjectTooShort`) and at most the bytes that remain
+(`ObjectOverrunsPage`); that no byte follows the last record
+(`TrailingBytes`); and that the position plus the count does not overflow
+(`PositionOverflow`). Each length is compared with the bytes present before
+it is used, and nothing is allocated from a declared length.
+
+**Changes outside the new module.** `StructuralClosureLedgerV1::count` was
+compiled only for tests. The session reads it, so one attribute in
+`closure.rs` is removed and the method is always compiled. The dead-code
+expectations that named task 14294 on the view's `resolve` and
+`read_handle_at` are removed as well: rustc treats the items of a module
+expected to be dead as live roots for the items they call, so once the export
+module calls these two methods their expectations can no longer be met. The
+export module's own expectation names task
+`rspace-dag-transfer-trait-binding`.
+
+**The tests.** The module `persistence::tests::transfer_export` holds a
+reference importer. It decodes every page with `TransferPageViewV1::parse`,
+checks the binding and the position, computes each object's Blake2b-256
+digest, accepts the manifest only first and only as the binding's root of the
+binding's profile, accepts any other object only if an accepted object
+announced it with the same length (parent-first) and it was not received
+before (once), and at the end page requires that nothing announced is
+missing.
+
+- `pages_carry_exactly_the_closure_once_parent_first_for_deep_wide_and_shared_states`
+  publishes, in one store, a deep state (200 datums `a`, `aa`, `aaa` and so
+  on, a chain of 200 node levels), a wide state (one datum per UTF-8 lead
+  byte, 178 children of one node, which is a Node256 branch, and 40 children
+  of another, a Node48), and a shared state (the same four joins on two
+  channels, so that both channels' join subtries are one object with
+  descendants that one node references twice, and two continuations, whose
+  sources are content blobs). With the checkpoint, the store retains four
+  states. Each state is exported in pages of at most 8192 bytes and 16
+  objects. For each, the importer's order equals an independent walk of the
+  store that records every object; the imported objects form a structurally
+  closed state with the walk's object and byte counts; and the session's
+  record holds exactly the objects whose retained reference count, computed
+  by the test from the four retained closures, is not 1. The pages and the
+  page buffer stay within the page limits, the walk's stack within the bound
+  above, and the export's stack capacity at most twice the walk's high-water
+  mark plus 4; the walk applies the export's stack discipline, so its
+  high-water mark is the export's. The checkpoint, whose three namespace
+  roots are one object, exports two objects.
+- `the_session_binding_is_the_root_digest_and_profile_and_other_bindings_are_refused`,
+  `a_pinned_state_stays_servable_while_successors_are_published` and
+  `serving_is_refused_after_the_pin_is_released_and_resume_tokens_do_not_survive_a_reopen`
+  witness the export-side clauses of DT-01, DT-04 and DT-05; they are listed
+  with the contract rows of the source-bound DAG transfer contract.
+- `resume_positions_serve_the_same_stream` requests an earlier page start, a
+  position inside a page, the last page, the end of the stream and the start
+  twice, and compares each answer with the page that the layout and the
+  export order define; a position beyond the end is refused.
+- `a_child_first_order_is_rejected_by_the_reference_importer` is the
+  committed red control. A test-side encoder, written from the layout table
+  alone, reproduces every exported page byte for byte. Re-encoded in the
+  reverse, child-first order, the same objects are refused at position 0;
+  with a parent and its child swapped they are refused at the child; with one
+  object twice, as a duplicate; and without the last object, at the end page.
+- `every_page_length_is_untrusted_bounded_and_checked` gives the decoder
+  twelve malformed pages, at least one per check above, each wrong only in
+  the checked field (a page altered after the checksum checks is resealed
+  with a fresh checksum), and requires the typed error with its exact
+  fields, while the unaltered page parses; the importer refuses a page of
+  another binding and a page at another position.
+- `page_limits_admit_one_object_at_least_and_an_oversized_object_is_refused`
+  covers the smallest limits, a page limit one byte below the manifest's
+  record (refused, again on a retry), a limit of exactly that record, and one
+  object per page.
+
+**The TX row.** TX is the durable state transfer family.
+
+| ID | Required property | Test |
+|---|---|---|
+| TX-01 | Exact closure, once, parent-first. For retained durable states that are deep (a chain of 200 node levels), wide (a Node256 and a Node48 branch) and shared (an object with descendants that one node references twice, and objects shared across states), the pages of an export session carry exactly the closure of the state's manifest, every object once, in the parent-first export order of transfer version 1 and within the page limits. The imported objects form a structurally closed state, and the session records exactly the closure's objects whose retained reference count is not 1. | `pages_carry_exactly_the_closure_once_parent_first_for_deep_wide_and_shared_states` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -8547,6 +8837,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-03 | `ExactOldPinsProtected` | `EXEC_ONLY` | P | Partially entailed (task 12437): `AcquireOldPin` requires `oldPresent`, and `Reclaim` requires `oldPins = {}`. The executable refinement obligation is that publication, startup and an explicit request all reclaim through `reclaim_reclamation_candidate`, which retires the old pack range only while no lease overlaps it, so that a lease on an older-epoch alias protects the same files, and that `acquire` then refuses a lease on the retired range with `Retired`. |
 | GC-04 | `CrashRetryAuthority` | `EXEC_ONLY` | P | Partially entailed (task 12437): `PublicationBeforeReclamation` implies the invariant, and `Crash` and `Recover` leave `catalog` and `oldPresent` unchanged. The executable refinement obligation is that a process crash at each of the 18 publication points or after publication, a recovery, a second crash and a second recovery never delete an old file while the catalog selects the old generation. The crash is simulated inside the test process: the writer, every lease and the registry handle are dropped, and the process-wide registry of a directory whose packs were retired stays. Loss of unsynchronized writes on power failure is not simulated. |
 | GC-05 | `OperationRootRoleQuotient` | `EXEC_ONLY` | P | Partially entailed (task 12437): the invariant states that the reader, export and import tokens have their roles, are not WAL ids, need the same object closure and the exact generation, and need no WAL bytes. The store realizes each role as a `RetainedRootRegistryV1` row with a generation lease on the exact admitted generation. The executable refinement obligation is that the role changes no closure seed, revision, lease identity, release, reclamation deferral or store byte. Reclamation does not consult the process-local `RetainedRootRegistryV1`, so the generation lease realizes `exactGeneration`; registration writes no durable byte and pins nothing beyond the exact generation, which realizes the false `walBytes`. |
+| TX-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14302): the closure, every object once and parent-first, carried by the pages of a pinned export of a retained durable state. `RSpaceDagStateTransfer.tla` states the transfer contract over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents canonical objects, the export order or the page layout. |
 
 ## Generator discipline
 
@@ -9258,6 +9549,35 @@ PathMap aggregate takes its new manifest digest. No production code,
 persisted record kind, byte layout, magic number or file name changed. See
 the GC protection invariants as executable properties section.
 
+The 2026-11-11 durable state transfer export slice of task 7939 (task 14302)
+adds TX-01, the first TX row, so the catalog/derivation/binding registry now
+contains **252** IDs. On an export of the candidate tree, which already holds
+the durable state root, empty durable store genesis, direct manifest identity
+and GC protection slices, the eight tests of the new file passed in debug and
+in release together with the generation-checkpoint manifest test, and the
+whole library test target passed with 948 tests in both profiles (10
+ignored). A temporary print in TX-01, run once in release on the tree this
+slice was written on and then removed, measured the footprint of the four
+exports, whose closures hold 2, 401, 622 and 633 objects. The walk that
+applies the export's stack discipline peaked at 4 stack entries on the deep
+state's chain of 200 node levels and at 180 on the wide and shared states,
+whose largest node has 178 children, where the export's stacks had capacities
+of 8 and 182 entries. The page buffer stayed within its 8192-byte limit, and
+the record of emitted shared objects held 1, 3, 4 and 5 digests. One
+production control made the exporter write each page's records in reverse
+order, children before parents, with valid lengths, count and checksum. It
+made seven of the eight tests fail: six because the reference importer
+refused the first record of a first page as not parent-first, at position 0,
+and the page-length test because its list of importer outcomes changed; the
+limits test, whose imported pages each hold one object, passed. The exporter
+was then restored from the candidate tree, and the eight tests passed again.
+Clippy of `rspace_plus_plus` with every target lists no finding in the files
+of this slice, and `rustfmt --check` passes on its Rust files. The
+workspace-regression registry hashes the manifest test's file and the
+persistence test module, both of which change, so it was regenerated, and the
+PathMap aggregate takes its new manifest digest. No persisted byte, record
+kind, root, identity or wire message changed.
+
 ## Caller-authority contract (2026-09-06)
 
 **Status: verified abstract contract; legacy caller observations exercised; durable
@@ -9886,6 +10206,25 @@ task, not currently passing runtime evidence.
 | DT-09 | `AdoptionRequiresAdmittedClosure` | DT-M11 | Future 7939 and 7940: `PreserveCurrent` and `Activate` publish only an admitted, sealed closure of a supported session; a stale activation is rejected by the generation CAS. |
 | DT-10 | `NoSessionHoldsNothing` | DT-M12 | Future 7939 and 7940: abort before admission discards staging and token and leaves the capability unused; after admission the capability is consumed through the FFI abort (`AbortConsumesWithoutPublishing`), never by dropping the token. |
 | DT-11 | the seven inherited invariants, `AffineLifecycleIsPreserved` | the three affine mutants; DT-W15; DT-P01 | Existing affine evidence (LM-10); no new property. |
+
+### Export-side witnesses (task 14302, 2026-11-11)
+
+Task 14302 builds the exporting side of task 7939, described in the durable
+state transfer export section. Its tests witness the export-side clauses of
+three rows above. The rows stay **Future**: the importer, its persisted
+frontier, cold admission and the node binding are later tasks, and the
+clauses in the last column are not realized under ruling D1, which binds a
+session to the direct manifest root. The binding digest is therefore the
+digest of the semantic manifest, not a digest of the coupled closure, its
+physical representation and its catalog generation as the session
+coordinates above describe, and the session holds no bridge version. The
+transfer version is the page layout's version, 1.
+
+| ID | Witness test | Export-side clause witnessed | Clause not realized |
+|---|---|---|---|
+| DT-01 | `the_session_binding_is_the_root_digest_and_profile_and_other_bindings_are_refused` | A session binds exactly the manifest digest and the profile, and every page carries both. A token bound to another retained root, to the same root under another profile, or to a root the store does not retain is refused, and so is opening a session for a root the store does not retain. | No generation enters the binding: at a later catalog generation the same state has the same binding and the same pages, so a token is not refused against a restamp and there is no generation to refresh. |
+| DT-04 | `a_pinned_state_stays_servable_while_successors_are_published`, `serving_is_refused_after_the_pin_is_released_and_resume_tokens_do_not_survive_a_reopen` | Pages are served only under the session's own pin. While the owner publishes two successors, and after owner teardown and a reopen, the pinned state's pages are served unchanged. After `release_pin` every position is refused, and a session opened after a reopen refuses a resume token of an earlier session. | A session object that survives a reopen within one process keeps its pin and keeps serving; only a release or a restart drops the pin. Lease expiry does not exist. |
+| DT-05 | `a_pinned_state_stays_servable_while_successors_are_published` | While a session holds its pin, `retire_pack_range_if_unleased` refuses the pinned generation's pack range after owner teardown and a reopen, and the session's lease is the only one left; releasing the pin leaves none. | Reclamation itself, tasks 7943 and 7944, is not exercised. |
 
 ## Refinement completion rule
 

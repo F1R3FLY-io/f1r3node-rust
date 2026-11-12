@@ -28,6 +28,15 @@ mod recovery;
 mod rspace_authority;
 mod startup;
 mod state_root;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only unit tests export a durable state until task \
+                  rspace-dag-transfer-trait-binding serves transfer pages through it"
+    )
+)]
+mod transfer_export;
 mod view_reader;
 
 pub(crate) use admission::{
@@ -132,6 +141,11 @@ pub(crate) use state_root::{
     resolve_retained_state,
 };
 #[cfg(test)]
+pub(crate) use transfer_export::{
+    DurableExportSessionV1, TransferBindingV1, TransferExportErrorV1, TransferPageFormatErrorV1,
+    TransferPageLimitsV1, TransferPageViewV1, TransferTokenV1,
+};
+#[cfg(test)]
 pub(crate) use view_reader::DurableViewReaderV1;
 
 /// Restart-recovered semantic authority exposed as a read-only view.
@@ -210,14 +224,6 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
         })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only unit tests take a read handle at a resolved state until task 14294 \
-                      resets the durable history repository through it"
-        )
-    )]
     pub(crate) fn read_handle_at(
         &self,
         resolved: &state_root::ResolvedDurableStateV1,
@@ -234,14 +240,6 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
         })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only unit tests resolve a durable state root until task 14294 reads the \
-                      durable history repository through it"
-        )
-    )]
     pub(crate) fn resolve(
         &self,
         root: state_root::DurableStateRootV1,

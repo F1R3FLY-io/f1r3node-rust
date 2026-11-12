@@ -64,3 +64,4 @@ mod windows_durable_authority;
 mod durable_store_genesis;
 #[cfg(unix)]
 mod gc_protection_properties;
+mod transfer_export;

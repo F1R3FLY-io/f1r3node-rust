@@ -420,6 +420,7 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("GC-03", "exact_old_generation_pins_defer_reclamation_until_released"),
     ("GC-04", "crash_before_publication_keeps_the_old_generation_for_retry"),
     ("GC-05", "reader_export_and_import_roots_share_one_protection_quotient"),
+    ("TX-01", "pages_carry_exactly_the_closure_once_parent_first_for_deep_wide_and_shared_states"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {
