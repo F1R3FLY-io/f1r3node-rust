@@ -739,6 +739,8 @@ fn positive(start: u64, end: u64) -> Option<u64> {
     end.checked_sub(start).filter(|delta| *delta > 0)
 }
 
+fn non_negative(start: u64, end: u64) -> Option<u64> { end.checked_sub(start) }
+
 fn wall_ns(started: Instant) -> u64 {
     let elapsed = u64::try_from(started.elapsed().as_nanos()).expect("an elapsed time fits u64");
     positive(0, elapsed).expect("a timed routine takes a positive wall time")
@@ -748,8 +750,8 @@ fn phase_durations(readings: &[Reading; 6]) -> Option<[[u64; 3]; 5]> {
     let mut durations = [[0; 3]; 5];
     for (duration, pair) in durations.iter_mut().zip(readings.windows(2)) {
         *duration = [
-            positive(pair[0].thread, pair[1].thread)?,
-            positive(pair[0].process, pair[1].process)?,
+            non_negative(pair[0].thread, pair[1].thread)?,
+            non_negative(pair[0].process, pair[1].process)?,
             positive(pair[0].wall, pair[1].wall)?,
         ];
     }
@@ -1327,8 +1329,9 @@ fn time(cell: ScaleCell, cell_text: &str, fixture_directory: &Path, scratch: &Pa
         .iter()
         .enumerate()
         .map(|(commit, sample)| {
-            phase_durations(&sample.readings)
-                .unwrap_or_else(|| panic!("a phase clock of commit {commit} did not advance"))
+            phase_durations(&sample.readings).unwrap_or_else(|| {
+                panic!("commit {commit}: a clock went backwards or the wall clock did not advance")
+            })
         })
         .collect::<Vec<_>>();
     for (commit, (sample, durations)) in run.samples.iter().zip(&durations).enumerate() {
@@ -1534,7 +1537,10 @@ fn check_time(records: &[Record], cell: &ScaleCell, cell_text: &str) -> Vec<Stri
         assert_eq!(record.get("label"), cell.label(commit).name());
         check_target(record);
         for key in SAMPLE_KEYS.into_iter().filter(|key| key.ends_with("_ns")) {
-            assert!(record.integer(key) > 0, "commit {commit} has a zero {key}");
+            let duration = record.integer(key);
+            if key.ends_with("_wall_ns") {
+                assert!(duration > 0, "commit {commit} has a zero {key}");
+            }
         }
         assert!(record.integer("rss_after") > 0);
     }
@@ -1653,6 +1659,9 @@ fn scaling_harness_is_deterministic_and_fails_closed() {
     assert_eq!(positive(7, 7), None);
     assert_eq!(positive(8, 7), None);
     assert_eq!(positive(7, 8), Some(1));
+    assert_eq!(non_negative(7, 7), Some(0));
+    assert_eq!(non_negative(8, 7), None);
+    assert_eq!(non_negative(7, 8), Some(1));
     assert!(counted(measure_allocations(|| ()).1).is_none());
     assert!(counted(measure_allocations(|| Vec::<u8>::with_capacity(1)).1).is_some());
     assert_eq!(classify_filesystem(TMPFS_MAGIC), None);
@@ -1716,4 +1725,44 @@ fn scaling_harness_is_deterministic_and_fails_closed() {
         );
     }
     fs::remove_dir_all(scratch.path()).expect("remove the scaling harness scratch directory");
+}
+
+#[test]
+fn phase_durations_accept_zero_cpu_time_and_fail_closed() {
+    const READINGS: [[u64; 3]; 6] = [
+        [100, 1_000, 10_000],
+        [101, 1_020, 10_300],
+        [103, 1_050, 10_700],
+        [106, 1_090, 11_200],
+        [110, 1_140, 11_800],
+        [115, 1_200, 12_500],
+    ];
+    const ADVANCING: [[u64; 3]; 5] =
+        [[1, 20, 300], [2, 30, 400], [3, 40, 500], [4, 50, 600], [5, 60, 700]];
+    let durations = |readings: [[u64; 3]; 6]| {
+        phase_durations(&readings.map(|[thread, process, wall]| Reading {
+            thread,
+            process,
+            wall,
+        }))
+    };
+    assert_eq!(durations(READINGS), Some(ADVANCING));
+    for (phase, [thread, process, wall]) in ADVANCING.into_iter().enumerate() {
+        let (start, end) = (READINGS[phase], READINGS[phase + 1]);
+        let cases = [
+            ("the thread CPU clock stalls", [start[0], end[1], end[2]], Some([0, process, wall])),
+            ("the process CPU clock stalls", [end[0], start[1], end[2]], Some([thread, 0, wall])),
+            ("both CPU clocks stall", [start[0], start[1], end[2]], Some([0, 0, wall])),
+            ("the wall clock stalls", [end[0], end[1], start[2]], None),
+            ("the wall clock goes backwards", [end[0], end[1], start[2] - 1], None),
+            ("the thread CPU clock goes backwards", [start[0] - 1, end[1], end[2]], None),
+            ("the process CPU clock goes backwards", [end[0], start[1] - 1, end[2]], None),
+        ];
+        for (case, changed_end, expected) in cases {
+            let mut readings = READINGS;
+            readings[phase + 1] = changed_end;
+            let measured = durations(readings).map(|durations| durations[phase]);
+            assert_eq!(measured, expected, "the durations of phase {phase} when {case}");
+        }
+    }
 }

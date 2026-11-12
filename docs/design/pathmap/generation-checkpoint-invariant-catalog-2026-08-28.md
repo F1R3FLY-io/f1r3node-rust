@@ -6481,18 +6481,56 @@ commit. Time mode runs no observer and reads no `/proc/self/io`, so it reports
 six zeros.
 
 **Probes fail closed.** A probe that cannot measure stops the child; it never
-reports a zero.
+reports a zero in place of a measurement. A CPU duration of zero is a
+measurement, not a failure to measure (the paragraph of 2026-11-12 below).
 
 | Probe | Source | Refused |
 |---|---|---|
 | I/O | `LinuxIo::parse` of `/proc/self/io`, read whole into a 512-byte stack buffer | a missing counter, or a read that fills the buffer |
 | Memory | `status_bytes` of `VmRSS`, `VmHWM` and `VmSwap` in `/proc/self/status`, read whole into an 8 KiB stack buffer | a missing field, or a read that fills the buffer |
-| Clocks | `clock_gettime` of `CLOCK_THREAD_CPUTIME_ID` and `CLOCK_PROCESS_CPUTIME_ID`, and `Instant` for wall time | a failed call, or a phase whose reading does not advance |
+| Clocks | `clock_gettime` of `CLOCK_THREAD_CPUTIME_ID` and `CLOCK_PROCESS_CPUTIME_ID`, and `Instant` for wall time | a failed call, a phase across which a CPU-time reading decreases, or a phase across which the wall reading does not advance |
 | Allocations | the counting allocator's thread-local measurement | a probed phase that counts no allocation |
 | Scratch | the `statfs` magic of the fixture and scratch directories | tmpfs or ramfs |
 
 The `/proc` readers allocate nothing when they succeed, so a probe never
 perturbs the allocation counts that it brackets.
+
+**CPU durations may be zero (2026-11-12, task 14369).** Until this date the
+contract required every nanosecond field of a `SCALE_SAMPLE` record to be
+positive: the harness refused a phase across which any of the three clocks did
+not advance, and the driver refused a zero in any of the 15 fields. That rule
+refused real measurements. pgmcp artifact 1753 records a probe on the
+benchmark host (kernel 7.2.15, clocksource `tsc`,
+`CONFIG_IRQ_TIME_ACCOUNTING=y`). Each of its runs took 2,000,000 pairs of
+consecutive readings in the harness's order, on a pinned CPU, while a gate
+ran. With no work between the two readings of a pair, the thread CPU clock did
+not advance in 1,080 pairs and the process CPU clock in 1,390; with about 1.5
+microseconds of work between them, in 277 and 541 pairs. No CPU-time reading
+went backwards, and the wall clock advanced in every pair, by at least
+1,021 ns. Why the kernel reports equal readings is not established, and the
+rule does not depend on the cause. The rule is now: the thread and the process
+CPU duration of a phase are the end reading minus the start reading, zero is a
+measurement, and an end reading below the start reading is refused; the wall
+duration of a phase stays positive, and a wall clock that does not advance is
+refused. Only the accepted values of the ten CPU fields of `SCALE_SAMPLE`
+widen, from positive to non-negative. The tags, the fields, their order and
+the version `v1` are unchanged, and every record that the old rule accepts is
+accepted by the new rule with the same values. The rule is stated in three
+places, which changed together: the harness (`phase_durations` and the
+parent's `check_time`), the driver (`convert_field`, whose self-test now
+accepts a zero thread and a zero process CPU duration and refuses a zero wall
+duration) and this subsection, where the fail-closed sentence, the Clocks row
+and the property text of SW-04 are restated. SW-04 keeps its test; the unit
+test `phase_durations_accept_zero_cpu_time_and_fail_closed` checks each clock
+of each phase on synthetic readings. The decision population of 2026-11-03
+satisfies both rules: none of its 714 time processes was refused, so every
+sample record passed the old rule and therefore passes the new one, and no CPU
+column of its
+[process summary](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03-process-summary.tsv)
+holds a zero (the smallest per-process `thread_ns` is 403,510 ns and the
+smallest per-phase median is 6,933 ns). The analysis is unchanged: a zero
+phase duration enters only sums, medians and differences, and the log-log fit
+still refuses a process statistic that is not positive.
 
 **Scale limits.** Cold admission, the cold-checked acquire and the generation
 publisher's preflight are the only checks of the durable limits; a trusted
@@ -6588,7 +6626,7 @@ group or others can open fails the synthetic child.
 | SW-01 | Current growth. At each key count every commit passes the verify routine, and the deactivate-first control expands exactly $`\lvert \mathrm{cl}(B) \rvert + \lvert \mathrm{cl}(T) \rvert`$ objects, $`2 \lvert \mathrm{cl}(B) \cap \mathrm{cl}(T) \rvert`$ more than the trusted commit. The smallest excess grows strictly from each key count to the next. | `trusted_commit_work_is_the_changed_frontier_under_geometric_current_growth` |
 | SW-02 | History growth. Every commit passes the verify routine, and each commit's current and retained work is the same at every history size and for both writers. The test prints each commit's metadata bytes for both writers, and from 64 historical states up the V1 manifest is larger than the V2 step at every commit. | `trusted_commit_work_is_unchanged_by_geometric_history_growth` |
 | SW-03 | Last-reference deletion. The deleted closure is the part of $`\mathrm{cl}(B)`$ off the manifest, the namespace roots and every kept key's search path. It is disjoint from $`\mathrm{cl}(T)`$, holds each deleted key's leaf, and has between $`m`$ and $`2m - 1`$ objects. The retained frontier is exactly the new path $`\mathrm{cl}(T) \setminus \mathrm{cl}(B)`$, and after the commit every object of $`\mathrm{cl}(B) \setminus \mathrm{cl}(T)`$ has current count zero and a positive retained count. Every commit passes the verify routine. | `last_reference_deletion_expands_exactly_the_deleted_closure` |
-| SW-04 | Harness determinism and fail-closed probes. A `/proc/self/io` copy that lacks any of `rchar`, `wchar`, `syscr`, `syscw`, `read_bytes` and `write_bytes`, or is truncated anywhere before the last of those values, is refused, as is a status copy that lacks `VmRSS`, `VmHWM` or `VmSwap`, and a `/proc` read that fills its buffer. Equal or decreasing clock readings, a zero allocation count, and tmpfs and ramfs are refused. 27 malformed cells are refused, and the schedule permutation is a bijection for every length up to 64 under four seeds. For each of the U, E and L cells, a build child prints a header and a fixture record; two verify children print the same records except the 32 per-phase probe fields and the process record; and a time child prints one sample per commit, with the labels in order, every nanosecond field positive, zero probes and the verify children's target chain. In E only the reclaim commit unlinks files, and they include `reclaim.v1`. | `scaling_harness_is_deterministic_and_fails_closed` |
+| SW-04 | Harness determinism and fail-closed probes. A `/proc/self/io` copy that lacks any of `rchar`, `wchar`, `syscr`, `syscw`, `read_bytes` and `write_bytes`, or is truncated anywhere before the last of those values, is refused, as is a status copy that lacks `VmRSS`, `VmHWM` or `VmSwap`, and a `/proc` read that fills its buffer. Decreasing clock readings, equal wall-clock readings, a zero allocation count, and tmpfs and ramfs are refused; equal CPU-time readings give a duration of zero. 27 malformed cells are refused, and the schedule permutation is a bijection for every length up to 64 under four seeds. For each of the U, E and L cells, a build child prints a header and a fixture record; two verify children print the same records except the 32 per-phase probe fields and the process record; and a time child prints one sample per commit, with the labels in order, every wall nanosecond field positive, every CPU nanosecond field a canonical integer, zero probes and the verify children's target chain. In E only the reclaim commit unlinks files, and they include `reclaim.v1`. | `scaling_harness_is_deterministic_and_fails_closed` |
 
 **The results (task 11990).** The preregistered measurement is pgmcp experiment
 446, and it asks the question that opens this section. Its decision population,

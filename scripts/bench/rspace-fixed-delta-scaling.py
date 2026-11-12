@@ -253,7 +253,7 @@ def convert_field(tag, name, value):
     if INTEGER_PATTERN.fullmatch(value) is None or int(value) > U64_MAX:
         raise MalformedRecord(f"{tag} {name}={value!r} is not an unsigned integer")
     number = int(value)
-    if tag == "SCALE_SAMPLE" and name.endswith("_ns") and number == 0:
+    if tag == "SCALE_SAMPLE" and name.endswith("_wall_ns") and number == 0:
         raise MalformedRecord(f"{tag} {name} is not positive")
     if name == "hwm_reset" and number > 1:
         raise MalformedRecord(f"{tag} hwm_reset={number} is neither 0 nor 1")
@@ -1631,6 +1631,13 @@ def refuses(action, error_type, message):
     raise AssertionError(message)
 
 
+def accepts(action, error_type, message):
+    try:
+        return action()
+    except error_type as error:
+        raise AssertionError(f"{message}: {error}") from None
+
+
 def replaced(line, old, new):
     require(old in line, f"{old!r} does not occur in the record")
     return line.replace(old, new, 1)
@@ -1836,6 +1843,11 @@ def check_record_contract():
     }
     for tag, values in valid.items():
         require(parse_record(format_record(tag, values)) == (tag, values), f"{tag} does not round-trip")
+    for name in ("seal_thread_ns", "seal_process_ns"):
+        sample = dict(valid["SCALE_SAMPLE"], **{name: 0})
+        parsed = accepts(lambda: parse_record(format_record("SCALE_SAMPLE", sample)), MalformedRecord,
+                         f"refused a SCALE_SAMPLE whose {name} is zero")
+        require(parsed == ("SCALE_SAMPLE", sample), f"a SCALE_SAMPLE whose {name} is zero does not round-trip")
     line = format_record("SCALE_VERIFY", valid["SCALE_VERIFY"])
     fields = line.split("\t")
     target = valid["SCALE_VERIFY"]["target"]
@@ -1859,7 +1871,7 @@ def check_record_contract():
         replaced(line, f"\ttarget={target}\t", f"\ttarget={target[:-2]}\t"),
         replaced(line, "\tunlinked=-", "\tunlinked=pack-1;index-1"),
         replaced(line, "\tunlinked=-", "\tunlinked=index-1;;pack-1"),
-        format_record("SCALE_SAMPLE", dict(valid["SCALE_SAMPLE"], seal_thread_ns=0)),
+        format_record("SCALE_SAMPLE", dict(valid["SCALE_SAMPLE"], seal_wall_ns=0)),
         format_record("SCALE_PROCESS", dict(valid["SCALE_PROCESS"], hwm_reset=2)),
         format_record("SCALE_PROCESS", dict(valid["SCALE_PROCESS"], filesystem="tmpfs")),
         format_record("SCALE_PROCESS", dict(valid["SCALE_PROCESS"], mode="build")),
@@ -1900,6 +1912,13 @@ def check_record_contract():
     timing_header = ("SCALE_HEADER", {"mode": "time", "cell": text})
     timing = synthetic_process("time", len(labels))
     validate_child_records("time", cell, [timing_header, *samples, ("SCALE_PROCESS", timing)])
+    stalled = [*samples[:-1], ("SCALE_SAMPLE", dict(samples[-1][1], seal_thread_ns=0))]
+    printed = terse_output([format_record(*record)
+                            for record in (timing_header, *stalled, ("SCALE_PROCESS", timing))])
+    timed = accepts(lambda: validate_child_records("time", cell, child_records(printed)), RecordError,
+                    "refused a time child with one zero thread CPU duration")
+    require([commit["seal_thread_ns"] for commit in timed["commits"]].count(0) == 1
+            and len(timed["commits"]) == len(labels), "a zero thread CPU duration did not reach the commits")
     for probe in PROCESS_PROBE_KEYS:
         refuses(lambda: validate_child_records("time", cell, [timing_header, *samples,
                                                                 ("SCALE_PROCESS", dict(timing, **{probe: 1}))]),

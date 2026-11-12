@@ -1032,6 +1032,20 @@ $ python3 -I derive.py . target/perf/logs/7929 <new work directory> <new output 
 The run takes about five seconds. `-I` isolates the interpreter from the environment and from the user's site
 packages.
 
+**Note of 2026-11-12 (task 14369): the repository argument.** The driver in the tree is no longer the measured
+driver: `scripts/bench/rspace-fixed-delta-scaling.py` now accepts a `SCALE_SAMPLE` record whose thread or process CPU
+duration is zero (the catalog's harness subsection states the rule and its reason). Run from a tree that holds the
+changed driver, with `.` as the first argument, the program therefore stops at `load_driver` with `refused:
+scripts/bench/rspace-fixed-delta-scaling.py differs from the source that the collection recorded`, as section 8
+intends. To reproduce the files, pass a checkout of commit `941ff07d821f9b7b5e8dc5d0a8e62310c328b32c` as the first
+argument instead; the program reads only the three driver sources from it. No figure, no file and no line of the
+program changed. Checked on 2026-11-12 against the archived decision bundle, for `load_driver` and `regenerate`:
+the three sources of the measured commit regenerate the four population files byte for byte and the three summaries
+as committed; the changed tree is refused as quoted; and a scratch script that calls the program's functions without
+the digest check shows that the changed driver regenerates the same bytes, because no archived sample record holds a
+zero. The manifest part of the program was not rerun, because local copies of archived files were gone by then
+(Durability, below).
+
 **Why the output is byte-identical.** Every input is pinned:
 
 - the decision bundle by its digest;
