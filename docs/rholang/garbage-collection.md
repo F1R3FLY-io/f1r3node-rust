@@ -239,6 +239,93 @@ therefore cannot delete an installed entry.
 trapped-set so ids from an aborted deploy cannot be swept against a
 successor deploy's hot store.
 
+## GC Roots: Pinning from Rust-Side Callers
+
+Some Rust-side callers hold references to unforgeable names that H1 would
+otherwise classify as scope-trapped. The canonical case is an exploratory
+deploy that **predicts** a `GPrivate` id via `Tools::unforgeable_name_rng`
+(seeded from the deploy's RNG) and later reads on that channel; if the
+sweep runs between the deploy that minted the name and the read, the data
+is gone and the read blocks forever.
+
+The sweep's deletion set is `drained_trapped_ids ∩ ¬pinned`, where `pinned`
+is a counted registry owned by each `ISpace`. Rust-side callers pin an id
+for the lifetime of a reference they hold.
+
+### API
+
+`rspace++/src/rspace/gc_roots.rs`:
+
+- `GcRootRegistry::new() -> Arc<Self>`
+- `GcRootRegistry::pin_by_key(&Arc<Self>, key: Vec<u8>) -> GcRootHandle`
+- `GcRootRegistry::is_pinned_by_key(&self, key: &[u8]) -> bool`
+- `GcRootRegistry::pinned_count(&self) -> usize`
+- `GcRootHandle::release(self)` / `impl Drop for GcRootHandle`
+
+Semantics:
+
+- **Ref-counted.** Pinning the same key twice holds refcount 2; both drops
+  must occur before the key becomes sweep-eligible again. Concurrent pins
+  across threads compose.
+- **RAII.** Dropping a `GcRootHandle` releases the pin. `release()` is an
+  explicit early-release equivalent.
+- **No-op unpin on unknown.** Releasing a never-pinned key is a no-op in
+  release builds; `debug_assert!` fires in debug to catch mixed manual +
+  Drop release.
+- **Weak reference to the registry.** Handles hold `Weak<GcRootRegistry>`
+  so long-lived handles don't keep a dropped space's registry alive.
+
+`ISpace::gc_roots(&self) -> Arc<GcRootRegistry>` returns the space's
+registry. `RSpace`, `ReplayRSpace`, and `ReportingRspace` override to
+return their owned registry; `ChargingRSpace` in the rholang runtime
+forwards to the wrapped space. The trait default returns a fresh empty
+registry — matches the default no-op `sweep_channels`.
+
+The rholang wrapper
+`rholang::rust::interpreter::garbage::pin_unforgeable(&Arc<GcRootRegistry>, &Par)`
+returns `Option<GcRootHandle>`, `None` when the par is not a bare
+`GPrivate`. Sister helper `is_unforgeable_pinned(registry, par)` mirrors the
+predicate. The API accepts `&Par` so future extensions (forgeable channels,
+bundle-wrapped unforgeables) do not require caller signature changes.
+
+### Usage pattern
+
+```rust
+use rholang::rust::interpreter::garbage::pin_unforgeable;
+
+let predicted_chan: Par = /* bare GPrivate predicted via unforgeable_name_rng */;
+let roots = runtime.reducer.space.gc_roots();
+let _pin = pin_unforgeable(&roots, &predicted_chan);
+// run the deploy that mints `predicted_chan`, then read from it…
+// `_pin` drops here, releasing the pin for the next sweep.
+```
+
+### Play / replay determinism
+
+Pins are Rust-side state and do not flow through the Rholang deploy payload.
+The sweep's deletion set depends on pin state at each `create_checkpoint`;
+a play/replay root agreement therefore requires the same pin state on both
+sides. Current callers — exploratory deploys using
+`capture_results_with_name`, `play_exploratory_par`, oracle readers — run
+only in play contexts and do not participate in validation replay, so they
+do not need to mirror pins. Callers that pin during a deploy whose
+checkpoint gets replayed **must** mirror the pin onto the replay space's
+registry at the matching point; otherwise the replay sweep will delete what
+play's sweep skipped, and `check_replay_data` will fail.
+
+A durable pin protocol (trace-log event replayed into the registry) is a
+future extension; today the registry is explicitly ephemeral.
+
+### Scope exclusions
+
+- The registry is per-space; `RSpace::spawn()` gives the spawned space a
+  fresh empty registry. Callers that want shared pins across a spawn must
+  share the parent's `gc_roots` Arc explicitly.
+- Pins only protect against the scope-trapped sweep. They do not affect
+  any other rspace operation (produce, consume, install, soft-checkpoint,
+  reset) — a pinned entry is still freely deletable through the normal
+  consume path.
+
 ## Future Extensions (Separate Design Docs)
 
 - **H2: Bundle0 wrapping.** An occurrence of `x` wrapped only in

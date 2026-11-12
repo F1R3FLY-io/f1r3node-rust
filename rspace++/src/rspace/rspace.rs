@@ -24,6 +24,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use shared::rust::store::key_value_store::KeyValueStore;
 
+use crate::rspace::gc_roots::GcRootRegistry;
 use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::hot_store::HotStore;
 use crate::rspace::internal::Install;
@@ -89,6 +90,11 @@ pub struct RSpace<C, P, A, K> {
     // No DashMap entry() → no parking_lot shard contention per produce/consume.
     phase_a_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
+    // GC root pins. Rust-side callers that predict a trapped unforgeable's
+    // id (e.g., exploratory deploys using `Tools::unforgeable_name_rng`)
+    // hold a `GcRootHandle` here for the lifetime of the reference, and
+    // the sweep in ops_sweep skips any trapped id that is currently pinned.
+    pub gc_roots: Arc<GcRootRegistry>,
 }
 
 impl<C, P, A, K> RSpace<C, P, A, K>

@@ -562,7 +562,18 @@ impl RhoRuntime for RhoRuntimeImpl {
         // docs/rholang/garbage-collection.md.
         let drained = self.reducer.drain_trapped();
         if std::env::var("F1R3FLY_SCOPE_TRAPPED_GC").as_deref() == Ok("1") {
-            let trapped = trapped_channels_from_ids(drained);
+            // Rust-side callers (exploratory deploys, oracle readers, …) pin
+            // an unforgeable's id via `self.reducer.space.gc_roots()` for the
+            // lifetime of a reference they hold. The sweep must skip any such
+            // pinned id even if H1 classifies the binder as trapped, otherwise
+            // the rspace entries behind the reference disappear while the
+            // reference is still live. See docs/rholang/garbage-collection.md.
+            let roots = self.reducer.space.gc_roots();
+            let unpinned: Vec<Vec<u8>> = drained
+                .into_iter()
+                .filter(|id| !roots.is_pinned_by_key(id))
+                .collect();
+            let trapped = trapped_channels_from_ids(unpinned);
             if !trapped.is_empty() {
                 let _ = self.reducer.space.sweep_channels(trapped).await;
             }

@@ -379,6 +379,10 @@ where
         self.replay_rspace.sweep_channels(trapped_channels).await
     }
 
+    fn gc_roots(&self) -> std::sync::Arc<crate::rspace::gc_roots::GcRootRegistry> {
+        self.replay_rspace.gc_roots()
+    }
+
     async fn get_root(&self) -> Blake2b256Hash { self.replay_rspace.get_root().await }
 
     async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {

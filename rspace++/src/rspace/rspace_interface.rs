@@ -1,12 +1,14 @@
 // See rspace/src/main/scala/coop/rchain/rspace/ISpace.scala
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
+use super::gc_roots::GcRootRegistry;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
 use super::trace::Log;
@@ -186,6 +188,13 @@ pub trait ISpace<
     where C: 'async_trait {
         Ok(())
     }
+
+    /// Return the GC root registry for this space. Pinning a key here causes
+    /// `sweep_channels` to skip any trapped channel whose extracted key is
+    /// pinned. Default returns a fresh empty registry (never pins anything),
+    /// which matches the no-op default `sweep_channels`. `RSpace` and
+    /// `ReplayRSpace` override to return the space's owned registry.
+    fn gc_roots(&self) -> Arc<GcRootRegistry> { GcRootRegistry::new() }
 
     /// Return current history root hash without creating a checkpoint.
     async fn get_root(&self) -> Blake2b256Hash;

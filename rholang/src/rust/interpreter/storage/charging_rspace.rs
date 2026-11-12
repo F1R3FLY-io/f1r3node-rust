@@ -174,6 +174,12 @@ impl ChargingRSpace {
                 self.space.sweep_channels(trapped_channels).await
             }
 
+            fn gc_roots(
+                &self,
+            ) -> std::sync::Arc<rspace_plus_plus::rspace::gc_roots::GcRootRegistry> {
+                self.space.gc_roots()
+            }
+
             async fn get_root(&self) -> Blake2b256Hash { self.space.get_root().await }
 
             async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {

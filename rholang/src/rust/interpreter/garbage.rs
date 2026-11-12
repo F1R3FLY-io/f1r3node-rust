@@ -223,5 +223,34 @@ pub fn gprivate_bytes_if_bare(par: &Par) -> Option<&[u8]> {
     }
 }
 
+/// Pin the GPrivate id behind `par` in `registry`, returning an RAII handle.
+///
+/// Call from Rust-side code that predicts or otherwise holds a reference to
+/// an unforgeable name — for example an exploratory deploy that computes its
+/// return channel via `Tools::unforgeable_name_rng` and later reads from it.
+/// While the handle is live, `sweep_channels` on the same space skips this
+/// id even if it was classified as scope-trapped by `is_scope_trapped`.
+///
+/// Returns `None` when `par` is not a bare `GPrivate` (the only channel
+/// shape today's sweep considers). Callers who care about richer channel
+/// shapes should treat `None` as "nothing to pin" and proceed — the sweep
+/// would not have targeted those shapes anyway.
+pub fn pin_unforgeable(
+    registry: &std::sync::Arc<rspace_plus_plus::rspace::gc_roots::GcRootRegistry>,
+    par: &Par,
+) -> Option<rspace_plus_plus::rspace::gc_roots::GcRootHandle> {
+    gprivate_bytes_if_bare(par).map(|id| registry.pin_by_key(id.to_vec()))
+}
+
+/// Returns `true` iff `par` is a bare `GPrivate` whose id is currently pinned
+/// in `registry`. Mirrors `pin_unforgeable`'s acceptance predicate: non-bare
+/// pars return `false` (they can't be pinned, so they can't be "pinned").
+pub fn is_unforgeable_pinned(
+    registry: &rspace_plus_plus::rspace::gc_roots::GcRootRegistry,
+    par: &Par,
+) -> bool {
+    gprivate_bytes_if_bare(par).is_some_and(|id| registry.is_pinned_by_key(id))
+}
+
 #[cfg(test)]
 mod tests;
