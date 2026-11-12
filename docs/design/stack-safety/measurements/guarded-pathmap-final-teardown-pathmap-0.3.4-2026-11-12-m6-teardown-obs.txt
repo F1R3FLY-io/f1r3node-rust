@@ -1,0 +1,38 @@
+===== M6 realistic 256, five trials (50-m6-realistic-256.log)
+UTC start: 2026-11-12T02:57:18.185857066Z
+cwd: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/src/rspace++
+loadavg before: 6.91 14.44 15.65 8/4862 3021342
+command: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/scripts/heavy.sh taskset -c 27 env RSPACE_TEARDOWN_SHAPE=realistic RSPACE_TEARDOWN_SIZE=256 RSPACE_TEARDOWN_TRIALS=5 [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/target/release/deps/rspace_plus_plus-284e98559b92ff6f --exact rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement --ignored --test-threads=1 --nocapture
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=52839339
+TEARDOWN_OBS	shape=realistic	size=256	trial=1	values=256	elapsed_ns=52850961
+TEARDOWN_OBS	shape=realistic	size=256	trial=2	values=256	elapsed_ns=52714562
+TEARDOWN_OBS	shape=realistic	size=256	trial=3	values=256	elapsed_ns=52784606
+TEARDOWN_OBS	shape=realistic	size=256	trial=4	values=256	elapsed_ns=52879957
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 940 filtered out; finished in 0.27s
+
+exit status: 0
+loadavg after: 6.91 14.44 15.65 6/4859 3021407
+UTC end: 2026-11-12T02:57:18.491165806Z
+===== M6 line 16384, five trials (51-m6-line-16384.log)
+UTC start: 2026-11-12T02:57:18.492630957Z
+cwd: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/src/rspace++
+loadavg before: 6.91 14.44 15.65 8/4860 3021412
+command: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/scripts/heavy.sh taskset -c 27 env RSPACE_TEARDOWN_SHAPE=line RSPACE_TEARDOWN_SIZE=16384 RSPACE_TEARDOWN_TRIALS=5 [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/target/release/deps/rspace_plus_plus-284e98559b92ff6f --exact rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement --ignored --test-threads=1 --nocapture
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4287988
+TEARDOWN_OBS	shape=line	size=16384	trial=1	values=0	elapsed_ns=4313016
+TEARDOWN_OBS	shape=line	size=16384	trial=2	values=0	elapsed_ns=4318837
+TEARDOWN_OBS	shape=line	size=16384	trial=3	values=0	elapsed_ns=4332612
+TEARDOWN_OBS	shape=line	size=16384	trial=4	values=0	elapsed_ns=4324908
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 940 filtered out; finished in 0.04s
+
+exit status: 0
+loadavg after: 6.91 14.44 15.65 6/4861 3021438
+UTC end: 2026-11-12T02:57:18.568995142Z

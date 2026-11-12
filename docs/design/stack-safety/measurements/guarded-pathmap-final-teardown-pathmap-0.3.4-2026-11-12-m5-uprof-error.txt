@@ -1,0 +1,73 @@
+===== AMDuProfCLI collect: driver log of the one M5 attempt (60-uprof-m5-collect.log)
+UTC start: 2026-11-12T02:56:26.272948085Z
+cwd: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/src/rspace++
+perf_event_paranoid: 2
+loadavg before: 8.07 16.02 16.19 6/4854 3015002
+command: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/scripts/heavy.sh [ROOT]/usr/bin/AMDuProfCLI collect --config hotspots --timer-interval 1 --call-graph-mode fpo --call-graph-size 8192 --call-graph-depth 128 --affinity 27 --log-path [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/tmp -o [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/out/recordings/uprof-m5 [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/target/release/deps/guarded_matching_tests-c2d38880f7e4ed42 --exact selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds --test-threads=1 --nocapture
+[ROOT]/usr/bin/AMDuProfCLI
+Ignoring call graph mode fpo / dwarf as it is not supported with Hotspots and Threading analysis.
+WARNING: Option (--call-graph-depth) is not applicable with provided config, hence ignored.
+ERROR: Failed to start profiling. Access denied. (error code 0x80070005)
+
+
+	Log file is at: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/tmp/[USER]-AMDuProfCLI.log
+
+ERROR: Collection of profile data failed 
+exit status: 5
+loadavg after: 8.07 16.02 16.19 7/4853 3015158
+UTC end: 2026-11-12T02:56:26.487706116Z
+===== AMDuProfCLI tool log, complete (63-uprof-tool-log.txt). Its clock times are the host's local time (EST, UTC-0500, per 16-local-utc-offset.txt): the first session (21:47:17 local, 02:47:17 UTC) is the 'AMDuProfCLI report --help' query, the second (21:56:26 local, 02:56:26 UTC) is the M5 attempt
+===============================================================
+Started logging session [Wed Nov 11 21:47:17 2026] @[WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/tmp/[USER]-AMDuProfCLI.log
+===============================================================
+===============================================================
+Closed logging session
+===============================================================
+===============================================================
+Started logging session [Wed Nov 11 21:56:26 2026] @[WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/tmp/[USER]-AMDuProfCLI.log
+===============================================================
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #21 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4275][TID: 3015027][21:56:26]: Not a CPU [cpuidle]
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #11 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #9 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #7 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #28 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #18 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #5 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #26 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #16 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #3 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #24 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #14 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #1 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #22 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #12 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #30 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #20 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #10 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #8 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4275][TID: 3015027][21:56:26]: Not a CPU [cpufreq]
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #29 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #19 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #6 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #27 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #17 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #4 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #25 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #15 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #2 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #23 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #13 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #0 frequency range (1429008, 4561833)
+[PROFILE_UTILS][void fnPopulateDeviceInfo(AMDTSysDevicesInfoMapT&):4270][TID: 3015027][21:56:26]: CPU #31 frequency range (1429008, 4561833)
+[PROFILE_COMMON][void AMDTProfileSessionWriter::RecordTimestamp(TimestampDescriptor):1309][TID: 3015071][21:56:26]: This should not get called for PROFILE_STARTED...
+[CPU_PROFILING_CTRL][bool CaPerfEvent::ExcludeKernelSamples():209][TID: 3015071][21:56:26]: Setting the exclude_kernel attribute to 1
+[CPU_PROFILING_CTRL][HRESULT CaPerfEvent::startEvent(bool):739][TID: 3015071][21:56:26]: sys_perf_event_open failed groupFd(-1), cpu(0), pid(3015073), cnt(0)
+[CPU_PROFILING_CTRL][HRESULT CaPerfEvent::startEvent(bool):752][TID: 3015071][21:56:26]: sys_perf_event_open failed - Permission denied.
+[CPU_PROFILING_CTRL][virtual HRESULT CaPerfProfiler::startProfile(bool):245][TID: 3015071][21:56:26]: Error in startProfile, ret(-2147024891)
+[PROFILE_COMMON][ExtractError:2196][TID: 3015071][21:56:26]: Error occured encountered for [CPU PROFILE]: Failed to start profiling. Access denied. (error code 0x80070005)
+
+
+===============================================================
+Closed logging session
+===============================================================

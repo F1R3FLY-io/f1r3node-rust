@@ -1,0 +1,37 @@
+===== M5 unprofiled run under GNU time (52-m5-wall-time.log)
+UTC start: 2026-11-12T02:57:04.977442672Z
+cwd: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/src/rspace++
+loadavg before: 7.82 15.00 15.84 4/4851 3020669
+command: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/scripts/heavy.sh taskset -c 27 [ROOT]/usr/bin/time -v [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/target/release/deps/guarded_matching_tests-c2d38880f7e4ed42 --exact selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds --test-threads=1 --nocapture
+
+running 1 test
+test selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 13.18s
+
+	Command being timed: "[WORKSPACE_ROOT]/target/scratch/session-401d0c58/c44/w14343/target/release/deps/guarded_matching_tests-c2d38880f7e4ed42 --exact selector_and_enumerator_are_stack_safe_at_twenty_thousand_binds --test-threads=1 --nocapture"
+	User time (seconds): 12.98
+	System time (seconds): 0.13
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:13.18
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 172656
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 40685
+	Voluntary context switches: 3
+	Involuntary context switches: 61
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
+exit status: 0
+loadavg after: 6.91 14.44 15.65 7/4862 3021335
+UTC end: 2026-11-12T02:57:18.181113173Z
