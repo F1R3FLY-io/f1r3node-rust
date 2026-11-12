@@ -85,6 +85,8 @@ pub open spec fn integrated_epm_paths_wf(state: dispatcher::IntegratedState) -> 
         dispatcher::IntegratedState::Accepted { accepted } => match accepted {
             dispatcher::IntegratedAccepted::LiveRoot { post_root_score, .. } =>
                 product_epm_paths_wf(post_root_score),
+            dispatcher::IntegratedAccepted::LiveNoScoreRoot { pre_complete, .. } =>
+                product_epm_paths_wf(pre_complete),
             dispatcher::IntegratedAccepted::CanonicalPathRoot { pre_complete, .. } =>
                 product_epm_paths_wf(pre_complete),
         },

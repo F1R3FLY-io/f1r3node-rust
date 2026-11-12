@@ -9701,6 +9701,44 @@ pub proof fn live_runtime_product_root_complete_is_exact(
     );
 }
 
+#[cfg(rpb3_live_push)]
+#[verifier::opaque]
+pub open spec fn live_runtime_product_root_complete_noscore_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    returned: runtime_source::RuntimeNoScoreRootReturnImage,
+) -> bool {
+    &&& live_runtime_product_wf(before)
+    &&& before.cursors.len() == 1
+    &&& before.cursors[0].is_some()
+    &&& wire_source::wire_runtime_next_field(before.cursors[0].unwrap())
+        == Some(wire_source::WireConcreteTransition::End {
+            state: wire_source::wire_runtime_derive_cursor(
+                before.cursors[0].unwrap(),
+            ).unwrap(),
+        })
+    &&& runtime_source::runtime_message_driver_step(
+        before.source.runtime, runtime_source::RuntimeMessageEvent::Eof,
+    ) == Some(runtime_source::RuntimeMessageOutcome::RootReturnedNoScore { returned })
+    &&& after == before
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_root_complete_noscore_keeps_state(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    returned: runtime_source::RuntimeNoScoreRootReturnImage,
+)
+    requires live_runtime_product_root_complete_noscore_step(before, after, returned),
+    ensures
+        live_runtime_product_wf(before),
+        after == before,
+        before.cursors.len() == 1,
+        before.source.product.bridge.admission.frames.len() == 1,
+{
+    reveal(live_runtime_product_root_complete_noscore_step);
+}
+
 // One transition vocabulary for the live wire, admission, storage, score, and
 // nested-map product.  The component steps below remain the precise guards;
 // this dispatcher makes their common inductive invariant explicit.
@@ -9710,6 +9748,7 @@ pub enum LiveRuntimeProductAction {
     MapKey,
     RootScore,
     RootComplete { returned: runtime_source::RuntimeRootReturnImage },
+    RootCompleteNoScore { returned: runtime_source::RuntimeNoScoreRootReturnImage },
     MessageChildScore,
     MessagePush {
         request: runtime_source::SourceFrameRequestImage,
@@ -9768,6 +9807,8 @@ pub open spec fn live_runtime_product_step(
             live_runtime_product_root_score_step(before, after),
         LiveRuntimeProductAction::RootComplete { returned } =>
             live_runtime_product_root_complete_step(before, after, returned),
+        LiveRuntimeProductAction::RootCompleteNoScore { returned } =>
+            live_runtime_product_root_complete_noscore_step(before, after, returned),
         LiveRuntimeProductAction::MessageChildScore =>
             live_runtime_product_message_child_score_step(before, after),
         LiveRuntimeProductAction::MessagePush {
@@ -9838,6 +9879,9 @@ pub proof fn live_runtime_product_step_preserves_wf(
             live_runtime_product_root_score_preserves_wf(before, after),
         LiveRuntimeProductAction::RootComplete { returned } =>
             live_runtime_product_root_score_preserves_wf(before, after),
+        LiveRuntimeProductAction::RootCompleteNoScore { returned } => {
+            reveal(live_runtime_product_root_complete_noscore_step);
+        },
         LiveRuntimeProductAction::MessageChildScore =>
             live_runtime_product_message_child_score_preserves_wf(before, after),
         LiveRuntimeProductAction::MessagePush {
@@ -10778,6 +10822,10 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
         forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
             ==> live_runtime_product_ancestor_view_same(before, after, i),
 {
+    if let LiveRuntimeProductAction::RootCompleteNoScore { returned } = action {
+        live_runtime_product_root_complete_noscore_keeps_state(before, after, returned);
+        return;
+    }
     live_runtime_product_step_preserves_wf(before, after, action);
     let old = before.source.product;
     let new = after.source.product;
@@ -10836,6 +10884,7 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 before.source.product.bridge, after.source.product.bridge,
             );
         },
+        LiveRuntimeProductAction::RootCompleteNoScore { .. } => assert(false),
         LiveRuntimeProductAction::MessageChildScore => {
             assert(live_runtime_product_message_child_score_step(before, after));
             product_message_child_score_preserves_ancestor_prefix(old, new);

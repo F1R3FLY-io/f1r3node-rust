@@ -118,6 +118,10 @@ pub enum IntegratedAccepted {
         post_root_score: LiveRuntimeProductState,
         live_returned: runtime::RuntimeRootReturnImage,
     },
+    LiveNoScoreRoot {
+        pre_complete: LiveRuntimeProductState,
+        live_returned: runtime::RuntimeNoScoreRootReturnImage,
+    },
     CanonicalPathRoot {
         pre_complete: LiveRuntimeProductState,
         path_returned: terminal::LiveCanonicalPathTerminalOutcome,
@@ -133,6 +137,8 @@ pub open spec fn integrated_accepted_wf(accepted: IntegratedAccepted) -> bool {
     match accepted {
         IntegratedAccepted::LiveRoot { post_root_score, .. } =>
             integrated::live_runtime_product_wf(post_root_score),
+        IntegratedAccepted::LiveNoScoreRoot { pre_complete, .. } =>
+            integrated::live_runtime_product_wf(pre_complete),
         IntegratedAccepted::CanonicalPathRoot { pre_complete, .. } =>
             integrated::live_runtime_product_wf(pre_complete),
     }
@@ -168,6 +174,7 @@ pub open spec fn integrated_live_required_top_kind(action: LiveRuntimeProductAct
         | LiveRuntimeProductAction::MessageEpmPush { .. }
         | LiveRuntimeProductAction::RootScore
         | LiveRuntimeProductAction::RootComplete { .. }
+        | LiveRuntimeProductAction::RootCompleteNoScore { .. }
         | LiveRuntimeProductAction::MessageChildScore
         | LiveRuntimeProductAction::MessageChildComplete
         | LiveRuntimeProductAction::MapValueAccept
@@ -335,6 +342,13 @@ pub open spec fn integrated_live_case(
                 accepted: IntegratedAccepted::LiveRoot { post_root_score, live_returned: accepted_returned },
             } => accepted_returned == returned
                 && integrated::live_runtime_product_step(before, post_root_score, action),
+            _ => false,
+        },
+        LiveRuntimeProductAction::RootCompleteNoScore { returned } => match after {
+            IntegratedState::Accepted {
+                accepted: IntegratedAccepted::LiveNoScoreRoot { pre_complete, live_returned: accepted_returned },
+            } => accepted_returned == returned
+                && integrated::live_runtime_product_step(before, pre_complete, action),
             _ => false,
         },
         _ => match after {
@@ -1388,6 +1402,9 @@ pub proof fn integrated_live_non_push_is_functional(
             live_runtime_root_score_is_functional(before, left, right),
         LiveRuntimeProductAction::RootComplete { returned } =>
             live_runtime_root_score_is_functional(before, left, right),
+        LiveRuntimeProductAction::RootCompleteNoScore { returned } => {
+            reveal(integrated::live_runtime_product_root_complete_noscore_step);
+        },
         LiveRuntimeProductAction::MessageChildScore =>
             live_runtime_message_child_score_is_functional(before, left, right),
         LiveRuntimeProductAction::MessagePush { .. }
@@ -1737,6 +1754,26 @@ pub proof fn integrated_step_is_function(
                         ) => live_runtime_root_score_is_functional(
                             product, post_left, post_right,
                         ),
+                        _ => {},
+                    }
+                },
+                LiveRuntimeProductAction::RootCompleteNoScore { returned } => {
+                    match (left, right) {
+                        (
+                            IntegratedState::Accepted {
+                                accepted: IntegratedAccepted::LiveNoScoreRoot {
+                                    pre_complete: pre_left, ..
+                                },
+                            },
+                            IntegratedState::Accepted {
+                                accepted: IntegratedAccepted::LiveNoScoreRoot {
+                                    pre_complete: pre_right, ..
+                                },
+                            },
+                        ) => {
+                            live_noscore_root_completion_is_exact(product, pre_left, returned);
+                            live_noscore_root_completion_is_exact(product, pre_right, returned);
+                        },
                         _ => {},
                     }
                 },
@@ -2246,6 +2283,18 @@ pub proof fn integrated_step_preserves_wf(
                             product, post_root_score, live,
                         );
                     },
+                    (
+                        LiveRuntimeProductAction::RootCompleteNoScore { .. },
+                        IntegratedState::Accepted {
+                            accepted: IntegratedAccepted::LiveNoScoreRoot {
+                                pre_complete, ..
+                            },
+                        },
+                    ) => {
+                        integrated::live_runtime_product_step_preserves_wf(
+                            product, pre_complete, live,
+                        );
+                    },
                     (_, IntegratedState::Active { product: next }) => {
                         integrated_live_relation_refines_live_step(product, next, live, route);
                         integrated::live_runtime_product_step_preserves_wf(product, next, live);
@@ -2586,6 +2635,11 @@ pub proof fn integrated_live_step_establishes_kind_guard(
             assert(frames.len() == 1);
             assert(frames[0] == frames.last());
         },
+        LiveRuntimeProductAction::RootCompleteNoScore { returned } => {
+            live_noscore_root_completion_is_exact(before, after, returned);
+            let frames = before.source.product.bridge.admission.frames;
+            assert(frames[0] == frames.last());
+        },
         LiveRuntimeProductAction::MapEntryFinish => {
             reveal(integrated::live_runtime_product_map_entry_finish_step);
         },
@@ -2769,6 +2823,23 @@ pub open spec fn integrated_root_completion(
             },
             _ => false,
         },
+        IntegratedAccepted::LiveNoScoreRoot { pre_complete, live_returned: returned } => match action {
+            IntegratedAction::Live {
+                live_action: LiveRuntimeProductAction::RootCompleteNoScore { returned: action_returned }, ..
+            } => {
+                &&& action_returned == returned
+                &&& integrated::live_runtime_product_root_complete_noscore_step(
+                    pre, pre_complete, returned,
+                )
+                &&& pre_complete == pre
+                &&& frames.len() == 1
+                &&& frames[0].frame_kind == 1
+                &&& returned.remaining_frames == 0
+                &&& returned.pre_pop == pre.source.runtime
+                &&& !admission::admission_summary_has_score(returned.summary.kind)
+            },
+            _ => false,
+        },
         IntegratedAccepted::CanonicalPathRoot { pre_complete, path_returned: returned } => match action {
             IntegratedAction::CanonicalPath { driver_before, driver_action: path } => {
                 &&& pre_complete == pre
@@ -2810,6 +2881,28 @@ pub proof fn live_root_completion_is_exact(
     runtime::runtime_root_return_is_pre_pop_exact(pre.source.runtime, post.source.product.bridge);
 }
 
+pub proof fn live_noscore_root_completion_is_exact(
+    pre: LiveRuntimeProductState,
+    post: LiveRuntimeProductState,
+    returned: runtime::RuntimeNoScoreRootReturnImage,
+)
+    requires integrated::live_runtime_product_root_complete_noscore_step(pre, post, returned),
+    ensures
+        integrated::live_runtime_product_wf(pre),
+        post == pre,
+        pre.source.product.bridge.admission.frames.len() == 1,
+        pre.source.product.bridge.admission.frames[0].frame_kind == 1,
+        pre.source.product.bridge.admission.frames[0].score_handle.is_none(),
+        returned.remaining_frames == 0,
+        returned.pre_pop == pre.source.runtime,
+        !admission::admission_summary_has_score(returned.summary.kind),
+{
+    reveal(integrated::live_runtime_product_root_complete_noscore_step);
+    assert(pre.source.runtime.score == pre.source.product.bridge);
+    runtime::runtime_selected_eof_outcome_is_checked(pre.source.runtime);
+    runtime::runtime_noscore_root_return_is_checked(pre.source.runtime);
+}
+
 pub proof fn integrated_accept_refines_root(
     states: Seq<IntegratedState>, actions: Seq<IntegratedAction>,
 )
@@ -2846,6 +2939,14 @@ pub proof fn integrated_accept_refines_root(
                             },
                         ) => {
                             live_root_completion_is_exact(product, post_root_score, returned);
+                        },
+                        (
+                            LiveRuntimeProductAction::RootCompleteNoScore { returned },
+                            IntegratedState::Accepted {
+                                accepted: IntegratedAccepted::LiveNoScoreRoot { pre_complete, .. },
+                            },
+                        ) => {
+                            live_noscore_root_completion_is_exact(product, pre_complete, returned);
                         },
                         _ => {},
                     }
@@ -3009,6 +3110,157 @@ pub proof fn boolean_root_canonical_path_complete_is_integrated_step()
     assert(accepted is Accepted);
     assert(integrated_step(active, accepted, action));
     integrated_accepted_step_is_accepting_trace(active, accepted, action);
+}
+
+pub open spec fn live_unit_root_noscore_state() -> Option<LiveRuntimeProductState> {
+    let root = admission::admission_unit_noscore_root();
+    let indexed_backing = epm::IndexedBackingImage::Borrowed {
+        bytes: Seq::empty(),
+        source: 0,
+        absolute_start: 0,
+        start: 0,
+        len: 0,
+        end_override: None,
+    };
+    let wire_backing = wire::WireRuntimeBackingImage::Borrowed {
+        bytes: Seq::empty(),
+        source: 0,
+        absolute_start: 0,
+        start: 0,
+        len: 0,
+        end_override: None,
+    };
+    match (
+        integrated::product_root_initial(root, indexed_backing),
+        wire::wire_runtime_initial(wire_backing, false),
+    ) {
+        (Some(product), Some(cursor)) => match wire::wire_runtime_cursor_project(cursor) {
+            Some(reader) => Some(LiveRuntimeProductState {
+                source: LiveSourceProductState {
+                    product,
+                    runtime: runtime::runtime_noscore_unit_root_before(),
+                    arena: arena::RuntimeScoreArena { entries: Seq::empty() },
+                    wire: seq![Some(reader)],
+                },
+                cursors: seq![Some(cursor)],
+            }),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
+pub proof fn live_unit_root_noscore_state_is_wf()
+    ensures
+        live_unit_root_noscore_state().is_some(),
+        integrated::live_runtime_product_wf(live_unit_root_noscore_state().unwrap()),
+        live_unit_root_noscore_state().unwrap().source.runtime
+            == runtime::runtime_noscore_unit_root_before(),
+{
+    let root = admission::admission_unit_noscore_root();
+    let indexed_backing = epm::IndexedBackingImage::Borrowed {
+        bytes: Seq::empty(),
+        source: 0,
+        absolute_start: 0,
+        start: 0,
+        len: 0,
+        end_override: None,
+    };
+    admission::admission_unit_root_completes_without_score();
+    assert(admission::admission_root_initial(root));
+    map::integrated_initial_is_well_formed(root);
+    assert(epm::indexed_backing_project(indexed_backing).is_some());
+    let indexed = epm::indexed_backing_project(indexed_backing).unwrap();
+    assert(epm::indexed_image_wf(indexed));
+    assert(indexed.bytes =~= root.source_bytes);
+    assert(integrated::product_root_initial(root, indexed_backing).is_some());
+    integrated::product_root_initial_exact(root, indexed_backing);
+    admission::admission_initial_wf(root);
+    score_bridge::bridge_initial_exact(root);
+    runtime::runtime_noscore_unit_root_witness();
+    let state = live_unit_root_noscore_state().unwrap();
+    assert(state.source.product.bridge == runtime::runtime_noscore_unit_root_before().score);
+    assert(runtime::runtime_frame_image_wf(state.source.runtime));
+    assert(arena::runtime_projects_score(
+        state.source.arena, state.source.product.bridge.transcript,
+    ));
+}
+
+pub proof fn live_unit_root_noscore_end_is_ready()
+    ensures
+        live_unit_root_noscore_state().is_some(),
+        live_unit_root_noscore_state().unwrap().cursors.len() == 1,
+        live_unit_root_noscore_state().unwrap().cursors[0].is_some(),
+        wire::wire_runtime_next_field(live_unit_root_noscore_state().unwrap().cursors[0].unwrap())
+            == Some(wire::WireConcreteTransition::End {
+                state: wire::wire_runtime_derive_cursor(
+                    live_unit_root_noscore_state().unwrap().cursors[0].unwrap(),
+                ).unwrap(),
+            }),
+{
+    live_unit_root_noscore_state_is_wf();
+    let state = live_unit_root_noscore_state().unwrap();
+    let cursor = state.cursors[0].unwrap();
+    assert(wire::wire_runtime_next_field(cursor)
+        == Some(wire::WireConcreteTransition::End {
+            state: wire::wire_runtime_derive_cursor(cursor).unwrap(),
+        }));
+}
+
+pub proof fn live_unit_root_noscore_complete_is_accepting_trace()
+    ensures ({
+        let before = live_unit_root_noscore_state().unwrap();
+        let returned = runtime::runtime_noscore_root_return(
+            runtime::runtime_noscore_unit_root_before(),
+        ).unwrap();
+        let action = IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::RootCompleteNoScore { returned },
+            route: IntegratedPushRoute::Plain,
+        };
+        let accepted = IntegratedAccepted::LiveNoScoreRoot {
+            pre_complete: before, live_returned: returned,
+        };
+        &&& live_unit_root_noscore_state().is_some()
+        &&& integrated_wf(IntegratedState::Active { product: before })
+        &&& integrated_step(
+            IntegratedState::Active { product: before },
+            IntegratedState::Accepted { accepted },
+            action,
+        )
+        &&& integrated_trace_accepts(
+            seq![IntegratedState::Active { product: before }, IntegratedState::Accepted { accepted }],
+            seq![action],
+        )
+        &&& integrated_root_completion(before, action, accepted)
+        &&& returned.summary.program_type_id == 7
+        &&& returned.summary.kind == admission::AdmissionReturnedKind::Unit
+    }),
+{
+    live_unit_root_noscore_state_is_wf();
+    live_unit_root_noscore_end_is_ready();
+    runtime::runtime_noscore_unit_root_witness();
+    let before = live_unit_root_noscore_state().unwrap();
+    let returned = runtime::runtime_noscore_root_return(
+        runtime::runtime_noscore_unit_root_before(),
+    ).unwrap();
+    let live = LiveRuntimeProductAction::RootCompleteNoScore { returned };
+    reveal(integrated::live_runtime_product_root_complete_noscore_step);
+    assert(integrated::live_runtime_product_root_complete_noscore_step(before, before, returned));
+    live_noscore_root_completion_is_exact(before, before, returned);
+    assert(integrated::live_runtime_product_step(before, before, live));
+    let action = IntegratedAction::Live { live_action: live, route: IntegratedPushRoute::Plain };
+    let accepted = IntegratedAccepted::LiveNoScoreRoot {
+        pre_complete: before, live_returned: returned,
+    };
+    let active = IntegratedState::Active { product: before };
+    let done = IntegratedState::Accepted { accepted };
+    let frames = before.source.product.bridge.admission.frames;
+    assert(frames[0] == frames.last());
+    assert(integrated_kind_guard(before, action));
+    assert(integrated_wf(active));
+    assert(integrated_step(active, done, action));
+    integrated_accepted_step_is_accepting_trace(active, done, action);
+    assert(integrated_root_completion(before, action, accepted));
 }
 
 pub open spec fn act_unwind_witness_frame() -> admission::AdmissionFrameState {

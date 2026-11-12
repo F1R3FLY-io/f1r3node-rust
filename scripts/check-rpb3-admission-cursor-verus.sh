@@ -342,6 +342,7 @@ integrated_core_proofs=(
   live_runtime_product_continue_indexed_uses_read_field
   live_runtime_product_continue_indexed_anchor_exact
   live_runtime_product_root_end_is_ready
+  live_runtime_product_root_complete_noscore_keeps_state
 )
 integrated_push_proofs=(
   live_runtime_child_cursor_is_payload
@@ -2268,6 +2269,10 @@ proofs_rpb3_integrated_dispatcher=(
   act_forward_witness_forward_capacity
   act_forward_witness_forward_source
   act_forward_witness_is_integrated_step
+  live_noscore_root_completion_is_exact
+  live_unit_root_noscore_state_is_wf
+  live_unit_root_noscore_end_is_ready
+  live_unit_root_noscore_complete_is_accepting_trace
 )
 proofs_rpb3_plain_parser_source_refinement=(
   forward_payload_root_projection
