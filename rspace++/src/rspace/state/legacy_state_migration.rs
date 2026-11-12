@@ -1001,6 +1001,7 @@ mod tests {
     use super::*;
     use crate::rspace::history::cold_store::{DataLeaf, PersistedData, PersistedDataKind};
     use crate::rspace::history::radix_tree::hash_node;
+    use crate::rspace::shared::lmdb_dir_store_manager::resolve_lmdb_environment;
 
     fn root(seed: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![seed; 32]) }
 
@@ -1023,7 +1024,8 @@ mod tests {
 
     fn legacy_database(path: &Path) -> (Arc<Env>, BytesDb) {
         std::fs::create_dir_all(path).expect("create legacy LMDB directory");
-        let env = env_cache::get_or_open_env(path, 16 * 1024 * 1024, 8).expect("legacy env");
+        let resolved = resolve_lmdb_environment(path).expect("resolve legacy LMDB directory");
+        let env = env_cache::get_or_open_env(&resolved, 16 * 1024 * 1024, 8).expect("legacy env");
         let mut txn = env.write_txn().expect("legacy database transaction");
         let db = env
             .create_database(&mut txn, Some(LEGACY_DB))
@@ -1392,14 +1394,59 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_legacy_source_reached_through_a_symbolic_link_is_staged_and_completed() {
+        let scratch = test_scratch::acquire("rspace-legacy-link-");
+        let real = scratch.path().join("real");
+        std::fs::create_dir_all(&real).expect("real source parent");
+        let link = scratch.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symbolic link to the source parent");
+        let (env, history, cold, roots_db) = databases(&scratch.path().join("authority"), "rspace");
+        let v2 = link.join("rspace/casper/v2");
+        let (_history_env, _legacy_history) = legacy_database(&v2.join("history"));
+        let (_cold_env, _legacy_cold) = legacy_database(&v2.join("cold"));
+        let (roots_env, legacy_roots) = legacy_database(&v2.join("roots"));
+        let empty = RadixHistory::empty_root_node_hash();
+        seed_legacy_catalog(&roots_env, legacy_roots, &empty);
+
+        migrate_legacy_state(
+            Arc::clone(&env),
+            history,
+            cold,
+            roots_db,
+            &LmdbAuthorityLayout::for_prefix("rspace").expect("authority layout"),
+            None,
+            Some(&v2),
+            16 * 1024 * 1024,
+            8,
+        )
+        .expect("stage v2 state through the link");
+        let validator: RecordValidator = Arc::new(|_, _| Ok(()));
+        assert!(
+            complete_legacy_state(&env, history, cold, roots_db, b"rspace", &validator)
+                .expect("complete v2 state through the link")
+        );
+        let txn = env.read_txn().expect("completed read");
+        assert_eq!(
+            roots_db
+                .get(&txn, &CURRENT_ROOT_KEY.to_vec())
+                .expect("current root read")
+                .map(|bytes| decode_current(&bytes).expect("current root record")),
+            Some((empty, 0))
+        );
+    }
+
     #[test]
     fn concrete_record_failure_cannot_publish_a_structurally_valid_source() {
         let scratch = test_scratch::acquire("rspace-legacy-malformed-");
         let (env, history, cold, roots_db) = databases(&scratch.path().join("authority"), "rspace");
         let cold_path = scratch.path().join("cold");
         std::fs::create_dir_all(&cold_path).expect("cold source directory");
-        let cold_env =
-            env_cache::get_or_open_env(&cold_path, 16 * 1024 * 1024, 8).expect("cold source env");
+        let cold_resolved =
+            resolve_lmdb_environment(&cold_path).expect("resolve cold source directory");
+        let cold_env = env_cache::get_or_open_env(&cold_resolved, 16 * 1024 * 1024, 8)
+            .expect("cold source env");
         let mut cold_txn = cold_env.write_txn().expect("cold source write");
         let source_cold: BytesDb = cold_env
             .create_database(&mut cold_txn, Some("rspace-cold"))
