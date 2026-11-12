@@ -89,6 +89,7 @@ source_files=(
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
   "$model_dir/rpb3_epm_live_handoff.rs"
+  "$model_dir/rpb3_ezipper_bool_slot_readable.rs"
   "$model_dir/rpb3_message_frame_finish_mapping.rs"
   "$model_dir/rpb3_finish_handle_transcript.rs"
   "$model_dir/rpb3_score_finish_unique.rs"
@@ -1295,6 +1296,67 @@ proofs_rpb3_epm_unwind_product_lift=(
   live_runtime_internal_epm_continue_preserves_wf
   live_runtime_unwind_virtual_state_wf
   accepted_unwind_live_runtime_internal_sequence
+)
+proofs_rpb3_ezipper_bool_slot_readable=(
+  scalar_slot_skips_other_slot_push
+  scalar_slot_takes_first_slot_push
+  flag_view_kept_frame_readable
+  unrecorded_frame_flag_readable
+  top_replaced_flags_readable
+  child_pushed_flags_readable
+  parent_replaced_flags_readable
+  cursor_advanced_flags_readable
+  ezipper_flag_slot_descriptor_is_pinned
+  recorded_occurrence_keeps_flag_readable
+  admission_continue_keeps_flags_readable
+  scalar_record_keeps_flags_readable
+  admission_push_keeps_flags_readable
+  ezipper_plain_push_targets_payload_slot
+  ezipper_indexed_push_targets_payload_slot
+  complete_child_keeps_flags_readable
+  path_push_keeps_flags_readable
+  path_return_keeps_flags_readable
+  ezipper_finish_selects_ezipper_step
+  score_finish_keeps_flags_readable
+  epm_resolved_parent_keeps_flags_readable
+  epm_push_frames_keep_flags_readable
+  epm_accept_frames_keep_flags_readable
+  initial_root_flags_readable
+  product_message_continue_keeps_flags_readable
+  product_message_push_keeps_flags_readable
+  product_map_key_keeps_flags_readable
+  product_map_value_push_keeps_flags_readable
+  product_map_pop_keeps_flags_readable
+  product_epm_continue_keeps_flags_readable
+  product_epm_child_return_keeps_flags_readable
+  product_epm_finish_accept_keeps_flags_readable
+  live_continue_keeps_flags_readable
+  live_continue_indexed_keeps_flags_readable
+  live_map_key_keeps_flags_readable
+  live_score_keeps_flags_readable
+  live_root_noscore_keeps_flags_readable
+  live_message_push_keeps_flags_readable
+  live_message_epm_push_keeps_flags_readable
+  live_map_value_push_keeps_flags_readable
+  live_message_child_complete_keeps_flags_readable
+  live_map_value_accept_keeps_flags_readable
+  live_map_entry_finish_keeps_flags_readable
+  live_epm_map_value_accept_keeps_flags_readable
+  live_epm_continue_keeps_flags_readable
+  live_epm_push_keeps_flags_readable
+  live_epm_end_keeps_flags_readable
+  live_epm_finish_accept_keeps_flags_readable
+  live_runtime_step_keeps_flags_readable
+  integrated_live_keeps_flags_readable
+  integrated_path_keeps_flags_readable
+  act_forward_keeps_flags_readable
+  act_unwind_keeps_flags_readable
+  obligation_return_keeps_flags_readable
+  handoff_keeps_flags_readable
+  integrated_step_keeps_flags_readable
+  integrated_trace_keeps_flags_readable
+  unrecorded_start_is_readable
+  reachable_ezipper_flag_slot_is_readable
 )
 proofs_rpb3_ezipper_source_refinement=(
   ezipper_absent_modeled_pop_is_source_bound
@@ -2560,6 +2622,7 @@ gated_modules=(
   rpb3_epm_source_accept_refinement
   rpb3_epm_unwind_event_lift
   rpb3_epm_unwind_product_lift
+  rpb3_ezipper_bool_slot_readable
   rpb3_ezipper_source_refinement
   rpb3_finish_handle_transcript
   rpb3_finish_macro_refinement
@@ -5042,6 +5105,39 @@ fi
 if ! rg -q '^verification results:: 72 verified, 0 errors' "$message_frame_finish_mapping_log"; then
   cat "$message_frame_finish_mapping_log"
   echo "rpb3-admission-cursor: message frame finish mapping module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_ezipper_bool_slot_readable[@]}"; do
+  proof_log="$evidence_dir/ezipper-bool-slot-readable-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_ezipper_bool_slot_readable --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EZipper flag readability $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EZipper flag readability $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+ezipper_bool_slot_readable_log="$evidence_dir/ezipper-bool-slot-readable-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_ezipper_bool_slot_readable \
+  "$integrated_source" \
+  >"$ezipper_bool_slot_readable_log" 2>&1; then
+  cat "$ezipper_bool_slot_readable_log"
+  echo "rpb3-admission-cursor: EZipper flag readability module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 59 verified, 0 errors' "$ezipper_bool_slot_readable_log"; then
+  cat "$ezipper_bool_slot_readable_log"
+  echo "rpb3-admission-cursor: EZipper flag readability module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do
