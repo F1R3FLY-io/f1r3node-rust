@@ -59,9 +59,15 @@ pub(crate) use durable::{
     INDEX_RECORD_LEN_V1, IndexFormatError, IndexGenerationV1, ObjectIndexFileViewV1,
     ObjectIndexHeaderV1, ObjectLocationV1, PACK_HEADER_LEN_V1, PackFormatError, PackHeaderV1,
 };
+#[cfg(test)]
 pub(crate) use durable::{
-    DurableAuthorityViewV1, DurableObjectReadErrorV1, DurableRSpaceAuthorityV1,
-    DurableStateReadHandleErrorV1, DurableStateRootV1, DurableViewReaderV1,
+    DurableAdmissionLimitsV1, DurableAuthorityViewV1, DurableObjectReadErrorV1,
+    DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError, TrustedSuccessorPolicyV1,
+    create_empty_store_v1, recover_read_authority,
+};
+pub(crate) use durable::{
+    DurableRSpaceAuthorityV1, DurableStateReadHandleErrorV1, DurableStateRootV1,
+    DurableViewReaderV1,
 };
 pub(crate) use manifest::AcceleratorManifestView;
 #[cfg(test)]
@@ -99,6 +105,9 @@ pub(crate) use rewrite::{
 #[cfg(test)]
 pub(crate) use rewrite::{preflight_sensitive_copy_bytes, reset_preflight_sensitive_copy_bytes};
 #[cfg(test)]
+pub(crate) use semantic::RSpaceSemanticProfile;
+pub use semantic::SemanticProfile;
+#[cfg(test)]
 pub(crate) use semantic::semantic_profile_seal;
 #[cfg(test)]
 pub(crate) use semantic::verify_rspace_semantics_after_structural;
@@ -107,7 +116,6 @@ pub(crate) use semantic::{
     IncrementalSemanticLimits, SemanticValidationLimits, SemanticValidationReport,
     verify_rspace_semantics,
 };
-pub use semantic::{RSpaceSemanticProfile, SemanticProfile};
 #[cfg(test)]
 pub(crate) use store::{
     CanonicalObjectStore, MutableObjectStore, ObjectAdmission, StagingObjectStore,

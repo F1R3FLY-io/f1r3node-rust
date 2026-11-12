@@ -29,8 +29,8 @@ impl<P: SemanticProfile> DurableViewReaderV1<P> {
         not(test),
         expect(
             dead_code,
-            reason = "only unit tests read through a durable view reader until task 12399 \
-                      bootstraps the hot store from it"
+            reason = "only unit tests set a durable view reader's limits until the durable \
+                      state-authority backend (rspace-authority-durable-backend) configures them"
         )
     )]
     pub(crate) fn with_limits(self, limits: DurableHotStoreBootstrapLimits) -> Self {

@@ -53,9 +53,12 @@ use crate::rspace::ordered_receive::{
 };
 use crate::rspace::persistence::{
     CanonicalFormatError, CatalogSlotV1, ContentTransition, DagTransactionError,
-    DurableAuthorityViewV1, DurableObjectReadErrorV1, GenerationLeaseRegistryV1,
-    ImmutableObjectStore, MutationError, OpenDagTransaction, RSpaceMutationBatchV1,
-    RSpaceSemanticProfile, SemanticNamespace, SemanticProfile, StateVersionV1,
+    GenerationLeaseRegistryV1, ImmutableObjectStore, MutationError, ObjectRefV1,
+    OpenDagTransaction, RSpaceMutationBatchV1, SemanticNamespace, SemanticProfile, StateVersionV1,
+};
+#[cfg(test)]
+use crate::rspace::persistence::{
+    DurableAuthorityViewV1, DurableObjectReadErrorV1, RSpaceSemanticProfile,
 };
 use crate::rspace::receive_accelerator::{
     ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, ReceiveId,
@@ -159,20 +162,53 @@ struct HotJournalAckMarkerV1 {
     terminal: CatalogSlotV1,
 }
 
+pub(crate) struct DurableJournalBaseV1 {
+    pub manifest: ObjectRefV1,
+    pub registry: GenerationLeaseRegistryV1,
+}
+
+enum JournalBaseV1 {
+    Detached(ObjectRefV1),
+    Bound(CatalogSlotV1),
+    Invalidated,
+}
+
 struct DurableJournalStateV1 {
-    base: Option<CatalogSlotV1>,
+    base: JournalBaseV1,
     registry: GenerationLeaseRegistryV1,
     version: JournalVersionV1,
     acknowledged: Option<HotJournalAckMarkerV1>,
 }
 
 impl DurableJournalStateV1 {
+    #[cfg(test)]
     fn new(base: CatalogSlotV1, registry: GenerationLeaseRegistryV1) -> Self {
         Self {
-            base: Some(base),
+            base: JournalBaseV1::Bound(base),
             registry,
             version: JournalVersionV1::new(),
             acknowledged: None,
+        }
+    }
+
+    fn detached(base: DurableJournalBaseV1) -> Self {
+        Self {
+            base: JournalBaseV1::Detached(base.manifest),
+            registry: base.registry,
+            version: JournalVersionV1::new(),
+            acknowledged: None,
+        }
+    }
+
+    fn is_bound_to(&self, slot: CatalogSlotV1) -> bool {
+        matches!(self.base, JournalBaseV1::Bound(bound) if bound == slot)
+    }
+
+    fn recorded_manifest(&self) -> Option<ObjectRefV1> {
+        match self.base {
+            JournalBaseV1::Detached(manifest) => Some(manifest),
+            JournalBaseV1::Bound(slot) => Some(slot.state().manifest()),
+            JournalBaseV1::Invalidated => None,
         }
     }
 
@@ -417,6 +453,8 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         base: CatalogSlotV1,
         registry: &GenerationLeaseRegistryV1,
     ) -> Result<(), RSpaceError>;
+
+    fn bind_journal_authority(&self, slot: CatalogSlotV1) -> Result<(), RSpaceError>;
 
     fn validate_journal_acknowledgement(
         &self,
@@ -845,7 +883,7 @@ where
 
     fn matches_captured_journal(&self, captured: &CapturedHotJournalV1) -> bool {
         self.durable_journal.as_ref().is_some_and(|binding| {
-            binding.base == Some(captured.base) && binding.version.matches(&captured.version)
+            binding.is_bound_to(captured.base) && binding.version.matches(&captured.version)
         }) && self.matches_pending_journal(&captured.observation.pending)
     }
 
@@ -855,7 +893,7 @@ where
         terminal: CatalogSlotV1,
     ) -> bool {
         self.durable_journal.as_ref().is_some_and(|binding| {
-            binding.base == Some(terminal) &&
+            binding.is_bound_to(terminal) &&
                 binding.acknowledged.as_ref().is_some_and(|marker| {
                     Arc::ptr_eq(&marker.identity, &captured.identity) &&
                         marker.terminal == terminal &&
@@ -972,7 +1010,7 @@ where
     fn invalidate_journal_base(&mut self) {
         if let Some(journal) = &mut self.durable_journal {
             journal.advance();
-            journal.base = None;
+            journal.base = JournalBaseV1::Invalidated;
         }
     }
 }
@@ -1599,10 +1637,18 @@ where
         let binding = state.durable_journal.as_ref().ok_or_else(|| {
             RSpaceError::JournalConflict("hot store has no durable journal authority".to_owned())
         })?;
-        if binding.base != Some(base) {
-            return Err(RSpaceError::JournalConflict(
-                "durable journal base changed before capture".to_owned(),
-            ));
+        match binding.base {
+            JournalBaseV1::Bound(bound) if bound == base => {}
+            JournalBaseV1::Detached(_) => {
+                return Err(RSpaceError::JournalConflict(
+                    "durable journal is detached from every catalog slot".to_owned(),
+                ));
+            }
+            JournalBaseV1::Bound(_) | JournalBaseV1::Invalidated => {
+                return Err(RSpaceError::JournalConflict(
+                    "durable journal base changed before capture".to_owned(),
+                ));
+            }
         }
         Ok(CapturedHotJournalV1 {
             identity: Arc::new(JournalCaptureIdentityV1),
@@ -1629,13 +1675,32 @@ where
     ) -> Result<(), RSpaceError> {
         let state = self.state.read().expect("hot store state read lock");
         if !state.durable_journal.as_ref().is_some_and(|binding| {
-            binding.base == Some(base) && binding.registry.shares_registry(registry)
+            binding.is_bound_to(base) && binding.registry.shares_registry(registry)
         }) {
             return Err(RSpaceError::JournalConflict(
                 "hot store is not bound to this durable base and directory authority".to_owned(),
             ));
         }
         Ok(())
+    }
+
+    fn bind_journal_authority(&self, slot: CatalogSlotV1) -> Result<(), RSpaceError> {
+        let mut state = hot_state_write(&self.state);
+        let binding = state.durable_journal.as_mut().ok_or_else(|| {
+            RSpaceError::JournalConflict("hot store has no durable journal authority".to_owned())
+        })?;
+        match binding.recorded_manifest() {
+            Some(manifest) if manifest == slot.state().manifest() => {
+                binding.base = JournalBaseV1::Bound(slot);
+                Ok(())
+            }
+            Some(_) => Err(RSpaceError::JournalConflict(
+                "catalog slot names another state than the durable journal's base".to_owned(),
+            )),
+            None => Err(RSpaceError::JournalConflict(
+                "durable journal base was invalidated and cannot be bound".to_owned(),
+            )),
+        }
     }
 
     fn acknowledge_pending_journal(
@@ -1681,7 +1746,7 @@ where
             .durable_journal
             .as_mut()
             .expect("journal clearing preserves its authority");
-        binding.base = Some(expected);
+        binding.base = JournalBaseV1::Bound(expected);
         binding.version = next;
         binding.acknowledged = Some(marker);
         Ok(HotJournalAcknowledgementV1::Committed)
@@ -2516,6 +2581,10 @@ mod accepted_match_formal_bindings_tests;
 mod journal_commit_tests;
 
 #[cfg(test)]
+#[path = "../../tests/hot_store/durable_reader_bootstrap.rs"]
+mod durable_reader_bootstrap_tests;
+
+#[cfg(test)]
 #[path = "../../tests/hot_store/receive_revision_tokens.rs"]
 mod receive_revision_tokens_tests;
 
@@ -2552,6 +2621,7 @@ impl Default for DurableHotStoreBootstrapLimits {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 #[expect(
     dead_code,
@@ -2567,8 +2637,10 @@ pub(crate) enum DurableHotStoreBootstrapError {
     },
 }
 
+#[cfg(test)]
 pub(crate) struct ClosedDurableHistoryReader;
 
+#[cfg(test)]
 impl<C: Clone, P: Clone, A: Clone, K: Clone> HistoryReaderBase<C, P, A, K>
     for ClosedDurableHistoryReader
 {
@@ -2586,13 +2658,7 @@ impl HotStoreInstances {
     /// generation-pinned durable view. The complete namespace enumeration is
     /// performed before publication; any authenticated read or checked Bag
     /// failure aborts construction and cannot become an empty fallback.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only unit tests call this bootstrap until task 7931 wires it into RSpace"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn create_from_durable<C, P, A, K>(
         authority: &DurableAuthorityViewV1<RSpaceSemanticProfile<C, P, A, K>>,
         limits: DurableHotStoreBootstrapLimits,
@@ -2693,6 +2759,54 @@ impl HotStoreInstances {
             state: std::sync::RwLock::new(state),
             history_cache: std::sync::RwLock::new(HistoryStoreCache::default()),
             history_reader_base: Box::new(ClosedDurableHistoryReader),
+        }))
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests build a lazily filled durable hot store until \
+                      rspace-reset-durable-wiring, rspace-hard-checkpoint-durable-wiring and \
+                      rspace-soft-revert-durable-rebase install it"
+        )
+    )]
+    pub(crate) fn create_from_durable_reader<C, P, A, K>(
+        reader: Box<dyn HistoryReaderBase<C, P, A, K>>,
+        cache: HotStoreState<C, P, A, K>,
+        base: DurableJournalBaseV1,
+    ) -> Result<Box<dyn HotStore<C, P, A, K>>, DataIndexError>
+    where
+        C: Default
+            + Clone
+            + Debug
+            + Eq
+            + Hash
+            + RhoPathEncode
+            + ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
+        P: Default + Clone + Debug + StableHashSerialize + Send + Sync + 'static,
+        A: Default
+            + Clone
+            + Debug
+            + Serialize
+            + RhoPathEncode
+            + ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
+        K: Default + Clone + Debug + StableHashSerialize + Send + Sync + 'static,
+    {
+        let state = InMemHotStoreState {
+            durable_journal: Some(Box::new(DurableJournalStateV1::detached(base))),
+            ..InMemHotStoreState::from_snapshot(cache)?
+        };
+        Ok(Box::new(InMemHotStore {
+            state: std::sync::RwLock::new(state),
+            history_cache: std::sync::RwLock::new(HistoryStoreCache::default()),
+            history_reader_base: reader,
         }))
     }
 

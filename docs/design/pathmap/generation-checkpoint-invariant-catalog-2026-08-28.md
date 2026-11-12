@@ -8816,6 +8816,200 @@ for a root that is a manifest.
 chains of 20 000 nodes that differ only in the deepest endpoint on a 256 KiB
 stack.
 
+### Lazy durable hot-store bootstrap (2026-11-12)
+
+The [lazy durable view reader](#lazy-durable-view-reader-2026-11-11) reads
+one key of a pinned durable generation at a time. This slice, the third leaf
+of the view seam (task 12399), builds the hot store on such a reader instead
+of enumerating every namespace before the store exists.
+`HotStoreInstances::create_from_durable_reader(reader, cache, base)`, in
+[`hot_store.rs`](../../../rspace++/src/rspace/hot_store.rs), takes three
+parts:
+
+| Part | What it provides |
+|---|---|
+| `reader: Box<dyn HistoryReaderBase<C, P, A, K>>` | The source of every key that the store does not hold. In production it is a `DurableViewReaderV1` over a read handle and the roots of the base state. |
+| `cache: HotStoreState<C, P, A, K>` | Records preloaded per key. A key in the cache is loaded, even with an empty `Vec`, and the reader is never asked for it. |
+| `base: DurableJournalBaseV1` | The manifest of the base state and the generation lease registry of its directory, which the store's durable journal records. |
+
+Construction loads the cache with the same `from_snapshot` as
+`create_from_hs_and_hr` and keeps the reader. It makes no reader call, reads
+no durable object and enumerates no namespace, so its time and memory are
+linear in the size of the cache. The first access of an uncached key fills
+the key from the reader through the store's history cache. A fill is not a
+mutation: it neither journals nor advances the journal version, and the
+filled records keep the order of their durable paths. The eager
+`create_from_durable`, which enumerates the whole state at construction, and
+`ClosedDurableHistoryReader`, which the eager store installs as its reader,
+are now `#[cfg(test)]`; the tests keep the eager store as the oracle of the
+lazy one.
+
+**Detached journals** (ruling Q1 of task 12399, option A). A lazily built
+store exists before an owner has selected a catalog slot for it, so its
+journal cannot be bound to a slot at construction. The base of a durable
+journal is now one of three states:
+
+| Base | Set by | Capture, validation and acknowledgement |
+|---|---|---|
+| `Detached(manifest)` | `create_from_durable_reader` | Refused with `JournalConflict`, because the journal is detached from every catalog slot. |
+| `Bound(slot)` | `bind_journal_authority(slot)`, and the acknowledgement of a publication | Accepted for exactly that slot and refused for every other one. |
+| `Invalidated` | `clear` and `set_state` | Refused with `JournalConflict`. |
+
+The recorded manifest of a journal is the manifest of `Detached(manifest)`,
+or the manifest of the state of `Bound(slot)`; an invalidated journal records
+none. `bind_journal_authority(slot)` binds the journal to `slot` when the
+state of `slot` has exactly the recorded manifest, digest and encoded length
+alike. Otherwise it refuses with `JournalConflict` and changes nothing: not
+the base, the journals or the journal version. A bind changes no journal
+content, so it does not advance the version. Equal manifests name equal
+contents, so a bound journal may be bound again to another slot of the same
+state, and that re-bind keeps its journals and its version. A bind of a bound
+journal to a slot of another state is refused like any other, and the journal
+stays bound to its slot. The registry check of `validate_journal_authority`
+still refuses the owner of another directory. Until the bind,
+`into_rspace_authority`, `attach` and
+`checkpoint_view` refuse the store through `validate_journal_authority` with
+`Journal(JournalConflict)`, and `commit_pending_deltas` refuses every durable
+journal, as before. The eager bootstrap still creates a journal bound to its
+view's slot.
+
+Only unit tests build a lazily filled durable store until the reset,
+hard-checkpoint and soft-revert wiring installs it (tasks
+`rspace-reset-durable-wiring`, `rspace-hard-checkpoint-durable-wiring` and
+`rspace-soft-revert-durable-rebase`), so `create_from_durable_reader` carries
+`cfg_attr(not(test), expect(dead_code))` with a reason that names those
+tasks. The eager enumerations `data_entries`, `continuation_entries` and
+`join_entries` of
+[`mod.rs`](../../../rspace++/src/rspace/persistence/durable/mod.rs) and
+`set_channel_counts` of
+[`data_index.rs`](../../../rspace++/src/rspace/data_index.rs) are reached
+only from the eager bootstrap now, and carry the same attribute.
+`DurableHotStoreBootstrapError`, which only the eager bootstrap returns, is
+`#[cfg(test)]`. So are the re-exports of `DurableAuthorityViewV1`,
+`DurableObjectReadErrorV1` and `RSpaceSemanticProfile` in
+[`persistence/mod.rs`](../../../rspace++/src/rspace/persistence/mod.rs), whose
+only users outside tests were the eager bootstrap and its error type, beside
+a test-only re-export of the durable owner's limits, successor policy,
+transaction error, genesis and recovery that the tests of this slice use. In
+[`view_reader.rs`](../../../rspace++/src/rspace/persistence/durable/view_reader.rs),
+the dead-code expectation of `DurableViewReaderV1::with_limits` named this
+task as the end of its test-only use. Only tests set a reader's limits, so the
+expectation stays, and its reason now names the durable state-authority
+backend (task `rspace-authority-durable-backend`), which creates the durable
+history repository that builds the readers. No persisted byte, record kind,
+root or wire message changes.
+
+**Tests.** The module
+[`durable_reader_bootstrap.rs`](../../../rspace++/tests/hot_store/durable_reader_bootstrap.rs)
+uses the universe of VR-02: the channels `a`, `b` and `c`, the values `v0` to
+`v2`, the bodies `k0` and `k1`, the stored groups `(a)`, `(b)`, `(a,b)`,
+`(b,a)`, `(a,a)` and `(c,a,b)`, and the unstored groups `(c)`, `(c,a)` and
+`(a,b,c)`, which are probed as well. A base state is put into the hot store of
+a fresh durable owner on an empty store, each continuation with a join for
+every distinct channel of its group, published and recovered as a view; a
+generated base holds up to seven data and up to five continuations. A case
+chooses a base, a cache, that is any subset of the 15 probed keys with their
+base records, and up to 23 operations: reads, puts and removals of data,
+continuations and joins. A removal's index is taken from the eager store's
+records, and a continuation is put and removed together with its joins, so
+that every published state stays coherent. The lazy store reads through a
+wrapper of its reader that records every call, its key and the number of
+records it returned.
+
+1. `lazy_and_eager_stores_agree_on_contents_reads_and_journals` (VR-04)
+   builds both stores over one view. Constructing the lazy store must make no
+   reader call. Every operation must give both stores the same answer: the
+   same records in the same order for a read, and the same result for a put
+   or a removal. Afterwards every probed key must hold the same records in
+   both stores, as a multiset and in the same order, and the five pending
+   journals must be equal. The lazy store is then bound to the view's slot,
+   and the captures of both stores at that slot must carry the same base, the
+   same journal revision, the same journals and the same data and join
+   counts. No cached key may have been read from the reader. Three seeded
+   cases and 32 generated ones are checked, and the test asserts that each of
+   these occurred: a fill that returned records, a fill inside a mutation, a
+   cache that holds records, a non-empty final journal, an effective removal
+   in each namespace, and both orders of one pair stored at the end.
+2. `lazy_bootstrap_makes_no_reader_call_during_construction` (VR-05) builds a
+   lazy store over each of the three seeded bases with three caches: none,
+   four keys, and all 15. Construction must make no reader call. Reading each
+   probed key must then return the eager store's records, make no call for a
+   cached key, and make exactly one call, for that key, for an uncached one.
+   Uncached and cached reads that return records both occur.
+3. `a_bound_lazy_store_checkpoints_to_the_eager_successor_slot` (VR-06) copies
+   the published store's files, all but `writer.lock.v1`, into a twin
+   directory, which must hold the same bytes and recover the same catalog
+   slot. The lazy store is built on the original's view and the eager store on
+   the twin's, and the operations are applied to both. `into_rspace_authority`
+   must refuse the detached lazy store with `Journal(JournalConflict)` and
+   return the view with the same slot, and must accept it after
+   `bind_journal_authority` with that slot. Both owners then checkpoint. The
+   two states must be equal, the successor slots that `attach` reports must be
+   equal and name that state, both journals must be empty, every probed key
+   must hold the same records, and, once both owners are dropped, the two
+   directories must hold the same files byte for byte. Two seeded cases and 16
+   generated ones are checked; a checkpoint that publishes a new generation,
+   one whose empty journal leaves the state unchanged, and a fill that
+   returned records all occur.
+4. `detached_journals_cannot_be_published_and_mismatched_binds_change_nothing`
+   (VR-08) has two parts. On the second seeded base, a lazy store with no
+   cache puts a datum and a continuation, so that its journal is not empty.
+   Capture and validation at the view's slot, `commit_pending_deltas`,
+   `into_rspace_authority`, and `checkpoint_view` of an owner attached through
+   the eager store with the lazy store as the store to publish must all refuse
+   with `JournalConflict`, and must leave the store's files and the journal
+   unchanged. A bind to the genesis slot of the same directory, whose state
+   has another manifest, must be refused and change neither the journal nor
+   the refusal of a capture. A bind to the view's slot must then succeed, and
+   the owner must publish the lazy journal as the next generation, which
+   acknowledges the journal and binds it to the successor slot that `attach`
+   reports. A re-bind of that journal to the view's slot, whose state is no
+   longer the journal's, must be refused and keep the journal's version, its
+   contents and the slot at which the owner attaches the store.
+   The successor reopens with the lazy store's records, compared as multisets
+   per key. The record index of
+   [`record_index.rs`](../../../rspace++/src/rspace/record_index.rs) keeps a
+   live order of continuations and joins, newest put first, and a reopened
+   store reads them in the order of their durable paths, so the two orders
+   may differ after a put. In the second part, two identical lazy stores over
+   a synthetic base start detached, or bound to the base's slot at generation
+   0, apply the same operations and are both invalidated by `clear` in about a
+   quarter of the generated cases and in one seeded case. One of them is
+   bound to a synthetic slot at generation 0 or 1 whose manifest is drawn from
+   three digests and two encoded lengths, so that equal digests with unequal
+   lengths occur. The bind must succeed exactly when the manifest equals the
+   base's and the journal is not invalidated. After an accepted bind, capture
+   and validation at the slot must succeed, a capture at another slot must be
+   refused, and the other store's capture at the slot must succeed exactly
+   when that store was bound to the slot before; a journal that was bound
+   before must keep its version and its contents. After a refused bind, a
+   journal that was bound before must still be captured at the base's slot
+   with the same version and contents, and the two stores must be
+   indistinguishable: equal journals, equal refusals of capture and
+   validation at the slot and at the base's slot, equal results of a bind to
+   the base's slot, and then captures with the same base, revision and
+   observation, or the same refusal. Five seeded cases and 256 generated ones
+   are checked; an accepted bind at another generation, an accepted re-bind
+   of a bound journal to another slot of the same state, a refused bind with
+   a non-empty journal, a refused bind with an equal digest and an unequal
+   length, a refused re-bind of a bound journal to a slot of another state,
+   and a refused bind of an invalidated journal all occur.
+5. `the_closed_reader_control_breaks_the_lazy_and_eager_agreement` runs the
+   check of VR-04 on the three seeded cases with `ClosedDurableHistoryReader`
+   in place of the durable reader. The check must fail exactly for the second
+   seed, whose uncached keys hold base records, and pass for the empty base
+   and for the base whose every key is cached, so the check of VR-04 can fail
+   and detects a reader that loses records. It is bound to no ID.
+
+**The VR rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| VR-04 | Lazy and eager stores agree. For a published durable state, a hot store built by `create_from_durable_reader` over a durable reader of that state, with any cache of base records, and the eager store of `create_from_durable` give every read, put and removal of data, continuations and joins the same answer. Afterwards every channel and group holds the same records in both stores, as multisets and in the same order, and their pending journals are equal. After the lazy store is bound to the state's slot, the captures of both stores at that slot carry the same base, journal revision, journals and endpoint counts. No cached key is read from the reader. | `lazy_and_eager_stores_agree_on_contents_reads_and_journals` |
+| VR-05 | No reads at construction. Building a store with `create_from_durable_reader` makes no reader call, whatever its cache. Afterwards the first read of a cached key makes no call, the first read of an uncached key makes exactly one call, for that key, and every read returns the eager store's records. | `lazy_bootstrap_makes_no_reader_call_during_construction` |
+| VR-06 | A bound lazy store publishes as the eager store does. With the base in two byte-identical directories, the owner refuses a detached lazy store and accepts it after `bind_journal_authority` with its view's slot. Checkpointing the same operations through the lazy store and through the eager store then yields the same state and the same successor catalog slot, empties both journals, leaves the same records in both stores and leaves the two directories byte-identical. | `a_bound_lazy_store_checkpoints_to_the_eager_successor_slot` |
+| VR-08 | Detached journals cannot be published, and refused binds change nothing. Capture, validation, `commit_pending_deltas`, `into_rspace_authority` and `checkpoint_view` refuse a detached journal with `JournalConflict` and change no file and no journal. `bind_journal_authority` accepts exactly the slots whose state has the journal's recorded manifest, digest and encoded length alike, and refuses every slot once the journal is invalidated. A journal already bound may be bound again to another slot of the same state, which keeps its contents and its version; a bind of a bound journal to a slot of another state is refused and leaves the journal bound to its slot with the same contents and version. After a refused bind the store cannot be told apart from an identical store that did not attempt it. | `detached_journals_cannot_be_published_and_mismatched_binds_change_nothing` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -9060,7 +9254,11 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | VR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12397): the lease count, lease key activity and reclamation decision of a durable read handle across a successor and owner teardown. It witnesses the caller registry's CA-21, `pinned_generation_cannot_be_reclaimed`, and CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite: listing `RSpaceCallerAuthority.v` among its Rocq sources would oblige a row here for every capstone of that file. |
 | VR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the per-key results of a lazy durable reader against the eager enumerations of the same published state. No model states a property of the reader's Rust results, and both sides decode through the same functions. |
 | VR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the results of a lazy durable reader after a successor is published, after owner teardown, and on the successor's generation with the retained predecessor's roots. Like VR-01, it witnesses the caller registry's CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite, for the reason given at VR-01. |
+| VR-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12399): the answers, final records, pending journals and bound captures of a lazily and an eagerly bootstrapped hot store over one published state. No model states a property of the hot store's Rust results, and the eager store is the oracle. |
+| VR-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12399): the reader calls of a lazily bootstrapped hot store at construction and at the first read of each key. No model counts reader calls. |
+| VR-06 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12399): the owner's admission and checkpoint of a bound lazy store against an eager store in a byte-identical twin directory. No model distinguishes a lazily from an eagerly built hot store; the property is the executable equality of their publications. |
 | VR-07 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12398): the literal ordered prefix of a continuation read, ruling D1. This matrix cites no model of RhoPathV1 group prefixes, and no model states a property of the reader's Rust results. |
+| VR-08 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12399): the refusals of a detached journal, and the manifest check of `bind_journal_authority` for detached and for bound journals. No model has a detached journal base or a bind. |
 | DI-01 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_root_is_function_of_semantic_roots`, `RSpaceDirectManifestIdentity.direct_resolution_is_exact` | P | Partially entailed (task 14301): the published root of a store whose current manifest is durable for its profile is a function of the current namespace roots, whatever the store's retained history, catalog generation, ledger and objects, and a coherent store resolves that root to those roots. The executable refinement obligations are that the canonical radix DAG makes each namespace root a function of the endpoints it holds, across insertion orders and checkpoint schedules; that reopen recovers the published current manifest and a coherent ledger; and that Blake2b-256 over the manifest's canonical bytes refines the model's injective code. |
 | DI-02 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_resolution_is_exact` | P | Partially entailed (task 14301): on a coherent store, the root of each current or retained state gets that state's own outcome after one read, and every other root, including the digest of a manifest that the ledger no longer retains, is refused as unknown with no read. The executable refinement obligations are that `resolve_retained_state` refines `resolve_direct` (one ledger probe, one bounded read, the parse and the digest check, then steps 4 to 6) and that cold admission and the closure ledger make the admitted core coherent. |
 | DI-03 | `EXEC_ONLY` | `RSpaceDirectManifestIdentity.direct_root_is_function_of_semantic_roots` | P | Partially entailed (task 14301): the injective direction of the theorem gives different published roots to stores of one profile whose durable current manifests have different namespace roots. That two states which differ in one endpoint differ in exactly that endpoint's namespace root is the executable refinement obligation; it rests on the canonical encoding and on Blake2b-256 over it, which the model abstracts as an injective code. |
@@ -9887,6 +10085,51 @@ test's file, all of which change, so it was regenerated, and the PathMap
 aggregate takes its new manifest digest. No persisted record kind, byte
 layout, magic number or file name is new. See the retained state endpoint
 difference section.
+
+The 2026-11-12 lazy durable hot-store bootstrap slice of task 12399 adds
+VR-04, VR-05, VR-06 and VR-08, so the catalog/derivation/binding registry
+now contains **262** IDs. The manifest test's executable sources gain
+`durable_reader_bootstrap.rs`. On an export of the candidate tree, the five
+tests of the new module, the 20 durable owner tests (one more is ignored),
+the 20 journal-commit tests and the 22 tests of the generation-checkpoint
+property module passed in debug and in release, and the whole library test
+target, the manifest test included, passed in debug and in release with 976
+tests (966 passed, 10 ignored). The seeded cases of VR-04, VR-06 and VR-08
+cover by themselves every case that their tests require. While this slice
+was written, a debug run failed VR-08 at the comparison of the reopened
+successor, which then also compared the order of the lazy store's
+continuations under `(a,a)` with the reopened store's: the live store read
+`k0` before `k1`, newest put first, and the reopened store read them in the
+order of their durable paths. That comparison now uses multisets per key, as
+the lazy durable hot-store bootstrap section states; no production code
+changed for it. Five controls were each applied to the export, run against
+the new module in debug with `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` and
+removed, and each made exactly one test of the module fail:
+
+- Running VR-04 with `ClosedDurableHistoryReader` in place of the durable
+  reader made VR-04 fail at its second seed: removing the base datum of
+  channel `b` succeeded in the eager store and failed in the lazy store with
+  `BugFoundError("Index 0 out of bounds when removing datum (len=0)")`.
+- Binding without the manifest comparison, that is accepting every slot
+  while the journal records a manifest, made VR-08 fail at the bind of the
+  detached journal to the genesis slot, which returned `Ok(())`.
+- Refusing every re-bind of a bound journal made VR-08 fail at its fourth
+  seed, whose re-bind to another slot of the same state was refused.
+- Accepting every re-bind of a bound journal made VR-08 fail at the re-bind
+  of the journal that the owner had acknowledged to the slot of the base
+  state, which returned `Ok(())`.
+- Advancing the journal version at every re-bind of a bound journal made
+  VR-08 fail at its fourth seed, whose re-bind kept the journal's contents
+  but not its version.
+
+Each faulted file was restored from its saved copy and compared byte for
+byte. Clippy of `rspace_plus_plus` with every target lists no finding in the
+files of this slice, and `rustfmt --check` passes on its Rust files. The
+workspace-regression registry hashes the persistence module and the manifest
+test's file, and the RMP2 registry hashes `data_index.rs`; all three change,
+so both registries were regenerated, and the PathMap aggregate takes their
+new manifest digests. No persisted record kind, byte layout, magic number or
+file name is new. See the lazy durable hot-store bootstrap section.
 
 ## Caller-authority contract (2026-09-06)
 

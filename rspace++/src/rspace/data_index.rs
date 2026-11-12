@@ -2011,6 +2011,14 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
 
     /// Replace one channel from exact authenticated multiplicities. Counts
     /// stay in the Bag/PathMap representation throughout construction.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only the test-only eager durable hot-store bootstrap loads channels from \
+                      authenticated counts"
+        )
+    )]
     pub(crate) fn set_channel_counts(
         &mut self,
         channel: C,

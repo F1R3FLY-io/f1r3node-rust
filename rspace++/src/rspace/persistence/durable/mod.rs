@@ -365,6 +365,13 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     /// legacy channel projection. This is intended for a bounded startup
     /// compatibility bridge; each endpoint retains its checked multiplicity
     /// so callers can build a PathMap-backed state without expanding counts.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only the test-only eager durable hot-store bootstrap enumerates a namespace"
+        )
+    )]
     pub(crate) fn data_entries(
         &self,
         max_steps: u64,
@@ -402,6 +409,13 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     /// Enumerate authenticated ContinuationMap records while preserving each
     /// ordered channel group. Source payloads are validated through the same
     /// pinned generation and bounded decoder as keyed reads.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only the test-only eager durable hot-store bootstrap enumerates a namespace"
+        )
+    )]
     pub(crate) fn continuation_entries(
         &self,
         max_steps: u64,
@@ -443,6 +457,13 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
 
     /// Enumerate authenticated JoinBag records while preserving endpoint
     /// multiplicity and the indexed channel identity.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only the test-only eager durable hot-store bootstrap enumerates a namespace"
+        )
+    )]
     pub(crate) fn join_entries(
         &self,
         max_steps: u64,
