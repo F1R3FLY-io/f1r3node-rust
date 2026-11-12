@@ -12,8 +12,8 @@ pub mod history_repository_impl;
     not(test),
     expect(
         dead_code,
-        reason = "only unit tests construct the durable history repository until task \
-                  rspace-authority-durable-backend returns it from create_history_repo"
+        reason = "only unit tests read a durable history repository's view through its reader \
+                  accessor; the repository holds the reader for its generation lease"
     )
 )]
 pub(crate) mod durable_history_repository;

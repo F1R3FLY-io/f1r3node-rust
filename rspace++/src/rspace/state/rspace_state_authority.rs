@@ -6,22 +6,40 @@
 //! unforgeable capability produced either by a completed local checkpoint or
 //! by a sealed import; arbitrary digests cannot acquire publication authority.
 
+use std::any::{Any, type_name};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::fmt::{Debug, Display, Formatter};
+use std::hash::Hash;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use heed::types::SerdeBincode;
 use heed::{Database, Env};
+use serde::Serialize;
 use shared::rust::ByteBuffer;
 use shared::rust::store::key_value_store::{
     KeyValueStore, KeyValueStoreMutation, KvStoreError, validate_atomic_batch,
 };
 
-use crate::rspace::errors::{AuthorityBackendMismatch, HistoryError, RootError};
+use crate::rspace::data_index::DataIndexError;
+use crate::rspace::errors::{
+    AuthorityBackendMismatch, HistoryError, HistoryRepositoryError, RootError,
+};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::history::cold_store::{ColdLeafAddress, validate_cold_leaf};
 use crate::rspace::history::instances::radix_history::{PreparedHistoryCheckpoint, RadixHistory};
 use crate::rspace::history::roots_store::CurrentRoot;
+use crate::rspace::hot_store::{DurableJournalBaseV1, HotStore, HotStoreInstances, HotStoreState};
+use crate::rspace::persistence::{
+    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError,
+    DurableLimits, DurablePublishedCoreV1, DurableRSpaceAuthorityV1, DurableRSpaceTransactionError,
+    DurableStateReadHandleErrorV1, DurableStateRootV1, DurableStoreGenesisErrorV1,
+    DurableViewReaderV1, GenerationLeaseRegistryV1, LogPackDecodeLimits, RSpaceSemanticProfile,
+    SemanticProfile, create_empty_store_v1, recover_read_authority,
+};
+use crate::rspace::rho_path::RhoPathEncode;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::shared::env_cache;
 use crate::rspace::shared::trie_exporter::NodePath;
 use crate::rspace::state::closure_verifier::{RecordValidator, verify_state_closure};
@@ -139,9 +157,45 @@ struct LmdbState {
     roots: BytesDb,
 }
 
+type DurableOwnerMutexV1<S> = tokio::sync::Mutex<DurableRSpaceAuthorityV1<S>>;
+
+pub(crate) struct DurableBackendV1 {
+    directory: PathBuf,
+    recovery: DurableLimits,
+    wal: LogPackDecodeLimits,
+    admission: DurableAdmissionLimitsV1,
+    opening: Mutex<()>,
+    slot: OnceLock<Arc<dyn Any + Send + Sync>>,
+}
+
+pub(crate) struct DurableOwnerSlotV1<S: SemanticProfile>
+where S::Channel: Clone + Hash + Eq
+{
+    owner: DurableOwnerMutexV1<S>,
+    published: DurablePublishedCoreV1<S>,
+    generation_leases: GenerationLeaseRegistryV1,
+}
+
+#[derive(Debug)]
+pub(crate) enum DurableBackendErrorV1 {
+    Directory(DurableIoError),
+    Genesis(Box<DurableStoreGenesisErrorV1>),
+    Recovery(Box<DurableAdmissionErrorV1>),
+    View(DurableStateReadHandleErrorV1),
+    HotStore(DataIndexError),
+    Owner(Box<DurableRSpaceTransactionError>),
+    ProfileMismatch { requested: &'static str },
+}
+
+pub(crate) enum AuthorityRouteV1<'a> {
+    Legacy,
+    Durable(&'a DurableBackendV1),
+}
+
 enum AuthorityBackend {
     Memory(Mutex<MemoryState>),
     Lmdb(LmdbState),
+    Durable(DurableBackendV1),
 }
 
 /// The sole mutation authority for the three persistent RSpace state domains.
@@ -270,12 +324,57 @@ impl RSpaceStateAuthority {
         Ok(authority)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests open a durable state authority until \
+                      rspace-select-durable-backend selects it per store prefix"
+        )
+    )]
+    pub(crate) fn durable(
+        directory: impl Into<PathBuf>,
+        recovery: DurableLimits,
+        wal: LogPackDecodeLimits,
+        admission: DurableAdmissionLimitsV1,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            identity: Arc::new(AuthorityIdentity),
+            backend: AuthorityBackend::Durable(DurableBackendV1 {
+                directory: directory.into(),
+                recovery,
+                wal,
+                admission,
+                opening: Mutex::new(()),
+                slot: OnceLock::new(),
+            }),
+        })
+    }
+
+    pub(crate) fn route(&self) -> AuthorityRouteV1<'_> {
+        match &self.backend {
+            AuthorityBackend::Memory(_) | AuthorityBackend::Lmdb(_) => AuthorityRouteV1::Legacy,
+            AuthorityBackend::Durable(durable) => AuthorityRouteV1::Durable(durable),
+        }
+    }
+
+    fn require_legacy(
+        &self,
+        facet: AuthorityBackendMismatch,
+    ) -> Result<(), AuthorityBackendMismatch> {
+        match &self.backend {
+            AuthorityBackend::Memory(_) | AuthorityBackend::Lmdb(_) => Ok(()),
+            AuthorityBackend::Durable(_) => Err(facet),
+        }
+    }
+
     /// Finish any structurally staged legacy migration with the concrete
     /// RSpace record decoder, then initialize an actually fresh catalog.
     pub(crate) fn initialize_for_records(
         &self,
         validator: &RecordValidator,
     ) -> Result<(), RootError> {
+        self.require_legacy(AuthorityBackendMismatch::Roots)?;
         if let AuthorityBackend::Lmdb(state) = &self.backend {
             complete_legacy_state(
                 &state.env,
@@ -319,6 +418,7 @@ impl RSpaceStateAuthority {
                     kind,
                 }))
             }
+            AuthorityBackend::Durable(_) => Err(facet_mismatch(kind)),
         }
     }
 
@@ -331,6 +431,9 @@ impl RSpaceStateAuthority {
             AuthorityBackend::Lmdb(state) => {
                 let txn = state.env.read_txn().map_err(root_heed)?;
                 decode_current_from_db(state.roots, &txn)
+            }
+            AuthorityBackend::Durable(_) => {
+                Err(RootError::BackendMismatch(AuthorityBackendMismatch::Roots))
             }
         }
     }
@@ -365,6 +468,7 @@ impl RSpaceStateAuthority {
         cold_leaves: Vec<(ColdLeafAddress, ByteBuffer)>,
         record_validator: &RecordValidator,
     ) -> Result<CurrentRoot, HistoryError> {
+        self.require_legacy(AuthorityBackendMismatch::History)?;
         if !Arc::ptr_eq(self, prepared.authority()) {
             return Err(HistoryError::ActionError(
                 "prepared checkpoint belongs to a different RSpace authority".to_string(),
@@ -525,10 +629,14 @@ impl RSpaceStateAuthority {
                 txn.commit().map_err(root_heed)?;
                 Ok(next)
             }
+            AuthorityBackend::Durable(_) => {
+                Err(HistoryError::BackendMismatch(AuthorityBackendMismatch::History))
+            }
         }
     }
 
     pub fn begin_import(&self, spec: StateImportSpec) -> Result<StagedImport, StateImportError> {
+        self.require_legacy(AuthorityBackendMismatch::History)?;
         let expected_generation = self
             .current_verified_root()?
             .map(|current| current.generation());
@@ -552,6 +660,7 @@ impl RSpaceStateAuthority {
         next_path: NodePath,
         terminal: bool,
     ) -> Result<(), StateImportError> {
+        self.require_legacy(AuthorityBackendMismatch::History)?;
         self.ensure_authority(&staged.identity)?;
         if !staged.pending_paths.remove(start_path) {
             return Err(StateImportError::UnexpectedStartPath(start_path.clone()));
@@ -567,6 +676,7 @@ impl RSpaceStateAuthority {
         staged: StagedImport,
         record_validator: &RecordValidator,
     ) -> Result<SealedImportedRoots, StateImportError> {
+        self.require_legacy(AuthorityBackendMismatch::History)?;
         self.ensure_authority(&staged.identity)?;
         if !staged.pending_paths.is_empty() {
             return Err(StateImportError::IncompletePagination(
@@ -593,6 +703,7 @@ impl RSpaceStateAuthority {
         sealed: SealedImportedRoots,
         witness: &StateImportPublicationWitness,
     ) -> Result<StateImportPublication, StateImportError> {
+        self.require_legacy(AuthorityBackendMismatch::Roots)?;
         self.ensure_authority(&sealed.identity)?;
         let activation = match sealed.spec.publication_mode() {
             StateImportPublicationMode::PreserveCurrent => {
@@ -628,6 +739,7 @@ impl RSpaceStateAuthority {
         &self,
         root: &Blake2b256Hash,
     ) -> Result<KnownVerifiedRoot, RootError> {
+        self.require_legacy(AuthorityBackendMismatch::Roots)?;
         if !self.contains_verified_root(root)? {
             return Err(RootError::UnknownRootError(format!("unknown verified root: {root}")));
         }
@@ -638,6 +750,7 @@ impl RSpaceStateAuthority {
     }
 
     pub fn activate_known(&self, known: KnownVerifiedRoot) -> Result<CurrentRoot, RootError> {
+        self.require_legacy(AuthorityBackendMismatch::Roots)?;
         self.ensure_root_authority(&known.identity)?;
         self.publish_roots(
             &[],
@@ -649,6 +762,7 @@ impl RSpaceStateAuthority {
     }
 
     pub fn contains_verified_root(&self, root: &Blake2b256Hash) -> Result<bool, RootError> {
+        self.require_legacy(AuthorityBackendMismatch::Roots)?;
         validate_root_hash(root)?;
         let key = verified_root_key(root);
         let expected = verified_root_value(root);
@@ -665,6 +779,9 @@ impl RSpaceStateAuthority {
                     Some(value) if value == expected => Ok(true),
                     Some(_) => Err(corrupt_membership(root)),
                 }
+            }
+            AuthorityBackend::Durable(_) => {
+                Err(RootError::BackendMismatch(AuthorityBackendMismatch::Roots))
             }
         }
     }
@@ -692,6 +809,9 @@ impl RSpaceStateAuthority {
                     publish_in_db(state.roots, &mut txn, &roots, target, expected_generation)?;
                 txn.commit().map_err(root_heed)?;
                 Ok(result)
+            }
+            AuthorityBackend::Durable(_) => {
+                Err(RootError::BackendMismatch(AuthorityBackendMismatch::Roots))
             }
         }
     }
@@ -734,6 +854,7 @@ impl RSpaceStateAuthority {
                     .map(|key| db.get(&txn, key).map_err(Into::into))
                     .collect()
             }
+            AuthorityBackend::Durable(_) => Err(durable_object_refusal(kind)),
         }
     }
 
@@ -767,6 +888,7 @@ impl RSpaceStateAuthority {
                 txn.commit()?;
                 Ok(())
             }
+            AuthorityBackend::Durable(_) => Err(durable_object_refusal(kind)),
         }
     }
 
@@ -831,6 +953,7 @@ impl RSpaceStateAuthority {
                 txn.commit()?;
                 Ok(true)
             }
+            AuthorityBackend::Durable(_) => Err(durable_object_refusal(kind)),
         }
     }
 
@@ -852,6 +975,7 @@ impl RSpaceStateAuthority {
                 }
                 Ok(result)
             }
+            AuthorityBackend::Durable(_) => Err(durable_object_refusal(kind)),
         }
     }
 
@@ -876,6 +1000,7 @@ impl RSpaceStateAuthority {
                 }
                 Ok(())
             }
+            AuthorityBackend::Durable(_) => Err(durable_object_refusal(kind)),
         }
     }
 
@@ -904,6 +1029,7 @@ impl RSpaceStateAuthority {
                 }
                 Ok(())
             }
+            AuthorityBackend::Durable(_) => Err(durable_object_refusal(kind)),
         }
     }
 
@@ -921,6 +1047,7 @@ impl RSpaceStateAuthority {
                 };
                 Ok(has_first)
             }
+            AuthorityBackend::Durable(_) => Err(durable_object_refusal(kind)),
         }
     }
 
@@ -951,8 +1078,247 @@ impl RSpaceStateAuthority {
                 }
                 Ok(total)
             }
+            AuthorityBackend::Durable(_) => Err(durable_object_refusal(kind)),
         }
     }
+}
+
+impl DurableBackendV1 {
+    pub(crate) fn owner_slot<C, P, A, K>(
+        &self,
+    ) -> Result<Arc<DurableOwnerSlotV1<RSpaceSemanticProfile<C, P, A, K>>>, DurableBackendErrorV1>
+    where
+        C: Default
+            + Clone
+            + Debug
+            + Eq
+            + Hash
+            + RhoPathEncode
+            + ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
+        P: Default + Clone + Debug + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+        A: Default
+            + Clone
+            + Debug
+            + Serialize
+            + RhoPathEncode
+            + ColdStoreDecode
+            + Send
+            + Sync
+            + 'static,
+        K: Default + Clone + Debug + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+    {
+        if let Some(installed) = self.slot.get() {
+            return typed_owner_slot(Arc::clone(installed));
+        }
+        let _opening = match self.opening.lock() {
+            Ok(opening) => opening,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(installed) = self.slot.get() {
+            return typed_owner_slot(Arc::clone(installed));
+        }
+        let opened: Arc<dyn Any + Send + Sync> =
+            Arc::new(DurableOwnerSlotV1::<RSpaceSemanticProfile<C, P, A, K>>::open(self)?);
+        typed_owner_slot(Arc::clone(self.slot.get_or_init(|| opened)))
+    }
+}
+
+impl<S: SemanticProfile> DurableOwnerSlotV1<S>
+where S::Channel: Clone + Hash + Eq
+{
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests lock the durable owner until \
+                      rspace-hard-checkpoint-durable-wiring checkpoints through it"
+        )
+    )]
+    pub(crate) fn owner(&self) -> &DurableOwnerMutexV1<S> { &self.owner }
+
+    pub(crate) fn published_core(&self) -> DurablePublishedCoreV1<S> { self.published.clone() }
+}
+
+impl<C, P, A, K> DurableOwnerSlotV1<RSpaceSemanticProfile<C, P, A, K>>
+where
+    C: Default
+        + Clone
+        + Debug
+        + Eq
+        + Hash
+        + RhoPathEncode
+        + ColdStoreDecode
+        + Send
+        + Sync
+        + 'static,
+    P: Default + Clone + Debug + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+    A: Default
+        + Clone
+        + Debug
+        + Serialize
+        + RhoPathEncode
+        + ColdStoreDecode
+        + Send
+        + Sync
+        + 'static,
+    K: Default + Clone + Debug + StableHashSerialize + ColdStoreDecode + Send + Sync + 'static,
+{
+    fn open(backend: &DurableBackendV1) -> Result<Self, DurableBackendErrorV1> {
+        let directory = DurableDirectoryV1::open(backend.directory.as_path())
+            .map_err(DurableBackendErrorV1::Directory)?;
+        let store_files = directory
+            .store_file_names()
+            .map_err(DurableBackendErrorV1::Directory)?;
+        if store_files.is_empty() {
+            create_empty_store_v1::<RSpaceSemanticProfile<C, P, A, K>>(
+                directory.path(),
+                backend.recovery,
+            )
+            .map_err(|error| DurableBackendErrorV1::Genesis(Box::new(error)))?;
+        }
+        let view = recover_read_authority::<RSpaceSemanticProfile<C, P, A, K>>(
+            directory.path(),
+            backend.recovery,
+            backend.wal,
+            backend.admission,
+        )
+        .map_err(|error| DurableBackendErrorV1::Recovery(Box::new(error)))?;
+        let resolved = view
+            .resolve(DurableStateRootV1::of_manifest(view.manifest()))
+            .map_err(|error| {
+                DurableBackendErrorV1::View(DurableStateReadHandleErrorV1::Root(error))
+            })?;
+        let handle = view
+            .read_handle_at(&resolved)
+            .map_err(DurableBackendErrorV1::View)?;
+        let probe = Arc::new(Self::lazy_store(
+            DurableViewReaderV1::new(handle, resolved.roots()),
+            DurableJournalBaseV1 {
+                manifest: resolved.manifest(),
+                registry: view.generation_leases(),
+            },
+        )?);
+        probe
+            .bind_journal_authority(view.catalog())
+            .map_err(|error| {
+                DurableBackendErrorV1::Owner(Box::new(DurableRSpaceTransactionError::from(error)))
+            })?;
+        let owner = match DurableRSpaceAuthorityV1::from_view(view, &probe) {
+            Ok(owner) => owner,
+            Err(refusal) => {
+                let (_view, error) = *refusal;
+                return Err(DurableBackendErrorV1::Owner(Box::new(error)));
+            }
+        };
+        Ok(Self {
+            published: owner.published_core(),
+            generation_leases: owner.generation_leases(),
+            owner: DurableOwnerMutexV1::new(owner),
+        })
+    }
+
+    pub(crate) fn view_store(
+        &self,
+        root: &Blake2b256Hash,
+    ) -> Result<Box<dyn HotStore<C, P, A, K>>, DurableBackendErrorV1> {
+        let target = DurableStateRootV1::try_from(root).map_err(|error| {
+            DurableBackendErrorV1::View(DurableStateReadHandleErrorV1::Root(error))
+        })?;
+        let (resolved, handle) = self
+            .published
+            .read_handle(Some(target))
+            .map_err(DurableBackendErrorV1::View)?;
+        Self::lazy_store(DurableViewReaderV1::new(handle, resolved.roots()), DurableJournalBaseV1 {
+            manifest: resolved.manifest(),
+            registry: self.generation_leases.clone(),
+        })
+    }
+
+    fn lazy_store(
+        reader: DurableViewReaderV1<RSpaceSemanticProfile<C, P, A, K>>,
+        base: DurableJournalBaseV1,
+    ) -> Result<Box<dyn HotStore<C, P, A, K>>, DurableBackendErrorV1> {
+        HotStoreInstances::create_from_durable_reader(
+            Box::new(reader),
+            HotStoreState::default(),
+            base,
+        )
+        .map_err(DurableBackendErrorV1::HotStore)
+    }
+}
+
+impl Display for DurableBackendErrorV1 {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Directory(error) => {
+                write!(formatter, "the durable store directory cannot be listed: {error}")
+            }
+            Self::Genesis(error) => {
+                write!(formatter, "the empty durable store cannot be created: {error}")
+            }
+            Self::Recovery(error) => {
+                write!(formatter, "the durable store cannot be recovered and admitted: {error}")
+            }
+            Self::View(error) => {
+                write!(formatter, "the durable state cannot be pinned: {error}")
+            }
+            Self::HotStore(error) => {
+                write!(formatter, "the durable hot store cannot be built: {error}")
+            }
+            Self::Owner(error) => {
+                write!(formatter, "the durable owner cannot be built: {error:?}")
+            }
+            Self::ProfileMismatch { requested } => write!(
+                formatter,
+                "the durable owner slot holds another semantic profile than {requested}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DurableBackendErrorV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Directory(error) => Some(error),
+            Self::Genesis(error) => Some(&**error),
+            Self::Recovery(error) => Some(&**error),
+            Self::View(error) => Some(error),
+            Self::HotStore(error) => Some(error),
+            Self::Owner(_) | Self::ProfileMismatch { .. } => None,
+        }
+    }
+}
+
+impl From<DurableBackendErrorV1> for HistoryRepositoryError {
+    fn from(error: DurableBackendErrorV1) -> Self {
+        HistoryRepositoryError::DurableBackend(Box::new(error))
+    }
+}
+
+fn typed_owner_slot<S: SemanticProfile>(
+    installed: Arc<dyn Any + Send + Sync>,
+) -> Result<Arc<DurableOwnerSlotV1<S>>, DurableBackendErrorV1>
+where S::Channel: Clone + Hash + Eq {
+    installed.downcast::<DurableOwnerSlotV1<S>>().map_err(|_| {
+        DurableBackendErrorV1::ProfileMismatch {
+            requested: type_name::<S>(),
+        }
+    })
+}
+
+fn facet_mismatch(kind: ObjectKind) -> AuthorityBackendMismatch {
+    match kind {
+        ObjectKind::History => AuthorityBackendMismatch::History,
+        ObjectKind::Cold => AuthorityBackendMismatch::Cold,
+        ObjectKind::Roots => AuthorityBackendMismatch::Roots,
+    }
+}
+
+fn durable_object_refusal(kind: ObjectKind) -> KvStoreError {
+    KvStoreError::InvalidArgument(facet_mismatch(kind).to_string())
 }
 
 #[derive(Clone)]

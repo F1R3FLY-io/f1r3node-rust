@@ -9914,6 +9914,295 @@ pending journals and the store's records all equal what they were before.
 | CB-02 | Wrong origins and foreign registries are refused, and changed journals are stale. `capture_cross_base_journal` refuses with `JournalConflict`, and changes nothing, a store without a durable journal, an invalidated journal, an origin other than the journal's recorded state (another digest, or the same digest with another encoded length) and a registry other than the journal's own. A capture of either kind whose origin is not the journal's recorded state fails `validate_pending_journal` and the acknowledgement. A journal changed after the capture, by a mutation, a restore, `clear`, `set_state` or the acknowledgement of another capture, each of which advances the version, fails `validate_pending_journal` and the acknowledgement; reads and refused removals keep the capture valid. | `a_wrong_origin_or_registry_is_refused_and_a_changed_journal_fails_validation` |
 | CB-03 | Equal observation. On generated operations and publications, a cross-base capture carries the observation (the five pending journals and the data and join counts) and the journal revision of a same-base capture at a slot of its origin, taken from an identical store bound to that slot, and, after its own store is bound to a slot of the origin, of that store's same-base capture there. A bind to a slot of the origin keeps the cross-base capture valid. | `a_cross_base_capture_observes_what_a_same_base_capture_at_the_origin_observes` |
 
+### Durable state-authority backend (2026-11-12)
+
+Task 7931 wires the durable PathMap owner into RSpace. Until this slice the
+state authority, `RSpaceStateAuthority` in
+[`rspace_state_authority.rs`](../../../rspace++/src/rspace/state/rspace_state_authority.rs),
+had two backends, the in-memory one and the LMDB one, and
+`RSpace::create_history_repo` in
+[`rspace.rs`](../../../rspace++/src/rspace/rspace.rs) always opened the
+legacy history repository over it. This slice, leaf G11 of the operation gate
+(task 12420), adds the third backend,
+`AuthorityBackend::Durable(DurableBackendV1)`, and gives
+`create_history_repo` a durable branch. The in-memory and LMDB paths do not
+change: `create_history_repo` first asks the authority for its route, and the
+legacy route runs the same statements as before.
+
+`RSpaceStateAuthority::durable(directory, recovery, wal, admission)` builds
+the backend from a store directory and from the limits of recovery, of
+log-pack decoding and of admission. It does no I/O. No store manager selects
+the durable backend yet; that is task `rspace-select-durable-backend`. Until
+then only tests call the constructor, so it carries
+`cfg_attr(not(test), expect(dead_code))` with a reason that names that task.
+
+**One owner slot.** The backend holds one slot,
+`OnceLock<Arc<dyn Any + Send + Sync>>`. The first
+`create_history_repo::<C, P, A, K>` installs a
+`DurableOwnerSlotV1<RSpaceSemanticProfile<C, P, A, K>>` in it, and every
+later call takes the slot back with `Arc::downcast`:
+
+```text
+RSpaceStateAuthority
+ └─ AuthorityBackend::Durable(DurableBackendV1)
+     ├─ directory, and the recovery, log-pack and admission limits
+     ├─ opening: std::sync::Mutex<()>     taken by a call that finds the slot empty
+     └─ slot: OnceLock<Arc<dyn Any + Send + Sync>>
+         └─ DurableOwnerSlotV1<RSpaceSemanticProfile<C, P, A, K>>
+             ├─ owner: tokio::sync::Mutex<DurableRSpaceAuthorityV1<..>>
+             │      holds the writer lease and the owner's incarnation
+             ├─ published: DurablePublishedCoreV1<..>
+             │      the cell of the owner's newest admitted core
+             └─ generation_leases: GenerationLeaseRegistryV1
+                    the lease registry of the store directory
+
+create_history_repo
+ ├─▶ DurableHistoryRepositoryV1::new(published)    pinned at the current state
+ └─▶ lazy hot store over a DurableViewReaderV1     pinned at the repository's root,
+                                                   detached journal, empty cache
+```
+
+| Part of the slot | What it is | Who uses it |
+|---|---|---|
+| `owner` | The durable owner, `DurableRSpaceAuthorityV1`, in a `tokio::sync::Mutex`. It holds the directory's writer lease and its incarnation. | The checkpoint paths of later leaves, through `owner()`. Only tests call `owner()` until task `rspace-hard-checkpoint-durable-wiring`, so it carries a dead-code expectation that names that task. |
+| `published` | The `DurablePublishedCoreV1` cell that the owner's `published_core()` returns. Every clone of it shares the owner's newest admitted core. | Every repository and hot store that `create_history_repo` builds. |
+| `generation_leases` | The generation-lease registry of the store directory, taken from the owner when the slot is built. | The base of each hot store's detached journal, which must name the directory's registry. Reading it from the owner would take the owner's mutex. |
+
+The slot therefore owns the owner for as long as the backend lives. No
+repository or hot store holds the owner or the slot, and `create_history_repo`
+never locks the owner: it reads the published core, and it drops its handle
+of the slot before it returns. Once no caller holds a handle of the slot,
+dropping the authority drops the slot and the owner, which releases the
+writer lease; the repositories and hot stores built before keep reading the
+generations that they pinned.
+
+**The first open.** `DurableBackendV1::owner_slot::<C, P, A, K>()` reads the
+slot with one atomic load. Only a call that finds the slot empty takes the
+`opening` mutex, reads the slot again, and opens the store:
+
+1. Open the directory and list its store files: the catalog, packs, indexes
+   and reclamation candidates. The writer lock and foreign files do not
+   count, exactly as in `create_empty_store_v1`.
+2. If and only if there is no store file, create the empty store with
+   `create_empty_store_v1`, which repeats that check under the writer lease.
+3. Recover and admit the store with `recover_read_authority`, which takes the
+   writer lease. A partial store is refused here, and the backend writes
+   nothing to it: it never runs genesis over a directory that holds a store
+   file.
+4. Build a probe store: a lazy hot store over the recovered state whose
+   journal is bound to the recovered catalog slot with
+   `bind_journal_authority`. `DurableRSpaceAuthorityV1::from_view` accepts
+   only a store bound to the view's slot and directory, and keeps no
+   reference to it, so the probe is dropped when the open returns.
+5. Build the owner with `from_view`, build the slot from the owner, its
+   published core and its registry, and install the slot with `get_or_init`.
+
+A refused open installs nothing, so the next call opens again. The `opening`
+mutex serializes first opens: of two concurrent first calls, the second waits
+for the first, and then finds the slot that the first installed instead of
+meeting the first one's writer lease, or opens the store itself if the first
+was refused. A first open costs one directory listing, a genesis only
+for an empty directory, and one recovery and admission, as any open does. A
+later call costs one atomic load, one downcast, and the pin of one read handle
+each for the repository and the hot store.
+
+**What `create_history_repo` returns in durable mode.** The repository is
+`DurableHistoryRepositoryV1::new(slot.published_core())`, pinned at the
+current state. The hot store is built by `create_from_durable_reader` over a
+`DurableViewReaderV1` pinned at the repository's root, with an empty cache and
+a detached journal whose base is that state's manifest and the slot's
+registry, so it reads every key lazily. `create_from_durable_reader`
+therefore has a production caller now, and its dead-code expectation in
+[`hot_store.rs`](../../../rspace++/src/rspace/hot_store.rs) is removed.
+
+**Why a tokio mutex.** In this slice only tests lock the owner. The rule for
+the later leaves is that the checkpoint paths lock it with `lock().await` and
+that nothing else locks it inside a runtime: `close` and tests outside a
+runtime use `blocking_lock`. A task that waits for a `tokio::sync::Mutex`
+yields its thread to the runtime. A task that waited for a
+`std::sync::Mutex` with a blocking `lock()` would block its thread instead,
+and on a current-thread runtime the task that holds the lock could then never
+resume to release it. OG-46 pins this.
+
+**Typed refusals.** Every refusal of the durable branch is a
+`DurableBackendErrorV1`. `HistoryRepositoryError` is public and the
+backend's error type is crate-private, so the new variant
+`HistoryRepositoryError::DurableBackend` holds the refusal as a
+`Box<dyn std::error::Error + Send + Sync>`, and a caller recovers it with
+`downcast_ref::<DurableBackendErrorV1>()`, as an unavailable legacy facet is
+recovered from `heed::Error`.
+
+| Variant | Refused when |
+|---|---|
+| `Directory` | The directory cannot be opened or listed. |
+| `Genesis` | Store genesis of an empty directory fails. |
+| `Recovery` | Recovery or admission refuses the store: for example a partial store, or a writer lease that another opener holds (`WriterLockContended`). |
+| `View` | The current state, or the repository's root, cannot be resolved or pinned. |
+| `HotStore` | `create_from_durable_reader` cannot index the store's initial cache. The backend passes an empty cache, so this refusal is not expected. |
+| `Owner` | The probe cannot be bound, or `from_view` refuses the view. |
+| `ProfileMismatch { requested }` | The slot holds another `RSpaceSemanticProfile` instantiation than the requested one. The refusal reads only the slot. |
+
+The tests below reach `Genesis`, `Recovery` and `ProfileMismatch`. No test
+reaches `Directory`, `View`, `HotStore` or `Owner`.
+
+**Legacy-only methods.** The durable arm of `legacy_facet` serves none of the
+three [legacy facets](#fallible-legacy-state-authority-facets-2026-11-01):
+`history_store`, `cold_store` and `roots_store_for_inspection` return
+`AuthorityBackendMismatch::History`, `Cold` and `Roots`. Every other method
+that reads or writes the legacy objects or the verified-root catalog refuses
+before it looks at its arguments:
+
+| Methods | Refusal |
+|---|---|
+| `initialize_for_records`, `current_verified_root`, `current_root`, `known_verified_root`, `activate_known`, `contains_verified_root` | `RootError::BackendMismatch(Roots)`. `RootError` had no typed mismatch; the variant and its conversion from `AuthorityBackendMismatch` are new. |
+| `commit_local_checkpoint` | `HistoryError::BackendMismatch(History)`, before the prepared checkpoint's authority is compared. |
+| `begin_import`, `accept_import_page`, `seal_import` | `StateImportError::BackendMismatch(History)`, as the durable repository's importer refuses `begin_import`. |
+| `publish_import` | `StateImportError::BackendMismatch(Roots)`. |
+
+`HistoryRepositoryInstances::repository` over a durable authority therefore
+refuses at `initialize_for_records` with
+`HistoryRepositoryError::RootError(RootError::BackendMismatch(Roots))`; there
+is no `Option` backend and no LMDB fallback. The private object methods behind
+the facet views gain a durable arm that returns `KvStoreError::InvalidArgument`
+with the mismatch's message. No facet view of a durable authority exists, so
+that arm is unreachable.
+
+**Re-exports.** The re-exports that production code now uses leave
+`#[cfg(test)]`. In
+[`durable/mod.rs`](../../../rspace++/src/rspace/persistence/durable/mod.rs)
+they are `DurableDirectoryV1`, `DurableIoError`,
+`DurableRSpaceTransactionError`, `DurableStoreGenesisErrorV1` and
+`create_empty_store_v1`. In
+[`persistence/mod.rs`](../../../rspace++/src/rspace/persistence/mod.rs) they
+are `DurableAdmissionLimitsV1`, `DurableRSpaceAuthorityV1`,
+`DurableRSpaceTransactionError`, `create_empty_store_v1`,
+`recover_read_authority` and `RSpaceSemanticProfile`, and
+`DurableAdmissionErrorV1`, `DurableDirectoryV1`, `DurableIoError` and
+`DurableStoreGenesisErrorV1` are re-exported there for the first time. The
+module of the durable history repository keeps its dead-code expectation,
+because `reader()` still has no production caller.
+
+**Two expectation reasons.** The reason of that expectation, in
+[`history/mod.rs`](../../../rspace++/src/rspace/history/mod.rs), and the
+reason of the expectation on `DurableViewReaderV1::with_limits`, in
+[`view_reader.rs`](../../../rspace++/src/rspace/persistence/durable/view_reader.rs),
+named this task as the end of a test-only use that this slice does not end.
+Both now give the standing reason. The repository holds its reader for the
+reader's generation lease, and only tests read through `reader()`: the
+backend pins a second reader for the hot store, because a reader is not
+cloneable. The backend builds every reader with the default limits, which
+impose no ceiling, so only tests set limits: a ceiling would refuse the read
+of a state that the runtime itself reached.
+
+**Not in this slice.**
+
+- `RSpace::create_with_replay` asks the repository for a history reader at
+  its root, which the durable repository refuses with
+  `HistoryError::BackendMismatch(History)`, so in durable mode it returns
+  that refusal. This slice does not change it.
+- The backend does not create a missing directory; `Directory` refuses it.
+- The lazy readers keep their default limits, and
+  `DurableViewReaderV1::with_limits` stays test-only.
+- The backend keeps the limits of an open only. The limits of a checkpoint
+  publication are left to the checkpoint wiring.
+
+No persisted byte, record kind, root, identity or wire message changes.
+
+**Tests.** The module
+[`durable_authority_backend.rs`](../../../rspace++/tests/persistence/durable_authority_backend.rs)
+builds each durable authority over a fresh trial directory, with the recovery
+limits of the recovery tests and unbounded log-pack and admission limits, and
+opens it through
+`RSpace::<String, String, String, String>::create_history_repo`, or through
+`RSpace::<Vec<u8>, String, String, String>` for a second profile. A store
+snapshot holds every file of the directory but the writer lock, byte for
+byte.
+
+1. `create_history_repo_calls_share_one_durable_owner_slot` (OG-13) calls
+   `create_history_repo` twice on one authority over an empty directory. Both
+   calls succeed; had the second opened the directory again, it would have
+   met the first one's writer lease. Two `owner_slot` calls return the same
+   `Arc` (`Arc::ptr_eq`) with the same owner mutex (`std::ptr::eq`), and the
+   slot has exactly three strong references, the backend's and the two
+   handles, so no repository or hot store holds it. The published core's
+   current root is the store-genesis root, both repositories report it, and
+   both hot stores read an empty channel.
+2. `a_second_semantic_profile_is_refused_by_the_owner_slot` (OG-14) opens the
+   string-channel profile and then requests the byte-channel profile, and the
+   reverse in a second directory. In both orders the second profile's
+   `create_history_repo` and its direct `owner_slot` call are refused with
+   `ProfileMismatch`, whose `requested` is `type_name` of the second profile.
+   The store snapshot does not change, and the first profile is still served
+   at the same root; in the first order also by the same slot
+   (`Arc::ptr_eq`).
+3. `legacy_only_authority_methods_refuse_the_durable_backend` (OG-15) calls
+   the three facet accessors and every method of the table above before the
+   slot is opened and again after, and requires each typed refusal, and
+   requires `HistoryRepositoryInstances::repository` to return
+   `RootError(BackendMismatch(Roots))`. The capabilities that some methods
+   consume, a known root, a prepared checkpoint, a staged import and a sealed
+   import, come from an in-memory authority. A method that compared the
+   capability's authority first would refuse it as foreign, so each mismatch
+   shows that the backend is checked first. Before the open the trial
+   directory stays empty, without even a writer lock; after it the store
+   snapshot does not change. The store opened in between is at the
+   store-genesis root.
+4. `only_an_empty_directory_becomes_a_store_at_the_store_genesis_root`
+   (OG-41) opens an empty directory. The repository's root and empty root are
+   the store-genesis root, `DurableStateRootV1::store_genesis`, the directory
+   holds exactly `catalog.v1`, pack 1 and index generation 1 beside the
+   writer lock, and the hot store reads an empty channel. A new authority
+   then opens the store at the same root, and the genesis trace of that open
+   is empty. Next, every genesis step that a traced open through the backend
+   reaches is crashed once, in a fresh directory, through the backend's own
+   first open, which is refused with `Genesis`. A second open by the same
+   authority, which also shows that a refused open installs nothing, has
+   three outcomes. When the crash left no store file, which a crash at the
+   first step and at no other does, the backend creates the store at the
+   store-genesis root. When the crash left a partial store, which a crash at
+   any later step up to and including the catalog slot write does, the open
+   is refused with `Recovery`, reaches no genesis step and leaves the snapshot
+   unchanged. When the crash came after the catalog slot write, the store
+   opens at the store-genesis root without genesis. All three outcomes occur.
+5. `a_task_waiting_for_the_owner_mutex_yields_its_thread` (OG-46) runs a
+   current-thread runtime with a `LocalSet` on its own thread. One task takes
+   the owner mutex and holds the guard across an await of a release signal.
+   A second task signals that it is about to lock, and waits for the mutex.
+   The runtime has one thread, so the driving future observes that signal
+   only after the second task's poll has returned, when the second task is
+   parked on the mutex; only then does it send the release. The holder
+   resumes, returns the owner's current root and drops the guard, and the
+   waiter takes the mutex and returns the same root, which is the published
+   core's. The test thread is the watchdog: if the runtime thread has not
+   reported both roots after 30 s, the test fails with the message
+   `a task waiting for the owner mutex blocked the runtime thread for 30 s`.
+6. `a_second_authority_over_a_held_store_is_refused_by_the_writer_lease` is
+   the leaf's red control for a second opener, committed as the neighbouring
+   writer-lease tests are. A second authority over the directory of a live
+   first authority is refused with `Recovery` holding
+   `Startup(Io(WriterLockContended))`, reaches no genesis step and changes no
+   file. Once the first authority is dropped, the same second authority opens
+   the store at the same root, while the first authority's repository and hot
+   store are still alive and that hot store still reads an empty channel: the
+   slot alone owned the owner and its writer lease. It is bound to no ID.
+7. `a_published_store_reopens_at_its_published_root` uses the fixture of the
+   durable RSpace authority tests: its owner publishes a datum, a
+   continuation on the group `(channel, channel)` and its join, and is
+   dropped. The backend then opens the store
+   without genesis, the repository is at the published state's root, and the
+   lazy hot store reads that datum, that continuation and that join. It is
+   bound to no ID.
+
+**The OG rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| OG-13 | One owner shared. Every `create_history_repo` of one durable authority uses one owner slot: repeated calls return repositories at the owner's published root, `owner_slot` returns the same `Arc` with the same owner mutex, and only the backend and its callers' handles hold the slot. | `create_history_repo_calls_share_one_durable_owner_slot` |
+| OG-14 | A second profile is refused. Once the slot holds one `RSpaceSemanticProfile` instantiation, `create_history_repo` and `owner_slot` with another are refused with `ProfileMismatch` naming the requested profile, in either order, without changing a store file, and the installed profile is still served. | `a_second_semantic_profile_is_refused_by_the_owner_slot` |
+| OG-15 | Legacy-only methods refuse. Before and after the slot is opened, the three facet accessors return `AuthorityBackendMismatch` naming their facet, the root-catalog methods return `RootError::BackendMismatch(Roots)`, `commit_local_checkpoint` returns `HistoryError::BackendMismatch(History)`, the import staging and sealing methods return `StateImportError::BackendMismatch(History)`, `publish_import` returns it with `Roots`, and `HistoryRepositoryInstances::repository` refuses. No refusal creates or changes a file. | `legacy_only_authority_methods_refuse_the_durable_backend` |
+| OG-41 | Only an empty directory becomes a store. A directory without a store file becomes a store at the store-genesis root with exactly the genesis files, and a directory that holds a store opens without genesis. After a crash at any genesis step of the backend's first open, a directory left without a store file becomes the store, a partial store is refused with `Recovery` and left unchanged without genesis, and a store whose catalog slot was written opens at the store-genesis root. | `only_an_empty_directory_becomes_a_store_at_the_store_genesis_root` |
+| OG-46 | A waiter yields its thread. On a current-thread runtime, a task that waits for the owner mutex while another task holds the guard across an await lets that task run on the same thread, and both complete with the owner's current root within a 30 s watchdog. | `a_task_waiting_for_the_owner_mutex_yields_its_thread` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -10189,6 +10478,11 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | CB-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14348): the successor checks of the hot store's acknowledgement for a capture whose publication base is not the slot that the journal is bound to. The journal models of this matrix have no publication base apart from the bound catalog: `HotStoreJournalAcknowledgement` compares journals only, and `JournalOwnerReadiness` binds one registry and one catalog. |
 | CB-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14348): the refusals of a cross-base capture for a wrong origin, a foreign registry or an invalidated journal, and the staleness of a capture after a change. No journal model of this matrix has an origin. Staleness rests on the version advance whose freshness JV-01 to JV-03 state, but the refusals are properties of the Rust captures. |
 | CB-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14348): a cross-base capture and a same-base capture at its origin carry equal observations. The journal models of this matrix have no cross-base capture to compare; the property is the executable equality of two captures. |
+| OG-13 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12420): every `create_history_repo` of one durable authority shares one owner slot, and no repository or hot store holds it. No model represents the state authority's backend, its slot or Rust object identity. |
+| OG-14 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12420): the owner slot refuses a second Rust instantiation of the semantic profile. Every instantiation has the same profile ID, and no model represents Rust types. |
+| OG-15 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12420): the typed refusals of the legacy-only authority methods by the durable backend. No model states a property of Rust method results or error types. |
+| OG-41 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12420): the backend runs genesis only over a directory without a store file, and refuses a partial store left by a crash in its own genesis. As for SG-01 and SG-03, no model creates the first generation. |
+| OG-46 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12420): a task that waits for the owner's mutex yields its runtime thread. No model represents a runtime thread or the poll of a task. |
 
 ## Generator discipline
 
@@ -11147,6 +11441,31 @@ and the PathMap obligation registry hash the manifest test's file, which
 changes, so both are regenerated with this slice. No persisted record kind,
 byte layout, magic number or file name is new. See the cross-base hot-store
 journal capture section.
+
+The 2026-11-12 durable state-authority backend slice of task 7931 (task
+12420) adds OG-13, OG-14, OG-15, OG-41 and OG-46, so the
+catalog/derivation/binding registry now contains **274** IDs. On an export
+of the candidate tree, which already holds the import staging, view-local
+checkpoint and cross-base journal capture slices, the seven tests of the
+backend's module passed in debug and in release together with the durable
+RSpace authority, durable history repository, store genesis, view reader,
+owner checkpoint view, owner incarnation, state-authority and lazy
+hot-store bootstrap tests and the manifest test (92 passed, 1 ignored), and
+the whole library test target passed in both profiles with 998 tests (988
+passed, 10 ignored). The red control for a second opener is the committed
+test `a_second_authority_over_a_held_store_is_refused_by_the_writer_lease`,
+as the writer-lease refusals of the durable startup, authority core and
+publication tests are committed tests. The red control for the owner's
+mutex was applied to the export, run against OG-46 in debug and removed:
+the owner held in a `std::sync::Mutex`, which OG-46's two tasks then lock
+with a blocking `lock()`, made OG-46 fail after 30 s with its watchdog
+message instead of hanging. The faulted files were restored from the
+candidate tree, and the export was compared with it after the runs. Clippy
+of `rspace_plus_plus` with every target lists no finding in the files of
+this slice, and `rustfmt --check` passes on its Rust files. The PathMap,
+workspace-regression, atomic-checkpoint and affine-import registries hash
+files that change, so those registries are regenerated with this slice. No
+persisted byte, record kind, root, identity or wire message changed.
 
 ## Caller-authority contract (2026-09-06)
 

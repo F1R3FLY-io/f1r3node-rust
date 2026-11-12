@@ -116,6 +116,7 @@ impl From<AuthorityBackendMismatch> for HistoryError {
 pub enum HistoryRepositoryError {
     RootError(RootError),
     HistoryError(HistoryError),
+    DurableBackend(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl std::fmt::Display for HistoryRepositoryError {
@@ -123,6 +124,9 @@ impl std::fmt::Display for HistoryRepositoryError {
         match self {
             HistoryRepositoryError::RootError(err) => write!(f, "Root Error: {}", err),
             HistoryRepositoryError::HistoryError(err) => write!(f, "History Error: {}", err),
+            HistoryRepositoryError::DurableBackend(err) => {
+                write!(f, "Durable Backend Error: {}", err)
+            }
         }
     }
 }
@@ -208,6 +212,7 @@ pub enum RootError {
         actual_generation: Option<u64>,
     },
     RootCatalogGenerationOverflow,
+    BackendMismatch(AuthorityBackendMismatch),
 }
 
 impl std::fmt::Display for RootError {
@@ -229,10 +234,15 @@ impl std::fmt::Display for RootError {
             RootError::RootCatalogGenerationOverflow => {
                 write!(f, "Root catalog generation overflow")
             }
+            RootError::BackendMismatch(err) => write!(f, "Authority Backend Mismatch: {}", err),
         }
     }
 }
 
 impl From<KvStoreError> for RootError {
     fn from(error: KvStoreError) -> Self { RootError::KvStoreError(error.to_string()) }
+}
+
+impl From<AuthorityBackendMismatch> for RootError {
+    fn from(error: AuthorityBackendMismatch) -> Self { RootError::BackendMismatch(error) }
 }

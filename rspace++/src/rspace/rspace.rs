@@ -52,12 +52,14 @@ use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 use super::util::unpack_option;
 use crate::rspace::checkpoint::Checkpoint;
+use crate::rspace::history::durable_history_repository::DurableHistoryRepositoryV1;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::serializers::serializers::CandidateOrderingBytes;
 use crate::rspace::space_matcher::SpaceMatcher;
+use crate::rspace::state::rspace_state_authority::{AuthorityRouteV1, DurableBackendV1};
 
 #[derive(Clone)]
 pub struct RSpaceStore {
@@ -804,6 +806,10 @@ where
         A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
         K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
     {
+        if let AuthorityRouteV1::Durable(durable) = store.authority.route() {
+            return Self::create_durable_history_repo(durable);
+        }
+
         let history_repo = HistoryRepositoryInstances::repository(store.authority)?;
 
         let history_reader = history_repo.get_history_reader(&history_repo.root())?;
@@ -811,6 +817,36 @@ where
         let hot_store = HotStoreInstances::create_from_hr(history_reader.base());
 
         Ok((history_repo, hot_store))
+    }
+
+    fn create_durable_history_repo(
+        durable: &DurableBackendV1,
+    ) -> Result<
+        (
+            Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>,
+            Box<dyn HotStore<C, P, A, K>>,
+        ),
+        HistoryRepositoryError,
+    >
+    where
+        C: Clone
+            + Debug
+            + Default
+            + Send
+            + Sync
+            + Serialize
+            + ColdStoreDecode
+            + Eq
+            + Hash
+            + 'static,
+        P: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+        K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
+    {
+        let slot = durable.owner_slot::<C, P, A, K>()?;
+        let repository = DurableHistoryRepositoryV1::new(slot.published_core())?;
+        let hot_store = slot.view_store(&repository.root())?;
+        Ok((Box::new(repository), hot_store))
     }
 
     fn produce_counters(&self, produce_refs: &[Produce]) -> BTreeMap<Produce, i32> {

@@ -2821,15 +2821,6 @@ impl HotStoreInstances {
         }))
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only unit tests build a lazily filled durable hot store until \
-                      rspace-reset-durable-wiring, rspace-hard-checkpoint-durable-wiring and \
-                      rspace-soft-revert-durable-rebase install it"
-        )
-    )]
     pub(crate) fn create_from_durable_reader<C, P, A, K>(
         reader: Box<dyn HistoryReaderBase<C, P, A, K>>,
         cache: HotStoreState<C, P, A, K>,

@@ -444,6 +444,11 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("CB-01", "a_cross_base_capture_is_acknowledged_only_at_the_successor_of_its_publication_base"),
     ("CB-02", "a_wrong_origin_or_registry_is_refused_and_a_changed_journal_fails_validation"),
     ("CB-03", "a_cross_base_capture_observes_what_a_same_base_capture_at_the_origin_observes"),
+    ("OG-13", "create_history_repo_calls_share_one_durable_owner_slot"),
+    ("OG-14", "a_second_semantic_profile_is_refused_by_the_owner_slot"),
+    ("OG-15", "legacy_only_authority_methods_refuse_the_durable_backend"),
+    ("OG-41", "only_an_empty_directory_becomes_a_store_at_the_store_genesis_root"),
+    ("OG-46", "a_task_waiting_for_the_owner_mutex_yields_its_thread"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

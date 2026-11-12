@@ -179,7 +179,7 @@
       "checker": "scripts/check-affine-import-obligations.py",
       "family": "affine_import",
       "manifest": "formal/affine_import_obligations.generated.json",
-      "manifest_sha256": "31863104d73c20e82b313ff9b59f1284584ff5eb4271c00c1784d74998884eec",
+      "manifest_sha256": "49148d07910442b13d4a0ef95bb4b58b255bb0f3e59a66deb88d619dadcd2322",
       "obligations": {
         "causal_mutants": [
           {
@@ -280,14 +280,14 @@
           }
         ],
         "runtime_authority": "rspace++/src/rspace/state/rspace_state_authority.rs",
-        "runtime_authority_sha256": "b58f09d024777a9396a4cd3fb77bc321859e0e6fc833a6299d8d895dda86a88c"
+        "runtime_authority_sha256": "7ca16e3240a1313efaf576cff35afe1676641c6c67afc231d960416539642fb1"
       }
     },
     {
       "checker": "scripts/check-atomic-checkpoint-obligations.py",
       "family": "atomic_checkpoint",
       "manifest": "formal/atomic_checkpoint_obligations.generated.json",
-      "manifest_sha256": "11d8bf37f42a6c10baadbefeb64e5b45dad3a83f0b6a77a9755981fef56cb235",
+      "manifest_sha256": "75a88217793d09e55d9cde3fae76340e0775a2e59e87481dfc651de949eba90c",
       "obligations": {
         "causal_mutants": [
           {
@@ -319,7 +319,7 @@
         "config_sha256": "cadaf269a7a99cd2ebdb7864028aceadcf57466925da7ee59adeb7a5ac0585c1",
         "model": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.tla",
         "model_sha256": "414692c6550cb700f6772b05db5f14c67edf26b11300d90a8288460a360bcd98",
-        "module_sha256": "b58f09d024777a9396a4cd3fb77bc321859e0e6fc833a6299d8d895dda86a88c",
+        "module_sha256": "7ca16e3240a1313efaf576cff35afe1676641c6c67afc231d960416539642fb1",
         "non_vacuity_witnesses": [
           {
             "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthorityUnverifiedBaseRefusalWitness.cfg",
@@ -8718,7 +8718,7 @@
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "7fec53e7778b41827e666dd50b2853c21abfece36bf10b3a4fde51731ea72747",
+      "manifest_sha256": "8e19286f2f5e110aa8c6264a615510da981e3e5a129af2feab11f751780a4c29",
       "obligations": {
         "controls": [
           {
@@ -9105,10 +9105,10 @@
           "rholang/tests/epathmap_replay_equivalence_spec.rs": "9925b245d2ebe4c6a5d9d0e1193058dcac9565168e7caa351c638c0d1f836849",
           "rspace++/libs/rspace_rhotypes/src/lib.rs": "a419f0b57104e280bd6ce584b0a4b6be9d7c74ae4b897e8bc527d4c5b16f9588",
           "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
-          "rspace++/src/rspace/persistence/mod.rs": "6608ff03d94c447f4abdcdad15965a6d32691f7739183a4012238b7199540981",
-          "rspace++/src/rspace/state/rspace_state_authority.rs": "b58f09d024777a9396a4cd3fb77bc321859e0e6fc833a6299d8d895dda86a88c",
-          "rspace++/tests/persistence/generation_checkpoint_properties.rs": "fbcc7656fe2964348151981af15c68710844b717eb76b7d92cefa39a15cbd186",
-          "rspace++/tests/persistence/mod.rs": "86cee2be3d4135e02ccb4c6951bdabb12cc93c049cb603b76b9a067e09a0215a",
+          "rspace++/src/rspace/persistence/mod.rs": "c77396f7b87ec2a91a1df2b5284268bda000c7c9aace61175c70d691ddd9013a",
+          "rspace++/src/rspace/state/rspace_state_authority.rs": "7ca16e3240a1313efaf576cff35afe1676641c6c67afc231d960416539642fb1",
+          "rspace++/tests/persistence/generation_checkpoint_properties.rs": "91b58e6def42cef066f107c6a6bb3132805095867910ccde2a3d9fddcbbe7bc5",
+          "rspace++/tests/persistence/mod.rs": "e7e7847c35e79c2b5e41fac11817051fd235a2ccff22edee15fac1da260416d0",
           "rspace++/tests/state/atomic_state_authority.rs": "d33603450549c6cacb1b03366bccdf31762e2ad2d95aa1325d6b7914b9fccb1c",
           "shared/Cargo.toml": "eb329b1f634d0cfbc623f9a28007d221b4f6100cb6d12638023072d73dd229c0",
           "shared/tests/workspace_regression_formal_bindings.rs": "0cc934d3b6d274c80df8bf3b093afffd3e7d3a8cc0f3cb983dac5d67e0f05946"

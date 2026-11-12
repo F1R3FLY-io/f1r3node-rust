@@ -69,3 +69,4 @@ mod transfer_export;
 mod state_difference;
 #[cfg(unix)]
 mod transfer_import_staging;
+mod durable_authority_backend;

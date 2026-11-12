@@ -88,16 +88,14 @@ pub(crate) use index::{ObjectIndexFileViewV1, ObjectLocationV1};
 pub(crate) use index::{committed_index_constructions, reset_committed_index_constructions};
 #[cfg(all(test, windows))]
 pub(crate) use io::{CATALOG_FILE_NAME_V1, DurableIoOperation, WRITER_LOCK_FILE_NAME_V1};
-#[cfg(test)]
-pub(crate) use io::{
-    DurableDirectoryV1, DurableIoError, DurableWriterLeaseV1, FileLengthExpectation,
-    index_file_name, pack_file_name,
-};
+pub(crate) use io::{DurableDirectoryV1, DurableIoError};
 #[cfg(test)]
 pub(crate) use io::{
     DurableIoFailpointV1, arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
     arm_reclamation_intent_write_prefix,
 };
+#[cfg(test)]
+pub(crate) use io::{DurableWriterLeaseV1, FileLengthExpectation, index_file_name, pack_file_name};
 pub use layout::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
 pub use limits::{DurableLimitConfig, DurableLimitError, DurableLimitKind, DurableLimits};
 pub use pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
@@ -125,13 +123,14 @@ pub(crate) use recovery::{
 };
 #[cfg(test)]
 pub(crate) use rspace_authority::hooks as journal_owner_hooks;
-pub(crate) use rspace_authority::{DurablePublishedCoreV1, DurableRSpaceAuthorityV1};
+pub(crate) use rspace_authority::{
+    DurablePublishedCoreV1, DurableRSpaceAuthorityV1, DurableRSpaceTransactionError,
+};
 #[cfg(test)]
 pub(crate) use rspace_authority::{
-    DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError, JournalPublicationPhaseV1,
-    OwnerIncarnationAllocatorV1, OwnerIncarnationExhaustedV1, ViewAttachmentRefusalV1,
+    DurableRSpacePublicationLimitsV1, JournalPublicationPhaseV1, OwnerIncarnationAllocatorV1,
+    OwnerIncarnationExhaustedV1, ViewAttachmentRefusalV1,
 };
-pub(crate) use startup::EmptyStateCheckpointSourceV1;
 #[cfg(test)]
 pub(crate) use startup::{
     DurableStartupErrorV1, IndexBindingDispositionV1, PhysicallyRecoveredDurableWriterV1,
@@ -139,10 +138,13 @@ pub(crate) use startup::{
 };
 #[cfg(test)]
 pub(crate) use startup::{DurableStartupHookPointV1, arm_durable_startup_hook};
+pub(crate) use startup::{
+    DurableStoreGenesisErrorV1, EmptyStateCheckpointSourceV1, create_empty_store_v1,
+};
 #[cfg(test)]
 pub(crate) use startup::{
-    DurableStoreGenesisErrorV1, DurableStoreGenesisStepV1, arm_durable_store_genesis_failpoint,
-    create_empty_store_v1, start_durable_store_genesis_trace, take_durable_store_genesis_trace,
+    DurableStoreGenesisStepV1, arm_durable_store_genesis_failpoint,
+    start_durable_store_genesis_trace, take_durable_store_genesis_trace,
 };
 pub(crate) use state_root::{DurableStateReadHandleErrorV1, DurableStateRootV1};
 #[cfg(test)]

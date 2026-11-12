@@ -59,14 +59,16 @@ pub(crate) use durable::{
     INDEX_RECORD_LEN_V1, IndexFormatError, IndexGenerationV1, ObjectIndexFileViewV1,
     ObjectIndexHeaderV1, ObjectLocationV1, PACK_HEADER_LEN_V1, PackFormatError, PackHeaderV1,
 };
+pub(crate) use durable::{
+    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError,
+    DurablePublishedCoreV1, DurableRSpaceAuthorityV1, DurableRSpaceTransactionError,
+    DurableStateReadHandleErrorV1, DurableStateRootV1, DurableStoreGenesisErrorV1,
+    DurableViewReaderV1, create_empty_store_v1, recover_read_authority,
+};
 #[cfg(test)]
 pub(crate) use durable::{
-    DurableAdmissionLimitsV1, DurableAuthorityViewV1, DurableObjectReadErrorV1,
-    DurableRSpaceAuthorityV1, DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError,
-    TrustedSuccessorPolicyV1, create_empty_store_v1, recover_read_authority,
-};
-pub(crate) use durable::{
-    DurablePublishedCoreV1, DurableStateReadHandleErrorV1, DurableStateRootV1, DurableViewReaderV1,
+    DurableAuthorityViewV1, DurableObjectReadErrorV1, DurableRSpacePublicationLimitsV1,
+    TrustedSuccessorPolicyV1,
 };
 pub(crate) use manifest::AcceleratorManifestView;
 #[cfg(test)]
@@ -103,7 +105,6 @@ pub(crate) use rewrite::{
 };
 #[cfg(test)]
 pub(crate) use rewrite::{preflight_sensitive_copy_bytes, reset_preflight_sensitive_copy_bytes};
-#[cfg(test)]
 pub(crate) use semantic::RSpaceSemanticProfile;
 pub use semantic::SemanticProfile;
 #[cfg(test)]

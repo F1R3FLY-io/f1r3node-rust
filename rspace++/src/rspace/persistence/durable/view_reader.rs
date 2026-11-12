@@ -29,8 +29,9 @@ impl<P: SemanticProfile> DurableViewReaderV1<P> {
         not(test),
         expect(
             dead_code,
-            reason = "only unit tests set a durable view reader's limits until the durable \
-                      state-authority backend (rspace-authority-durable-backend) configures them"
+            reason = "only unit tests set a durable view reader's limits; the durable \
+                      state-authority backend reads with the default limits, which impose no \
+                      ceiling"
         )
     )]
     pub(crate) fn with_limits(self, limits: DurableHotStoreBootstrapLimits) -> Self {
