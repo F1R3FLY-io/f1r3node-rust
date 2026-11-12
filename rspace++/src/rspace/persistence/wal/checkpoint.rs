@@ -24,6 +24,7 @@ use crate::rspace::persistence::checksum::{
 };
 use crate::rspace::persistence::durable::{
     AdmittedCheckpointSourceV1, DurableObjectCopyErrorV1, DurableObjectReadErrorV1,
+    EmptyStateCheckpointSourceV1,
 };
 use crate::rspace::persistence::physical::{PhysicalDigest, STORE_ID_LEN, StoreId};
 use crate::rspace::persistence::retention::v2_format::{RetentionFormat, RetentionReader};
@@ -99,6 +100,8 @@ pub(crate) trait GenerationCheckpointSourceV1: source_seal::Sealed {
 }
 
 impl<P: SemanticProfile> source_seal::Sealed for AdmittedCheckpointSourceV1<P> {}
+
+impl source_seal::Sealed for EmptyStateCheckpointSourceV1 {}
 
 impl<P: SemanticProfile> GenerationCheckpointSourceV1 for AdmittedCheckpointSourceV1<P> {
     type ReadError = DurableObjectReadErrorV1;

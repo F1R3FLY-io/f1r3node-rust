@@ -1136,7 +1136,7 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     }
 }
 
-fn preflight_recovery_limits(
+pub(super) fn preflight_recovery_limits(
     limits: DurableLimits,
     pack_tail: u64,
     object_records: u64,

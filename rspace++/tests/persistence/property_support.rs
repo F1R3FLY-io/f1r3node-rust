@@ -412,6 +412,9 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("NV-12", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
     ("NV-13", "selected_successor_damage_never_falls_back_and_repairs_safe_index"),
     ("NV-14", "selected_successor_damage_never_falls_back_and_repairs_safe_index"),
+    ("SG-01", "an_empty_store_reopens_at_generation_one_with_empty_namespaces"),
+    ("SG-02", "independently_created_empty_stores_share_the_empty_state_manifest_digest"),
+    ("SG-03", "a_crash_at_any_genesis_write_or_sync_point_never_opens_a_different_state"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

@@ -19,13 +19,13 @@ pub(crate) use checkpoint::{
     GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1, GenerationCheckpointLayoutVisitErrorV1,
     GenerationCheckpointObjectLayoutV1, GenerationCheckpointPrepareIdentityV1,
     GenerationCheckpointPreparePreflightV1, GenerationCheckpointPrepareWriteErrorV1,
-    GenerationCheckpointSourceV1, PreparedGenerationCheckpointV1, designated_retention_object,
+    GenerationCheckpointSourceCopyErrorV1, GenerationCheckpointSourceV1,
+    PreparedGenerationCheckpointV1, designated_retention_object,
     preflight_generation_checkpoint_prepare_for,
 };
 #[cfg(test)]
 pub(crate) use checkpoint::{
-    GenerationCheckpointPrepareRecordViewV1, GenerationCheckpointSourceCopyErrorV1,
-    preflight_generation_checkpoint_prepare_v1,
+    GenerationCheckpointPrepareRecordViewV1, preflight_generation_checkpoint_prepare_v1,
 };
 pub(crate) use checkpoint_commit::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GenerationCheckpointCommitRecordV1,

@@ -111,6 +111,7 @@ pub(crate) use rspace_authority::{
     DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError, JournalPublicationPhaseV1,
     OwnerIncarnationAllocatorV1, OwnerIncarnationExhaustedV1, ViewAttachmentRefusalV1,
 };
+pub(crate) use startup::EmptyStateCheckpointSourceV1;
 #[cfg(test)]
 pub(crate) use startup::{
     DurableStartupErrorV1, IndexBindingDispositionV1, PhysicallyRecoveredDurableWriterV1,
@@ -118,6 +119,11 @@ pub(crate) use startup::{
 };
 #[cfg(test)]
 pub(crate) use startup::{DurableStartupHookPointV1, arm_durable_startup_hook};
+#[cfg(test)]
+pub(crate) use startup::{
+    DurableStoreGenesisErrorV1, DurableStoreGenesisStepV1, arm_durable_store_genesis_failpoint,
+    create_empty_store_v1, start_durable_store_genesis_trace, take_durable_store_genesis_trace,
+};
 #[cfg(test)]
 pub(crate) use state_root::{
     DurableStateReadHandleErrorV1, DurableStateRootV1, ResolvedDurableStateV1,

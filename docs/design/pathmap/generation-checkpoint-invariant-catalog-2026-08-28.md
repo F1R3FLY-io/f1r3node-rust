@@ -7934,6 +7934,109 @@ second test.
 | DI-03 | One endpoint, another root. Two states that differ in exactly one endpoint, whether added or changed in multiplicity, have different durable state roots, and only that endpoint's namespace root differs. | `states_that_differ_in_one_endpoint_have_different_roots` |
 | DI-04 | Legacy provenance does not resolve. A retained manifest that carries a legacy history root, current or historical, is refused with `UnknownRootError` for that reason, while a manifest without one resolves. | `a_manifest_with_a_legacy_history_root_does_not_resolve` |
 
+### Empty durable store genesis (2026-11-11)
+
+Task 14292 adds the production constructor of a fresh durable store. Before
+it, a durable directory could only be opened, and only tests installed store
+images. Opening a directory that holds no `catalog.v1` fails with the startup
+error `Io` (`NotFound` for `catalog.v1`); a catalog whose two slots are both
+empty fails with `NoCatalogAuthority`.
+`create_empty_store_v1::<P>(directory, limits)` in
+[`startup.rs`](../../../rspace++/src/rspace/persistence/durable/startup.rs)
+writes the first generation of an empty store and returns the catalog slot
+that it made authoritative.
+
+**What genesis writes.** Every byte comes from an existing encoder; no record
+kind, byte layout, magic number or file name is new.
+
+| Object or file | Content |
+|---|---|
+| Empty root | `CanonicalDagNode::empty()`, the root of all three namespaces. |
+| Manifest | Schema 1, the profile `P::ID`, the three empty roots and `legacy_history_root = None`. The store's state is generation 1 of this manifest. |
+| Retention anchor | A V2 anchor that retains that state with the canonical bytes of its closure (the manifest and the empty root, each once), no history, and the empty radix root. |
+| Pack 1 | The genesis pack header, one generation-checkpoint PREPARE whose DATA objects are the empty root, the manifest, the anchor and the empty radix node in digest order, and its COMMIT, whose previous commit digest is zero. |
+| Index generation 1 | The index header and one record per DATA object. |
+| `catalog.v1` | Slot 0 names that COMMIT at catalog epoch 1; slot 1 stays empty. |
+
+The constructor computes the whole image in memory before it opens the
+directory: the empty-state closure and its V2 metadata closure, the
+checkpoint descriptor, the PREPARE bytes, the index bytes, the recovery-limit
+preflight that checkpoint publication applies, the COMMIT and the catalog
+slot. A format or limit error therefore leaves the directory untouched.
+
+**Write and sync order.** Genesis then takes the writer lease and performs the
+order of checkpoint publication in
+[`publication.rs`](../../../rspace++/src/rspace/persistence/durable/publication.rs),
+without the steps that need an older generation (the reclamation candidate
+and the catalog compare-and-swap read). Each row is one test injection point
+of `DurableStoreGenesisStepV1`, placed immediately before its operation.
+
+| # | Point | Operation |
+|---|---|---|
+| 1 | `CreatePack` | Create pack 1 (`O_CREAT`, `O_EXCL`, `O_NOFOLLOW`, owner-only). |
+| 2 | `WritePackHeader` | Write the pack header at offset 0. |
+| 3 | `WritePrepare` | Write the PREPARE at offset 128; require the exact PREPARE end. |
+| 4 | `SyncPrepare` | Synchronize the pack file. |
+| 5 | `CreateIndex` | Create index generation 1. |
+| 6 | `WriteIndex` | Write the index image at offset 0; require the exact index tail. |
+| 7 | `SyncIndex` | Synchronize the index file. |
+| 8 | `WriteCommit` | Reopen pack 1 and require the exact PREPARE end, then write the COMMIT there; require the exact COMMIT end. |
+| 9 | `SyncCommit` | Synchronize the pack file. |
+| 10 | `SyncArtifactDirectory` | Synchronize the directory, which makes the pack and index names durable. |
+| 11 | `CreateCatalog` | Create `catalog.v1` with `O_EXCL` and extend it to 672 zero bytes. |
+| 12 | `WriteCatalogSlot` | Write the slot at offset 0. |
+| 13 | `SyncCatalog` | Synchronize the catalog file. |
+| 14 | `SyncCatalogDirectory` | Synchronize the directory, which makes the catalog name durable. |
+
+**Why a crash at each point is safe.** A crash at a point means that the
+operation at that point does not happen, every earlier operation does, and
+the call returns without cleanup.
+
+- Point 1: no store file exists. Recovery finds no `catalog.v1`, and the next
+  genesis creates the store.
+- Points 2 to 11: pack 1 (from point 6 also index 1) exists and `catalog.v1`
+  does not, so recovery fails before it reads any pack.
+- Inside the operation of point 11, between the create and the extension:
+  `catalog.v1` exists with no bytes, and recovery fails the catalog's
+  exact-length check. The injection point lies before the operation, so the
+  test does not produce this state; it follows from `open_catalog`, which
+  requires exactly 672 bytes.
+- Point 12: `catalog.v1` holds 672 zero bytes, which select no authority
+  (`NoCatalogAuthority`).
+- A torn slot write of fewer than 336 bytes: an empty prefix is point 12. A
+  prefix that leaves a nonzero byte of the slot unwritten fails the slot's
+  CRC32C check, so selection fails with `NoValidCatalog`. A prefix whose
+  unwritten suffix is all zero already equals the whole slot, and the store
+  opens with exactly the genesis state; that is always the case from 332 bytes
+  on, because the CRC32C field is eight bytes wide and its last four bytes are
+  zero.
+- Points 13 and 14: the complete slot is in the file, and the store opens
+  with exactly the genesis state.
+
+From point 2 on, the directory holds a store file, and the next genesis
+refuses it. Under power loss, points 4, 7, 9 and 10 make every pack and index
+byte and both names durable before the catalog exists; the catalog can then
+survive only absent, short, all zero, torn or complete, and only the complete
+slot opens, naming bytes that are already durable. Every create uses
+`O_EXCL`, so genesis never replaces an existing file.
+
+**Refusal.** Genesis lists the directory through the pinned directory handle's
+path, requiring before and after the listing that the path still names the
+same device and inode, and refuses with `DirectoryHoldsStoreFiles` when any
+name is one that a durable store creates: `catalog.v1`, `reclaim.v1`,
+`reclaim.v1.tmp`, or a pack, index or rebuild-index name that the existing
+name functions produce. The error lists those names, and nothing is written.
+The advisory `writer.lock.v1` is not a store file, and names that no durable
+store creates do not block genesis.
+
+**The SG rows.** SG is the store genesis family.
+
+| ID | Required property | Test |
+|---|---|---|
+| SG-01 | Empty store genesis. `create_empty_store_v1` on an empty directory creates exactly `catalog.v1`, pack 1 and index generation 1 beside the writer lock, and its catalog file is the returned slot followed by an empty slot. `recover_read_authority` reopens the store with that slot: generation 1 of the manifest with schema 1, the store's profile, three empty namespace roots and no legacy history root; catalog epoch 1, pack 1 as first live and active pack, index generation 1 verified without a rebuild, and the V2 anchor of that state as retention manifest with two metadata objects. The data, continuation and join namespaces enumerate nothing. | `an_empty_store_reopens_at_generation_one_with_empty_namespaces` |
+| SG-02 | Deterministic empty state. Two stores created independently in two directories have different store identities and the same empty-state manifest digest, which equals the digest of an independently encoded manifest with the three empty roots and no legacy history root. | `independently_created_empty_stores_share_the_empty_state_manifest_digest` |
+| SG-03 | Crash-safe genesis. The injection points are taken from a traced genesis run and each is exercised once. A crash at a point stops genesis there; recovery then either fails without changing the directory or opens exactly the genesis state, and it opens exactly when the point follows the catalog slot write. A second genesis then refuses the directory, listing exactly the store files present, and changes nothing; only a crash before the first create leaves no store file, and then the second genesis creates the store. Every torn catalog-slot prefix from 0 to 335 bytes likewise opens exactly the genesis state or no authority, and both outcomes occur. | `a_crash_at_any_genesis_write_or_sync_point_never_opens_a_different_state` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -8183,6 +8286,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | DI-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): resolution of a digest against the admitted ledger's current and retained root counts, and the refusal of every other digest. No model states a lookup of a retained state by its manifest digest. |
 | DI-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): different roots for states that differ in one endpoint. The property rests on the canonical encoding and on Blake2b-256 over it, which no model represents. |
 | DI-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14293): the refusal of manifests that carry a legacy history root. No model represents legacy provenance. |
+| SG-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14292): the files, catalog slot, recovered state and empty namespaces of a store that `create_empty_store_v1` creates. The publication model and its Rocq theory start from an admitted old generation (phase `OldAdmitted`, selected authority `old`), so no model creates the first generation. |
+| SG-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14292): the empty state's manifest digest depends only on the schema, the profile and the empty root, not on the store identity. No model states a property of manifest bytes. |
+| SG-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14292): crash safety of genesis at each create, write and sync point and at every torn catalog-slot prefix. The crash selection that `raw_slot_recovery_selects_old_complete_new_or_rejects` states maps a torn slot to the old authority, and a genesis directory has none: there a torn slot selects no authority, and the next genesis refuses the directory. |
 
 ## Generator discipline
 
@@ -8768,6 +8874,48 @@ The workspace-regression registry hashes the manifest test's file and the
 persistence test module, both of which change, so it was regenerated, and the
 PathMap aggregate takes its new manifest digest. No persisted byte, record
 kind, root, identity or wire message changed.
+
+The 2026-11-11 empty durable store genesis slice of task 14292 adds SG-01,
+SG-02 and SG-03, the first SG rows, so the catalog/derivation/binding registry
+now contains **246** IDs. On an export of the candidate tree, which already
+holds the lazy durable view reader and durable state root slices, the five
+tests of the new file passed in debug and in release, and so did the durable
+persistence modules, the checkpoint WAL module and the generation-checkpoint
+property module with the manifest test; the whole library test target passed
+with 928 tests in both profiles (10 ignored). In a worker copy with temporary
+prints, which were removed afterwards and the file compared byte for byte, a
+traced genesis reached the 14 points of the table in order. Crashes at the
+first 12 left a directory that does not open, and crashes at the last two a
+store that opens with the genesis state; of the 336 torn slot prefixes, 332
+did not open, and the four of 332 to 335 bytes opened with the genesis state.
+Three production controls were each applied to the export and run against the
+five tests of the new file:
+
+- Omitting the retention anchor, that is neither staging the anchor and the
+  empty radix node nor admitting and seeding the metadata closure, made all
+  five fail at their first genesis, before the directory is opened, with
+  `Checkpoint(RetentionMetadataBelowMinimum { data_objects: 2,
+  retained_objects: 2, data_bytes: 259, retained_bytes: 259 })`. The V2
+  inventory rule refuses a checkpoint without its anchor, so such a store is
+  never written, and SG-01 fails at construction rather than at admission.
+- Counting the anchor but leaving its bytes out of the empty-state source
+  made all five fail the same way, with `Canonical(MissingObject(..))` for the
+  anchor's digest from the PREPARE writer.
+- Writing the anchor but appointing the manifest in its place in the catalog
+  slot made SG-01, SG-02, SG-03 and the foreign-names test fail at their first
+  reopen through `recover_read_authority`, which refused with
+  `Startup(CatalogVerification(Catalog(CatalogCommitPublication { .. })))`:
+  the catalog's publication names the 209-byte manifest where the COMMIT's
+  names the 136-byte anchor. The refusal test, which never reopens, passed.
+
+The export was then restored, and the five tests passed again. Clippy of
+`rspace_plus_plus` with every target lists no finding in the files of this
+slice, and `rustfmt --check` passes on its Rust files. The
+workspace-regression registry hashes the manifest test's file and the
+persistence test module, both of which change, so it was regenerated, and the
+PathMap aggregate takes its new manifest digest. No persisted record kind,
+byte layout, magic number or file name is new. See the empty durable store
+genesis section.
 
 ## Caller-authority contract (2026-09-06)
 

@@ -132,6 +132,7 @@ pub(crate) enum DurableIoOperation {
     RemoveFile,
     ReplaceFile,
     PublishFile,
+    ReadDirectory,
 }
 
 impl DurableIoOperation {
@@ -151,6 +152,7 @@ impl DurableIoOperation {
             Self::RemoveFile => "remove durable temporary file",
             Self::ReplaceFile => "atomically replace durable file",
             Self::PublishFile => "publish durable file without replacement",
+            Self::ReadDirectory => "read durable directory entries",
         }
     }
 }
@@ -976,6 +978,26 @@ impl DurableDirectoryV1 {
         )
     }
 
+    pub(crate) fn store_file_names(&self) -> Result<Vec<String>, DurableIoError> {
+        require_path_names_pinned_directory(&self.directory, &self.path)?;
+        let read_error = |source| DurableIoError::Io {
+            operation: DurableIoOperation::ReadDirectory,
+            path: self.path.clone(),
+            source,
+        };
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(&self.path).map_err(read_error)? {
+            let name = entry.map_err(read_error)?.file_name();
+            match name.to_str() {
+                Some(name) if is_store_file_name(name) => names.push(name.to_owned()),
+                _ => {}
+            }
+        }
+        require_path_names_pinned_directory(&self.directory, &self.path)?;
+        names.sort_unstable();
+        Ok(names)
+    }
+
     fn create_new(&self, name: &str) -> Result<DurableFileV1, DurableIoError> {
         self.open_child(name, ChildOpenMode::CreateNew)
     }
@@ -1678,6 +1700,36 @@ fn index_rebuild_file_name(generation: IndexGenerationV1) -> String {
     format!("{}.rebuild", index_file_name(generation))
 }
 
+fn is_store_file_name(name: &str) -> bool {
+    match name {
+        CATALOG_FILE_NAME_V1 |
+        RECLAMATION_CANDIDATE_FILE_NAME_V1 |
+        RECLAMATION_CANDIDATE_TEMPORARY_FILE_NAME_V1 => true,
+        _ => is_pack_file_name(name) || is_index_file_name(name),
+    }
+}
+
+fn store_file_number(name: &str, prefix: &str, suffix: &str) -> Option<u64> {
+    let (digits, _) = name.strip_prefix(prefix)?.split_once(suffix)?;
+    digits.parse().ok()
+}
+
+fn is_pack_file_name(name: &str) -> bool {
+    matches!(
+        store_file_number(name, PACK_FILE_PREFIX_V1, PACK_FILE_SUFFIX_V1).map(PackId::new),
+        Some(Ok(pack)) if pack_file_name(pack) == name
+    )
+}
+
+fn is_index_file_name(name: &str) -> bool {
+    matches!(
+        store_file_number(name, INDEX_FILE_PREFIX_V1, INDEX_FILE_SUFFIX_V1)
+            .map(IndexGenerationV1::new),
+        Some(Ok(generation))
+            if index_file_name(generation) == name || index_rebuild_file_name(generation) == name
+    )
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ChildOpenMode {
     ReadOnly,
@@ -1761,6 +1813,38 @@ fn open_directory_handle(path: &Path) -> Result<File, DurableIoError> {
 fn open_directory_handle(path: &Path) -> Result<File, DurableIoError> {
     Err(DurableIoError::UnsupportedPlatform {
         operation: DurableIoOperation::OpenDirectory,
+        path: path.to_path_buf(),
+    })
+}
+
+#[cfg(unix)]
+fn require_path_names_pinned_directory(
+    directory: &File,
+    path: &Path,
+) -> Result<(), DurableIoError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata_error = |source| DurableIoError::Io {
+        operation: DurableIoOperation::Metadata,
+        path: path.to_path_buf(),
+        source,
+    };
+    let pinned = directory.metadata().map_err(metadata_error)?;
+    let named = std::fs::symlink_metadata(path).map_err(metadata_error)?;
+    if (named.dev(), named.ino()) != (pinned.dev(), pinned.ino()) {
+        return Err(DurableIoError::Io {
+            operation: DurableIoOperation::ReadDirectory,
+            path: path.to_path_buf(),
+            source: io::Error::other("the path no longer names the pinned durable directory"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn require_path_names_pinned_directory(_: &File, path: &Path) -> Result<(), DurableIoError> {
+    Err(DurableIoError::UnsupportedPlatform {
+        operation: DurableIoOperation::ReadDirectory,
         path: path.to_path_buf(),
     })
 }

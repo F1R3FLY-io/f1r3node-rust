@@ -61,3 +61,4 @@ mod trusted_successor_properties;
 mod wal_codec;
 #[cfg(windows)]
 mod windows_durable_authority;
+mod durable_store_genesis;
