@@ -4873,12 +4873,18 @@ of these means against the code.
   eviction would need the maxima recomputed
   (`eviction_requires_recomputation_counterexample`) and an extension of this
   family.
-- *Reset-target references.* A reset publishes an earlier retained state at a
-  fresh generation. Generated histories reach that target without a reset:
-  steps whose next state equals a retained earlier state, readers that pin and
-  read retained generations, and reset-shaped binds from retained states,
-  which must be refused before any mutation after faults and restarts. The
-  alias lookup, reset identity and activation remain tasks 7931 and 7756.
+- *Reset-target references.* When this section was written, a reset published
+  an earlier retained state at a fresh generation, and the generated histories
+  reach that target without a reset: steps whose next state equals a retained
+  earlier state, readers that pin and read retained generations, and
+  reset-shaped binds from retained states, which must be refused before any
+  mutation after faults and restarts. Ruling Q1, option A, of 2026-11-12
+  retired that rule: a reset publishes nothing and attaches the caller's view
+  to a retained state, and a checkpoint publishes the successor of the view's
+  own base (CA-12 to CA-15 of the caller-authority contract below). A
+  checkpoint from a base that is not current is the subject of task
+  `rspace-owner-cross-base-checkpoint`, not of this family. The alias lookup
+  and reset identity remain tasks 7931 and 7756; no activation remains.
 - *Overflow, scratch and final limits.* Overflow is the generation-lease
   counter's: at the owner's successor pin it leaves the owner awaiting
   acknowledgement, and at a reader's pin it is refused with nothing changed.
@@ -5177,8 +5183,9 @@ call that script. TH-01 and TH-03 cite the four new capstones.
   task 11969.
 - Semantic eviction does not exist under keep-all retention; a future one
   needs the maxima recomputed and this family extended.
-- Reset identity and activation remain task 7756, and the substrate stays out
-  of RSpace until task 7931 wires it in.
+- Reset identity remains task 7756, and the substrate stays out of RSpace
+  until task 7931 wires it in. Activation is no longer a task: ruling Q1,
+  option A, of 2026-11-12 made a reset local to the caller's view.
 - No scaling is claimed here; the
   [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29)
   measures it (thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history,
@@ -6155,8 +6162,9 @@ of the [torn reclamation intents section](#torn-reclamation-intents-bug-11970-20
   (review decision 11).
 - Semantic eviction does not exist under keep-all retention; a future one
   needs the maxima recomputed and the TH family extended.
-- Reset identity and activation remain task 7756, and the substrate stays out
-  of RSpace until task 7931 wires it in.
+- Reset identity remains task 7756, and the substrate stays out of RSpace
+  until task 7931 wires it in. Activation is no longer a task: ruling Q1,
+  option A, of 2026-11-12 made a reset local to the caller's view.
 - No scaling is claimed here; the
   [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29)
   measures it (thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history,
@@ -9116,9 +9124,10 @@ cell through `published_core()`. Its former `resolve(root)` and
 `resolve_read_handle(root)`, which resolved and leased under the owner's
 mutex, are removed. The cost does not depend on the number of retained states
 or on the size of any state. By the decision of 2026-11-11, a reset is local:
-it writes nothing, syncs nothing and records no activation. An activation
-write belongs to the RSpace wiring through `activate_retained`, not to the
-repository.
+it writes nothing, syncs nothing and records no activation. Ruling Q1, option
+A, of 2026-11-12 removed the activation write from the RSpace wiring as well:
+no caller records an activation, and the `activate_retained` entry point that
+the earlier plan named was never added.
 
 **The published core (task 14358).** A checkpoint holds the owner's mutex
 across its difference walk and its durable writes, so a reset that locked the
