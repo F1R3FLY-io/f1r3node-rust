@@ -11,6 +11,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONFIG="${1:-$ROOT/.mergify.yml}"
 
+if awk '
+  /^  - name:/ { canary = ($0 ~ /^  - name: ca-(item|daily)$/) }
+  canary && /^[[:space:]]*-[[:space:]]/ && /ca-soak|Soak Gate/ { found = 1 }
+  END { exit !found }
+' "$CONFIG"; then
+  printf 'FAIL: a ca-canary queue requires a soak before merge\n' >&2
+  exit 1
+fi
+
 DEV_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|cargo-deny|Test (block-storage)|Test (comm)|Test (crypto)|Test (graphz)|Test (models)|Test (rholang)|Test (node)|Test (shared)|Integration Gate (amd64)|Integration Gate (arm64)|Test (casper 1/2)|Test (casper 2/2)|Test (rspace_plus_plus)|Commit Policy'
 MASTER_REQUIRED='Static Checks|Script Tests|Soak Harness Tests|Test Gate (casper)|Test (rspace_plus_plus)|Test (rholang)|Test (shared)|Test (node)|Test (models)|Test (crypto)|Test (block-storage)|Test (comm)|Test (graphz)|cargo-deny|Commit Policy|Promotion Source'
 

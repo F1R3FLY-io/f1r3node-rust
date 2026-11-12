@@ -218,8 +218,11 @@ grep -q "^pr create --repo example/repo --base ca-canary --head $sync_branch --l
 	fail "the sync pull request was not opened from the sync branch to ca-canary with ci-heavy: $(cat "$TMP/gh.log")"
 grep -Fq 'created by `just ca-sync`.' "$TMP/gh.log" ||
 	fail "the sync body does not name just ca-sync: $(cat "$TMP/gh.log")"
-grep -Fq 'Add the `ca-soak` label to start the 22-hour soak.' "$TMP/gh.log" ||
-	fail "the sync body does not ask for the ca-soak label: $(cat "$TMP/gh.log")"
+if grep -Eq 'ca-soak|after the soak passes' "$TMP/gh.log"; then
+	fail "the sync body requires a soak before merge: $(cat "$TMP/gh.log")"
+fi
+grep -Fq 'Mergify queues this sync after its CI checks pass' "$TMP/gh.log" ||
+	fail "the sync body does not describe its CI requirement: $(cat "$TMP/gh.log")"
 if grep -q -- '--label ca-soak' "$TMP/gh.log"; then
 	fail "the sync pull request started a soak: $(cat "$TMP/gh.log")"
 fi
