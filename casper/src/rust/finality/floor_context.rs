@@ -235,11 +235,10 @@ impl FloorContext {
     /// livelocked the shard under sustained contention. A sig with no kept
     /// rejection in the cone is not in a retry context and the gate stays
     /// closed — first inclusions never consult it, and a standing win is
-    /// governed by the repeat check. A rejection settled DEEPER than the
-    /// walk window (possible while the floor lags the tip by more than the
-    /// deploy lifespan) also reads as no-disposition: retries defer through
-    /// deep floor lag — delay, never loss, since the floor-clock buffer
-    /// retain keeps custody until the floor itself closes the window.
+    /// governed by the repeat check. Callers start the walk at
+    /// `deploy_window::repeat_scan_start`, which reaches every record of a
+    /// deploy still live on the floor clock: a record sits above its
+    /// carrier, and the carrier above the deploy's `valid_after`.
     pub fn retry_gate_open(
         &self,
         dag: &KeyValueDagRepresentation,
