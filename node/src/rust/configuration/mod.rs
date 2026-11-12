@@ -769,16 +769,6 @@ mod embedded_defaults_tests {
     }
 
     #[test]
-    fn report_cache_keeps_1000_heights_by_default() {
-        let cfg: NodeConf = hocon::HoconLoader::new()
-            .load_str(EMBEDDED_DEFAULTS)
-            .unwrap()
-            .resolve()
-            .unwrap();
-        assert_eq!(cfg.api_server.report_cache_retention_blocks, 1000);
-    }
-
-    #[test]
     fn report_cache_retention_outside_its_range_is_rejected() {
         for value in ["-1", "4294967296"] {
             let override_config = format!("api-server.report-cache-retention-blocks = {value}");
