@@ -1990,6 +1990,41 @@ pub proof fn integrated_driver_preserves_wf(
     },
 {}
 
+/// An integrated root finish consumes the whole root: whenever
+/// `integrated_admission_driver_step` returns `RootFinished` or
+/// `RootFinishedNoScore`, the admission stack holds exactly one frame and
+/// that frame's cursor is at `root_end`.
+///
+/// Both outcomes come only from the `Message` branch forwarding a root
+/// `Complete` of `admission::concrete_message_driver_step`, whose `Complete`
+/// arm finishes only a one-frame state; that guard gives the frame count of
+/// both outcomes. The cursor fact comes from one conjunct per outcome:
+/// - `RootFinished` requires `admission_complete_root` of the admission state
+///   (through `concrete_message_root_complete` and
+///   `concrete_message_root_summary`), and its conjunct
+///   `root.cursor == state.root_end` gives the fact;
+/// - `RootFinishedNoScore` requires `admission_complete_noscore_root`, which
+///   repeats that conjunct for a root without a score handle; the predicate
+///   is opaque, so the body reveals it.
+///
+/// Well-formedness alone bounds the root cursor by `root_end` (the root's
+/// region ends there) without forcing equality, so the cursor fact rests on
+/// these two conjuncts.
+pub proof fn integrated_root_finish_consumes_root(
+    state: IntegratedAdmissionState, action: IntegratedAdmissionAction,
+)
+    ensures match integrated_admission_driver_step(state, action) {
+        Some(IntegratedAdmissionOutcome::RootFinished { .. })
+        | Some(IntegratedAdmissionOutcome::RootFinishedNoScore { .. }) => {
+            &&& state.admission.frames.len() == 1
+            &&& state.admission.frames[0].cursor == state.admission.root_end
+        },
+        _ => true,
+    },
+{
+    reveal(admission::admission_complete_noscore_root);
+}
+
 pub proof fn integrated_new_map_child_body_id_is_driver_assigned(
     state: IntegratedAdmissionState,
     field: admission::IndexedCanonicalFieldModel,

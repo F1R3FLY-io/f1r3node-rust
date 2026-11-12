@@ -1435,6 +1435,7 @@ proofs_rpb3_map_frame_refinement=(
   integrated_root_finish_returns_derived_summary
   integrated_unit_root_finishes_without_score
   integrated_driver_preserves_wf
+  integrated_root_finish_consumes_root
   integrated_new_map_child_body_id_is_driver_assigned
   integrated_replay_preserves_wf
   integrated_map_completion_source_bound
