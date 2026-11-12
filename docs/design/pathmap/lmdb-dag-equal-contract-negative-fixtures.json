@@ -56,10 +56,10 @@
       "expected_code": "control_source_scope_drift"
     },
     {
-      "name": "semantic witness cannot disappear",
-      "pointer": "/paired_contract/semantic_witnesses",
-      "value": [],
-      "expected_code": "semantic_witness_gap"
+      "name": "work-equivalence witnesses cannot disappear",
+      "pointer": "/paired_contract/work_equivalence_witnesses",
+      "value": {},
+      "expected_code": "work_witness_gap"
     },
     {
       "name": "equal sync boundary cannot disappear",
@@ -72,6 +72,146 @@
       "pointer": "/matrix/4/outputs",
       "value": ["checkpoint_reopen_recovery_latency", "gc_work", "write_amplification", "retained_and_garbage_bytes", "inode_count"],
       "expected_code": "matrix_outputs_drift"
+    },
+    {
+      "name": "superseded cross-arm witness list cannot return",
+      "pointer": "/paired_contract/semantic_witnesses",
+      "value": ["current_and_known_roots", "data_bag_contents_and_order", "continuation_map_contents_and_order", "join_bag_contents_and_order", "produce_consume_comm_diagnostics", "reset_replay_and_restart_selection", "cold_export_import_and_state_sync_bytes"],
+      "expected_code": "cross_arm_comparison_forbidden"
+    },
+    {
+      "name": "equal roots cannot be required across arms",
+      "pointer": "/paired_contract/work_equivalence_witnesses/W1/compares",
+      "value": ["operations", "payloads", "checkpoint_positions", "roots"],
+      "expected_code": "cross_arm_comparison_forbidden"
+    },
+    {
+      "name": "byte-equal state-sync pages cannot be required across arms",
+      "pointer": "/paired_contract/work_equivalence_witnesses/W3/compares",
+      "value": ["contents_digest_at_every_checkpoint", "state_sync_bytes"],
+      "expected_code": "cross_arm_comparison_forbidden"
+    },
+    {
+      "name": "a reset cannot name a root value",
+      "pointer": "/paired_contract/work_equivalence_witnesses/W1/reset_names",
+      "value": "root_value",
+      "expected_code": "cross_arm_comparison_forbidden"
+    },
+    {
+      "name": "timed cells of a lane cannot be left unmarked",
+      "pointer": "/matrix/1/timed_cells_choice_free",
+      "value": null,
+      "expected_code": "timed_cell_not_choice_free"
+    },
+    {
+      "name": "reset-then-checkpoint cell cannot be timed without being choice-free",
+      "pointer": "/matrix/4/added_cells/0/choice_free",
+      "value": false,
+      "expected_code": "timed_cell_not_choice_free"
+    },
+    {
+      "name": "a choice-bearing cell cannot be timed",
+      "pointer": "/matrix/5/untimed_choice_bearing_cell/timed",
+      "value": true,
+      "expected_code": "timed_cell_not_choice_free"
+    },
+    {
+      "name": "a lane cannot lose its choice-bearing cell",
+      "pointer": "/matrix/3/untimed_choice_bearing_cell",
+      "value": null,
+      "expected_code": "choice_bearing_cell_gap"
+    },
+    {
+      "name": "two orders of one channel set cannot enter timed cells",
+      "pointer": "/timed_cell_policy/excluded_traces",
+      "value": [],
+      "expected_code": "trace_exclusion_gap"
+    },
+    {
+      "name": "a not-applicable marking needs a reason",
+      "pointer": "/not_applicable_before_sampling/1/reason",
+      "value": "",
+      "expected_code": "not_applicable_reason_missing"
+    },
+    {
+      "name": "history-scaling levels cannot shrink",
+      "pointer": "/matrix/6/levels/retained_states",
+      "value": [16, 256],
+      "expected_code": "matrix_levels_drift"
+    },
+    {
+      "name": "reset-then-checkpoint cell cannot disappear",
+      "pointer": "/matrix/4/added_cells",
+      "value": [],
+      "expected_code": "matrix_cells_drift"
+    },
+    {
+      "name": "treatment cannot fall back to the authority-only path",
+      "pointer": "/treatment/owner_entrypoint",
+      "value": "DurableAuthorityViewV1::into_rspace_authority",
+      "expected_code": "treatment_owner_drift"
+    },
+    {
+      "name": "executable reference cannot be claimed available before it exists",
+      "pointer": "/timed_cell_policy/verifier_available_at_preregistration",
+      "value": true,
+      "expected_code": "premature_verifier_claim"
+    },
+    {
+      "name": "eight-worker timed cells cannot lose the channel-disjoint parts marker",
+      "pointer": "/matrix/3/multi_worker_timed_cells",
+      "value": null,
+      "expected_code": "multi_worker_disjointness_gap"
+    },
+    {
+      "name": "per-step choice-freedom alone cannot verify eight-worker timed cells",
+      "pointer": "/matrix/3/multi_worker_timed_cells/choice_freedom_method",
+      "value": "per_step_choice_free",
+      "expected_code": "multi_worker_disjointness_gap"
+    },
+    {
+      "name": "eight-worker checkpoints cannot be taken without joining every worker",
+      "pointer": "/matrix/3/multi_worker_timed_cells/barriers",
+      "value": "per_worker_without_joining",
+      "expected_code": "multi_worker_barrier_not_joined"
+    },
+    {
+      "name": "eight-worker timed cells cannot drop the per-worker reference runs",
+      "pointer": "/matrix/3/multi_worker_timed_cells/per_worker_verification",
+      "value": "none",
+      "expected_code": "multi_worker_method_drift"
+    },
+    {
+      "name": "an untimed choice-bearing cell cannot admit two orders of one channel set",
+      "pointer": "/matrix/5/untimed_choice_bearing_cell/excluded_traces",
+      "value": [],
+      "expected_code": "trace_exclusion_gap"
+    },
+    {
+      "name": "the harness pin cannot name a commit that did not touch the harness (the control pin)",
+      "pointer": "/historical_evidence/harness_last_edit",
+      "value": "5d19c439215ff26bd28c42beac418da56a6b8dd6",
+      "expected_code": "historical_harness_stale"
+    }
+  ],
+  "harness_pin_probes": [
+    {
+      "name": "a harness pin that did not touch the harness is stale",
+      "inputs": {
+        "pin": "5d19c439215ff26bd28c42beac418da56a6b8dd6",
+        "pin_is_ancestor_of_head": true,
+        "last_touch_as_of_pin": "0c1d01cebcab832b1ba01191e27f00aa7f268f48"
+      },
+      "expected_code": "historical_harness_stale"
+    },
+    {
+      "name": "a harness pin that is not an ancestor of HEAD is rejected (synthetic commit)",
+      "inputs": {
+        "pin": "1111111111111111111111111111111111111111",
+        "pin_is_ancestor_of_head": false,
+        "last_touch_as_of_pin": "1111111111111111111111111111111111111111"
+      },
+      "expected_code": "historical_harness_not_ancestor"
     }
   ],
   "staleness_probes": [

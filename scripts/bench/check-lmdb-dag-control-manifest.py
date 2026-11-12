@@ -28,6 +28,7 @@ LANES = {
     "concurrency_pinned_readers": "real_owner",
     "publication_lifecycle": "real_owner",
     "transfer_comm": "real_owner",
+    "history_scaling": "real_owner",
 }
 MATRIX_LEVELS = {
     "component_admission_persistence": {
@@ -66,6 +67,7 @@ MATRIX_LEVELS = {
         "comm_order": ["datum_first", "receive_first"],
         "transfer": ["cold_export_import", "state_sync"],
     },
+    "history_scaling": {"retained_states": [16, 256, 4096]},
 }
 MATRIX_OUTPUTS = {
     "component_admission_persistence": [
@@ -114,7 +116,112 @@ MATRIX_OUTPUTS = {
         "p99_latency",
         "candidate_and_node_visits",
     ],
+    "history_scaling": ["reopen_latency", "peak_rss", "physical_bytes"],
 }
+FORBIDDEN_CROSS_ARM_SUBJECTS = ("roots", "orders", "chosen_comms", "state_sync_bytes")
+COMPARISON_SUBJECTS = {
+    "operations": "operation_list",
+    "payloads": "operation_list",
+    "checkpoint_positions": "operation_list",
+    "replay_results": "results",
+    "replay_contents": "contents",
+    "replay_root": "roots",
+    "export_import_root": "roots",
+    "contents_digest_at_every_checkpoint": "contents_digest",
+    "roots": "roots",
+    "orders": "orders",
+    "chosen_comms": "chosen_comms",
+    "state_sync_bytes": "state_sync_bytes",
+    "current_and_known_roots": "roots",
+    "data_bag_contents_and_order": "orders",
+    "continuation_map_contents_and_order": "orders",
+    "join_bag_contents_and_order": "orders",
+    "produce_consume_comm_diagnostics": "chosen_comms",
+    "reset_replay_and_restart_selection": "roots",
+    "cold_export_import_and_state_sync_bytes": "state_sync_bytes",
+}
+WORK_EQUIVALENCE_WITNESSES = {
+    "W1": {
+        "name": "same_operation_list",
+        "scope": "across_arms",
+        "compares": ["operations", "payloads", "checkpoint_positions"],
+        "reset_names": "checkpoint_position",
+    },
+    "W2": {
+        "name": "own_validity",
+        "scope": "within_each_arm",
+        "compares": [
+            "replay_results",
+            "replay_contents",
+            "replay_root",
+            "export_import_root",
+        ],
+    },
+    "W3": {
+        "name": "choice_free_contents_digest",
+        "scope": "across_arms",
+        "applies_to": "timed_cells",
+        "compares": ["contents_digest_at_every_checkpoint"],
+        "contents_digest": "canonical_multiset_digest_per_channel_and_ordered_channel_list",
+        "computed_outside_both_backends": True,
+    },
+}
+CHOICE_BEARING_CHECKS = ["W1", "W2", "comm_membership_in_reference_enabled_set"]
+EXCLUDED_TRACES = ["two_orders_of_one_channel_set"]
+MULTI_WORKER_TIMED_CELLS = {
+    "concurrency_pinned_readers": {
+        "workers": 8,
+        "choice_freedom_method": "channel_disjoint_parts",
+        "parts_checked_on": "generated_operation_lists_outside_both_backends",
+        "per_worker_verification": "one_reference_run_per_worker",
+        "barriers": "all_workers_joined_after_prescribed_prefixes",
+    },
+}
+ADDED_CELLS = {
+    "publication_lifecycle": [
+        {
+            "cell_id": "publication-lifecycle-reset-then-checkpoint",
+            "timed": True,
+            "choice_free": True,
+            "operation_pattern": "reset_to_an_earlier_checkpoint_position_then_checkpoint",
+            "outputs": ["reset_latency", "following_checkpoint_latency"],
+        }
+    ],
+}
+NOT_APPLICABLE = [
+    {
+        "item": "component_lane",
+        "targets": [{"lane": "component_admission_persistence"}],
+    },
+    {
+        "item": "paired_retained_root_gc",
+        "targets": [
+            {
+                "lane": "publication_lifecycle",
+                "axis": "gc_pin",
+                "levels": [False, True],
+            },
+            {"lane": "publication_lifecycle", "output": "gc_work"},
+            {"lane": "concurrency_pinned_readers", "output": "gc_deferral"},
+        ],
+    },
+    {
+        "item": "retention_eviction",
+        "targets": [
+            {
+                "lane": "delta_sharing_retention",
+                "axis": "reference_case",
+                "levels": ["retention_eviction"],
+            }
+        ],
+    },
+]
+WHOLLY_NOT_APPLICABLE_LANES = frozenset(
+    target["lane"]
+    for entry in NOT_APPLICABLE
+    for target in entry["targets"]
+    if set(target) == {"lane"}
+)
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -168,11 +275,221 @@ def git(*arguments: str) -> str:
     return result.stdout.strip()
 
 
+def git_is_ancestor(ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    require(result.returncode in (0, 1), "git_preflight_failed", result.stderr.strip())
+    return result.returncode == 0
+
+
+def check_harness_pin(
+    pin: str, pin_is_ancestor_of_head: bool, last_touch_as_of_pin: str
+) -> None:
+    require(
+        pin_is_ancestor_of_head,
+        "historical_harness_not_ancestor",
+        f"harness pin {pin} is not an ancestor of HEAD",
+    )
+    require(
+        last_touch_as_of_pin == pin,
+        "historical_harness_stale",
+        f"harness pin {pin} is not the last commit that touched the harness as of "
+        f"itself ({last_touch_as_of_pin or 'none'} is)",
+    )
+
+
 def exact(actual: object, expected: object, code: str) -> None:
     require(
         type(actual) is type(expected) and actual == expected,
         code,
         f"expected {expected!r}, got {actual!r}",
+    )
+
+
+def validate_work_equivalence(contract: dict) -> None:
+    require(
+        "semantic_witnesses" not in contract,
+        "cross_arm_comparison_forbidden",
+        "the superseded witness list compares roots, orders, chosen COMMs and "
+        "state-sync bytes across arms",
+    )
+    witnesses = contract.get("work_equivalence_witnesses")
+    if not (
+        isinstance(witnesses, dict)
+        and set(witnesses) == set(WORK_EQUIVALENCE_WITNESSES)
+    ):
+        raise CheckFailure(
+            "work_witness_gap", "work-equivalence witnesses W1, W2 and W3 are required"
+        )
+    for label, witness in witnesses.items():
+        require(
+            isinstance(witness, dict) and isinstance(witness.get("compares"), list),
+            "work_witness_drift",
+            f"{label} must be an object with a list of compared items",
+        )
+        if witness.get("scope") == "across_arms":
+            for item in witness["compares"]:
+                subject = (
+                    COMPARISON_SUBJECTS.get(item) if isinstance(item, str) else None
+                )
+                require(
+                    subject not in FORBIDDEN_CROSS_ARM_SUBJECTS,
+                    "cross_arm_comparison_forbidden",
+                    f"{label} compares {item!r} ({subject}) across arms",
+                )
+    require(
+        witnesses["W1"].get("reset_names") != "root_value",
+        "cross_arm_comparison_forbidden",
+        "a reset in the operation list names a root value, which differs across arms",
+    )
+    exact(witnesses, WORK_EQUIVALENCE_WITNESSES, "work_witness_drift")
+    exact(
+        contract.get("never_compared_across_arms"),
+        list(FORBIDDEN_CROSS_ARM_SUBJECTS),
+        "work_witness_drift",
+    )
+
+
+def validate_timed_cell_policy(policy: object) -> None:
+    if not isinstance(policy, dict):
+        raise CheckFailure(
+            "timed_cell_not_choice_free", "the timed-cell policy is missing"
+        )
+    for field, expected in {
+        "choice_free_required": True,
+        "required_outcome_set": "singleton",
+    }.items():
+        exact(policy.get(field), expected, "timed_cell_not_choice_free")
+    for field, expected in {
+        "choice_freedom_verifier": "executable_reference_tuple_space",
+        "verifier_delivered_by_leaf": "rspace-executable-reference-tuplespace",
+        "verified_before_sampling": True,
+    }.items():
+        exact(policy.get(field), expected, "choice_freedom_verifier_drift")
+    exact(
+        policy.get("verifier_available_at_preregistration"),
+        False,
+        "premature_verifier_claim",
+    )
+    exact(policy.get("excluded_traces"), EXCLUDED_TRACES, "trace_exclusion_gap")
+
+
+def validate_lane_cells(row: dict) -> None:
+    lane = row["lane"]
+    if lane in WHOLLY_NOT_APPLICABLE_LANES:
+        for field in (
+            "timed_cells_choice_free",
+            "added_cells",
+            "multi_worker_timed_cells",
+            "untimed_choice_bearing_cell",
+        ):
+            require(
+                field not in row,
+                "not_applicable_drift",
+                f"{lane} is not applicable before sampling but declares {field}",
+            )
+        return
+    require(
+        row.get("timed_cells_choice_free") is True,
+        "timed_cell_not_choice_free",
+        f"the timed cells of {lane} are not marked choice-free",
+    )
+    added = row.get("added_cells", [])
+    require(
+        isinstance(added, list) and all(isinstance(cell, dict) for cell in added),
+        "matrix_cells_drift",
+        f"the added cells of {lane} must be a list of objects",
+    )
+    for cell in added:
+        require(
+            cell.get("timed") is False or cell.get("choice_free") is True,
+            "timed_cell_not_choice_free",
+            f"timed cell {cell.get('cell_id')!r} is not marked choice-free",
+        )
+    exact(added, ADDED_CELLS.get(lane, []), "matrix_cells_drift")
+    validate_multi_worker_cells(row)
+    choice_bearing = row.get("untimed_choice_bearing_cell")
+    if not isinstance(choice_bearing, dict):
+        raise CheckFailure(
+            "choice_bearing_cell_gap", f"{lane} has no untimed choice-bearing cell"
+        )
+    require(
+        choice_bearing.get("timed") is False,
+        "timed_cell_not_choice_free",
+        f"the choice-bearing cell of {lane} is timed but not choice-free",
+    )
+    require(
+        choice_bearing.get("excluded_traces") == EXCLUDED_TRACES,
+        "trace_exclusion_gap",
+        f"the choice-bearing cell of {lane} admits two orders of one channel set",
+    )
+    exact(
+        choice_bearing,
+        {
+            "cell_id": lane.replace("_", "-") + "-choice-bearing",
+            "timed": False,
+            "choice_free": False,
+            "checks": CHOICE_BEARING_CHECKS,
+            "arms_may_end_in_different_outcome_members": True,
+            "excluded_traces": EXCLUDED_TRACES,
+        },
+        "choice_bearing_cell_gap",
+    )
+
+
+def validate_multi_worker_cells(row: dict) -> None:
+    lane = row["lane"]
+    expected = MULTI_WORKER_TIMED_CELLS.get(lane)
+    marker = row.get("multi_worker_timed_cells")
+    if expected is None:
+        require(
+            marker is None,
+            "multi_worker_method_drift",
+            f"{lane} has no multi-worker level but declares multi-worker timed cells",
+        )
+        return
+    fields = marker if isinstance(marker, dict) else {}
+    require(
+        fields.get("choice_freedom_method") == expected["choice_freedom_method"],
+        "multi_worker_disjointness_gap",
+        f"the {expected['workers']}-worker timed cells of {lane} lack the "
+        "channel-disjoint parts marker",
+    )
+    require(
+        fields.get("barriers") == expected["barriers"],
+        "multi_worker_barrier_not_joined",
+        f"the {expected['workers']}-worker timed cells of {lane} do not take every "
+        "checkpoint and reset with all workers joined",
+    )
+    exact(marker, expected, "multi_worker_method_drift")
+
+
+def validate_not_applicable(entries: object) -> None:
+    if not (
+        isinstance(entries, list) and all(isinstance(entry, dict) for entry in entries)
+    ):
+        raise CheckFailure(
+            "not_applicable_drift", "not-applicable markings must be a list of objects"
+        )
+    for entry in entries:
+        reason = entry.get("reason")
+        require(
+            isinstance(reason, str) and reason.strip() != "",
+            "not_applicable_reason_missing",
+            f"{entry.get('item')!r} is marked not applicable without a reason",
+        )
+    exact(
+        [
+            {key: value for key, value in entry.items() if key != "reason"}
+            for entry in entries
+        ],
+        NOT_APPLICABLE,
+        "not_applicable_drift",
     )
 
 
@@ -219,10 +536,23 @@ def validate_static(manifest: dict) -> None:
         "rspace++/benches/rspace_act_lmdb.rs",
         "historical_harness_drift",
     )
-    exact(
-        git("log", "-1", "--format=%H", "--", historical["component_harness"]),
-        historical.get("harness_last_edit"),
-        "historical_harness_stale",
+    harness_pin = historical.get("harness_last_edit")
+    if not (isinstance(harness_pin, str) and HEX40.fullmatch(harness_pin) is not None):
+        raise CheckFailure(
+            "historical_harness_stale",
+            f"harness pin {harness_pin!r} is not a full commit SHA",
+        )
+    check_harness_pin(
+        harness_pin,
+        git_is_ancestor(harness_pin, "HEAD"),
+        git(
+            "log",
+            "-1",
+            "--format=%H",
+            harness_pin,
+            "--",
+            historical["component_harness"],
+        ),
     )
 
     control = manifest.get("control", {})
@@ -242,17 +572,17 @@ def validate_static(manifest: dict) -> None:
         exact(control.get(field), expected, "control_setting_drift")
 
     treatment = manifest.get("treatment", {})
-    exact(
-        treatment.get("owner_entrypoint"),
-        "DurableAuthorityViewV1::into_rspace_authority",
-        "treatment_owner_drift",
-    )
+    for field, expected in {
+        "owner_entrypoint": "RSpace with the durable backend selected",
+        "selection_delivered_by_leaf": "rspace-select-durable-backend",
+    }.items():
+        exact(treatment.get(field), expected, "treatment_owner_drift")
     exact(
         treatment.get("ffi_selected_at_preregistration"), False, "premature_owner_claim"
     )
     exact(
         treatment.get("readiness"),
-        "requires_non_default_real_owner_adapter",
+        "requires_durable_backend_selection",
         "premature_owner_claim",
     )
 
@@ -263,27 +593,19 @@ def validate_static(manifest: dict) -> None:
         "durability_contract_drift",
     )
     for field in (
-        "identical_command_trace",
-        "identical_canonical_object_stream_and_batch_size",
         "identical_sync_and_barrier_sequence",
         "identical_retention_and_cache_policy",
         "identical_worker_and_reader_pin_policy",
         "durability_kill_reopen_witness_required",
     ):
         exact(contract.get(field), True, "paired_contract_drift")
-    exact(
-        contract.get("semantic_witnesses"),
-        [
-            "current_and_known_roots",
-            "data_bag_contents_and_order",
-            "continuation_map_contents_and_order",
-            "join_bag_contents_and_order",
-            "produce_consume_comm_diagnostics",
-            "reset_replay_and_restart_selection",
-            "cold_export_import_and_state_sync_bytes",
-        ],
-        "semantic_witness_gap",
-    )
+    for field, expected in {
+        "retention_policy": "keep_all_in_both_arms",
+        "pair_validity": "same_work_modulo_nondeterminism",
+    }.items():
+        exact(contract.get(field), expected, "paired_contract_drift")
+    validate_work_equivalence(contract)
+    validate_timed_cell_policy(manifest.get("timed_cell_policy"))
 
     sampling = manifest.get("sampling", {})
     frozen_sampling = {
@@ -332,6 +654,8 @@ def validate_static(manifest: dict) -> None:
         exact(row.get("scope"), LANES[row["lane"]], "matrix_scope_drift")
         exact(row.get("levels"), MATRIX_LEVELS[row["lane"]], "matrix_levels_drift")
         exact(row.get("outputs"), MATRIX_OUTPUTS[row["lane"]], "matrix_outputs_drift")
+        validate_lane_cells(row)
+    validate_not_applicable(manifest.get("not_applicable_before_sampling"))
 
     template = manifest.get("run_instance_template", {})
     exact(template.get("status"), "unfilled", "template_prematurely_ready")
@@ -341,7 +665,8 @@ def validate_static(manifest: dict) -> None:
         "treatment_binary_sha256",
         "host_snapshot_sha256",
         "real_owner_adapter_commit",
-        "semantic_witness_sha256",
+        "work_equivalence_witness_sha256",
+        "choice_freedom_receipt_sha256",
         "kill_reopen_witness_sha256",
         "source_tree_clean",
         "same_durability_contract",
@@ -384,7 +709,7 @@ def validate_preflight(manifest: dict, instance: dict) -> None:
         "control_binary_sha256",
         "treatment_binary_sha256",
         "host_snapshot_sha256",
-        "semantic_witness_sha256",
+        "work_equivalence_witness_sha256",
         "kill_reopen_witness_sha256",
         "pair_plan_sha256",
     ):
@@ -394,6 +719,12 @@ def validate_preflight(manifest: dict, instance: dict) -> None:
             "run_instance_incomplete",
             f"{field} must be a SHA-256 digest",
         )
+    receipt = instance.get("choice_freedom_receipt_sha256")
+    require(
+        isinstance(receipt, str) and HEX64.fullmatch(receipt) is not None,
+        "choice_freedom_unverified",
+        "timed cells need the executable reference's choice-freedom receipt",
+    )
     adapter = instance.get("real_owner_adapter_commit")
     require(
         isinstance(adapter, str) and HEX40.fullmatch(adapter),
@@ -448,12 +779,19 @@ def self_test(manifest: dict) -> None:
     require(
         isinstance(cases, list), "negative_fixture_gap", "manifest mutations missing"
     )
-    exact(len(cases), 12, "negative_fixture_gap")
+    exact(len(cases), 32, "negative_fixture_gap")
     probes = fixtures.get("staleness_probes", [])
     require(
         isinstance(probes, list), "negative_fixture_gap", "staleness probes missing"
     )
     exact(len(probes), 3, "negative_fixture_gap")
+    harness_probes = fixtures.get("harness_pin_probes", [])
+    require(
+        isinstance(harness_probes, list),
+        "negative_fixture_gap",
+        "harness-pin probes missing",
+    )
+    exact(len(harness_probes), 2, "negative_fixture_gap")
     for case in cases:
         mutated = copy.deepcopy(manifest)
         set_pointer(mutated, case["pointer"], case["value"])
@@ -470,9 +808,17 @@ def self_test(manifest: dict) -> None:
             exact(error.code, case["expected_code"], "negative_fixture_mismatch")
         else:
             raise CheckFailure("negative_fixture_survived", case["name"])
+    for case in harness_probes:
+        try:
+            check_harness_pin(**case["inputs"])
+        except CheckFailure as error:
+            exact(error.code, case["expected_code"], "negative_fixture_mismatch")
+        else:
+            raise CheckFailure("negative_fixture_survived", case["name"])
     print(
-        f"lmdb-dag-control: {len(cases)} manifest mutants and "
-        f"{len(probes)} staleness probes rejected"
+        f"lmdb-dag-control: {len(cases)} manifest mutants, "
+        f"{len(probes)} staleness probes and "
+        f"{len(harness_probes)} harness-pin probes rejected"
     )
 
 

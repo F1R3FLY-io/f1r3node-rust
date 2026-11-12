@@ -5,7 +5,7 @@
   "state": "preregistered_without_samples",
   "protocol": {
     "path": "docs/design/pathmap/lmdb-dag-equal-contract-comparison-protocol.md",
-    "sha256": "d2963a6ce6534bcd11c33734eb95cec50b9de86cf81dcc82ad04230303e69bd1"
+    "sha256": "41243ab2a4aa5986346b0e6cd5d36e2d38e37a753217d78da8f2bf24576c0b8e"
   },
   "historical_evidence": {
     "path": "docs/design/stack-safety/measurements/rspace-act-lmdb-experiment-327-transcript-2026-09-29.json",
@@ -30,27 +30,50 @@
     "relaxed_sync": false
   },
   "treatment": {
-    "owner_entrypoint": "DurableAuthorityViewV1::into_rspace_authority",
+    "owner_entrypoint": "RSpace with the durable backend selected",
+    "selection_delivered_by_leaf": "rspace-select-durable-backend",
     "ffi_selected_at_preregistration": false,
-    "readiness": "requires_non_default_real_owner_adapter"
+    "readiness": "requires_durable_backend_selection"
   },
   "paired_contract": {
     "acknowledgement": "successful_durable_checkpoint_after_required_sync",
-    "identical_command_trace": true,
-    "identical_canonical_object_stream_and_batch_size": true,
     "identical_sync_and_barrier_sequence": true,
     "identical_retention_and_cache_policy": true,
     "identical_worker_and_reader_pin_policy": true,
     "durability_kill_reopen_witness_required": true,
-    "semantic_witnesses": [
-      "current_and_known_roots",
-      "data_bag_contents_and_order",
-      "continuation_map_contents_and_order",
-      "join_bag_contents_and_order",
-      "produce_consume_comm_diagnostics",
-      "reset_replay_and_restart_selection",
-      "cold_export_import_and_state_sync_bytes"
-    ]
+    "retention_policy": "keep_all_in_both_arms",
+    "pair_validity": "same_work_modulo_nondeterminism",
+    "work_equivalence_witnesses": {
+      "W1": {
+        "name": "same_operation_list",
+        "scope": "across_arms",
+        "compares": ["operations", "payloads", "checkpoint_positions"],
+        "reset_names": "checkpoint_position"
+      },
+      "W2": {
+        "name": "own_validity",
+        "scope": "within_each_arm",
+        "compares": ["replay_results", "replay_contents", "replay_root", "export_import_root"]
+      },
+      "W3": {
+        "name": "choice_free_contents_digest",
+        "scope": "across_arms",
+        "applies_to": "timed_cells",
+        "compares": ["contents_digest_at_every_checkpoint"],
+        "contents_digest": "canonical_multiset_digest_per_channel_and_ordered_channel_list",
+        "computed_outside_both_backends": true
+      }
+    },
+    "never_compared_across_arms": ["roots", "orders", "chosen_comms", "state_sync_bytes"]
+  },
+  "timed_cell_policy": {
+    "choice_free_required": true,
+    "required_outcome_set": "singleton",
+    "choice_freedom_verifier": "executable_reference_tuple_space",
+    "verifier_delivered_by_leaf": "rspace-executable-reference-tuplespace",
+    "verifier_available_at_preregistration": false,
+    "verified_before_sampling": true,
+    "excluded_traces": ["two_orders_of_one_channel_set"]
   },
   "sampling": {
     "primary_metric": "median_within_pair_treatment_control_durable_batch_throughput_ratio",
@@ -93,31 +116,128 @@
       "lane": "owner_primary_unchanged_state",
       "scope": "real_owner",
       "levels": {"objects": [4096, 65536, 1048576], "changed_paths_per_checkpoint": [64]},
-      "outputs": ["durable_batches_per_second", "operation_p50_p95_p99", "checkpoint_p50_p95_p99", "semantic_witness", "work_per_changed_path"]
+      "outputs": ["durable_batches_per_second", "operation_p50_p95_p99", "checkpoint_p50_p95_p99", "semantic_witness", "work_per_changed_path"],
+      "timed_cells_choice_free": true,
+      "untimed_choice_bearing_cell": {
+        "cell_id": "owner-primary-unchanged-state-choice-bearing",
+        "timed": false,
+        "choice_free": false,
+        "checks": ["W1", "W2", "comm_membership_in_reference_enabled_set"],
+        "arms_may_end_in_different_outcome_members": true,
+        "excluded_traces": ["two_orders_of_one_channel_set"]
+      }
     },
     {
       "lane": "delta_sharing_retention",
       "scope": "real_owner",
       "levels": {"delta": [1, 64, 4096], "retained_roots": [1, 16, 128], "sharing_percent": [0, 50, 95], "reference_case": ["repeated_update", "full_removal", "same_digest_reuse", "retention_eviction"]},
-      "outputs": ["reference_activations_deactivations", "new_bytes", "old_closure_work", "metadata_work", "dedup", "latency"]
+      "outputs": ["reference_activations_deactivations", "new_bytes", "old_closure_work", "metadata_work", "dedup", "latency"],
+      "timed_cells_choice_free": true,
+      "untimed_choice_bearing_cell": {
+        "cell_id": "delta-sharing-retention-choice-bearing",
+        "timed": false,
+        "choice_free": false,
+        "checks": ["W1", "W2", "comm_membership_in_reference_enabled_set"],
+        "arms_may_end_in_different_outcome_members": true,
+        "excluded_traces": ["two_orders_of_one_channel_set"]
+      }
     },
     {
       "lane": "concurrency_pinned_readers",
       "scope": "real_owner",
       "levels": {"workers": [1, 8], "long_lived_old_root_pin": [false, true]},
-      "outputs": ["durable_batches_per_second", "p99_latency", "lock_contention", "gc_deferral", "wal_replay_tail", "recovery_point"]
+      "outputs": ["durable_batches_per_second", "p99_latency", "lock_contention", "gc_deferral", "wal_replay_tail", "recovery_point"],
+      "timed_cells_choice_free": true,
+      "multi_worker_timed_cells": {
+        "workers": 8,
+        "choice_freedom_method": "channel_disjoint_parts",
+        "parts_checked_on": "generated_operation_lists_outside_both_backends",
+        "per_worker_verification": "one_reference_run_per_worker",
+        "barriers": "all_workers_joined_after_prescribed_prefixes"
+      },
+      "untimed_choice_bearing_cell": {
+        "cell_id": "concurrency-pinned-readers-choice-bearing",
+        "timed": false,
+        "choice_free": false,
+        "checks": ["W1", "W2", "comm_membership_in_reference_enabled_set"],
+        "arms_may_end_in_different_outcome_members": true,
+        "excluded_traces": ["two_orders_of_one_channel_set"]
+      }
     },
     {
       "lane": "publication_lifecycle",
       "scope": "real_owner",
       "levels": {"checkpoint_every_mutations": [1, 64, 1024], "pack_rotation": [false, true], "wal_rotation": [false, true], "restart": ["clean", "torn"], "index_repair": [false, true], "gc_pin": [false, true]},
-      "outputs": ["checkpoint_reopen_recovery_latency", "gc_work", "write_amplification", "retained_and_garbage_bytes", "whole_tree_allocated_bytes", "inode_count"]
+      "outputs": ["checkpoint_reopen_recovery_latency", "gc_work", "write_amplification", "retained_and_garbage_bytes", "whole_tree_allocated_bytes", "inode_count"],
+      "timed_cells_choice_free": true,
+      "added_cells": [
+        {
+          "cell_id": "publication-lifecycle-reset-then-checkpoint",
+          "timed": true,
+          "choice_free": true,
+          "operation_pattern": "reset_to_an_earlier_checkpoint_position_then_checkpoint",
+          "outputs": ["reset_latency", "following_checkpoint_latency"]
+        }
+      ],
+      "untimed_choice_bearing_cell": {
+        "cell_id": "publication-lifecycle-choice-bearing",
+        "timed": false,
+        "choice_free": false,
+        "checks": ["W1", "W2", "comm_membership_in_reference_enabled_set"],
+        "arms_may_end_in_different_outcome_members": true,
+        "excluded_traces": ["two_orders_of_one_channel_set"]
+      }
     },
     {
       "lane": "transfer_comm",
       "scope": "real_owner",
       "levels": {"channel_distribution": ["shared", "random", "adversarial"], "comm_order": ["datum_first", "receive_first"], "transfer": ["cold_export_import", "state_sync"]},
-      "outputs": ["transfer_bytes_latency", "imported_root_witness", "produce_consume_comm_throughput", "p99_latency", "candidate_and_node_visits"]
+      "outputs": ["transfer_bytes_latency", "imported_root_witness", "produce_consume_comm_throughput", "p99_latency", "candidate_and_node_visits"],
+      "timed_cells_choice_free": true,
+      "untimed_choice_bearing_cell": {
+        "cell_id": "transfer-comm-choice-bearing",
+        "timed": false,
+        "choice_free": false,
+        "checks": ["W1", "W2", "comm_membership_in_reference_enabled_set"],
+        "arms_may_end_in_different_outcome_members": true,
+        "excluded_traces": ["two_orders_of_one_channel_set"]
+      }
+    },
+    {
+      "lane": "history_scaling",
+      "scope": "real_owner",
+      "levels": {"retained_states": [16, 256, 4096]},
+      "outputs": ["reopen_latency", "peak_rss", "physical_bytes"],
+      "timed_cells_choice_free": true,
+      "untimed_choice_bearing_cell": {
+        "cell_id": "history-scaling-choice-bearing",
+        "timed": false,
+        "choice_free": false,
+        "checks": ["W1", "W2", "comm_membership_in_reference_enabled_set"],
+        "arms_may_end_in_different_outcome_members": true,
+        "excluded_traces": ["two_orders_of_one_channel_set"]
+      }
+    }
+  ],
+  "not_applicable_before_sampling": [
+    {
+      "item": "component_lane",
+      "targets": [{"lane": "component_admission_persistence"}],
+      "reason": "Both arms are the real RSpace with one backend selected each. This lane drives neither arm's RSpace, and its precondition, identical canonical bytes in both arms, cannot hold because the PathMap backend does not reproduce LMDB's bytes."
+    },
+    {
+      "item": "paired_retained_root_gc",
+      "targets": [
+        {"lane": "publication_lifecycle", "axis": "gc_pin", "levels": [false, true]},
+        {"lane": "publication_lifecycle", "output": "gc_work"},
+        {"lane": "concurrency_pinned_readers", "output": "gc_deferral"}
+      ],
+      "reason": "Both arms run keep-all retention and LMDB reclaims nothing, so no garbage collection runs in either arm and a GC measurement has no control value to pair with."
+    },
+    {
+      "item": "retention_eviction",
+      "targets": [{"lane": "delta_sharing_retention", "axis": "reference_case", "levels": ["retention_eviction"]}],
+      "reason": "Both arms run keep-all retention and LMDB reclaims nothing, so no retained state is evicted in either arm."
     }
   ],
   "run_instance_template": {
@@ -127,7 +247,8 @@
     "treatment_binary_sha256": null,
     "host_snapshot_sha256": null,
     "real_owner_adapter_commit": null,
-    "semantic_witness_sha256": null,
+    "work_equivalence_witness_sha256": null,
+    "choice_freedom_receipt_sha256": null,
     "kill_reopen_witness_sha256": null,
     "pair_plan_sha256": null,
     "source_tree_clean": null,
