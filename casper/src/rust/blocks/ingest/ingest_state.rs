@@ -318,13 +318,15 @@ impl IngestState {
                 }
             }
             IngestInput::Need { hash } => {
-                if !stores.in_dag(&hash) && !self.tracker.contains(&hash) {
-                    self.scheduler.need_block(
-                        &hash,
-                        NeedOrigin::Requested,
-                        NeedFacts::default(),
-                        now_ms,
-                    );
+                if self.tracker.contains(&hash) {
+                    self.vouch_for_held(&hash);
+                } else if !stores.in_dag(&hash) {
+                    let facts = NeedFacts {
+                        vouched: true,
+                        ..NeedFacts::default()
+                    };
+                    self.scheduler
+                        .need_block(&hash, NeedOrigin::Requested, facts, now_ms);
                 }
             }
             IngestInput::IntakeRefused(refused) => {
@@ -443,12 +445,9 @@ impl IngestState {
             )
             .record(now_ms.saturating_sub(first_requested_ms) as f64 / 1_000.0);
         }
-        let settled = need.as_ref().is_some_and(|need| {
-            need.facts.cited_by_bonded
-                && self
-                    .anchor_height
-                    .is_some_and(|anchor| anchor > 0 && meta.height <= anchor)
-        });
+        let settled = need
+            .as_ref()
+            .is_some_and(|need| need.facts.vouched && self.at_or_below_anchor(meta.height));
         if meta.solicited {
             meta.pushed_by = None;
         }
@@ -768,14 +767,46 @@ impl IngestState {
         }
     }
 
-    /// Held blocks wait on `missing`: each one not itself held is needed.
+    /// Held blocks wait on `missing`: each one not itself held is needed, and a
+    /// vouched citation of one that is held may make it settled history.
     fn cite(&mut self, missing: &[BlockHash], facts: &NeedFacts, now_ms: u64) {
         for dependency in missing {
             if !self.tracker.contains(dependency) {
                 self.scheduler
                     .need_block(dependency, NeedOrigin::Cited, facts.clone(), now_ms);
+            } else if facts.vouched {
+                self.vouch_for_held(dependency);
             }
         }
+    }
+
+    /// A held block vouched for after it was held is admitted as settled
+    /// history instead of validated, if it is at or below the anchor and its
+    /// validation has not started.
+    fn vouch_for_held(&mut self, hash: &BlockHash) {
+        let Some(height) = self.tracker.meta(hash).map(|meta| meta.height) else {
+            return;
+        };
+        if !self.at_or_below_anchor(height) {
+            return;
+        }
+        if let Some(unwaited) = self.tracker.admit_settled_instead(hash) {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %short(hash),
+                height,
+                "Block vouched for while held; it is admitted as settled history"
+            );
+            self.released(Departure {
+                unwaited,
+                ..Departure::default()
+            });
+        }
+    }
+
+    fn at_or_below_anchor(&self, height: i64) -> bool {
+        self.anchor_height
+            .is_some_and(|anchor| anchor > 0 && height <= anchor)
     }
 
     /// Needs and state roots no held block waits on any more are dropped.
@@ -909,7 +940,7 @@ impl IngestState {
             let facts = NeedFacts {
                 height_hint: Some(meta.height),
                 trusted: meta.trusted,
-                cited_by_bonded: false,
+                vouched: false,
             };
             self.scheduler
                 .need_block(hash, NeedOrigin::Cited, facts, now_ms);
@@ -920,7 +951,7 @@ impl IngestState {
             let facts = NeedFacts {
                 height_hint: Some(meta.height),
                 trusted: meta.trusted,
-                cited_by_bonded: false,
+                vouched: false,
             };
             self.scheduler
                 .need_block(hash, NeedOrigin::Requested, facts, now_ms);
@@ -1086,7 +1117,7 @@ fn citation(meta: &HeldMeta) -> NeedFacts {
     NeedFacts {
         height_hint: Some(meta.height - 1),
         trusted: meta.trusted,
-        cited_by_bonded: meta.bonded_at_anchor,
+        vouched: meta.bonded_at_anchor,
     }
 }
 

@@ -241,6 +241,54 @@ fn a_cited_block_at_or_below_the_anchor_is_admitted_as_settled_history() {
 }
 
 #[test]
+fn a_block_below_the_anchor_that_the_node_requested_itself_is_offered_as_settled_history() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    s.handle(received(meta(9, 40, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+}
+
+#[test]
+fn a_held_block_below_the_anchor_that_the_node_then_requests_is_admitted_as_settled_history() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 40, &[3])), 0, &dag);
+    assert!(
+        s.is_needed(&hash(3)) && s.next_dispatch().is_none(),
+        "staging: received unvouched, the block waits on its parent to be validated"
+    );
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+    assert!(
+        !s.is_needed(&hash(3)),
+        "settled history waits on nothing, so its parent is no longer fetched"
+    );
+}
+
+#[test]
+fn a_held_block_below_the_anchor_that_a_bonded_block_then_cites_is_admitted_as_settled_history() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 40, &[3])), 0, &dag);
+    s.handle(received(meta(10, 41, &[9])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
+}
+
+#[test]
+fn a_held_block_above_the_anchor_stays_held_for_validation_when_the_node_requests_it() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(received(meta(9, 51, &[0])), 0, &dag);
+    s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
+}
+
+#[test]
 fn no_block_is_admitted_as_settled_history_before_casper_is_attached() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
