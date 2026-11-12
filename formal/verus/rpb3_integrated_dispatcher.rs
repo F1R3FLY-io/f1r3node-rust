@@ -1488,6 +1488,62 @@ pub proof fn integrated_live_relation_non_push_refines_live_step(
     hide(integrated::live_runtime_product_step);
 }
 
+/// At a MessagePush action, `integrated_live_relation` is the route-selected
+/// step at the action's fields. The relation is unfolded once, at the action's
+/// constructor; the route-selected step stays hidden, so it is matched by
+/// congruence on the fields and its push relations are never unfolded.
+pub proof fn integrated_live_relation_message_push_is_route_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+    route: IntegratedPushRoute,
+    request: runtime::SourceFrameRequestImage,
+    actual_top_kind: Option<runtime::SourceFrameRequestKind>,
+    after_len: usize,
+    after_capacity: usize,
+    stats_frame_variant_bytes: usize,
+)
+    requires
+        action == (LiveRuntimeProductAction::MessagePush {
+            request, actual_top_kind, after_len, after_capacity, stats_frame_variant_bytes,
+        }),
+        integrated_live_relation(before, after, action, route),
+    ensures
+        integrated_message_push_route_step(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes, route,
+        ),
+{
+    hide(integrated_message_push_route_step);
+}
+
+/// At a MessagePush action, the observed MessagePush step at the action's
+/// fields is a `live_runtime_product_step`. The Live step is unfolded once, at
+/// the action's constructor; the observed step stays hidden, so it is matched
+/// by congruence on the fields and its push relations are never unfolded.
+pub proof fn integrated_message_push_observed_is_live_step(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+    request: runtime::SourceFrameRequestImage,
+    actual_top_kind: Option<runtime::SourceFrameRequestKind>,
+    after_len: usize,
+    after_capacity: usize,
+    stats_frame_variant_bytes: usize,
+)
+    requires
+        action == (LiveRuntimeProductAction::MessagePush {
+            request, actual_top_kind, after_len, after_capacity, stats_frame_variant_bytes,
+        }),
+        integrated::live_runtime_product_message_push_observed_step(
+            before, after, request, actual_top_kind, after_len, after_capacity,
+            stats_frame_variant_bytes,
+        ),
+    ensures integrated::live_runtime_product_step(before, after, action),
+{
+    hide(integrated::live_runtime_product_message_push_observed_step);
+}
+
 pub proof fn integrated_live_relation_message_push_refines_live_step(
     before: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
@@ -1499,14 +1555,28 @@ pub proof fn integrated_live_relation_message_push_refines_live_step(
         integrated_live_relation(before, after, action, route),
     ensures integrated::live_runtime_product_step(before, after, action),
 {
+    hide(integrated_live_relation);
+    hide(integrated::live_runtime_product_step);
+    hide(integrated_message_push_route_step);
+    hide(integrated::live_runtime_product_message_push_observed_step);
     match action {
         LiveRuntimeProductAction::MessagePush {
             request, actual_top_kind, after_len, after_capacity,
             stats_frame_variant_bytes,
-        } => integrated_message_push_route_implies_observed(
-            before, after, request, actual_top_kind, after_len, after_capacity,
-            stats_frame_variant_bytes, route,
-        ),
+        } => {
+            integrated_live_relation_message_push_is_route_step(
+                before, after, action, route, request, actual_top_kind, after_len,
+                after_capacity, stats_frame_variant_bytes,
+            );
+            integrated_message_push_route_implies_observed(
+                before, after, request, actual_top_kind, after_len, after_capacity,
+                stats_frame_variant_bytes, route,
+            );
+            integrated_message_push_observed_is_live_step(
+                before, after, action, request, actual_top_kind, after_len,
+                after_capacity, stats_frame_variant_bytes,
+            );
+        },
         _ => {},
     }
 }
