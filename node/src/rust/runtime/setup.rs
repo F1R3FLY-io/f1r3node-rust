@@ -350,28 +350,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         KeyValueBlockStore::create_from_kvm(&mut rnode_store_manager).await?
     };
 
-    // Last finalized Block storage
-    let last_finalized_storage = {
-        use block_storage::rust::finality::LastFinalizedKeyValueStorage;
-
-        LastFinalizedKeyValueStorage::create_from_kvm(&mut rnode_store_manager).await?
-    };
-
-    // Migrate LastFinalizedStorage to BlockDagStorage
-    let lfb_require_migration = last_finalized_storage.require_migration()?;
-    if lfb_require_migration {
-        use tracing::info;
-
-        info!("Migrating LastFinalizedStorage to BlockDagStorage.");
-        last_finalized_storage
-            .migrate_lfb(&mut rnode_store_manager, &block_store)
-            .await?;
-    }
-    info!(
-        lfb_migration = lfb_require_migration,
-        "LastFinalized storage checked"
-    );
-
     // Block DAG storage
     let block_dag_storage = {
         use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
