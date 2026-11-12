@@ -424,6 +424,9 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("GC-04", "crash_before_publication_keeps_the_old_generation_for_retry"),
     ("GC-05", "reader_export_and_import_roots_share_one_protection_quotient"),
     ("TX-01", "pages_carry_exactly_the_closure_once_parent_first_for_deep_wide_and_shared_states"),
+    ("DF-01", "visited_differences_turn_the_from_state_into_the_to_state"),
+    ("DF-02", "a_difference_reads_only_the_nodes_the_two_states_do_not_share"),
+    ("DF-03", "both_orders_of_a_receive_group_are_visited_as_distinct_endpoints"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

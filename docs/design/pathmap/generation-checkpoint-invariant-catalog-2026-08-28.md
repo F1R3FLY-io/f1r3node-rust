@@ -8705,6 +8705,117 @@ every root except the owner's current one with `UnknownRootError`.
 | HR-02 | Unknown roots are refused without effect. A digest absent from the store, another store's state root, the LMDB radix empty root, and the digest of an object of this store that is not a current or retained state are refused with `UnknownRootError` from every view, and the repository reports that it contains none of them; a hash of another length is refused with `InvalidRootHash`. No file of the store directory changes, and every view keeps its root and its reads. | `an_unknown_root_is_refused_and_changes_no_file` |
 | HR-03 | Reset is local. A reset, accepted or refused, reaches none of the 16 directory failpoints, so it performs no write and no sync through them, gives the same outcome with any one of them armed, and leaves the store directory unchanged. | `reset_performs_no_write_and_no_sync_under_every_directory_failpoint` |
 
+### Retained state endpoint difference (2026-11-12)
+
+Task 14347 adds `visit_state_difference` in
+[`difference.rs`](../../../rspace++/src/rspace/persistence/difference.rs), a
+read-only walk of the endpoint difference between two retained durable
+states. Its caller is the owner's cross-base checkpoint
+(`rspace-owner-cross-base-checkpoint`): under ruling Q1, option A, a reset is
+local to the runtime view and writes nothing, and a checkpoint publishes the
+view's successor from the store's current state, so the owner asks the walk,
+under its mutex, for every endpoint whose value differs between the current
+state and the view's base. Until that caller lands, only the tests call the
+walk.
+
+**Interface.** `visit_state_difference(store, from, to, limits, visit)` takes
+one object store through which both states are readable (the caller holds the
+read handles of both), the `SemanticRoots` of the two states, four limits and
+a visitor. It calls `visit(namespace, path, from_value, to_value)` once for
+each endpoint of the data, continuation and join namespaces whose two values
+differ, including an endpoint that only one state holds; the other side is
+then `EndpointValue::Absent`. It writes nothing and takes no lease. An error
+returned by the visitor, a read error and a limit refusal each stop the walk
+and are returned typed, and the caller then publishes nothing. The report
+gives the consumed amount of each limit and the number of differences.
+
+**Walk.** A node of the canonical radix DAG holds a compressed prefix, an
+endpoint and its children by edge byte, and the walk parses it as
+`visit_endpoints_under_prefix` does. Inside its prefix a canonical node holds
+no endpoint and continues with exactly one byte, and objects are content
+addressed, so equal references are equal subtrees. A namespace whose two
+roots are equal is skipped unread, and so is every pair of children with
+equal references under one path. The walk keeps an explicit worklist of
+pending subtrees and one shared path buffer, both reserved once from the
+limits; nothing recurses. A pending pair of different objects that start at
+one path is aligned along the two prefixes, and the position reached after
+their common bytes decides the step:
+
+| Position after the common bytes | Step |
+|---|---|
+| Both nodes end | Compare the two endpoints. Merge the children by edge: equal references are skipped, different references are pushed as a pair, and a child on one side only is pushed as a one-sided subtree. |
+| The from node ends inside the to prefix | The to side holds no endpoint there, so a from endpoint is visited against `Absent`. From children off the to path are pushed as one-sided subtrees. The walk reads the from child on the to path and continues the alignment, or, if there is none, the rest of the to node is one-sided. |
+| The to node ends inside the from prefix | The mirror of the previous row. |
+| The two prefixes diverge | Both remainders are one-sided. The from remainder is pushed with the object already read, so it is not read again, and the to remainder is walked at once. |
+
+A one-sided subtree visits each of its endpoints against `Absent` on the
+other side. A continuation's group is the literal ordered list of its
+channels in the endpoint path (ruling D1): `(a,b)` and `(b,a)` are two
+different endpoints, and the walk never sorts or rewrites a path.
+
+**Cost.** A node occurrence of a state is a namespace, the path at which the
+node starts and the node's object reference; within one trie a start path
+names at most one node. The unshared node occurrences of two states are the
+symmetric difference of their occurrence sets. Each read is of an unshared
+occurrence: a pair holds different objects at one start path, a node read
+while the other side is inside a prefix has no counterpart that starts at
+its path, and a one-sided subtree has none at all. Each start path of each
+side is reached once, and every unshared occurrence is reached. The walk
+therefore reads exactly the unshared occurrences, each once, and its time is
+linear in their canonical bytes, whatever the size of the shared part. A
+state compared with itself reads and reserves nothing. A bound by distinct
+objects would be unachievable: if state A holds subtree N at path p and K at
+q, and state B holds M at p and N at q, the objects that the states do not
+share are the two roots, K and M, but a walk must also read N to learn A's
+endpoints under p.
+
+**Limits.** `max_object_reads` and `max_object_read_bytes` bound the reads and
+their canonical bytes, `max_worklist` the pending subtrees and
+`max_path_bytes` the path buffer. Each read, push and append is checked
+before it happens and refused with `ResourceLimit`, naming the resource
+(`state difference object reads`, `state difference object read bytes`,
+`state difference worklist`, `state difference path bytes`) and the amount
+that it would have reached. The worklist and the path buffer are reserved
+from their limits, so a limit too large to reserve is refused with
+`AllocationFailure`. Each report field is the consumed amount of the limit of
+the same name, so limits equal to a report admit the same walk.
+
+**The DF rows.** DF is the state difference family. DF-01 and DF-02 run two
+fixed schedules and then 32 generated ones, each published through a durable
+owner from the fixture of the durable RSpace authority tests: a schedule
+publishes the fixture's state and two to four units of one to three edits
+over channels `a`, `b` and `c`, values `v0` to `v2`, groups `(a)`, `(b)`,
+`(a,b)`, `(b,a)`, `(a,a)` and `(c,a,b)`, and bodies `k0` and `k1`; a put is
+twice as likely as a removal. Every published state is retained, and the
+test recovers the store and compares every ordered pair of its states. The
+two fixed schedules must together show every listed case.
+
+| ID | Required property | Test |
+|---|---|---|
+| DF-01 | Exact endpoint difference. Each published state decodes to the contents that its schedule put in it. For every ordered pair of states, the walk visits no endpoint twice and none with equal values, and it visits exactly the endpoints whose values differ, with both values; its report counts them. Replacing each visited endpoint of the from state by its `to_value`, or removing it when that is `Absent`, gives exactly the endpoints of the to state, which decode to the to state's data and joins as multisets per channel and to its continuations per ordered channel list. Observed: pairs with and without a difference; differences in each namespace; endpoints only in from, only in to and with changed values; and, computed from the key sets independently of the walk, a from node end inside a to prefix, a to node end inside a from prefix, and two prefixes that diverge. | `visited_differences_turn_the_from_state_into_the_to_state` |
+| DF-02 | Reads only unshared nodes. The node occurrences of each state are enumerated independently of the walk. For every ordered pair of states, the walk reads through a counting store exactly as many objects as its report counts, never more than the unshared node occurrences of the two states, and in fact exactly that many; a state against itself reads zero objects; and the visits are still exactly the endpoint difference. Observed: pairs of a state with itself, pairs that read objects, pairs that skip a namespace with equal roots, and pairs that skip a shared subtree below differing roots. | `a_difference_reads_only_the_nodes_the_two_states_do_not_share` |
+| DF-03 | Both orders of a group are distinct endpoints. A published state holds a continuation and its joins under the group `(a,b)` only, and its successor holds the same body under `(b,a)` only. In both directions the walk visits exactly two continuation endpoints, at two distinct paths, each below its own group's literal ordered prefix and decoding to that group's record, one only in from and one only in to; it visits the four join endpoints of the two groups and no data endpoint, six differences in all. | `both_orders_of_a_receive_group_are_visited_as_distinct_endpoints` |
+
+Four more tests bind no ID. Durable keys are RhoPath keys, which are
+prefix-free, so no durable state has an endpoint at the empty key or on a node
+with children.
+`arbitrary_canonical_pairs_visit_their_exact_difference_and_read_only_unshared_nodes`
+therefore builds canonical DAGs over arbitrary byte keys with the canonical
+rebuild oracle, one fixed pair that shows every step and 256 generated pairs,
+and requires in both directions the exact difference and reads equal to the
+unshared occurrences. `every_limit_binds_exactly_and_refuses_one_below`
+predicts the fixed pair's 13 unshared occurrences, 13 reads and 9
+differences, admits the same walk at limits equal to the consumed amounts,
+refuses one below each with the exact `ResourceLimit`, walks a state against
+itself with zero limits, and refuses an unreservable worklist or path buffer.
+`read_and_visitor_errors_stop_the_walk_with_typed_errors` requires
+`MissingObject` for a withheld node, the store's own error for a failing
+read, the visitor's error after its first call, and `UnexpectedObjectKind`
+for a root that is a manifest.
+`a_twenty_thousand_node_deep_difference_is_walked_on_a_small_stack` walks two
+chains of 20 000 nodes that differ only in the deepest endpoint on a 256 KiB
+stack.
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -8966,6 +9077,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | HR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the contents that a view reset to a retained root reads. No model represents a durable view, its reset or its lazy reader's results. |
 | HR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the refusal, from every view, of roots that the owner's current ledger does not count, with no change to the store directory. No model states a lookup of a retained state by its manifest digest. |
 | HR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): a reset reaches no directory failpoint and changes no file. The failpoints are a test seam of the Rust I/O layer, which no model represents. |
+| DF-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14347): the endpoint difference of two retained states turns the from state into the to state. This matrix cites no model of the canonical radix DAG's endpoints or of a walk over two states, and no model states a property of the walk's Rust results. |
+| DF-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14347): the walk reads exactly the node occurrences that the two states do not share. No model in this matrix counts the reads of a walk over a radix DAG. |
+| DF-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14347): the literal ordered group path of a continuation endpoint, ruling D1, as VR-07 states it for a continuation read. This matrix cites no model of RhoPathV1 group prefixes. |
 
 ## Generator discipline
 
@@ -9733,6 +9847,46 @@ digest. A reset of this slice resolves its root and takes its read handle
 under the owner's lock; task `rspace-reset-durable-wiring` requires that a
 view-local reset does not take that lock. No persisted byte, record kind,
 root, identity or wire message changed.
+
+The 2026-11-12 retained state difference slice of task 14347 adds DF-01 to
+DF-03, the first DF rows, so the catalog/derivation/binding registry now
+contains **258** IDs. The manifest test's family list gains `DF`, and its
+executable sources gain `state_difference.rs`. On an export of the candidate
+tree, the seven tests of the new file passed in debug and in release, and the
+whole library test target, the manifest test included, passed in debug and in
+release with 971 tests (961 passed, 10 ignored). The limits test observed the
+13 unshared node occurrences, 13 reads and 9 differences derived by hand for
+its fixed pair, and the deep test observed 40 000 reads, one pending pair at a
+time and a 19 999-byte path. Three controls were each applied to the export's
+`difference.rs`, run against the seven tests in debug and removed:
+
+- Matching the children of two aligned nodes by edge instead of by object
+  reference, so that a child edge that both states hold is never descended,
+  made DF-01 and DF-02 fail at their first fixed schedule, which visited
+  nothing for a pair whose data roots both hold the children of channels `a`
+  and `b`. DF-03 failed because no join endpoint was visited, and the
+  in-memory, limits and deep tests failed; only the error test passed.
+- Sorting the channel frames of a visited continuation path made DF-03 fail:
+  the walk from the `(a,b)` state to the `(b,a)` state visited the group
+  `(a,b)` twice, once only in from and once only in to. DF-01 and DF-02
+  failed at their first fixed schedule, which holds both orders; the four
+  tests of the data namespace passed.
+- Descending children with equal references as well made DF-02 fail at its
+  first fixed schedule, which read 8 objects where the two states do not share
+  6 node occurrences, and the in-memory and limits tests failed with 15 reads
+  for 13 unshared occurrences. DF-01, DF-03, the deep and the error tests
+  passed: the walk stayed exact and only read more.
+
+Each faulted file was restored from the candidate tree, and the export then
+equalled that tree again. The controls ran with
+`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`. Clippy of `rspace_plus_plus` with
+every target lists no finding in the files of this slice, and
+`rustfmt --check` passes on its Rust files. The workspace-regression registry
+hashes the persistence module, the persistence test module and the manifest
+test's file, all of which change, so it was regenerated, and the PathMap
+aggregate takes its new manifest digest. No persisted record kind, byte
+layout, magic number or file name is new. See the retained state endpoint
+difference section.
 
 ## Caller-authority contract (2026-09-06)
 
