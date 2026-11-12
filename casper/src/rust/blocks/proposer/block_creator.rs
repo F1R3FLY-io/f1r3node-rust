@@ -244,6 +244,25 @@ fn retry_frontier_deferral_lease_expired(next_block: i64, rejection_height: i64)
     next_block.saturating_sub(rejection_height) > RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS
 }
 
+/// The disposition-walk start validation uses for a block carrying these
+/// retries. A retry older than the tip window has its records below it.
+fn retry_walk_start(
+    tip_start: i64,
+    ctx: &FloorContext,
+    deploy_lifespan: i64,
+    valid_afters: impl Iterator<Item = i64>,
+) -> Result<i64, CasperError> {
+    match valid_afters.min() {
+        Some(oldest) => crate::rust::util::deploy_window::repeat_scan_start(
+            tip_start,
+            ctx.floor.block_number,
+            deploy_lifespan,
+            oldest,
+        ),
+        None => Ok(tip_start),
+    }
+}
+
 /// One line per deferred retry with the gate's basis — a recurring deferral
 /// for one sig is the starvation tripwire, and the basis says which of the
 /// gate's closed conditions is holding it.
@@ -817,16 +836,27 @@ async fn prepare_user_deploys_with_policy(
     };
 
     // The retry gate, proposer side — the SAME predicate validation runs
-    // (`FloorContext::retry_gate_open`), so a proposal the gate admits is a
-    // proposal every validator accepts. A buffered retry stays parked until
-    // its latest kept rejection settles into the floor closure; re-proposal
-    // against a live contest regenerated same-sig sibling copies faster
-    // than merges could adjudicate them. No derivable floor (`None`) defers
-    // every retry — delay, never loss: the buffer's floor-window retain
-    // keeps custody.
+    // (`FloorContext::retry_gate_open`) over the same walk start, so a
+    // proposal the gate admits is a proposal every validator accepts. A
+    // buffered retry stays parked until its latest kept rejection settles
+    // into the floor closure; re-proposal against a live contest regenerated
+    // same-sig sibling copies faster than merges could adjudicate them. No
+    // derivable floor (`None`) defers every retry — delay, never loss: the
+    // buffer's floor-window retain keeps custody.
     let recovered: HashSet<Signed<DeployData>> = if allow_recovered_deploys {
         let mut kept: HashSet<Signed<DeployData>> = HashSet::new();
         let mut gated_count = 0usize;
+        let buffered_walk_start = match floor_ctx {
+            Some(ctx) => retry_walk_start(
+                earliest_block_number,
+                ctx,
+                casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+                buffered_deploys
+                    .iter()
+                    .map(|deploy| deploy.data.valid_after_block_number),
+            )?,
+            None => earliest_block_number,
+        };
         for deploy in buffered_deploys {
             let candidate = !canonical_won_buffer_sigs.contains(&deploy.sig)
                 && (!casper_snapshot.deploys_in_scope.contains(&deploy.sig)
@@ -839,7 +869,7 @@ async fn prepare_user_deploys_with_policy(
                     match ctx.retry_gate_basis(
                         &casper_snapshot.dag,
                         block_store,
-                        earliest_block_number,
+                        buffered_walk_start,
                         &deploy.sig,
                     )? {
                         RetryGateBasis::Open => {
@@ -1096,6 +1126,18 @@ async fn prepare_user_deploys_with_policy(
     // mints a block every validator rejects as `PrematureDeployRetry`.
     let mut retry_candidates: HashSet<Signed<DeployData>> = HashSet::new();
     let mut gated_pool_retries = 0usize;
+    let pool_walk_start = match floor_ctx {
+        Some(ctx) => retry_walk_start(
+            earliest_block_number,
+            ctx,
+            casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+            valid_unique
+                .iter()
+                .filter(|d| is_retry_candidate(d))
+                .map(|deploy| deploy.data.valid_after_block_number),
+        )?,
+        None => earliest_block_number,
+    };
     for deploy in valid_unique.iter().filter(|d| is_retry_candidate(d)) {
         if recovered_sigs.contains(&deploy.sig) {
             retry_candidates.insert(deploy.clone());
@@ -1106,7 +1148,7 @@ async fn prepare_user_deploys_with_policy(
                 match ctx.retry_gate_basis(
                     &casper_snapshot.dag,
                     block_store,
-                    earliest_block_number,
+                    pool_walk_start,
                     &deploy.sig,
                 )? {
                     RetryGateBasis::Open => {
@@ -1158,7 +1200,7 @@ async fn prepare_user_deploys_with_policy(
             let rejection_heights = match floor_ctx {
                 Some(ctx) => ctx.latest_kept_rejection_heights(
                     block_store,
-                    earliest_block_number,
+                    pool_walk_start,
                     retry_candidates.iter().map(|deploy| &deploy.sig),
                 )?,
                 None => HashMap::new(),
