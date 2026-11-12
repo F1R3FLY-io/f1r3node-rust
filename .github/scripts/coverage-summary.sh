@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Build a per-crate line-coverage table from cargo-llvm-cov summary files.
+# Build a per-crate line-coverage table from cargo-llvm-cov lcov files.
 #
-# Input: a directory with coverage-<crate>.json files, each produced by
-# `cargo llvm-cov report --json --summary-only`. Output: a Markdown table on
-# stdout. A missing or unreadable file becomes a "missing" row so one failed
-# matrix leg cannot hide the other crates' numbers. The overall row is the
+# Input: a directory with coverage-<crate>.lcov files, each produced by
+# `cargo llvm-cov report --lcov`. A crate tested in shards has one
+# coverage-<crate>-<n>.lcov per shard. A line is counted once per crate, from
+# its DA records, and is covered when any shard ran it. Output: a Markdown
+# table on stdout. A missing or unreadable file becomes a "missing" row so one
+# failed test job cannot hide the other crates' numbers. The overall row is the
 # line-weighted total across the crates that reported.
 set -euo pipefail
 export LC_ALL=C
@@ -23,7 +25,7 @@ shift
 if [ "$#" -gt 0 ]; then
 	crates=("$@")
 else
-	# Same set as the coverage matrix in ci.yml.
+	# Same set as the test jobs in ci.yml.
 	crates=(rspace_plus_plus rholang shared node models crypto block-storage comm graphz casper)
 fi
 
@@ -36,15 +38,28 @@ missing=0
 gate_failed=0
 failures=()
 for crate in "${crates[@]}"; do
-	file="$dir/coverage-$crate.json"
+	files=()
+	for file in "$dir/coverage-$crate.lcov" "$dir/coverage-$crate"-[0-9]*.lcov; do
+		[ -s "$file" ] && files+=("$file")
+	done
 	stats=""
-	if [ -s "$file" ]; then
-		stats="$(jq -er '
-			.data[0].totals.lines
-			| select([.count, .covered, .percent] | all(.[]; type == "number"))
-			| select(.count >= 0 and .covered >= 0 and .covered <= .count and .percent >= 0 and .percent <= 100)
-			| "\(.count) \(.covered) \(.percent)"
-		' "$file" 2>/dev/null || true)"
+	if [ "${#files[@]}" -gt 0 ]; then
+		stats="$(awk -F'[:,]' '
+			/^SF:/ { source = substr($0, 4); next }
+			/^DA:/ {
+				if (source == "" || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/) { bad = 1; exit }
+				line = source SUBSEP $2
+				seen[line] = 1
+				if ($3 > 0) hit[line] = 1
+			}
+			END {
+				if (bad) exit 1
+				count = 0; covered = 0
+				for (line in seen) { count++; if (line in hit) covered++ }
+				if (count == 0) exit 1
+				printf "%d %d %.6f\n", count, covered, 100 * covered / count
+			}
+		' "${files[@]}" 2>/dev/null || true)"
 	fi
 	if [ -z "$stats" ]; then
 		echo "| $crate | — | — | missing |"
@@ -80,7 +95,7 @@ fi
 
 if [ "$missing" -eq 1 ]; then
 	echo ""
-	echo "Some crates did not report coverage. Check the Coverage jobs for failures."
+	echo "Some crates did not report coverage. Check the Test jobs for failures."
 fi
 
 if [ "$gate_failed" -eq 0 ]; then

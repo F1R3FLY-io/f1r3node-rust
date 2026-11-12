@@ -275,7 +275,10 @@ impl BlockReportAPI {
 
         let window = self.report_window(casper).await?;
         if let Some((dag, window_start)) = &window {
-            if below_report_window(dag.block_number(&block.block_hash), *window_start) {
+            let block_number = dag
+                .block_number(&block.block_hash)
+                .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
+            if below_report_window(block_number, *window_start) {
                 metrics::counter!("block_report.cache_skipped_below_window", "source" => "casper")
                     .increment(1);
                 return Ok(report);
@@ -306,7 +309,10 @@ impl BlockReportAPI {
             .block_dag()
             .await
             .map_err(|e| BlockReportError::StoreError(e.to_string()))?;
-        let Some(lfb_height) = dag.block_number(&dag.last_finalized_block()) else {
+        let Some(lfb_height) = dag
+            .block_number(&dag.last_finalized_block())
+            .map_err(|e| BlockReportError::StoreError(e.to_string()))?
+        else {
             return Ok(None);
         };
         let window_start = lfb_height - i64::from(self.report_cache_retention);

@@ -98,7 +98,7 @@ async fn finalize_until_carrier_is_finalized(
                 .deploy_canonical_appearance(deploy_sig)
                 .expect("appearance")
                 .expect("the carrier is indexed");
-            if dag.is_finalized(&carrier_hash) {
+            if dag.is_finalized(&carrier_hash).unwrap() {
                 let floor =
                     floor_of_block(&dag, &nodes[0].block_store, &lfb.block_hash, test_ftt())
                         .await
