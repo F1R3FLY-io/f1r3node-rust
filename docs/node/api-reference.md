@@ -1035,10 +1035,10 @@ Proto definitions: `models/src/main/protobuf/DeployServiceV1.proto`, `ProposeSer
 
 | Node type | `transfers` on deploy responses | `TransfersAvailable` WebSocket event |
 |-----------|--------------------------------|--------------------------------------|
-| **Readonly** | Populated array | Emitted after block report cache warming |
+| **Readonly** | Populated array; `null` for a block below the report window while another replay runs | Emitted after block report cache warming |
 | **Validator** | `null` (omitted) | Not emitted |
 
-`null` means transfers cannot be extracted on this node type (block replay requires readonly mode). An empty array `[]` means the deploy had no transfers. Transfer amounts are exact decimal strings, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts).
+`null` means transfers are unavailable: block replay requires readonly mode, and a readonly node replays a block below `api-server.report-cache-retention-blocks` (default 1000 heights) only while no other replay runs. Over gRPC, `transfers_available` is `false` in the same cases. An empty array `[]` means the deploy had no transfers. Transfer amounts are exact decimal strings, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts).
 
 ---
 

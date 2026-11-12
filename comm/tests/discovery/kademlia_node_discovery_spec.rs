@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,6 +21,54 @@ impl KademliaRPC for LookupRpc {
 
     async fn lookup(&self, _key: &[u8], _peer: &PeerNode) -> Result<Vec<PeerNode>, CommError> {
         Ok(vec![self.candidate.lock().unwrap().clone()])
+    }
+}
+
+/// Answers this node's pings as `reachable` says, counting them.
+struct ContactRpc {
+    reachable: bool,
+    pings: AtomicUsize,
+}
+
+impl ContactRpc {
+    fn new(reachable: bool) -> Arc<Self> {
+        Arc::new(Self {
+            reachable,
+            pings: AtomicUsize::new(0),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl KademliaRPC for ContactRpc {
+    async fn ping(&self, _peer: &PeerNode) -> Result<bool, CommError> {
+        self.pings.fetch_add(1, Ordering::SeqCst);
+        Ok(self.reachable)
+    }
+
+    async fn lookup(&self, _key: &[u8], _peer: &PeerNode) -> Result<Vec<PeerNode>, CommError> {
+        Ok(Vec::new())
+    }
+}
+
+/// Never answers this node's pings, like a one-way peer this node cannot reach.
+struct SilentRpc;
+
+#[async_trait::async_trait]
+impl KademliaRPC for SilentRpc {
+    async fn ping(&self, _peer: &PeerNode) -> Result<bool, CommError> {
+        std::future::pending().await
+    }
+
+    async fn lookup(&self, _key: &[u8], _peer: &PeerNode) -> Result<Vec<PeerNode>, CommError> {
+        Ok(Vec::new())
+    }
+}
+
+/// Lets the background reachability probe that a contact spawned run to completion.
+async fn settle() {
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
     }
 }
 
@@ -78,12 +127,11 @@ async fn normal_removal_does_not_delay_rediscovery() {
 }
 
 #[tokio::test]
-async fn inbound_rpc_does_not_restore_an_evicted_address() {
+async fn inbound_rpc_from_an_address_this_node_cannot_reach_does_not_restore_it() {
     let local = peer(1, "local");
     let dead = peer(2, "dead");
-    let rpc = Arc::new(LookupRpc {
-        candidate: Mutex::new(dead.clone()),
-    });
+    let rpc = ContactRpc::new(false);
+    let rpc_probe = rpc.clone();
     let store = Arc::new(KademliaStore::new(local.id.clone(), rpc.clone()));
     store.update_last_seen(&dead).await.unwrap();
     let discovery = KademliaNodeDiscovery::new(store.clone(), rpc, local.id.clone());
@@ -95,6 +143,8 @@ async fn inbound_rpc_does_not_restore_an_evicted_address() {
     handle_lookup(dead.clone(), local.id.key.to_vec(), store.clone(), None)
         .await
         .unwrap();
+    settle().await;
+    assert_eq!(rpc_probe.pings.load(Ordering::SeqCst), 1);
     assert!(store.find(&dead.id.key).unwrap().is_none());
 
     let changed = peer(2, "new-address");
@@ -105,6 +155,82 @@ async fn inbound_rpc_does_not_restore_an_evicted_address() {
         store.find(&changed.id.key).unwrap().unwrap().endpoint,
         changed.endpoint
     );
+}
+
+#[tokio::test]
+async fn an_evicted_peer_reachable_again_is_restored_by_its_own_contact() {
+    let local = peer(1, "local");
+    let returning = peer(2, "returning");
+    let rpc = ContactRpc::new(true);
+    let store = Arc::new(KademliaStore::new(local.id.clone(), rpc.clone()));
+
+    store.evict_unreachable_peer(&returning).unwrap();
+    handle_ping(returning.clone(), store.clone(), None)
+        .await
+        .unwrap();
+    settle().await;
+    assert!(store.find(&returning.id.key).unwrap().is_some());
+
+    store.evict_unreachable_peer(&returning).unwrap();
+    handle_lookup(
+        returning.clone(),
+        local.id.key.to_vec(),
+        store.clone(),
+        None,
+    )
+    .await
+    .unwrap();
+    settle().await;
+    assert!(store.find(&returning.id.key).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_peer_s_own_rpc_is_answered_without_waiting_on_the_reachability_probe() {
+    let local = peer(1, "local");
+    let one_way = peer(2, "one-way");
+    let store = Arc::new(KademliaStore::new(local.id.clone(), Arc::new(SilentRpc)));
+
+    store.evict_unreachable_peer(&one_way).unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        handle_ping(one_way.clone(), store.clone(), None),
+    )
+    .await
+    .expect("the ping is answered while the probe is still waiting")
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        handle_lookup(one_way.clone(), local.id.key.to_vec(), store.clone(), None),
+    )
+    .await
+    .expect("the lookup is answered while the probe is still waiting")
+    .unwrap();
+    assert!(store.find(&one_way.id.key).unwrap().is_none());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_suppressed_address_is_probed_at_most_once_per_interval() {
+    let local = peer(1, "local");
+    let dead = peer(2, "dead");
+    let rpc = ContactRpc::new(false);
+    let store = Arc::new(KademliaStore::new(local.id.clone(), rpc.clone()));
+
+    store.evict_unreachable_peer(&dead).unwrap();
+    for _ in 0..3 {
+        handle_ping(dead.clone(), store.clone(), None)
+            .await
+            .unwrap();
+    }
+    settle().await;
+    assert_eq!(rpc.pings.load(Ordering::SeqCst), 1);
+
+    tokio::time::advance(Duration::from_secs(20)).await;
+    handle_ping(dead.clone(), store.clone(), None)
+        .await
+        .unwrap();
+    settle().await;
+    assert_eq!(rpc.pings.load(Ordering::SeqCst), 2);
+    assert!(store.find(&dead.id.key).unwrap().is_none());
 }
 
 #[tokio::test(start_paused = true)]
