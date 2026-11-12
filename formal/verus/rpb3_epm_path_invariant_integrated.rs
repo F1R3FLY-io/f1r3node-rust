@@ -32,27 +32,58 @@
 //! `epm_frames_paths_wf_prefix`, `epm_frames_paths_wf_update`) cover the three
 //! ways an integrated action edits `epm_frames`: a pushed child slot, popped
 //! child slots, and one replaced frame.
+//!
+//! The file also proves that every live product action
+//! (`live_runtime_product_step`) preserves `product_epm_paths_wf`, and with it
+//! the Live actions of `integrated_step`:
+//! - The Message and Map actions edit `epm_frames` only through
+//!   `product_map_step`, which pushes a child slot without an EPathMap frame,
+//!   pops the top slot, or keeps every slot (`product_map_epm_frames`). The
+//!   score steps and the root completion keep every slot. The no-score root
+//!   completion keeps the whole live product
+//!   (`live_runtime_product_root_complete_noscore_keeps_state`).
+//! - EpmContinue (through the unwind product lift) and EpmEnd replace the top
+//!   frame by the `event_step` successor of the frame it holds. EpmPush does
+//!   the same with the reducer's successor and pushes a child slot without a
+//!   frame. EpmMapValueAccept pops the returning child's slot and replaces the
+//!   parent frame that waits on the map value by its `accept_child` successor.
+//!   EpmFinishAccept pops the finished frame's slot.
+//!   `rpb3_epm_frame_path_invariant` proves that `event_step` and
+//!   `accept_child` keep `epm_frame_path_wf`.
+//! - The Start edge of EpmContinue derives its successor's invariant from the
+//!   event itself. The pending obligation that the edge starts has the kind
+//!   that `edge_return` checks against the parser's `ObligationStarted` kind,
+//!   which is the kind of the new focused Obligation frame; without that check
+//!   the Start-edge case fails. With the Continue action the edge opens no
+//!   wait, so the started obligation does not await resolution.
 
 use vstd::prelude::*;
 
 use crate as integrated;
 use crate::{
     rpb3_act_source_product_integration as act,
+    rpb3_admission_cursor as admission,
     rpb3_canonical_path_common_product as common,
     rpb3_canonical_path_driver_product_integration as path_driver,
     rpb3_epathmap_event_refinement as epm,
+    rpb3_epathmap_terminal_source_observation as epm_terminal,
     rpb3_epm_active_line_work_source as active,
     rpb3_epm_batch_cursor_composition as batch,
     rpb3_epm_batch_cursor_source_extraction as act_source,
     rpb3_epm_frame_path_invariant as frame_path,
     rpb3_epm_parser_escape_invariant as escape,
+    rpb3_epm_push_live_action_refinement as push_live,
+    rpb3_epm_push_source_action_refinement as push_source,
     rpb3_epm_restore_run_expansion as restore,
     rpb3_epm_unwind_event_lift as unwind,
     rpb3_epm_unwind_product_lift as unwind_product,
     rpb3_integrated_dispatcher as dispatcher,
     rpb3_live_canonical_path_source_refinement as path_live,
+    rpb3_map_frame_refinement as map,
     rpb3_path_parser_refinement as parser,
-    LiveRuntimeProductState, ProductScoreState,
+    rpb3_runtime_frame_source_refinement as runtime,
+    rpb3_wire_cursor_source_refinement as wire,
+    LiveRuntimeProductAction, LiveRuntimeProductState, ProductScoreState,
 };
 
 verus! {
@@ -1040,6 +1071,1004 @@ pub proof fn integrated_act_unwind_keeps_epm_paths_wf(
             assert(frame_path::epm_frame_path_wf(after_frame));
             assert(next.source.product.epm_frames == frames.update(last, Some(after_frame)));
             epm_frames_paths_wf_update(frames, last, after_frame);
+        },
+        _ => {},
+    }
+}
+
+/// A map step of the product pushes a child slot without an EPathMap frame,
+/// pops the top slot, or keeps every slot (`product_map_epm_frames`); a pop
+/// needs a non-empty `epm_frames` (`product_map_pop_owned`).
+pub proof fn product_map_step_keeps_epm_paths_wf(
+    before: ProductScoreState,
+    after: ProductScoreState,
+    action: map::IntegratedAdmissionAction,
+)
+    requires
+        epm_frames_paths_wf(before.epm_frames),
+        integrated::product_map_step(before, after, action),
+    ensures
+        epm_frames_paths_wf(after.epm_frames),
+{
+    let frames = before.epm_frames;
+    let outcome = map::integrated_admission_driver_step(before.map, action).unwrap();
+    assert(integrated::product_map_epm_frames(before, outcome) == Some(after.epm_frames));
+    match outcome {
+        map::IntegratedAdmissionOutcome::MessagePushed { .. }
+        | map::IntegratedAdmissionOutcome::MapValuePushed { .. } => {
+            epm_frames_paths_wf_push_none(frames);
+        },
+        map::IntegratedAdmissionOutcome::MessageParentAccepted { .. }
+        | map::IntegratedAdmissionOutcome::MapValueAccepted { .. }
+        | map::IntegratedAdmissionOutcome::MapEntryCompleted { .. } => {
+            assert(integrated::product_map_pop_owned(before));
+            epm_frames_paths_wf_prefix(frames, frames.len() - 1);
+        },
+        _ => {},
+    }
+}
+
+/// Continue case: the Message Continue step is a map step of the product on
+/// the field the source reader reads next.
+pub proof fn live_continue_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_continue_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    assert(integrated::live_source_product_continue_step(before.source, after.source));
+    match before.source.wire.last() {
+        Some(reader) => match wire::wire_source_next_field(reader) {
+            wire::WireSourceTransition::Field { field, .. } => {
+                product_map_step_keeps_epm_paths_wf(
+                    before.source.product,
+                    after.source.product,
+                    map::IntegratedAdmissionAction::Message {
+                        action: admission::ConcreteFrameActionModel::Continue { field },
+                    },
+                );
+            },
+            _ => {},
+        },
+        None => {},
+    }
+}
+
+/// ContinueIndexed case: the indexed Message Continue step is a map step of
+/// the product on the field the source reader reads next, against the top
+/// indexed region.
+pub proof fn live_continue_indexed_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_continue_indexed_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    assert(integrated::live_source_product_continue_indexed_step(before.source, after.source));
+    let parent_source = integrated::product_admission_source_image(
+        before.source.product.indexed_regions.last(),
+    );
+    match before.source.wire.last() {
+        Some(reader) => match wire::wire_source_next_field(reader) {
+            wire::WireSourceTransition::Field { field, .. } => {
+                product_map_step_keeps_epm_paths_wf(
+                    before.source.product,
+                    after.source.product,
+                    map::IntegratedAdmissionAction::Message {
+                        action: admission::ConcreteFrameActionModel::ContinueIndexed {
+                            field,
+                            parent_source,
+                        },
+                    },
+                );
+            },
+            _ => {},
+        },
+        None => {},
+    }
+}
+
+/// MapKey case: the Map key step is a map step of the product on the field the
+/// source reader reads next.
+pub proof fn live_map_key_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_map_key_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    assert(integrated::live_source_product_map_key_step(before.source, after.source));
+    match before.source.wire.last() {
+        Some(reader) => match wire::wire_source_next_field(reader) {
+            wire::WireSourceTransition::Field { field, .. } => {
+                product_map_step_keeps_epm_paths_wf(
+                    before.source.product,
+                    after.source.product,
+                    map::IntegratedAdmissionAction::MapKey { field },
+                );
+            },
+            _ => {},
+        },
+        None => {},
+    }
+}
+
+/// RootScore case: the root score step keeps every EPathMap slot
+/// (`product_root_score_step`).
+pub proof fn live_root_score_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_root_score_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    assert(integrated::product_root_score_step(before.source.product, after.source.product));
+    assert(after.source.product.epm_frames == before.source.product.epm_frames);
+}
+
+/// RootComplete case: the root completion's live product is the root score
+/// step's poststate, which keeps every EPathMap slot.
+pub proof fn live_root_complete_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    returned: runtime::RuntimeRootReturnImage,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_root_complete_step(before, after, returned),
+    ensures
+        product_epm_paths_wf(after),
+{
+    live_root_score_keeps_epm_paths_wf(before, after);
+}
+
+/// RootCompleteNoScore case: the no-score root completion keeps the whole live
+/// product (`live_runtime_product_root_complete_noscore_keeps_state`), so it
+/// keeps every EPathMap slot.
+pub proof fn live_root_complete_no_score_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    returned: runtime::RuntimeNoScoreRootReturnImage,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_root_complete_noscore_step(before, after, returned),
+    ensures
+        product_epm_paths_wf(after),
+{
+    integrated::live_runtime_product_root_complete_noscore_keeps_state(before, after, returned);
+}
+
+/// MessageChildScore case: the Message child score step keeps every EPathMap
+/// slot (`product_message_child_score_step`).
+pub proof fn live_message_child_score_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_message_child_score_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    assert(integrated::product_message_child_score_step(
+        before.source.product,
+        after.source.product,
+    ));
+    assert(after.source.product.epm_frames == before.source.product.epm_frames);
+}
+
+/// MessagePush case: on a successful storage observation, the plain and the
+/// indexed Message push are map steps of the product on the field the parent
+/// cursor reads next.
+pub proof fn live_message_push_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    request: runtime::SourceFrameRequestImage,
+    actual_top_kind: Option<runtime::SourceFrameRequestKind>,
+    after_len: usize,
+    after_capacity: usize,
+    stats_frame_variant_bytes: usize,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_message_push_observed_step(
+            before,
+            after,
+            request,
+            actual_top_kind,
+            after_len,
+            after_capacity,
+            stats_frame_variant_bytes,
+        ),
+    ensures
+        product_epm_paths_wf(after),
+{
+    let old = before.source.product;
+    let new = after.source.product;
+    let frame_bytes = before.source.runtime.frame_bytes;
+    if let runtime::SourceFramePushObservationResult::Success { storage } =
+        runtime::source_frame_push_observe_after(
+            request.request_kind,
+            actual_top_kind,
+            old.bridge.admission.frames.len() as usize,
+            before.source.runtime.capacity,
+            after_len,
+            after_capacity,
+            frame_bytes,
+            stats_frame_variant_bytes,
+        ) {
+        if let Some(wire::WireConcreteTransition::Field { field, .. }) =
+            wire::wire_runtime_next_field(before.cursors.last().unwrap()) {
+            if integrated::live_runtime_product_message_push_step(before, after, request, storage) {
+                product_map_step_keeps_epm_paths_wf(
+                    old,
+                    new,
+                    map::IntegratedAdmissionAction::Message {
+                        action: admission::ConcreteFrameActionModel::Push {
+                            field,
+                            child: request.child,
+                            frame_bytes,
+                        },
+                    },
+                );
+            } else {
+                assert(integrated::live_runtime_product_message_push_indexed_step(
+                    before,
+                    after,
+                    request,
+                    storage,
+                ));
+                product_map_step_keeps_epm_paths_wf(
+                    old,
+                    new,
+                    map::IntegratedAdmissionAction::Message {
+                        action: admission::ConcreteFrameActionModel::PushIndexed {
+                            field,
+                            child: request.child,
+                            parent_source: integrated::product_admission_source_image(
+                                old.indexed_regions.last(),
+                            ),
+                            frame_bytes,
+                        },
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// MessageEpmPush case: on a successful storage observation, the push of an
+/// EPathMap child is the indexed Message push, a map step of the product on
+/// the field the parent cursor reads next; the child gets a slot without a
+/// frame.
+pub proof fn live_message_epm_push_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    request: runtime::SourceFrameRequestImage,
+    actual_top_kind: Option<runtime::SourceFrameRequestKind>,
+    after_len: usize,
+    after_capacity: usize,
+    stats_frame_variant_bytes: usize,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_message_epm_push_indexed_observed_step(
+            before,
+            after,
+            request,
+            actual_top_kind,
+            after_len,
+            after_capacity,
+            stats_frame_variant_bytes,
+        ),
+    ensures
+        product_epm_paths_wf(after),
+{
+    let old = before.source.product;
+    let new = after.source.product;
+    let frame_bytes = before.source.runtime.frame_bytes;
+    if let runtime::SourceFramePushObservationResult::Success { storage } =
+        runtime::source_frame_push_observe_after(
+            request.request_kind,
+            actual_top_kind,
+            old.bridge.admission.frames.len() as usize,
+            before.source.runtime.capacity,
+            after_len,
+            after_capacity,
+            frame_bytes,
+            stats_frame_variant_bytes,
+        ) {
+        assert(integrated::live_runtime_product_message_epm_push_indexed_step(
+            before,
+            after,
+            request,
+            storage,
+        ));
+        if let Some(wire::WireConcreteTransition::Field { field, .. }) =
+            wire::wire_runtime_next_field(before.cursors.last().unwrap()) {
+            product_map_step_keeps_epm_paths_wf(
+                old,
+                new,
+                map::IntegratedAdmissionAction::Message {
+                    action: admission::ConcreteFrameActionModel::PushIndexed {
+                        field,
+                        child: request.child,
+                        parent_source: integrated::product_admission_source_image(
+                            old.indexed_regions.last(),
+                        ),
+                        frame_bytes,
+                    },
+                },
+            );
+        }
+    }
+}
+
+/// MapValuePush case: on a successful storage observation, the plain and the
+/// indexed Map value push are map steps of the product on the field the
+/// parent cursor reads next.
+pub proof fn live_map_value_push_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    request: runtime::SourceFrameRequestImage,
+    actual_top_kind: Option<runtime::SourceFrameRequestKind>,
+    after_len: usize,
+    after_capacity: usize,
+    stats_frame_variant_bytes: usize,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_map_value_push_observed_step(
+            before,
+            after,
+            request,
+            actual_top_kind,
+            after_len,
+            after_capacity,
+            stats_frame_variant_bytes,
+        ),
+    ensures
+        product_epm_paths_wf(after),
+{
+    let old = before.source.product;
+    let new = after.source.product;
+    let frame_bytes = before.source.runtime.frame_bytes;
+    if let runtime::SourceFramePushObservationResult::Success { storage } =
+        runtime::source_frame_push_observe_after(
+            request.request_kind,
+            actual_top_kind,
+            old.bridge.admission.frames.len() as usize,
+            before.source.runtime.capacity,
+            after_len,
+            after_capacity,
+            frame_bytes,
+            stats_frame_variant_bytes,
+        ) {
+        if let Some(wire::WireConcreteTransition::Field { field, .. }) =
+            wire::wire_runtime_next_field(before.cursors.last().unwrap()) {
+            if integrated::live_runtime_product_map_value_push_step(
+                before,
+                after,
+                request,
+                storage,
+            ) {
+                product_map_step_keeps_epm_paths_wf(
+                    old,
+                    new,
+                    map::IntegratedAdmissionAction::MapValue {
+                        field,
+                        child: request.child,
+                        frame_bytes,
+                    },
+                );
+            } else {
+                assert(integrated::live_runtime_product_map_value_push_indexed_step(
+                    before,
+                    after,
+                    request,
+                    storage,
+                ));
+                product_map_step_keeps_epm_paths_wf(
+                    old,
+                    new,
+                    map::IntegratedAdmissionAction::MapValueIndexed {
+                        field,
+                        child: request.child,
+                        parent_source: integrated::product_admission_source_image(
+                            old.indexed_regions.last(),
+                        ),
+                        frame_bytes,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// MessageChildComplete case: the Message child completion is a map step of
+/// the product that pops the child's slot.
+pub proof fn live_message_child_complete_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_message_child_complete_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    product_map_step_keeps_epm_paths_wf(
+        before.source.product,
+        after.source.product,
+        map::IntegratedAdmissionAction::Message {
+            action: admission::ConcreteFrameActionModel::Complete,
+        },
+    );
+}
+
+/// MapValueAccept case: the Map value acceptance is a map step of the product
+/// that pops the value child's slot.
+pub proof fn live_map_value_accept_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_map_value_accept_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    product_map_step_keeps_epm_paths_wf(
+        before.source.product,
+        after.source.product,
+        map::IntegratedAdmissionAction::MapAccept,
+    );
+}
+
+/// MapEntryFinish case: the Map entry finish is a map step of the product that
+/// pops the entry's slot.
+pub proof fn live_map_entry_finish_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_map_entry_finish_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    reveal(integrated::live_runtime_product_map_entry_finish_step);
+    product_map_step_keeps_epm_paths_wf(
+        before.source.product,
+        after.source.product,
+        map::IntegratedAdmissionAction::MapFinish,
+    );
+}
+
+/// EpmMapValueAccept case: the returning child's slot is popped, and the
+/// parent frame that waits on the map value is replaced by its
+/// `accept_child` successor (`linked_epm_child_return`).
+pub proof fn live_epm_map_value_accept_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    summary: epm::ChildSummary,
+    admission_summary: admission::AdmissionReturnedKind,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_epm_map_value_accept_step(
+            before,
+            after,
+            summary,
+            admission_summary,
+        ),
+    ensures
+        product_epm_paths_wf(after),
+{
+    let old = before.source.product;
+    let new = after.source.product;
+    let frames = old.epm_frames;
+    let parent = frames.len() - 2;
+    assert(integrated::product_epm_map_value_owned(old));
+    assert(integrated::product_epm_child_return_step(
+        old,
+        new,
+        summary,
+        admission_summary,
+        None,
+    ));
+    let prior = integrated::product_linked_parent(old).unwrap();
+    let next = integrated::product_linked_top(new).unwrap();
+    assert(epm::linked_epm_child_return(
+        prior,
+        next,
+        summary,
+        admission_summary,
+        frames.last(),
+        None,
+    ));
+    let return_id = prior.admission.frames.last().return_id.unwrap();
+    assert(epm::accept_child(prior.epm, next.epm, Some(return_id), summary));
+    assert(frames[parent] == Some(prior.epm));
+    assert(epm_slot_path_wf(frames[parent]));
+    frame_path::epm_frame_path_wf_accept_child(prior.epm, next.epm, Some(return_id), summary);
+    let popped = frames.subrange(0, frames.len() - 1);
+    epm_frames_paths_wf_prefix(frames, frames.len() - 1);
+    assert(new.epm_frames == popped.update(parent, Some(next.epm)));
+    epm_frames_paths_wf_update(popped, parent, next.epm);
+}
+
+/// An EpmContinue step through the unwind product lift replaces only the top
+/// EPathMap slot: the prestate's top slot holds the frame of its linked top,
+/// and the poststate's top slot holds that frame's `event_step` successor
+/// under the Continue action (`linked_epm_continue`).
+pub proof fn live_epm_continue_top_frames(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    event: epm::EpmEvent,
+)
+    requires
+        unwind_product::live_runtime_internal_epm_unwind_step(before, after, event),
+    ensures
+        ({
+            let frames = before.source.product.epm_frames;
+            let prior = integrated::product_linked_top(before.source.product).unwrap();
+            let next = integrated::product_linked_top(after.source.product).unwrap();
+            &&& frames.len() > 0
+            &&& frames[frames.len() - 1] == Some(prior.epm)
+            &&& epm::event_step(
+                prior.epm,
+                next.epm,
+                event,
+                prior.admission.next_obligation_id,
+                epm::EpmAction::Continue,
+            )
+            &&& after.source.product.epm_frames == frames.update(
+                frames.len() - 1,
+                Some(next.epm),
+            )
+        }),
+{
+    let prior = integrated::product_linked_top(before.source.product).unwrap();
+    let next = integrated::product_linked_top(after.source.product).unwrap();
+    assert(integrated::product_epm_continue_step(
+        before.source.product,
+        after.source.product,
+        event,
+    ));
+    assert(epm::linked_epm_continue(prior, next, event));
+}
+
+/// EpmContinue Start-edge case. The parser reports the new Obligation frame on
+/// the focused top of the live path (`parser_started_top`), and the pending
+/// obligation that `start_obligation` adds has the edge's id, kind and payload
+/// length; `edge_return` checks the edge's kind against the parser's
+/// `ObligationStarted` kind, which gives clause (b). With the Continue action
+/// the edge opens no wait (`edge_return` needs `request_for_obligation` to be
+/// None), so the new obligation does not await resolution. The restore entry
+/// of the prestate is pushed (`epm_restore_push_wf`), and the path and the
+/// cursor each grow by one.
+pub proof fn live_epm_continue_start_edge_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    source_offset: usize,
+    origin: epm::EdgeOrigin,
+    kind: epm::PathObligationKind,
+    payload_len: usize,
+    tag: epm::SourceAnchor,
+)
+    requires
+        product_epm_paths_wf(before),
+        unwind_product::live_runtime_internal_epm_unwind_step(
+            before,
+            after,
+            epm::EpmEvent::Edge {
+                source_offset,
+                origin,
+                effect: epm::PathEdgeEffect::Start { kind, payload_len, tag },
+            },
+        ),
+    ensures
+        product_epm_paths_wf(after),
+{
+    let event = epm::EpmEvent::Edge {
+        source_offset,
+        origin,
+        effect: epm::PathEdgeEffect::Start { kind, payload_len, tag },
+    };
+    live_epm_continue_top_frames(before, after, event);
+    let frames = before.source.product.epm_frames;
+    let last = frames.len() - 1;
+    let prior = integrated::product_linked_top(before.source.product).unwrap();
+    let next = integrated::product_linked_top(after.source.product).unwrap();
+    let frame = prior.epm;
+    let next_frame = next.epm;
+    assert(epm_slot_path_wf(frames[last]));
+    assert(frame_path::epm_frame_path_wf(frame));
+    let byte = epm::edge_byte(frame, source_offset, origin);
+    let anchor = epm::trie_position(frame, source_offset);
+    let source = parser::ParserSource { source: anchor.source, offset: anchor.offset };
+    let path_len = (frame.path.path_bytes.len() + 1) as usize;
+    let image = frame.path.parser;
+    let step = parser::feed_parser_byte(image, byte, source, path_len);
+    frame_path::parser_feed_byte_frames(image, byte, source, path_len);
+    escape::parser_escape_wf_feed_byte(image, byte, source, path_len);
+    frame_path::epm_layout_path_lengths(next_frame);
+    assert(next_frame.path.parser == step.image);
+    assert(frame.wait.is_none());
+    assert(next_frame.wait.is_none());
+    frame_path::epm_restore_push_wf(frame, next_frame.path);
+    assert(next_frame.path.gate == frame.path.gate);
+    assert(!frame.path.gate.dead);
+    assert(!parser::parser_root_gate(step.image).dead);
+    assert(path_len as int == next_frame.path.path_bytes.len());
+    let obligation = next_frame.path.pending.unwrap();
+    match step.event {
+        parser::ParserEvent::ObligationStarted { id, kind: parser_kind, payload_len: parser_len } => {
+            assert(frame_path::parser_started_top(
+                step.image.focus,
+                id,
+                parser_kind,
+                parser_len,
+                path_len,
+            ));
+            assert(obligation.id == id);
+            assert(epm::parser_kind_matches(obligation.kind, parser_kind));
+            assert(obligation.payload_len as int == parser_len as int);
+            assert(obligation.payload_start == path_len);
+        },
+        _ => {},
+    }
+    assert(frame_path::epm_pending_matches_focus(next_frame.path.pending, next_frame.path.parser));
+    assert(!obligation.awaiting_resolution) by {
+        if obligation.awaiting_resolution {
+            assert(epm::obligation_ready(next_frame.path));
+        }
+    }
+    assert(frame_path::epm_path_length_bounds(next_frame));
+    assert(frame_path::epm_frame_path_wf(next_frame));
+    epm_frames_paths_wf_update(frames, last, next_frame);
+}
+
+/// EpmContinue case, through the unwind product lift: the top frame is
+/// replaced by its `event_step` successor. A Start edge is the Start-edge
+/// case; every other event keeps the frame invariant by
+/// `epm_frame_path_wf_event_step`.
+pub proof fn live_epm_continue_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    event: epm::EpmEvent,
+)
+    requires
+        product_epm_paths_wf(before),
+        unwind_product::live_runtime_internal_epm_unwind_step(before, after, event),
+    ensures
+        product_epm_paths_wf(after),
+{
+    match event {
+        epm::EpmEvent::Edge {
+            source_offset,
+            origin,
+            effect: epm::PathEdgeEffect::Start { kind, payload_len, tag },
+        } => {
+            live_epm_continue_start_edge_keeps_epm_paths_wf(
+                before,
+                after,
+                source_offset,
+                origin,
+                kind,
+                payload_len,
+                tag,
+            );
+        },
+        _ => {
+            live_epm_continue_top_frames(before, after, event);
+            let frames = before.source.product.epm_frames;
+            let last = frames.len() - 1;
+            let prior = integrated::product_linked_top(before.source.product).unwrap();
+            let next = integrated::product_linked_top(after.source.product).unwrap();
+            assert(epm_slot_path_wf(frames[last]));
+            frame_path::epm_frame_path_wf_event_step(
+                prior.epm,
+                next.epm,
+                event,
+                prior.admission.next_obligation_id,
+                epm::EpmAction::Continue,
+            );
+            epm_frames_paths_wf_update(frames, last, next.epm);
+        },
+    }
+}
+
+/// EpmPush case: the reducer step replaces the top frame by its `event_step`
+/// successor under the Push action (`epm_push_source_ready`), and the pushed
+/// child gets a slot without a frame (`epm_push_source_product_after`).
+pub proof fn live_epm_push_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    observed: push_source::EpmPushLiveObservation,
+)
+    requires
+        product_epm_paths_wf(before),
+        push_live::epm_push_live_after(before, observed) == Some(after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    assert(push_live::epm_push_live_ready(before, observed));
+    assert(push_source::epm_push_source_ready(before, observed.push));
+    let old = before.source.product;
+    let frames = old.epm_frames;
+    let last = frames.len() - 1;
+    let prior = integrated::product_linked_top(old).unwrap();
+    let request = push_source::epm_push_source_request(prior, observed.push).unwrap();
+    let reducer_after = observed.push.reducer_after;
+    assert(frames[last] == Some(prior.epm));
+    assert(epm_slot_path_wf(frames[last]));
+    assert(epm::event_step(
+        prior.epm,
+        reducer_after,
+        observed.push.terminal_event,
+        prior.admission.next_obligation_id,
+        epm::EpmAction::Push(request),
+    ));
+    frame_path::epm_frame_path_wf_event_step(
+        prior.epm,
+        reducer_after,
+        observed.push.terminal_event,
+        prior.admission.next_obligation_id,
+        epm::EpmAction::Push(request),
+    );
+    assert(after.source.product == push_source::epm_push_source_product_after(
+        old,
+        observed.push,
+        request,
+    ));
+    let updated = frames.update(last, Some(reducer_after));
+    assert(after.source.product.epm_frames == updated.push(None));
+    epm_frames_paths_wf_update(frames, last, reducer_after);
+    epm_frames_paths_wf_push_none(updated);
+}
+
+/// EpmEnd case: the top frame is replaced by its End `event_step` successor
+/// (`product_epm_complete_step`, `linked_epm_complete`).
+pub proof fn live_epm_end_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    observed: epm_terminal::EpmTerminalSourceObservation,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_epm_end_source_step(before, after, observed),
+    ensures
+        product_epm_paths_wf(after),
+{
+    let old = before.source.product;
+    let frames = old.epm_frames;
+    let last = frames.len() - 1;
+    let prior = integrated::product_linked_top(old).unwrap();
+    let complete = epm_terminal::epm_terminal_complete_from_source(prior.epm, observed).unwrap();
+    assert(integrated::product_epm_complete_step(old, after.source.product, complete.action));
+    let next = integrated::product_linked_top(after.source.product).unwrap();
+    assert(epm::linked_epm_complete(prior, next, complete.action));
+    assert(frames[last] == Some(prior.epm));
+    assert(epm_slot_path_wf(frames[last]));
+    frame_path::epm_frame_path_wf_event_step(
+        prior.epm,
+        next.epm,
+        epm::EpmEvent::End,
+        prior.admission.next_obligation_id,
+        complete.action,
+    );
+    epm_frames_paths_wf_update(frames, last, next.epm);
+}
+
+/// EpmFinishAccept case: the finished EPathMap frame's slot is popped
+/// (`product_epm_finish_accept_step`).
+pub proof fn live_epm_finish_accept_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_epm_finish_accept_step(before, after),
+    ensures
+        product_epm_paths_wf(after),
+{
+    let old = before.source.product;
+    let frames = old.epm_frames;
+    assert(integrated::live_source_product_epm_finish_accept_step(before.source, after.source));
+    assert(integrated::product_epm_finish_accept_step(old, after.source.product));
+    assert(frames.len() > 0);
+    epm_frames_paths_wf_prefix(frames, frames.len() - 1);
+}
+
+/// Every live product action keeps the invariant: one case per action.
+pub proof fn live_runtime_product_step_keeps_epm_paths_wf(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        product_epm_paths_wf(before),
+        integrated::live_runtime_product_step(before, after, action),
+    ensures
+        product_epm_paths_wf(after),
+{
+    match action {
+        LiveRuntimeProductAction::Continue => {
+            live_continue_keeps_epm_paths_wf(before, after);
+        },
+        LiveRuntimeProductAction::ContinueIndexed => {
+            live_continue_indexed_keeps_epm_paths_wf(before, after);
+        },
+        LiveRuntimeProductAction::MapKey => {
+            live_map_key_keeps_epm_paths_wf(before, after);
+        },
+        LiveRuntimeProductAction::RootScore => {
+            live_root_score_keeps_epm_paths_wf(before, after);
+        },
+        LiveRuntimeProductAction::RootComplete { returned } => {
+            live_root_complete_keeps_epm_paths_wf(before, after, returned);
+        },
+        LiveRuntimeProductAction::RootCompleteNoScore { returned } => {
+            live_root_complete_no_score_keeps_epm_paths_wf(before, after, returned);
+        },
+        LiveRuntimeProductAction::MessageChildScore => {
+            live_message_child_score_keeps_epm_paths_wf(before, after);
+        },
+        LiveRuntimeProductAction::MessagePush {
+            request,
+            actual_top_kind,
+            after_len,
+            after_capacity,
+            stats_frame_variant_bytes,
+        } => {
+            live_message_push_keeps_epm_paths_wf(
+                before,
+                after,
+                request,
+                actual_top_kind,
+                after_len,
+                after_capacity,
+                stats_frame_variant_bytes,
+            );
+        },
+        LiveRuntimeProductAction::MessageEpmPush {
+            request,
+            actual_top_kind,
+            after_len,
+            after_capacity,
+            stats_frame_variant_bytes,
+        } => {
+            live_message_epm_push_keeps_epm_paths_wf(
+                before,
+                after,
+                request,
+                actual_top_kind,
+                after_len,
+                after_capacity,
+                stats_frame_variant_bytes,
+            );
+        },
+        LiveRuntimeProductAction::MapValuePush {
+            request,
+            actual_top_kind,
+            after_len,
+            after_capacity,
+            stats_frame_variant_bytes,
+        } => {
+            live_map_value_push_keeps_epm_paths_wf(
+                before,
+                after,
+                request,
+                actual_top_kind,
+                after_len,
+                after_capacity,
+                stats_frame_variant_bytes,
+            );
+        },
+        LiveRuntimeProductAction::MessageChildComplete => {
+            live_message_child_complete_keeps_epm_paths_wf(before, after);
+        },
+        LiveRuntimeProductAction::MapValueAccept => {
+            live_map_value_accept_keeps_epm_paths_wf(before, after);
+        },
+        LiveRuntimeProductAction::MapEntryFinish => {
+            live_map_entry_finish_keeps_epm_paths_wf(before, after);
+        },
+        LiveRuntimeProductAction::EpmMapValueAccept { summary, admission_summary } => {
+            live_epm_map_value_accept_keeps_epm_paths_wf(before, after, summary, admission_summary);
+        },
+        LiveRuntimeProductAction::EpmContinue { event } => {
+            live_epm_continue_keeps_epm_paths_wf(before, after, event);
+        },
+        LiveRuntimeProductAction::EpmPush { observed } => {
+            live_epm_push_keeps_epm_paths_wf(before, after, observed);
+        },
+        LiveRuntimeProductAction::EpmEnd { observed } => {
+            live_epm_end_keeps_epm_paths_wf(before, after, observed);
+        },
+        LiveRuntimeProductAction::EpmFinishAccept => {
+            live_epm_finish_accept_keeps_epm_paths_wf(before, after);
+        },
+    }
+}
+
+/// Live case of `integrated_step`. A root completion is accepted with the
+/// live product that `integrated_live_case` relates to the action by
+/// `live_runtime_product_step`: the root score step's poststate (`LiveRoot`),
+/// or the unchanged product of a no-score root (`LiveNoScoreRoot`). Every
+/// other Live action runs to an Active product by `integrated_live_relation`,
+/// which refines `live_runtime_product_step`
+/// (`integrated_live_relation_refines_live_step`).
+pub proof fn integrated_live_keeps_epm_paths_wf(
+    before: dispatcher::IntegratedState,
+    after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        integrated_epm_paths_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action is Live,
+    ensures
+        integrated_epm_paths_wf(after),
+{
+    match (before, action) {
+        (
+            dispatcher::IntegratedState::Active { product },
+            dispatcher::IntegratedAction::Live { live_action, route },
+        ) => {
+            assert(dispatcher::integrated_live_case(product, after, live_action, route));
+            match (live_action, after) {
+                (
+                    LiveRuntimeProductAction::RootComplete { .. },
+                    dispatcher::IntegratedState::Accepted {
+                        accepted: dispatcher::IntegratedAccepted::LiveRoot { post_root_score, .. },
+                    },
+                ) => {
+                    live_runtime_product_step_keeps_epm_paths_wf(
+                        product,
+                        post_root_score,
+                        live_action,
+                    );
+                },
+                (
+                    LiveRuntimeProductAction::RootCompleteNoScore { .. },
+                    dispatcher::IntegratedState::Accepted {
+                        accepted: dispatcher::IntegratedAccepted::LiveNoScoreRoot { pre_complete, .. },
+                    },
+                ) => {
+                    live_runtime_product_step_keeps_epm_paths_wf(
+                        product,
+                        pre_complete,
+                        live_action,
+                    );
+                },
+                (_, dispatcher::IntegratedState::Active { product: next }) => {
+                    dispatcher::integrated_live_relation_refines_live_step(
+                        product,
+                        next,
+                        live_action,
+                        route,
+                    );
+                    live_runtime_product_step_keeps_epm_paths_wf(product, next, live_action);
+                },
+                _ => {},
+            }
         },
         _ => {},
     }

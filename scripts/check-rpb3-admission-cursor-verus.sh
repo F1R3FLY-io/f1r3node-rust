@@ -1195,6 +1195,29 @@ proofs_rpb3_epm_path_invariant_integrated=(
   act_unwind_after_epm_frames
   act_unwind_selected_checkpoint
   integrated_act_unwind_keeps_epm_paths_wf
+  product_map_step_keeps_epm_paths_wf
+  live_continue_keeps_epm_paths_wf
+  live_continue_indexed_keeps_epm_paths_wf
+  live_map_key_keeps_epm_paths_wf
+  live_root_score_keeps_epm_paths_wf
+  live_root_complete_keeps_epm_paths_wf
+  live_root_complete_no_score_keeps_epm_paths_wf
+  live_message_child_score_keeps_epm_paths_wf
+  live_message_push_keeps_epm_paths_wf
+  live_message_epm_push_keeps_epm_paths_wf
+  live_map_value_push_keeps_epm_paths_wf
+  live_message_child_complete_keeps_epm_paths_wf
+  live_map_value_accept_keeps_epm_paths_wf
+  live_map_entry_finish_keeps_epm_paths_wf
+  live_epm_map_value_accept_keeps_epm_paths_wf
+  live_epm_continue_top_frames
+  live_epm_continue_start_edge_keeps_epm_paths_wf
+  live_epm_continue_keeps_epm_paths_wf
+  live_epm_push_keeps_epm_paths_wf
+  live_epm_end_keeps_epm_paths_wf
+  live_epm_finish_accept_keeps_epm_paths_wf
+  live_runtime_product_step_keeps_epm_paths_wf
+  integrated_live_keeps_epm_paths_wf
 )
 proofs_rpb3_epm_push_live_action_refinement=(
   epm_push_live_action_is_checked
@@ -4758,7 +4781,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: EPathMap path invariant integrated module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 19 verified, 0 errors' "$epm_path_invariant_integrated_log"; then
+if ! rg -q '^verification results:: 42 verified, 0 errors' "$epm_path_invariant_integrated_log"; then
   cat "$epm_path_invariant_integrated_log"
   echo "rpb3-admission-cursor: EPathMap path invariant integrated module did not verify" >&2
   exit 1
