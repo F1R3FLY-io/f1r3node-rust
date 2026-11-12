@@ -74,11 +74,14 @@ fi
 for control in \
   "RetakeGateMutant:Invariant LockOrder is violated" \
   "RetakeGateDeadlockMutant:Deadlock reached" \
-  "SkipBaseMutant:Invariant ExactBaseOrRefuse is violated" \
+  "CaptureAtViewBaseMutant:Invariant CapturedPredecessorIsOwnerRoot is violated" \
+  "PublishOnCurrentMutant:Invariant PublishedSuccessorIsOfViewBase is violated" \
+  "ResetMovesOwnerMutant:Invariant OwnerRootIsLastPublication is violated" \
+  "SpawnCopiesBaseMutant:Action property SpawnSharesOwner is violated" \
   "ForeignPermitMutant:Invariant PermitProvenance is violated" \
   "CloseNoBumpMutant:Invariant StaleIncarnationRefused is violated" \
   "ReopenReusesIncarnationMutant:Invariant StaleIncarnationRefused is violated" \
-  "NeverRefusedStaleBase:Invariant NeverRefusedStaleBase is violated" \
+  "NeverPublishedAcrossBases:Invariant NeverPublishedAcrossBases is violated" \
   "NeverRefusedRetainedIncarnation:Invariant NeverRefusedRetainedIncarnation is violated" \
   "NeverReconciledByOtherView:Invariant NeverReconciledByOtherView is violated"
 do
@@ -95,4 +98,4 @@ do
     exit 1
   fi
 done
-echo "journal-owner: control, view-gate control with liveness, twenty-four causal mutants (nineteen plus five) and fourteen reachability witnesses (eleven plus three) passed"
+echo "journal-owner: control, view-gate control with liveness, twenty-seven causal mutants (nineteen plus eight) and fourteen reachability witnesses (eleven plus three) passed"
