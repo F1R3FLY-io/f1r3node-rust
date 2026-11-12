@@ -4384,7 +4384,10 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         )
         .await
         .unwrap(),
-        mergeable_channels_gc::GcProgress::Complete { deleted: 0 }
+        mergeable_channels_gc::GcProgress::Complete {
+            deleted: 0,
+            blocks_deleted: 0,
+        }
     );
     assert!(rm.has_mergeable_entry(&lagging_block).unwrap());
     assert!(dag.get_cached_floor(&chain_hash(TIP)).unwrap().is_none());
@@ -4417,8 +4420,8 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         .await
         .expect("collect_garbage")
         {
-            mergeable_channels_gc::GcProgress::Yielded { deleted: count } => deleted += count,
-            mergeable_channels_gc::GcProgress::Complete { deleted: count } => {
+            mergeable_channels_gc::GcProgress::Yielded { deleted: count, .. } => deleted += count,
+            mergeable_channels_gc::GcProgress::Complete { deleted: count, .. } => {
                 deleted += count;
                 completed = true;
                 break;

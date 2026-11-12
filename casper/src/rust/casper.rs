@@ -529,6 +529,10 @@ pub struct CasperShardConf {
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
+    /// Delete finalized block bodies from the block store once no honest
+    /// validator can still cite them. Shares the mergeable-channel GC
+    /// horizon and predicate; requires `enable_mergeable_channel_gc = true`.
+    pub enable_block_store_gc: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
@@ -574,6 +578,7 @@ impl CasperShardConf {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
+            enable_block_store_gc: false,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,

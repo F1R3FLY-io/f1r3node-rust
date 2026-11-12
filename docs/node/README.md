@@ -76,6 +76,8 @@ The following flags override HOCON configuration at startup. CLI flags always ta
 | `--ceremony-master-mode` | `casper.genesis_ceremony.ceremony_master_mode = true` | Enable ceremony master mode (creates genesis block if none found) |
 | `--enable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = true` | Enable mergeable channel garbage collection |
 | `--disable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = false` | Disable mergeable channel GC (takes precedence over `--enable-mergeable-channel-gc`) |
+| `--enable-block-store-gc` | `casper.enable_block_store_gc = true` | Delete finalized block bodies that no honest validator can still cite (piggybacks on the mergeable-channel GC pass) |
+| `--disable-block-store-gc` | `casper.enable_block_store_gc = false` | Disable block-store GC (takes precedence over `--enable-block-store-gc`) |
 | `--heartbeat-enabled` | `casper.heartbeat_conf.enabled = true` | Enable heartbeat block proposing for liveness |
 | `--heartbeat-disabled` | `casper.heartbeat_conf.enabled = false` | Disable heartbeat proposing (takes precedence over `--heartbeat-enabled`) |
 | `--heartbeat-check-interval` | `casper.heartbeat_conf.check_interval` | How often the heartbeat loop wakes to evaluate its decision tree |
@@ -97,6 +99,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 
 - `--ceremony-master-mode` unconditionally sets `casper.genesis_ceremony.ceremony_master_mode = true`.
 - `--disable-mergeable-channel-gc` / `--enable-mergeable-channel-gc` override `casper.enable_mergeable_channel_gc`. The disable flag is checked first; only if it is absent does the enable flag apply.
+- `--disable-block-store-gc` / `--enable-block-store-gc` follow the same pattern for `casper.enable_block_store_gc`. Has no effect when mergeable-channel GC is disabled, since the GC loop that drives it is not spawned.
 - `--heartbeat-disabled` / `--heartbeat-enabled` follow the same pattern for `casper.heartbeat_conf.enabled`.
 
 ## gRPC Services
