@@ -656,6 +656,100 @@ async fn scope_layout_independent_names_and_reopen() {
     assert_eq!(reopened.current_verified_root().unwrap(), expected);
 }
 
+fn scope_layout_assert_named_databases(
+    environment: &std::path::Path,
+    written: &[(&str, Vec<u8>, Vec<u8>)],
+) {
+    let environment =
+        crate::rspace::shared::lmdb_dir_store_manager::resolve_lmdb_environment(environment)
+            .expect("resolve the LMDB environment");
+    let env = crate::rspace::shared::env_cache::get_or_open_env(&environment, 16 * 1024 * 1024, 32)
+        .expect("open the LMDB environment");
+    let txn = env.read_txn().expect("begin a read transaction");
+    let held: std::collections::BTreeSet<String> = env
+        .open_database::<heed::types::Str, heed::types::DecodeIgnore>(&txn, None)
+        .expect("open the unnamed database")
+        .expect("the unnamed database always exists")
+        .iter(&txn)
+        .expect("iterate the unnamed database")
+        .map(|entry| entry.map(|(name, ())| name.to_owned()))
+        .collect::<Result<_, _>>()
+        .expect("read the database names");
+    for (identifier, key, value) in written {
+        let Some(database): Option<super::BytesDb> = env
+            .open_database(&txn, Some(*identifier))
+            .expect("look a database up by name")
+        else {
+            panic!("missing database {identifier}: the environment holds {held:?}");
+        };
+        assert_eq!(
+            database.get(&txn, key).expect("read the database").as_ref(),
+            Some(value),
+            "database {identifier} does not hold the value written through its store"
+        );
+    }
+    let mapped: std::collections::BTreeSet<String> = written
+        .iter()
+        .map(|&(identifier, _, _)| identifier.to_owned())
+        .collect();
+    assert_eq!(held, mapped, "the environment holds a database that no mapping names");
+}
+
+#[tokio::test]
+async fn scope_layout_absent_overrides_use_logical_identifiers() {
+    let scratch = test_scratch::acquire("rspace-scope-absent-override-");
+    let mapping = [
+        ("custom-history", "shared"),
+        ("custom-roots", "shared"),
+        ("custom-cold", "shared"),
+        ("application", "ordinary"),
+    ]
+    .into_iter()
+    .map(|(identifier, environment)| {
+        (
+            Db::new(identifier.to_owned(), None),
+            LmdbEnvConfig::new(environment.to_owned(), 16 * 1024 * 1024).with_max_dbs(32),
+        )
+    })
+    .collect();
+    let mut manager = LmdbDirStoreManager::new(scratch.path().to_path_buf(), mapping);
+    let ordinary = manager
+        .store("application".to_owned())
+        .await
+        .expect("open the ordinary store");
+    let (ordinary_key, ordinary_value) = (b"ordinary-key".to_vec(), b"ordinary-value".to_vec());
+    ordinary
+        .put(vec![(ordinary_key.clone(), ordinary_value.clone())])
+        .expect("write through the ordinary store");
+    scope_layout_assert_named_databases(&scratch.path().join("ordinary"), &[(
+        "application",
+        ordinary_key,
+        ordinary_value,
+    )]);
+    let authority = manager
+        .state_authority("custom")
+        .await
+        .expect("open the authority");
+    authority
+        .initialize_for_records(&validator())
+        .expect("initialize the authority");
+    let history = history_at_current(&authority);
+    let (address, leaf) = data_leaf(b"scope-absent-override");
+    let (_, plan) = prepare_insert(history.as_ref(), 91, &address);
+    let published = authority
+        .commit_local_checkpoint(&plan, vec![(address.clone(), leaf.clone())], &validator())
+        .expect("commit one checkpoint");
+    let root_node = plan
+        .root_encoding()
+        .expect("a changed checkpoint encodes its root")
+        .to_vec();
+    scope_layout_assert_named_databases(&scratch.path().join("shared"), &[
+        ("custom-history", published.root().bytes(), root_node),
+        ("custom-roots", CURRENT_ROOT_KEY.to_vec(), encode_current_root(&published)),
+        ("custom-cold", address.encode(), leaf),
+    ]);
+}
+
 fn data_leaf(label: &[u8]) -> (ColdLeafAddress, Vec<u8>) {
     let record = bincode::serialize(&label.to_vec()).expect("record");
     let payload = bincode::serialize(&vec![record]).expect("record sequence");
