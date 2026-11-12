@@ -84,6 +84,17 @@ struct Held {
     awaiting_root: Option<Blake2b256Hash>,
     retry_at_ms: Option<u64>,
     seq: u64,
+    vouch: Vouch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Vouch {
+    Unvouched,
+    /// Vouched for while its validation ran: it is admitted as settled history
+    /// if the attempt ends without a verdict.
+    DuringValidation,
+    /// Settled-history admission declined it, so a vouch no longer applies.
+    Declined,
 }
 
 impl Held {
@@ -194,6 +205,7 @@ impl DependencyTracker {
             awaiting_root: None,
             retry_at_ms: None,
             seq,
+            vouch: Vouch::Unvouched,
         };
         if held.stage == Stage::Ready {
             self.ready.insert(held.ready_key());
@@ -344,11 +356,62 @@ impl DependencyTracker {
         let held = self.working(hash);
         held.work = Work::Validate;
         held.stage = Stage::Waiting;
+        held.vouch = Vouch::Declined;
         held.missing.extend(missing.iter().cloned());
         for dependency in &missing {
             self.add_waiter(dependency, hash);
         }
         self.promote_if_ready(hash);
+    }
+
+    /// `hash`, held for validation, is admitted as settled history instead.
+    /// A block no worker holds switches now; a block being validated switches
+    /// if the attempt ends without a verdict. Returns what a switch stopped
+    /// waiting on, or `None` when nothing switched now.
+    pub fn vouch(&mut self, hash: &BlockHash) -> Option<Departure> {
+        let held = self.held.get_mut(hash)?;
+        if held.work != Work::Validate || held.vouch == Vouch::Declined {
+            return None;
+        }
+        if held.stage == Stage::Working {
+            held.vouch = Vouch::DuringValidation;
+            return None;
+        }
+        Some(self.admit_settled_instead(hash))
+    }
+
+    /// A validation attempt of `hash` ended without a verdict. If the block
+    /// was vouched for meanwhile, it is admitted as settled history instead of
+    /// waiting or retrying, and what it stopped waiting on is returned.
+    pub fn settle_if_vouched(&mut self, hash: &BlockHash) -> Option<Departure> {
+        let held = self.working(hash);
+        if held.vouch != Vouch::DuringValidation {
+            return None;
+        }
+        held.stage = Stage::Waiting;
+        Some(self.admit_settled_instead(hash))
+    }
+
+    fn admit_settled_instead(&mut self, hash: &BlockHash) -> Departure {
+        let held = self.held.get_mut(hash).expect("a switched block is held");
+        held.work = Work::AdmitSettled;
+        held.vouch = Vouch::Unvouched;
+        let missing = std::mem::take(&mut held.missing);
+        let root = held.awaiting_root.take();
+        if let Some(retry_at_ms) = held.retry_at_ms.take() {
+            self.cooling.remove(&(retry_at_ms, hash.clone()));
+        }
+        let unwaited = self.stop_waiting(hash, &missing);
+        let unawaited_roots = root
+            .and_then(|root| self.stop_awaiting_root(hash, root))
+            .into_iter()
+            .collect();
+        self.promote_if_ready(hash);
+        Departure {
+            unwaited,
+            unawaited_roots,
+            ..Departure::default()
+        }
     }
 
     /// A validation attempt of `hash` failed without a verdict. A retry waits
@@ -571,6 +634,43 @@ impl DependencyTracker {
             .insert(waiter.clone());
     }
 
+    /// `waiter` stops waiting on `missing`. Returns the dependencies no held
+    /// block waits on any more.
+    fn stop_waiting(&mut self, waiter: &BlockHash, missing: &HashSet<BlockHash>) -> Vec<BlockHash> {
+        let mut unwaited = Vec::new();
+        for dependency in missing {
+            let waiters = self
+                .waiters
+                .get_mut(dependency)
+                .expect("a missing dependency is indexed");
+            waiters.remove(waiter);
+            if waiters.is_empty() {
+                self.waiters.remove(dependency);
+                unwaited.push(dependency.clone());
+            }
+        }
+        unwaited
+    }
+
+    /// `waiter` stops awaiting `root`. Returns `root` if no held block awaits
+    /// it any more.
+    fn stop_awaiting_root(
+        &mut self,
+        waiter: &BlockHash,
+        root: Blake2b256Hash,
+    ) -> Option<Blake2b256Hash> {
+        let waiters = self
+            .root_waiters
+            .get_mut(&root)
+            .expect("an awaited root is indexed");
+        waiters.remove(waiter);
+        if !waiters.is_empty() {
+            return None;
+        }
+        self.root_waiters.remove(&root);
+        Some(root)
+    }
+
     fn take(&mut self, hash: &BlockHash) -> Departure {
         let held = self.held.remove(hash).expect("only held entries are taken");
         self.view.set_held(hash, false, false);
@@ -603,30 +703,12 @@ impl DependencyTracker {
         if let Some(retry_at_ms) = held.retry_at_ms {
             self.cooling.remove(&(retry_at_ms, hash.clone()));
         }
-        let mut unwaited = Vec::new();
-        for dependency in &held.missing {
-            let waiters = self
-                .waiters
-                .get_mut(dependency)
-                .expect("a missing dependency is indexed");
-            waiters.remove(hash);
-            if waiters.is_empty() {
-                self.waiters.remove(dependency);
-                unwaited.push(dependency.clone());
-            }
-        }
-        let mut unawaited_roots = Vec::new();
-        if let Some(root) = &held.awaiting_root {
-            let waiters = self
-                .root_waiters
-                .get_mut(root)
-                .expect("an awaited root is indexed");
-            waiters.remove(hash);
-            if waiters.is_empty() {
-                self.root_waiters.remove(root);
-                unawaited_roots.push(root.clone());
-            }
-        }
+        let unwaited = self.stop_waiting(hash, &held.missing);
+        let unawaited_roots = held
+            .awaiting_root
+            .and_then(|root| self.stop_awaiting_root(hash, root))
+            .into_iter()
+            .collect();
         Departure {
             removed: vec![held.meta],
             released: Vec::new(),
@@ -753,6 +835,19 @@ pub(crate) mod tests {
         t.root_imported(&root);
         assert_eq!(t.next_ready(), Some((hash(1), Work::Validate)));
         assert!(!t.is_root_awaited(&root));
+    }
+
+    #[test]
+    fn a_vouch_for_a_block_cooling_before_a_retry_drops_the_retry() {
+        let mut t = tracker();
+        hold(&mut t, 1, 1, &[]);
+        t.next_ready();
+        assert_eq!(t.failed(&hash(1), 0), FailureVerdict::Retry);
+        assert_eq!(t.vouch(&hash(1)), Some(Departure::default()));
+        assert_eq!(t.retry_at_ms(&hash(1)), None);
+        assert_eq!(t.next_ready(), Some((hash(1), Work::AdmitSettled)));
+        t.release_cooled(u64::MAX);
+        assert_eq!(t.next_ready(), None);
     }
 
     #[test]
