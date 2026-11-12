@@ -437,6 +437,10 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("DF-01", "visited_differences_turn_the_from_state_into_the_to_state"),
     ("DF-02", "a_difference_reads_only_the_nodes_the_two_states_do_not_share"),
     ("DF-03", "both_orders_of_a_receive_group_are_visited_as_distinct_endpoints"),
+    (
+        "TX-02",
+        "duplicate_reordered_truncated_and_corrupted_pages_are_refused_and_leave_the_frontier_unchanged",
+    ),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

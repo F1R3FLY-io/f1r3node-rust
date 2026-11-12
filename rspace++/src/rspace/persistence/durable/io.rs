@@ -98,7 +98,7 @@ pub(crate) fn arm_reclamation_intent_write_prefix(prefix_len: usize) {
 }
 
 #[cfg(test)]
-fn trip_durable_io_failpoint(
+pub(super) fn trip_durable_io_failpoint(
     failpoint: DurableIoFailpointV1,
     operation: DurableIoOperation,
     path: &Path,
@@ -1760,7 +1760,7 @@ fn absolute_diagnostic_path(path: PathBuf) -> Result<PathBuf, DurableIoError> {
 }
 
 #[cfg(unix)]
-fn open_directory_handle(path: &Path) -> Result<File, DurableIoError> {
+pub(super) fn open_directory_handle(path: &Path) -> Result<File, DurableIoError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
     let file = OpenOptions::new()
@@ -1810,7 +1810,7 @@ fn open_directory_handle(path: &Path) -> Result<File, DurableIoError> {
 }
 
 #[cfg(not(unix))]
-fn open_directory_handle(path: &Path) -> Result<File, DurableIoError> {
+pub(super) fn open_directory_handle(path: &Path) -> Result<File, DurableIoError> {
     Err(DurableIoError::UnsupportedPlatform {
         operation: DurableIoOperation::OpenDirectory,
         path: path.to_path_buf(),
@@ -2134,7 +2134,7 @@ fn ensure_child_matches_handle(
 }
 
 #[cfg(unix)]
-fn validate_authority_file(
+pub(super) fn validate_authority_file(
     file: &File,
     operation: DurableIoOperation,
     path: &Path,
@@ -2183,7 +2183,7 @@ fn validate_authority_file(
 }
 
 #[cfg(not(unix))]
-fn validate_authority_file(
+pub(super) fn validate_authority_file(
     _file: &File,
     operation: DurableIoOperation,
     path: &Path,

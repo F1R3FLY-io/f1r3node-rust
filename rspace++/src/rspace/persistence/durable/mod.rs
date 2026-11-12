@@ -37,6 +37,15 @@ mod state_root;
     )
 )]
 mod transfer_export;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only unit tests stage imported pages until task \
+                  rspace-dag-transfer-trait-binding stages transfer pages through it"
+    )
+)]
+mod transfer_import;
 mod view_reader;
 
 pub(crate) use admission::{
@@ -142,6 +151,11 @@ pub(crate) use state_root::{ResolvedDurableStateV1, resolve_retained_state};
 pub(crate) use transfer_export::{
     DurableExportSessionV1, TransferBindingV1, TransferExportErrorV1, TransferPageFormatErrorV1,
     TransferPageLimitsV1, TransferPageViewV1, TransferTokenV1,
+};
+#[cfg(test)]
+pub(crate) use transfer_import::{
+    DurableImportSessionV1, TransferFrontierFormatErrorV1, TransferImportBoundV1,
+    TransferImportErrorV1, TransferObjectRefusalV1, TransferStagingOutcomeV1, abort_import,
 };
 pub(crate) use view_reader::DurableViewReaderV1;
 

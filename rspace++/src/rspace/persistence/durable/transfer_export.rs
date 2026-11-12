@@ -17,7 +17,7 @@ use crate::rspace::persistence::{
     SemanticProfileId,
 };
 
-const TRANSFER_PAGE_VERSION_V1: u64 = 1;
+pub(super) const TRANSFER_PAGE_VERSION_V1: u64 = 1;
 const ROOT_OFFSET: usize = 8;
 const PROFILE_OFFSET: usize = ROOT_OFFSET + OBJECT_DIGEST_LEN;
 const POSITION_OFFSET: usize = PROFILE_OFFSET + SEMANTIC_PROFILE_ID_LEN;
@@ -440,6 +440,8 @@ impl<'a> TransferPageViewV1<'a> {
             remaining: self.objects,
         }
     }
+
+    pub(super) const fn records(self) -> &'a [u8] { self.objects }
 }
 
 pub(crate) struct TransferPageObjectsV1<'a> {

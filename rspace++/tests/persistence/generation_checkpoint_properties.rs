@@ -742,6 +742,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("transfer_export.rs"),
         include_str!("state_difference.rs"),
         include_str!("../hot_store/durable_reader_bootstrap.rs"),
+        include_str!("transfer_import_staging.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {

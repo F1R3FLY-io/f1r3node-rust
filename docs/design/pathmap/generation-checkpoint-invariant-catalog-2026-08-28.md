@@ -8580,6 +8580,317 @@ missing.
 |---|---|---|
 | TX-01 | Exact closure, once, parent-first. For retained durable states that are deep (a chain of 200 node levels), wide (a Node256 and a Node48 branch) and shared (an object with descendants that one node references twice, and objects shared across states), the pages of an export session carry exactly the closure of the state's manifest, every object once, in the parent-first export order of transfer version 1 and within the page limits. The imported objects form a structurally closed state, and the session records exactly the closure's objects whose retained reference count is not 1. | `pages_carry_exactly_the_closure_once_parent_first_for_deep_wide_and_shared_states` |
 
+### Durable state transfer import staging (2026-11-12)
+
+Task 14303 builds the first step of the importing side of task 7939:
+private, non-authoritative staging of the pages that an export session
+serves, with a durable frontier from which an interrupted import resumes. Its
+code is
+[`transfer_import.rs`](../../../rspace++/src/rspace/persistence/durable/transfer_import.rs).
+Only unit tests call it until task `rspace-dag-transfer-trait-binding` stages
+transfer pages through it. Finalisation, the cold admission of a complete
+staging and its publication, is a later task: nothing here admits, seals or
+publishes a state. Staging never writes the store's packs, catalog or index,
+and no open of the store reads it. Recovery and reclamation open fixed names
+only (`catalog.v1`, `writer.lock.v1`, `reclaim.v1` and the pack and index
+files that the catalog names), and the one enumeration of the store
+directory, at genesis, keeps store file names only.
+
+**Terms.** As in the export section, $`C(M)`$ is the closure of the state
+whose semantic manifest is $`M`$, the stream is $`C(M)`$ in the export order
+of transfer version 1, and $`n = |C(M)|`$. An import *session* is bound to
+one *binding*, the pair of the manifest's digest and its semantic profile,
+which is the binding of the export session that serves it. Its *frontier*
+$`f`$, with $`0 \le f \le n`$, is the number of leading stream objects that
+it has staged durably and acknowledged; the binding and the frontier form
+its *token*, a `TransferTokenV1` as the exporter answers it. An object is
+*staged* when its record is in the staging log, and *announced* when a
+staged object references it and it is not staged. A page of $`k`$ objects
+at position $`f`$ carries the objects at positions $`f`$ to $`f + k - 1`$.
+
+**Where staging lives.** The staging of a store is one subdirectory of the
+store's directory.
+
+| Path in the store directory | Kind | Mode | Content |
+|---|---|---|---|
+| `transfer-import.v1/` | directory | `0700` | the staging of one session |
+| `transfer-import.v1/objects.v1` | file | `0600` | the staging log |
+| `transfer-import.v1/frontier.v1` | file | `0600` | the frontier record |
+| `transfer-import.v1/frontier.v1.tmp` | file | `0600` | a frontier record being written; never read |
+
+The location follows from the durable I/O layer's conventions. (1)
+`open_directory_handle` validates the store directory as owned by the
+effective user and writable by nobody else, so the staging inherits that
+protection, and on the store's file system the frontier's `rename` is atomic
+and a directory synchronization orders it. (2) Every name that a reader of
+the store opens is fixed and names a file, so a staging that a crash leaves
+behind is never taken for authority and never blocks an open. (3) One
+directory makes abort exact: abort deletes that directory and nothing else.
+(4) The names follow the layer's `.v1` and `.v1.tmp` forms, and every staged
+file is opened with `O_NOFOLLOW` and validated as a regular, singly linked,
+owner-only file of the effective user by `validate_authority_file`, which
+validates the store's own files. A directory elsewhere, for example under
+the system's temporary directory, would lose (1): another file system, other
+permissions, and a staging that outlives its store. `begin_import` creates
+the directory with `mkdir`, which fails if it exists, so a store has at most
+one staging, and a session holds an exclusive advisory lock (`flock`) on its
+open log, so no other session, in this process or another, resumes or
+aborts a live one.
+
+**Frontier record (version 1).** Every integer is unsigned and
+little-endian.
+
+| Offset | Width (bytes) | Field | Meaning |
+|---:|---:|---|---|
+| 0 | 8 | magic | the ASCII bytes `RSPFRNT1` |
+| 8 | 8 | version | the transfer version whose export order the position counts, `1` |
+| 16 | 32 | root | binding: the Blake2b-256 digest of the state's semantic manifest |
+| 48 | 16 | profile | binding: the `SemanticProfileId` of that manifest |
+| 64 | 8 | position | the frontier $`f`$ |
+| 72 | 8 | checksum | the CRC32C of bytes 0 to 71, in a 64-bit field whose high 32 bits are zero |
+
+A record is exactly 80 bytes. Its fields are the token and the transfer
+version, which a resume must match (DT-03), and nothing else: no store
+identity, catalog generation or time. As in a page, the checksum detects a
+torn or damaged record and is not an identity. A record is replaced
+atomically: it is written to `frontier.v1.tmp`, which is synchronized and
+renamed over `frontier.v1`, and the rename is made durable by synchronizing
+the staging directory.
+
+**Staging log.** `objects.v1` is the concatenation, in stream order, of the
+record regions of the staged pages: for each staged object, its canonical
+length $`L \ge 32`$ in 8 bytes, then its $`L`$ canonical bytes. It has no
+header. Its binding is the frontier record's, and resume re-admits every
+record from the binding's manifest on, so a log written for another binding
+cannot be resumed under this one. The log holds the $`f`$ acknowledged
+records and, after a crash, at most the records of one page beyond them.
+Write $`\lambda_q`$ for the length of the log's first $`q`$ records.
+
+**Admitting an object.** A session keeps in memory a map from every staged
+or announced digest to its canonical length and a staged flag, the number of
+announced objects (*outstanding*), the declared canonical bytes, and the
+number of references examined. `admit(q, o)` decides an object $`o`$ at
+stream position $`q`$. It applies the rules of the export tests' reference
+importer, with their digest and length checks, bounded and reversible.
+
+```text
+admit(q, o):
+    d = Blake2b-256(o)
+    if d is staged:                           refuse Duplicate
+    if d is announced with another length:    refuse LengthMismatch
+    if d is announced:                        mark d staged; outstanding -= 1
+    else if q = 0 and d is the binding's root: record d as staged
+    else:                                     refuse Unreferenced
+    parse o with CanonicalObjectView::parse   -- NotCanonical
+    at q = 0, o must be a semantic manifest of the binding's profile
+                                              -- ForeignManifest
+    at q >= 1, o must be a DAG node or a blob -- UnexpectedKind
+    for each reference r of o (a manifest: its three namespace roots;
+                               a node: its content blob, then its children):
+        references += 1                       -- at most max_references
+        if r is recorded with another length: refuse LengthMismatch
+        if r is not recorded: record r as announced; outstanding += 1
+            -- outstanding at most max_worklist, the recorded objects at most
+            -- max_distinct_objects, their declared lengths at most
+            -- max_canonical_bytes
+```
+
+The four bounds are the caller's `StructuralValidationLimits`, the closure
+verifier's own ceilings, and a refusal names the bound it hit (`Bound`).
+Every insertion first reserves its capacity with `try_reserve`, so an
+allocation failure is a refusal (`Allocation`), not an abort. Every change
+is recorded in an undo log, so a page is admitted entirely or not at all.
+
+**Staging a page.** `stage_page(page)` takes these steps in order. A refusal
+in steps 1 to 6 changes nothing: not the frontier, the frontier record, the
+log or the in-memory state, because step 6 undoes every object of the page
+admitted before the refused one.
+
+```text
+stage_page(page):
+     1. refuse SessionFailed if a step 7 to 12 of an earlier page failed
+     2. view = TransferPageViewV1::parse(page, limits)   -- the export's decoder
+     3. refuse PageBinding unless view.binding is the session's binding
+     4. refuse PositionMismatch unless view.position = f
+     5. if view.count = 0 (the end page): answer Complete(f) if f >= 1 and
+        outstanding = 0, else refuse IncompleteAtEnd
+     6. admit the page's objects at f, f + 1, ..., f + k - 1;
+        on a refusal undo them all and refuse Object
+     7. write the page's record region at log offset lambda_f   [PhysicalWrite]
+     8. fsync the log                                           [PhysicalSync]
+     9. remove a leftover frontier.v1.tmp, create it and write
+        the record of f + k                                     [CandidateWrite]
+    10. fsync frontier.v1.tmp                                   [CandidateSync]
+    11. rename frontier.v1.tmp over frontier.v1                 [BeforeReplace]
+    12. fsync the staging directory     [AfterReplaceBeforeDirectorySync,
+                                         DirectorySync]
+    13. f = f + k; clear the undo log; answer Staged(f)
+```
+
+The bracketed names are the durable I/O layer's existing failpoints, which
+the tests trip just before the write, `fsync` or rename of their step; no
+failpoint is added. An error in steps 7 to 12 undoes the page in memory and
+fails the session, whose memory may then disagree with the disk; a resume,
+which re-derives the session from the disk, continues it. The end page
+completes a stream only when nothing announced is missing; checking the
+staged closure as a state is cold admission, a later task.
+
+**Beginning, resuming and aborting.** `begin_import::<P>(store, binding,
+limits, bounds)` refuses a binding whose profile is not `P`'s
+(`ForeignProfile`); creates the staging directory (`StagingExists` if it is
+there) and synchronizes the store directory; creates, locks and synchronizes
+an empty log; and writes the record of position 0 as steps 9 to 12 do.
+`resume_import::<P>` with the same arguments refuses a foreign profile;
+opens the staging (`NoStaging`) and locks its log (`StagingInUse`); reads the
+frontier record (`IncompleteStaging` if it is absent); refuses a record of
+another transfer version (`UnsupportedTransferVersion`) or of another root
+or profile (`BindingMismatch`); re-admits the log's first $`f`$ records with
+`admit`; and only then cuts the log back to $`\lambda_f`$ and synchronizes
+it, which discards a page beyond the frontier. A refused resume therefore
+keeps the frontier record and the log byte for byte. `abort` ends a session,
+and `abort_import(store)` the staging that no live session holds
+(`StagingInUse` otherwise): both remove `frontier.v1`, `frontier.v1.tmp` and
+`objects.v1` by name, remove the directory, which fails closed if it holds
+anything else, and synchronize the store directory. A session can begin only
+where no staging directory exists, so it starts at frontier 0 with an empty
+log (DT-06).
+
+```text
+stage_page at frontier f, page of k objects        durable state after a crash
+──────────────────────────────────────────────     ────────────────────────────
+ 1-6  parse, bind, position, admit (memory only)    f_d = f, log = lambda_f
+  7   write records          ◀ PhysicalWrite        f_d = f, lambda_f <= log
+  8   fsync log              ◀ PhysicalSync              <= lambda_(f+k)
+  9   write frontier.v1.tmp  ◀ CandidateWrite       f_d = f, log = lambda_(f+k)
+ 10   fsync frontier.v1.tmp  ◀ CandidateSync          (one page beyond f_d)
+ 11   rename                 ◀ BeforeReplace
+ 12   fsync directory        ◀ AfterReplace...,     f_d in {f, f+k},
+                               DirectorySync          log = lambda_(f+k)
+ 13   f = f + k, Staged                             f_d = f+k, log = lambda_(f+k)
+```
+
+**Claim (DT-07).** At every crash point of `stage_page`, write $`f_d`$ for
+the durable frontier, $`\ell_d`$ for the durable log's length, and $`k_d`$
+for the object count of the page at $`f_d`$. Then
+
+```math
+\lambda_{f_d} \;\le\; \ell_d \;\le\; \lambda_{f_d + k_d},
+```
+
+that is, the log holds every acknowledged record and at most one page beyond
+them.
+
+*Proof.* Let the page at the frontier $`f`$ hold $`k`$ objects. Before step
+7 the durable log is $`\lambda_f`$ bytes long: after begin $`\lambda_0 = 0`$,
+and a completed page and a resume both end with the log synchronized at that
+length. Only step 7 changes the log, and step 8 makes the change durable.
+Only step 11 changes `frontier.v1`, and step 12 makes the change durable, so
+$`f_d = f`$ until step 11 starts, $`f_d \in \{f, f + k\}`$ from then until
+step 12 completes, and $`f_d = f + k`$ afterwards. (i) A crash before step 8
+completes leaves $`f_d = f`$, $`k_d = k`$ and
+$`\lambda_f \le \ell_d \le \lambda_{f+k}`$. (ii) A crash after step 8 leaves
+$`\ell_d = \lambda_{f+k}`$, and either $`f_d = f`$, one page behind the log,
+or $`f_d = f + k`$, with no page beyond it. In both cases the bound holds,
+and $`\ell_d \ge \lambda_{f_d}`$ in particular because the only record that
+names $`f + k`$ is created in step 9, after step 8 made the page's records
+durable. $`\blacksquare`$
+
+*Other crash points.* A crash during a resume's cut leaves the log between
+$`\lambda_f`$ and its earlier length, which the claim already bounds. A crash
+during begin or abort leaves a staging without its frontier record or without
+its log, in either order of the removals, which a resume refuses
+(`IncompleteStaging`) and an abort removes; after abort's last step no
+staging is left (`NoStaging`).
+
+*Replay is idempotent.* Resume re-admits the $`f_d`$ acknowledged records,
+cuts the log to $`\lambda_{f_d}`$ and continues at $`f_d`$. Admission is a
+function of the sequence of records alone, so the re-derived in-memory state
+is the one the original session had at $`f_d`$, and staging the pages from
+$`f_d`$ on yields a log and a frontier record byte-identical to a run without
+the crash. Step 4 refuses a page beyond the frontier, and a staged page moves
+the frontier from its own position to the position after it, never back and
+never past a page: `FrontierIsContiguous` and `FrontierAdvancesByOne` at page
+granularity, since the model's stream unit is one object of a two-object
+closure and the implementation's is a page.
+
+**Memory and cost.** A session holds its map, one entry of a 32-byte digest,
+a length and a flag per staged or announced object, so at most
+`max_distinct_objects` entries; the undo log of one page; and no page
+buffer, since a page's record region is written to the log from the caller's
+buffer. Staging an object costs one Blake2b-256 digest, one parse, one map
+probe and one probe per reference; staging a page costs two writes (its
+records and the 80-byte record), one rename and three `fsync` calls. A resume reads the log once, through a buffer of 64 KiB or of
+the log's length if that is smaller, into one object buffer reserved for
+exactly each record's checked length, and reserves the map for the smallest
+of $`f`$, the log's length divided by 40 (the shortest record) and
+`max_distinct_objects` entries.
+
+**Decoding the staging.** Everything read back is untrusted. A frontier
+record must be exactly 80 bytes long before it is read into a fixed 80-byte
+buffer (`Length`); its magic (`Magic`), the high half of its checksum field
+(`ChecksumOutOfRange`), its CRC32C (`Checksum`), its version and its binding
+are then checked in that order. Each log record's length field must be
+present (`StagedObjectsMissing`); the length must be at least 32 and at most
+`max_page_bytes`, the largest record that a page can carry
+(`StagedRecordLength`), and at most the bytes that remain
+(`StagedObjectsMissing`); only then is a buffer of that length reserved and
+read, and the record is re-admitted under the caller's bounds
+(`StagedObject`, which carries the refusal).
+
+**Changes outside the new module.** Five functions of the durable I/O layer
+become visible to its sibling modules (`pub(super)`): `open_directory_handle`
+and `validate_authority_file`, each in its Unix and its other-platform form,
+and the test-only `trip_durable_io_failpoint`. In `transfer_export.rs`,
+`TRANSFER_PAGE_VERSION_V1` becomes `pub(super)` and the new `pub(super)`
+accessor `TransferPageViewV1::records` returns a parsed page's record region,
+so the importer shares the page decoder and the version instead of copying
+them. `durable/mod.rs` mounts the module with a dead-code expectation naming
+task `rspace-dag-transfer-trait-binding` and re-exports its types to the
+tests. No persisted record kind, byte layout, magic number or file name of
+the store changes; the staging directory and its frontier record are the
+private, non-authoritative files that the transfer contract's staging and
+frontier rows call for.
+
+**The tests.** The module `persistence::tests::transfer_import_staging`
+publishes states of 8 to 24 values on each of three channels, exports them
+in pages of at most 2048 bytes and 6 objects, and stages them into an empty
+store that `create_empty_store_v1` creates.
+
+- `staged_pages_hold_exactly_the_exported_stream_and_never_touch_the_store`
+  stages a stream of 87 objects in 15 object pages, drops the session halfway
+  and resumes it. It requires frontier 0 on disk and in memory, an empty log
+  and the modes `0700` and `0600` at begin; after each page a token at the
+  next page's position; a resume at the token; `Complete` at the end page,
+  again on a repeat and after a resume of the complete staging; a log equal
+  to the stream's record regions; and the store's catalog, packs and index
+  unchanged, the store recovered beside the staging with its genesis catalog
+  slot, and nothing but the staging directory removed by abort.
+- `a_token_resumes_only_on_a_stream_of_its_transfer_version_binding_and_profile`,
+  `staging_and_frontier_never_cross_sessions_and_a_new_session_starts_empty_at_frontier_zero`
+  and
+  `a_crash_between_object_sync_and_token_write_leaves_at_most_one_page_beyond_the_frontier_and_replay_is_idempotent`
+  witness DT-03, DT-06 and DT-07; they are listed with the contract rows of
+  the source-bound DAG transfer contract.
+- `duplicate_reordered_truncated_and_corrupted_pages_are_refused_and_leave_the_frontier_unchanged`
+  is TX-02 below. It imports with limits of 4096 bytes and 12 objects, so
+  that a page holding one object twice is refused for the duplicate and not
+  for its length.
+- `every_staged_length_and_the_frontier_record_are_untrusted_bounded_and_checked`
+  gives resume frontier records of 79 and 81 bytes, with a flipped magic
+  byte, with a checksum field over 32 bits and with a flipped position bit,
+  and logs whose first record declares 31 or 2049 bytes, whose last record
+  overruns the log, that lack their last byte, or whose manifest has a
+  flipped bit; each is refused with its typed error and kept byte for byte.
+  A resume under a bound below the staged prefix is refused and keeps the
+  staging, and a page beyond each of the four bounds is refused without
+  effect.
+
+**The TX row.**
+
+| ID | Required property | Test |
+|---|---|---|
+| TX-02 | Refused pages leave no trace. On a session that has staged two pages of a 60-object stream, fourteen malformed pages are refused, each by the check it fails: a replay of the last staged page and the page after the next (`PositionMismatch`); a page that repeats a staged object (`Duplicate`); a page that holds its next object twice (`Duplicate` at the second copy, after the first was admitted); a reordered page whose object no staged object references (`Unreferenced`); the next page cut below its header, without its last byte and inside its first object, and with its count raised or lowered by one (the page decoder's refusals); with a bit flipped under its old checksum (`Checksum`) or in its first object and resealed (`Unreferenced`, since the digest is no longer announced); and with a corrupted version or position. Each refusal leaves the frontier, the outstanding count, the frontier record, the staging log and the staging directory's entries as they were, and the honest stream then stages to completion with a log equal to its records. | `duplicate_reordered_truncated_and_corrupted_pages_are_refused_and_leave_the_frontier_unchanged` |
+
 ### Durable history repository (2026-11-11)
 
 Task 14294 implements `HistoryRepository` over the durable journal owner, so
@@ -9403,6 +9714,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-04 | `CrashRetryAuthority` | `EXEC_ONLY` | P | Partially entailed (task 12437): `PublicationBeforeReclamation` implies the invariant, and `Crash` and `Recover` leave `catalog` and `oldPresent` unchanged. The executable refinement obligation is that a process crash at each of the 18 publication points or after publication, a recovery, a second crash and a second recovery never delete an old file while the catalog selects the old generation. The crash is simulated inside the test process: the writer, every lease and the registry handle are dropped, and the process-wide registry of a directory whose packs were retired stays. Loss of unsynchronized writes on power failure is not simulated. |
 | GC-05 | `OperationRootRoleQuotient` | `EXEC_ONLY` | P | Partially entailed (task 12437): the invariant states that the reader, export and import tokens have their roles, are not WAL ids, need the same object closure and the exact generation, and need no WAL bytes. The store realizes each role as a `RetainedRootRegistryV1` row with a generation lease on the exact admitted generation. The executable refinement obligation is that the role changes no closure seed, revision, lease identity, release, reclamation deferral or store byte. Reclamation does not consult the process-local `RetainedRootRegistryV1`, so the generation lease realizes `exactGeneration`; registration writes no durable byte and pins nothing beyond the exact generation, which realizes the false `walBytes`. |
 | TX-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14302): the closure, every object once and parent-first, carried by the pages of a pinned export of a retained durable state. `RSpaceDagStateTransfer.tla` states the transfer contract over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents canonical objects, the export order or the page layout. |
+| TX-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14303): a refused transfer page changes neither the import session's frontier and in-memory closure nor its staging log, frontier record or staging directory. `RSpaceDagStateTransfer.tla` rejects an out-of-order page over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents pages, their decoding, canonical objects or the staging's files. |
 | HR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the contents that a view reset to a retained root reads. No model represents a durable view, its reset or its lazy reader's results. |
 | HR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the refusal, from every view, of roots that the owner's current ledger does not count, with no change to the store directory. No model states a lookup of a retained state by its manifest digest. |
 | HR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): a reset reaches no directory failpoint and changes no file. The failpoints are a test seam of the Rust I/O layer, which no model represents. |
@@ -10300,6 +10612,44 @@ it was regenerated, and the PathMap aggregate takes its new manifest digest.
 No persisted byte, record kind, root, identity or wire message changed, and
 the garbage-collection algorithm is unchanged.
 
+The 2026-11-12 durable state transfer import staging slice of task 7939 (task
+14303) adds TX-02, so the catalog/derivation/binding registry now contains
+**266** IDs, and it makes DT-06 and DT-07 executable (see the import-side
+witnesses of the source-bound DAG transfer contract). On an export of the
+candidate tree, which already holds the durable history repository, retained
+state difference, lazy durable hot-store bootstrap and published-core slices,
+the six tests of the new file passed in debug and in release together with the
+generation-checkpoint manifest test (7 passed), and the whole library test
+target passed in both profiles with 985 tests (975 passed, 10 ignored). The
+tests stage exported streams of 87, 48, 66, 60 and 30 objects in pages of at
+most 2048 bytes and 6 objects, and the DT-07 test interrupts the staging of the
+pages 0, 5 and 9 of 10 object pages in 30 crash cases. Four red controls were
+each applied to the export's copy of the new module, run against the six tests
+in debug and removed, and each made exactly the tests named here fail. Writing
+the frontier record after the page's records but before their sync made only
+DT-07 fail, at its durability check: after a crash at `PhysicalSync` that lost
+the unsynchronized effects while page 0 was staged, the frontier record
+acknowledged 6 objects while the staging log held 0 of the 1459 bytes of their
+records. Accepting an object that is already staged made only TX-02 fail, at a
+page that repeats a staged object. Returning an object refusal without undoing
+the page's earlier admissions made TX-02 fail at a page that holds its next
+object twice, and made the bounds test fail at a page beyond a session bound;
+in the worker's copy of the tree that was the distinct-object bound, the only
+bound case whose refused object is not the page's first. Keeping the staged
+records beyond the frontier on resume made only DT-07 fail, at its comparison
+of every crash case with the uninterrupted staging; in the worker's copy of the
+tree exactly the 18 of its 30 cases that leave one page beyond the frontier
+resumed at the end of that page instead of at the frontier, while every replay
+still equalled the uninterrupted staging. Each faulted file was restored from
+the candidate tree. Clippy of `rspace_plus_plus` with every target lists no
+finding in the files of this slice, and `rustfmt --check` passes on its Rust
+files. The workspace-regression registry hashes the manifest test's file and
+the persistence test module, both of which change, so it was regenerated, and
+the PathMap aggregate takes its new manifest digest. No persisted format of the
+store, record kind, root, identity or wire message changed: the staging
+directory and its frontier record are new, private to one import session and
+not authoritative, and no open of the store reads them.
+
 ## Caller-authority contract (2026-09-06)
 
 **Status: verified abstract contract; legacy caller observations exercised; durable
@@ -10913,7 +11263,8 @@ and DT-P*nn* above.
 
 DT-01 to DT-10 exhaust the transfer invariants of the model; DT-11 names the inherited
 lifecycle. **Future** entries are binding executable acceptance targets for the indicated
-task, not currently passing runtime evidence.
+task, not currently passing runtime evidence. **Executable** entries name the task whose
+tests realize every clause of the property; the witness tables below name those tests.
 
 | ID | Model symbol | Negative control | Required executable property |
 |---|---|---|---|
@@ -10922,8 +11273,8 @@ task, not currently passing runtime evidence.
 | DT-03 | `StreamMatchesSessionIdentity` | DT-M01, DT-M08 | Future 7939: a token resumes only on a stream speaking its transfer version, bridge and profile; upgraded, legacy-only, epoch and foreign-profile peers refuse, and an unactivated bridge is never answered with the older `PreservedLegacyV1` authority (CI-12, CI-25). |
 | DT-04 | `ServingIsPinned` | DT-M05 | Future 7939: the exporter serves a session only under an authority-held pin of that exact session; after a restart or lease expiry drops it, resume is refused. |
 | DT-05 | `PinnedGenerationsAreRetained` | DT-M06 | Future 7939 with 7943–7944: reclamation never removes a generation a transfer pins (CA-21). |
-| DT-06 | `StagingIsSessionBound` | DT-M03 | Future 7939: staging and frontier never cross sessions; a session opened after a refusal or abort starts at frontier 0 with empty private staging. |
-| DT-07 | `FrontierIsContiguous`, `FrontierAdvancesByOne` | DT-M02, DT-M10, DT-P02 | Future 7939: a page beyond the next position is rejected; the frontier is persisted only after the objects it covers are durable; crash injection between the two leaves at most one page beyond the frontier, and replay is idempotent. |
+| DT-06 | `StagingIsSessionBound` | DT-M03 | Executable (task 14303): staging and frontier never cross sessions; a session opened after a refusal or abort starts at frontier 0 with empty private staging. |
+| DT-07 | `FrontierIsContiguous`, `FrontierAdvancesByOne` | DT-M02, DT-M10, DT-P02 | Executable (task 14303): a page beyond the next position is rejected; the frontier is persisted only after the objects it covers are durable; crash injection between the two leaves at most one page beyond the frontier, and replay is idempotent. |
 | DT-08 | `ColdAdmissionRequiresCompleteClosure` | DT-M09 | Future 7939: full cold admission (closure walk, retention metadata closure, history rules) runs only at the complete frontier over the complete closure of the session binding. |
 | DT-09 | `AdoptionRequiresAdmittedClosure` | DT-M11 | Future 7939 and 7940: `PreserveCurrent` and `Activate` publish only an admitted, sealed closure of a supported session; a stale activation is rejected by the generation CAS. |
 | DT-10 | `NoSessionHoldsNothing` | DT-M12 | Future 7939 and 7940: abort before admission discards staging and token and leaves the capability unused; after admission the capability is consumed through the FFI abort (`AbortConsumesWithoutPublishing`), never by dropping the token. |
@@ -10947,6 +11298,30 @@ transfer version is the page layout's version, 1.
 | DT-01 | `the_session_binding_is_the_root_digest_and_profile_and_other_bindings_are_refused` | A session binds exactly the manifest digest and the profile, and every page carries both. A token bound to another retained root, to the same root under another profile, or to a root the store does not retain is refused, and so is opening a session for a root the store does not retain. | No generation enters the binding: at a later catalog generation the same state has the same binding and the same pages, so a token is not refused against a restamp and there is no generation to refresh. |
 | DT-04 | `a_pinned_state_stays_servable_while_successors_are_published`, `serving_is_refused_after_the_pin_is_released_and_resume_tokens_do_not_survive_a_reopen` | Pages are served only under the session's own pin. While the owner publishes two successors, and after owner teardown and a reopen, the pinned state's pages are served unchanged. After `release_pin` every position is refused, and a session opened after a reopen refuses a resume token of an earlier session. | A session object that survives a reopen within one process keeps its pin and keeps serving; only a release or a restart drops the pin. Lease expiry does not exist. |
 | DT-05 | `a_pinned_state_stays_servable_while_successors_are_published` | While a session holds its pin, `retire_pack_range_if_unleased` refuses the pinned generation's pack range after owner teardown and a reopen, and the session's lease is the only one left; releasing the pin leaves none. | Reclamation itself, tasks 7943 and 7944, is not exercised. |
+
+### Import-side witnesses (task 14303, 2026-11-12)
+
+Task 14303 builds import staging, described in the durable state transfer
+import staging section. Its tests witness the import-side clauses of three
+rows above, and two of those rows become executable. DT-06 and DT-07 are
+executable from this slice: every clause of their required executable
+property is realized by staging and witnessed by a test below, so their
+rows below name no unrealized clause, and the contract rows table marks
+both **Executable**. DT-03
+stays **Future**: its clauses on the bridge, on legacy-only and epoch peers
+and on an unactivated bridge need a bridge version, which under ruling D1 no
+session holds, and the negotiation with a peer, which is task 7940. The
+model's stream unit is one object of a two-object closure; the
+implementation's frontier counts objects and advances by whole pages, so
+`FrontierIsContiguous` and `FrontierAdvancesByOne` are realized at page
+granularity: the log holds at most one page beyond the frontier, and the
+frontier moves from a page's position to the position after it.
+
+| ID | Witness test | Import-side clause witnessed | Clause not realized |
+|---|---|---|---|
+| DT-03 | `a_token_resumes_only_on_a_stream_of_its_transfer_version_binding_and_profile` | A token resumes only under its transfer version, root and profile. A resume under the binding of another retained state or under another profile is refused and keeps the frontier record and the log byte for byte, and so is a resume of a frontier record whose version field reads 2, or whose profile field names another profile, each with a valid checksum. A new import of a foreign profile is refused before any staging. A resumed session refuses pages of another root, of another profile and of transfer version 2 without effect, and its stream then completes. | The bridge clause, legacy-only and epoch peers, and the unactivated bridge: no session holds a bridge version (ruling D1), and negotiation with a peer is task 7940. |
+| DT-06 | `staging_and_frontier_never_cross_sessions_and_a_new_session_starts_empty_at_frontier_zero` | While a session lives, a second begin of the same or another binding is refused (`StagingExists`), a resume or an abort from outside it is refused (`StagingInUse`), and its frontier and staging stay unchanged. After abort its token resumes nothing. A session begun after an abort, or after a refused resume and an abort, starts at frontier 0 with an empty log, refuses the earlier session's pages and holds only its own stream. A begin interrupted before its first frontier record (failpoint `CandidateWrite`) resumes nothing (`IncompleteStaging`) and blocks a new begin until abort removes it. | None. |
+| DT-07 | `a_crash_between_object_sync_and_token_write_leaves_at_most_one_page_beyond_the_frontier_and_replay_is_idempotent` | A page beyond the next position is refused without effect. Staging of the first, a middle and the last object page of a 60-object stream is interrupted at each of the seven failpoints of the claim in the import staging section, in 30 cases: every failpoint with its visible effects surviving, and the three failpoints that leave an unsynchronized effect also with that effect lost, the page's appended records at `PhysicalSync` and the rename at `AfterReplaceBeforeDirectorySync` and `DirectorySync`. In every case the frontier record acknowledges no record that the log lacks, the log holds at most one page beyond it, resume continues at the predicted position with the predicted log length, and the replayed staging equals an uninterrupted one byte for byte. A torn record tail beyond the frontier is discarded on resume. | None. |
 
 ## Refinement completion rule
 
