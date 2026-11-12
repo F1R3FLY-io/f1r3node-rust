@@ -89,6 +89,7 @@ source_files=(
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
   "$model_dir/rpb3_epm_live_handoff.rs"
+  "$model_dir/rpb3_message_frame_finish_mapping.rs"
   "$model_dir/rpb3_finish_handle_transcript.rs"
   "$model_dir/rpb3_score_finish_unique.rs"
   "$model_dir/rpb3_score_finish_groups.rs"
@@ -1486,6 +1487,80 @@ proofs_rpb3_message_driver_source_integration=(
   generated_message_source_operations_scored_eof_selected_exact
   generated_message_source_operations_noscore_eof_selected_exact
 )
+proofs_rpb3_message_frame_finish_mapping=(
+  finish_kind_table_matches_generated_table
+  finish_component_tags_agree
+  finish_production_constants_agree
+  finish_prestate_agrees_with_admission
+  finish_descriptor_constrained_parents
+  finish_mapping_root_total
+  finish_mapping_child_total
+  finish_mapping_map_value_total
+  finish_mapping_case_total
+  finish_mapping_total_universal
+  finish_mapping_routes_complete
+  finish_guard_raw_par
+  finish_guard_cost_atom_absent
+  finish_guard_cost_atom_bytes
+  finish_guard_cost_bound
+  finish_guard_cost_atom_bound_forward
+  finish_guard_cost_signature
+  finish_guard_cost_region
+  finish_guard_cost_token_stack
+  finish_guard_bundle
+  finish_guard_if
+  finish_guard_send
+  finish_guard_match_component
+  finish_guard_absent_specialized
+  finish_guard_absent_connective
+  finish_guard_receive_bind
+  finish_guard_match_case
+  finish_guard_bool_oneof
+  finish_guard_expr_atom
+  finish_guard_expr_numeric
+  finish_guard_expr_big_rational
+  finish_guard_expr_fixed_point
+  finish_guard_sys_auth_token
+  finish_guard_new_empty_collections
+  finish_guard_new_one_injection
+  finish_guard_new_one_absent_injection
+  finish_guard_new_one_uri
+  finish_guard_new_collections
+  finish_guard_expr_payload_forward
+  finish_guard_expr_structural
+  finish_guard_evar
+  finish_guard_ordered_sequence
+  finish_guard_emethod
+  finish_guard_emap_finish
+  finish_guard_connective_not
+  finish_guard_connective_varref
+  finish_guard_connective_collection
+  finish_guard_unforgeable_bytes
+  finish_guard_receive_present_condition
+  finish_guard_receive_absent_condition
+  finish_guard_nonsemantic
+  finish_guard_var
+  finish_guard_epathmap_owner
+  finish_guard_ezipper
+  finish_selector_group_1_empty
+  finish_selector_group_2_empty
+  finish_selector_group_3_empty
+  finish_selector_group_4_empty
+  finish_selector_group_5_empty
+  finish_selector_group_6_empty
+  finish_selector_none_without_guard
+  finish_noscore_guard_sound
+  finish_noscore_root_guard_sound
+  finish_epathmap_guard_sound
+  finish_eof_route_is_mapped
+  finish_nonvacuity_big_rational_child
+  finish_nonvacuity_empty_send_root
+  finish_nonvacuity_unit_root
+  finish_nonvacuity_var_child
+  finish_nonvacuity_emap_incomplete_child
+  finish_nonvacuity_ezipper_absent_child
+  finish_nonvacuity_ezipper_scored_root
+)
 proofs_rpb3_no_score_child_eof_coverage=(
   nsc_complete_step_facts
   nsc_classify_set_map_arm
@@ -2467,6 +2542,7 @@ gated_modules=(
   rpb3_map_push_scoped_identity_classes
   rpb3_map_push_selected_subview_extraction
   rpb3_message_driver_source_integration
+  rpb3_message_frame_finish_mapping
   rpb3_no_score_child_eof_coverage
   rpb3_path_parser_refinement
   rpb3_plain_parser_source_refinement
@@ -4883,6 +4959,39 @@ fi
 if ! rg -q '^verification results:: 66 verified, 0 errors' "$finish_handle_transcript_log"; then
   cat "$finish_handle_transcript_log"
   echo "rpb3-admission-cursor: finish top-handle facts module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_message_frame_finish_mapping[@]}"; do
+  proof_log="$evidence_dir/message-frame-finish-mapping-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_message_frame_finish_mapping --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: message frame finish mapping $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: message frame finish mapping $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+message_frame_finish_mapping_log="$evidence_dir/message-frame-finish-mapping-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_message_frame_finish_mapping \
+  "$integrated_source" \
+  >"$message_frame_finish_mapping_log" 2>&1; then
+  cat "$message_frame_finish_mapping_log"
+  echo "rpb3-admission-cursor: message frame finish mapping module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 72 verified, 0 errors' "$message_frame_finish_mapping_log"; then
+  cat "$message_frame_finish_mapping_log"
+  echo "rpb3-admission-cursor: message frame finish mapping module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do

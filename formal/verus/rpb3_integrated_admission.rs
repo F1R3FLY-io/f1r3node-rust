@@ -110,6 +110,8 @@ mod rpb3_score_finish_groups;
 mod rpb3_score_finish_unique;
 #[cfg(rpb3_live_push)]
 mod rpb3_finish_handle_transcript;
+#[cfg(rpb3_live_push)]
+mod rpb3_message_frame_finish_mapping;
 
 use {
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
