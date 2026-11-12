@@ -375,15 +375,17 @@ env:
   #   missed #0 once the shared shard passed height 100. No other changes
   #   since 012bfda. Verified: descends from 012bfda; the test passes locally
   #   against the dev image.
-  # 2026-11-10: 4373258 -> 03f3fe8 (system-integration PR #175 head, which
+  # 2026-11-12: 4373258 -> 03f3fe8 (system-integration PR #175 head, which
   #   lands with this change). ShardConfig(deploy_queue=True) runs a deploy
   #   queue in front of each validator; test_load loads a queued shard and
   #   takes test_shard_degradation's checks (that test is removed);
   #   test_capacity ramps load until the shard stops keeping up; rust.conf
   #   drops the overrides #918 makes node defaults and the parameter #917
-  #   removed. Verified: descends from 012bfda; 516 unit tests pass; test_load
-  #   passes locally on the subprocess provider against this branch's node
-  #   and queue binaries built before the rebase onto dev.
+  #   removed. 03f3fe8 descends from 012bfda, not from 4373258: it lacks the
+  #   test_successful_genesis_ceremony fix, so it is replaced by #175's merge
+  #   once #175 takes system-integration main. Verified: 516 unit tests pass;
+  #   test_load passed on both ucc legs of two CI runs of this branch (runs
+  #   43085072701 and 43111212784, before the rebase onto dev a8058fbc1).
   SYSTEM_INTEGRATION_REF: 03f3fe8af0b151b921ddcb5af17f8f1de2576329
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
@@ -2548,10 +2550,19 @@ jobs:
         run: |
           started="$(date +%s)"
           mkdir -p "$(dirname "$CAPACITY_OUT")"
+          # At most two hours, and never the last hour of the budget, which
+          # the segments need.
+          limit="$(( BUDGET_SECONDS - 3600 ))"
+          [ "$limit" -gt 7200 ] && limit=7200
+          if [ "$limit" -le 0 ]; then
+            echo "::error::a ${BUDGET_SECONDS}s budget leaves no room for the capacity escalation"
+            echo "remaining_seconds=$BUDGET_SECONDS" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
           set +e
-          (cd system-integration && poetry run pytest \
+          (cd system-integration && timeout --kill-after=60 "$limit" poetry run pytest \
             integration-tests/test/tests/custom/test_capacity.py \
-            --provider=docker -v --tb=short --instafail --timeout=7200)
+            --provider=docker -v --tb=short --instafail --timeout="$limit")
           status=$?
           set -e
           remaining="$(( BUDGET_SECONDS - ($(date +%s) - started) ))"
