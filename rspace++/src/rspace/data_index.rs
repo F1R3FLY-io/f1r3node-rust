@@ -1898,6 +1898,28 @@ impl PartialEq for RSpaceDataIndex {
 
 impl Eq for RSpaceDataIndex {}
 
+pub(crate) fn record_rebased_counts(
+    journal: &mut BagDelta,
+    prefix: &[u8],
+    base: &Bag,
+    overlay: &Bag,
+) -> Result<(), BagError> {
+    let mut path = prefix.to_vec();
+    overlay
+        .subtract(base)
+        .try_visit_relative_prefix(b"", |relative, amount| {
+            path.truncate(prefix.len());
+            path.extend_from_slice(relative);
+            journal.record_addition(&path, amount)
+        })?;
+    base.subtract(overlay)
+        .try_visit_relative_prefix(b"", |relative, amount| {
+            path.truncate(prefix.len());
+            path.extend_from_slice(relative);
+            journal.record_removal(&path, amount)
+        })
+}
+
 pub struct RSpaceDataStore<C, A: Clone> {
     index: RSpaceDataIndex,
     candidate_catalogs: RwLock<HashMap<Vec<u8>, Arc<CandidateCatalog<A>>>>,
@@ -1981,6 +2003,36 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     }
 
     pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
+
+    pub(crate) fn loaded_channels(&self) -> Result<Vec<(Vec<u8>, C)>, DataIndexError>
+    where C: ColdStoreDecode {
+        let mut channels = Vec::new();
+        channels
+            .try_reserve_exact(self.loaded_channel_count())
+            .map_err(|_| DataIndexError::AllocationFailure(self.loaded_channel_count()))?;
+        self.index.try_visit_channels(|marker, _| {
+            let view = RhoPathV1::parse_datum_prefix(marker)?;
+            channels.push((marker.to_vec(), C::cold_decode(&view.channel_identity())?));
+            Ok::<(), DataIndexError>(())
+        })?;
+        Ok(channels)
+    }
+
+    pub(crate) fn record_rebased_channel(
+        &self,
+        marker: &[u8],
+        base: impl IntoIterator<Item = Datum<A>>,
+        journal: &mut BagDelta,
+    ) -> Result<(), DataIndexError>
+    where
+        A: Clone + Serialize + RhoPathEncode,
+    {
+        let Some(overlay) = self.index.channel_bag_at_marker(marker) else {
+            return Ok(());
+        };
+        let base = RSpaceDataIndex::prepare_channel_replacement(base)?;
+        record_rebased_counts(journal, marker, &base, overlay).map_err(Into::into)
+    }
 
     pub fn is_loaded(&self, channel: &C) -> bool
     where C: RhoPathEncode {

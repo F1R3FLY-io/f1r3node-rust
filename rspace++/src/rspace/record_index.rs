@@ -17,7 +17,8 @@ use std::sync::Arc;
 use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ZipperMoving, ZipperReadOnlyIteration, ZipperValues};
 
-use super::bag::{BagDelta, Multiplicity};
+use super::bag::{Bag, BagDelta, BagError, Multiplicity};
+use super::data_index::record_rebased_counts;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_slice};
 use super::history::cold_store::{CanonicalCollectionKind, PERSISTED_DATA_HEADER_LEN};
@@ -690,6 +691,24 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
             Ok(()) => {}
             Err(error) => match error {},
         }
+    }
+
+    fn loaded_group_keys(&self) -> Vec<(Vec<u8>, Arc<[G]>)> {
+        let mut keys = Vec::with_capacity(self.group_count);
+        self.visit_groups(|prefix, group| keys.push((prefix.to_vec(), Arc::clone(&group.key))));
+        keys
+    }
+
+    fn group_counts(&self, prefix: &[u8]) -> Result<Bag, BagError> {
+        let mut counts = Bag::new();
+        self.try_visit_group_records(prefix, |_, record| {
+            let relative = &record.path[record.prefix_len..];
+            record
+                .orders
+                .iter()
+                .try_for_each(|_| counts.insert(relative).map(|_| ()))
+        })?;
+        Ok(counts)
     }
 
     fn ordered_records(&self, prefix: &[u8]) -> Vec<Arc<StoredRecord<R>>> {
@@ -1518,6 +1537,66 @@ where
 
     pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
 
+    pub(crate) fn loaded_groups(&self) -> Vec<(Vec<u8>, Arc<[C]>)> {
+        self.resting.loaded_group_keys()
+    }
+
+    pub(crate) fn record_rebased_group(
+        &self,
+        channels: &[C],
+        base: Vec<WaitingContinuation<P, K>>,
+        delta: &mut BagDelta,
+        content: &mut PathMap<ContentTransition>,
+        source_bytes: &mut PathMap<Arc<[u8]>>,
+    ) -> Result<(), BagError> {
+        let prefix = RhoPathV1::continuation_prefix(channels);
+        if !self.resting.is_loaded(&prefix) {
+            return Ok(());
+        }
+        let mut receiving = Self::new();
+        receiving.set_group(channels.to_vec(), base);
+        record_rebased_counts(
+            delta,
+            &prefix,
+            &receiving.resting.group_counts(&prefix)?,
+            &self.resting.group_counts(&prefix)?,
+        )?;
+        self.resting.visit_group_records(&prefix, |_, overlay| {
+            let identity_path = overlay
+                .identity_path
+                .as_deref()
+                .expect("a continuation record carries its identity path");
+            let before = receiving
+                .resting
+                .identities
+                .get(identity_path)
+                .and_then(|record| record.source_ref);
+            if let Ok(transition) = ContentTransition::new(before, overlay.source_ref) {
+                content.insert(identity_path, transition);
+                if transition.after().is_some() {
+                    let view = overlay
+                        .continuation_view()
+                        .expect("a resting continuation record keeps its field bounds")
+                        .expect("a resting continuation record admits its own field bounds");
+                    source_bytes.insert(identity_path, continuation_source(view.source_suffix()).1);
+                }
+            }
+        });
+        receiving.resting.visit_group_records(&prefix, |_, record| {
+            let identity_path = record
+                .identity_path
+                .as_deref()
+                .expect("a continuation record carries its identity path");
+            if self.resting.identities.contains(identity_path) {
+                return;
+            }
+            if let Ok(transition) = ContentTransition::new(record.source_ref, None) {
+                content.insert(identity_path, transition);
+            }
+        });
+        Ok(())
+    }
+
     pub(crate) fn clear(&mut self) {
         self.resting.clear();
         self.installed = PathMap::new();
@@ -1810,6 +1889,34 @@ where C: Clone + RhoPathEncode + Send + Sync
     pub(crate) fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
 
     pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
+
+    pub(crate) fn loaded_channels(&self) -> Vec<(Vec<u8>, C)> {
+        self.resting
+            .loaded_group_keys()
+            .into_iter()
+            .map(|(prefix, channel)| (prefix, channel[0].clone()))
+            .collect()
+    }
+
+    pub(crate) fn record_rebased_channel(
+        &self,
+        channel: &C,
+        base: Vec<Vec<C>>,
+        journal: &mut BagDelta,
+    ) -> Result<(), BagError> {
+        let prefix = RhoPathV1::join_prefix(channel);
+        if !self.resting.is_loaded(&prefix) {
+            return Ok(());
+        }
+        let mut receiving = OrderedGroupStore::default();
+        Self::replace_channel_joins(&mut receiving, channel.clone(), base);
+        record_rebased_counts(
+            journal,
+            &prefix,
+            &receiving.group_counts(&prefix)?,
+            &self.resting.group_counts(&prefix)?,
+        )
+    }
 
     pub(crate) fn loaded_records(&self) -> Vec<(C, Vec<Vec<C>>)> {
         self.resting

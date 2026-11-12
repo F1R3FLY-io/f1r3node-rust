@@ -1,8 +1,9 @@
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::ops::Bound;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -497,6 +498,14 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         continuation_content: PathMap<ContentTransition>,
         continuation_source_bytes: PathMap<Arc<[u8]>>,
         joins: BagDelta,
+    ) -> Result<(), RSpaceError>;
+    fn rebase_pending_deltas(
+        &self,
+        data: &BagDelta,
+        continuations: &BagDelta,
+        continuation_content: &PathMap<ContentTransition>,
+        continuation_source_bytes: &PathMap<Arc<[u8]>>,
+        joins: &BagDelta,
     ) -> Result<(), RSpaceError>;
     fn apply_accepted_match(
         &self,
@@ -1865,6 +1874,73 @@ where
         Ok(())
     }
 
+    fn rebase_pending_deltas(
+        &self,
+        data: &BagDelta,
+        continuations: &BagDelta,
+        continuation_content: &PathMap<ContentTransition>,
+        continuation_source_bytes: &PathMap<Arc<[u8]>>,
+        joins: &BagDelta,
+    ) -> Result<(), RSpaceError> {
+        let mut state = hot_state_write(&self.state);
+        let mut domain = JournalRebaseDomain {
+            data: state.data.loaded_channels()?.into_iter().collect(),
+            continuations: state.continuations.loaded_groups().into_iter().collect(),
+            joins: state.joins.loaded_channels().into_iter().collect(),
+        };
+        domain.add_data_keys(data)?;
+        domain.add_join_keys(joins)?;
+        domain.add_continuation_identity_keys("continuation content", continuation_content)?;
+        domain.add_continuation_identity_keys("continuation source", continuation_source_bytes)?;
+        domain.check_continuation_keys(continuations)?;
+
+        let mut rebased_data = BagDelta::new();
+        for (marker, channel) in &domain.data {
+            let base = self.history_reader_base.get_data_canonical(channel);
+            state
+                .data
+                .record_rebased_channel(marker, base, &mut rebased_data)?;
+        }
+        let mut rebased_continuations = BagDelta::new();
+        let mut rebased_content = PathMap::new();
+        let mut rebased_source_bytes = PathMap::new();
+        for channels in domain.continuations.values() {
+            let base = self
+                .history_reader_base
+                .get_continuations_canonical(channels);
+            state
+                .continuations
+                .record_rebased_group(
+                    channels,
+                    base,
+                    &mut rebased_continuations,
+                    &mut rebased_content,
+                    &mut rebased_source_bytes,
+                )
+                .map_err(DataIndexError::Bag)?;
+        }
+        let mut rebased_joins = BagDelta::new();
+        for channel in domain.joins.values() {
+            let base = self.history_reader_base.get_joins_canonical(channel);
+            state
+                .joins
+                .record_rebased_channel(channel, base, &mut rebased_joins)
+                .map_err(DataIndexError::Bag)?;
+        }
+
+        state.data.restore_pending_delta(rebased_data);
+        state
+            .continuations
+            .restore_pending_delta(rebased_continuations);
+        state.joins.restore_pending_delta(rebased_joins);
+        state.continuations.restore_pending_content(rebased_content);
+        state
+            .continuations
+            .restore_pending_source_bytes(rebased_source_bytes);
+        state.advance_journal_version();
+        Ok(())
+    }
+
     fn apply_accepted_match(
         &self,
         transition: AcceptedMatch<C>,
@@ -2411,6 +2487,112 @@ where
     }
 }
 
+struct JournalRebaseDomain<C> {
+    data: BTreeMap<Vec<u8>, C>,
+    continuations: BTreeMap<Vec<u8>, Arc<[C]>>,
+    joins: BTreeMap<Vec<u8>, C>,
+}
+
+fn malformed_journal_key(journal: &str, error: impl std::fmt::Display) -> RSpaceError {
+    RSpaceError::JournalConflict(format!(
+        "captured {journal} journal holds a malformed key: {error}"
+    ))
+}
+
+fn noncanonical_journal_key(journal: &str) -> RSpaceError {
+    RSpaceError::JournalConflict(format!(
+        "captured {journal} journal holds a key that is not canonical for its channels"
+    ))
+}
+
+fn rebase_domain_member<'domain, V>(
+    domain: &'domain BTreeMap<Vec<u8>, V>,
+    key: &[u8],
+) -> Option<&'domain V> {
+    domain
+        .range::<[u8], _>((Bound::Unbounded, Bound::Included(key)))
+        .next_back()
+        .and_then(|(prefix, member)| key.starts_with(prefix).then_some(member))
+}
+
+impl<C> JournalRebaseDomain<C>
+where C: RhoPathEncode + ColdStoreDecode
+{
+    fn add_data_keys(&mut self, journal: &BagDelta) -> Result<(), RSpaceError> {
+        for (path, _) in journal.additions().iter().chain(journal.removals().iter()) {
+            let view = RhoPathV1::parse_datum(&path)
+                .map_err(|error| malformed_journal_key("data", error))?;
+            let (marker, _) = path.split_at(view.channel_prefix_len());
+            if self.data.contains_key(marker) {
+                continue;
+            }
+            let channel = C::cold_decode(&view.channel_identity())
+                .map_err(|error| malformed_journal_key("data", error))?;
+            if RhoPathV1::datum_prefix(&channel) != marker {
+                return Err(noncanonical_journal_key("data"));
+            }
+            self.data.insert(marker.to_vec(), channel);
+        }
+        Ok(())
+    }
+
+    fn add_join_keys(&mut self, journal: &BagDelta) -> Result<(), RSpaceError> {
+        for (path, _) in journal.additions().iter().chain(journal.removals().iter()) {
+            let view = RhoPathV1::parse_join(&path)
+                .map_err(|error| malformed_journal_key("join", error))?;
+            if rebase_domain_member(&self.joins, &path).is_some() {
+                continue;
+            }
+            let channel = C::cold_decode(&view.indexed_channel_identity())
+                .map_err(|error| malformed_journal_key("join", error))?;
+            let prefix = RhoPathV1::join_prefix(&channel);
+            if !path.starts_with(&prefix) {
+                return Err(noncanonical_journal_key("join"));
+            }
+            self.joins.insert(prefix, channel);
+        }
+        Ok(())
+    }
+
+    fn add_continuation_identity_keys<V: Clone + Send + Sync + Unpin>(
+        &mut self,
+        journal: &str,
+        keys: &PathMap<V>,
+    ) -> Result<(), RSpaceError> {
+        for (path, _) in keys.iter() {
+            let view = RhoPathV1::parse_continuation(&path)
+                .map_err(|error| malformed_journal_key(journal, error))?;
+            if rebase_domain_member(&self.continuations, &path).is_some() {
+                continue;
+            }
+            let channels = view
+                .channel_identities()
+                .map(|identity| C::cold_decode(&identity))
+                .collect::<Result<Vec<C>, _>>()
+                .map_err(|error| malformed_journal_key(journal, error))?;
+            let prefix = RhoPathV1::continuation_prefix(&channels);
+            if !path.starts_with(&prefix) {
+                return Err(noncanonical_journal_key(journal));
+            }
+            self.continuations.insert(prefix, Arc::from(channels));
+        }
+        Ok(())
+    }
+
+    fn check_continuation_keys(&self, journal: &BagDelta) -> Result<(), RSpaceError> {
+        for (path, _) in journal.additions().iter().chain(journal.removals().iter()) {
+            if rebase_domain_member(&self.continuations, &path).is_none() {
+                return Err(RSpaceError::JournalConflict(
+                    "captured continuation journal holds a key outside every captured \
+                     continuation group"
+                        .to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<C, P, A, K> InMemHotStore<C, P, A, K>
 where
     C: Clone + Debug + Hash + Eq + RhoPathEncode + ColdStoreDecode + Sync + Send,
@@ -2650,6 +2832,10 @@ mod receive_revision_tokens_tests;
 #[cfg(test)]
 #[path = "../../tests/hot_store/receive_accelerator_bindings.rs"]
 mod receive_accelerator_bindings_tests;
+
+#[cfg(test)]
+#[path = "../../tests/hot_store/journal_rebase.rs"]
+mod journal_rebase_tests;
 
 #[cfg(feature = "accepted-match-transition-experiment")]
 #[doc(hidden)]
