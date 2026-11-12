@@ -1187,15 +1187,14 @@ impl RuntimeManager {
     pub async fn slashable_stakes(
         &self,
         hash: &StateHash,
-    ) -> Result<HashMap<Validator, i64>, CasperError> {
+    ) -> Result<HashMap<Validator, BigInt>, CasperError> {
         let bonds = self.compute_bonds(hash).await?;
         let quarantined = self.quarantined_stakes(hash).await?;
-        let mut stakes: HashMap<Validator, i64> = HashMap::new();
+        let mut stakes: HashMap<Validator, BigInt> = HashMap::new();
         for bond in bonds.into_iter().chain(quarantined) {
-            let stake = stakes.entry(bond.validator).or_insert(0);
-            *stake = stake.saturating_add(bond.stake);
+            *stakes.entry(bond.validator).or_default() += bond.stake.into_bigint();
         }
-        stakes.retain(|_, stake| *stake > 0);
+        stakes.retain(|_, stake| *stake > BigInt::from(0));
         Ok(stakes)
     }
 

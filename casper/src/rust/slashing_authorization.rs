@@ -7,7 +7,6 @@
 //! nodes reach the same verdict whatever order they saw the equivocation in
 //! and whichever of its blocks they hold.
 
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -17,6 +16,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, EquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::{self, Validator};
+use num_bigint::BigInt;
 
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
@@ -149,22 +149,17 @@ fn evidence_for(
 pub fn authorized_slash_candidates(
     snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
-    slashable: &HashMap<Validator, i64>,
+    slashable: &HashMap<Validator, BigInt>,
 ) -> Result<Vec<AuthorizedSlashCandidate>, CasperError> {
     let mut by_offender: BTreeMap<Validator, BlockMetadata> = BTreeMap::new();
-    for metadata in snapshot.dag.invalid_blocks() {
-        if !slashable.contains_key(&metadata.sender) {
-            continue;
-        }
-        match by_offender.entry(metadata.sender.clone()) {
-            Entry::Vacant(entry) => {
-                entry.insert(metadata);
-            }
-            Entry::Occupied(mut entry) => {
-                if metadata.block_hash < entry.get().block_hash {
-                    entry.insert(metadata);
-                }
-            }
+    for offender in slashable.keys() {
+        let lowest = snapshot
+            .dag
+            .equivocations_of(offender)?
+            .into_iter()
+            .min_by(|left, right| left.block_hash.cmp(&right.block_hash));
+        if let Some(invalid) = lowest {
+            by_offender.insert(offender.clone(), invalid);
         }
     }
     by_offender
@@ -185,7 +180,7 @@ pub fn authorized_slash_candidates(
 /// rejects the block as `InvalidBlock::UnauthorizedSlashDeploy`.
 pub fn validate_received_slash_deploys(
     block: &BlockMessage,
-    slashable: &HashMap<Validator, i64>,
+    slashable: &HashMap<Validator, BigInt>,
     shard_id: &str,
     chain_id: &[u8],
 ) -> Result<(), CasperError> {
@@ -212,7 +207,10 @@ pub fn validate_received_slash_deploys(
             .into());
         }
         let offender = equivocator_proven_by(evidence, shard_id, chain_id)?;
-        if !slashable.get(&offender).is_some_and(|stake| *stake > 0) {
+        if !slashable
+            .get(&offender)
+            .is_some_and(|stake| *stake > BigInt::from(0))
+        {
             return Err(SlashAuthError::NothingToSlash {
                 validator: hex::encode(&offender),
             }

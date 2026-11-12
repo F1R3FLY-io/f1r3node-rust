@@ -19,15 +19,15 @@ main()
        node_runtime::start()
          -> NodeIdentifier from TLS certificate
          -> setup_node_program()
-              -> Initialize LMDB stores (block, DAG, casper buffer, deploy, eval, play, replay, reporting)
+              -> Initialize LMDB stores (block, DAG, deploy, eval, play, replay, reporting)
               -> Create RuntimeManager (play/replay) with history
               -> Create Estimator, ValidatorIdentity
-              -> Create block processor queue (mpsc::unbounded_channel)
+              -> Start block ingest (intake, owner, validation workers, request sender)
               -> Create proposer queue (oneshot channels)
               -> Create API services and server instances
          -> Spawn concurrent tasks via JoinSet:
               CasperLoop, UpdateForkChoiceLoop, EngineInit, CasperLaunch,
-              BlockProcessorInstance, ProposerInstance, HeartbeatProposer, ServersInstances
+              BlockIngest, ProposerInstance, HeartbeatProposer, ServersInstances
          -> Monitor tasks, graceful shutdown on SIGTERM/SIGINT
   -> ELSE (CLI subcommand):
        run_cli() -> route to deploy/propose/repl/keygen/status/etc.
@@ -127,7 +127,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
   "shardId": "root",
   "peers": 4,
   "nodes": 4,
-  "minPhloPrice": 1,
+  "minPhloPrice": "1",
   "nativeTokenName": "F1R3CAP",
   "nativeTokenSymbol": "F1R3",
   "nativeTokenDecimals": 8,
@@ -184,7 +184,7 @@ All query endpoints accept an optional `?block_hash=` parameter to query against
 Returns the vault balance for a wallet address. The address must be a native-token address (Base58-encoded, starts with `1111`). Queries the SystemVault contract at `rho:vault:system`.
 
 ```json
-{"address": "04abc...", "balance": 1000000, "blockNumber": 42, "blockHash": "abc..."}
+{"address": "04abc...", "balance": "1000000", "blockNumber": 42, "blockHash": "abc..."}
 ```
 
 ### `GET /api/registry/{uri}`
@@ -200,7 +200,7 @@ Looks up a registry URI (e.g. `rho:id:...`). Unwraps the `(true, data)` tuple fr
 Returns the active validator set with stake from the PoS contract at `rho:system:pos` (`getBonds`).
 
 ```json
-{"validators": [{"publicKey": "04abc...", "stake": 100}], "totalStake": 300, "blockNumber": 42, "blockHash": "abc..."}
+{"validators": [{"publicKey": "04abc...", "stake": "100"}], "totalStake": "300", "blockNumber": 42, "blockHash": "abc..."}
 ```
 
 ### `GET /api/epoch`
@@ -239,8 +239,8 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 |----------|----------------|-------------|
 | **Primitives** | | |
 | Boolean | `ExprBool` | `{"ExprBool": {"data": true}}` |
-| Integer | `ExprInt` | `{"ExprInt": {"data": 42}}` |
-| Unsigned 64-bit integer | `ExprUint64` | `{"ExprUint64": {"data": 42}}` |
+| Integer | `ExprInt` | `{"ExprInt": {"data": "42"}}` |
+| Unsigned 64-bit integer | `ExprUint64` | `{"ExprUint64": {"data": "42"}}` |
 | Signed 32-bit integer | `ExprInt32` | `{"ExprInt32": {"data": -42}}` |
 | Unsigned 32-bit integer | `ExprUint32` | `{"ExprUint32": {"data": 42}}` |
 | Unsigned 16-bit integer | `ExprUint16` | `{"ExprUint16": {"data": 42}}` |
@@ -283,7 +283,7 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 - **No silent drops**: every Rholang type has a representation. Unknown future types render as `ExprUnknown` with a type name — never silently disappear from responses.
 - **Map keys**: any RhoExpr can be a map key. Primitives use natural string representation; complex types are serialized to JSON strings.
 - **Sized integer map keys**: a key of type `UInt64`, `Int32`, `UInt32`, `UInt16` or `UInt8` has its type suffix, for example `"5u64"` or `"5u8"`. An `Int` key has no suffix (`"5"`). Keys of different integer types therefore stay separate.
-- **64-bit integers in JSON**: `ExprInt` and `ExprUint64` values are JSON numbers. A JavaScript `Number` holds integers exactly only up to 2^53, so a client in JavaScript must use a parser with 64-bit integer support to read larger values exactly.
+- **64-bit integers in JSON**: `ExprInt` and `ExprUint64` values are decimal strings. JavaScript guarantees exact integers only within `-(2^53-1)..2^53-1`. The string form keeps every value exact. See [64-bit integers and token amounts](api-reference.md#64-bit-integers-and-token-amounts).
 - **Extended numerics**: `BigInt`, `BigRat`, and `FixedPoint` are represented as decimal strings (not binary) for client readability. `Float` is IEEE 754 f64.
 - **Process-level constructs** (sends, receives, new bindings) are represented as `ExprUnknown { type_name: "Process" }` rather than full AST serialization. These are rarely returned by data queries.
 - **Deploy not found**: returns HTTP 404 (not 400) so clients can distinguish "not yet in block" from "invalid request."
@@ -321,7 +321,7 @@ The error chain propagates cleanly: `verify_token_metadata_matches_config → Er
 
 ## Transfer Extraction
 
-Transfer data (from/to/amount/success) is extracted from block execution reports and inlined on `DeployInfo` for `get_block` and `last_finalized_block` responses.
+Transfer data (from/to/amount/success) is extracted from block execution reports and inlined on `DeployInfo` for `get_block` and `last_finalized_block` responses. The amount is exact for `Int` and `BigInt` values. HTTP and WebSocket responses give it as a decimal string, and gRPC gives it in `TransferInfo.amountRaw`. See the [transfer API contract](api-reference.md#64-bit-integers-and-token-amounts).
 
 ### Architecture
 
@@ -373,20 +373,7 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 
 ## Runtime Instances
 
-**`BlockProcessorInstance`** -- Receives blocks, validates, applies to DAG. Semaphore-bounded parallelism. Re-queues on `FinalizationInProgress`.
-
-### Block-processing bounds (compiled constants)
-
-The former `F1R3_*` block-processing env vars are gone — every bound is a
-named constant with a single definition. Current values:
-
-| Constant | Value | Purpose |
-|----------|------:|---------|
-| `MAX_BLOCKS_IN_PROCESSING` | `512` | Cap on concurrently in-flight blocks (one shared set; all admission gates use this one constant). **When the cap is hit, incoming blocks are dropped with a warn log** (they are re-fetched via the missing-dependency path later). |
-| `MALLOC_TRIM_INTERVAL_BLOCKS` | `64` | Linux/glibc only: `malloc_trim(0)` after every 64 processed blocks to return freed arena memory to the OS. |
-| `MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. |
-| `VALIDATION_ERROR_QUARANTINE_MS` | `120000` | Pacing of hard-validation-failure retries; a separate constant from the missing-dependency quarantine (they no longer alias). |
-| `VALIDATION_ERROR_ATTEMPTS_MAX` | `32` | Cap on hard validation `Err`s per buffered block (typed outcomes — duplicate, malformed, missing-dependency — never count). At the cap the block is purged from the buffer with a warn; only a fresh peer delivery brings it back. |
+**`BlockIngest`** -- Takes received blocks into the DAG: intake, one owner of what the node holds and needs, validation workers, and a request sender. The node supervises its tasks as one critical task. See [Block ingest](../casper/BLOCK_INGEST.md) for the flow, the bounds and the metrics.
 
 **`ProposerInstance`** -- Dequeues proposal requests. Non-blocking locking (try_lock). 5-minute timeout for stuck proposals. Min-interval between proposals is 250ms (hardcoded).
 

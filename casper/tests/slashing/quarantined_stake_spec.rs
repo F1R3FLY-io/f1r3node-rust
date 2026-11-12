@@ -7,6 +7,7 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::helper::block_util::resign_block;
 use crate::helper::test_node::TestNode;
@@ -36,7 +37,11 @@ async fn admit_everywhere(nodes: &mut [TestNode], block: &BlockMessage) {
 
 /// The stake `validator` holds in quarantine after `block`, if it is still
 /// withdrawing.
-async fn quarantined(node: &TestNode, block: &BlockMessage, validator: &Validator) -> Option<i64> {
+async fn quarantined(
+    node: &TestNode,
+    block: &BlockMessage,
+    validator: &Validator,
+) -> Option<TokenAmount> {
     node.runtime_manager
         .quarantined_stakes(&block.body.state.post_state_hash)
         .await
@@ -64,7 +69,7 @@ async fn an_equivocator_is_slashed_while_its_withdrawal_is_in_quarantine() {
         .collect();
     for vault in parameters.2.vaults.iter_mut() {
         if validator_vaults.contains(&vault.vault_address) {
-            vault.initial_balance = 1_000_000;
+            vault.initial_balance = 1_000_000u64.into();
         }
     }
     let genesis = GenesisBuilder::new()
@@ -127,7 +132,7 @@ async fn an_equivocator_is_slashed_while_its_withdrawal_is_in_quarantine() {
             .state
             .bonds
             .iter()
-            .any(|bond| bond.validator == leaving_key && bond.stake > 0)
+            .any(|bond| bond.validator == leaving_key && !bond.stake.is_zero())
         {
             break;
         }
@@ -173,7 +178,7 @@ async fn an_equivocator_is_slashed_while_its_withdrawal_is_in_quarantine() {
     admit_everywhere(&mut nodes, &next).await;
     assert_eq!(
         quarantined(&nodes[1], &next, &leaving_key).await,
-        Some(0),
+        Some(TokenAmount::zero()),
         "the slash takes the quarantined stake"
     );
 

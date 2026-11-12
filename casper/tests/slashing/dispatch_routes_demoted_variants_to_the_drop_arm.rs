@@ -4,7 +4,7 @@
 // minted slash evidence that diverged across honest nodes, and the
 // recursive carrier verdicts burned honest stake to FT −18.55. Every
 // demoted variant now routes past the evidence-minting arms to the drop
-// arm: buffer entry removed, no DAG insert — the block is refused without
+// arm: no DAG insert — the block is refused without
 // becoming anyone's economic evidence.
 //
 // AdmissibleEquivocation and IgnorableEquivocation keep their own
@@ -14,7 +14,6 @@
 
 use casper::rust::block_status::InvalidBlock;
 use casper::rust::casper::{Casper, MultiParentCasper};
-use models::rust::block_hash::BlockHashSerde;
 
 use super::detector_totality_helpers::{block as synth_block, validator as synth_validator};
 use crate::helper::test_node::TestNode;
@@ -67,12 +66,6 @@ async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
         let sender = synth_validator(hash_byte.saturating_add(21));
         let synth = synth_block(hash_byte, sender.clone(), seq_num, vec![], vec![]);
 
-        let hash_serde = BlockHashSerde(synth.block_hash.clone());
-        node.casper
-            .casper_buffer_storage
-            .put_pendant(hash_serde.clone())
-            .expect("pre-populate buffer pendant");
-
         let dag_repr = node.casper.block_dag().await.expect("dag representation");
         node.casper
             .handle_invalid_block(&synth, variant, &dag_repr)
@@ -84,18 +77,8 @@ async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
             .await
             .expect("post-dispatch dag representation");
         assert!(
-            !dag_after.contains(&synth.block_hash),
+            !dag_after.contains(&synth.block_hash).unwrap(),
             "[{:?}] a demoted verdict's block must not enter the DAG",
-            variant
-        );
-
-        assert!(
-            !node
-                .casper
-                .casper_buffer_storage
-                .get_pendants()
-                .contains(&hash_serde),
-            "[{:?}] buffer must be purged by the drop arm",
             variant
         );
     }

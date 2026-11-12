@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::validator::Validator;
 // Slashing-critical DagState lock is held inside the
 // `BlockDagKeyValueStorage::get_representation_internal` RMW chain;
 // migrating to `parking_lot::RwLock` aligns it with the parent
@@ -18,7 +17,11 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
 
+use super::dag_persistence::{DagPersistence, DagProgress};
+
 pub(crate) struct DagStateCopy {
+    pub(crate) sequence: u64,
+    pub(crate) max_height: Option<i64>,
     pub(crate) dag_set: imbl::HashSet<BlockHash>,
     pub(crate) child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
     pub(crate) height_map: imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
@@ -29,17 +32,23 @@ pub(crate) struct DagStateCopy {
     pub(crate) finalized_block_set: imbl::HashSet<BlockHash>,
 }
 
-/// The blocks held for each sender at each sequence number.
-pub type SequenceMap = imbl::HashMap<(Validator, i32), imbl::HashSet<BlockHash>>;
-
 pub struct BlockMetadataStore {
     store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     dag_state: Arc<RwLock<DagState>>,
+    persistence: Option<Arc<DagPersistence>>,
+    hot_window: i64,
 }
 
 /// In-memory DAG state using persistent immutable collections (imbl).
 /// Clone is O(1) via structural sharing, enabling race-free snapshots.
+#[derive(Clone)]
 pub(crate) struct DagState {
+    pub(crate) resident_height_map: imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
+    pub(crate) edges: usize,
+    pub(crate) sequence: u64,
+    pub(crate) max_height: Option<i64>,
+    pub(crate) cutoff: i64,
+    pub(crate) total: u64,
     pub(crate) dag_set: imbl::HashSet<BlockHash>,
     pub(crate) child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
     pub(crate) height_map: imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
@@ -48,7 +57,6 @@ pub(crate) struct DagState {
     pub(crate) block_number_map: imbl::HashMap<BlockHash, i64>,
     pub(crate) main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub(crate) self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
-    pub(crate) sequence_map: SequenceMap,
     // In general - at least genesis should be LFB.
     // But dagstate can be empty, as it is initialized before genesis is inserted.
     // Also lots of tests do not have genesis properly initialised, so fixing all this is pain.
@@ -64,13 +72,18 @@ const FINALIZED_BLOCK_CACHE_RETAIN: usize = 25_000;
 impl DagState {
     fn new() -> Self {
         Self {
+            resident_height_map: imbl::OrdMap::new(),
+            edges: 0,
+            sequence: 0,
+            max_height: None,
+            cutoff: 0,
+            total: 0,
             dag_set: imbl::HashSet::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
-            sequence_map: imbl::HashMap::new(),
             last_finalized_block: Some((BlockHash::new(), 0)),
             finalized_block_set: imbl::HashSet::new(),
         }
@@ -82,8 +95,6 @@ struct BlockInfo {
     parents: Vec<BlockHash>,
     main_parent: Option<BlockHash>,
     self_justification: Option<BlockHash>,
-    sender: Validator,
-    seq_num: i32,
     block_num: i64,
     is_invalid: bool,
     is_directly_finalized: bool,
@@ -109,7 +120,7 @@ impl BlockMetadataStore {
         }
     }
 
-    pub fn try_new(
+    pub(crate) fn try_new(
         block_metadata_store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     ) -> Result<Self, KvStoreError> {
         let blocks_info = block_metadata_store.collect(|(hash, metadata)| {
@@ -123,6 +134,8 @@ impl BlockMetadataStore {
         Ok(Self {
             store: block_metadata_store,
             dag_state,
+            persistence: None,
+            hot_window: i64::MAX,
         })
     }
 
@@ -142,6 +155,8 @@ impl BlockMetadataStore {
             .try_read_until(deadline)
             .ok_or(SnapshotError::LockTimeout(wait))?;
         Ok(DagStateCopy {
+            sequence: guard.sequence,
+            max_height: guard.max_height,
             dag_set: guard.dag_set.clone(),
             child_map: guard.child_map.clone(),
             height_map: guard.height_map.clone(),
@@ -153,31 +168,196 @@ impl BlockMetadataStore {
         })
     }
 
+    #[cfg(any(test, feature = "test-internals"))]
     pub fn new(
         block_metadata_store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     ) -> Self {
-        let blocks_info_result = block_metadata_store
-            .collect(|(hash, metadata)| {
-                Some((
-                    hash.0.clone(),
-                    Self::block_metadata_to_info(&hash.0, metadata),
-                ))
-            })
-            .unwrap_or_else(|e| {
-                tracing::warn!(
-                    "Warning: Failed to collect block metadata: {}. Continuing with empty store.",
-                    e
-                );
-                Vec::new()
-            });
+        Self::try_new(block_metadata_store).expect("failed to restore test DAG metadata")
+    }
 
-        let blocks_info_map = blocks_info_result.into_iter().collect::<HashMap<_, _>>();
-        let dag_state = Self::recreate_in_memory_state(blocks_info_map);
-
-        Self {
-            store: block_metadata_store,
-            dag_state,
+    pub(crate) fn open_windowed(
+        store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+        persistence: Arc<DagPersistence>,
+        hot_window: i64,
+    ) -> Result<Self, KvStoreError> {
+        if hot_window <= 0 {
+            return Err(KvStoreError::InvalidArgument(
+                "dag-hot-window-depth must be positive".into(),
+            ));
         }
+        let progress = persistence.recover()?;
+        let cutoff = progress
+            .lfb
+            .as_ref()
+            .map_or(0, |(_, height)| height.saturating_sub(hot_window).max(0));
+        let mut state = DagState::new();
+        state.last_finalized_block = progress.lfb.clone();
+        state.sequence = progress.sequence;
+        state.max_height = progress.max_height;
+        state.total = progress.total;
+        state.cutoff = cutoff;
+        let result = Self {
+            store,
+            dag_state: Arc::new(RwLock::new(state)),
+            persistence: Some(persistence.clone()),
+            hot_window,
+        };
+        let Some(max_height) = progress.max_height else {
+            return Ok(result);
+        };
+        let mut after = None;
+        loop {
+            let page = persistence.history.scan_height_range(
+                cutoff,
+                max_height,
+                progress.sequence,
+                false,
+                after.as_deref(),
+                1024,
+            )?;
+            for hash in page.rows {
+                let metadata = result.get_unsafe(&hash)?;
+                let member = persistence
+                    .history
+                    .membership(&hash, progress.sequence)?
+                    .ok_or_else(|| {
+                        KvStoreError::KeyNotFound("height entry has no DAG membership".into())
+                    })?;
+                if member.height != metadata.block_number
+                    || member.invalid != metadata.is_invalid()
+                    || metadata.block_hash != hash
+                {
+                    return Err(KvStoreError::InvalidArgument(
+                        "DAG height entry disagrees with metadata".into(),
+                    ));
+                }
+                Self::add_block_to_dag_state(
+                    result.dag_state.clone(),
+                    Self::block_metadata_to_info(&hash, &metadata),
+                );
+                Self::prune_finalized_cache_if_needed(&mut result.dag_state.write());
+            }
+            after = page.next;
+            if after.is_none() {
+                break;
+            }
+        }
+        result.dag_state.write().last_finalized_block = progress.lfb;
+        Ok(result)
+    }
+
+    pub(crate) fn publish_committed(
+        &mut self,
+        metadata: &BlockMetadata,
+        progress: &DagProgress,
+    ) -> Result<(), KvStoreError> {
+        {
+            let mut state = self.dag_state.write();
+            state.sequence = progress.sequence;
+            state.max_height = progress.max_height;
+            state.total = progress.total;
+            state.last_finalized_block = progress.lfb.clone();
+        }
+        let resident = {
+            let state = self.dag_state.read();
+            metadata.block_number >= state.cutoff
+                && state
+                    .max_height
+                    .is_some_and(|height| metadata.block_number <= height)
+        };
+        if resident {
+            Self::add_block_to_dag_state(
+                self.dag_state.clone(),
+                Self::block_metadata_to_info(&metadata.block_hash, metadata),
+            );
+            Self::prune_finalized_cache_if_needed(&mut self.dag_state.write());
+        }
+        self.refresh_window()
+    }
+
+    pub(crate) fn refresh_window(&mut self) -> Result<(), KvStoreError> {
+        if self.persistence.is_none() {
+            return Ok(());
+        }
+        let mut replacement = self.dag_state.read().clone();
+        let cutoff = replacement
+            .last_finalized_block
+            .as_ref()
+            .map_or(0, |(_, height)| {
+                height.saturating_sub(self.hot_window).max(0)
+            });
+        if cutoff <= replacement.cutoff {
+            return Ok(());
+        }
+        let started = Instant::now();
+        loop {
+            let Some((height, hashes)) = replacement.resident_height_map.get_min() else {
+                break;
+            };
+            let height = *height;
+            if height >= cutoff {
+                break;
+            }
+            let batch: Vec<_> = hashes.iter().take(1024).cloned().collect();
+            let mut remaining = hashes.clone();
+            for hash in batch {
+                let metadata = self.get_unsafe(&hash)?;
+                if metadata.block_number != height
+                    || metadata.block_hash != hash
+                    || metadata.is_invalid()
+                        == replacement
+                            .height_map
+                            .get(&height)
+                            .is_some_and(|hashes| hashes.contains(&hash))
+                {
+                    return Err(KvStoreError::InvalidArgument(
+                        "resident DAG height disagrees with metadata".into(),
+                    ));
+                }
+                replacement.dag_set.remove(&hash);
+                replacement.block_number_map.remove(&hash);
+                replacement.main_parent_map.remove(&hash);
+                replacement.self_justification_map.remove(&hash);
+                replacement.finalized_block_set.remove(&hash);
+                remaining.remove(&hash);
+                if let Some(mut hashes) = replacement.height_map.get(&height).cloned() {
+                    hashes.remove(&hash);
+                    if hashes.is_empty() {
+                        replacement.height_map.remove(&height);
+                    } else {
+                        replacement.height_map.insert(height, hashes);
+                    }
+                }
+                for parent in metadata.parents {
+                    if let Some(mut children) = replacement.child_map.get(&parent).cloned() {
+                        if children.remove(&hash).is_some() {
+                            replacement.edges -= 1;
+                        }
+                        if children.is_empty() && !replacement.dag_set.contains(&parent) {
+                            replacement.child_map.remove(&parent);
+                        } else {
+                            replacement.child_map.insert(parent, children);
+                        }
+                    }
+                }
+                if replacement
+                    .child_map
+                    .get(&hash)
+                    .is_some_and(|children| children.is_empty())
+                {
+                    replacement.child_map.remove(&hash);
+                }
+            }
+            if remaining.is_empty() {
+                replacement.resident_height_map.remove(&height);
+            } else {
+                replacement.resident_height_map.insert(height, remaining);
+            }
+        }
+        replacement.cutoff = cutoff;
+        *self.dag_state.write() = replacement;
+        metrics::histogram!("dag.eviction.time").record(started.elapsed().as_secs_f64());
+        Ok(())
     }
 
     fn block_metadata_to_info(hash: &BlockHash, block_metadata: &BlockMetadata) -> BlockInfo {
@@ -193,8 +373,6 @@ impl BlockMetadataStore {
             parents: block_metadata.parents.clone(),
             main_parent,
             self_justification,
-            sender: block_metadata.sender.clone(),
-            seq_num: block_metadata.sequence_number,
             block_num: block_metadata.block_number,
             is_invalid: block_metadata.is_invalid(),
             is_directly_finalized: block_metadata.directly_finalized,
@@ -203,17 +381,20 @@ impl BlockMetadataStore {
     }
 
     pub fn add(&mut self, block_metadata: BlockMetadata) -> Result<(), KvStoreError> {
+        if self.persistence.is_some() {
+            return Err(KvStoreError::InvalidArgument(
+                "windowed metadata must be added through DAG publication".into(),
+            ));
+        }
         let block_hash = block_metadata.block_hash.clone();
         let block_info = Self::block_metadata_to_info(&block_hash, &block_metadata);
 
+        self.store
+            .put_one(BlockHashSerde(block_hash), block_metadata)?;
         self.dag_state = Self::validate_dag_state(Self::add_block_to_dag_state(
             self.dag_state.clone(),
             block_info,
         ));
-
-        // Update persistent block metadata store
-        self.store
-            .put_one(BlockHashSerde(block_hash), block_metadata)?;
 
         Ok(())
     }
@@ -226,6 +407,19 @@ impl BlockMetadataStore {
         indirectly: HashSet<BlockHash>,
         ft_value: f32,
     ) -> Result<(), KvStoreError> {
+        if let Some(persistence) = &self.persistence {
+            let progress = persistence.finalize(&directly, &indirectly, ft_value)?;
+            let metadata = self.get_unsafe(&directly)?;
+            {
+                let mut state = self.dag_state.write();
+                for hash in &indirectly {
+                    if state.dag_set.contains(hash) {
+                        state.finalized_block_set.insert(hash.clone());
+                    }
+                }
+            }
+            return self.publish_committed(&metadata, &progress);
+        }
         let indirectly_serde: Vec<BlockHashSerde> = indirectly
             .iter()
             .map(|hash| BlockHashSerde(hash.clone()))
@@ -252,6 +446,11 @@ impl BlockMetadataStore {
             })
             .collect();
 
+        let mut new_values = Vec::with_capacity(1 + new_metas_for_if.len());
+        new_values.push((BlockHashSerde(directly.clone()), new_meta_for_df.clone()));
+        new_values.extend(new_metas_for_if);
+        self.store.put(new_values)?;
+
         // Add all blocks to finalized set
         let mut dag_state_guard = self.dag_state.write();
         for hash in indirectly {
@@ -271,10 +470,6 @@ impl BlockMetadataStore {
         drop(dag_state_guard);
 
         // persist new values all at once
-        let mut new_values = Vec::with_capacity(1 + new_metas_for_if.len());
-        new_values.push((BlockHashSerde(directly), new_meta_for_df));
-        new_values.extend(new_metas_for_if);
-        self.store.put(new_values)?;
 
         Ok(())
     }
@@ -326,6 +521,12 @@ impl BlockMetadataStore {
         self.store.delete(vec![BlockHashSerde(hash.clone())])
     }
 
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn restore_kv_row_for_tests(&self, metadata: BlockMetadata) -> Result<(), KvStoreError> {
+        self.store
+            .put_one(BlockHashSerde(metadata.block_hash.clone()), metadata)
+    }
+
     pub fn get_unsafe(&self, hash: &BlockHash) -> Result<BlockMetadata, KvStoreError> {
         self.get(hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
@@ -365,8 +566,6 @@ impl BlockMetadataStore {
         self.dag_state.read().self_justification_map.clone()
     }
 
-    pub fn sequence_map(&self) -> SequenceMap { self.dag_state.read().sequence_map.clone() }
-
     pub fn last_finalized_block(&self) -> BlockHash {
         self.dag_state
             .read()
@@ -390,6 +589,15 @@ impl BlockMetadataStore {
 
         // Update dag set / all blocks in the DAG
         state_guard.dag_set.insert(hash.clone());
+        let mut resident_height = state_guard
+            .resident_height_map
+            .get(&block_info.block_num)
+            .cloned()
+            .unwrap_or_default();
+        resident_height.insert(hash.clone());
+        state_guard
+            .resident_height_map
+            .insert(block_info.block_num, resident_height);
 
         // Update children relation map
         // Create entry for current block (with empty children set initially)
@@ -406,7 +614,9 @@ impl BlockMetadataStore {
                 .get(parent)
                 .cloned()
                 .unwrap_or_else(imbl::HashSet::new);
-            children.insert(hash.clone());
+            if children.insert(hash.clone()).is_none() {
+                state_guard.edges += 1;
+            }
             state_guard.child_map.insert(parent.clone(), children);
         }
 
@@ -436,12 +646,6 @@ impl BlockMetadataStore {
                 .self_justification_map
                 .insert(hash.clone(), self_justification);
         }
-
-        state_guard
-            .sequence_map
-            .entry((block_info.sender, block_info.seq_num))
-            .or_default()
-            .insert(hash.clone());
 
         if block_info.is_directly_finalized
             && state_guard
@@ -516,6 +720,7 @@ mod tests {
     use models::rust::block_implicits::get_random_block;
     use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::store::key_value_store::KeyValueStore;
 
     use super::*;
 
@@ -544,6 +749,65 @@ mod tests {
 
     fn store_over(kv: Arc<InMemoryKeyValueStore>) -> BlockMetadataStore {
         BlockMetadataStore::new(KeyValueTypedStoreImpl::new(kv))
+    }
+
+    /// An in-memory store whose writes fail.
+    #[derive(Clone)]
+    struct RefusingWrites(Arc<InMemoryKeyValueStore>);
+
+    impl KeyValueStore for RefusingWrites {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
+        fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
+            self.0.get(keys)
+        }
+
+        fn put(&self, _kv_pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
+            Err(KvStoreError::IoError("write refused".to_string()))
+        }
+
+        fn put_one_if_absent(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<bool, KvStoreError> {
+            Err(KvStoreError::IoError("write refused".to_string()))
+        }
+
+        fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> { self.0.delete(keys) }
+
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            self.0.delete_if_value(key, expected)
+        }
+
+        fn iterate(&self, f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> { self.0.iterate(f) }
+
+        fn iterate_while(
+            &self,
+            f: &mut dyn FnMut(Vec<u8>, Vec<u8>) -> Result<bool, KvStoreError>,
+        ) -> Result<(), KvStoreError> {
+            self.0.iterate_while(f)
+        }
+
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
+
+        fn to_map(&self) -> Result<std::collections::BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> {
+            self.0.to_map()
+        }
+
+        fn print_store(&self) -> Result<(), KvStoreError> { self.0.print_store() }
+
+        fn non_empty(&self) -> Result<bool, KvStoreError> { self.0.non_empty() }
+
+        fn size_bytes(&self) -> usize { self.0.size_bytes() }
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_dag_state_unchanged() {
+        let mut store = BlockMetadataStore::new(KeyValueTypedStoreImpl::new(Arc::new(
+            RefusingWrites(Arc::new(InMemoryKeyValueStore::new())),
+        )));
+        let genesis = block(0, vec![]);
+        assert!(store.add(meta(&genesis)).is_err());
+        assert!(!store.contains(&genesis.block_hash));
+        assert!(store.dag_set().is_empty());
+        assert!(store.block_number_map().is_empty());
     }
 
     #[test]
@@ -731,37 +995,5 @@ mod tests {
             .get(&1)
             .unwrap()
             .contains(&b1.block_hash));
-    }
-
-    #[test]
-    fn blocks_are_indexed_by_sender_and_sequence_number_across_a_restart() {
-        let kv = Arc::new(InMemoryKeyValueStore::new());
-        let first = block(1, vec![]);
-        let mut second = block(2, vec![]);
-        second.sender = first.sender.clone();
-        second.seq_num = first.seq_num;
-        let mut later = block(3, vec![]);
-        later.sender = first.sender.clone();
-        later.seq_num = first.seq_num + 1;
-        {
-            let mut store = store_over(kv.clone());
-            for b in [&first, &second, &later] {
-                store.add(meta(b)).unwrap();
-            }
-        }
-
-        let restored = store_over(kv);
-        let sequences = restored.sequence_map();
-        assert_eq!(
-            sequences.get(&(first.sender.clone(), first.seq_num)),
-            Some(&imbl::HashSet::from_iter([
-                first.block_hash.clone(),
-                second.block_hash.clone()
-            ]))
-        );
-        assert_eq!(
-            sequences.get(&(first.sender.clone(), later.seq_num)),
-            Some(&imbl::HashSet::from_iter([later.block_hash.clone()]))
-        );
     }
 }

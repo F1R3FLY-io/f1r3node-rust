@@ -155,7 +155,10 @@ pub struct Held {
 
 fn empty_dag() -> KeyValueDagRepresentation {
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    KeyValueDagRepresentation {
+    block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+        history: None,
+        view_sequence: u64::MAX,
+        view_max_height: None,
         dag_set: imbl::HashSet::new(),
         latest_messages_map: imbl::HashMap::new(),
         child_map: imbl::HashMap::new(),
@@ -163,8 +166,6 @@ fn empty_dag() -> KeyValueDagRepresentation {
         block_number_map: imbl::HashMap::new(),
         main_parent_map: imbl::HashMap::new(),
         self_justification_map: imbl::HashMap::new(),
-        sequence_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: Bytes::new(),
         finalized_blocks_set: imbl::HashSet::new(),
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store))),
@@ -175,6 +176,7 @@ fn empty_dag() -> KeyValueDagRepresentation {
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
     }
+    .build()
 }
 
 fn metadata(held: &Held) -> BlockMetadata {
@@ -204,17 +206,14 @@ pub fn snapshot(held: &[Held], max_block_num: i64, bonds: Vec<(Validator, i64)>)
             continue;
         }
         let metadata = metadata(item);
-        dag.dag_set.insert(metadata.block_hash.clone());
-        dag.block_number_map
+        let fixture = dag.fixture_mut();
+        fixture.dag_set.insert(metadata.block_hash.clone());
+        fixture
+            .block_number_map
             .insert(metadata.block_hash.clone(), metadata.block_number);
-        dag.sequence_map
-            .entry((metadata.sender.clone(), metadata.sequence_number))
-            .or_default()
-            .insert(metadata.block_hash.clone());
-        if metadata.is_invalid() {
-            dag.invalid_blocks_set.insert(metadata.clone());
-        } else {
-            dag.height_map
+        if !metadata.is_invalid() {
+            fixture
+                .height_map
                 .entry(metadata.block_number)
                 .or_default()
                 .insert(metadata.block_hash.clone());
@@ -224,7 +223,10 @@ pub fn snapshot(held: &[Held], max_block_num: i64, bonds: Vec<(Validator, i64)>)
             .add(metadata)
             .expect("metadata insert");
     }
-    let bonds_map = bonds.iter().cloned().collect::<HashMap<_, _>>();
+    let bonds_map = bonds
+        .iter()
+        .map(|(validator, stake)| (validator.clone(), (*stake).into()))
+        .collect::<HashMap<_, _>>();
     let active_validators = bonds.into_iter().map(|(validator, _)| validator).collect();
     CasperSnapshot {
         dag,

@@ -505,7 +505,7 @@ async fn containment_reference<W: WorkMeter>(
     ftt: FtThreshold,
 ) -> Result<Floor, CasperError> {
     match floor_of_block_metered(meter, dag, block_store, &current.hash, ftt).await {
-        Ok(floor) if dag.contains(&floor.hash) => Ok(floor),
+        Ok(floor) if dag.contains(&floor.hash)? => Ok(floor),
         Ok(_) | Err(CasperError::BlockNotHeld(_, _)) => Ok(current.clone()),
         Err(other) => Err(other),
     }
@@ -1253,7 +1253,7 @@ pub async fn floor_of_block_metered<W: WorkMeter>(
 #[derive(Default)]
 pub(crate) struct WitnessMemo {
     verdicts: HashMap<BlockHash, bool>,
-    committees: HashMap<BlockHash, HashMap<Validator, i64>>,
+    committees: HashMap<BlockHash, HashMap<Validator, num_bigint::BigInt>>,
     evaluations: u64,
 }
 
@@ -1289,7 +1289,7 @@ impl WitnessMemo {
         meter: &W,
         dag: &KeyValueDagRepresentation,
         block: &BlockHash,
-    ) -> Result<HashMap<Validator, i64>, CasperError> {
+    ) -> Result<HashMap<Validator, num_bigint::BigInt>, CasperError> {
         if let Some(committee) = self.committees.get(block) {
             return Ok(committee.clone());
         }
@@ -1588,7 +1588,7 @@ async fn cold_parent_frontier_metered<W: WorkMeter>(
                 block_number,
             });
         }
-        match dag.main_parent(&current) {
+        match dag.main_parent(&current)? {
             Some(main_parent) => {
                 current = main_parent;
                 walked += 1;
@@ -1662,7 +1662,7 @@ mod frontier_determinism_tests {
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
-        wm.insert(v.clone(), 1i64);
+        wm.insert(v.clone(), 1u64.into());
         BlockMetadata {
             block_hash: hash,
             parents,
@@ -1712,7 +1712,10 @@ mod frontier_determinism_tests {
         mp.insert(b2.clone(), b1.clone());
         mp.insert(b3.clone(), b2.clone());
 
-        let dag = KeyValueDagRepresentation {
+        let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -1720,8 +1723,6 @@ mod frontier_determinism_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            sequence_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -1734,7 +1735,8 @@ mod frontier_determinism_tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
         (dag, v, (g, b1, b2, b3))
     }
 
@@ -1776,7 +1778,10 @@ mod frontier_determinism_tests {
             mp.insert(hash.clone(), parent);
         }
 
-        let dag = KeyValueDagRepresentation {
+        let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -1784,8 +1789,6 @@ mod frontier_determinism_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            sequence_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -1798,7 +1801,8 @@ mod frontier_determinism_tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
         (dag, absent, held)
     }
 
@@ -1984,15 +1988,20 @@ mod frontier_determinism_tests {
             .write()
             .add(md(genesis.clone(), vec![], 0, &Bytes::new()))
             .unwrap();
-        dag.dag_set.insert(genesis.clone());
-        dag.block_number_map.insert(genesis.clone(), 0);
+        dag.fixture_mut().dag_set.insert(genesis.clone());
+        dag.fixture_mut()
+            .block_number_map
+            .insert(genesis.clone(), 0);
         dag.put_cached_floor(held[3].clone(), held[1].clone())
             .unwrap();
         dag.put_cached_frontier(held[3].clone(), held[1].clone())
             .unwrap();
         let seeded_validator = Bytes::from(vec![7; 65]);
-        dag.latest_messages_map.insert(val(), held[4].clone());
-        dag.latest_messages_map
+        dag.fixture_mut()
+            .latest_messages_map
+            .insert(val(), held[4].clone());
+        dag.fixture_mut()
+            .latest_messages_map
             .insert(seeded_validator, genesis.clone());
         (dag, absent, held, genesis)
     }
@@ -2006,7 +2015,9 @@ mod frontier_determinism_tests {
     async fn a_walk_crossing_the_retention_edge_abstains_the_tip() {
         let thr = FtThreshold::from_f32_lossy(0.1);
         let (mut dag, _absent, held) = mk_truncated_dag();
-        dag.latest_messages_map.insert(val(), held[4].clone());
+        dag.fixture_mut()
+            .latest_messages_map
+            .insert(val(), held[4].clone());
         let current = Floor {
             hash: held[1].clone(),
             block_number: seed_number(&dag, &held[1]),
@@ -2046,12 +2057,19 @@ mod frontier_determinism_tests {
             .write()
             .add(md(undecidable.clone(), vec![held[0].clone()], 86, &lagging))
             .unwrap();
-        dag.dag_set.insert(undecidable.clone());
-        dag.block_number_map.insert(undecidable.clone(), 86);
-        dag.main_parent_map
+        dag.fixture_mut().dag_set.insert(undecidable.clone());
+        dag.fixture_mut()
+            .block_number_map
+            .insert(undecidable.clone(), 86);
+        dag.fixture_mut()
+            .main_parent_map
             .insert(undecidable.clone(), held[0].clone());
-        dag.latest_messages_map.insert(val(), held[4].clone());
-        dag.latest_messages_map.insert(lagging, undecidable);
+        dag.fixture_mut()
+            .latest_messages_map
+            .insert(val(), held[4].clone());
+        dag.fixture_mut()
+            .latest_messages_map
+            .insert(lagging, undecidable);
 
         let current = Floor {
             hash: held[0].clone(),
@@ -2101,16 +2119,22 @@ mod frontier_determinism_tests {
                 &stale_validator,
             ))
             .unwrap();
-        dag.dag_set.insert(stale_tip.clone());
-        dag.block_number_map.insert(stale_tip.clone(), 84);
-        dag.main_parent_map
+        dag.fixture_mut().dag_set.insert(stale_tip.clone());
+        dag.fixture_mut()
+            .block_number_map
+            .insert(stale_tip.clone(), 84);
+        dag.fixture_mut()
+            .main_parent_map
             .insert(stale_tip.clone(), absent.clone());
         dag.put_cached_floor(stale_tip.clone(), stale_tip.clone())
             .unwrap();
         dag.put_cached_frontier(stale_tip.clone(), stale_tip.clone())
             .unwrap();
-        dag.latest_messages_map.insert(val(), held[4].clone());
-        dag.latest_messages_map
+        dag.fixture_mut()
+            .latest_messages_map
+            .insert(val(), held[4].clone());
+        dag.fixture_mut()
+            .latest_messages_map
             .insert(stale_validator, stale_tip.clone());
 
         let current = Floor {
@@ -2223,7 +2247,10 @@ mod frontier_determinism_tests {
     ) -> BlockMetadata {
         let mut weight_map = BTreeMap::new();
         for (validator, weight) in wm {
-            weight_map.insert(validator, weight);
+            weight_map.insert(
+                validator,
+                u64::try_from(weight).expect("fixture weight").into(),
+            );
         }
         BlockMetadata {
             block_hash: hash,
@@ -2259,7 +2286,10 @@ mod frontier_determinism_tests {
         for b in blocks {
             bms.add(b).unwrap();
         }
-        KeyValueDagRepresentation {
+        block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -2267,8 +2297,6 @@ mod frontier_determinism_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            sequence_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -2282,6 +2310,7 @@ mod frontier_determinism_tests {
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
+        .build()
     }
 
     fn based(mut m: BlockMetadata, base: &Bytes) -> BlockMetadata {
@@ -2509,7 +2538,7 @@ mod frontier_determinism_tests {
             "an unheld floor leaves the LFB as the reference"
         );
 
-        dag.dag_set.remove(&w);
+        dag.fixture_mut().dag_set.remove(&w);
         dag.put_cached_floor(m.clone(), w.clone()).unwrap();
         let metadata_only = containment_reference(&NoopWork, &dag, &store, &at(&m, 2), thr)
             .await
@@ -2538,6 +2567,7 @@ mod frontier_determinism_tests {
             meta.weight_map = bonds
                 .iter()
                 .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .map(|(key, stake)| (key, u64::try_from(stake).expect("fixture stake").into()))
                 .collect();
             meta
         };
@@ -2568,6 +2598,7 @@ mod frontier_determinism_tests {
                 .expect("metadata")
                 .weight_map
                 .into_iter()
+                .map(|(validator, stake)| (validator, stake.into_bigint()))
                 .collect::<HashMap<_, _>>()
         };
 
@@ -2609,6 +2640,7 @@ mod frontier_determinism_tests {
             meta.weight_map = bonds
                 .iter()
                 .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .map(|(key, stake)| (key, u64::try_from(stake).expect("fixture stake").into()))
                 .collect();
             meta
         };
@@ -2627,7 +2659,7 @@ mod frontier_determinism_tests {
             .expect("committee");
         assert_eq!(
             bonded_committee.get(&joiner),
-            Some(&400),
+            Some(&400.into()),
             "the bond belongs to the target's own committee"
         );
 
@@ -2646,8 +2678,8 @@ mod frontier_determinism_tests {
              threshold the oracle measures against"
         );
         assert_eq!(
-            participating.values().sum::<i64>(),
-            100,
+            participating.values().sum::<num_bigint::BigInt>(),
+            100.into(),
             "the certifying weight is the stake that has actually spoken"
         );
 
@@ -2662,8 +2694,8 @@ mod frontier_determinism_tests {
             CliqueOracle::participating_weight_map(plain_committee, &dag, &unheard)
                 .expect("participating");
         assert_eq!(
-            plain_participating.values().sum::<i64>(),
-            participating.values().sum::<i64>(),
+            plain_participating.values().sum::<num_bigint::BigInt>(),
+            participating.values().sum::<num_bigint::BigInt>(),
             "both siblings certify over the same participating stake until the \
              joiner produces a message"
         );
@@ -2674,10 +2706,10 @@ mod frontier_determinism_tests {
         heard.insert(joiner.clone(), bonded.clone());
         let after = CliqueOracle::participating_weight_map(bonded_committee, &dag, &heard)
             .expect("participating");
-        assert_eq!(after.get(&joiner), Some(&400));
+        assert_eq!(after.get(&joiner), Some(&400.into()));
         assert_eq!(
-            after.values().sum::<i64>(),
-            500,
+            after.values().sum::<num_bigint::BigInt>(),
+            500.into(),
             "the joiner's stake joins the certifying weight once it has spoken"
         );
     }
@@ -3147,8 +3179,8 @@ mod frontier_determinism_tests {
             md_wm(g_b.clone(), vec![], 0, &w, vec![(w.clone(), 1)]),
             md_wm(b1.clone(), vec![g_b.clone()], 1, &w, vec![(w.clone(), 1)]),
         ]);
-        dag.latest_messages_map.insert(v, a1);
-        dag.latest_messages_map.insert(w, b1);
+        dag.fixture_mut().latest_messages_map.insert(v, a1);
+        dag.fixture_mut().latest_messages_map.insert(w, b1);
         (dag, g_a, g_b)
     }
 
@@ -3526,12 +3558,14 @@ mod frontier_determinism_tests {
         blocks.extend(extra_blocks);
         let mut dag = build_dag(blocks);
 
-        dag.self_justification_map.insert(la, target.clone());
+        dag.fixture_mut()
+            .self_justification_map
+            .insert(la, target.clone());
         for (block, prev) in self_justifications {
-            dag.self_justification_map.insert(block, prev);
+            dag.fixture_mut().self_justification_map.insert(block, prev);
         }
         dag.last_finalized_block_hash = floor_block.clone();
-        dag.finalized_blocks_set.insert(floor_block);
+        dag.fixture_mut().finalized_blocks_set.insert(floor_block);
 
         let mut latest_messages = BTreeMap::new();
         latest_messages.insert(va, h(12));
@@ -3567,7 +3601,9 @@ mod frontier_determinism_tests {
                 ],
                 extra,
             );
-            dag.main_parent_map.insert(h(9), spine.clone());
+            dag.fixture_mut()
+                .main_parent_map
+                .insert(h(9), spine.clone());
             (dag, target, latest_messages)
         };
         // a's view of b is a pre-anchor block; b holds a rival above the floor.
@@ -3665,7 +3701,7 @@ mod frontier_determinism_tests {
         // Splice the dip into the target's spine so visiting it alone vetoes
         // nothing: floor <- dip is the settled prefix, rival is the divergence.
         let mut dag = dag;
-        dag.main_parent_map.insert(h(9), dip);
+        dag.fixture_mut().main_parent_map.insert(h(9), dip);
 
         let certified = CliqueOracle::ft_witnessed_exact(
             &target,
@@ -3896,5 +3932,112 @@ mod frontier_determinism_tests {
                 Ok::<(), TestCaseError>(())
             })?;
         }
+    }
+}
+
+#[cfg(test)]
+mod containment_history_tests {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::BlockMessage;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn containment_reference_distinguishes_cold_history_absence_and_corruption() {
+        let mut manager = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new_with_hot_window(&mut manager, 1)
+            .await
+            .unwrap();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let mut blocks: Vec<BlockMessage> = Vec::new();
+        for height in 0..=4 {
+            let parents = blocks
+                .last()
+                .map(|parent| vec![parent.block_hash.clone()])
+                .unwrap_or_default();
+            let block = get_random_block(
+                Some(height),
+                Some(height as i32),
+                None,
+                None,
+                Some(vec![9; models::rust::validator::LENGTH].into()),
+                None,
+                Some(height),
+                Some(parents),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some("test".to_string()),
+                None,
+            );
+            block_store.put_block_message(&block).unwrap();
+            storage
+                .insert(
+                    &block,
+                    if height == 0 {
+                        InsertMode::Approved
+                    } else {
+                        InsertMode::Normal
+                    },
+                )
+                .unwrap();
+            blocks.push(block);
+        }
+        storage
+            .record_directly_finalized(blocks[4].block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        assert_eq!(dag.resident_bounds().0, Some(3));
+        assert_eq!(dag.resident_counts().blocks, 2);
+        let cold = blocks[1].block_hash.clone();
+        assert!(dag.contains(&cold).unwrap());
+        let current = Floor {
+            hash: blocks[4].block_hash.clone(),
+            block_number: 4,
+        };
+        let ftt = FtThreshold::from_ppm(100_000);
+        dag.put_cached_floor(current.hash.clone(), cold.clone())
+            .unwrap();
+        let selected = containment_reference(&NoopWork, &dag, &block_store, &current, ftt)
+            .await
+            .unwrap();
+        assert_eq!(selected.hash, cold);
+        assert_eq!(selected.block_number, 1);
+
+        let missing = BlockHash::from(vec![0xEE; 32]);
+        assert!(!dag.contains(&missing).unwrap());
+        dag.put_cached_floor(current.hash.clone(), missing).unwrap();
+        let selected = containment_reference(&NoopWork, &dag, &block_store, &current, ftt)
+            .await
+            .unwrap();
+        assert_eq!(selected.hash, current.hash);
+
+        dag.put_cached_floor(current.hash.clone(), cold.clone())
+            .unwrap();
+        let membership = manager
+            .store("dag-membership-v1".to_string())
+            .await
+            .unwrap();
+        let key = cold.to_vec();
+        let original = membership.get(&vec![key.clone()]).unwrap()[0]
+            .clone()
+            .unwrap();
+        membership.put_one(key.clone(), vec![0xff]).unwrap();
+        let result = containment_reference(&NoopWork, &dag, &block_store, &current, ftt).await;
+        assert!(matches!(result, Err(CasperError::KvStoreError(_))));
+        membership.put_one(key, original).unwrap();
+        let selected = containment_reference(&NoopWork, &dag, &block_store, &current, ftt)
+            .await
+            .unwrap();
+        assert_eq!(selected.hash, cold);
     }
 }

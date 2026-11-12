@@ -70,7 +70,8 @@ fuzz_target!(|input: Input| {
         .map(|other| other.block_hash.clone())
         .min();
     assert_eq!(
-        EquivocationDetector::equivocation_of(&snapshot.dag, &candidate),
+        EquivocationDetector::equivocation_of(&snapshot.dag, &candidate)
+            .expect("a fixture view reads without error"),
         expected_sibling
     );
 
@@ -84,7 +85,8 @@ fuzz_target!(|input: Input| {
             &snapshot.dag,
             &candidate,
             input.requested_as_dependency
-        ),
+        )
+        .expect("a fixture view reads without error"),
         expected_verdict
     );
 });

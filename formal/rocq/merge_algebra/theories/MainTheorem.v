@@ -136,7 +136,11 @@ Theorem merge_algebra_conflict_correct :
     (* with the number-channel exemption the code applies, it is FULLY subsumed *)
     (forall a b, removed_fires_exempt is_number_ch a b -> retained_conflict is_number_ch a b))
   /\
-  (* PART B - the §3c produce-only over-fill guard (Section Overfill). A produce
+  (* PART B is SUPERSEDED: it models the §3c shape guard, which has been removed
+     from the node in favour of tag-based classification (see Section Overfill in
+     ConflictSoundness.v). It still holds of the model.
+
+     PART B - the §3c produce-only over-fill guard (Section Overfill). A produce
      that does NOT consume the base over-fills a single-value NUMBER cell -- a case
      Part A's `svc_update = consumes && produces` model is VACUOUS for. For ANY
      number-classifier / numeric-base / cardinality parameters: (1) the guard fires

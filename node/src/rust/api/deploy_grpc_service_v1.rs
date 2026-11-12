@@ -74,7 +74,7 @@ pub struct DeployGrpcServiceV1Impl {
     dev_mode: bool,
     network_id: String,
     shard_id: String,
-    min_phlo_price: i64,
+    min_phlo_price: shared::rust::token_amount::TokenAmount,
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
@@ -98,7 +98,7 @@ impl DeployGrpcServiceV1Impl {
         dev_mode: bool,
         network_id: String,
         shard_id: String,
-        min_phlo_price: i64,
+        min_phlo_price: shared::rust::token_amount::TokenAmount,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
@@ -1074,10 +1074,10 @@ impl DeployService for DeployGrpcServiceV1Impl {
         // chain-adopted ones; local conf only until casper is up.
         let (min_phlo_price, epoch_length) = match self.engine_cell.get().await.with_casper() {
             Some(casper) => (
-                casper.casper_shard_conf().min_phlo_price,
+                casper.casper_shard_conf().min_phlo_price.clone(),
                 casper.casper_shard_conf().epoch_length,
             ),
-            None => (self.min_phlo_price, self.epoch_length),
+            None => (self.min_phlo_price.clone(), self.epoch_length),
         };
         let current_epoch = if epoch_length > 0 && lfb_number >= 0 {
             lfb_number / epoch_length as i64
@@ -1095,7 +1095,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price,
+            min_phlo_price: min_phlo_price.to_string(),
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),
@@ -1171,7 +1171,7 @@ mod tests {
             false,
             "testnet".to_string(),
             "root".to_string(),
-            1,
+            (1).into(),
             "F1R3".to_string(),
             "F1R3".to_string(),
             8,
@@ -1215,7 +1215,7 @@ mod tests {
         let deploy_data = DeployDataMessage {
             term: "Nil".to_string(),
             time_stamp: 1,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 1000,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
@@ -1226,6 +1226,239 @@ mod tests {
             crypto::rust::signatures::signed::Signed::create(deploy_data, Box::new(Secp256k1), sk)
                 .unwrap();
         DeployDataMessage::to_proto(signed)
+    }
+
+    #[tokio::test]
+    async fn block_rpc_and_http_handlers_preserve_exact_amounts_from_cached_reports() {
+        use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
+        use casper::rust::engine::engine_with_casper::EngineWithCasper;
+        use models::casper::{
+            report_proto, BlockEventInfo, DeployInfoWithEventData, ReportCommProto,
+            ReportConsumeProto, ReportPhase, ReportProduceProto, ReportProto, SingleReport,
+        };
+        use models::rhoapi::{ListParWithRandom, Par};
+        use models::rust::block_metadata::BlockMetadata;
+        use num_bigint::BigInt;
+        use prost::Message;
+        use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoString};
+        use rholang::rust::interpreter::util::vault_address::VaultAddress;
+        use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+        use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+        use tower::ServiceExt;
+
+        use crate::rust::api::admin_web_api::AdminWebApiImpl;
+        use crate::rust::api::web_api::WebApiImpl;
+        use crate::rust::web::shared_handlers::AppState;
+        use crate::rust::web::web_api_routes::WebApiRoutes;
+
+        let mut service = service();
+        let processed =
+            casper::rust::util::construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let from = VaultAddress::from_public_key(&processed.deploy.pk)
+            .unwrap()
+            .to_base58();
+        let deploy_info = processed.clone().to_deploy_info();
+        let mut block = models::rust::block_implicits::get_random_block_default();
+        block.body.deploys = vec![processed];
+        let hash = hex::encode(&block.block_hash);
+        let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.last_finalized_block = block.block_hash.clone();
+        snapshot.dag.last_finalized_block_hash = block.block_hash.clone();
+        snapshot
+            .dag
+            .fixture_mut()
+            .dag_set
+            .insert(block.block_hash.clone());
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .insert(block.block_hash.clone());
+        snapshot
+            .dag
+            .block_metadata_index
+            .write()
+            .add(BlockMetadata::from_block(
+                &block,
+                None,
+                Some(true),
+                Some(true),
+            ))
+            .unwrap();
+        service
+            .engine_cell
+            .set(Arc::new(EngineWithCasper::new(Arc::new(
+                TestCasperWithSnapshot::new(snapshot, block.clone()),
+            ))))
+            .await;
+
+        let amounts: Vec<BigInt> = vec![
+            BigInt::from(1),
+            (BigInt::from(1) << 53) + 1,
+            BigInt::from(i64::MAX),
+            BigInt::from(1) << 63,
+            BigInt::from(10_000_000_000_000_000_000u64),
+            BigInt::from(1) << 128,
+            (BigInt::from(1) << 256) - 1,
+        ];
+        let channel = RhoString::create_par("synthetic-transfer-channel".to_string());
+        let report = BlockEventInfo {
+            deploys: vec![DeployInfoWithEventData {
+                deploy_info: Some(deploy_info).into(),
+                report: vec![SingleReport {
+                    phase: ReportPhase::User as i32,
+                    events: amounts
+                        .iter()
+                        .map(|amount| ReportProto {
+                            report: Some(report_proto::Report::Comm(ReportCommProto {
+                                consume: Some(ReportConsumeProto {
+                                    channels: vec![channel.clone()],
+                                    ..Default::default()
+                                }),
+                                produces: vec![ReportProduceProto {
+                                    data: Some(ListParWithRandom {
+                                        pars: vec![
+                                            RhoString::create_par(from.clone()),
+                                            Par::default(),
+                                            RhoString::create_par(
+                                                "synthetic-recipient".to_string(),
+                                            ),
+                                            RhoBigInt::create_par(amount),
+                                            Par::default(),
+                                            Par::default(),
+                                        ],
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                }],
+                            })),
+                        })
+                        .collect(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let store = ReportStore::new(Arc::new(InMemoryKeyValueStore::new()));
+        store
+            .put(vec![(block.block_hash.to_vec(), report)])
+            .unwrap();
+        service.transfer_unforgeable = channel;
+        service.block_report_api = BlockReportAPI::new(
+            casper::rust::reporting_casper::noop(),
+            store,
+            service.engine_cell.clone(),
+            service.key_value_block_store.clone(),
+            CliqueOracleImpl,
+            false,
+        );
+
+        let get_block = service
+            .get_block(tonic::Request::new(BlockQuery { hash: hash.clone() }))
+            .await
+            .unwrap()
+            .into_inner();
+        let last_finalized = service
+            .last_finalized_block(tonic::Request::new(LastFinalizedBlockQuery {}))
+            .await
+            .unwrap()
+            .into_inner();
+        for encoded in [get_block.encode_to_vec(), last_finalized.encode_to_vec()] {
+            let decoded = BlockResponse::decode(encoded.as_slice()).unwrap();
+            let Some(models::casper::v1::block_response::Message::BlockInfo(block)) =
+                decoded.message
+            else {
+                panic!("block response must carry the block");
+            };
+            assert!(block.deploys[0].transfers_available);
+            assert_eq!(block.deploys[0].transfers.len(), amounts.len());
+            for (transfer, amount) in block.deploys[0].transfers.iter().zip(&amounts) {
+                assert_eq!(transfer.amount_raw, amount.to_string());
+                assert!(transfer.success);
+            }
+        }
+
+        for decimals in [8, 18] {
+            let engine = Arc::new(service.engine_cell.clone());
+            let web_api = WebApiImpl::new(
+                10,
+                false,
+                "testnet".to_string(),
+                "root".to_string(),
+                (1).into(),
+                "F1R3".to_string(),
+                "F1R3".to_string(),
+                decimals,
+                false,
+                true,
+                service.block_report_api.clone(),
+                service.transfer_unforgeable.clone(),
+                engine.clone(),
+                service.rp_conf_cell.clone(),
+                service.connections_cell.clone(),
+                service.node_discovery.clone(),
+                None,
+                100,
+                50,
+                service.is_ready.clone(),
+            );
+            let events = F1r3flyEvents::new();
+            let app = WebApiRoutes::create_router().with_state(AppState::new(
+                Arc::new(AdminWebApiImpl::new(None, None, engine)),
+                Arc::new(web_api),
+                Arc::new(service.block_report_api.clone()),
+                service.rp_conf_cell.clone(),
+                Arc::new(service.connections_cell.clone()),
+                service.node_discovery.clone(),
+                Arc::new(events.consume()),
+                events.startup_buffer(),
+            ));
+            for path in [
+                format!("/block/{hash}?view=full"),
+                "/last-finalized-block?view=full".to_string(),
+            ] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri(path)
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), axum::http::StatusCode::OK);
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let transfers = json["deploys"][0]["transfers"].as_array().unwrap();
+                assert_eq!(transfers.len(), amounts.len());
+                for (transfer, amount) in transfers.iter().zip(&amounts) {
+                    assert_eq!(
+                        transfer["amount"],
+                        amount.to_string(),
+                        "decimals={decimals}"
+                    );
+                    assert_eq!(transfer["fromAddr"], from);
+                    assert_eq!(transfer["success"], true);
+                }
+            }
+            let response = app
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/block/{hash}?view=summary"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(json.get("deploys").is_none());
+        }
     }
 
     #[tokio::test]

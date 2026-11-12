@@ -51,6 +51,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockCommitment, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::history::Either;
@@ -288,12 +289,12 @@ impl Validate {
         let weight = if b.header.parents_hash_list.is_empty() {
             proto_util::weight_map(genesis)
                 .get(&b.sender)
-                .copied()
-                .unwrap_or(0)
+                .cloned()
+                .unwrap_or_default()
         } else {
             proto_util::weight_from_sender(block_store, b)?
         };
-        if weight > 0 {
+        if weight > BigInt::from(0) {
             Ok(true)
         } else {
             tracing::warn!(
@@ -1286,11 +1287,9 @@ impl Validate {
         // block_number; production assigns 0).
         if max_parent_depth != i32::MAX {
             // ANCHOR: the block's OWN parent frontier, never this node's tip.
-            // The proposer drops parents more than `max_parent_depth` below the
-            // highest parent it selected (`snapshot.rs`), so anchoring the check
-            // on that same value makes proposer and validator agree by
-            // construction — filtering only ever removes LOW parents, so the max
-            // over the declared parents is the max the proposer used.
+            // The proposer keeps only parents within a `max_parent_depth` span
+            // around its main parent (`snapshot.rs`), so the declared parents
+            // satisfy this pairwise rule by construction.
             //
             // Reading `latest_block_number()` here instead made a validity
             // verdict depend on how far ahead the validating node happened to
@@ -1302,15 +1301,18 @@ impl Validate {
             let mut parent_numbers: Vec<(BlockHash, i64)> = Vec::with_capacity(parent_hashes.len());
             let mut frontier_known = true;
             for parent_hash in &parent_hashes {
-                match s.dag.lookup_unsafe(parent_hash) {
-                    Ok(meta) => parent_numbers.push((parent_hash.clone(), meta.block_number)),
+                match s.dag.lookup(parent_hash) {
+                    Ok(Some(meta)) => parent_numbers.push((parent_hash.clone(), meta.block_number)),
                     // A parent with no metadata leaves the frontier unknown, and
                     // an anchor derived from a partial parent set could reject a
                     // legal block. Skip the check and let the dependency gate
                     // handle the missing parent.
-                    Err(_) => {
+                    Ok(None) => {
                         frontier_known = false;
                         break;
+                    }
+                    Err(error) => {
+                        return Either::Left(BlockError::from_validation_error(error.into()))
                     }
                 }
             }
@@ -1402,21 +1404,32 @@ impl Validate {
                 // and no default.
                 let mut lowest_parent_height = b.body.state.block_number;
                 for parent_hash in &parent_hashes {
-                    if let Ok(Some(meta)) = s.dag.lookup(parent_hash) {
-                        if meta.block_number < lowest_parent_height {
-                            lowest_parent_height = meta.block_number;
+                    match s.dag.lookup(parent_hash) {
+                        Ok(Some(meta)) => {
+                            lowest_parent_height = lowest_parent_height.min(meta.block_number)
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            return Either::Left(BlockError::from_validation_error(error.into()))
                         }
                     }
                 }
                 let ancestor_hashes: Vec<BlockHash> =
-                    dag_ops::bf_traverse(vec![prev_block_hash.clone()], |hash| {
-                        match s.dag.lookup(hash) {
-                            Ok(Some(meta)) if meta.block_number >= lowest_parent_height => {
-                                meta.parents.clone()
-                            }
-                            _ => vec![],
+                    match dag_ops::try_bf_traverse(vec![prev_block_hash.clone()], |hash| {
+                        Ok::<_, shared::rust::store::key_value_store::KvStoreError>(
+                            match s.dag.lookup(hash)? {
+                                Some(meta) if meta.block_number >= lowest_parent_height => {
+                                    meta.parents.clone()
+                                }
+                                _ => vec![],
+                            },
+                        )
+                    }) {
+                        Ok(hashes) => hashes,
+                        Err(error) => {
+                            return Either::Left(BlockError::from_validation_error(error.into()))
                         }
-                    });
+                    };
                 let ancestor_set: HashSet<BlockHash> = ancestor_hashes.into_iter().collect();
 
                 // Check if at least one parent is new (not in ancestor closure)
@@ -1768,11 +1781,11 @@ impl Validate {
             Ok(committee) => {
                 let bonds_set: HashSet<_> = proto_util::bonds(b)
                     .iter()
-                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .map(|bond| (bond.validator.clone(), bond.stake.clone()))
                     .collect();
                 let committee_set: HashSet<_> = committee
                     .iter()
-                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .map(|bond| (bond.validator.clone(), bond.stake.clone()))
                     .collect();
 
                 if bonds_set == committee_set {
@@ -1802,11 +1815,11 @@ impl Validate {
             Ok(computed_bonds) => {
                 let bonds_set: HashSet<_> = bonds
                     .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
+                    .map(|bond| (&bond.validator, bond.stake.clone()))
                     .collect();
                 let computed_bonds_set: HashSet<_> = computed_bonds
                     .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
+                    .map(|bond| (&bond.validator, bond.stake.clone()))
                     .collect();
 
                 if bonds_set == computed_bonds_set {
@@ -1826,12 +1839,14 @@ impl Validate {
     }
 
     /// All of deploys must have greater or equal phloPrice than minPhloPrice
-    pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> ValidBlockProcessing {
-        if b.body
-            .deploys
-            .iter()
-            .all(|deploy| deploy.deploy.data.phlo_price >= min_phlo_price)
-        {
+    pub fn phlo_price(
+        b: &BlockMessage,
+        min_phlo_price: &shared::rust::token_amount::TokenAmount,
+    ) -> ValidBlockProcessing {
+        if b.body.deploys.iter().all(|deploy| {
+            deploy.deploy.data.validate_amounts().is_ok()
+                && deploy.deploy.data.phlo_price >= *min_phlo_price
+        }) {
             Either::Right(ValidBlock::Valid)
         } else {
             Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))

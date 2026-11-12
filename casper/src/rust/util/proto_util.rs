@@ -17,9 +17,11 @@ use models::rust::casper::protocol::casper_message::{
     Justification, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
 use shared::rust::dag::observation_work::{NoopWork, WorkMeter};
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
+use shared::rust::token_amount::TokenAmount;
 use shared::rust::ByteString;
 
 use crate::rust::errors::CasperError;
@@ -111,23 +113,23 @@ pub fn get_creator_justification_as_list_until_goal_in_memory(
 /// Get weight map from a block message
 pub fn weight_map(
     block_message: &BlockMessage,
-) -> std::collections::HashMap<prost::bytes::Bytes, i64> {
+) -> std::collections::HashMap<prost::bytes::Bytes, BigInt> {
     weight_map_from_state(&block_message.body.state)
 }
 
 /// Get weight map from a state
 fn weight_map_from_state(
     state: &models::rust::casper::protocol::casper_message::F1r3flyState,
-) -> std::collections::HashMap<prost::bytes::Bytes, i64> {
+) -> std::collections::HashMap<prost::bytes::Bytes, BigInt> {
     state
         .bonds
         .iter()
-        .map(|bond| (bond.validator.clone(), bond.stake))
+        .map(|bond| (bond.validator.clone(), bond.stake.to_bigint()))
         .collect()
 }
 
 /// Get total weight from a weight map
-pub fn weight_map_total(weights: &std::collections::HashMap<ByteString, i64>) -> i64 {
+pub fn weight_map_total(weights: &std::collections::HashMap<ByteString, BigInt>) -> BigInt {
     weights.values().sum()
 }
 
@@ -136,10 +138,14 @@ pub fn min_total_validator_weight(
     dag: &mut KeyValueDagRepresentation,
     block_hash: &BlockHash,
     max_clique_min_size: i32,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     dag.lookup(block_hash).map(|block_metadata_opt| {
         let block_metadata = block_metadata_opt.expect("Block metadata should exist");
-        let mut sorted_weights: Vec<i64> = block_metadata.weight_map.values().cloned().collect();
+        let mut sorted_weights: Vec<BigInt> = block_metadata
+            .weight_map
+            .values()
+            .map(TokenAmount::to_bigint)
+            .collect();
         sorted_weights.sort();
         sorted_weights
             .iter()
@@ -164,7 +170,7 @@ pub fn weight_from_validator_by_dag(
     dag: &mut KeyValueDagRepresentation,
     block_hash: &BlockHash,
     validator: &Validator,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     weight_from_validator_by_dag_metered(&NoopWork, dag, block_hash, validator)
 }
 
@@ -173,7 +179,7 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
     dag: &mut KeyValueDagRepresentation,
     block_hash: &BlockHash,
     validator: &Validator,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     // On the fork-choice BFS a traversed block — or its main parent, read for
     // the weight map — can be absent from the metadata index: a sync/prune
     // window, or, on an LFS-restored node, a parent below the restore horizon
@@ -208,16 +214,16 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
             Ok(parent_metadata
                 .weight_map
                 .get(validator)
-                .cloned()
-                .unwrap_or(0))
+                .map(TokenAmount::to_bigint)
+                .unwrap_or_default())
         }
         None => {
             // No parents (genesis) - use current block's weight map
             Ok(block_metadata
                 .weight_map
                 .get(validator)
-                .cloned()
-                .unwrap_or(0))
+                .map(TokenAmount::to_bigint)
+                .unwrap_or_default())
         }
     }
 }
@@ -227,13 +233,13 @@ pub fn weight_from_validator(
     block_store: &KeyValueBlockStore,
     b: &BlockMessage,
     validator: &prost::bytes::Bytes,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     // A block's own bonds are written by its sender, so they never decide its
     // weight: a parentless block carries none here (`Validate::
     // block_sender_has_weight` judges it against the genesis). A main parent this
     // node does not hold leaves the weight unknown, never self-asserted.
     let Some(parent_hash) = b.header.parents_hash_list.first() else {
-        return Ok(0);
+        return Ok(BigInt::from(0));
     };
     let parent = block_store
         .get(parent_hash)?
@@ -242,14 +248,17 @@ pub fn weight_from_validator(
             context: MissingBlockContext::new("weight_from_validator: main parent"),
         })?;
 
-    Ok(weight_map(&parent).get(validator).cloned().unwrap_or(0))
+    Ok(weight_map(&parent)
+        .get(validator)
+        .cloned()
+        .unwrap_or_default())
 }
 
 /// Get weight from sender
 pub fn weight_from_sender(
     block_store: &KeyValueBlockStore,
     b: &BlockMessage,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     weight_from_validator(block_store, b, &b.sender)
 }
 
@@ -342,7 +351,7 @@ where
             if visited.contains(&parent) {
                 continue;
             }
-            match dag.block_number(&parent) {
+            match dag.block_number(&parent)? {
                 Some(number) if number < block_number => {}
                 Some(_) => match dag.lookup(&parent).map_err(CasperError::from)? {
                     Some(meta) => {
@@ -403,7 +412,7 @@ pub fn block_number(block: &BlockMessage) -> i64 { block.body.state.block_number
 pub fn bond_to_bond_info(bond: &Bond) -> BondInfo {
     BondInfo {
         validator: PrettyPrinter::build_string_no_limit(&bond.validator),
-        stake: bond.stake,
+        stake: bond.stake.to_string(),
     }
 }
 
@@ -542,7 +551,7 @@ pub fn unsigned_block_proto_with_leaves(
 }
 
 // =========================================================================
-// Block hash — Merkle scheme v2
+// Block hash — Merkle scheme v3
 // =========================================================================
 //
 // Shape:
@@ -573,7 +582,7 @@ pub fn unsigned_block_proto_with_leaves(
 
 /// Scheme-version byte prepended to the header preimage.  Bumping this
 /// constant is a hard fork — see the file-level docstring.
-pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x02;
+pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x03;
 
 /// Interior-node domain byte used by `MERKLE_PARAMS`.
 const INTERIOR_DOMAIN: u8 = 0x01;
@@ -710,19 +719,16 @@ fn applied_from_scope_root(block: &BlockMessage) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Merkle root over the bonds sub-tree.  Bonds are sorted by validator
-/// public key before leaf-hashing so the root is independent of
-/// in-memory order.  Each leaf is
-/// `Blake2b256(LEAF_BOND || validator_pk || stake_le)`.
+/// Merkle root over the bonds, sorted by validator. Each leaf is
+/// `Blake2b256(LEAF_BOND || BondProto encoding)`, whose stake is 32 bytes.
 fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
     let mut sorted: Vec<&Bond> = bonds.iter().collect();
     sorted.sort_by(|a, b| a.validator.as_ref().cmp(b.validator.as_ref()));
     let leaves: Vec<[u8; 32]> = sorted
         .iter()
         .map(|b| {
-            let mut buf = Vec::with_capacity(b.validator.len() + 8);
-            buf.extend_from_slice(b.validator.as_ref());
-            buf.extend_from_slice(&b.stake.to_le_bytes());
+            use prost::Message;
+            let buf = (*b).clone().to_proto().encode_to_vec();
             crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_BOND, &buf)
         })
         .collect();
@@ -907,59 +913,6 @@ pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
         .collect()
 }
 
-// Return hashes of all blocks that are yet to be seen by the passed in block
-pub fn unseen_block_hashes(
-    dag: &KeyValueDagRepresentation,
-    justifications: &Vec<Justification>,
-    current_block_hash: Option<&BlockHash>,
-) -> Result<HashSet<BlockHash>, KvStoreError> {
-    let dags_latest_messages = dag.latest_messages()?;
-    let blocks_latest_messages = to_latest_message(justifications, dag)?;
-
-    // From input block perspective we want to find what latest messages are not seen
-    //  that are in the DAG latest messages.
-    // - if validator is not in the justification of the block
-    // - if justification contains validator's newer latest message
-    let unseen_latest_messages =
-        dags_latest_messages
-            .into_iter()
-            .filter(|(validator, dag_latest_message)| {
-                let validator_in_justification = blocks_latest_messages.contains_key(validator);
-                let block_has_newer_latest_message =
-                    blocks_latest_messages
-                        .get(validator)
-                        .map(|block_latest_message| {
-                            dag_latest_message.sequence_number
-                                > block_latest_message.sequence_number
-                        });
-
-                !validator_in_justification
-                    || (validator_in_justification
-                        && block_has_newer_latest_message.unwrap_or(false))
-            });
-
-    // Collect all unseen block hashes
-    let mut all_unseen_blocks = HashSet::new();
-    for (validator, unseen_latest_message) in unseen_latest_messages {
-        let validator_latest_message = blocks_latest_messages.get(&validator);
-        let creator_blocks =
-            get_creator_blocks_between(dag, &unseen_latest_message, validator_latest_message)?;
-        all_unseen_blocks.extend(creator_blocks);
-    }
-
-    // Remove blocks that are already in the block's justifications
-    for block_metadata in blocks_latest_messages.values() {
-        all_unseen_blocks.remove(&block_metadata.block_hash);
-    }
-
-    // Remove the current block hash (at block creation the block does not exist yet)
-    if let Some(h) = current_block_hash {
-        all_unseen_blocks.remove(h);
-    }
-
-    Ok(all_unseen_blocks)
-}
-
 /// The invalid-blocks map (cited block hash -> offender) the PoS slash deploys
 /// of a set of slashes read through `rho:casper:invalidBlocks`. Taken from the
 /// slashes' own evidence, so creation and replay on any node produce the same
@@ -991,64 +944,6 @@ pub fn slash_evidence(block: &BlockMessage) -> impl Iterator<Item = &Equivocatio
             } => Some(evidence.as_ref()),
             _ => None,
         })
-}
-
-fn get_creator_blocks_between(
-    dag: &KeyValueDagRepresentation,
-    top_block: &BlockMetadata,
-    bottom_block: Option<&BlockMetadata>,
-) -> Result<HashSet<BlockHash>, KvStoreError> {
-    match bottom_block {
-        Some(bottom_block) => {
-            // Use the bf_traverse function from dag_ops for breadth-first traversal
-            let neighbor_fn = |block: &BlockMetadata| -> Vec<BlockMetadata> {
-                get_creator_justification_unless_goal(dag, block, bottom_block).unwrap_or_default()
-            };
-
-            // Start traversal from top_block
-            let traversal_result =
-                shared::rust::dag::dag_ops::bf_traverse(vec![top_block.clone()], neighbor_fn);
-
-            // Collect all block hashes into a HashSet
-            let blocks_set: HashSet<BlockHash> = traversal_result
-                .into_iter()
-                .map(|block| block.block_hash.clone())
-                .collect();
-
-            Ok(blocks_set)
-        }
-
-        None => Ok(HashSet::from([top_block.block_hash.clone()])),
-    }
-}
-
-fn get_creator_justification_unless_goal(
-    dag: &KeyValueDagRepresentation,
-    block: &BlockMetadata,
-    goal: &BlockMetadata,
-) -> Result<Vec<BlockMetadata>, KvStoreError> {
-    match creator_justification_block_metadata(block) {
-        Some(Justification {
-            validator: _,
-            latest_block_hash,
-        }) => match dag.lookup(&latest_block_hash) {
-            Ok(Some(creator_justification)) => {
-                if creator_justification == *goal {
-                    Ok(vec![])
-                } else {
-                    Ok(vec![creator_justification])
-                }
-            }
-
-            _ => Err(KvStoreError::KeyNotFound(format!(
-                "BlockDAG is missing justification {} for {}",
-                PrettyPrinter::build_string_bytes(&latest_block_hash),
-                PrettyPrinter::build_string_bytes(&block.block_hash)
-            ))),
-        },
-
-        None => Ok(vec![]),
-    }
 }
 
 pub fn justification_to_justification_info(justification: &Justification) -> JustificationInfo {
@@ -1089,7 +984,7 @@ mod fork_choice_b1_repro_tests {
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
-        wm.insert(v.clone(), 7i64);
+        wm.insert(v.clone(), 7u64.into());
         BlockMetadata {
             block_hash: hash,
             parents,
@@ -1122,7 +1017,10 @@ mod fork_choice_b1_repro_tests {
         for b in blocks {
             assert!(bms.add(b).is_ok(), "test DAG metadata insert failed");
         }
-        KeyValueDagRepresentation {
+        block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -1130,8 +1028,6 @@ mod fork_choice_b1_repro_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            sequence_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -1145,6 +1041,7 @@ mod fork_choice_b1_repro_tests {
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
+        .build()
     }
 
     /// The sixth restore-horizon walk (#306). On an LFS-restored node a held
@@ -1313,7 +1210,7 @@ mod merkle_block_hash_tests {
         let data = DeployData {
             term: format!("@{nonce}!({nonce})"),
             time_stamp: nonce,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 100_000,
             valid_after_block_number: 0,
             shard_id: "test-shard".to_string(),
@@ -1588,7 +1485,7 @@ mod merkle_block_hash_tests {
         let mut b = base.clone();
         b.body.state.bonds = vec![Bond {
             validator: Bytes::from(vec![0xBB; 33]),
-            stake: 1,
+            stake: 1.into(),
         }];
         assert_ne!(hash_block(&b), h0, "bonds must affect hash");
 
@@ -1660,6 +1557,32 @@ mod merkle_block_hash_tests {
     }
 
     #[test]
+    fn bigint_bonds_root_uses_canonical_amounts() {
+        use prost::Message;
+        let first = Bond {
+            validator: Bytes::from_static(b"v"),
+            stake: TokenAmount::max(),
+        };
+        let second = Bond {
+            validator: Bytes::from_static(b"v\x01"),
+            stake: TokenAmount::new(BigInt::from(1) << 248).unwrap(),
+        };
+        let leaf = crypto::rust::hash::merkle::hash_leaf_tagged(
+            LEAF_BOND,
+            &first.clone().to_proto().encode_to_vec(),
+        );
+        assert_eq!(
+            bonds_root(&[first.clone()]),
+            crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &[leaf])
+        );
+        assert_ne!(bonds_root(&[first.clone()]), bonds_root(&[second.clone()]));
+        assert_eq!(
+            bonds_root(&[first.clone(), second.clone()]),
+            bonds_root(&[second, first])
+        );
+    }
+
+    #[test]
     fn bonds_root_is_order_independent() {
         let v1 = Bytes::from(vec![0x11; 33]);
         let v2 = Bytes::from(vec![0x22; 33]);
@@ -1667,22 +1590,22 @@ mod merkle_block_hash_tests {
         a.body.state.bonds = vec![
             Bond {
                 validator: v1.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: v2.clone(),
-                stake: 200,
+                stake: 200.into(),
             },
         ];
         let mut b = empty_block();
         b.body.state.bonds = vec![
             Bond {
                 validator: v2,
-                stake: 200,
+                stake: 200.into(),
             },
             Bond {
                 validator: v1,
-                stake: 100,
+                stake: 100.into(),
             },
         ];
         assert_eq!(
@@ -2212,7 +2135,7 @@ mod merkle_block_hash_tests {
         // pre/post state hashes, sender = 33 zero bytes, timestamp =
         // 1_700_000_000_000, version = 1, shard_id = "test-shard",
         // sig_algorithm = "secp256k1".
-        const EXPECTED: &str = "3f3b12cd4da91b6c00c49db707da5c3ca210a65c8b9c0cffef6aa79e95d3e992";
+        const EXPECTED: &str = "602ea568b611a2a16415363ffd358f08afa358a231094bce24b755e8a6f631f2";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
     }
 
@@ -2226,7 +2149,7 @@ mod merkle_block_hash_tests {
         b.body.state.post_state_hash = Bytes::from(vec![6; 32]);
         b.body.state.bonds = vec![Bond {
             validator: Bytes::from(vec![7; 65]),
-            stake: 100,
+            stake: 100.into(),
         }];
         b.body.state.block_number = 42;
         b.body.rejected_deploys = vec![RejectedDeploy {
@@ -2252,7 +2175,7 @@ mod merkle_block_hash_tests {
     /// dropped from or reordered in the preimage changes it.
     #[test]
     fn hash_block_populated_golden_hex() {
-        const EXPECTED: &str = "5354088ff2b7e79d81d7a7c06b49909decfac6e81228f1efcaea07229a3d5a02";
+        const EXPECTED: &str = "32d5b2c9339bb446ea23c20cde55b24873ef5f03866a2545fbd8ad5ac7e38b03";
         assert_eq!(
             hex::encode(hash_block(&populated_block())),
             EXPECTED,

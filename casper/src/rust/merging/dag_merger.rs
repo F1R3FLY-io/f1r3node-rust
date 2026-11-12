@@ -4,18 +4,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use models::rhoapi::ListParWithRandom;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::RejectedDeploy;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::internal::Datum;
-use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
 use rspace_plus_plus::rspace::merger::event_log_index::{EventLogIndex, EventLogIndexFold};
 use rspace_plus_plus::rspace::merger::merging_logic::{self, NumberChannelsDiff};
-use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
 
@@ -51,33 +47,6 @@ fn remove_from_available(available: &mut Vec<Vec<u8>>, removed: &[Vec<u8>]) -> b
         available.remove(pos);
     }
     true
-}
-
-fn binary_data_is_single_number(data: &[Vec<u8>]) -> bool {
-    if data.len() != 1 {
-        return false;
-    }
-    RholangMergingLogic::encoded_datum_is_number(&data[0])
-}
-
-fn numeric_cell_would_overfill(base: &[Vec<u8>], current: &[Vec<u8>], added: &[Vec<u8>]) -> bool {
-    if added.is_empty() {
-        return false;
-    }
-    if binary_data_is_single_number(base) {
-        return current.len() + added.len() > 1;
-    }
-    // A base-empty channel only reads as a single-value cell when MULTIPLE
-    // writers accumulate into it. A sole chain leaving several numeric datums
-    // on a channel it created is intra-chain state that already executed
-    // sequentially in PLAY — not a produce-only conflict.
-    base.is_empty()
-        && !current.is_empty()
-        && current.len() + added.len() > 1
-        && current
-            .iter()
-            .chain(added.iter())
-            .all(|bytes| RholangMergingLogic::encoded_datum_is_number(bytes))
 }
 
 fn dependency_ordered_branch_items<'a>(
@@ -289,20 +258,6 @@ fn split_unavailable_branch_consumes(
                 if !next_data.contains_key(channel) {
                     next_data.insert(channel.clone(), base_data(channel)?);
                 }
-                let base = base_data(channel)?;
-                let current = next_data.get(channel).unwrap();
-                if numeric_cell_would_overfill(&base, current, added) {
-                    tracing::debug!(
-                        target: "f1r3.trace.unavail",
-                        channel = ?channel,
-                        base = base.len(),
-                        current = current.len(),
-                        added = added.len(),
-                        "reject: numeric cell would overfill"
-                    );
-                    applicable = false;
-                    break;
-                }
                 next_data.get_mut(channel).unwrap().extend(added.clone());
             }
         }
@@ -380,41 +335,19 @@ fn split_unavailable_resolved_branches(
     Ok(rejected_all)
 }
 
-/// §3c keep-one: among the surviving (`to_merge`) branches, reject the minimal
-/// set of writers that would over-fill a single-value (number) cell, keeping
-/// one. This is the finer counterpart to the apply-time guard in the merge
-/// override: instead of failing the whole merge, drop the losing writers (which
-/// recovery re-proposes) and merge the rest.
-///
-/// Only the SAME channels the apply-time guard covers are considered: a channel
-/// whose base is a single numeric datum AND that this merge does not fold
-/// (absent from any branch's mergeable set). Folded number channels are
-/// reconciled by the number-channel fold and must not be rejected here;
-/// registry / TreeHashMap nodes are non-numeric and exempt. The kept writer is
-/// the lowest-ordered `DeployChainIndex`, so the choice is node-deterministic.
-// False positive on `pinned`: DeployChainIndex's Hash/Eq use only immutable fields.
+/// Reject every surviving chain that writes to a channel another surviving
+/// chain folds as a tagged number channel without recording the tag itself,
+/// and every chain that depends on one. Every write to a tagged channel records
+/// its tag, so an untagged write to a folded channel means the record is
+/// incomplete, and applying it beside the fold would leave the cell holding
+/// more than one value.
+// False positive: DeployChainIndex's Hash/Eq use only immutable fields.
 #[allow(clippy::mutable_key_type)]
-fn split_overfilled_single_value_cells(
+fn split_untagged_writes_to_folded_channels(
     resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
     depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
     mergeable_channels: &impl Fn(&DeployChainIndex) -> NumberChannelsDiff,
-    base_datum: &impl Fn(
-        &Blake2b256Hash,
-    ) -> Result<
-        Vec<Datum<ListParWithRandom>>,
-        rspace_plus_plus::rspace::errors::HistoryError,
-    >,
-    base_binary: &impl Fn(
-        &Blake2b256Hash,
-    ) -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
-    // Chains already committed in the main parent's state; preferred as the
-    // survivor when a single-value cell has to keep exactly one writer.
-    //
-    // ALWAYS EMPTY in production: the base became the main parent, so its
-    // chains are in the base rather than in the conflict set and there is
-    // nothing to prefer. Only unit tests supply a non-empty set.
-    pinned: &HashSet<DeployChainIndex>,
-) -> Result<HashableSet<DeployChainIndex>, rspace_plus_plus::rspace::errors::HistoryError> {
+) -> HashableSet<DeployChainIndex> {
     let mut all_chains: Vec<DeployChainIndex> = resolved
         .to_merge
         .iter()
@@ -429,80 +362,17 @@ fn split_overfilled_single_value_cells(
         }
     }
 
-    // Combined per-channel change + the ordered producers (chains that add).
-    let mut combined: HashMap<Blake2b256Hash, ChannelChange<Vec<u8>>> = HashMap::new();
-    let mut producers: HashMap<Blake2b256Hash, Vec<DeployChainIndex>> = HashMap::new();
-    // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
-    #[allow(clippy::mutable_key_type)]
     let mut rejected_seed: HashSet<DeployChainIndex> = HashSet::new();
     for chain in &all_chains {
         let chain_mergeable = mergeable_channels(chain);
-        for entry in chain.state_changes.datums_changes.iter() {
-            let ch = entry.key().clone();
-            let chg = entry.value();
-            if chain_mergeable.contains_key(&ch) {
-                continue;
-            }
-            if folded.contains(&ch) && (!chg.added.is_empty() || !chg.removed.is_empty()) {
-                rejected_seed.insert(chain.clone());
-                continue;
-            }
-            let c = combined
-                .entry(ch.clone())
-                .or_insert_with(ChannelChange::empty);
-            c.added.extend(chg.added.clone());
-            c.removed.extend(chg.removed.clone());
-            if !chg.added.is_empty() {
-                producers.entry(ch).or_default().push(chain.clone());
-            }
-        }
-    }
-
-    // Seed rejections: for each over-filled single-value cell, keep the lowest
-    // producer, reject the rest.
-    for (ch, chg) in &combined {
-        if chg.added.is_empty() {
-            continue;
-        }
-        let base_d = base_datum(ch)?;
-        let is_single_number = base_d.len() == 1
-            && RholangMergingLogic::try_get_number_with_rnd(&base_d[0].a).is_some();
-        let base_b = base_binary(ch)?;
-        let kept = StateChange::multiset_diff(&base_b, &chg.removed);
-        let empty_numeric_cell = base_d.is_empty()
-            && kept.is_empty()
-            && chg
-                .added
-                .iter()
-                .all(|bytes| RholangMergingLogic::encoded_datum_is_number(bytes));
-        if !is_single_number && !empty_numeric_cell {
-            continue;
-        }
-        if kept.len() + chg.added.len() > 1 {
-            if let Some(prod) = producers.get(ch) {
-                // Keep-one picks by chain order, which knows nothing about
-                // provenance — so it can drop the writer whose effect the MAIN
-                // PARENT already committed, leaving this block's state missing
-                // content its own spine ancestor holds. Order pinned producers
-                // first. `DeployChainIndex` ordering breaks all remaining
-                // ties after pinning and rejection history. It is a
-                // preference inside an existing keep-one, never a veto: if
-                // every producer is pinned, one still loses and the merge
-                // stays live.
-                let mut ordered: Vec<&DeployChainIndex> = prod.iter().collect();
-                // Pinned first, then the chain with the most prior on-DAG
-                // rejections (issue #294: a chain the content ordering keeps
-                // losing must gain priority with each loss, or it starves to
-                // expiry). The chain's total order breaks remaining ties.
-                ordered.sort_by(|a, b| {
-                    (!pinned.contains(*a), std::cmp::Reverse(a.prior_rejections))
-                        .cmp(&(!pinned.contains(*b), std::cmp::Reverse(b.prior_rejections)))
-                        .then_with(|| a.cmp(b))
-                });
-                for loser in ordered.iter().skip(1) {
-                    rejected_seed.insert((*loser).clone());
-                }
-            }
+        let untagged_write_to_folded = chain.state_changes.datums_changes.iter().any(|entry| {
+            let change = entry.value();
+            !chain_mergeable.contains_key(entry.key())
+                && folded.contains(entry.key())
+                && (!change.added.is_empty() || !change.removed.is_empty())
+        });
+        if untagged_write_to_folded {
+            rejected_seed.insert(chain.clone());
         }
     }
 
@@ -532,7 +402,7 @@ fn split_overfilled_single_value_cells(
             resolved.rejected.0.insert(c.clone());
         }
     }
-    Ok(rejected)
+    rejected
 }
 
 /// Per-sig prior-rejection counts derived from the rejection records the
@@ -1361,13 +1231,10 @@ pub fn merge(
     actual_seq_all.sort();
     let actual_seq_all = actual_seq_all;
 
-    // Pin the settled chains. Pinning keeps a preferred writer as the
-    // keep-one survivor in the over-filled single-value-cell splitter; the
-    // main parent no longer needs it (its content is committed in the
-    // base), but a SETTLED chain competing in that splitter must win for
-    // the same reason the base's content must: it is committed. This is a
-    // preference inside an existing keep-one, never a veto — see the
-    // splitter's ordering comment.
+    // Pin the settled chains. Conflict resolution prefers a rejection option
+    // that keeps them: a SETTLED chain is committed, so it must win for the
+    // same reason the base's content must. This is a preference among the
+    // options, never a veto.
     #[allow(clippy::mutable_key_type)]
     let pinned: HashSet<DeployChainIndex> = settled_committed.iter().cloned().collect();
 
@@ -1469,7 +1336,7 @@ pub fn merge(
     let mergeable_channels_fn =
         |chain: &DeployChainIndex| chain.event_log_index.number_channels_data.clone();
 
-    let mk_compute_trie_actions_fn = |multi_writer_channels: HashSet<Blake2b256Hash>| {
+    let compute_trie_actions_fn = {
         let reader = Arc::clone(&history_reader);
         move |changes: rspace_plus_plus::rspace::merger::state_change::StateChange,
               mergeable_chs| {
@@ -1510,31 +1377,6 @@ pub fn merge(
                             base_get_data,
                         )?))
                     } else {
-                        // §3c single-value-cell discriminator: reject a merge that would
-                        // over-fill a single-value (number) cell via a write this merge did
-                        // not fold. Registry / TreeHashMap nodes are non-numeric and exempt.
-                        // Prevents the RhoVM IntegerAdd single-value invariant tripping at
-                        // read time (RCA-asi-devnet-finality-halt). `added`-empty changes
-                        // skip the base read inside the helper.
-                        //
-                        // Provenance gate for the base-empty arm: a channel absent at
-                        // base whose adds all came from a SINGLE accepted chain is that
-                        // branch's own internal state — it executed sequentially in PLAY
-                        // and validated in REPLAY, so multiple numeric datums prove the
-                        // channel is not a single-value cell. Overfill on a base-empty
-                        // channel is only a cross-writer accumulation phenomenon.
-                        if !channel_changes.added.is_empty() {
-                            let base = reader.get_data(hash)?;
-                            if !base.is_empty() || multi_writer_channels.contains(hash) {
-                                let base_bin = reader.get_data_proj_binary(hash)?;
-                                RholangMergingLogic::check_single_value_cell_not_overfilled(
-                                    hash,
-                                    &base,
-                                    &base_bin,
-                                    channel_changes,
-                                )?;
-                            }
-                        }
                         Ok(None)
                     }
                 },
@@ -1749,36 +1591,29 @@ pub fn merge(
         )
     };
 
-    let split_unavailable =
-        |resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>| {
-            let mut rejected = split_unavailable_resolved_branches(
-                resolved,
-                &depends_fn,
-                &mergeable_channels_fn,
-                &|channel| history_reader.get_data_proj_binary(channel),
-                &|consume_channels| {
-                    let history_pointer =
-                        rspace_plus_plus::rspace::hashing::stable_hash_provider::hash_from_hashes(
-                            consume_channels,
-                        );
-                    history_reader.get_continuations_proj_binary(&history_pointer)
-                },
-            )?;
-            // §3c keep-one: drop losing writers to an over-filled single-value
-            // cell (recovery re-proposes them) instead of failing the merge.
-            let overfilled = split_overfilled_single_value_cells(
-                resolved,
-                &depends_fn,
-                &mergeable_channels_fn,
-                &|channel| history_reader.get_data(channel),
-                &|channel| history_reader.get_data_proj_binary(channel),
-                &pinned,
-            )?;
-            for chain in overfilled.0 {
-                rejected.0.insert(chain);
-            }
-            Ok(rejected)
-        };
+    let split_unavailable = |resolved: &mut conflict_set_merger::ResolvedConflicts<
+        DeployChainIndex,
+    >| {
+        let mut rejected = split_unavailable_resolved_branches(
+            resolved,
+            &depends_fn,
+            &mergeable_channels_fn,
+            &|channel| history_reader.get_data_proj_binary(channel),
+            &|consume_channels| {
+                let history_pointer =
+                    rspace_plus_plus::rspace::hashing::stable_hash_provider::hash_from_hashes(
+                        consume_channels,
+                    );
+                history_reader.get_continuations_proj_binary(&history_pointer)
+            },
+        )?;
+        let untagged =
+            split_untagged_writes_to_folded_channels(resolved, &depends_fn, &mergeable_channels_fn);
+        for chain in untagged.0 {
+            rejected.0.insert(chain);
+        }
+        Ok(rejected)
+    };
 
     let (mut resolved, unavailable_rejected_count) = resolve_conflicts_with_unavailable_retry(
         &actual_seq_all,
@@ -1966,28 +1801,6 @@ pub fn merge(
         .map(|deploy| deploy.deploy_id.clone())
         .collect();
 
-    // Channels where MORE THAN ONE accepted chain contributes datum adds:
-    // only these can exhibit cross-writer accumulation, so only these are
-    // subject to the base-empty single-value-cell overfill guard.
-    let multi_writer_channels: HashSet<Blake2b256Hash> = {
-        let mut writer_counts: HashMap<Blake2b256Hash, usize> = HashMap::new();
-        for branch in &resolved.to_merge {
-            for chain in &branch.0 {
-                for entry in chain.state_changes.datums_changes.iter() {
-                    if !entry.value().added.is_empty() {
-                        *writer_counts.entry(entry.key().clone()).or_insert(0) += 1;
-                    }
-                }
-            }
-        }
-        writer_counts
-            .into_iter()
-            .filter(|(_, writers)| *writers > 1)
-            .map(|(channel, _)| channel)
-            .collect()
-    };
-    let compute_trie_actions_fn = mk_compute_trie_actions_fn(multi_writer_channels);
-
     // Combine surviving diffs and apply to the LFB post-state.
     let new_state = conflict_set_merger::compute_merged_state(
         &resolved,
@@ -2151,8 +1964,10 @@ mod tests {
 
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use dashmap::DashMap;
+    use models::rhoapi::ListParWithRandom;
     use rholang::rust::interpreter::rho_type::RhoNumber;
     use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+    use rspace_plus_plus::rspace::internal::Datum;
     use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
     use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
     use rspace_plus_plus::rspace::merger::state_change::StateChange;
@@ -2392,8 +2207,10 @@ mod tests {
         assert!(!rejected.0.contains(&high_cost));
     }
 
+    /// An untagged channel is ordinary Rholang: sends that do not consume the
+    /// integer it holds add to it, whatever the values are.
     #[test]
-    fn unavailable_floor_consumes_reject_produce_only_single_value_overfill() {
+    fn integer_sends_onto_an_untagged_channel_holding_an_integer_are_all_kept() {
         let channel = Blake2b256Hash::from_bytes(vec![0x12; 32]);
         let base = encoded_number(&channel, 0);
         let added_a = encoded_number(&channel, 1);
@@ -2414,298 +2231,9 @@ mod tests {
 
         let (kept, rejected) = split_branch(branch, channel, base, |_, _| false);
 
-        assert!(kept.is_none());
-        assert!(rejected.0.contains(&first));
-        assert!(rejected.0.contains(&second));
-    }
-
-    #[test]
-    fn unavailable_floor_consumes_keep_one_empty_numeric_cell_creator() {
-        let channel = Blake2b256Hash::from_bytes(vec![0x14; 32]);
-        let added_a = encoded_number(&channel, 0);
-        let added_b = encoded_number(&channel, 0);
-        let first = chain(
-            1,
-            10,
-            1,
-            datum_change(channel.clone(), Vec::new(), vec![added_a]),
-        );
-        let second = chain(
-            2,
-            1,
-            1,
-            datum_change(channel.clone(), Vec::new(), vec![added_b]),
-        );
-        let branch = HashableSet(HashSet::from([first.clone(), second.clone()]));
-
-        let (kept, rejected) = split_branch_with_base(branch, channel, Vec::new(), |_, _| false);
-
-        let kept = kept.expect("one numeric creator must survive");
-        assert_eq!(kept.0.len(), 1);
-        assert_eq!(rejected.0.len(), 1);
-        assert_ne!(
-            kept.0.iter().next().unwrap().source_block_hash,
-            rejected.0.iter().next().unwrap().source_block_hash
-        );
-    }
-
-    #[test]
-    fn overfilled_splitter_keep_one_empty_numeric_cell_creator() {
-        let channel = Blake2b256Hash::from_bytes(vec![0x15; 32]);
-        let added_a = encoded_number(&channel, 0);
-        let added_b = encoded_number(&channel, 0);
-        let first = chain(
-            1,
-            10,
-            1,
-            datum_change(channel.clone(), Vec::new(), vec![added_a]),
-        );
-        let second = chain(
-            2,
-            1,
-            1,
-            datum_change(channel.clone(), Vec::new(), vec![added_b]),
-        );
-        let mut resolved = conflict_set_merger::ResolvedConflicts {
-            to_merge: vec![
-                HashableSet(HashSet::from([first.clone()])),
-                HashableSet(HashSet::from([second.clone()])),
-            ],
-            rejected: HashableSet(HashSet::new()),
-            late_set_size: 0,
-            actual_set_size: 2,
-            branches_count: 2,
-            rejected_as_dependents_count: 0,
-            optimal_rejection_count: 0,
-            conflict_map_conflicts_count: 0,
-            rejection_options_count: 0,
-            branches_time: std::time::Duration::ZERO,
-            conflicts_map_time: std::time::Duration::ZERO,
-            rejection_options_time: std::time::Duration::ZERO,
-        };
-
-        let rejected = split_overfilled_single_value_cells(
-            &mut resolved,
-            &|_, _| false,
-            &|_| BTreeMap::new(),
-            &|_| Ok(Vec::new()),
-            &|_| Ok(Vec::new()),
-            &HashSet::new(),
-        )
-        .expect("split overfilled cells");
-
-        assert_eq!(rejected.0.len(), 1);
-        assert_eq!(resolved.to_merge.len(), 1);
-        assert_eq!(resolved.to_merge[0].0.len(), 1);
-    }
-
-    /// Issue #294 (B1): a chain that already lost prior merges — its deploys
-    /// carry kept rejection records in the scope — must win keep-one against
-    /// an otherwise-equal contender. Without loss-aware adjudication the
-    /// content ordering alone decides, the same chain loses every merge, and
-    /// recovery re-proposes it into the same loss until its window closes.
-    #[test]
-    fn overfilled_splitter_prefers_previously_rejected_contender() {
-        let channel = Blake2b256Hash::from_bytes(vec![0x18; 32]);
-        let added_fresh = encoded_number(&channel, 0);
-        let added_veteran = encoded_number(&channel, 0);
-        // Equal cost; the fresh contender's deploy id is lex-smaller, so the
-        // content ordering alone keeps it. The veteran carries one prior loss.
-        let fresh = chain(
-            1,
-            10,
-            1,
-            datum_change(channel.clone(), Vec::new(), vec![added_fresh]),
-        );
-        let mut veteran = chain(
-            2,
-            10,
-            1,
-            datum_change(channel.clone(), Vec::new(), vec![added_veteran]),
-        );
-        veteran.prior_rejections = 1;
-        let mut resolved = conflict_set_merger::ResolvedConflicts {
-            to_merge: vec![
-                HashableSet(HashSet::from([fresh.clone()])),
-                HashableSet(HashSet::from([veteran.clone()])),
-            ],
-            rejected: HashableSet(HashSet::new()),
-            late_set_size: 0,
-            actual_set_size: 2,
-            branches_count: 2,
-            rejected_as_dependents_count: 0,
-            optimal_rejection_count: 0,
-            conflict_map_conflicts_count: 0,
-            rejection_options_count: 0,
-            branches_time: std::time::Duration::ZERO,
-            conflicts_map_time: std::time::Duration::ZERO,
-            rejection_options_time: std::time::Duration::ZERO,
-        };
-
-        let rejected = split_overfilled_single_value_cells(
-            &mut resolved,
-            &|_, _| false,
-            &|_| BTreeMap::new(),
-            &|_| Ok(Vec::new()),
-            &|_| Ok(Vec::new()),
-            &HashSet::new(),
-        )
-        .expect("split overfilled cells");
-
-        assert!(
-            rejected.0.contains(&fresh),
-            "the contender with no prior losses must be the one rejected"
-        );
-        assert_eq!(resolved.to_merge.len(), 1);
-        assert!(
-            resolved.to_merge[0].0.contains(&veteran),
-            "the previously rejected chain must survive keep-one"
-        );
-    }
-
-    /// Issue #294 (B2): equal prior-rejection counts must leave adjudication
-    /// exactly where the content ordering puts it — loss-awareness is a
-    /// tie-breaker on losses, never a perturbation of the deterministic
-    /// baseline every validator must reproduce.
-    #[test]
-    fn overfilled_splitter_equal_prior_losses_keep_content_order() {
-        let channel = Blake2b256Hash::from_bytes(vec![0x19; 32]);
-        let added_a = encoded_number(&channel, 0);
-        let added_b = encoded_number(&channel, 0);
-        let mut first = chain(
-            1,
-            10,
-            1,
-            datum_change(channel.clone(), Vec::new(), vec![added_a]),
-        );
-        let mut second = chain(
-            2,
-            10,
-            1,
-            datum_change(channel.clone(), Vec::new(), vec![added_b]),
-        );
-        first.prior_rejections = 1;
-        second.prior_rejections = 1;
-        let mut resolved = conflict_set_merger::ResolvedConflicts {
-            to_merge: vec![
-                HashableSet(HashSet::from([first.clone()])),
-                HashableSet(HashSet::from([second.clone()])),
-            ],
-            rejected: HashableSet(HashSet::new()),
-            late_set_size: 0,
-            actual_set_size: 2,
-            branches_count: 2,
-            rejected_as_dependents_count: 0,
-            optimal_rejection_count: 0,
-            conflict_map_conflicts_count: 0,
-            rejection_options_count: 0,
-            branches_time: std::time::Duration::ZERO,
-            conflicts_map_time: std::time::Duration::ZERO,
-            rejection_options_time: std::time::Duration::ZERO,
-        };
-
-        let rejected = split_overfilled_single_value_cells(
-            &mut resolved,
-            &|_, _| false,
-            &|_| BTreeMap::new(),
-            &|_| Ok(Vec::new()),
-            &|_| Ok(Vec::new()),
-            &HashSet::new(),
-        )
-        .expect("split overfilled cells");
-
-        assert!(
-            rejected.0.contains(&second),
-            "with equal prior losses the content ordering must still decide"
-        );
-        assert_eq!(resolved.to_merge.len(), 1);
-        assert!(
-            resolved.to_merge[0].0.contains(&first),
-            "the content-order winner must survive when losses are equal"
-        );
-    }
-
-    /// Issue #294 (B3): the losing-every-merge composition. One deploy meets
-    /// a FRESH equal-cost contender on the same key every round; each round's
-    /// loser leaves a rejection record in the scope, exactly as the merge
-    /// records rejections in block bodies. A deploy the content ordering
-    /// always ranks last must still land before `deploy_lifespan` rounds
-    /// close its validity window — otherwise it terminates Expired with no
-    /// error surfaced, which is the defect.
-    #[test]
-    fn sustained_same_key_contention_lands_before_window_closes() {
-        let channel = Blake2b256Hash::from_bytes(vec![0x1a; 32]);
-        // Lex-largest deploy id: the content ordering alone rejects it in
-        // every round's tie.
-        let starved_id: u8 = 0xff;
-        let lifespan_rounds: u8 = 50;
-        let mut scope_records: Vec<RejectedDeploy> = Vec::new();
-        let mut landed_round: Option<u8> = None;
-
-        for round in 1..=lifespan_rounds {
-            let added_fresh = encoded_number(&channel, 0);
-            let added_starved = encoded_number(&channel, 0);
-            let mut contenders = [
-                chain(
-                    round,
-                    10,
-                    1,
-                    datum_change(channel.clone(), Vec::new(), vec![added_fresh]),
-                ),
-                chain(
-                    starved_id,
-                    10,
-                    1,
-                    datum_change(channel.clone(), Vec::new(), vec![added_starved]),
-                ),
-            ];
-            let counts = prior_rejection_counts(scope_records.iter());
-            stamp_prior_rejections(&mut contenders, &counts);
-            let [fresh, starved] = contenders;
-
-            let mut resolved = conflict_set_merger::ResolvedConflicts {
-                to_merge: vec![
-                    HashableSet(HashSet::from([fresh.clone()])),
-                    HashableSet(HashSet::from([starved.clone()])),
-                ],
-                rejected: HashableSet(HashSet::new()),
-                late_set_size: 0,
-                actual_set_size: 2,
-                branches_count: 2,
-                rejected_as_dependents_count: 0,
-                optimal_rejection_count: 0,
-                conflict_map_conflicts_count: 0,
-                rejection_options_count: 0,
-                branches_time: std::time::Duration::ZERO,
-                conflicts_map_time: std::time::Duration::ZERO,
-                rejection_options_time: std::time::Duration::ZERO,
-            };
-            let rejected = split_overfilled_single_value_cells(
-                &mut resolved,
-                &|_, _| false,
-                &|_| BTreeMap::new(),
-                &|_| Ok(Vec::new()),
-                &|_| Ok(Vec::new()),
-                &HashSet::new(),
-            )
-            .expect("split overfilled cells");
-
-            if !rejected.0.contains(&starved) {
-                landed_round = Some(round);
-                break;
-            }
-            scope_records.push(RejectedDeploy {
-                sig: Bytes::from(vec![starved_id]),
-                duplicate: false,
-                carrier: Bytes::from(vec![round; 32]),
-            });
-        }
-
-        assert!(
-            landed_round.is_some(),
-            "starved deploy lost every merge for {} rounds and expired",
-            lifespan_rounds
-        );
+        let kept = kept.expect("both sends survive");
+        assert!(kept.0.contains(&first) && kept.0.contains(&second));
+        assert!(rejected.0.is_empty(), "{:?}", rejected.0);
     }
 
     /// Issue #294 (B5): a merge's counts come from the records of every block
@@ -2817,112 +2345,6 @@ mod tests {
         }
     }
 
-    /// Issue #294 (B7): the adversarial bound of phase 1. A contender that
-    /// arrives with a manufactured lead of N prior losses outranks a fresh
-    /// victim on the same key — but only for N rounds. Every round the
-    /// victim loses it gains one loss of its own, so the lead is consumed
-    /// one merge at a time. With the content ordering also against the
-    /// victim (the worst case, and the one round a lead-less rival already
-    /// costs it), the victim lands at round N + 2: the lead buys exactly N
-    /// extra merges of delay. The attacker cannot extend the delay without
-    /// manufacturing fresh losses, each of which costs a charged winner on
-    /// the same key.
-    #[test]
-    fn manufactured_loss_lead_delays_victim_by_exactly_lead_rounds() {
-        let channel = Blake2b256Hash::from_bytes(vec![0x1b; 32]);
-        // Lex-smaller id: the content ordering favors the attacker in a tie.
-        let attacker_id: u8 = 0x01;
-        let victim_id: u8 = 0x02;
-        let lead: u64 = 3;
-        let mut scope_records: Vec<RejectedDeploy> = (0..lead)
-            .map(|i| RejectedDeploy {
-                sig: Bytes::from(vec![attacker_id]),
-                duplicate: false,
-                carrier: Bytes::from(vec![0x80 + i as u8; 32]),
-            })
-            .collect();
-        let mut victim_landed_round: Option<u64> = None;
-
-        for round in 1..=(lead + 2) {
-            let mut contenders = [
-                chain(
-                    attacker_id,
-                    10,
-                    1,
-                    datum_change(channel.clone(), Vec::new(), vec![encoded_number(
-                        &channel, 0,
-                    )]),
-                ),
-                chain(
-                    victim_id,
-                    10,
-                    1,
-                    datum_change(channel.clone(), Vec::new(), vec![encoded_number(
-                        &channel, 0,
-                    )]),
-                ),
-            ];
-            let counts = prior_rejection_counts(scope_records.iter());
-            stamp_prior_rejections(&mut contenders, &counts);
-            let [attacker, victim] = contenders;
-
-            let mut resolved = conflict_set_merger::ResolvedConflicts {
-                to_merge: vec![
-                    HashableSet(HashSet::from([attacker.clone()])),
-                    HashableSet(HashSet::from([victim.clone()])),
-                ],
-                rejected: HashableSet(HashSet::new()),
-                late_set_size: 0,
-                actual_set_size: 2,
-                branches_count: 2,
-                rejected_as_dependents_count: 0,
-                optimal_rejection_count: 0,
-                conflict_map_conflicts_count: 0,
-                rejection_options_count: 0,
-                branches_time: std::time::Duration::ZERO,
-                conflicts_map_time: std::time::Duration::ZERO,
-                rejection_options_time: std::time::Duration::ZERO,
-            };
-            let rejected = split_overfilled_single_value_cells(
-                &mut resolved,
-                &|_, _| false,
-                &|_| BTreeMap::new(),
-                &|_| Ok(Vec::new()),
-                &|_| Ok(Vec::new()),
-                &HashSet::new(),
-            )
-            .expect("split overfilled cells");
-
-            if !rejected.0.contains(&victim) {
-                victim_landed_round = Some(round);
-                break;
-            }
-            assert!(
-                round <= lead + 1,
-                "the victim must lose no more than {} rounds against a lead of {}",
-                lead + 1,
-                lead
-            );
-            // The attacker's win is charged and lands; only the victim's loss
-            // is recorded. The attacker re-enters the next round with its
-            // original lead (a fresh deploy on the same key, same sig
-            // history).
-            scope_records.push(RejectedDeploy {
-                sig: Bytes::from(vec![victim_id]),
-                duplicate: false,
-                carrier: Bytes::from(vec![round as u8; 32]),
-            });
-        }
-
-        assert_eq!(
-            victim_landed_round,
-            Some(lead + 2),
-            "a lead of {} must buy exactly {} extra merges of delay over the one tie round",
-            lead,
-            lead
-        );
-    }
-
     #[test]
     fn unavailable_split_rejects_untagged_touch_to_folded_number_channel() {
         let channel = Blake2b256Hash::from_bytes(vec![0x16; 32]);
@@ -2953,7 +2375,7 @@ mod tests {
     }
 
     #[test]
-    fn overfilled_splitter_rejects_untagged_touch_to_folded_number_channel() {
+    fn an_untagged_write_to_a_folded_number_channel_is_rejected() {
         let channel = Blake2b256Hash::from_bytes(vec![0x17; 32]);
         let tagged_added = encoded_number(&channel, 0);
         let untagged_added = encoded_number(&channel, 0);
@@ -2988,40 +2410,15 @@ mod tests {
             rejection_options_time: std::time::Duration::ZERO,
         };
 
-        let rejected = split_overfilled_single_value_cells(
-            &mut resolved,
-            &|_, _| false,
-            &|chain| chain.event_log_index.number_channels_data.clone(),
-            &|_| Ok(Vec::new()),
-            &|_| Ok(Vec::new()),
-            &HashSet::new(),
-        )
-        .expect("split mixed folded cells");
+        let rejected =
+            split_untagged_writes_to_folded_channels(&mut resolved, &|_, _| false, &|chain| {
+                chain.event_log_index.number_channels_data.clone()
+            });
 
         assert!(rejected.0.contains(&untagged));
         assert!(!rejected.0.contains(&tagged));
         assert_eq!(resolved.to_merge.len(), 1);
         assert!(resolved.to_merge[0].0.contains(&tagged));
-    }
-
-    #[test]
-    fn unavailable_floor_consumes_reject_internal_single_value_overfill() {
-        let channel = Blake2b256Hash::from_bytes(vec![0x13; 32]);
-        let base = encoded_number(&channel, 0);
-        let added_a = encoded_number(&channel, 1);
-        let added_b = encoded_number(&channel, 2);
-        let overfilled = chain(
-            1,
-            10,
-            1,
-            datum_change(channel.clone(), vec![base.clone()], vec![added_a, added_b]),
-        );
-        let branch = HashableSet(HashSet::from([overfilled.clone()]));
-
-        let (kept, rejected) = split_branch(branch, channel, base, |_, _| false);
-
-        assert!(kept.is_none());
-        assert!(rejected.0.contains(&overfilled));
     }
 
     #[test]
@@ -3279,82 +2676,6 @@ mod tests {
         );
     }
 
-    /// Conflict resolution is not the only place main-parent content can be
-    /// dropped: §3c keep-one picks the survivor for an over-filled single-value
-    /// cell by CHAIN ORDER, which knows nothing about provenance. Two
-    /// validators racing an RMW on one cell is the ucc suite's core shape, so
-    /// a main-parent writer landing later in the order is ordinary, not exotic
-    /// — and dropping it leaves the block's state missing content its own
-    /// spine ancestor holds, the same defect by a different route.
-    ///
-    /// Also unreachable from the node: `split_overfilled_single_value_cells`
-    /// is called with an empty `pinned` set, so the ordering preference this
-    /// asserts never applies in production.
-    #[test]
-    fn overfill_keep_one_prefers_main_parent_content() {
-        let counter = Blake2b256Hash::from_bytes(vec![0x71; 32]);
-        // Sorts FIRST, so unpinned keep-one would retain this one.
-        let rival = chain(
-            0,
-            10,
-            1,
-            datum_change(counter.clone(), Vec::new(), vec![encoded_number(
-                &counter, 3,
-            )]),
-        );
-        // Sorts LAST, but its effect is already committed in the main parent.
-        let main_parent_chain = chain(
-            9,
-            10,
-            1,
-            datum_change(counter.clone(), Vec::new(), vec![encoded_number(
-                &counter, 4,
-            )]),
-        );
-
-        let mut resolved = conflict_set_merger::ResolvedConflicts {
-            to_merge: vec![
-                HashableSet(HashSet::from([rival.clone()])),
-                HashableSet(HashSet::from([main_parent_chain.clone()])),
-            ],
-            rejected: HashableSet(HashSet::new()),
-            late_set_size: 0,
-            actual_set_size: 2,
-            branches_count: 2,
-            rejected_as_dependents_count: 0,
-            optimal_rejection_count: 0,
-            conflict_map_conflicts_count: 0,
-            rejection_options_count: 0,
-            branches_time: std::time::Duration::ZERO,
-            conflicts_map_time: std::time::Duration::ZERO,
-            rejection_options_time: std::time::Duration::ZERO,
-        };
-
-        #[allow(clippy::mutable_key_type)]
-        let pinned: HashSet<DeployChainIndex> = HashSet::from([main_parent_chain.clone()]);
-
-        let rejected = split_overfilled_single_value_cells(
-            &mut resolved,
-            &|_, _| false,
-            &|_| BTreeMap::new(),
-            &|_| Ok(Vec::new()),
-            &|_| Ok(Vec::new()),
-            &pinned,
-        )
-        .expect("overfill split");
-
-        assert!(
-            !rejected.0.contains(&main_parent_chain),
-            "keep-one dropped the writer whose effect the main parent already \
-             committed, purely because it sorts later"
-        );
-        assert!(
-            rejected.0.contains(&rival),
-            "the cell must still keep exactly one writer — the preference \
-             reorders the choice, it does not suppress the keep-one"
-        );
-    }
-
     #[test]
     fn unavailable_retry_reconsiders_conflicts_after_winning_branch_is_removed() {
         let channel = Blake2b256Hash::from_bytes(vec![0x44; 32]);
@@ -3457,12 +2778,12 @@ mod tests {
     ///   (`compute_branches` groups by `depends`), and availability walks
     ///   branches separately carrying base plus that branch's own accepted
     ///   adds — so the consumer's unbacked removal is rejected on the first
-    ///   pass, before §3c runs at all.
+    ///   pass, before the folded-channel check runs at all.
     /// - **With the dependency** ⇒ they share a branch and both pass
-    ///   availability, but §3c's rejection of the producer re-enters
-    ///   `resolve_conflicts_with_unavailable_retry`, which puts the producer
-    ///   in the LATE set; `resolve_conflicts` then drops the consumer as its
-    ///   dependent before the fold sees it.
+    ///   availability, but the folded-channel check's rejection of the
+    ///   producer re-enters `resolve_conflicts_with_unavailable_retry`, which
+    ///   puts the producer in the LATE set; `resolve_conflicts` then drops the
+    ///   consumer as its dependent before the fold sees it.
     ///
     /// Both arms assert the same end state: whatever survives the loop passes
     /// the availability check that `make_trie_action` would otherwise fail.
@@ -3517,12 +2838,13 @@ mod tests {
                 ]),
                 consumer_log,
             );
-            // A second, lower-ordered writer to the same counter. Neither
-            // chain overfills the counter on its own.
-            let rival = chain(
+            // A rival that writes the counter as a tagged number channel, so the
+            // producer's untagged write to it is rejected.
+            let rival = mergeable_chain(
                 0,
                 10,
                 1,
+                counter.clone(),
                 datum_change(counter.clone(), Vec::new(), vec![encoded_number(
                     &counter, 9,
                 )]),
@@ -3580,30 +2902,26 @@ mod tests {
                     &HashSet::new(),
                 )
             };
-            // Exactly what `merge` runs per iteration: availability, then §3c,
-            // unioned into one rejection set that feeds the retry.
-            let split_unavailable =
-                |resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>| {
-                    let mut rejected = split_unavailable_resolved_branches(
-                        resolved,
-                        &depends_fn,
-                        &mergeable_fn,
-                        &base_data,
-                        &|_| Ok(Vec::new()),
-                    )?;
-                    let overfilled = split_overfilled_single_value_cells(
-                        resolved,
-                        &depends_fn,
-                        &mergeable_fn,
-                        &|_| Ok(Vec::new()),
-                        &base_data,
-                        &HashSet::new(),
-                    )?;
-                    for chain in overfilled.0 {
-                        rejected.0.insert(chain);
-                    }
-                    Ok(rejected)
-                };
+            // Exactly what `merge` runs per iteration: availability, then the
+            // folded-channel check, unioned into one rejection set that feeds
+            // the retry.
+            let split_unavailable = |resolved: &mut conflict_set_merger::ResolvedConflicts<
+                DeployChainIndex,
+            >| {
+                let mut rejected = split_unavailable_resolved_branches(
+                    resolved,
+                    &depends_fn,
+                    &mergeable_fn,
+                    &base_data,
+                    &|_| Ok(Vec::new()),
+                )?;
+                let untagged =
+                    split_untagged_writes_to_folded_channels(resolved, &depends_fn, &mergeable_fn);
+                for chain in untagged.0 {
+                    rejected.0.insert(chain);
+                }
+                Ok(rejected)
+            };
 
             let (resolved, _) = resolve_conflicts_with_unavailable_retry(
                 &[producer, consumer, rival],
@@ -3654,12 +2972,13 @@ mod tests {
         );
 
         // Arm 2 — genuinely dependent chains: both pass availability together,
-        // §3c drops the producer, and the retry drops the consumer as its
-        // dependent. Convergence is asserted by the per-survivor check above.
+        // the folded-channel check drops the producer, and the retry drops the
+        // consumer as its dependent. Convergence is asserted by the
+        // per-survivor check above.
         let dependent = run(true);
         assert!(
             dependent.len() < 3,
-            "the producer's §3c rejection must carry its dependent consumer out too"
+            "the producer's rejection must carry its dependent consumer out too"
         );
     }
 

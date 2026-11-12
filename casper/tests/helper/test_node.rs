@@ -1,28 +1,21 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/TestNode.scala
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::block_status::BlockStatus;
-use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, CheckedBlock, InFlightBlocks,
-    IntegrityFailure, StoreVerdict,
-};
+use casper::rust::blocks::ingest::ingest_view::IngestView;
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::new_proposer;
 use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
-use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
-use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::safety_oracle::CliqueOracleImpl;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -47,8 +40,8 @@ use models::rust::casper::protocol::casper_message::{
 };
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use tokio::sync::mpsc;
 
+use crate::helper::inline_ingest::InlineIngest;
 use crate::util::comm::transport_layer_test_impl::test_network::TestNetwork;
 use crate::util::comm::transport_layer_test_impl::{
     TransportLayerServerTestImpl, TransportLayerTestImpl,
@@ -84,8 +77,8 @@ pub struct TestNode {
     pub tls: TransportLayerServerTestImpl,
     pub genesis: BlockMessage,
     pub validator_id_opt: Option<ValidatorIdentity>,
-    // Note: blockProcessingPipe implemented as method process_block_through_pipe
-    pub block_processor: BlockProcessor<TransportLayerTestImpl>,
+    pub ingest: Arc<tokio::sync::Mutex<InlineIngest>>,
+    pub ingest_view: IngestView,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<KeyValueDeployStorage>,
@@ -93,13 +86,9 @@ pub struct TestNode {
         Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
     pub runtime_manager: RuntimeManager,
-    // Note: no log field, logging will come from log crate
-    pub requested_blocks: RequestedBlocks,
-    pub block_retriever: BlockRetriever<TransportLayerTestImpl>,
     pub connections_cell: ConnectionsCell,
     pub rp_conf: RPConf,
-    // Casper instance (Arc<Mutex> for shared ownership with interior mutability)
-    pub casper: Arc<MultiParentCasperImpl<TransportLayerTestImpl>>,
+    pub casper: Arc<MultiParentCasperImpl>,
     // Engine cell for packet handling (matches Scala line 177)
     pub engine_cell: EngineCell,
     // Packet handler for receiving messages (matches Scala line 178)
@@ -186,68 +175,23 @@ impl TestNode {
         &mut self,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
-        Self::process_block_through_pipe(self.casper.clone(), &self.block_processor, block).await
+        self.ingest
+            .lock()
+            .await
+            .process(self.casper.clone(), block, None)
+            .await
     }
 
-    /// Processes a block through the validation pipeline.
-    ///
-    /// This method:
-    /// 1. Checks if block is of interest
-    /// 2. Stores (CheckedBlock::check has already checked format, signature, and hash)
-    /// 3. Checks dependencies
-    /// 4. Validates with effects
-    pub async fn process_block_through_pipe(
-        casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
-        block_processor: &BlockProcessor<TransportLayerTestImpl>,
+    /// Processes a block `from` delivered, as a peer's push or reply.
+    pub async fn receive_block(
+        &mut self,
         block: BlockMessage,
+        from: PeerNode,
     ) -> Result<ValidBlockProcessing, CasperError> {
-        let checked = match CheckedBlock::check(block.clone(), BLOCK_PROCESSOR_METRICS_SOURCE) {
-            Ok(checked) => checked,
-            Err((_, IntegrityFailure::Malformed)) => {
-                return Ok(Either::Left(BlockStatus::invalid_format()))
-            }
-            Err((_, IntegrityFailure::HashMismatch)) => {
-                return Ok(Either::Left(BlockStatus::invalid_block_hash()))
-            }
-        };
-
-        // Check if block is of interest
-        let verdict = block_processor.check_if_of_interest(casper.clone(), &checked)?;
-
-        if !verdict.is_fresh() {
-            return Ok(Either::Left(BlockStatus::not_of_interest()));
-        }
-
-        let Some(store_mode) = block_processor
-            .check_sender_authorization(&checked)?
-            .store_mode()
-        else {
-            return Ok(Either::Left(BlockStatus::invalid_sender()));
-        };
-
-        // Store
-        match block_processor.store(&checked, store_mode).await? {
-            StoreVerdict::Stored => {}
-            StoreVerdict::PendingRefused(refusal) => {
-                block_processor
-                    .release_refused_pending(&block, refusal)
-                    .await?;
-                return Ok(Either::Left(BlockStatus::missing_blocks()));
-            }
-        }
-
-        // Check dependencies
-        let dependencies_ready = block_processor
-            .check_dependencies_with_effects(casper.clone(), &checked)
-            .await?;
-
-        if !dependencies_ready {
-            return Ok(Either::Left(BlockStatus::missing_blocks()));
-        }
-
-        // Validate with effects
-        block_processor
-            .validate_with_effects(casper.clone(), &checked, None)
+        self.ingest
+            .lock()
+            .await
+            .process(self.casper.clone(), block, Some(from))
             .await
     }
 
@@ -258,7 +202,7 @@ impl TestNode {
         &mut self,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
-        Self::process_block_through_pipe(self.casper.clone(), &self.block_processor, block).await
+        self.process_block(block).await
     }
 
     /// Creates and adds a block from deploys (equivalent to Scala addBlock(deploys), line 201-202).
@@ -571,143 +515,73 @@ impl TestNode {
         Ok(block)
     }
 
-    /// Synchronizes this node with other nodes (equivalent to Scala syncWith, line 293-344).
-    ///
-    /// This method implements iterative synchronization:
-    /// 1. Drains message queues from requested block peers
-    /// 2. Handles receive on this node
-    /// 3. Repeats until all blocks are received or max attempts reached
-    ///
-    /// # Parameters
-    /// * `nodes` - Nodes to synchronize with
+    /// Synchronizes this node with other nodes (equivalent to Scala syncWith, line 293-344):
+    /// exchanges messages with them until this node needs no block, or a
+    /// bounded number of rounds passes.
     pub async fn sync_with(&mut self, nodes: &mut [&mut TestNode]) -> Result<(), CasperError> {
         const MAX_SYNC_ATTEMPTS: usize = 10;
 
-        // Build network map (peer -> node index)
-        let network_map: std::collections::HashMap<PeerNode, usize> = nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.local != self.local)
-            .map(|(idx, node)| (node.local.clone(), idx))
-            .collect();
-
-        // Initial handleReceive; a detached announce may still be in flight,
-        // so give it a bounded window before reading empty request state as
-        // already-synced.
+        // A detached announce may still be in flight, so give it a bounded
+        // window before reading no needs as already-synced.
         let mut settle_rounds = 0;
         loop {
             self.handle_receive().await?;
-            let has_pending = {
-                let requested = self.requested_blocks.lock().unwrap();
-                requested.values().any(|req| !req.received)
-            };
-            if has_pending || settle_rounds >= 5 {
+            if self.block_needs().await > 0 || settle_rounds >= 5 {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             settle_rounds += 1;
         }
 
-        // Check if all synced
-        let mut done = {
-            let requested = self.requested_blocks.lock().unwrap();
-            !requested.values().any(|req| !req.received)
-        };
-
-        let mut cnt = 0;
-
-        // Synchronization loop
-        while cnt < MAX_SYNC_ATTEMPTS && !done {
-            // Get list of peers we're waiting for
-            let asked_peers: Vec<PeerNode> = {
-                let requested = self.requested_blocks.lock().unwrap();
-                requested
-                    .values()
-                    .flat_map(|req| {
-                        if req.peers.is_empty() {
-                            // Empty peers means broadcast - check everyone
-                            network_map.keys().cloned().collect()
-                        } else {
-                            req.peers.clone()
-                        }
-                    })
-                    .collect()
-            };
-
-            // Drain queues of asked peers
-            for peer in asked_peers {
-                if let Some(&idx) = network_map.get(&peer) {
-                    nodes[idx].handle_receive().await?;
+        let mut rounds = 0;
+        while rounds < MAX_SYNC_ATTEMPTS && self.block_needs().await > 0 {
+            for node in nodes.iter() {
+                if node.local != self.local {
+                    node.handle_receive().await?;
                 }
             }
-
-            // Handle receive on this node
             self.handle_receive().await?;
-
-            // Check if we're done
-            done = {
-                let requested = self.requested_blocks.lock().unwrap();
-                !requested.values().any(|req| !req.received)
-            };
-            cnt += 1;
+            rounds += 1;
         }
 
-        // Log results
-        if !done {
-            let requested = self.requested_blocks.lock().unwrap();
-            let pending: Vec<String> = requested
-                .iter()
-                .filter(|(_, req)| !req.received)
-                .map(|(hash, req)| {
-                    format!(
-                        "{} -> {:?}",
-                        models::rust::casper::pretty_printer::PrettyPrinter::build_string_no_limit(
-                            hash
-                        ),
-                        req
-                    )
-                })
-                .collect();
-
+        let needs = self.block_needs().await;
+        if needs > 0 {
             tracing::warn!(
-                "Node {} still pending requests for blocks (after {} attempts): {:?}",
+                "Node {} still needs {} blocks after {} rounds",
                 self.local,
-                MAX_SYNC_ATTEMPTS,
-                pending
+                needs,
+                MAX_SYNC_ATTEMPTS
             );
         } else {
-            let peer_names: Vec<String> = network_map.keys().map(|p| p.to_string()).collect();
             tracing::info!(
-                "Node {} has exchanged all the requested blocks with [{}] after {} round(s)",
+                "Node {} has every block it needs after {} round(s)",
                 self.local,
-                peer_names.join("; "),
-                cnt
+                rounds
             );
         }
-
         Ok(())
     }
+
+    /// Blocks this node needs and does not hold.
+    pub async fn block_needs(&self) -> usize { self.ingest.lock().await.block_needs() }
 
     /// Synchronizes with a single node.
     pub async fn sync_with_one(&mut self, node: &mut TestNode) -> Result<(), CasperError> {
         self.sync_with(&mut [node]).await
     }
 
-    /// Checks if this node contains a block (equivalent to Scala contains, line 346).
-    pub fn contains(&self, block_hash: &BlockHash) -> bool { self.casper.contains(block_hash) }
+    /// Checks if this node's DAG holds a block (equivalent to Scala contains, line 346).
+    pub fn contains(&self, block_hash: &BlockHash) -> bool {
+        self.block_dag_storage
+            .contains(block_hash)
+            .expect("test node DAG membership read failed")
+    }
 
-    /// Checks if this node knows about a block (in storage or requested) (equivalent to Scala knowsAbout, line 347-348).
+    /// The block is in the DAG, held by block ingest, or needed (equivalent to Scala knowsAbout, line 347-348).
     pub fn knows_about(&self, block_hash: &BlockHash) -> bool {
-        // Check if in storage
-        let in_storage = self.contains(block_hash);
-
-        // Check if in requested blocks
-        let in_requested = {
-            let requested = self.requested_blocks.lock().unwrap();
-            requested.contains_key(block_hash)
-        };
-
-        in_storage || in_requested
+        self.contains(block_hash)
+            || self.ingest_view.is_held(block_hash)
+            || self.ingest_view.is_awaited(block_hash)
     }
 
     /// Shuts off this node by clearing its transport layer queue (equivalent to Scala shutoff, line 350).
@@ -721,9 +595,8 @@ impl TestNode {
         let rp_conf = self.rp_conf.clone();
         let packet_handler = self.packet_handler.clone();
 
-        // Clone casper and block_processor for direct BlockMessage processing
         let casper = self.casper.clone();
-        let block_processor = self.block_processor.clone();
+        let ingest = self.ingest.clone();
 
         let dispatch = Arc::new(
             move |protocol: Protocol| -> std::pin::Pin<
@@ -737,7 +610,7 @@ impl TestNode {
                 let rp_conf = rp_conf.clone();
                 let packet_handler = packet_handler.clone();
                 let casper = casper.clone();
-                let block_processor = block_processor.clone(); // Clone Arc for this invocation
+                let ingest = ingest.clone();
 
                 Box::pin(async move {
                     match protocol.message {
@@ -774,14 +647,14 @@ impl TestNode {
                                 if let Ok(casper_msg) = casper_message_from_proto(proto) {
                                     match casper_msg {
                                         CasperMessage::BlockMessage(block) => {
-                                            // Call process_block_through_pipe (static method)
-                                            let _result = TestNode::process_block_through_pipe(
-                                                casper.clone(),
-                                                &block_processor,
-                                                block,
-                                            )
-                                            .await
-                                            .map_err(|e| CommError::CasperError(e.to_string()))?;
+                                            ingest
+                                                .lock()
+                                                .await
+                                                .process(casper.clone(), block, Some(peer))
+                                                .await
+                                                .map_err(|e| {
+                                                    CommError::CasperError(e.to_string())
+                                                })?;
 
                                             return Ok(
                                                 CommunicationResponse::handled_without_message(),
@@ -825,7 +698,7 @@ impl TestNode {
 
         drop(self.tls.handle_receive(dispatch, handle_streamed).await?);
 
-        Ok(())
+        self.ingest.lock().await.pump(self.casper.clone()).await
     }
 
     /// Creates a standalone TestNode (single node network)
@@ -1090,10 +963,6 @@ impl TestNode {
                 .unwrap(),
         ));
 
-        let casper_buffer_storage = resources::casper_buffer_storage_from_dyn(&mut *kvm)
-            .await
-            .unwrap();
-
         let rspace_store = (*kvm).r_space_stores().await.unwrap();
         let mergeable_store = resources::mergeable_store_from_dyn(&mut *kvm)
             .await
@@ -1113,15 +982,17 @@ impl TestNode {
             rp_conf.bootstrap = Some(bootstrap_peer);
         }
         let event_publisher = F1r3flyEvents::new();
-        // Scala: implicit val requestedBlocks: RequestedBlocks[F] = Ref.unsafe[F, Map[BlockHash, RequestState]](Map.empty)
-        let requested_blocks = Arc::new(Mutex::new(HashMap::<BlockHash, RequestState>::new()));
-        // Scala: implicit val blockRetriever: BlockRetriever[F] = BlockRetriever.of[F]
-        let block_retriever = BlockRetriever::new(
-            requested_blocks.clone(),
+        let ingest = InlineIngest::new(
+            block_store.clone(),
+            block_dag_storage.clone(),
+            genesis.clone(),
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
-        );
+        )
+        .expect("block ingest opens on a fresh DAG storage");
+        let ingest_handle = ingest.handle();
+        let ingest_view = ingest.view().clone();
 
         let _ = test_network.add_peer(&current_peer_node);
 
@@ -1140,7 +1011,6 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-                block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
                 rp_conf.clone(),
@@ -1148,31 +1018,6 @@ impl TestNode {
                 false, // allow_empty_blocks - disabled for tests
             )
         });
-
-        let bp_dependencies = BlockProcessorDependencies::new(
-            block_store.clone(),
-            casper_buffer_storage.clone(),
-            block_dag_storage.clone(),
-            block_retriever.clone(),
-            tle.clone(),
-            connections_cell.clone(),
-            rp_conf.clone(),
-            None,
-        );
-
-        let block_processor = BlockProcessor::new(bp_dependencies);
-
-        // Creates an unbounded tokio channel for processing (Casper, BlockMessage) tuples
-        // - Sender: Non-blocking, cloneable, used to enqueue blocks for processing
-        // - Receiver: Thread-safe (Arc<Mutex>), used to dequeue blocks from processing pipeline
-        let (block_processor_queue_tx, block_processor_queue_rx) =
-            mpsc::channel::<BlockQueueItem>(1024);
-        let block_processor_queue = (
-            block_processor_queue_tx,
-            Arc::new(Mutex::new(block_processor_queue_rx)),
-        );
-
-        let _block_processor_state = Arc::new(RwLock::new(HashSet::<BlockHash>::new()));
 
         let shard_id = "root".to_string();
         let finalization_rate = finalization_rate.unwrap_or(1);
@@ -1208,12 +1053,12 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
-            casper_version: 1,
-            bond_minimum: 0,
-            bond_maximum: i64::MAX,
+            casper_version: genesis.header.version,
+            bond_minimum: 0.into(),
+            bond_maximum: (i64::MAX as u64).into(),
             epoch_length,
             quarantine_length: 20000,
-            min_phlo_price: 1,
+            min_phlo_price: (1).into(),
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
@@ -1243,7 +1088,7 @@ impl TestNode {
         let casper_impl = MultiParentCasperImpl {
             observer: finalization.observer.clone(),
             divergence_monitor: finalization.divergence_monitor.clone(),
-            block_retriever: block_retriever.clone(),
+            ingest: ingest_handle.clone(),
             event_publisher: event_publisher.clone(),
             runtime_manager: finalization.runtime_manager.clone(),
             estimator: estimator.clone(),
@@ -1251,7 +1096,6 @@ impl TestNode {
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
-            casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             finalized_bond_cache,
             casper_shard_conf: finalization.shard_conf.clone(),
@@ -1279,15 +1123,13 @@ impl TestNode {
         let engine_cell = EngineCell::init();
 
         let running_engine = Running::new(
-            block_processor_queue.0.clone(), // block_processing_queue_tx
-            Arc::new(InFlightBlocks::new()), // blocks_in_processing
-            casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
-            _approved_block.clone(),         // approved_block
-            the_init,                        // the_init
-            disable_state_exporter,          // disable_state_exporter
-            tle.clone(),                     // transport
-            rp_conf.clone(),                 // conf
-            block_retriever.clone(),         // block_retriever
+            ingest_handle,
+            casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>,
+            _approved_block.clone(),
+            the_init,
+            disable_state_exporter,
+            tle.clone(),
+            rp_conf.clone(),
             None,
         );
         engine_cell.set(Arc::new(running_engine)).await;
@@ -1302,14 +1144,13 @@ impl TestNode {
             tls,
             genesis,
             validator_id_opt,
-            block_processor,
+            ingest: Arc::new(tokio::sync::Mutex::new(ingest)),
+            ingest_view,
             block_store,
             block_dag_storage,
             deploy_storage,
             rejected_deploy_buffer,
             runtime_manager,
-            requested_blocks,
-            block_retriever,
             connections_cell,
             rp_conf,
             casper,

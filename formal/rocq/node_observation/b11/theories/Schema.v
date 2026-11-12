@@ -13,7 +13,7 @@ Record metadata := {
   metadata_parents : list wire;
   metadata_sender : wire;
   metadata_justifications : list (wire * wire);
-  metadata_weights : list (wire * N);
+  metadata_weights : list (wire * wire);
   metadata_block_number : N;
   metadata_sequence_number : N;
   metadata_invalid : bool;
@@ -30,7 +30,7 @@ Definition metadata_tuple_codec :=
     (pair_codec (list_codec
     (pair_codec blob blob))
     (pair_codec (list_codec
-    (pair_codec blob (uint 8)))
+    (pair_codec blob blob))
     (pair_codec (uint 8)
     (pair_codec (uint 4)
     (pair_codec (boolean)
@@ -41,7 +41,7 @@ Definition metadata_tuple_codec :=
 Definition metadata_unpack (value : metadata) :=
   (metadata_block_hash value, (metadata_parents value, (metadata_sender value, (metadata_justifications value, (metadata_weights value, (metadata_block_number value, (metadata_sequence_number value, (metadata_invalid value, (metadata_directly_finalized value, (metadata_finalized value, (metadata_fault_tolerance_bits value, metadata_merge_base value))))))))))).
 
-Definition metadata_pack (value : ((wire) * ((list wire) * ((wire) * ((list (wire * wire)) * ((list (wire * N)) * ((N) * ((N) * ((bool) * ((bool) * ((bool) * ((N) * (wire))))))))))))%type) : metadata :=
+Definition metadata_pack (value : ((wire) * ((list wire) * ((wire) * ((list (wire * wire)) * ((list (wire * wire)) * ((N) * ((N) * ((bool) * ((bool) * ((bool) * ((N) * (wire))))))))))))%type) : metadata :=
   let '(v0, (v1, (v2, (v3, (v4, (v5, (v6, (v7, (v8, (v9, (v10, v11))))))))))) := value in
   {| metadata_block_hash := v0;
      metadata_parents := v1;
@@ -68,6 +68,7 @@ Record snapshot := {
   snapshot_usage : list N;
   snapshot_coverage : N * (bool * N);
   snapshot_generation : N;
+  snapshot_view_sequence : N;
   snapshot_transactions : list (wire * (N * (N * option N)));
   snapshot_dag_set : list wire;
   snapshot_child_map : list (wire * list wire);
@@ -93,7 +94,7 @@ Definition snapshot_tuple_codec :=
     (pair_codec (tagged "coverage"
     (pair_codec (uint 8)
     (pair_codec boolean (uint 8))))
-    (pair_codec (tagged "generation" (uint 8))
+    (pair_codec (pair_codec (tagged "generation" (uint 8)) (tagged "view_sequence" (uint 8)))
     (pair_codec (tagged "transactions" (list_codec
     (pair_codec blob
     (pair_codec (uint 8)
@@ -124,16 +125,17 @@ Definition snapshot_tuple_codec :=
     (pair_codec blob (optional blob)))) ((tagged "work" (uint 8))))))))))))))))))))).
 
 Definition snapshot_unpack (value : snapshot) :=
-  (snapshot_schema_version value, (snapshot_scope value, (snapshot_limits value, (snapshot_usage value, (snapshot_coverage value, (snapshot_generation value, (snapshot_transactions value, (snapshot_dag_set value, (snapshot_child_map value, (snapshot_height_map value, (snapshot_block_number_map value, (snapshot_main_parent_map value, (snapshot_self_justification_map value, (snapshot_last_finalized_block value, (snapshot_finalized_block_set value, (snapshot_latest_messages value, (snapshot_invalid_blocks value, (snapshot_blocks value, (snapshot_bodies value, snapshot_work value))))))))))))))))))).
+  (snapshot_schema_version value, (snapshot_scope value, (snapshot_limits value, (snapshot_usage value, (snapshot_coverage value, ((snapshot_generation value, snapshot_view_sequence value), (snapshot_transactions value, (snapshot_dag_set value, (snapshot_child_map value, (snapshot_height_map value, (snapshot_block_number_map value, (snapshot_main_parent_map value, (snapshot_self_justification_map value, (snapshot_last_finalized_block value, (snapshot_finalized_block_set value, (snapshot_latest_messages value, (snapshot_invalid_blocks value, (snapshot_blocks value, (snapshot_bodies value, snapshot_work value))))))))))))))))))).
 
-Definition snapshot_pack (value : ((N) * ((wire) * ((list N * N) * ((list N) * ((N * (bool * N)) * ((N) * ((list (wire * (N * (N * option N)))) * ((list wire) * ((list (wire * list wire)) * ((list (N * list wire)) * ((list (wire * N)) * ((list (wire * wire)) * ((list (wire * wire)) * ((option (wire * N)) * ((list wire) * ((list (wire * wire)) * ((list (wire * metadata)) * ((list (wire * (metadata * (option wire * option wire)))) * ((list (wire * option wire)) * (N))))))))))))))))))))%type) : snapshot :=
+Definition snapshot_pack (value : ((N) * ((wire) * ((list N * N) * ((list N) * ((N * (bool * N)) * ((N * N) * ((list (wire * (N * (N * option N)))) * ((list wire) * ((list (wire * list wire)) * ((list (N * list wire)) * ((list (wire * N)) * ((list (wire * wire)) * ((list (wire * wire)) * ((option (wire * N)) * ((list wire) * ((list (wire * wire)) * ((list (wire * metadata)) * ((list (wire * (metadata * (option wire * option wire)))) * ((list (wire * option wire)) * (N))))))))))))))))))))%type) : snapshot :=
   let '(v0, (v1, (v2, (v3, (v4, (v5, (v6, (v7, (v8, (v9, (v10, (v11, (v12, (v13, (v14, (v15, (v16, (v17, (v18, v19))))))))))))))))))) := value in
   {| snapshot_schema_version := v0;
      snapshot_scope := v1;
      snapshot_limits := v2;
      snapshot_usage := v3;
      snapshot_coverage := v4;
-     snapshot_generation := v5;
+     snapshot_generation := fst v5;
+     snapshot_view_sequence := snd v5;
      snapshot_transactions := v6;
      snapshot_dag_set := v7;
      snapshot_child_map := v8;

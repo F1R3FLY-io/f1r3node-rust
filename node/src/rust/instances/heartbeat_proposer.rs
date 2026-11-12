@@ -631,7 +631,7 @@ async fn check_lfb_and_propose(
             &snapshot,
             &casper,
             config.advanced.empty_frontier_max_unfinalized_blocks.max(1) as usize,
-        ),
+        )?,
         idle_recovery_window_open,
         lag_recovery_leader,
         empty_frontier_backpressure,
@@ -985,29 +985,29 @@ fn cone_has_user_work(
     snapshot: &CasperSnapshot,
     casper: &Arc<dyn MultiParentCasper + Send + Sync>,
     max_depth: usize,
-) -> bool {
+) -> Result<bool, CasperError> {
     let mut seen: std::collections::HashSet<BlockHash> = std::collections::HashSet::new();
     for (_, tip) in snapshot.dag.latest_message_hashes().iter() {
         let mut cursor = Some(tip.clone());
         for _ in 0..max_depth {
             let Some(hash) = cursor else { break };
-            if snapshot.dag.is_finalized(&hash) || !seen.insert(hash.clone()) {
+            if snapshot.dag.is_finalized(&hash)? || !seen.insert(hash.clone()) {
                 break;
             }
-            if let Ok(Some(block)) = casper.block_store().get(&hash) {
+            if let Some(block) = casper.block_store().get(&hash)? {
                 let carries_deploy = block
                     .body
                     .deploys
                     .iter()
                     .any(|processed| !is_system_deploy_id(&processed.deploy.sig));
                 if carries_deploy || !block.body.rejected_deploys.is_empty() {
-                    return true;
+                    return Ok(true);
                 }
             }
-            cursor = snapshot.dag.main_parent(&hash);
+            cursor = snapshot.dag.main_parent(&hash)?;
         }
     }
-    false
+    Ok(false)
 }
 
 /// The stale-LFB recovery pacing window: whether enough time has passed
@@ -1599,37 +1599,53 @@ mod tests {
                 merge_base: Bytes::new(),
             };
 
-            snapshot.dag.dag_set.insert(hash.clone());
+            snapshot.dag.fixture_mut().dag_set.insert(hash.clone());
             let mut height_hashes = snapshot
                 .dag
+                .fixture_mut()
                 .height_map
                 .get(&block_number)
                 .cloned()
                 .unwrap_or_default();
             height_hashes.insert(hash.clone());
-            snapshot.dag.height_map.insert(block_number, height_hashes);
             snapshot
                 .dag
+                .fixture_mut()
+                .height_map
+                .insert(block_number, height_hashes);
+            snapshot
+                .dag
+                .fixture_mut()
                 .block_number_map
                 .insert(hash.clone(), block_number);
             for parent in &parents {
                 let mut children = snapshot
                     .dag
+                    .fixture_mut()
                     .child_map
                     .get(parent)
                     .cloned()
                     .unwrap_or_default();
                 children.insert(hash.clone());
-                snapshot.dag.child_map.insert(parent.clone(), children);
+                snapshot
+                    .dag
+                    .fixture_mut()
+                    .child_map
+                    .insert(parent.clone(), children);
             }
             if let Some(parent) = parents.first() {
                 snapshot
                     .dag
+                    .fixture_mut()
                     .main_parent_map
                     .insert(hash.clone(), parent.clone());
             }
             if finalized {
-                snapshot.dag.finalized_blocks_set.insert(hash.clone());
+                snapshot
+                    .dag
+                    .fixture_mut()
+                    .finalized_blocks_set
+                    .insert(hash.clone());
                 snapshot.dag.last_finalized_block_hash = hash.clone();
                 snapshot.last_finalized_block = hash.clone();
             }
@@ -1719,10 +1735,12 @@ mod tests {
 
             snapshot
                 .dag
+                .fixture_mut()
                 .latest_messages_map
                 .insert(validator_id, self_tip);
             snapshot
                 .dag
+                .fixture_mut()
                 .latest_messages_map
                 .insert(peer_validator, peer_tip);
 

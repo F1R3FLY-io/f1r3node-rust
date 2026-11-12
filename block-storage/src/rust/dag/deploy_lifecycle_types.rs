@@ -107,10 +107,10 @@ impl DeployLifecycleTables {
     pub fn canonical_appearance(
         &self,
         sig: &[u8],
-        is_visible: &dyn Fn(&[u8]) -> bool,
+        is_visible: &dyn Fn(&[u8]) -> Result<bool, KvStoreError>,
     ) -> Result<Option<ByteString>, KvStoreError> {
         if let Some(terminal) = self.get_terminal(sig)? {
-            if terminal.latest_block_hash.is_empty() {
+            if terminal.latest_block_hash.is_empty() || !is_visible(&terminal.latest_block_hash)? {
                 return Ok(None);
             }
             return Ok(Some(terminal.latest_block_hash));
@@ -118,17 +118,18 @@ impl DeployLifecycleTables {
         let Some(row) = self.get_events(sig)? else {
             return Ok(None);
         };
-        Ok(row
-            .events
-            .iter()
-            .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
-            .filter(|e| is_visible(&e.block_hash))
-            .max_by(|a, b| {
-                a.height
-                    .cmp(&b.height)
-                    .then_with(|| a.block_hash.cmp(&b.block_hash))
-            })
-            .map(|e| e.block_hash.clone()))
+        let mut latest: Option<&LifecycleEvent> = None;
+        for event in &row.events {
+            if matches!(event.kind, LifecycleEventKind::Included { .. })
+                && is_visible(&event.block_hash)?
+                && latest.is_none_or(|previous| {
+                    (event.height, &event.block_hash) > (previous.height, &previous.block_hash)
+                })
+            {
+                latest = Some(event);
+            }
+        }
+        Ok(latest.map(|event| event.block_hash.clone()))
     }
 
     /// Append events for a sig, recording `valid_after` with the first

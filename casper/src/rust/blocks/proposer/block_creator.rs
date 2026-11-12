@@ -22,10 +22,10 @@ use models::rust::casper::protocol::casper_message::{
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::errors::HistoryError;
 use shared::rust::blocking::in_blocking;
 use tracing;
 
@@ -432,11 +432,6 @@ fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
     match err {
-        CasperError::HistoryError(HistoryError::MergeError(msg)) => {
-            msg.contains("single-value cell")
-                && msg.contains("would hold")
-                && msg.contains("after merge")
-        }
         CasperError::RuntimeError(msg) => {
             (msg.contains("number channel")
                 && msg.contains("holds")
@@ -552,6 +547,85 @@ async fn derive_floor_context(
     )
     .await
     .map(Some)
+}
+
+enum ProposalShape {
+    AsSnapshot(Option<FloorContext>),
+    Witness {
+        snapshot: CasperSnapshot,
+        floor_ctx: FloorContext,
+    },
+}
+
+/// Over the floor-distance cap no multi-parent merge can be built, so the
+/// proposer declares only fork choice's main parent and still cites every
+/// latest message. Fork choice weighs main parents only and the oracle reads
+/// main chains and justifications only, so the block carries the same
+/// testimony a full merge would; the other tips stay tips and are merged once
+/// the floor is back within the cap. The block carries no user deploys, and
+/// it is built only when its parent's state holds the block's own floor, so
+/// it takes the single-parent fast path and never re-bases into the refusal.
+async fn shape_proposal(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    floor_ctx: Option<FloorContext>,
+    selection: super::proposer::DeploySelection,
+) -> Result<ProposalShape, CasperError> {
+    let Some(floor_ctx) = floor_ctx else {
+        return Ok(ProposalShape::AsSnapshot(None));
+    };
+    let distance = casper_snapshot.max_block_num - floor_ctx.floor.block_number;
+    if casper_snapshot.parents.len() < 2
+        || !interpreter_util::merge_scope_backstop_exceeded(distance)
+    {
+        return Ok(ProposalShape::AsSnapshot(Some(floor_ctx)));
+    }
+    let refusal = CasperError::FloorDistanceExceeded {
+        distance,
+        cap: interpreter_util::MAX_FLOOR_DISTANCE_BLOCKS,
+        floor_block: floor_ctx.floor.block_number,
+        parents: casper_snapshot.parents.len(),
+    };
+    if !selection.allows_empty() {
+        return Err(refusal);
+    }
+
+    let main_parent = casper_snapshot.parents[0].clone();
+    let mut witness = casper_snapshot.clone();
+    witness.max_block_num = main_parent.body.state.block_number;
+    witness.parents = vec![main_parent];
+    let witness_floor_ctx = derive_floor_context(&witness, block_store)
+        .await?
+        .expect("a snapshot with one parent always derives a floor");
+    let parent = crate::rust::finality::floor::Floor {
+        hash: witness.parents[0].block_hash.clone(),
+        block_number: witness.parents[0].body.state.block_number,
+    };
+    let parent_holds_floor = in_blocking(|| {
+        crate::rust::finality::floor::state_contains(
+            &witness.dag,
+            block_store,
+            &parent,
+            &witness_floor_ctx.floor,
+            &mut crate::rust::finality::floor::IntroducedSigsMemo::new(),
+        )
+    })?;
+    if !parent_holds_floor {
+        return Err(refusal);
+    }
+    tracing::info!(
+        target: "f1r3fly.casper.witness",
+        distance,
+        cap = interpreter_util::MAX_FLOOR_DISTANCE_BLOCKS,
+        floor_block = floor_ctx.floor.block_number,
+        witness_floor_block = witness_floor_ctx.floor.block_number,
+        parents_left_as_tips = casper_snapshot.parents.len() - 1,
+        "floor distance exceeds the merge cap: proposing a single-parent witness block"
+    );
+    Ok(ProposalShape::Witness {
+        snapshot: witness,
+        floor_ctx: witness_floor_ctx,
+    })
 }
 
 /// The parents-rooted canonical-won walk, through the operation context's
@@ -1549,7 +1623,7 @@ fn walk_unfinalized_cone(
         while let Some(block_hash) = stack.pop() {
             if !seen.insert(block_hash.clone())
                 || block_hash == casper_snapshot.last_finalized_block
-                || casper_snapshot.dag.is_finalized(&block_hash)
+                || casper_snapshot.dag.is_finalized(&block_hash)?
             {
                 continue;
             }
@@ -1712,9 +1786,9 @@ async fn prepare_slashing_deploys(
         .on_chain_state
         .bonds_map
         .get(&self_id)
-        .copied()
-        .unwrap_or(0);
-    if proposer_bond <= 0 {
+        .cloned()
+        .unwrap_or_default();
+    if proposer_bond <= BigInt::from(0) {
         return Ok(Vec::new());
     }
     let Some(floor_ctx) = floor_ctx else {
@@ -1915,7 +1989,7 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
                 .on_chain_state
                 .bonds_map
                 .iter()
-                .filter(|(_, stake)| **stake > 0)
+                .filter(|(_, stake)| **stake > BigInt::from(0))
                 .map(|(validator, _)| validator.clone())
                 .collect()
         };
@@ -2726,6 +2800,27 @@ pub async fn create_with_progress(
     selection: super::proposer::DeploySelection,
     finality_progress: &mut FinalityProgress,
 ) -> Result<BlockCreatorResult, CasperError> {
+    // The one derivation of the floor (and its post-state) for this whole
+    // propose; every walk and probe below reads it. `None` only for
+    // parentless fixture shapes, where the floor requirement surfaces at
+    // bonds packaging exactly as before.
+    let derived_floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
+    let witness_snapshot: CasperSnapshot;
+    let (casper_snapshot, floor_ctx, selection) =
+        match shape_proposal(casper_snapshot, block_store, derived_floor_ctx, selection).await? {
+            ProposalShape::AsSnapshot(floor_ctx) => (casper_snapshot, floor_ctx, selection),
+            ProposalShape::Witness {
+                snapshot,
+                floor_ctx,
+            } => {
+                witness_snapshot = snapshot;
+                (
+                    &witness_snapshot,
+                    Some(floor_ctx),
+                    super::proposer::DeploySelection::RecoveryEmpty,
+                )
+            }
+        };
     let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
@@ -2794,12 +2889,6 @@ pub async fn create_with_progress(
     );
 
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
-
-    // The one derivation of the floor (and its post-state) for this whole
-    // propose; every walk and probe below reads it. `None` only for
-    // parentless fixture shapes, where the floor requirement surfaces at
-    // bonds packaging exactly as before.
-    let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
     // Prepare deploys
     let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
@@ -3510,6 +3599,7 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 mod tests {
     use crypto::rust::public_key::PublicKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use rspace_plus_plus::rspace::errors::HistoryError;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -3655,10 +3745,18 @@ mod tests {
             .expect("treat rejected parent-scope user deploy as unresolved"));
         snapshot.rejected_in_scope.remove(&user_sig);
 
-        snapshot.dag.finalized_blocks_set.insert(user_hash.clone());
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .insert(user_hash.clone());
         assert!(!scope_has_unfinalized_user_deploys(&snapshot, &block_store)
             .expect("ignore finalized parent-scope user deploy"));
-        snapshot.dag.finalized_blocks_set.remove(&user_hash);
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .remove(&user_hash);
 
         snapshot.last_finalized_block = user_hash;
         assert!(!scope_has_unfinalized_user_deploys(&snapshot, &block_store)
@@ -3788,7 +3886,7 @@ mod tests {
                 DeployData {
                     term: format!("@{}!(Nil)", time_stamp),
                     time_stamp,
-                    phlo_price: 1,
+                    phlo_price: (1).into(),
                     phlo_limit: 100_000,
                     valid_after_block_number,
                     shard_id: "test".to_string(),
@@ -5164,7 +5262,7 @@ mod tests {
             while let Some(block_hash) = stack.pop() {
                 if !seen.insert(block_hash.clone())
                     || block_hash == casper_snapshot.last_finalized_block
-                    || casper_snapshot.dag.is_finalized(&block_hash)
+                    || casper_snapshot.dag.is_finalized(&block_hash).unwrap()
                 {
                     continue;
                 }
@@ -5381,12 +5479,6 @@ mod tests {
 
     #[test]
     fn detects_retryable_single_value_batch_errors() {
-        let err = CasperError::HistoryError(HistoryError::MergeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        ));
-
-        assert!(is_retryable_single_value_batch_error(&err));
-
         let runtime = CasperError::RuntimeError(
             "number channel abc holds 2 values [0, 0]; IntegerAdd single-value invariant violated"
                 .to_string(),
@@ -5402,11 +5494,6 @@ mod tests {
             "MergeType mismatch on channel abc".to_string(),
         ));
         assert!(!is_retryable_single_value_batch_error(&other));
-
-        let unrelated_runtime = CasperError::RuntimeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        );
-        assert!(!is_retryable_single_value_batch_error(&unrelated_runtime));
     }
 
     #[test]

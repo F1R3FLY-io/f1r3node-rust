@@ -32,3 +32,25 @@ async fn a_deploy_reports_only_its_own_mergeable_channels_under_the_uri_tag() {
     })
     .await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_system_process_reply_onto_a_tagged_channel_is_reported_mergeable() {
+    with_runtime("mergeable-channels-spec-", |mut runtime| async move {
+        let reply = runtime
+            .evaluate_with_term(
+                r#"new t(`rho:system:bitmaskMergeableTag`), hash(`rho:crypto:blake2b256Hash`) in {
+                     hash!("abc".toByteArray(), (*t, "reply"))
+                   }"#,
+            )
+            .await
+            .unwrap();
+        assert!(reply.errors.is_empty(), "{:?}", reply.errors);
+        assert_eq!(
+            reply.mergeable.values().copied().collect::<Vec<_>>(),
+            vec![MergeType::BitmaskOr],
+            "the hash's reply lands on a tagged channel: {:?}",
+            reply.mergeable
+        );
+    })
+    .await
+}
