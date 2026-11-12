@@ -89,6 +89,7 @@ source_files=(
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
   "$model_dir/rpb3_epm_live_handoff.rs"
+  "$model_dir/rpb3_ezipper_snapshot_provenance.rs"
   "$model_dir/rpb3_ezipper_bool_slot_readable.rs"
   "$model_dir/rpb3_message_frame_finish_mapping.rs"
   "$model_dir/rpb3_finish_handle_transcript.rs"
@@ -1358,6 +1359,86 @@ proofs_rpb3_ezipper_bool_slot_readable=(
   unrecorded_start_is_readable
   reachable_ezipper_flag_slot_is_readable
 )
+proofs_rpb3_ezipper_snapshot_provenance=(
+  epathmap_score_node_reads_back
+  epathmap_score_node_extends
+  epathmap_handle_shaped_extends
+  epathmap_score_node_snapshot_fits
+  epathmap_frame_shaped_extends
+  epathmap_view_kept_frame_shaped
+  epathmap_inert_frame_shaped
+  epathmap_fresh_frame_shaped
+  epathmap_frames_assemble
+  epathmap_top_replaced_shaped
+  epathmap_child_pushed_shaped
+  epathmap_parent_replaced_shaped
+  epathmap_cursor_advanced_shaped
+  admission_continue_keeps_epathmap_shaped
+  scalar_record_keeps_epathmap_shaped
+  admission_push_keeps_epathmap_shaped
+  complete_child_payload_return_shaped
+  complete_child_keeps_epathmap_shaped
+  owner_return_reads_back_owner_snapshot
+  path_push_keeps_epathmap_shaped
+  path_return_keeps_epathmap_shaped
+  owner_finish_selects_owner_step
+  owner_score_step_shapes_owner
+  score_finish_keeps_epathmap_shaped
+  epm_resolved_parent_keeps_epathmap_shaped
+  epm_push_frames_keep_epathmap_shaped
+  epm_accept_frames_keep_epathmap_shaped
+  initial_root_frames_shaped
+  full_transcript_refuses_append
+  unattached_append_adds_one_entry
+  constructor_step_needs_two_entries
+  pathmap_append_needs_four_entries
+  finish_group_1_empty_has_no_step
+  finish_group_2_empty_has_no_step
+  finish_group_3_empty_has_no_step
+  finish_group_4_empty_has_no_step
+  finish_group_5_empty_has_no_step
+  ezipper_eof_score_step_is_complete
+  ezipper_eof_without_room_has_no_score_step
+  ezipper_eof_score_step_dichotomy
+  ezipper_witness_before_is_shaped
+  ezipper_witness_reaches_complete_score
+  product_message_continue_keeps_epathmap_shaped
+  product_message_push_keeps_epathmap_shaped
+  product_map_key_keeps_epathmap_shaped
+  product_map_value_push_keeps_epathmap_shaped
+  product_map_pop_keeps_epathmap_shaped
+  product_epm_continue_keeps_epathmap_shaped
+  product_epm_child_return_keeps_epathmap_shaped
+  product_epm_finish_accept_keeps_epathmap_shaped
+  live_continue_keeps_epathmap_shaped
+  live_continue_indexed_keeps_epathmap_shaped
+  live_map_key_keeps_epathmap_shaped
+  live_score_keeps_epathmap_shaped
+  live_root_noscore_keeps_epathmap_shaped
+  live_message_push_keeps_epathmap_shaped
+  live_message_epm_push_keeps_epathmap_shaped
+  live_map_value_push_keeps_epathmap_shaped
+  live_message_child_complete_keeps_epathmap_shaped
+  live_map_value_accept_keeps_epathmap_shaped
+  live_map_entry_finish_keeps_epathmap_shaped
+  live_epm_map_value_accept_keeps_epathmap_shaped
+  live_epm_continue_keeps_epathmap_shaped
+  live_epm_push_keeps_epathmap_shaped
+  live_epm_end_keeps_epathmap_shaped
+  live_epm_finish_accept_keeps_epathmap_shaped
+  live_runtime_step_keeps_epathmap_shaped
+  integrated_noscore_root_keeps_epathmap_shaped
+  integrated_live_keeps_epathmap_shaped
+  integrated_path_keeps_epathmap_shaped
+  act_forward_keeps_epathmap_shaped
+  act_unwind_keeps_epathmap_shaped
+  obligation_return_keeps_epathmap_shaped
+  handoff_keeps_epathmap_shaped
+  integrated_step_keeps_epathmap_shaped
+  integrated_trace_keeps_epathmap_shaped
+  unscored_start_is_shaped
+  reachable_ezipper_eof_has_score_step
+)
 proofs_rpb3_ezipper_source_refinement=(
   ezipper_absent_modeled_pop_is_source_bound
   ezipper_absent_modeled_rejects_fabricated_summary
@@ -2623,6 +2704,7 @@ gated_modules=(
   rpb3_epm_unwind_event_lift
   rpb3_epm_unwind_product_lift
   rpb3_ezipper_bool_slot_readable
+  rpb3_ezipper_snapshot_provenance
   rpb3_ezipper_source_refinement
   rpb3_finish_handle_transcript
   rpb3_finish_macro_refinement
@@ -5138,6 +5220,39 @@ fi
 if ! rg -q '^verification results:: 59 verified, 0 errors' "$ezipper_bool_slot_readable_log"; then
   cat "$ezipper_bool_slot_readable_log"
   echo "rpb3-admission-cursor: EZipper flag readability module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_ezipper_snapshot_provenance[@]}"; do
+  proof_log="$evidence_dir/ezipper-snapshot-provenance-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_ezipper_snapshot_provenance --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EZipper snapshot provenance $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EZipper snapshot provenance $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+ezipper_snapshot_provenance_log="$evidence_dir/ezipper-snapshot-provenance-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_ezipper_snapshot_provenance \
+  "$integrated_source" \
+  >"$ezipper_snapshot_provenance_log" 2>&1; then
+  cat "$ezipper_snapshot_provenance_log"
+  echo "rpb3-admission-cursor: EZipper snapshot provenance module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 78 verified, 0 errors' "$ezipper_snapshot_provenance_log"; then
+  cat "$ezipper_snapshot_provenance_log"
+  echo "rpb3-admission-cursor: EZipper snapshot provenance module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do

@@ -114,6 +114,8 @@ mod rpb3_finish_handle_transcript;
 mod rpb3_message_frame_finish_mapping;
 #[cfg(rpb3_live_push)]
 mod rpb3_ezipper_bool_slot_readable;
+#[cfg(rpb3_live_push)]
+mod rpb3_ezipper_snapshot_provenance;
 
 use {
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
