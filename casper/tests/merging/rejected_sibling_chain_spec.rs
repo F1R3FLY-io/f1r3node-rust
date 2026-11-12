@@ -156,7 +156,10 @@ fn dag_with_parents(
     let mut finalized_blocks_set = imbl::HashSet::new();
     finalized_blocks_set.insert(genesis.clone());
 
-    KeyValueDagRepresentation {
+    block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+        history: None,
+        view_sequence: u64::MAX,
+        view_max_height: None,
         dag_set,
         latest_messages_map: imbl::HashMap::new(),
         child_map,
@@ -175,6 +178,7 @@ fn dag_with_parents(
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
     }
+    .build()
 }
 
 struct MergeOutcome {
@@ -237,7 +241,7 @@ async fn merge_in_dag(
     expensive_sig: Option<Bytes>,
 ) -> MergeOutcome {
     let scope: HashSet<BlockHash> = blocks.iter().map(|block| block.hash.clone()).collect();
-    let (merged_state, rejected, _mergeable, applied) = dag_merger::merge(
+    let (merged_state, rejected, applied) = dag_merger::merge(
         &dag,
         genesis,
         &Blake2b256Hash::from_bytes_prost(base_state),
