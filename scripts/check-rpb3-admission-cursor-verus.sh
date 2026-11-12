@@ -5314,24 +5314,64 @@ if ! rg -q 'verification results:: 1 verified, 0 errors' "$terminal_trace_log"; 
   exit 1
 fi
 
+# The four causal mutants each alter one shared transition of the cursor model.
+# Each runs in its own shadow copy of the integrated crate and must fail at its
+# pinned proof when the shadow integrated root is verified with the integrated
+# flags. dropped_child changes the integrated push successor and fails at the
+# product Message push frame shape. skipped_root lets a root complete short of
+# its end and fails at the map driver's lemma that a root finish consumes the
+# whole root.
 for mutant in unchecked_length dropped_child skipped_root non_progress; do
-  mutant_source="$evidence_dir/$mutant.rs"
-  mutant_log="$evidence_dir/$mutant.log"
   case "$mutant" in
-    unchecked_length|non_progress) expected_proof=admission_continue_refines ;;
-    dropped_child) expected_proof=admission_push_refines ;;
-    skipped_root) expected_proof=admission_root_refines ;;
+    unchecked_length|non_progress)
+      # No integrated proof site exists for these two: every integrated
+      # continue reads its field through indexed_field_at_cursor (Message
+      # records) or admission_map_key_field (map keys), and both already force
+      # top.cursor < next_cursor <= top.region_end. Dropping either bound from
+      # the continue guard therefore leaves every integrated relation
+      # unchanged (equivalent mutants), so they are pinned at the cursor proof
+      # that states both bounds, verified inside the integrated crate.
+      site_module=rpb3_admission_cursor
+      expected_proof=admission_continue_refines
+      ;;
+    dropped_child)
+      site_module=rpb3_integrated_admission
+      expected_proof=product_map_push_concrete_frames
+      ;;
+    skipped_root)
+      site_module=rpb3_map_frame_refinement
+      expected_proof=integrated_root_finish_consumes_root
+      ;;
   esac
+  mutant_dir="$evidence_dir/$mutant-shadow"
+  mkdir -p "$mutant_dir"
+  cp "$model_dir"/*.rs "$mutant_dir/"
+  mutant_source="$mutant_dir/rpb3_admission_cursor.rs"
+  site_source="$mutant_dir/$site_module.rs"
+  mutant_log="$evidence_dir/$mutant.log"
   python3 "$repo_root/scripts/generate-rpb3-admission-mutant.py" \
     "$mutant" "$model_dir/rpb3_admission_cursor.rs" "$mutant_source"
-  if tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" --no-cheating --num-threads 1 \
-    "$mutant_source" >"$mutant_log" 2>&1; then
+  if cmp -s "$model_dir/rpb3_admission_cursor.rs" "$mutant_source"; then
+    echo "rpb3-admission-cursor: $mutant did not alter the shared cursor model" >&2
+    exit 1
+  fi
+  if [[ "$site_module" == rpb3_integrated_admission ]]; then
+    site_scope=(--verify-root)
+  else
+    site_scope=(--verify-only-module "$site_module")
+  fi
+  if tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 --rlimit 30 \
+    --cfg rpb3_integrated --cfg rpb3_live_push \
+    "${site_scope[@]}" --verify-function "$expected_proof" \
+    "$mutant_dir/rpb3_integrated_admission.rs" \
+    >"$mutant_log" 2>&1; then
     cat "$mutant_log"
     echo "rpb3-admission-cursor: $mutant unexpectedly verified" >&2
     exit 1
   fi
   if ! rg -Fq 'error: postcondition not satisfied' "$mutant_log" \
-    || ! rg -Fq "$mutant_source:" "$mutant_log" \
+    || ! rg -Fq "$site_source:" "$mutant_log" \
     || ! rg -Fq "pub proof fn $expected_proof(" "$mutant_log" \
     || ! rg -q 'verification results:: [0-9]+ verified, [1-9][0-9]* errors' "$mutant_log"; then
     cat "$mutant_log"
