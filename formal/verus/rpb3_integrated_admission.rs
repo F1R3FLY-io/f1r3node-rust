@@ -10811,13 +10811,22 @@ pub proof fn product_map_pop_preserves_ancestor_prefix(
         product_ancestor_view_same(before, after, i) by {}
 }
 
+/// The lemmas from here to `live_runtime_product_step_preserves_ancestor_prefix`
+/// prove its four conclusions one action at a time, each in a solver query of its
+/// own. Each one requires the live step at one constructor and proves that
+/// action's case of the four conclusions from the contracts of the lemmas the
+/// case rests on: the action's own preservation lemma and, where needed, the
+/// shared well-formedness and wire and cursor prefix lemmas. The proof itself only
+/// matches the action and calls the action's lemma, so no query proves two cases.
 #[cfg(rpb3_live_push)]
-pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
+pub proof fn live_runtime_product_continue_keeps_ancestor_prefix(
     before: LiveRuntimeProductState,
     after: LiveRuntimeProductState,
     action: LiveRuntimeProductAction,
 )
-    requires live_runtime_product_step(before, after, action),
+    requires
+        live_runtime_product_step(before, after, action),
+        action is Continue,
     ensures
         live_runtime_product_wf(after),
         0 <= live_runtime_product_ancestor_limit(before, action),
@@ -10826,10 +10835,6 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
         forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
             ==> live_runtime_product_ancestor_view_same(before, after, i),
 {
-    if let LiveRuntimeProductAction::RootCompleteNoScore { returned } = action {
-        live_runtime_product_root_complete_noscore_keeps_state(before, after, returned);
-        return;
-    }
     live_runtime_product_step_preserves_wf(before, after, action);
     let old = before.source.product;
     let new = after.source.product;
@@ -10848,6 +10853,51 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 _ => assert(false),
             }
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_continue_indexed_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is ContinueIndexed,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::ContinueIndexed => {
             assert(live_runtime_product_continue_indexed_step(before, after));
             let parent_source = product_admission_source_image(old.indexed_regions.last());
@@ -10865,6 +10915,51 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 _ => assert(false),
             }
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_map_key_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is MapKey,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::MapKey => {
             assert(live_runtime_product_map_key_step(before, after));
             match before.source.wire.last() {
@@ -10876,23 +10971,231 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 _ => assert(false),
             }
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_root_score_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is RootScore,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::RootScore => {
             assert(live_runtime_product_root_score_step(before, after));
             score_bridge::bridge_score_source_step_preserves_shape(
                 before.source.product.bridge, after.source.product.bridge,
             );
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {
+        assert(false);
+    }
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_root_complete_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is RootComplete,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::RootComplete { returned } => {
             assert(live_runtime_product_root_complete_step(before, after, returned));
             score_bridge::bridge_score_source_step_preserves_shape(
                 before.source.product.bridge, after.source.product.bridge,
             );
         },
-        LiveRuntimeProductAction::RootCompleteNoScore { .. } => assert(false),
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {
+        assert(false);
+    }
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_root_complete_noscore_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is RootCompleteNoScore,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    match action {
+        LiveRuntimeProductAction::RootCompleteNoScore { returned } => {
+            live_runtime_product_root_complete_noscore_keeps_state(before, after, returned);
+        },
+        _ => assert(false),
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_child_score_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is MessageChildScore,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::MessageChildScore => {
             assert(live_runtime_product_message_child_score_step(before, after));
             product_message_child_score_preserves_ancestor_prefix(old, new);
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_push_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is MessagePush,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::MessagePush {
             request, actual_top_kind, after_len, after_capacity,
             stats_frame_variant_bytes,
@@ -10934,6 +11237,51 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 }
             }
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_epm_push_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is MessageEpmPush,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::MessageEpmPush {
             request, actual_top_kind, after_len, after_capacity,
             stats_frame_variant_bytes,
@@ -10966,6 +11314,51 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 }
             }
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_map_value_push_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is MapValuePush,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::MapValuePush {
             request, actual_top_kind, after_len, after_capacity,
             stats_frame_variant_bytes,
@@ -11007,6 +11400,51 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 }
             }
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_message_child_complete_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is MessageChildComplete,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::MessageChildComplete => {
             assert(live_runtime_product_message_child_complete_step(before, after));
             product_map_pop_preserves_ancestor_prefix(
@@ -11015,12 +11453,102 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 },
             );
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_map_value_accept_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is MapValueAccept,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::MapValueAccept => {
             assert(live_runtime_product_map_value_accept_step(before, after));
             product_map_pop_preserves_ancestor_prefix(
                 old, new, map::IntegratedAdmissionAction::MapAccept,
             );
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_map_entry_finish_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is MapEntryFinish,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::MapEntryFinish => {
             reveal(live_runtime_product_map_entry_finish_step);
             assert(live_runtime_product_map_entry_finish_step(before, after));
@@ -11028,6 +11556,51 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 old, new, map::IntegratedAdmissionAction::MapFinish,
             );
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_epm_map_value_accept_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is EpmMapValueAccept,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::EpmMapValueAccept {
             summary, admission_summary,
         } => {
@@ -11038,18 +11611,140 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 old, new, summary, admission_summary,
             );
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_epm_continue_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is EpmContinue,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::EpmContinue { event } => {
             assert(rpb3_epm_unwind_product_lift::live_runtime_internal_epm_unwind_step(
                 before, after, event,
             ));
             product_epm_continue_preserves_ancestor_prefix(old, new, event);
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_epm_push_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is EpmPush,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::EpmPush { observed } => {
             assert(rpb3_epm_push_live_action_refinement::epm_push_live_after(
                 before, observed,
             ) == Some(after));
             live_epm_push_preserves_ancestor_prefix(before, after, observed);
         },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {}
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_epm_end_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is EpmEnd,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
         LiveRuntimeProductAction::EpmEnd { observed } => {
             assert(live_runtime_product_epm_end_source_step(before, after, observed));
             let prior = product_linked_top(old).unwrap();
@@ -11061,43 +11756,132 @@ pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
                 old, new, complete.action,
             );
         },
-        LiveRuntimeProductAction::EpmFinishAccept => {
-            assert(live_runtime_product_epm_finish_accept_step(before, after));
-            product_epm_finish_accept_preserves_ancestor_prefix(old, new);
-        },
+        _ => assert(false),
     }
     assert(0 <= limit);
     assert(limit <= new.bridge.admission.frames.len());
     assert forall|i: int| 0 <= i < limit implies
-        product_ancestor_view_same(old, new, i) by {
-        match action {
-            LiveRuntimeProductAction::RootScore
-            | LiveRuntimeProductAction::RootComplete { .. } => assert(false),
-            _ => {},
-        }
-    }
-    if let LiveRuntimeProductAction::EpmPush { .. } = action {
-    } else {
-        assert(strict_ancestor_sequence_shape(
-            before.source.wire, after.source.wire,
-        ));
-        assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
-        live_wire_cursor_shape_preserves_prefix(before, after, limit);
-    }
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
     assert forall|i: int| 0 <= i < limit implies
         live_runtime_product_ancestor_view_same(before, after, i) by {
-        match action {
-            LiveRuntimeProductAction::EpmPush { .. } => {},
-            _ => {
-                assert(product_ancestor_view_same(old, new, i));
-                assert(after.source.product.map.admission.frames[i]
-                    == before.source.product.map.admission.frames[i]);
-                assert(after.source.runtime.score.admission.frames[i]
-                    == before.source.runtime.score.admission.frames[i]);
-                assert(after.source.wire[i] == before.source.wire[i]);
-                assert(after.cursors[i] == before.cursors[i]);
-            },
-        }
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_epm_finish_accept_keeps_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires
+        live_runtime_product_step(before, after, action),
+        action is EpmFinishAccept,
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    live_runtime_product_step_preserves_wf(before, after, action);
+    let old = before.source.product;
+    let new = after.source.product;
+    let limit = live_runtime_product_ancestor_limit(before, action);
+    match action {
+        LiveRuntimeProductAction::EpmFinishAccept => {
+            assert(live_runtime_product_epm_finish_accept_step(before, after));
+            product_epm_finish_accept_preserves_ancestor_prefix(old, new);
+        },
+        _ => assert(false),
+    }
+    assert(0 <= limit);
+    assert(limit <= new.bridge.admission.frames.len());
+    assert forall|i: int| 0 <= i < limit implies
+        product_ancestor_view_same(old, new, i) by {}
+    assert(strict_ancestor_sequence_shape(
+        before.source.wire, after.source.wire,
+    ));
+    assert(strict_ancestor_sequence_shape(before.cursors, after.cursors));
+    live_wire_cursor_shape_preserves_prefix(before, after, limit);
+    assert forall|i: int| 0 <= i < limit implies
+        live_runtime_product_ancestor_view_same(before, after, i) by {
+        assert(product_ancestor_view_same(old, new, i));
+        assert(after.source.product.map.admission.frames[i]
+            == before.source.product.map.admission.frames[i]);
+        assert(after.source.runtime.score.admission.frames[i]
+            == before.source.runtime.score.admission.frames[i]);
+        assert(after.source.wire[i] == before.source.wire[i]);
+        assert(after.cursors[i] == before.cursors[i]);
+    }
+}
+
+#[cfg(rpb3_live_push)]
+pub proof fn live_runtime_product_step_preserves_ancestor_prefix(
+    before: LiveRuntimeProductState,
+    after: LiveRuntimeProductState,
+    action: LiveRuntimeProductAction,
+)
+    requires live_runtime_product_step(before, after, action),
+    ensures
+        live_runtime_product_wf(after),
+        0 <= live_runtime_product_ancestor_limit(before, action),
+        live_runtime_product_ancestor_limit(before, action)
+            <= after.source.product.bridge.admission.frames.len(),
+        forall|i: int| 0 <= i < live_runtime_product_ancestor_limit(before, action)
+            ==> live_runtime_product_ancestor_view_same(before, after, i),
+{
+    match action {
+        LiveRuntimeProductAction::Continue =>
+            live_runtime_product_continue_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::ContinueIndexed =>
+            live_runtime_product_continue_indexed_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::MapKey =>
+            live_runtime_product_map_key_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::RootScore =>
+            live_runtime_product_root_score_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::RootComplete { .. } =>
+            live_runtime_product_root_complete_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::RootCompleteNoScore { .. } =>
+            live_runtime_product_root_complete_noscore_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::MessageChildScore =>
+            live_runtime_product_message_child_score_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::MessagePush { .. } =>
+            live_runtime_product_message_push_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::MessageEpmPush { .. } =>
+            live_runtime_product_message_epm_push_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::MapValuePush { .. } =>
+            live_runtime_product_map_value_push_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::MessageChildComplete =>
+            live_runtime_product_message_child_complete_keeps_ancestor_prefix(
+                before, after, action,
+            ),
+        LiveRuntimeProductAction::MapValueAccept =>
+            live_runtime_product_map_value_accept_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::MapEntryFinish =>
+            live_runtime_product_map_entry_finish_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::EpmMapValueAccept { .. } =>
+            live_runtime_product_epm_map_value_accept_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::EpmContinue { .. } =>
+            live_runtime_product_epm_continue_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::EpmPush { .. } =>
+            live_runtime_product_epm_push_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::EpmEnd { .. } =>
+            live_runtime_product_epm_end_keeps_ancestor_prefix(before, after, action),
+        LiveRuntimeProductAction::EpmFinishAccept =>
+            live_runtime_product_epm_finish_accept_keeps_ancestor_prefix(before, after, action),
     }
 }
 
