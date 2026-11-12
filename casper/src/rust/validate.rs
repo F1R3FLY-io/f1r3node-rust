@@ -719,9 +719,7 @@ impl Validate {
                     oldest_valid_after,
                 ) {
                     Ok(start) => start,
-                    Err(e) => {
-                        return Either::Left(BlockError::from_validation_error(e.into()))
-                    }
+                    Err(e) => return Either::Left(BlockError::from_validation_error(e.into())),
                 }
             }
             _ => tip_scan_start,

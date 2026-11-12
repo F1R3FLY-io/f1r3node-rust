@@ -14,7 +14,7 @@ use casper::rust::api::block_api::{
     BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
     ExploratoryDeployReadOnlyError, ExploratoryDeployRejection, InvalidHashError,
     InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
-    ProposeRefusal, ProposeRefusedError,
+    ProposeRefusal, ProposeRefusedError, ValidatorNotBondedError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
@@ -304,6 +304,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                 cause.to_string(),
             );
         }
+        if cause.downcast_ref::<ValidatorNotBondedError>().is_some() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "validator_not_bonded",
+                cause.to_string(),
+            );
+        }
         if cause.downcast_ref::<ProposeReadOnlyError>().is_some() {
             return (
                 StatusCode::BAD_REQUEST,
@@ -509,6 +516,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
+        (status = 503, description = "The node's validator is not bonded, so it cannot include the deploy now; retry later (`validator_not_bonded`)", body = ApiErrorResponse),
     ),
     tag = "Deployment"
 )]
@@ -733,7 +741,7 @@ mod tests {
             BlockNotFoundError, DeployExpiredError, DeployNotFoundError, DeployValidationError,
             ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
             LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError, ProposeRefusal,
-            ProposeRefusedError,
+            ProposeRefusedError, ValidatorNotBondedError,
         };
         use casper::rust::casper::DeployError;
         use casper::rust::errors::CasperError;
@@ -786,6 +794,13 @@ mod tests {
                     message: "window closed".to_string(),
                 }),
                 (StatusCode::BAD_REQUEST, "deploy_expired".to_string())
+            );
+            assert_eq!(
+                classify(ValidatorNotBondedError),
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "validator_not_bonded".to_string()
+                )
             );
             assert_eq!(
                 classify(ProposeReadOnlyError),

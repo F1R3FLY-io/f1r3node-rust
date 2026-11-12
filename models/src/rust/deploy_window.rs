@@ -34,6 +34,37 @@ pub fn last_includable_block(
         .saturating_sub(1))
 }
 
+/// The highest `validAfterBlockNumber` a deploy may name when the latest
+/// block is `latest_block_number`. An honest node's tip runs ahead of another
+/// honest node's by less than the citable depth, so a client that read the
+/// number from any node of the shard names no block past this one.
+pub fn latest_valid_after(latest_block_number: i64, max_parent_depth: i32) -> i64 {
+    latest_block_number.saturating_add(i64::from(max_parent_depth))
+}
+
+pub fn is_too_far_ahead(
+    valid_after_block_number: i64,
+    latest_block_number: i64,
+    max_parent_depth: i32,
+) -> bool {
+    valid_after_block_number > latest_valid_after(latest_block_number, max_parent_depth)
+}
+
+pub fn too_far_ahead_message(
+    valid_after_block_number: i64,
+    latest_block_number: i64,
+    max_parent_depth: i32,
+) -> String {
+    format!(
+        "Deploy validAfterBlockNumber {} is ahead of the highest accepted block number {} \
+         (latest block {} plus max parent depth {}).",
+        valid_after_block_number,
+        latest_valid_after(latest_block_number, max_parent_depth),
+        latest_block_number,
+        max_parent_depth
+    )
+}
+
 pub fn repeat_scan_start(
     tip_scan_start: i64,
     floor_block_number: i64,
@@ -65,6 +96,13 @@ mod tests {
     fn negative_lifespan_is_rejected() {
         assert!(is_open(0, 0, -1).is_err());
         assert!(last_includable_block(0, -1).is_err());
+    }
+
+    #[test]
+    fn a_deploy_may_name_a_block_up_to_the_citable_depth_ahead() {
+        assert!(!is_too_far_ahead(125, 100, 25));
+        assert!(is_too_far_ahead(126, 100, 25));
+        assert!(!is_too_far_ahead(i64::MAX, i64::MAX - 1, i32::MAX));
     }
 
     #[test]

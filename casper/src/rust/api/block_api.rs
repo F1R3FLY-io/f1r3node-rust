@@ -396,6 +396,22 @@ impl std::fmt::Display for DeployExpiredError {
 
 impl std::error::Error for DeployExpiredError {}
 
+/// The node's own validator is not bonded, so it cannot propose a block for
+/// the deploy now. It may be bonded later.
+#[derive(Debug)]
+pub struct ValidatorNotBondedError;
+
+impl std::fmt::Display for ValidatorNotBondedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Deploy was rejected because node's validator is not bonded."
+        )
+    }
+}
+
+impl std::error::Error for ValidatorNotBondedError {}
+
 #[derive(Debug)]
 pub struct ProposeReadOnlyError;
 
@@ -743,10 +759,7 @@ impl BlockAPI {
             }
             let dag = casper.block_dag().await?;
             if !casper.is_local_validator_bonded() {
-                return Err(eyre::Report::new(DeployValidationError {
-                    message: "Deploy was rejected because node's validator is not bonded."
-                        .to_string(),
-                }));
+                return Err(eyre::Report::new(ValidatorNotBondedError));
             }
             // A deploy admitted now can only ever land in a block that doesn't
             // exist yet — the next one, at `latest_block_number + 1` — never
@@ -769,6 +782,20 @@ impl BlockAPI {
                     message: format!(
                         "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
                         d.data.valid_after_block_number, next_block_number, deploy_lifespan
+                    ),
+                }));
+            }
+            let max_parent_depth = casper.casper_shard_conf().max_parent_depth;
+            if models::rust::deploy_window::is_too_far_ahead(
+                d.data.valid_after_block_number,
+                dag.latest_block_number(),
+                max_parent_depth,
+            ) {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: models::rust::deploy_window::too_far_ahead_message(
+                        d.data.valid_after_block_number,
+                        dag.latest_block_number(),
+                        max_parent_depth,
                     ),
                 }));
             }

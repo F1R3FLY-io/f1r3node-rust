@@ -283,6 +283,51 @@ async fn block_api_rejects_deploy_from_unbonded_validator() {
 }
 
 #[tokio::test]
+async fn block_api_refuses_a_deploy_valid_after_a_block_past_the_citable_depth() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let casper = node
+        .engine_cell
+        .get()
+        .await
+        .with_casper()
+        .expect("a standalone test node runs casper");
+    let latest = casper.block_dag().await.unwrap().latest_block_number();
+    let max_parent_depth = casper.casper_shard_conf().max_parent_depth;
+    let highest = models::rust::deploy_window::latest_valid_after(latest, max_parent_depth);
+
+    let too_far = construct_deploy::source_deploy_now(
+        "@1!(1)".to_string(),
+        None,
+        Some(highest + 1),
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    let result =
+        BlockAPI::deploy(&node.engine_cell, too_far.clone(), &None, false, &shard_id).await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("is ahead of the highest accepted block number"));
+    assert!(!node.deploy_storage.contains_sig(&too_far.sig).unwrap());
+
+    let at_bound = construct_deploy::source_deploy_now(
+        "@2!(2)".to_string(),
+        None,
+        Some(highest),
+        Some(shard_id.clone()),
+    )
+    .unwrap();
+    let result =
+        BlockAPI::deploy(&node.engine_cell, at_bound.clone(), &None, false, &shard_id).await;
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[tokio::test]
 async fn block_api_rejects_deploy_from_keyless_read_only_node() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
