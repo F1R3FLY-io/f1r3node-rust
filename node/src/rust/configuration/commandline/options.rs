@@ -378,6 +378,10 @@ pub struct RunOptions {
     #[arg(long = "max-parent-depth")]
     pub max_parent_depth: Option<i32>,
 
+    /// Blocks after its valid-after block number in which a deploy can be included
+    #[arg(long = "deploy-lifespan")]
+    pub deploy_lifespan: Option<i64>,
+
     /// Node will request for fork choice tips if the latest FCT is more then forkChoiceStaleThreshold old
     #[arg(long = "fork-choice-stale-threshold", value_parser = ValueParser::new(parse_duration))]
     pub fork_choice_stale_threshold: Option<Duration>,

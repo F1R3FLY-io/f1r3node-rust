@@ -197,6 +197,7 @@ impl ConfigMapper<Options> for NodeConf {
                 run.max_number_of_parents,
             );
             Self::try_override_value(&mut self.casper.max_parent_depth, run.max_parent_depth);
+            Self::try_override_value(&mut self.casper.deploy_lifespan, run.deploy_lifespan);
             Self::try_override_value(
                 &mut self.casper.synchrony_constraint_threshold,
                 run.synchrony_constraint_threshold,
@@ -692,6 +693,7 @@ mod tests {
                 finalization_rate: Some(111111),
                 max_number_of_parents: Some(111111),
                 max_parent_depth: Some(111111),
+                deploy_lifespan: Some(111111),
                 fork_choice_stale_threshold: Some(Duration::from_secs(111111)),
                 fork_choice_check_if_stale_interval: Some(Duration::from_secs(111111)),
                 synchrony_constraint_threshold: Some(111111.0),
@@ -1082,6 +1084,7 @@ mod tests {
         assert_eq!(default_config.casper.finalization_rate, 111111);
         assert_eq!(default_config.casper.max_number_of_parents, 111111);
         assert_eq!(default_config.casper.max_parent_depth, 111111);
+        assert_eq!(default_config.casper.deploy_lifespan, 111111);
         assert_eq!(
             default_config.casper.fork_choice_stale_threshold,
             Duration::from_secs(111111)
