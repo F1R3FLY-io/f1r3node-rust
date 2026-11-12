@@ -502,6 +502,49 @@ async fn staged_pages_hold_exactly_the_exported_stream_and_never_touch_the_store
 }
 
 #[tokio::test]
+async fn an_ended_session_frees_its_staging_while_a_duplicate_of_its_log_descriptor_lives() {
+    let limits = page_limits(2048, 6);
+    let streams = exported_streams(&[8], limits);
+    let stream = &streams[0];
+    let (binding, pages) = (stream.binding, &stream.pages);
+    let (destination, _) = destination_store();
+    let store = destination.path();
+
+    let mut session = begin(store, binding, limits).expect("begin an import");
+    let staged = stage(&mut session, &pages[0]);
+    let first_duplicate = session
+        .duplicate_log_description()
+        .expect("duplicate the open description of the live session's log");
+    drop(session);
+    let resumed = resume(store, binding, limits);
+    let resumed_at = resumed
+        .as_ref()
+        .map(|session| session.frontier())
+        .map_err(ToString::to_string);
+    let second_duplicate = resumed
+        .as_ref()
+        .ok()
+        .map(|session| session.duplicate_log_description());
+    drop(resumed);
+    let aborted = abort_import(store).map_err(|error| error.to_string());
+    let staging_left = staging_path(store).exists();
+    drop((first_duplicate, second_duplicate));
+
+    assert_eq!(
+        resumed_at,
+        Ok(staged),
+        "a session that ended holds no lock on its staging, whatever duplicates of its log's open \
+         description remain, so a resume continues at its frontier"
+    );
+    assert_eq!(
+        (aborted, staging_left),
+        (Ok(()), false),
+        "after the resumed session ended beside a second duplicate, an abort from outside removes \
+         the staging"
+    );
+}
+
+#[tokio::test]
 async fn a_token_resumes_only_on_a_stream_of_its_transfer_version_binding_and_profile() {
     let limits = page_limits(2048, 6);
     let streams = exported_streams(&[12, 4], limits);

@@ -724,12 +724,9 @@ impl StagingDirectoryV1 {
         }
     }
 
-    fn open_objects(&self) -> Result<Option<File>, TransferImportErrorV1> {
+    fn open_objects(&self) -> Result<Option<StagedLogV1>, TransferImportErrorV1> {
         match open_staging_file(&self.objects_path, StagingFileOpenV1::ReadWrite) {
-            Ok(objects) => {
-                lock_staged_objects(&objects, &self.path)?;
-                Ok(Some(objects))
-            }
+            Ok(objects) => lock_staged_objects(objects, &self.path).map(Some),
             Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
                 Ok(None)
             }
@@ -837,7 +834,7 @@ impl StagingDirectoryV1 {
 
 pub(crate) struct DurableImportSessionV1<P: SemanticProfile> {
     staging: StagingDirectoryV1,
-    objects: File,
+    objects: StagedLogV1,
     limits: TransferPageLimitsV1,
     closure: StagedClosureV1,
     frontier: u64,
@@ -857,8 +854,9 @@ impl<P: SemanticProfile> DurableImportSessionV1<P> {
         let staging = StagingDirectoryV1::create(store_directory)?;
         let objects = open_staging_file(&staging.objects_path, StagingFileOpenV1::Create)
             .map_err(TransferImportErrorV1::Io)?;
-        lock_staged_objects(&objects, &staging.path)?;
+        let objects = lock_staged_objects(objects, &staging.path)?;
         objects
+            .file
             .sync_all()
             .map_err(io_error(DurableIoOperation::SyncFile, &staging.objects_path))
             .map_err(TransferImportErrorV1::Io)?;
@@ -909,7 +907,7 @@ impl<P: SemanticProfile> DurableImportSessionV1<P> {
         }
         let mut closure = StagedClosureV1::new(binding, bounds);
         let staged_len = readmit_staged_objects(
-            &mut objects,
+            &mut objects.file,
             &staging.objects_path,
             &mut closure,
             record.position,
@@ -932,6 +930,11 @@ impl<P: SemanticProfile> DurableImportSessionV1<P> {
     }
 
     pub(crate) const fn outstanding(&self) -> u64 { self.closure.counters.outstanding }
+
+    #[cfg(test)]
+    pub(crate) fn duplicate_log_description(&self) -> io::Result<File> {
+        self.objects.file.try_clone()
+    }
 
     pub(crate) fn stage_page(
         &mut self,
@@ -1004,12 +1007,14 @@ impl<P: SemanticProfile> DurableImportSessionV1<P> {
             path,
         )?;
         self.objects
+            .file
             .seek(SeekFrom::Start(self.staged_len))
             .map_err(io_error(DurableIoOperation::PositionalWrite, path))?;
         self.objects
+            .file
             .write_all(records)
             .map_err(io_error(DurableIoOperation::PositionalWrite, path))?;
-        validate_authority_file(&self.objects, DurableIoOperation::SyncFile, path)?;
+        validate_authority_file(&self.objects.file, DurableIoOperation::SyncFile, path)?;
         #[cfg(test)]
         trip_durable_io_failpoint(
             DurableIoFailpointV1::PhysicalSync,
@@ -1017,6 +1022,7 @@ impl<P: SemanticProfile> DurableImportSessionV1<P> {
             path,
         )?;
         self.objects
+            .file
             .sync_all()
             .map_err(io_error(DurableIoOperation::SyncFile, path))?;
         self.staging
@@ -1140,9 +1146,20 @@ fn require_store_profile<P: SemanticProfile>(
     }
 }
 
-fn lock_staged_objects(objects: &File, staging: &Path) -> Result<(), TransferImportErrorV1> {
+struct StagedLogV1 {
+    file: File,
+}
+
+impl Drop for StagedLogV1 {
+    fn drop(&mut self) { let _ = self.file.unlock(); }
+}
+
+fn lock_staged_objects(
+    objects: File,
+    staging: &Path,
+) -> Result<StagedLogV1, TransferImportErrorV1> {
     match objects.try_lock() {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(StagedLogV1 { file: objects }),
         Err(TryLockError::WouldBlock) => Err(TransferImportErrorV1::StagingInUse {
             path: staging.to_path_buf(),
         }),

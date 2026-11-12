@@ -8791,6 +8791,15 @@ the directory with `mkdir`, which fails if it exists, so a store has at most
 one staging, and a session holds an exclusive advisory lock (`flock`) on its
 open log, so no other session, in this process or another, resumes or
 aborts a live one.
+The lock belongs to the log's open file description and not to the
+descriptor: closing the descriptor frees it only when no duplicate of the
+description is left, and a child process that another thread spawns holds a
+duplicate of every descriptor from its creation until close-on-exec takes
+effect. Every holder of the lock therefore unlocks the description before
+it closes the descriptor (task 14368): a session that ends, by abort or by
+being dropped, and a begin, a resume or an abort that fails after it took
+the lock. A staging is free the moment its session ends, whatever
+duplicates remain. The store's writer lease releases its lock the same way.
 
 **Frontier record (version 1).** Every integer is unsigned and
 little-endian.
@@ -9020,6 +9029,15 @@ store that `create_empty_store_v1` creates.
   to the stream's record regions; and the store's catalog, packs and index
   unchanged, the store recovered beside the staging with its genesis catalog
   slot, and nothing but the staging directory removed by abort.
+- `an_ended_session_frees_its_staging_while_a_duplicate_of_its_log_descriptor_lives`
+  (task 14368) stages one page, duplicates the open description of the live
+  session's log, as a process spawn does until close-on-exec, and drops the
+  session beside the duplicate. It requires a resume at the staged frontier
+  and, after the resumed session is dropped beside a second duplicate, an
+  abort from outside that removes the staging. Without the unlock the
+  resume is refused as `StagingInUse`; the crash test of DT-07 met that
+  refusal once, in a run of the whole library, whose other tests spawn
+  processes from parallel threads.
 - `a_token_resumes_only_on_a_stream_of_its_transfer_version_binding_and_profile`,
   `staging_and_frontier_never_cross_sessions_and_a_new_session_starts_empty_at_frontier_zero`
   and
