@@ -12,6 +12,8 @@ theories/RSpaceConsensusIdentity.v
 theories/RSpaceConsensusIdentityMutants.v
 theories/RSpaceDirectManifestIdentity.v
 theories/RSpaceDirectManifestIdentityMutants.v
+theories/RSpaceEagerReference.v
+theories/RSpaceEagerReferenceMutants.v
 theories/GenerationCheckpointPublication.v
 theories/PathExactIncrementalClosure.v
 theories/IncrementalLedgerTrial.v

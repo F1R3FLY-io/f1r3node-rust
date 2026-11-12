@@ -1124,6 +1124,14 @@ rocq_compile_with_closed_count theories/RSpaceDirectManifestIdentityMutants.v 10
   "the direct manifest identity nonvacuity witnesses and negative controls"
 rocq_check_modules "RSpace direct manifest identity contract" \
   StackSafePDA.RSpaceDirectManifestIdentity StackSafePDA.RSpaceDirectManifestIdentityMutants
+rocq_reject_placeholders theories/RSpaceEagerReference.v \
+  theories/RSpaceEagerReferenceMutants.v
+rocq_compile_with_closed_count theories/RSpaceEagerReference.v 17 \
+  "the eager tuple-space reference and refinement capstones"
+rocq_compile_with_closed_count theories/RSpaceEagerReferenceMutants.v 14 \
+  "the eager reference nonvacuity witnesses and negative controls"
+rocq_check_modules "RSpace eager tuple-space reference" \
+  StackSafePDA.RSpaceEagerReference StackSafePDA.RSpaceEagerReferenceMutants
 rocq_reject_placeholders theories/EPM1.v
 rocq_compile_with_closed_count theories/EPM1.v 7 "EPM1 mode and positional-marker regressions"
 rocq_check_modules "EPM1 mode contracts" StackSafePDA.EPM1
