@@ -2,6 +2,47 @@
 
 This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fork-pr.yml`, and `.github/workflows/_integration-pipeline.yml`. Each job has one purpose, and its name states that purpose. A red check therefore tells the reader which kind of work failed.
 
+## Workflow revisions and branch previews
+
+Ordinary `pull_request` CI already runs the proposed merge revision.
+`Resolve Target` selects `github.sha`, and the test jobs check out that revision.
+The local call to `_integration-pipeline.yml` uses the same revision as its caller.
+Its code checkouts receive the resolved target SHA.
+CI changes can therefore be tested in a pull request before promotion to `master`.
+
+For a manual branch preview, select **CI**, select **Run workflow**, and choose the pushed branch under **Use workflow from**.
+Leave `target_sha` and `top_pull_request` empty.
+The workflow and source checkout then use the selected branch revision.
+The equivalent command is:
+
+```bash
+env -u GITHUB_TOKEN gh workflow run ci.yml --ref ci/workflow-preview
+```
+
+Replace `ci/workflow-preview` with the pushed branch name.
+This dispatch runs the existing GitHub-hosted checks.
+Full OCI validation still uses a pull request with `ci-heavy` and the existing eligibility rules.
+Manual previews do not publish images or releases.
+The workflow must already exist on the default branch for GitHub to offer its dispatch entry point.
+
+Trusted execution keeps separate revision rules:
+
+| Path | Workflow and script revision | Reason |
+| --- | --- | --- |
+| Protected Head Guard and CI Heavy Label | Trusted base branch under `pull_request_target` | Pull request changes cannot supply scripts to their write tokens. |
+| Fork integration validation | Trusted base workflow, approved fork source, and pinned harness | Existing launch approval and credential isolation remain required. |
+| Promote and Back-merge and Release Train Daily Back-merge | `master` only | The protected `release-credentials` environment holds the promotion app credentials. |
+| Deployment Train exact-merge CI | Trusted default-branch workflow, separate candidate `target_sha` | Release evidence binds the control revision separately from the candidate revision. |
+
+The deployment train dispatch intentionally retains the trusted default branch, currently `master`.
+Use ordinary PR CI or a plain branch dispatch to test workflow changes.
+Promotion operations retain temporary `promote/*` and `backmerge/*` heads.
+Their operation input selects the direction, while their workflow branch remains `master`.
+
+`test-ci-workflow-refs.sh` checks these boundaries.
+`test-ci-stack-gate.sh` checks event revision selection and exact-target dispatches with mocked GitHub responses.
+See the GitHub documentation for [workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows) and [local reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+
 ## Categories
 
 | Category | Meaning |
@@ -98,6 +139,7 @@ The job runs these script tests:
 - Commit Policy exemptions
 - Commit Policy source history
 - Commit Policy bootstrap
+- Workflow revision selection
 - Pre-push hook
 - Stack CI gate
 - Image publish tags
@@ -302,10 +344,34 @@ Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-rel
 The rulesets require a branch to be up to date before a merge. Mergify then accepts only in-place checks on the pull request head, not checks on a temporary draft pull request. A draft pull request has no `ci-heavy` label, so it would get no Integration Gate result. `.mergify.yml` therefore sets these values:
 
 - `merge_queue.mode: serial` and `merge_queue.max_parallel_checks: 1`
+- `merge_queue.queue_controls_comment: true` and `merge_queue.status_comments: all`
 - `batch_size: 1` and `max_checks_retries: 0` in each queue
 - `merge_conditions` identical to `queue_conditions` in each queue
 
-Each queue lists its checks in both condition lists. A pull request therefore enters a queue only after its checks pass.
+Each queue lists its checks in both condition lists.
+A pull request enters a queue only after its checks pass.
+
+Human-managed pull requests require an explicit merge request, including features, fixes, promotions, manual back-merges, and `ca/` items.
+Use either Mergify control:
+
+- Tick **Queue this pull request** in the Mergify comment.
+- Post `@Mergifyio queue` in a pull request comment.
+
+Both controls select an eligible queue and preserve its reviews, required checks, branch restrictions, and merge method.
+The initial checkbox appears when the pull request is ready to queue.
+A comment command can wait for the eligibility conditions.
+A human push cancels a pending request or removes a queued pull request.
+Review the new commits and request the queue again.
+See the [Mergify queue command](https://docs.mergify.com/commands/queue/).
+
+The daily release-train back-merge retains automatic queueing.
+Its rule requires `ca-canary`, a `backmerge/ca-release-<12-character SHA>` head, and the promotion app author.
+It also requires the scheduled-workflow marker in the generated PR body.
+Only the schedule event sets that marker.
+A manual dispatch of the daily workflow names its initiator and waits for an explicit queue request.
+
+Its existing queue still requires `CA Daily Provenance` and all its CI checks.
+No other pull request rule queues automatically.
 
 Mergify adds the `ci-heavy` label to every open pull request of this repository into `dev`, `master`, `ca-canary`, and `ca-release`. It does not label a protected head, or a `ca-canary` pull request that is not a `ca/` item. A draft gets the label when it is ready for review. If someone removes the label without a valid waiver, Mergify adds it again. The label runs the heavy pipeline on the pull request.
 
@@ -337,14 +403,31 @@ To merge a pull request into `master` or `ca-release`, get an approving review.
 
 A member of `@F1R3FLY-io/ci-maintainers` can merge a pull request into `dev` or `ca-canary` without an approval. Any other author needs an approving review. In both cases, each requested reviewer or team must submit a review, and no review can request changes. A reviewer who does not agree must use **Request changes**. A comment-only review removes the request and does not block the merge.
 
-To merge any other pull request into `dev`, get an approving review. Mergify adds `ci-heavy` when the pull request opens, queues it, and merges it after the checks pass. A push to the pull request starts the checks again.
+To merge any other pull request into `dev`, get an approving review.
+Mergify adds `ci-heavy` when the pull request opens.
+After the checks pass, tick the queue checkbox or post `@Mergifyio queue`.
+A push to the pull request starts the checks again.
 
 To merge a `ca/<item>` pull request:
 
 1. Get an approving review, or be a member of `@F1R3FLY-io/ci-maintainers`. Each requested reviewer must submit a review.
 2. Wait for the required CI checks to pass.
+3. Tick the queue checkbox or post `@Mergifyio queue`.
 
-Mergify queues the pull request. It added `ci-heavy` when the pull request opened.
+Mergify adds `ci-heavy` when the pull request opens.
+It queues the pull request after the explicit request and all eligibility conditions.
+
+#### Rollout of merge controls
+
+The queue controls take effect after this configuration reaches the default branch, currently `master`.
+Validate the configuration in the pull request, merge it into `dev`, and promote it through the existing protected workflow.
+Until promotion completes, the deployed Mergify configuration can still queue human-managed pull requests automatically.
+
+During rollout, inspect existing queued human-managed pull requests and remove entries that have no explicit merge request.
+After promotion, check the initial checkbox and comment command on an eligible human-managed pull request.
+Confirm that the scheduled daily back-merge still queues automatically.
+No live repository protection changes are required.
+Mergify documents the default-branch requirement in its [configuration reference](https://docs.mergify.com/configuration/file-format/).
 
 A pull request from a fork gets no heavy run, so no queue accepts it. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with this body line:
 

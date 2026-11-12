@@ -587,6 +587,20 @@ tasks:
       - "A /harmonize run with the fixed tooling keeps the frontmatter, the local STE prose, and resolvable links, and adds no STE Check findings."
       - "CLAUDE.md and AGENTS.md link the epic, user story, and ToDos standards and state the repository tasking conventions. AGENTS.md also carries the sections that harmonize adds to CLAUDE.md."
       - "The guidance states where a value stream is recorded, after the maintainer chooses the user story, the epic, or both."
+  - id: TASK-023-15
+    title: "Require explicit merge requests and protect workflow revision selection"
+    status: in_progress
+    priority: p2
+    claimed_by: codex-session-manual-queue-ci-refs
+    claimed_at: 2026-11-12T20:41:55Z
+    branch: ci/add-checkbox-merge-use-yml-from-branch
+    pr_base_branch: dev
+    decision: "The user requested manual queue controls and tests of branch CI, with existing security and release policies preserved."
+    acceptance:
+      - "Human-managed pull requests require the queue checkbox or queue comment. The scheduled release back-merge retains automatic queueing."
+      - "Focused tests preserve queue eligibility, required checks, reviews, merge methods, and temporary promotion and back-merge heads."
+      - "Focused tests verify event revision checkouts, local reusable workflows, selected-branch dispatches, and trusted master-only promotion credentials."
+      - "Existing documentation explains the behavior and the remaining rollout steps."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending
