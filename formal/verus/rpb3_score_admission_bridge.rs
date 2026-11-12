@@ -11292,6 +11292,114 @@ pub proof fn bridge_structural_no_score_child_finish_selected_none(
     bridge_structural_no_score_group_6_empty(before, fifth);
 }
 
+pub open spec fn bridge_opaque_root_frame(before: ScoreAdmissionBridge) -> bool {
+    before.admission.frames.len() > 0
+        && admission::admission_frame_wf(before.admission.frames.last())
+        && before.admission.frames.last().family == admission::AdmissionFamily::Other
+        && before.admission.frames.last().frame_kind == 1
+        && match before.admission.frames.last().program_type_id {
+            2 | 4 | 5 | 18 | 58 | 59 => true,
+            _ => false,
+        }
+}
+
+pub proof fn bridge_opaque_root_group_1_empty(before: ScoreAdmissionBridge)
+    requires bridge_opaque_root_frame(before),
+    ensures bridge_score_finish_selection_group_1(
+        before, BridgeScoreFinishSelection::NoCandidate,
+    ) == BridgeScoreFinishSelection::NoCandidate,
+{
+    assert(bridge_raw_par_step(before).is_none());
+    assert(bridge_cost_atom_absent_step(before).is_none());
+    assert(bridge_cost_atom_bytes_step(before).is_none());
+    assert(bridge_cost_bound_step(before).is_none());
+    assert(bridge_cost_atom_bound_forward_step(before).is_none());
+    assert(bridge_cost_signature_step(before).is_none());
+    assert(bridge_cost_region_step(before).is_none());
+    assert(bridge_cost_token_stack_step(before).is_none());
+    reveal(bridge_score_finish_selection_group_1);
+}
+
+pub proof fn bridge_opaque_root_group_2_empty(before: ScoreAdmissionBridge)
+    requires bridge_opaque_root_frame(before),
+    ensures bridge_score_finish_selection_group_2(
+        before, BridgeScoreFinishSelection::NoCandidate,
+    ) == BridgeScoreFinishSelection::NoCandidate,
+{
+    assert(bridge_bundle_step(before).is_none());
+    assert(bridge_if_step(before).is_none());
+    assert(bridge_send_step(before).is_none());
+    assert(bridge_match_step(before).is_none());
+    assert(bridge_absent_specialized_constructor_step(before).is_none());
+    assert(bridge_absent_connective_step(before).is_none());
+    assert(bridge_receive_bind_step(before).is_none());
+    assert(bridge_match_case_step(before).is_none());
+    reveal(bridge_score_finish_selection_group_2);
+}
+
+pub proof fn bridge_opaque_root_group_3_empty(
+    before: ScoreAdmissionBridge, selection: BridgeScoreFinishSelection,
+)
+    requires bridge_opaque_root_frame(before),
+    ensures bridge_score_finish_selection_group_3(before, selection) == selection,
+{
+    assert(bridge_bool_oneof_step(before).is_none());
+    assert(bridge_expr_atom_step(before).is_none());
+    assert(bridge_expr_numeric_step(before).is_none());
+    assert(bridge_expr_big_rational_step(before).is_none());
+    assert(bridge_expr_fixed_point_step(before).is_none());
+    assert(bridge_sys_auth_token_step(before).is_none());
+    assert(bridge_new_empty_collections_step(before).is_none());
+    assert(bridge_new_one_injection_step(before).is_none());
+    reveal(bridge_score_finish_selection_group_3);
+}
+
+pub proof fn bridge_opaque_root_group_4_empty(
+    before: ScoreAdmissionBridge, selection: BridgeScoreFinishSelection,
+)
+    requires bridge_opaque_root_frame(before),
+    ensures bridge_score_finish_selection_group_4(before, selection) == selection,
+{
+    assert(bridge_new_one_absent_injection_step(before).is_none());
+    assert(bridge_new_one_uri_step(before).is_none());
+    assert(bridge_new_collections_step(before).is_none());
+    assert(bridge_expr_payload_forward_step(before).is_none());
+    assert(bridge_expr_structural_constructor(
+        before.admission.frames.last().program_type_id,
+    ).is_none());
+    assert(bridge_expr_structural_step(before).is_none());
+    assert(bridge_evar_step(before).is_none());
+    assert(bridge_ordered_sequence_step(before).is_none());
+    assert(bridge_emethod_step(before).is_none());
+    assert(bridge_emap_finish_step(before).is_none());
+    reveal(bridge_score_finish_selection_group_4);
+}
+
+pub proof fn bridge_opaque_root_group_5_empty(
+    before: ScoreAdmissionBridge, selection: BridgeScoreFinishSelection,
+)
+    requires bridge_opaque_root_frame(before),
+    ensures bridge_score_finish_selection_group_5(before, selection) == selection,
+{
+    assert(bridge_connective_not_step(before).is_none());
+    assert(bridge_connective_varref_step(before).is_none());
+    assert(bridge_connective_collection_step(before).is_none());
+    assert(bridge_unforgeable_bytes_step(before).is_none());
+    assert(bridge_receive_present_condition_step(before).is_none());
+    assert(bridge_receive_absent_condition_step(before).is_none());
+    assert(bridge_nonsemantic_step(before).is_none());
+    reveal(bridge_score_finish_selection_group_5);
+}
+
+pub proof fn bridge_opaque_root_group_6_empty(
+    before: ScoreAdmissionBridge, selection: BridgeScoreFinishSelection,
+)
+    requires bridge_opaque_root_frame(before),
+    ensures bridge_score_finish_selection_group_6(before, selection) == selection,
+{
+    bridge_score_finish_selection_group_6_empty_off_programs(before);
+}
+
 pub proof fn bridge_evar_missing_var_step_none(before: ScoreAdmissionBridge)
     requires
         before.admission.frames.len() > 0,

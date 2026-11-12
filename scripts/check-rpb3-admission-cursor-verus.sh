@@ -1566,6 +1566,21 @@ proofs_rpb3_runtime_frame_source_refinement=(
   runtime_epm_owner_generic_route_exact
   runtime_epm_owner_generic_root_witness
   runtime_epm_owner_generic_child_witness
+  runtime_quiet_group_1_steps
+  runtime_quiet_group_2_steps
+  runtime_quiet_group_3_steps
+  runtime_quiet_group_4_steps
+  runtime_quiet_group_5_steps
+  runtime_quiet_group_6_steps
+  runtime_quiet_groups_exclude_score_route
+  runtime_noscore_root_excludes_score_route
+  runtime_noscore_root_selector_excluded
+  runtime_noscore_root_return_is_checked
+  runtime_par_root_raw_par_selected
+  runtime_noscore_unit_root_witness
+  runtime_noscore_emap_incomplete_root_witness
+  runtime_noscore_ezipper_absent_root_witness
+  source_noscore_unit_root_route_witness
 )
 proofs_rpb3_score_admission_bridge=(
   bridge_certified_interval_entries_exact
@@ -1837,6 +1852,12 @@ proofs_rpb3_score_admission_bridge=(
   bridge_score_finish_selection_group_6_var_child_witness
   bridge_score_finish_selection_group_6_owner_witness
   bridge_score_finish_selection_group_6_ezipper_witness
+  bridge_opaque_root_group_1_empty
+  bridge_opaque_root_group_2_empty
+  bridge_opaque_root_group_3_empty
+  bridge_opaque_root_group_4_empty
+  bridge_opaque_root_group_5_empty
+  bridge_opaque_root_group_6_empty
 )
 proofs_rpb3_score_arena_source_refinement=(
   runtime_children_len_projects
@@ -2788,7 +2809,12 @@ for proof in runtime_noscore_key_value_pair_modeled_witness \
   runtime_epm_owner_generic_agrees \
   runtime_epm_owner_generic_route_exact \
   runtime_epm_owner_generic_root_witness \
-  runtime_epm_owner_generic_child_witness; do
+  runtime_epm_owner_generic_child_witness \
+  runtime_noscore_root_excludes_score_route \
+  runtime_noscore_unit_root_witness \
+  runtime_noscore_emap_incomplete_root_witness \
+  runtime_noscore_ezipper_absent_root_witness \
+  source_noscore_unit_root_route_witness; do
   if ! rg -q "^pub proof fn ${proof}\\(" \
     "$model_dir/rpb3_runtime_frame_source_refinement.rs"; then
     echo "rpb3-admission-cursor: missing runtime proof $proof" >&2
