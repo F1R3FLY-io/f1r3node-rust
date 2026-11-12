@@ -138,16 +138,6 @@ Definition admit_historical_root (o : owner) (target : nat)
     end
   else None.
 
-Definition activation_ready (o : owner) (p : mutation_permit)
-    (a : admitted_root) : Prop :=
-  authorizes o p /\ admitted_domain a = owner_domain o /\
-  In (admitted_target a) (retained_roots o).
-
-Inductive activate (o : owner) (p : mutation_permit)
-    (a : admitted_root) : owner -> Prop :=
-| Activate : activation_ready o p a ->
-    activate o p a (published o (admitted_target a)).
-
 Theorem retained_membership_does_not_skip_semantic_admission :
   forall o target,
   semantic_accept (owner_domain o) target = false -> admit_historical_root o target = None.
@@ -165,48 +155,99 @@ Proof.
     [contradiction|reflexivity].
 Qed.
 
-Theorem activation_requires_exact_semantically_admitted_target :
-  forall o p a successor,
-  activate o p a successor ->
-  authorizes o p /\ In (current_root successor) (retained_roots o) /\
-  semantic_accept (owner_domain o) (current_root successor) = true.
+(** A reset or a spawn is local to its view and writes nothing.  A checkpoint names
+    the view's own base and publishes the successor of that base at the owner's next
+    publication generation, whatever the owner's current root is.
+
+    [view_checkpoint o v step next]: the view [v] is attached to the live and ready
+    owner [o] and its base [view_history_root v] is retained by [o]; [step] maps a
+    base to the root of that base with the view's journal applied.  No premise
+    mentions the current root or the generation of [o]. *)
+Inductive view_checkpoint (o : owner) (v : mutable_view) (step : nat -> nat) :
+    owner -> Prop :=
+| ViewCheckpoint : attached o v -> In (view_history_root v) (retained_roots o) ->
+    live o = true -> ready o = true ->
+    view_checkpoint o v step (published o (step (view_history_root v))).
+
+(** Two owners that agree on everything except their current root and generation. *)
+Definition differ_only_in_current_root_and_generation (left right : owner) : Prop :=
+  owner_domain left = owner_domain right /\ incarnation left = incarnation right /\
+  live left = live right /\ ready left = ready right /\
+  retained_roots left = retained_roots right /\
+  authenticated_aliases left = authenticated_aliases right.
+
+(** A checkpoint rule under which two owners that differ only in current root and
+    generation publish the same target for the same view and step. *)
+Definition checkpoint_target_is_independent_of_current_root
+    (checkpoint : owner -> mutable_view -> (nat -> nat) -> owner -> Prop) : Prop :=
+  forall left right v step left_next right_next,
+  differ_only_in_current_root_and_generation left right ->
+  checkpoint left v step left_next -> checkpoint right v step right_next ->
+  current_root left_next = current_root right_next.
+
+(** [view_reset o v target next reset_view]: the view [v] is attached to [o] and
+    [target] passes [admit_historical_root]; the owner is left as it was, and the view
+    keeps its domain and incarnation and takes [target] as its base. *)
+Inductive view_reset (o : owner) (v : mutable_view) (target : nat) :
+    owner -> mutable_view -> Prop :=
+| ViewReset : forall admitted, attached o v ->
+    admit_historical_root o target = Some admitted ->
+    view_reset o v target o (MutableView (view_domain v) (view_incarnation v) target).
+
+(** A reset rule that leaves the owner unchanged and yields a view attached at the
+    reset's target. *)
+Definition reset_leaves_owner_unchanged
+    (reset : owner -> mutable_view -> nat -> owner -> mutable_view -> Prop) : Prop :=
+  forall o v target next reset_view,
+  reset o v target next reset_view ->
+  next = o /\ attached o reset_view /\ view_history_root reset_view = target.
+
+(** A full spawn attaches a view to the same owner and resets it to the source's
+    history root. *)
+Inductive full_spawn (o : owner) (source : mutable_view) : owner -> mutable_view -> Prop :=
+| FullSpawn : forall shared attached_view next spawned,
+    attach_spawned_view o source shared attached_view ->
+    view_reset shared attached_view (view_history_root source) next spawned ->
+    full_spawn o source next spawned.
+
+Theorem view_checkpoint_publishes_successor_of_view_base : forall o v step next,
+  view_checkpoint o v step next ->
+  current_root next = step (view_history_root v) /\
+  publication_generation next = S (publication_generation o) /\
+  owner_domain next = owner_domain o /\ incarnation next = incarnation o.
+Proof. intros o v step next checkpoint; destruct checkpoint; simpl; repeat split. Qed.
+
+Theorem view_reset_leaves_owner_unchanged : reset_leaves_owner_unchanged view_reset.
 Proof.
-  intros o p a successor step; inversion step; subst.
-  unfold activation_ready in H; destruct H as [permit [same present]].
-  simpl; split; [exact permit|]. split; [exact present|].
-  rewrite <- same; apply semantic_evidence.
+  intros o v target next reset_view reset.
+  destruct reset as [admitted [same_domain same_incarnation] _].
+  split; [reflexivity|].
+  split; [split; [exact same_domain|exact same_incarnation]|reflexivity].
 Qed.
 
-Theorem historical_activation_has_fresh_publication_generation :
-  forall o p a successor,
-  activate o p a successor ->
-  publication_generation successor = S (publication_generation o) /\
-  current_root successor = admitted_target a /\
-  owner_domain successor = owner_domain o /\ incarnation successor = incarnation o.
-Proof. intros; inversion H; subst; simpl; auto. Qed.
-
-Theorem activation_is_deterministic : forall o p a left right,
-  activate o p a left -> activate o p a right -> left = right.
-Proof. intros; inversion H; inversion H0; reflexivity. Qed.
-
-Inductive full_spawn (o : owner) (p : mutation_permit)
-    (source : mutable_view) (a : admitted_root) : owner -> mutable_view -> Prop :=
-| FullSpawn : forall activated spawned,
-    attached o source -> admitted_target a = view_history_root source ->
-    activate o p a activated -> attach_spawned_view activated source activated spawned ->
-    full_spawn o p source a activated spawned.
-
-Theorem full_spawn_activates_history_before_attaching : forall o p source a next spawned,
-  full_spawn o p source a next spawned ->
-  publication_generation next = S (publication_generation o) /\
-  current_root next = view_history_root source /\
-  owner_domain next = owner_domain o /\ incarnation next = incarnation o /\
-  attached next spawned /\ view_history_root spawned = view_history_root source.
+(** The conclusion does not use the premise that the two owners differ only in current
+    root and generation; the premise is kept because a rule that reads the current root
+    fails even this comparison, between owners that differ in nothing else. *)
+Theorem view_checkpoint_target_is_independent_of_current_root :
+  checkpoint_target_is_independent_of_current_root view_checkpoint.
 Proof.
-  intros o p source a next spawned step; inversion step; subst.
-  apply historical_activation_has_fresh_publication_generation in H1.
-  apply spawn_attachment_reuses_owner_and_preserves_view_history in H2.
-  intuition congruence.
+  intros left right v step left_next right_next _ left_checkpoint right_checkpoint.
+  apply view_checkpoint_publishes_successor_of_view_base in left_checkpoint
+    as [left_target _].
+  apply view_checkpoint_publishes_successor_of_view_base in right_checkpoint
+    as [right_target _].
+  rewrite left_target, right_target; reflexivity.
+Qed.
+
+Theorem full_spawn_attaches_without_publication : forall o source next spawned,
+  full_spawn o source next spawned ->
+  next = o /\ attached o spawned /\ view_history_root spawned = view_history_root source.
+Proof.
+  intros o source next spawned spawn.
+  destruct spawn as [shared attached_view reset_owner reset_view attachment reset].
+  apply spawn_attachment_reuses_owner_and_preserves_view_history in attachment
+    as [same_owner _].
+  subst shared; exact (view_reset_leaves_owner_unchanged _ _ _ _ _ reset).
 Qed.
 
 End HistoricalAdmission.
@@ -406,10 +447,10 @@ Print Assumptions publication_invalidates_all_old_view_permits.
 Print Assumptions root_aba_does_not_revive_a_permit.
 Print Assumptions retained_membership_does_not_skip_semantic_admission.
 Print Assumptions unknown_target_cannot_be_admitted.
-Print Assumptions activation_requires_exact_semantically_admitted_target.
-Print Assumptions historical_activation_has_fresh_publication_generation.
-Print Assumptions activation_is_deterministic.
-Print Assumptions full_spawn_activates_history_before_attaching.
+Print Assumptions view_checkpoint_publishes_successor_of_view_base.
+Print Assumptions view_reset_leaves_owner_unchanged.
+Print Assumptions view_checkpoint_target_is_independent_of_current_root.
+Print Assumptions full_spawn_attaches_without_publication.
 Print Assumptions alias_resolution_is_exact_and_unambiguous.
 Print Assumptions missing_or_ambiguous_alias_refuses.
 Print Assumptions foreign_catalog_cannot_resolve.

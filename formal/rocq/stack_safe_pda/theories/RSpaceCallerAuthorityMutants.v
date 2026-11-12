@@ -191,6 +191,85 @@ Example stale_source_bytes_for_a_removed_record_are_not_the_rebased_source :
   source_of_transition (fun reference : nat => reference) (Some (Some 1, Some 2)) = Some 2.
 Proof. vm_compute; repeat split. Qed.
 
+(** Views of the owner [initial] (current root 10 at generation 7, roots 10 and 20
+    retained): one at the current root and one reset or spawned to the retained root
+    20.  [journal_successor] stands for applying a view's journal to a base, and
+    [accept_every_root] accepts every root semantically. *)
+Definition view_at_current_root := MutableView dag 4 10.
+Definition view_at_retained_root := MutableView dag 4 20.
+Definition journal_successor (root : nat) : nat := root + 100.
+Definition accept_every_root (_ : domain) (_ : nat) : bool := true.
+
+(** A checkpoint that applies the view's journal to the owner's current root instead
+    of the view's base. *)
+Inductive current_root_checkpoint (o : owner) (v : mutable_view) (step : nat -> nat) :
+    owner -> Prop :=
+| CurrentRootCheckpoint : attached o v -> In (view_history_root v) (retained_roots o) ->
+    live o = true -> ready o = true ->
+    current_root_checkpoint o v step (published o (step (current_root o))).
+
+(** Red control of [view_checkpoint_target_is_independent_of_current_root]: on
+    [initial], whose current root 10 is not the view's base 20, the view checkpoint
+    publishes 120 and the mutant 110; [initial] and [published initial 20] differ only
+    in current root and generation, and the mutant publishes 110 at the first and 120
+    at the second. *)
+Example a_checkpoint_of_the_current_root_depends_on_the_current_root :
+  current_root initial <> view_history_root view_at_retained_root /\
+  view_checkpoint initial view_at_retained_root journal_successor (published initial 120) /\
+  current_root_checkpoint initial view_at_retained_root journal_successor
+    (published initial 110) /\
+  ~ checkpoint_target_is_independent_of_current_root current_root_checkpoint.
+Proof.
+  assert (at_initial : current_root_checkpoint initial view_at_retained_root
+    journal_successor (published initial 110)).
+  { constructor; [repeat split|simpl; auto|reflexivity|reflexivity]. }
+  split; [discriminate|].
+  split; [constructor; [repeat split|simpl; auto|reflexivity|reflexivity]|].
+  split; [exact at_initial|].
+  intros claimed.
+  assert (at_moved : current_root_checkpoint (published initial 20) view_at_retained_root
+    journal_successor (published (published initial 20) 120)).
+  { constructor; [repeat split|simpl; auto|reflexivity|reflexivity]. }
+  assert (moved : differ_only_in_current_root_and_generation initial (published initial 20))
+    by (repeat split).
+  pose proof (claimed _ _ _ _ _ _ moved at_initial at_moved) as same_target.
+  discriminate same_target.
+Qed.
+
+(** A reset that publishes its target on the owner, as the removed activation did. *)
+Inductive publishing_reset (semantic_accept : domain -> nat -> bool) (o : owner)
+    (v : mutable_view) (target : nat) : owner -> mutable_view -> Prop :=
+| PublishingReset : forall admitted, attached o v ->
+    admit_historical_root semantic_accept o target = Some admitted ->
+    publishing_reset semantic_accept o v target (published o target)
+      (MutableView (view_domain v) (view_incarnation v) target).
+
+(** Red control of [view_reset_leaves_owner_unchanged]: the view reset and the full
+    spawn leave [initial] as it was, while the mutant moves it to generation 8. *)
+Example a_publishing_reset_changes_the_owner_generation :
+  view_reset accept_every_root initial view_at_current_root 20 initial view_at_retained_root /\
+  full_spawn accept_every_root initial view_at_retained_root initial view_at_retained_root /\
+  publishing_reset accept_every_root initial view_at_current_root 20
+    (published initial 20) view_at_retained_root /\
+  publication_generation (published initial 20) <> publication_generation initial /\
+  ~ reset_leaves_owner_unchanged (publishing_reset accept_every_root).
+Proof.
+  assert (publishing : publishing_reset accept_every_root initial view_at_current_root 20
+    (published initial 20) view_at_retained_root).
+  { econstructor; [repeat split|reflexivity]. }
+  split; [econstructor; [repeat split|reflexivity]|].
+  split.
+  { econstructor.
+    - constructor; [repeat split|reflexivity].
+    - econstructor; [repeat split|reflexivity]. }
+  split; [exact publishing|].
+  split; [discriminate|].
+  intros claimed.
+  destruct (claimed _ _ _ _ _ publishing) as [unchanged _].
+  apply (f_equal publication_generation) in unchanged.
+  discriminate unchanged.
+Qed.
+
 Print Assumptions generation_blind_aba_is_not_authorized.
 Print Assumptions ready_bit_alone_cannot_revive_closed_permit.
 Print Assumptions fresh_generation_does_not_replace_owner_identity.
@@ -217,6 +296,8 @@ Print Assumptions journal_key_only_rebase_misses_a_captured_cell_with_no_old_del
 Print Assumptions keeping_the_captured_before_misses_the_receiving_base.
 Print Assumptions copying_captured_sources_misses_bytes_after_a_cross_base_restore.
 Print Assumptions stale_source_bytes_for_a_removed_record_are_not_the_rebased_source.
+Print Assumptions a_checkpoint_of_the_current_root_depends_on_the_current_root.
+Print Assumptions a_publishing_reset_changes_the_owner_generation.
 
 Set Implicit Arguments.
 
