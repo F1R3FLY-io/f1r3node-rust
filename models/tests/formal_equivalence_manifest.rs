@@ -3883,12 +3883,15 @@ fn rspace_atomic_checkpoint_authority_and_negative_controls_are_manifested() {
         "ContentKeysAreImmutable ==",
         "NoUnpublishedCheckpointObjects ==",
         "GenerationAdvancesExactlyOnActivation ==",
-        "CommitUsesExactBase ==",
+        "VerifiedBasePlanIsNeverRefused ==",
+        "UnverifiedBasePlanIsNeverPublished ==",
         "FailedCommitLeavesAuthorityUnchanged ==",
         "NoOpLeavesAuthorityUnchanged ==",
+        "NeverUnverifiedBaseRefusal ==",
         "SplitObjectWriteMutant(plan) ==",
-        "RootOnlyCompareMutant(plan) ==",
+        "SharedCurrentBaseMutant(plan) ==",
         "TrustCallerTargetMutant ==",
+        "UnverifiedBaseCommitMutant(plan) ==",
     ] {
         assert!(
             model.contains(marker),
@@ -3904,7 +3907,8 @@ fn rspace_atomic_checkpoint_authority_and_negative_controls_are_manifested() {
         "INVARIANT ContentKeysAreImmutable",
         "INVARIANT NoUnpublishedCheckpointObjects",
         "INVARIANT GenerationAdvancesExactlyOnActivation",
-        "INVARIANT CommitUsesExactBase",
+        "INVARIANT VerifiedBasePlanIsNeverRefused",
+        "INVARIANT UnverifiedBasePlanIsNeverPublished",
         "INVARIANT FailedCommitLeavesAuthorityUnchanged",
         "INVARIANT NoOpLeavesAuthorityUnchanged",
     ] {
@@ -3918,8 +3922,11 @@ fn rspace_atomic_checkpoint_authority_and_negative_controls_are_manifested() {
     for marker in [
         "RSpaceAtomicCheckpointAuthority.cfg RSpaceAtomicCheckpointAuthority.tla",
         "RSpaceAtomicCheckpointAuthoritySplitMutant.cfg:NoUnpublishedCheckpointObjects",
-        "RSpaceAtomicCheckpointAuthorityRootOnlyMutant.cfg:CommitUsesExactBase",
+        "RSpaceAtomicCheckpointAuthoritySharedCurrentBaseMutant.cfg:VerifiedBasePlanIsNeverRefused",
         "RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg:VerifiedRootsHaveCompleteClosure",
+        "RSpaceAtomicCheckpointAuthorityUnverifiedBaseMutant.cfg:UnverifiedBasePlanIsNeverPublished",
+        "RSpaceAtomicCheckpointAuthorityUnverifiedBaseRefusalWitness.cfg",
+        "Invariant NeverUnverifiedBaseRefusal is violated",
     ] {
         assert!(
             runner.contains(marker),
@@ -3929,8 +3936,9 @@ fn rspace_atomic_checkpoint_authority_and_negative_controls_are_manifested() {
 
     for config in [
         "RSpaceAtomicCheckpointAuthoritySplitMutant.cfg",
-        "RSpaceAtomicCheckpointAuthorityRootOnlyMutant.cfg",
+        "RSpaceAtomicCheckpointAuthoritySharedCurrentBaseMutant.cfg",
         "RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg",
+        "RSpaceAtomicCheckpointAuthorityUnverifiedBaseMutant.cfg",
     ] {
         let path = format!("formal/tlaplus/stack_safe_pda/{config}");
         assert!(
@@ -3938,6 +3946,13 @@ fn rspace_atomic_checkpoint_authority_and_negative_controls_are_manifested() {
             "atomic-checkpoint authority mutant configuration is absent: {path}"
         );
     }
+
+    let witness =
+        "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthorityUnverifiedBaseRefusalWitness.cfg";
+    assert!(
+        repository_root().join(witness).is_file(),
+        "atomic-checkpoint authority witness configuration is absent: {witness}"
+    );
 }
 
 #[test]

@@ -11542,16 +11542,20 @@ Actual retained-root DAG import, shadow ownership and cutover remain tasks 7934â
 | LM-06 | Rollback begins at the designated older root, not an invented current successor | Fresh destination imports only the pinned rollback root and rejects membership of the later root until suffix replay. |
 | LM-07 | Replaying the recorded checkpoint suffix restores exact latest observations | New returned/current/fresh-repository root equality, exact generation advance, historical-read and ordered transcript comparison; full runtime/genesis/COMM replay remains the existing integration track. |
 | LM-08 | Complete publication couples history, cold objects, membership and current root | Existing `RSpaceAtomicCheckpointAuthority.tla`: `CurrentRootIsVerified`, `VerifiedRootsHaveCompleteClosure`, `ContentKeysAreImmutable`, `NoUnpublishedCheckpointObjects`; concrete atomic-state suite and split/trust-target controls. |
-| LM-09 | Activation is generation-bound; stale/failing/no-op operations have exact effects | Same model's `TypeInvariant`, `GenerationAdvancesExactlyOnActivation`, `CommitUsesExactBase`, `FailedCommitLeavesAuthorityUnchanged`, `NoOpLeavesAuthorityUnchanged`; existing atomic-state suite and root-only control. |
+| LM-09 | A publication needs a verified base and advances the generation by one; failing and no-op operations have exact effects | Same model's `TypeInvariant`, `GenerationAdvancesExactlyOnActivation`, `VerifiedBasePlanIsNeverRefused`, `FailedCommitLeavesAuthorityUnchanged`, `NoOpLeavesAuthorityUnchanged`; existing atomic-state suite and shared-current-base control. |
 | LM-10 | Import stages privately, seals once and publishes through its exact capability | Existing `RSpaceAffineImportLifecycle.tla`, import-session/state tests and the new real-LMDB rollback destination; no claim of process-persistent staging. |
 | LM-11 | Legacy namespace adoption preserves exact validated source identity | Existing `legacy_state_migration.rs` tests cover split/v2/eval, namespace-bound markers, divergent sources and malformed records; their same-process retry is not subprocess evidence. |
 | LM-12 | Physical migration does not silently replace legacy consensus identity | CI-01..CI-28 and the #7941 ordered-alias fixtures remain binding for 7934â€“7936; metadata/provenance is not a legacy-root certificate. In durable mode, CI-10 holds for LMDB mode only, and the cited CI-13, CI-19, CI-20 and CI-28 are not selected; they are deferred with the coupled bridge `rspace-consensus-bridge-construction`. |
+| LM-13 | A plan whose base is not a verified root is refused and changes nothing | Same model's `UnverifiedBasePlanIsNeverPublished`, reached by the plan prepared from the never-verified root `unknown` (witness `NeverUnverifiedBaseRefusal`); existing atomic-state test `a_plan_whose_base_is_not_verified_is_refused_without_writing` (changed plans in memory and LMDB, and a no-op plan) and unverified-base control. |
 
-The unchanged atomic model was rerun: 357 states generated, 127 distinct states,
-complete depth seven, no remaining queue or invariant failure. Its split-publication,
-root-only-base and trust-target controls each fail the intended invariant. This finite
-abstract model is reused, not presented as a proof of the LMDB engine, host filesystem
-or future PathMap persistence implementation.
+The atomic model as revised on 2026-11-12 was rerun: 3182 states generated, 1457 distinct
+states, complete depth nine, no remaining queue or invariant failure. In it a plan publishes
+the successor of its own verified base whatever root is current, and the plan prepared from
+the root `unknown`, which is never verified, is refused. Its split-publication,
+shared-current-base, trust-target and unverified-base controls each fail the intended
+invariant, and its witness configuration violates `NeverUnverifiedBaseRefusal`, so that
+refusal is reachable. This finite abstract model is reused, not presented as a proof of
+the LMDB engine, host filesystem or future PathMap persistence implementation.
 
 ### Verification result and reproduction
 

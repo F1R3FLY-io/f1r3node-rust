@@ -1,10 +1,10 @@
 {
   "causal_mutants": [
     {
-      "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthorityRootOnlyMutant.cfg",
-      "config_sha256": "e2faf8dbd0a911f79924ff29c6d8d7d792ee818d897432b7c0e3375ebdc4abe1",
-      "specification": "RootOnlyCompareMutantSpec",
-      "violated_invariant": "CommitUsesExactBase"
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthoritySharedCurrentBaseMutant.cfg",
+      "config_sha256": "ddd5f4ba54b6509fa50ca3c210dc7ccf0392924c752962d4867945af9729ef27",
+      "specification": "SharedCurrentBaseMutantSpec",
+      "violated_invariant": "VerifiedBasePlanIsNeverRefused"
     },
     {
       "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthoritySplitMutant.cfg",
@@ -17,13 +17,27 @@
       "config_sha256": "8070e8610593232d3d0fd77d2f12baaa3620785ada854c2f7b94d8f04b4a929a",
       "specification": "TrustCallerTargetMutantSpec",
       "violated_invariant": "VerifiedRootsHaveCompleteClosure"
+    },
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthorityUnverifiedBaseMutant.cfg",
+      "config_sha256": "9d7e0e8c61f46efa459b9c853a59263021dad94cc50ca2edd9dbb99eb77a4e93",
+      "specification": "UnverifiedBaseCommitMutantSpec",
+      "violated_invariant": "UnverifiedBasePlanIsNeverPublished"
     }
   ],
   "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.cfg",
-  "config_sha256": "db0199d8e40a9a44fdab54aa8706ddfc2d7e005b568aa155703d8579d0e11a07",
+  "config_sha256": "cadaf269a7a99cd2ebdb7864028aceadcf57466925da7ee59adeb7a5ac0585c1",
   "model": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.tla",
-  "model_sha256": "5044201a3dfcf7261884a49fc90ab3bf7df59a632b19e1ff9dea003d2fd00172",
+  "model_sha256": "414692c6550cb700f6772b05db5f14c67edf26b11300d90a8288460a360bcd98",
   "module_sha256": "b58f09d024777a9396a4cd3fb77bc321859e0e6fc833a6299d8d895dda86a88c",
+  "non_vacuity_witnesses": [
+    {
+      "config": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthorityUnverifiedBaseRefusalWitness.cfg",
+      "config_sha256": "47835474aa2066d322b6097f26904074f9a576d1ecfdd05d4c1505823c1d1540",
+      "specification": "Spec",
+      "violated_invariant": "NeverUnverifiedBaseRefusal"
+    }
+  ],
   "normal_suite_test_module": "rspace++/tests/state/atomic_state_authority.rs",
   "obligations": [
     {
@@ -95,8 +109,24 @@
       ],
       "kind": "invariant",
       "mode": "executable_refinement",
-      "symbol": "CommitUsesExactBase",
+      "symbol": "VerifiedBasePlanIsNeverRefused",
       "test": "a_plan_publishes_the_successor_of_its_own_base_after_root_aba"
+    },
+    {
+      "assertions": [
+        "let refusal = format!(\"unknown verified root: {base}\");",
+        "Err(HistoryError::RootError(RootError::UnknownRootError(message))) => {",
+        "assert_eq!(message, refusal, \"{changed_case}\")",
+        "assert_eq!(image(&authority), before, \"{changed_case}\");",
+        "authority.commit_local_checkpoint(&no_op_plan, Vec::new(), &validator())",
+        "assert_eq!(message, refusal, \"{no_op_case}\")",
+        "assert_eq!(image(&authority), before, \"{no_op_case}\");",
+        "(\"LV-06 (b) LMDB changed path\", \"LV-06 (c) LMDB no-op path\", lmdb, lmdb_image),"
+      ],
+      "kind": "invariant",
+      "mode": "executable_refinement",
+      "symbol": "UnverifiedBasePlanIsNeverPublished",
+      "test": "a_plan_whose_base_is_not_verified_is_refused_without_writing"
     },
     {
       "assertions": [

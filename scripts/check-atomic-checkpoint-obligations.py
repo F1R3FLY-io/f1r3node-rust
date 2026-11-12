@@ -46,9 +46,14 @@ BINDINGS = [
         "lmdb_reopen_preserves_exact_catalog_and_known_root_activation",
     ),
     (
-        "CommitUsesExactBase",
+        "VerifiedBasePlanIsNeverRefused",
         "executable_refinement",
         "a_plan_publishes_the_successor_of_its_own_base_after_root_aba",
+    ),
+    (
+        "UnverifiedBasePlanIsNeverPublished",
+        "executable_refinement",
+        "a_plan_whose_base_is_not_verified_is_refused_without_writing",
     ),
     (
         "FailedCommitLeavesAuthorityUnchanged",
@@ -64,8 +69,13 @@ BINDINGS = [
 
 MUTANTS = {
     "RSpaceAtomicCheckpointAuthoritySplitMutant.cfg": "NoUnpublishedCheckpointObjects",
-    "RSpaceAtomicCheckpointAuthorityRootOnlyMutant.cfg": "CommitUsesExactBase",
+    "RSpaceAtomicCheckpointAuthoritySharedCurrentBaseMutant.cfg": "VerifiedBasePlanIsNeverRefused",
     "RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg": "VerifiedRootsHaveCompleteClosure",
+    "RSpaceAtomicCheckpointAuthorityUnverifiedBaseMutant.cfg": "UnverifiedBasePlanIsNeverPublished",
+}
+
+WITNESSES = {
+    "RSpaceAtomicCheckpointAuthorityUnverifiedBaseRefusalWitness.cfg": "NeverUnverifiedBaseRefusal",
 }
 
 TEST_ASSERTIONS = {
@@ -97,6 +107,16 @@ TEST_ASSERTIONS = {
         'expect("a plan from a verified base publishes after the root ABA")',
         "assert_eq!(published, published_expected);",
         "expected_after_publication(&before_old, &old_plan, &old_leaf, &published_expected)",
+    ),
+    "a_plan_whose_base_is_not_verified_is_refused_without_writing": (
+        'let refusal = format!("unknown verified root: {base}");',
+        "Err(HistoryError::RootError(RootError::UnknownRootError(message))) => {",
+        'assert_eq!(message, refusal, "{changed_case}")',
+        'assert_eq!(image(&authority), before, "{changed_case}");',
+        "authority.commit_local_checkpoint(&no_op_plan, Vec::new(), &validator())",
+        'assert_eq!(message, refusal, "{no_op_case}")',
+        'assert_eq!(image(&authority), before, "{no_op_case}");',
+        '("LV-06 (b) LMDB changed path", "LV-06 (c) LMDB no-op path", lmdb, lmdb_image),',
     ),
     "no_op_writes_nothing_and_does_not_advance_generation": (
         "assert_eq!(observed, current_before);",
@@ -158,7 +178,14 @@ def test_targets(source):
 
 
 def extract(
-    model, config, mutant_configs, bindings, test_source, module_source, runner_source
+    model,
+    config,
+    mutant_configs,
+    witness_configs,
+    bindings,
+    test_source,
+    module_source,
+    runner_source,
 ):
     require(
         not re.search(r"(?m)^(INVARIANTS|PROPERTIES)\b", config),
@@ -262,6 +289,45 @@ def extract(
             }
         )
     require(
+        set(witness_configs) == set(WITNESSES),
+        "missing or extra witness configuration",
+    )
+    witnesses = []
+    for filename in sorted(witness_configs):
+        source = witness_configs[filename]
+        require(
+            not re.search(r"(?m)^(INVARIANTS|PROPERTIES|PROPERTY)\b", source),
+            f"unsupported witness obligation directive: {filename}",
+        )
+        specifications = config_items(source, "SPECIFICATION")
+        require(specifications == ["Spec"], f"witness specification: {filename}")
+        target = WITNESSES[filename]
+        require(
+            config_items(source, "INVARIANT") == [target],
+            f"witness target mismatch: {filename}",
+        )
+        require(
+            len(re.findall(rf"(?m)^{re.escape(target)}\s*==", model)) == 1,
+            f"missing or duplicate witness definition: {filename}",
+        )
+        require(
+            target not in invariants,
+            f"witness statement is a base obligation: {filename}",
+        )
+        require(
+            filename in runner_source
+            and f"Invariant {target} is violated" in runner_source,
+            f"witness outcome unchecked in normal proof suite: {filename}",
+        )
+        witnesses.append(
+            {
+                "config": str(FORMAL / filename),
+                "config_sha256": hashlib.sha256(source.encode()).hexdigest(),
+                "specification": specifications[0],
+                "violated_invariant": target,
+            }
+        )
+    require(
         f"{CONFIG.name} {MODEL.name}" in runner_source,
         "base model is absent from normal proof suite",
     )
@@ -279,13 +345,16 @@ def extract(
                 "symbol": symbol,
                 "mode": mapped[symbol][0],
                 "test": mapped[symbol][1],
-                "assertions": list(TEST_ASSERTIONS[mapped[symbol][1]])
-                if mapped[symbol][0] == "executable_refinement"
-                else [],
+                "assertions": (
+                    list(TEST_ASSERTIONS[mapped[symbol][1]])
+                    if mapped[symbol][0] == "executable_refinement"
+                    else []
+                ),
             }
             for kind, symbol in obligations
         ],
         "causal_mutants": mutants,
+        "non_vacuity_witnesses": witnesses,
     }
 
 
@@ -298,12 +367,22 @@ def fail_if_accepted(call):
 
 
 def self_test(inputs):
-    model, config, mutants, bindings, test_source, module_source, runner_source = inputs
+    (
+        model,
+        config,
+        mutants,
+        witnesses,
+        bindings,
+        test_source,
+        module_source,
+        runner_source,
+    ) = inputs
     fail_if_accepted(
         lambda: extract(
             model,
             config + "INVARIANT TypeInvariant\n",
             mutants,
+            witnesses,
             bindings,
             test_source,
             module_source,
@@ -315,6 +394,7 @@ def self_test(inputs):
             model,
             config.replace("INVARIANT TypeInvariant\n", ""),
             mutants,
+            witnesses,
             bindings,
             test_source,
             module_source,
@@ -326,6 +406,7 @@ def self_test(inputs):
             model,
             config + "PROPERTY StaleLiveness\n",
             mutants,
+            witnesses,
             bindings,
             test_source,
             module_source,
@@ -337,6 +418,7 @@ def self_test(inputs):
             model,
             config + "INVARIANTS\nStaleSafety\n",
             mutants,
+            witnesses,
             bindings,
             test_source,
             module_source,
@@ -348,6 +430,7 @@ def self_test(inputs):
             model,
             config,
             mutants,
+            witnesses,
             bindings
             + [
                 (
@@ -366,6 +449,7 @@ def self_test(inputs):
             model,
             config,
             mutants,
+            witnesses,
             [
                 (
                     symbol,
@@ -384,6 +468,7 @@ def self_test(inputs):
             model,
             config,
             mutants,
+            witnesses,
             bindings + [bindings[0]],
             test_source,
             module_source,
@@ -395,6 +480,7 @@ def self_test(inputs):
             model,
             config,
             mutants,
+            witnesses,
             bindings,
             test_source.replace(
                 "expected_after_publication(&after_first, &second_plan, &second_leaf, &second_expected)",
@@ -410,6 +496,7 @@ def self_test(inputs):
             model,
             config,
             mutants,
+            witnesses,
             bindings,
             test_source.replace(
                 "assert!(authority.contains_verified_root(root.root()).unwrap());",
@@ -425,6 +512,7 @@ def self_test(inputs):
             model,
             config,
             mutants,
+            witnesses,
             bindings,
             test_source.replace(
                 "#[test]\nfn no_op_writes_nothing_and_does_not_advance_generation",
@@ -440,6 +528,7 @@ def self_test(inputs):
             model,
             config,
             mutants,
+            witnesses,
             bindings[1:],
             test_source,
             module_source,
@@ -451,6 +540,7 @@ def self_test(inputs):
             model,
             config,
             mutants,
+            witnesses,
             bindings,
             test_source.replace(
                 "#[test]\nfn memory_checkpoint_publishes_all_namespaces_together",
@@ -469,8 +559,92 @@ def self_test(inputs):
                 for key, value in mutants.items()
                 if key != next(iter(mutants))
             },
+            witnesses,
             bindings,
             test_source,
+            module_source,
+            runner_source,
+        )
+    )
+    fail_if_accepted(
+        lambda: extract(
+            model,
+            config,
+            mutants,
+            {},
+            bindings,
+            test_source,
+            module_source,
+            runner_source,
+        )
+    )
+    fail_if_accepted(
+        lambda: extract(
+            model,
+            config,
+            mutants,
+            {
+                name: source + "INVARIANT TypeInvariant\n"
+                for name, source in witnesses.items()
+            },
+            bindings,
+            test_source,
+            module_source,
+            runner_source,
+        )
+    )
+    fail_if_accepted(
+        lambda: extract(
+            model,
+            config + "INVARIANT NeverUnverifiedBaseRefusal\n",
+            mutants,
+            witnesses,
+            bindings + [("NeverUnverifiedBaseRefusal", "proof_only", None)],
+            test_source,
+            module_source,
+            runner_source,
+        )
+    )
+    fail_if_accepted(
+        lambda: extract(
+            model,
+            config,
+            mutants,
+            witnesses,
+            bindings,
+            test_source,
+            module_source,
+            runner_source.replace(
+                "Invariant NeverUnverifiedBaseRefusal is violated", "", 1
+            ),
+        )
+    )
+    fail_if_accepted(
+        lambda: extract(
+            model,
+            config,
+            mutants,
+            witnesses,
+            bindings,
+            test_source,
+            module_source,
+            runner_source.replace(
+                "RSpaceAtomicCheckpointAuthorityUnverifiedBaseMutant.cfg:UnverifiedBasePlanIsNeverPublished",
+                "",
+                1,
+            ),
+        )
+    )
+    fail_if_accepted(
+        lambda: extract(
+            model,
+            config,
+            mutants,
+            witnesses,
+            bindings,
+            test_source.replace(
+                'assert_eq!(image(&authority), before, "{no_op_case}");', "", 1
+            ),
             module_source,
             runner_source,
         )
@@ -489,10 +663,15 @@ def main():
         path.name: path.read_text()
         for path in (ROOT / FORMAL).glob(f"{STEM}*Mutant.cfg")
     }
+    witnesses = {
+        path.name: path.read_text()
+        for path in (ROOT / FORMAL).glob(f"{STEM}*Witness.cfg")
+    }
     inputs = (
         read(MODEL),
         read(CONFIG),
         mutants,
+        witnesses,
         BINDINGS,
         read(TEST),
         read(MODULE),

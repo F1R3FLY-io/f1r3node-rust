@@ -2345,8 +2345,9 @@ tlc_run "$tla_metadir" \
   RSpaceAtomicCheckpointAuthority.cfg RSpaceAtomicCheckpointAuthority.tla -cleanup
 for checkpoint_authority_mutant in \
   "split:RSpaceAtomicCheckpointAuthoritySplitMutant.cfg:NoUnpublishedCheckpointObjects" \
-  "root-only:RSpaceAtomicCheckpointAuthorityRootOnlyMutant.cfg:CommitUsesExactBase" \
-  "trust-target:RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg:VerifiedRootsHaveCompleteClosure"
+  "shared-current-base:RSpaceAtomicCheckpointAuthoritySharedCurrentBaseMutant.cfg:VerifiedBasePlanIsNeverRefused" \
+  "trust-target:RSpaceAtomicCheckpointAuthorityTrustTargetMutant.cfg:VerifiedRootsHaveCompleteClosure" \
+  "unverified-base:RSpaceAtomicCheckpointAuthorityUnverifiedBaseMutant.cfg:UnverifiedBasePlanIsNeverPublished"
 do
   checkpoint_authority_label="${checkpoint_authority_mutant%%:*}"
   checkpoint_authority_tail="${checkpoint_authority_mutant#*:}"
@@ -2367,6 +2368,21 @@ do
     exit 1
   fi
 done
+if checkpoint_authority_unverified_base_refusal="$({
+  tlc_run "$tla_metadir" \
+    RSpaceAtomicCheckpointAuthorityUnverifiedBaseRefusalWitness.cfg \
+    RSpaceAtomicCheckpointAuthority.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$checkpoint_authority_unverified_base_refusal"
+  echo "stack-safe-pda: refusal of an unverified-base atomic-checkpoint plan was unreachable" >&2
+  exit 1
+fi
+printf '%s\n' "$checkpoint_authority_unverified_base_refusal"
+if ! grep -q 'Invariant NeverUnverifiedBaseRefusal is violated' \
+    <<<"$checkpoint_authority_unverified_base_refusal"; then
+  echo "stack-safe-pda: unverified-base refusal witness failed without NeverUnverifiedBaseRefusal" >&2
+  exit 1
+fi
 tlc_run "$tla_metadir" \
   RSpaceRecordReplayAuthorityLifecycle.cfg \
   RSpaceRecordReplayAuthorityLifecycle.tla -cleanup
