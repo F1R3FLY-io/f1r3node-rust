@@ -15,14 +15,16 @@ use super::durable_rspace_authority::{
     Profile, Store, fixture, poll_checkpoint_with, publication_limits,
 };
 use super::support::PersistenceTrialDir;
+use crate::rspace::bag::{BagDelta, Multiplicity};
+use crate::rspace::data_index::RSpaceDataIndex;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::hot_store::{
     ClosedDurableHistoryReader, DurableHotStoreBootstrapLimits, HotStoreInstances,
 };
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::durable::{
-    DurableAdmissionLimitsV1, DurableAuthorityViewV1, DurableViewReaderV1, pack_file_name,
-    recover_read_authority,
+    DurableAdmissionLimitsV1, DurableAuthorityViewV1, DurableViewReaderV1, expansion_total,
+    pack_file_name, recover_read_authority,
 };
 use crate::rspace::persistence::{
     CanonicalFormatError, ClosureError, EndpointValue, LogPackDecodeLimits, ObjectDigest, PackId,
@@ -838,6 +840,111 @@ fn every_reader_limit_binds_its_read_and_panics_with_the_typed_error() {
         assert!(
             message.contains(&refusal),
             "{read:?} under {limit:?} {below}: the panic must carry {refusal}, found {message:?}"
+        );
+    }
+}
+
+#[test]
+fn a_multiplicity_total_past_u64_max_is_a_typed_limit_error_in_either_visit_order() {
+    let (_scratch, view) = published_view(|hot| {
+        for (name, small, large) in [("a", "v0", "v1"), ("b", "v1", "v0")] {
+            put_value(hot, name, small);
+            let mut delta = BagDelta::new();
+            delta
+                .record_addition(
+                    &RSpaceDataIndex::datum_path(&channel(name), &datum(name, large)),
+                    Multiplicity::new(u64::MAX).expect("u64::MAX is a nonzero multiplicity"),
+                )
+                .expect("record the addition of the large datum");
+            hot.apply_datum_delta(&delta)
+                .expect("the hot store accepts a datum of multiplicity u64::MAX");
+        }
+    });
+    let entries = view
+        .data_entries(u64::MAX, u64::MAX)
+        .expect("enumerate the durable data");
+    let reader = reader_at(&view, roots_of(&view));
+    let mut visit_orders = BTreeSet::new();
+    for name in ["a", "b"] {
+        let multiplicities: Vec<u64> = entries
+            .iter()
+            .filter(|(key, _, _)| key == name)
+            .map(|(_, _, multiplicity)| multiplicity.get())
+            .collect();
+        let expected = match multiplicities.as_slice() {
+            [u64::MAX, 1] => CanonicalFormatError::AllocationFailure {
+                requested: u64::MAX,
+            },
+            [1, u64::MAX] => CanonicalFormatError::ResourceLimit {
+                resource: "durable data materialization",
+                limit: u64::MAX,
+                attempted: u64::MAX,
+            },
+            other => {
+                panic!("channel {name} must hold the multiplicities 1 and u64::MAX: {other:?}")
+            }
+        };
+        let refusal = view
+            .data_for_channel(&channel(name), u64::MAX, u64::MAX, u64::MAX)
+            .expect_err("the view refuses to expand the channel's multiplicities");
+        assert!(
+            matches!(&refusal, ClosureError::Format(error) if *error == expected),
+            "channel {name} with multiplicities {multiplicities:?}: expected {expected:?}, found \
+             {refusal:?}"
+        );
+        let panic = catch_unwind(AssertUnwindSafe(|| reader.get_data_canonical(&channel(name))))
+            .expect_err("the reader fails closed on the channel's multiplicities");
+        let message = panic_message(&*panic);
+        assert!(
+            message.contains(&format!("{refusal:?}")),
+            "channel {name}: the reader's panic must carry the typed error {refusal:?}, found \
+             {message:?}"
+        );
+        visit_orders.insert(multiplicities);
+    }
+    assert_eq!(
+        visit_orders,
+        BTreeSet::from([vec![1, u64::MAX], vec![u64::MAX, 1]]),
+        "one channel must visit its large record first and the other second"
+    );
+}
+
+#[test]
+fn expansion_total_is_exact_at_the_limit_and_typed_past_it() {
+    const EXPANDED: usize = 2;
+    const BOUNDED_LIMITS: [u64; 2] = [3, u64::MAX - 1];
+    let expanded = u64::try_from(EXPANDED).expect("the expanded count fits u64");
+    for resource in ["durable data materialization", "durable join materialization"] {
+        let refused = |limit: u64, attempted: u64| -> Result<u64, CanonicalFormatError> {
+            Err(CanonicalFormatError::ResourceLimit {
+                resource,
+                limit,
+                attempted,
+            })
+        };
+        for limit in BOUNDED_LIMITS.into_iter().chain([u64::MAX]) {
+            assert_eq!(
+                expansion_total(EXPANDED, limit - expanded, limit, resource),
+                Ok(limit),
+                "{resource}: a total equal to the limit {limit} is returned"
+            );
+            assert_eq!(
+                expansion_total(EXPANDED, u64::MAX, limit, resource),
+                refused(limit, u64::MAX),
+                "{resource}: a total past u64::MAX under the limit {limit} attempts u64::MAX"
+            );
+        }
+        for limit in BOUNDED_LIMITS {
+            assert_eq!(
+                expansion_total(EXPANDED, limit - expanded + 1, limit, resource),
+                refused(limit, limit + 1),
+                "{resource}: a total of the limit {limit} plus one attempts that total"
+            );
+        }
+        assert_eq!(
+            expansion_total(EXPANDED, u64::MAX - expanded + 1, u64::MAX, resource),
+            refused(u64::MAX, u64::MAX),
+            "{resource}: the least total past u64::MAX attempts u64::MAX under the limit u64::MAX"
         );
     }
 }

@@ -55,6 +55,8 @@ pub use catalog::{CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, 
 #[cfg(test)]
 pub(crate) use catalog::{CatalogPackStateV1, CatalogSelectionV1};
 pub use error::DurableFormatError;
+#[cfg(test)]
+pub(crate) use expansion_count::expansion_total;
 pub(crate) use index::CommittedObjectIndexV1;
 #[cfg(test)]
 pub(crate) use index::{
@@ -543,16 +545,13 @@ where
                 )
                 .map_err(ClosureError::Format)?;
             let count = multiplicity.get();
-            let next = result.len() as u64 + count;
-            if next > max_values {
-                return Err(ClosureError::Format(
-                    crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
-                        resource: "durable data materialization",
-                        limit: max_values,
-                        attempted: next,
-                    },
-                ));
-            }
+            expansion_count::expansion_total(
+                result.len(),
+                count,
+                max_values,
+                "durable data materialization",
+            )
+            .map_err(ClosureError::Format)?;
             let count = usize::try_from(count).map_err(|_| {
                 ClosureError::Format(
                     crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
@@ -636,16 +635,13 @@ where
                 )
                 .map_err(ClosureError::Format)?;
             let count = multiplicity.get();
-            let next = result.len() as u64 + count;
-            if next > max_values {
-                return Err(ClosureError::Format(
-                    crate::rspace::persistence::CanonicalFormatError::ResourceLimit {
-                        resource: "durable join materialization",
-                        limit: max_values,
-                        attempted: next,
-                    },
-                ));
-            }
+            expansion_count::expansion_total(
+                result.len(),
+                count,
+                max_values,
+                "durable join materialization",
+            )
+            .map_err(ClosureError::Format)?;
             let count = usize::try_from(count).map_err(|_| {
                 ClosureError::Format(
                     crate::rspace::persistence::CanonicalFormatError::LengthOutOfRange {
@@ -666,6 +662,34 @@ where
         },
     )?;
     Ok(result)
+}
+
+mod expansion_count {
+    use crate::rspace::persistence::CanonicalFormatError;
+
+    pub(crate) fn expansion_total(
+        expanded: usize,
+        count: u64,
+        limit: u64,
+        resource: &'static str,
+    ) -> Result<u64, CanonicalFormatError> {
+        match u64::try_from(expanded)
+            .ok()
+            .and_then(|expanded| expanded.checked_add(count))
+        {
+            Some(total) if total <= limit => Ok(total),
+            Some(total) => Err(CanonicalFormatError::ResourceLimit {
+                resource,
+                limit,
+                attempted: total,
+            }),
+            None => Err(CanonicalFormatError::ResourceLimit {
+                resource,
+                limit,
+                attempted: u64::MAX,
+            }),
+        }
+    }
 }
 
 const fn require_shareable_read_handle<T: Send + Sync + 'static>() {}

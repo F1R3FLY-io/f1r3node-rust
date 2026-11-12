@@ -7707,11 +7707,11 @@ it:
 The budgets have no field for datum occurrences, and the eager bootstrap
 binds none, so the data read passes an unbounded occurrence limit. Expanding
 a datum's multiplicity still fails with a typed allocation error when the
-memory cannot be reserved, except in one case inherited from the view, which
-is described after the rulings below. The reader reads no manifest after it
-is built: its results depend only on its roots and on the immutable objects
-of its generation, so a successor that the owner publishes later cannot
-change them.
+memory cannot be reserved, and with a typed limit error when the count of
+expanded values would pass `u64::MAX`, as described after the rulings below.
+The reader reads no manifest after it is built: its results depend only on
+its roots and on the immutable objects of its generation, so a successor
+that the owner publishes later cannot change them.
 
 **One decode path.** The bodies of the view's `data_for_channel`,
 `continuations_for_channels` and `joins_for_channel` in
@@ -7738,18 +7738,40 @@ checks the blob's length and digest before the blob is decoded.
   legacy history reader's `.expect` calls do. An empty `Vec` means only that
   the authenticated prefix holds no record.
 
-**A gap in D2, inherited from the view.** The data read counts the values
-that it has expanded with `result.len() as u64 + count`. The hot store
-accepts, and the owner publishes, a channel whose datum multiplicities sum
-past `u64::MAX`, for instance one record of multiplicity 1 and one of
-multiplicity `u64::MAX`. When the larger record is visited second, the sum
-overflows. A build with overflow checks, such as the debug test profile,
-then panics with Rust's untyped "attempt to add with overflow", in the view's
-`data_for_channel` and in the reader alike. A release build wraps the sum and
-fails at the allocation with the typed `AllocationFailure`. Both fail closed,
-but only the release build panics with a typed error. The join read counts
-occurrences in the same way. This slice moved the bodies unchanged and does
-not change the count.
+**The expansion count.** The data and join reads count the values that they
+have expanded through one private function of `mod.rs`,
+`expansion_total(expanded, count, limit, resource)`. It adds a record's
+multiplicity `count` to the number `expanded` of values already expanded
+with `checked_add` and returns the sum when the sum is within `limit`. A sum
+above `limit` is refused with the typed `ResourceLimit`, whose `attempted`
+is the sum, and a sum past `u64::MAX` with `ResourceLimit` whose `attempted`
+is `u64::MAX`: the true sum exceeds every representable limit, so `u64::MAX`
+is a lower bound of it, and not even an unbounded limit admits it. The
+`resource` is the read's existing name, "durable data materialization" or
+"durable join materialization", and a `#[cfg(test)]` re-export lets the
+tests call the function. The hot store accepts, and the owner publishes, a
+channel whose datum multiplicities sum past `u64::MAX`, for instance one
+record of multiplicity 1 and one of multiplicity `u64::MAX`. When the
+larger record is visited second, the view's `data_for_channel` returns the
+typed `ResourceLimit`, and the reader panics with it, in every build. Until
+task 14335 the moved bodies counted with `result.len() as u64 + count`,
+which overflowed there: a build with overflow checks, such as the debug test
+profile, panicked with Rust's untyped "attempt to add with overflow", and a
+release build wrapped the sum, let a bounded limit pass unchecked and failed
+later with the typed `AllocationFailure`. When the larger record is visited
+first, the sum is `u64::MAX`, which the unbounded limit admits, and the read
+fails at the allocation with the typed `AllocationFailure`, as it did
+before.
+
+Two tests of the module check this behaviour, and like tests 4 and 5 below
+they check ruling D2 and are bound to no ID.
+`a_multiplicity_total_past_u64_max_is_a_typed_limit_error_in_either_visit_order`
+puts those two records on two channels, one in each visit order, and
+requires the typed error of each channel from the view and in the reader's
+panic message, with the same assertions in debug and in release.
+`expansion_total_is_exact_at_the_limit_and_typed_past_it` checks, for both
+resources, a sum equal to the limit, a sum one above it and a sum past
+`u64::MAX`, under two bounded limits and under the limit `u64::MAX`.
 
 `ClosedDurableHistoryReader`, the reader that the eager bootstrap installs in
 the hot store and that answers every query with an empty `Vec`, is now
@@ -8849,7 +8871,8 @@ the predicted tests fail:
 
 Each faulted file was restored and compared byte for byte with its saved
 copy. A temporary test, run once in debug and once in release and then
-removed, showed the overflow gap described in the lazy durable view reader
+removed, showed the overflow of the expansion count that task 14335 later
+made a typed limit error, as described in the lazy durable view reader
 section. Clippy of `rspace_plus_plus` with every target and warnings denied
 lists no finding in the files of this slice, and `rustfmt --check` passes on
 its Rust files. No persisted byte, root, identity or wire message changed.
