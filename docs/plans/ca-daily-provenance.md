@@ -3,7 +3,7 @@
 ## Scope
 
 [US-013](../UserStories.md#us-013-trusted-daily-back-merges) and TASK-029-1 cover the review follow-up for PR #792.
-The image publication dependencies and the accepted `ca-soaked` label risk do not change.
+The image publication dependencies do not change. The current merge policy does not require `ca-soaked` for `ca-canary`.
 
 ## Design
 

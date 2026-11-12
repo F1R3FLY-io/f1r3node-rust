@@ -10,7 +10,7 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | Static check | Reads files and history. It runs no program under test. |
 | Script test | Runs a behavioral test of a CI, release, or soak script. It needs no Rust build. |
 | Soak harness test | Builds the `casper-soak` harness and runs the real soak driver, also in Docker containers. |
-| Unit test | Runs `cargo test` for a crate. |
+| Unit test | Runs the tests of a crate once under `cargo llvm-cov` and records the line coverage of that run. |
 | Build | Builds a release artifact or a Docker image. |
 | Integration test | Runs a node network on ephemeral runners. |
 | Setup | Resolves the target commit and the run decisions for the other jobs. |
@@ -29,17 +29,26 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | `markdown_link_check` | Markdown Link Check | Static check | `build_base` |
 | `test` | Test (*crate*) | Unit test | `build_base`, `static_checks` |
 | `test_casper` | Test (casper *n*/2) | Unit test | `build_base`, `static_checks` |
-| `coverage` | Coverage (*crate*) | Unit test | `build_base`, `static_checks` |
-| `coverage_summary` | Coverage Summary | Gate | `build_base`, `coverage` |
+| `coverage_summary` | Coverage Summary | Gate | `build_base`, `test`, `test_casper` |
 | `test_casper_gate` | Test Gate (casper) | Gate | `test_casper`, `coverage_summary` |
-| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests`, `soak_harness_tests` |
+| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests` |
 | `integration_tests_amd64` | Integration Gate (amd64) | Gate | `build_base`, `pipeline` |
 | `integration_tests_arm64` | Integration Gate (arm64) | Gate | `build_base`, `pipeline` |
 | `notify_queue_failure` | Notify Queue Failure | Notification | `pipeline`, both integration gates |
 | `release_docker_image` | Release Docker Image | Build | the checks above |
 | `release_packages` | Release Packages | Build | the checks above |
 
-The Integration Pipeline waits for all three of Static Checks, Script Tests, and Soak Harness Tests. A failed inexpensive check therefore does not start ephemeral OCI runners.
+The Integration Pipeline waits for Static Checks and Script Tests. A failed inexpensive check therefore does not start ephemeral OCI runners. Script Tests covers the runner launch, tagging, and reclaim scripts that the pipeline uses.
+
+The Integration Pipeline does not wait for Soak Harness Tests. That job tests only the casper-soak tool, which the pipeline does not run, and it takes approximately 18 minutes. The merge queues and the release jobs still require it.
+
+### Unit tests and coverage
+
+Each Test job runs the tests of its crate one time, under `cargo llvm-cov`, with `.github/scripts/run-crate-tests.sh`. The job writes the line coverage of that run as an lcov file and uploads it as the `coverage-<crate>` artifact. The two casper shards upload `coverage-casper-1` and `coverage-casper-2`. The job writes the report before the doctests run, so doctests do not count toward coverage.
+
+On a pull request, Coverage Summary reads these files with `.github/scripts/coverage-summary.sh`. The script counts each source line of a crate one time, from the `DA` records of the lcov files. A line is covered when any shard ran it. Each crate and the workspace must have at least 80% line coverage. Test Gate (casper) fails when Coverage Summary fails.
+
+The `DA` count can be different from the line totals that `cargo llvm-cov report --json` prints. Across the crates, it gives a result from 0.03 points lower to 1.8 points higher. The script uses the `DA` count because the shards of one crate can be merged line by line only from those records.
 
 ### Static Checks
 
@@ -115,7 +124,7 @@ The job runs these script tests:
 
 ### Casper crash backtraces
 
-The `Test (casper N/2)` and `Coverage (casper)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The `Test (casper N/2)` jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
+The `Test (casper N/2)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
 
 ### Soak Harness Tests
 
@@ -278,7 +287,7 @@ Only `dev` and `master` publish without reviewer approval, through `protected-br
 
 ### Dev sync
 
-`dev` reaches the release train only through an occasional sync. A maintainer runs `just ca-sync`. The command opens a pull request from `dev` into `ca-canary` with the `ci-heavy` label. Its `ca/` head puts it in the `ca-item` queue, so it needs the 22-hour soak and an approval like any item. `ca-release` gets `dev` code only through a promotion from `ca-canary`.
+`dev` reaches the release train only through an occasional sync. A maintainer runs `just ca-sync`. The command opens a pull request from `dev` into `ca-canary` with the `ci-heavy` label. Its `ca/` head puts it in the `ca-item` queue, which uses the existing CI and review requirements. A merge into `ca-canary` does not require a soak. `ca-release` gets `dev` code only through a promotion from `ca-canary`.
 
 ### Daily back-merge
 
@@ -320,7 +329,7 @@ The **CI Heavy Label** workflow reruns the newest CI run of the head when the `c
 |---|---|---|
 | `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approval or a `ci-maintainers` author, requested reviews, no requested changes, the `devProtect` checks, Promotion Source, and `ci-heavy` with the gates, or a maintainer waiver |
 | `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | An approving review, no requested changes, the `masterProtect` checks, Promotion Source, the casper shards, and `ci-heavy` with the Integration Gates, or a maintainer waiver |
-| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`, and also the `ca-soaked` label |
+| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`. No pre-merge soak requirement. |
 | `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
 | `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | An approving review, no requested changes, the `ci-heavy` label with the Integration Gates and no waiver, and the `dev` checks |
 
@@ -332,8 +341,8 @@ To merge any other pull request into `dev`, get an approving review. Mergify add
 
 To merge a `ca/<item>` pull request:
 
-1. Add the `ca-soak` label to start its 22-hour soak. A passed soak adds the `ca-soaked` label.
-2. Get an approving review, or be a member of `@F1R3FLY-io/ci-maintainers`. Each requested reviewer must submit a review.
+1. Get an approving review, or be a member of `@F1R3FLY-io/ci-maintainers`. Each requested reviewer must submit a review.
+2. Wait for the required CI checks to pass.
 
 Mergify queues the pull request. It added `ci-heavy` when the pull request opened.
 
@@ -364,9 +373,7 @@ Name a security fix `hotfix/security-<topic>` into `master` or `fix/security-<to
 
 The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`.
 
-The `ca-soaked` label stays on the pull request when Mergify merges a new `ca-canary` base into it. A back-merge or a merged sync therefore does not need a new soak. A push by the author removes the label, so a code change needs a new soak. A commit status cannot do this, because a new head commit has no status and Mergify then removes the pull request from the queue.
-
-A person with triage access can add the label by hand. The 60-hour soak of `ca-release` still gates each `ca-v*` tag.
+An optional item soak can record diagnostic results for a `ca/*` head. Its `ca-soaked` label does not control queue entry or merge into `ca-canary`. The 60-hour soak of `ca-release` still gates each `ca-v*` tag.
 
 ### Merge rulesets
 
@@ -414,7 +421,7 @@ The [design](plans/ca-daily-provenance.md) gives the verification scope.
 
 | Event | Action |
 |---|---|
-| The `ca-soak` label on a `ca/*` pull request into `ca-canary` | Removes `ca-soaked` and starts the 22-hour soak of the head, gate `ca-item` |
+| The `ca-soak` label on a `ca/*` pull request into `ca-canary` | Removes `ca-soaked` and starts an optional 22-hour soak of the head, gate `ca-item` |
 | A push to that pull request by Mergify | Nothing. Mergify only merges the base. |
 | A push to that pull request by anyone else | Removes `ca-soak` and `ca-soaked` and cancels the queued and running soaks of the pull request. A new soak needs the `ca-soak` label again. |
 | A push to `ca-release` | Starts the 60-hour soak of the pushed commit, gate `ca-release` |
@@ -445,7 +452,7 @@ These rulesets are a plan. They are not applied.
 | Rule | `ca-canary` | `ca-release` |
 |---|---|---|
 | Deletion and non-fast-forward | Blocked | Blocked |
-| Required checks | The `devProtect` checks. The `ca-soaked` label in Mergify gates the soak. | The `masterProtect` checks. `just ca-tag` requires `Soak Gate (60h)` on the `ca-release` head. |
+| Required checks | The `devProtect` checks. Mergify requires no soak status or label. | The `masterProtect` checks. `just ca-tag` requires `Soak Gate (60h)` on the `ca-release` head. |
 | Pull request review | One code-owner approval for `ca/*` heads | One code-owner approval for `promote/ca-release-*` heads |
 | Merge method | Merge commit only | Merge commit only |
 | GitHub merge queue | None (Mergify) | None (Mergify) |
