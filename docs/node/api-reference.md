@@ -31,14 +31,14 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 
 | Code | Meaning | Common `error` values |
 |------|---------|----------------------|
-| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `validator_node_required`|
+| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `deploy_expired`, `readonly_node_required`, `validator_node_required`|
 | `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
 | `405` | HTTP method not allowed for this path | `method_not_allowed` |
 | `422` | Input is valid but execution failed | `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
 | `409` | Expected state conflict (empty mempool, propose refused) | `no_new_deploys`, `validator_not_bonded`, `not_enough_new_blocks`, `too_far_ahead_of_finalized` |
 | `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
 | `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
-| `503` | Node cannot serve the request yet, retry later | `observer_busy`, `block_not_held`, `history_incomplete`, `missing_block` |
+| `503` | Node cannot serve the request yet, retry later | `observer_busy`, `block_not_held`, `history_incomplete`, `missing_block`, `validator_not_bonded` (a deploy; a refused propose answers `409`) |
 
 ### Read-only-only endpoints on validators
 
@@ -127,7 +127,11 @@ curl http://localhost:40403/api/status
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 2,
-  "epochLength": 10
+  "epochLength": 10,
+  "latestBlockNumber": 31,
+  "deployLifespan": 300,
+  "maxUserDeploysPerBlock": 128,
+  "maxParentDepth": 25
 }
 ```
 
@@ -150,6 +154,13 @@ curl http://localhost:40403/api/status
 | `isReady` | bool | `true` after engine enters Running state |
 | `currentEpoch` | int | `lastFinalizedBlockNumber / epochLength` |
 | `epochLength` | int | Blocks per epoch, from genesis configuration |
+| `latestBlockNumber` | int/null | Highest block number in this node's DAG. `null` until casper is up |
+| `deployLifespan` | int/null | Blocks a deploy stays includable after its `validAfterBlockNumber`. `null` until casper is up |
+| `maxUserDeploysPerBlock` | int/null | Most user deploys one block carries. `null` until casper is up |
+| `maxParentDepth` | int/null | How far below the tip a block may cite, in blocks. `null` until casper is up |
+
+The last four values let a deploy client, such as a [deploy queue](deploy-queue.md), choose `validAfterBlockNumber`
+and pace its deploys.
 
 ---
 
@@ -277,7 +288,7 @@ Submit a signed deploy to the network. Validator nodes only.
 | `data.timestamp` | int | yes | Deploy timestamp (ms since epoch) |
 | `data.phloPrice` | decimal string | yes | Phlogiston price per unit in dust, in [0, 2^256-1]. JSON numbers are rejected. |
 | `data.phloLimit` | int | yes | Maximum phlogiston to consume |
-| `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
+| `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number. It must be above `latestBlockNumber - deployLifespan` and at most `latestBlockNumber + maxParentDepth` (see [`GET /api/status`](#get-apistatus)) |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
 | `data.parameters` | array | no | Named Rholang values. The default is an empty array. |
 | `deployer` | string | yes | Deployer public key (hex) |
@@ -305,10 +316,11 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed body or invalid field value: read-only node, unbonded validator, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `400` | Malformed body or invalid field value: read-only node, wrong shard ID, forbidden key, phlo price below minimum, `validAfterBlockNumber` above `latestBlockNumber + maxParentDepth` (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`), or a closed validity window (`deploy_expired`) |
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
+| `503` | The node's validator is not bonded, so it cannot include the deploy now (`validator_not_bonded`). Retry later or send the deploy to another validator |
 
 Deploy admission checks the node's validator against the last finalized block's committee. Proposal checks the selected parent's committee. These sets can differ during the finality gap after a bond change.
 
@@ -441,16 +453,17 @@ curl http://localhost:40403/api/deploy-finalization-status/3044...
 ```
 
 ```json
-{"state": "Finalized", "rejectionCount": 0, "latestBlockHash": "3bfdf56f..."}
+{"state": "Finalized", "rejection_count": 0, "latest_block_hash": "3bfdf56f..."}
 ```
 
-Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
+Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`. A [deploy queue](deploy-queue.md) also
+answers `Rejected`.
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `state` | string | Deploy finalization state |
-| `rejectionCount` | int | Number of times the deploy was rejected during finalization |
-| `latestBlockHash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
+| `rejection_count` | int | Number of times the deploy was rejected during finalization |
+| `latest_block_hash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
 
 | Status | Condition |
 |--------|-----------|
