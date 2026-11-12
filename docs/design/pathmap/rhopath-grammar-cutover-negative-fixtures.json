@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "manifest_mutations": [
+    {"name": "a dropped arm", "op": "remove", "pointer": "/arms/treatment", "expected_code": "arm_dropped"},
+    {"name": "a dropped workload", "op": "remove", "pointer": "/workloads/3", "expected_code": "workload_dropped"},
+    {"name": "W0 not deciding", "op": "replace", "pointer": "/workloads/0/role", "value": "diagnostic", "expected_code": "deciding_workload_drift"},
+    {"name": "a dropped primary metric", "op": "remove", "pointer": "/primary_metrics/5", "expected_code": "primary_metric_dropped"},
+    {"name": "no correctness gate", "op": "remove", "pointer": "/correctness_gate", "expected_code": "correctness_gate_missing"},
+    {"name": "a rule registered after a sample", "op": "replace", "pointer": "/sample_batches", "value": [{"batch_id": "batch-recorded-before-the-registration", "recorded_at_utc": "2000-01-01T00:00:00Z"}], "expected_code": "rule_registered_after_sample"},
+    {"name": "a profile ID other than the two arms", "op": "replace", "pointer": "/arms/treatment/profile_id", "value": "RSpace.Rust.V3", "expected_code": "profile_id_not_an_arm"},
+    {"name": "a sample plan smaller than the parent protocol's", "op": "replace", "pointer": "/sample_plan/primary_pairs", "value": 50, "expected_code": "sample_plan_smaller_than_parent"}
+  ]
+}

@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "task_public_id": "rspace-key-grammar-cutover-benchmark-protocol",
+  "state": "preregistered_without_samples",
+  "registration": {
+    "registry": "pgmcp",
+    "experiment_id": 489,
+    "registered_at_utc": "2026-11-12T19:23:19Z",
+    "registered_before_any_sample": true
+  },
+  "sample_batches": [],
+  "protocol": {
+    "path": "docs/design/pathmap/rhopath-grammar-cutover-comparison-protocol.md",
+    "records_experiment_id_and_registration_time": true
+  },
+  "parent_protocol": {
+    "task_public_id": "rspace-dag-required-performance-control",
+    "experiment_id": 377,
+    "import": "by_reference_pinned_by_sha256",
+    "pinned_at_commit": "c4c38ef10655b70549a27321d9374169cc1e0939",
+    "files": {
+      "protocol": {
+        "path": "docs/design/pathmap/lmdb-dag-equal-contract-comparison-protocol.md",
+        "sha256": "41243ab2a4aa5986346b0e6cd5d36e2d38e37a753217d78da8f2bf24576c0b8e"
+      },
+      "manifest": {
+        "path": "docs/design/pathmap/lmdb-dag-equal-contract-control-manifest.json",
+        "sha256": "56eeeba47d85aab258f9d6c945dff117232b2b3e96969b79dd0d315a7931e2cf"
+      },
+      "negative_fixtures": {
+        "path": "docs/design/pathmap/lmdb-dag-equal-contract-negative-fixtures.json",
+        "sha256": "cb2c5bf93d8cd2efb52eedfb311aec5091c52d73538cf4e44cdb1c1ed7955a7a"
+      }
+    },
+    "imported_sections": [
+      "Equal contract and observations",
+      "Required matrix and measured quantities",
+      "Paired sampling and decision rule"
+    ],
+    "imported_items": [
+      "harness",
+      "operation_lists",
+      "durability_contract",
+      "retention_contract",
+      "cache_contract",
+      "concurrency_contract",
+      "host_rules",
+      "paired_sampling",
+      "witnesses"
+    ],
+    "amendment_policy": "pinned_content_stays_imported_until_this_protocol_is_repinned_by_a_recorded_amendment",
+    "repin_without_further_ceremony_only_while": "no_sample_batch_is_recorded"
+  },
+  "arms": {
+    "control": {
+      "profile_id": "RSpace.Rust.V1",
+      "key_grammar": "RhoPathV1",
+      "backend": "durable_pathmap",
+      "profile_status": "in_use"
+    },
+    "treatment": {
+      "profile_id": "RSpace.Rust.V2",
+      "key_grammar": "RhoPathV2",
+      "backend": "durable_pathmap",
+      "profile_status": "proposed_awaiting_owner_approval",
+      "owner_question": "Q2",
+      "buildable_at_preregistration": false,
+      "requires_leaves": [
+        "rspace-key-grammar-profile-binding",
+        "rspace-key-grammar-lifecycle-differential",
+        "rspace-key-grammar-durable-lifecycle-differential"
+      ]
+    }
+  },
+  "workloads": [
+    {"id": "W0", "role": "deciding", "source": "parent_protocol_operation_lists", "cells": "every_timed_cell_of_the_parent_matrix"},
+    {"id": "W1", "role": "diagnostic", "source": "experiment_487", "channel_kind": "unforgeable_name", "receive_channels": [1]},
+    {"id": "W2", "role": "diagnostic", "source": "experiment_487", "channel_kind": "tuple_of_unforgeable_name_and_short_string", "receive_channels": [1]},
+    {"id": "W3", "role": "diagnostic", "source": "experiment_487", "channel_kind": "large_compound_list_of_16_triples", "receive_channels": [1]},
+    {"id": "W4", "role": "diagnostic", "source": "experiment_487", "channel_kind": "unforgeable_name", "receive_channels": [2, 3]}
+  ],
+  "primary_metrics": [
+    {"id": "produce_wall_time", "unit": "seconds_per_call", "event": "produce_call_that_completes_no_comm", "per_run": "arithmetic_mean", "lower_is_better": true},
+    {"id": "consume_wall_time", "unit": "seconds_per_call", "event": "consume_call_that_completes_no_comm", "per_run": "arithmetic_mean", "lower_is_better": true},
+    {"id": "comm_wall_time", "unit": "seconds_per_call", "event": "produce_or_consume_call_that_completes_a_comm", "per_run": "arithmetic_mean", "lower_is_better": true},
+    {"id": "checkpoint_publication_time", "unit": "seconds_per_checkpoint", "event": "acknowledged_checkpoint_call", "per_run": "arithmetic_mean", "lower_is_better": true},
+    {"id": "durable_bytes_written_per_checkpoint", "unit": "bytes_per_checkpoint", "event": "acknowledged_checkpoint_call", "per_run": "total_physical_write_bytes_divided_by_checkpoints", "lower_is_better": true},
+    {"id": "hot_store_resident_bytes", "unit": "bytes", "event": "checkpoint_position", "per_run": "maximum_live_heap_growth_since_before_open", "lower_is_better": true},
+    {"id": "open_time", "unit": "seconds_per_open", "event": "open_after_orderly_shutdown", "per_run": "arithmetic_mean", "lower_is_better": true},
+    {"id": "recovery_time", "unit": "seconds_per_recovery", "event": "open_after_kill_during_a_write", "per_run": "arithmetic_mean", "lower_is_better": true}
+  ],
+  "secondary_metrics": [
+    {"id": "key_bytes", "unit": "bytes", "method": "experiment_487_part_1", "enters_decision_rule": false},
+    {"id": "distinct_trie_edges", "unit": "edges", "method": "experiment_487_part_2", "enters_decision_rule": false},
+    {"id": "instructions_per_key_construction", "unit": "instructions", "method": "experiment_487_part_3_cachegrind_slope", "enters_decision_rule": false}
+  ],
+  "correctness_gate": {
+    "required_before_any_comparison": true,
+    "tests": [
+      "rspace-key-grammar-lifecycle-differential",
+      "rspace-key-grammar-durable-lifecycle-differential"
+    ],
+    "on_recorded_v1_divergence": "report_to_the_campaign_owner_before_any_comparison"
+  },
+  "sample_plan": {
+    "imported_from_section": "Paired sampling and decision rule",
+    "primary_cell_id": "owner-primary-65536",
+    "primary_pairs": 51,
+    "secondary_pairs": 30,
+    "diagnostic_stratum_pairs": 30,
+    "bootstrap_replicates": 100000,
+    "bootstrap_seed": 20261001,
+    "confidence_percent": 99,
+    "randomized_balanced_pair_order": true,
+    "one_pair_one_retained_run": true,
+    "timed_runs_unprofiled": true
+  },
+  "decision_rule": {
+    "evaluated_on_workload": "W0",
+    "evaluated_on": "measured_figures_only",
+    "scope": "every_primary_metric_in_every_eligible_timed_cell_of_W0_in_which_every_run_performs_its_event",
+    "statistic": "median_of_within_pair_ratios_treatment_over_control",
+    "interval": "two_sided_pair_preserving_bootstrap_interval",
+    "equivalence_margin_upper_bound": 1.05,
+    "worse_beyond_margin_when": "upper_bound_greater_than_margin",
+    "better_when": "upper_bound_less_than_one",
+    "equivalent_when": "upper_bound_between_one_and_margin_inclusive",
+    "outcomes": [
+      {"id": "recommend_v1", "when": "any_comparison_worse_beyond_margin", "recommends": "RSpace.Rust.V1"},
+      {"id": "recommend_v2_on_measurement", "when": "no_comparison_worse_beyond_margin_and_at_least_one_better", "recommends": "RSpace.Rust.V2"},
+      {"id": "recommend_v2_by_tie_break", "when": "all_comparisons_equivalent", "recommends": "RSpace.Rust.V2", "tie_break": "CBR-053_channel_identity_condition"}
+    ],
+    "no_recommendation_when": [
+      "correctness_gate_not_passed",
+      "a_primary_metric_is_defined_in_no_eligible_timed_cell_of_W0",
+      "a_pair_of_runs_fails_a_witness"
+    ],
+    "recommendation_goes_to": "campaign_owner",
+    "stop_points": [6021, 7936],
+    "protocol_decides": false
+  },
+  "encode_trie_path_diagnostic": {
+    "owner_question": "Q5",
+    "owner_question_answered_at_preregistration": false,
+    "fix_landed_at_preregistration": false,
+    "kind": "model_not_measurement",
+    "enters_decision_rule": false,
+    "source_experiment": 487,
+    "source_reading": "cold_production_arms_larger_iteration_pair",
+    "share_definition": "instructions_of_arm_v1structure_divided_by_instructions_of_arm_v1",
+    "shares": {
+      "W1": {"encode_trie_path_instructions": 6274.0, "v1_datum_prefix_instructions": 17100.2},
+      "W2": {"encode_trie_path_instructions": 1306000.9, "v1_datum_prefix_instructions": 1320425.6},
+      "W3": {"encode_trie_path_instructions": 63238710.5, "v1_datum_prefix_instructions": 63410521.5}
+    },
+    "no_share_measured_for": ["W0", "W4"],
+    "applies_to_arm": "control",
+    "applies_to_metric": "instructions_per_key_construction",
+    "formula": "modelled_control_instructions = measured_control_instructions * (1 - share)",
+    "omitted_when": "the_encode_trie_path_fix_of_owner_question_Q5_has_landed"
+  }
+}
