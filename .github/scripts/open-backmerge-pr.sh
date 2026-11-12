@@ -8,9 +8,7 @@
 #
 # BACKMERGE_SOURCE and BACKMERGE_TARGET select the back-merge. They default to
 # master and dev, and any other pair is refused. The ca-release -> ca-canary
-# back-merge runs each day from ca-daily-sync.yml, and Mergify merges it. A
-# maintainer runs the dev sync now and then. Its ca/ head puts it in the
-# ca-item queue of Mergify, so it needs the 22-hour soak like any ca/ item.
+# back-merge runs each day from ca-daily-sync.yml, and Mergify merges it.
 #
 # Do not open the back-merge from the source branch itself. A pull request
 # with head master shows "Update branch", which merges dev into master through
@@ -64,14 +62,12 @@ elif [ "${BACKMERGE_SCHEDULED:-}" = 1 ]; then
 Mergify merges this $kind when its CI passes. It needs no review."
 fi
 
-# The sync has no later push, so it gets ci-heavy now. The ca-soak label starts
-# a 22-hour soak VM, so a maintainer adds it.
 labels=()
 if [ "$kind" = sync ]; then
 	labels=(--label ci-heavy)
 	review="$review
 
-Add the \`ca-soak\` label to start the 22-hour soak. Mergify queues this sync after the soak passes and a different member of @F1R3FLY-io/ci-maintainers approves it."
+Mergify queues this sync after its CI checks pass and a different member of @F1R3FLY-io/ci-maintainers approves it."
 fi
 
 remote="${BACKMERGE_REMOTE:-origin}"

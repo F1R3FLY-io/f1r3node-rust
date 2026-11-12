@@ -22,7 +22,7 @@ use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::token_amount::TokenAmount;
 
-use crate::helper::test_node::TestNode;
+use crate::helper::test_node::{ShardOverrides, TestNode};
 use crate::util::genesis_builder::GenesisBuilder;
 
 const SOLO_BLOCKS: usize = MAX_FLOOR_DISTANCE_BLOCKS as usize + 1;
@@ -48,9 +48,12 @@ async fn stalled_two_validator_shard() -> StalledShard {
         .build_genesis_with_parameters(Some(parameters))
         .await
         .expect("genesis");
-    let mut nodes = TestNode::create_network(genesis, 2, None, None, None)
-        .await
-        .expect("create_network");
+    let mut nodes = TestNode::create_network_with_overrides(genesis, 2, ShardOverrides {
+        finalization_rate: Some(0),
+        ..Default::default()
+    })
+    .await
+    .expect("create_network");
     for node in nodes.iter_mut() {
         node.allow_empty_blocks = true;
     }

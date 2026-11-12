@@ -393,14 +393,11 @@ async fn block_data_deploy_data_and_invalid_blocks() {
             "new bd(`rho:block:data`) in { bd!(\"bd-out\") }",
         )
         .await;
-        assert_eq!(
-            data_at(&runtime, "bd-out").await,
-            vec![
-                gint_par(42),
-                gint_par(1234),
-                byte_array_par(sender_bytes.clone())
-            ]
-        );
+        assert_eq!(data_at(&runtime, "bd-out").await, vec![
+            gint_par(42),
+            gint_par(1234),
+            byte_array_par(sender_bytes.clone())
+        ]);
 
         let deployer_bytes = vec![1u8, 2, 3, 4];
         runtime
@@ -418,16 +415,10 @@ async fn block_data_deploy_data_and_invalid_blocks() {
         let deploy_data = data_at(&runtime, "dd-out").await;
         assert_eq!(deploy_data.len(), 3);
         assert_eq!(deploy_data[0], gint_par(777));
-
-        eval_ok(
-            &mut runtime,
-            "for (@_, @deployer, @_ <- @\"dd-out\") { new ops(`rho:system:deployerId:ops`) in { ops!(\"pubKeyBytes\", deployer, \"pk-out\") } }",
-        )
-        .await;
-        assert_eq!(
-            data_at(&runtime, "pk-out").await,
-            vec![byte_array_par(deployer_bytes)]
-        );
+        // Middle slot is the pubkey as a plain ByteArray; see
+        // `system_processes::get_deploy_data` for the surface rationale
+        // relative to `rho:system:deployerId`.
+        assert_eq!(deploy_data[1], byte_array_par(deployer_bytes));
 
         runtime.set_invalid_blocks(HashMap::new()).await;
         eval_ok(
@@ -601,7 +592,7 @@ async fn block_committee_set_then_get_round_trips() {
     let mut runtime = framework_runtime().await;
     eval_ok(
         &mut runtime,
-        "new set(`rho:test:block:data:set`) in { set!(\"committee\", {\"aa\".hexToBytes(): 3, \"bb\".hexToBytes(): 0}, \"ack\") }",
+        "new set(`rho:test:block:data:set`) in { set!(\"committee\", {\"aa\".hexToBytes(): 3n, \"bb\".hexToBytes(): 0n}, \"ack\") }",
     )
     .await;
     assert_eq!(data_at(&runtime, "ack").await, vec![Par::default()]);
@@ -612,7 +603,7 @@ async fn block_committee_set_then_get_round_trips() {
     .await;
     eval_ok(
         &mut runtime,
-        "for (@committee <- @\"committee-out\") { @\"checked\"!(committee == {\"aa\".hexToBytes(): 3}) }",
+        "for (@committee <- @\"committee-out\") { @\"checked\"!(committee == {\"aa\".hexToBytes(): 3n}) }",
     )
     .await;
     assert_eq!(data_at(&runtime, "checked").await, vec![gbool_par(true)]);
