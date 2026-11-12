@@ -14,10 +14,8 @@
 //!   `record_dag_cardinality_metrics`, `estimator`.
 //! * [`validation_dispatcher`] — `validate`, `validate_self_created`,
 //!   `handle_invalid_block`.
-//! * [`block_admission`] — `contains`, `dag_contains`, `buffer_contains`,
-//!   `get_approved_block`, `deploy`, `handle_valid_block`, `add_deploy`.
-//! * [`buffer_resolver`] — `get_dependency_free_from_buffer`,
-//!   `get_all_from_buffer`.
+//! * [`block_admission`] — `dag_contains`, `get_approved_block`, `deploy`,
+//!   `handle_valid_block`, `add_deploy`.
 //! * [`finalization_runner`] — `Finalizer`, `compute_last_finalized_block`,
 //!   `update_last_finalized_block`.
 //! * [`events`] — `block_event`, `created_event`, `added_event`,
@@ -36,7 +34,6 @@
 // nine-module decomposition.
 pub(crate) mod block_admission;
 pub(crate) mod bond_cache;
-pub(crate) mod buffer_resolver;
 pub mod ejection_requests;
 pub(crate) mod events;
 pub(crate) mod finalization_runner;

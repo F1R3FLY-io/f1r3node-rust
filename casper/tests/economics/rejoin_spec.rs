@@ -926,8 +926,11 @@ async fn a_nay_its_own_ancestry_contradicts_is_slashed_and_an_honest_one_is_not(
     let mut without_vote = nodes[judge_node]
         .block_dag_storage
         .get_representation()
-        .expect("dag");
-    without_vote.dag_set.remove(&lying.block_hash);
+        .expect("dag")
+        .detached_fixture()
+        .expect("detached view")
+        .build();
+    without_vote.fixture_mut().dag_set.remove(&lying.block_hash);
     let deferred = casper::rust::validate::Validate::dishonest_votes(
         &accusing,
         &without_vote,
@@ -944,9 +947,12 @@ async fn a_nay_its_own_ancestry_contradicts_is_slashed_and_an_honest_one_is_not(
     let mut without_parents = nodes[judge_node]
         .block_dag_storage
         .get_representation()
-        .expect("dag");
+        .expect("dag")
+        .detached_fixture()
+        .expect("detached view")
+        .build();
     for parent in &lying.header.parents_hash_list {
-        without_parents.dag_set.remove(parent);
+        without_parents.fixture_mut().dag_set.remove(parent);
     }
     let claimant_claim = lying
         .body
@@ -1198,7 +1204,16 @@ async fn a_proposer_does_not_sign_a_nay_over_ancestry_it_does_not_hold() {
         ..view.proposal_at(&own, knowledge)
     });
     let mut snapshot = nodes[voter].casper.get_snapshot().await.expect("snapshot");
-    snapshot.dag.dag_set.remove(&claimant_blocks[0]);
+    snapshot.dag = snapshot
+        .dag
+        .detached_fixture()
+        .expect("detached view")
+        .build();
+    snapshot
+        .dag
+        .fixture_mut()
+        .dag_set
+        .remove(&claimant_blocks[0]);
     let validator = nodes[voter].casper.get_validator().expect("validator");
     let node = &mut nodes[voter];
     let created = block_creator::create(
@@ -1600,7 +1615,11 @@ fn record_equivocation(node: &TestNode, first: &BlockMessage, second: &BlockMess
             .put_block_message(block)
             .expect("store evidence block");
     }
-    if !node.casper.dag_contains(&first.block_hash) {
+    if !node
+        .casper
+        .dag_contains(&first.block_hash)
+        .expect("dag read")
+    {
         node.casper
             .block_dag_storage
             .insert(first, InsertMode::Normal)

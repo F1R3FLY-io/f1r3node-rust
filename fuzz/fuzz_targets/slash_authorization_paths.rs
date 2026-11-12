@@ -183,7 +183,7 @@ fuzz_target!(|input: Input| {
         .collect();
 
     let mut lowest: BTreeMap<Validator, (BlockHash, BlockHash)> = BTreeMap::new();
-    for invalid in snapshot.dag.invalid_blocks() {
+    for invalid in snapshot.dag.invalid_blocks().expect("invalid blocks") {
         if !bonded(&bonds, &invalid.sender) {
             continue;
         }

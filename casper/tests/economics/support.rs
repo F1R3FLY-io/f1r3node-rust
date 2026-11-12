@@ -136,12 +136,10 @@ pub fn identity(node: &TestNode) -> Validator {
 /// `hash_set_casper`, the constructor every running casper goes through.
 pub async fn restart(
     node: &TestNode,
-) -> casper::rust::engine::multi_parent_casper::MultiParentCasperImpl<
-    crate::util::comm::transport_layer_test_impl::TransportLayerTestImpl,
-> {
+) -> casper::rust::engine::multi_parent_casper::MultiParentCasperImpl {
     let deploy_storage = (*node.casper.deploy_storage).clone();
     casper::rust::casper::hash_set_casper(
-        node.casper.block_retriever.clone(),
+        node.casper.ingest.clone(),
         node.casper.event_publisher.clone(),
         node.casper.runtime_manager.clone(),
         node.casper.estimator.clone(),
@@ -149,7 +147,6 @@ pub async fn restart(
         node.casper.block_dag_storage.clone(),
         deploy_storage,
         node.casper.rejected_deploy_buffer.clone(),
-        node.casper.casper_buffer_storage.clone(),
         node.casper.validator_id.clone(),
         node.casper.casper_shard_conf.clone(),
         node.casper.approved_block.clone(),

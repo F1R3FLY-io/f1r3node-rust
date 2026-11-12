@@ -6,7 +6,6 @@
 
 use std::collections::HashSet;
 
-use comm::rust::transport::transport_layer::TransportLayer;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::DeployData;
@@ -99,7 +98,7 @@ fn covered_limit(balance: &BigInt, price: &TokenAmount) -> i64 {
     i64::try_from(&(balance / price.as_bigint())).unwrap_or(i64::MAX)
 }
 
-impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
+impl MultiParentCasperImpl {
     /// Asks for the ejection of the first of `targets` other than itself that
     /// this node has not already asked for and knows no open claim against,
     /// and withdraws a request still waiting in the pool once the target's

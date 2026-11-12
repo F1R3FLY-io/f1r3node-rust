@@ -1264,9 +1264,14 @@ mod tests {
         let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
         snapshot.last_finalized_block = block.block_hash.clone();
         snapshot.dag.last_finalized_block_hash = block.block_hash.clone();
-        snapshot.dag.dag_set.insert(block.block_hash.clone());
         snapshot
             .dag
+            .fixture_mut()
+            .dag_set
+            .insert(block.block_hash.clone());
+        snapshot
+            .dag
+            .fixture_mut()
             .finalized_blocks_set
             .insert(block.block_hash.clone());
         snapshot

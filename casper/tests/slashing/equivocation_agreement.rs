@@ -5,7 +5,7 @@
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::util::construct_deploy;
 use crypto::rust::signatures::signed::Signed;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, EquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
@@ -167,7 +167,7 @@ enum Arrival {
 /// then the sibling. The sibling is an equivocation held invalid, and v1's
 /// next block slashes v0, however far v0's chain had moved on.
 async fn sibling_after_chain(chain: usize, arrival: Arrival) {
-    let (mut nodes, shard_id) = network(3, None).await;
+    let (mut nodes, shard_id) = network(4, None).await;
 
     let b1 = nodes[0]
         .create_block_unsafe(&[deploy(0, &shard_id)])
@@ -193,16 +193,25 @@ async fn sibling_after_chain(chain: usize, arrival: Arrival) {
     for block in &blocks {
         accept(&mut nodes[1], block, "v1 accepts v0's chain").await;
     }
-    if let Arrival::Admissible = arrival {
-        nodes[1]
-            .casper
-            .casper_buffer_storage
-            .add_relation(
-                BlockHashSerde(sibling.block_hash.clone()),
-                BlockHashSerde(prost::bytes::Bytes::from_static(b"child-of-the-sibling")),
-            )
-            .expect("the sibling is a requested dependency");
-    }
+    let child = match arrival {
+        Arrival::Ignorable => None,
+        Arrival::Admissible => {
+            accept(&mut nodes[3], &sibling, "v3 accepts the sibling").await;
+            let child = nodes[3]
+                .add_block_from_deploys(&[deploy(101, &shard_id)])
+                .await
+                .expect("v3 builds on the sibling");
+            nodes[1]
+                .process_block(child.clone())
+                .await
+                .expect("v1 holds the sibling's child");
+            assert!(
+                nodes[1].ingest_view.is_cited(&sibling.block_hash),
+                "a block v1 holds cites the sibling"
+            );
+            Some(child)
+        }
+    };
     let verdict = nodes[1]
         .process_block(sibling.clone())
         .await
@@ -241,6 +250,12 @@ async fn sibling_after_chain(chain: usize, arrival: Arrival) {
         is_equivocation(&v2_sibling),
         "chain {chain}: v2 sibling {v2_sibling:?}"
     );
+    if let Some(child) = child {
+        nodes[2]
+            .process_block(child)
+            .await
+            .expect("v2 receives the sibling's child");
+    }
     accept(
         &mut nodes[2],
         &next,

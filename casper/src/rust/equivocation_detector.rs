@@ -47,12 +47,12 @@ impl EquivocationDetector {
     pub fn equivocation_of(
         dag: &KeyValueDagRepresentation,
         block: &BlockMessage,
-    ) -> Option<BlockHash> {
-        dag.blocks_at(&block.sender, block.seq_num)?
-            .iter()
-            .filter(|hash| **hash != block.block_hash)
-            .min()
-            .cloned()
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(dag
+            .blocks_at(&block.sender, block.seq_num)?
+            .into_iter()
+            .filter(|hash| *hash != block.block_hash)
+            .min())
     }
 
     /// The verdict on a block that equivocates: admissible when another block
@@ -61,9 +61,9 @@ impl EquivocationDetector {
         dag: &KeyValueDagRepresentation,
         block: &BlockMessage,
         requested_as_dependency: bool,
-    ) -> ValidBlockProcessing {
-        let Some(sibling) = Self::equivocation_of(dag, block) else {
-            return Either::Right(ValidBlock::Valid);
+    ) -> Result<ValidBlockProcessing, KvStoreError> {
+        let Some(sibling) = Self::equivocation_of(dag, block)? else {
+            return Ok(Either::Right(ValidBlock::Valid));
         };
         tracing::warn!(
             target: "f1r3fly.slashing",
@@ -74,11 +74,13 @@ impl EquivocationDetector {
             requested_as_dependency,
             "equivocation"
         );
-        Either::Left(BlockError::Invalid(if requested_as_dependency {
-            InvalidBlock::AdmissibleEquivocation
-        } else {
-            InvalidBlock::IgnorableEquivocation
-        }))
+        Ok(Either::Left(BlockError::Invalid(
+            if requested_as_dependency {
+                InvalidBlock::AdmissibleEquivocation
+            } else {
+                InvalidBlock::IgnorableEquivocation
+            },
+        )))
     }
 
     /// A block neglects an equivocation when both of its blocks are in the
@@ -97,30 +99,26 @@ impl EquivocationDetector {
         let latest_messages = Self::to_latest_message_hashes(&block.justifications);
         let mut canonical_child_cache = CanonicalChildCache::new();
         let mut judged = HashSet::new();
-        for equivocation in dag.invalid_blocks() {
-            let Some(base_seq) = checked_base_seq(equivocation.sequence_number) else {
-                continue;
-            };
-            if !judged.insert((equivocation.sender.clone(), base_seq)) {
-                continue;
-            }
-            let bonded = post_state_bonds
-                .iter()
-                .any(|bond| bond.validator == equivocation.sender && !bond.stake.is_zero());
-            if bonded
-                && Self::is_equivocation_detectable(
-                    dag,
-                    block_store,
-                    &latest_messages,
-                    &equivocation.sender,
-                    i64::from(base_seq),
-                    genesis,
-                    &mut canonical_child_cache,
-                )?
-            {
-                return Ok(Either::Left(BlockError::Invalid(
-                    InvalidBlock::NeglectedEquivocation,
-                )));
+        for bond in post_state_bonds.iter().filter(|bond| !bond.stake.is_zero()) {
+            for equivocation in dag.equivocations_of(&bond.validator)? {
+                let Some(base_seq) = checked_base_seq(equivocation.sequence_number) else {
+                    continue;
+                };
+                if judged.insert((bond.validator.clone(), base_seq))
+                    && Self::is_equivocation_detectable(
+                        dag,
+                        block_store,
+                        &latest_messages,
+                        &bond.validator,
+                        i64::from(base_seq),
+                        genesis,
+                        &mut canonical_child_cache,
+                    )?
+                {
+                    return Ok(Either::Left(BlockError::Invalid(
+                        InvalidBlock::NeglectedEquivocation,
+                    )));
+                }
             }
         }
         Ok(Either::Right(ValidBlock::Valid))
@@ -453,7 +451,10 @@ mod tests {
         let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
         let block_metadata_index = Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store)));
 
-        let mut dag = KeyValueDagRepresentation {
+        let mut dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set: imbl::HashSet::new(),
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -461,8 +462,6 @@ mod tests {
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
-            sequence_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: BlockHash::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index,
@@ -475,25 +474,25 @@ mod tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
 
         for (index, block) in blocks.iter().enumerate() {
             let block_number = index as i64;
-            dag.dag_set.insert(block.block_hash.clone());
-            dag.block_number_map
+            dag.fixture_mut().dag_set.insert(block.block_hash.clone());
+            dag.fixture_mut()
+                .block_number_map
                 .insert(block.block_hash.clone(), block_number);
-            dag.height_map
+            dag.fixture_mut()
+                .height_map
                 .entry(block_number)
-                .or_default()
-                .insert(block.block_hash.clone());
-            dag.sequence_map
-                .entry((block.sender.clone(), block.seq_num))
                 .or_default()
                 .insert(block.block_hash.clone());
             if let Some(self_parent) = proto_util::creator_justification_block_message(block)
                 .map(|justification| justification.latest_block_hash)
             {
-                dag.self_justification_map
+                dag.fixture_mut()
+                    .self_justification_map
                     .insert(block.block_hash.clone(), self_parent);
             }
             dag.block_metadata_index
@@ -523,7 +522,8 @@ mod tests {
         let a2 = block(&v, 2, hash(12), Some(a1.block_hash.clone()));
         let a3 = block(&v, 3, hash(13), Some(a2.block_hash.clone()));
         let mut dag = dag_with(&[a1.clone(), a2.clone(), a3.clone()]);
-        dag.latest_messages_map
+        dag.fixture_mut()
+            .latest_messages_map
             .insert(v.clone(), a3.block_hash.clone());
         (dag, v, [a1, a2, a3])
     }
@@ -534,7 +534,7 @@ mod tests {
         for (held, seq) in [(&a3, 3), (&a2, 2), (&a1, 1)] {
             let sibling = block(&v, seq, hash(20 + seq as u8), None);
             assert_eq!(
-                EquivocationDetector::equivocation_of(&dag, &sibling),
+                EquivocationDetector::equivocation_of(&dag, &sibling).unwrap(),
                 Some(held.block_hash.clone()),
                 "seq {seq}"
             );
@@ -546,9 +546,18 @@ mod tests {
         let (dag, v, [_, a2, a3]) = chain_of_three();
         let next = block(&v, 4, hash(14), Some(a3.block_hash.clone()));
         let other = block(&validator(2), 2, hash(32), None);
-        assert_eq!(EquivocationDetector::equivocation_of(&dag, &a2), None);
-        assert_eq!(EquivocationDetector::equivocation_of(&dag, &next), None);
-        assert_eq!(EquivocationDetector::equivocation_of(&dag, &other), None);
+        assert_eq!(
+            EquivocationDetector::equivocation_of(&dag, &a2).unwrap(),
+            None
+        );
+        assert_eq!(
+            EquivocationDetector::equivocation_of(&dag, &next).unwrap(),
+            None
+        );
+        assert_eq!(
+            EquivocationDetector::equivocation_of(&dag, &other).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -559,7 +568,8 @@ mod tests {
             (true, InvalidBlock::AdmissibleEquivocation),
             (false, InvalidBlock::IgnorableEquivocation),
         ] {
-            let verdict = EquivocationDetector::equivocation_verdict(&dag, &sibling, requested);
+            let verdict =
+                EquivocationDetector::equivocation_verdict(&dag, &sibling, requested).unwrap();
             assert_eq!(verdict, Either::Left(BlockError::Invalid(expected)));
         }
     }
@@ -760,10 +770,10 @@ mod tests {
             validator: v.clone(),
             latest_block_hash: right.block_hash.clone(),
         }];
-        let mut dag = dag_with(&[g.clone(), left.clone(), right.clone(), observed.clone()]);
+        let dag = dag_with(&[g.clone(), left.clone(), right.clone(), observed.clone()]);
         let mut held = metadata(&right, 1);
         held.equivocates = Some(left.block_hash.clone());
-        dag.invalid_blocks_set.insert(held);
+        dag.block_metadata_index.write().add(held).unwrap();
         let store = block_store_with(&[left.clone(), right.clone(), observed.clone()]);
 
         let mut judged = block(&validator(3), 1, hash(50), None);

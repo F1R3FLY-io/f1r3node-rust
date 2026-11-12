@@ -18,14 +18,20 @@ pub fn view_holding(blocks: &[&BlockMessage]) -> CasperSnapshot {
     let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
     for block in blocks {
         let number = block.body.state.block_number;
-        snapshot.dag.dag_set.insert(block.block_hash.clone());
         snapshot
             .dag
+            .fixture_mut()
+            .dag_set
+            .insert(block.block_hash.clone());
+        snapshot
+            .dag
+            .fixture_mut()
             .block_number_map
             .insert(block.block_hash.clone(), number);
         if let Some(main_parent) = block.header.parents_hash_list.first() {
             snapshot
                 .dag
+                .fixture_mut()
                 .main_parent_map
                 .insert(block.block_hash.clone(), main_parent.clone());
         }

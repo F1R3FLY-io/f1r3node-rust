@@ -967,7 +967,7 @@ impl Validate {
         let parent_numbers: Vec<i64> = match proto_util::parent_hashes(b)
             .iter()
             .map(|parent_hash| {
-                s.dag.block_number(parent_hash).ok_or_else(|| {
+                s.dag.block_number(parent_hash)?.ok_or_else(|| {
                     KvStoreError::KeyNotFound(format!(
                         "Block dag store was missing {}",
                         PrettyPrinter::build_string_bytes(parent_hash)
@@ -1296,11 +1296,9 @@ impl Validate {
         // block_number; production assigns 0).
         if max_parent_depth != i32::MAX {
             // ANCHOR: the block's OWN parent frontier, never this node's tip.
-            // The proposer drops parents more than `max_parent_depth` below the
-            // highest parent it selected (`snapshot.rs`), so anchoring the check
-            // on that same value makes proposer and validator agree by
-            // construction — filtering only ever removes LOW parents, so the max
-            // over the declared parents is the max the proposer used.
+            // The proposer keeps only parents within a `max_parent_depth` span
+            // around its main parent (`snapshot.rs`), so the declared parents
+            // satisfy this pairwise rule by construction.
             //
             // Reading `latest_block_number()` here instead made a validity
             // verdict depend on how far ahead the validating node happened to
@@ -1312,15 +1310,18 @@ impl Validate {
             let mut parent_numbers: Vec<(BlockHash, i64)> = Vec::with_capacity(parent_hashes.len());
             let mut frontier_known = true;
             for parent_hash in &parent_hashes {
-                match s.dag.block_number(parent_hash) {
-                    Some(number) => parent_numbers.push((parent_hash.clone(), number)),
+                match s.dag.lookup(parent_hash) {
+                    Ok(Some(meta)) => parent_numbers.push((parent_hash.clone(), meta.block_number)),
                     // A parent with no metadata leaves the frontier unknown, and
                     // an anchor derived from a partial parent set could reject a
                     // legal block. Skip the check and let the dependency gate
                     // handle the missing parent.
-                    None => {
+                    Ok(None) => {
                         frontier_known = false;
                         break;
+                    }
+                    Err(error) => {
+                        return Either::Left(BlockError::from_validation_error(error.into()))
                     }
                 }
             }
@@ -1412,21 +1413,32 @@ impl Validate {
                 // and no default.
                 let mut lowest_parent_height = b.body.state.block_number;
                 for parent_hash in &parent_hashes {
-                    if let Ok(Some(meta)) = s.dag.lookup(parent_hash) {
-                        if meta.block_number < lowest_parent_height {
-                            lowest_parent_height = meta.block_number;
+                    match s.dag.lookup(parent_hash) {
+                        Ok(Some(meta)) => {
+                            lowest_parent_height = lowest_parent_height.min(meta.block_number)
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            return Either::Left(BlockError::from_validation_error(error.into()))
                         }
                     }
                 }
                 let ancestor_hashes: Vec<BlockHash> =
-                    dag_ops::bf_traverse(vec![prev_block_hash.clone()], |hash| {
-                        match s.dag.lookup(hash) {
-                            Ok(Some(meta)) if meta.block_number >= lowest_parent_height => {
-                                meta.parents.clone()
-                            }
-                            _ => vec![],
+                    match dag_ops::try_bf_traverse(vec![prev_block_hash.clone()], |hash| {
+                        Ok::<_, shared::rust::store::key_value_store::KvStoreError>(
+                            match s.dag.lookup(hash)? {
+                                Some(meta) if meta.block_number >= lowest_parent_height => {
+                                    meta.parents.clone()
+                                }
+                                _ => vec![],
+                            },
+                        )
+                    }) {
+                        Ok(hashes) => hashes,
+                        Err(error) => {
+                            return Either::Left(BlockError::from_validation_error(error.into()))
                         }
-                    });
+                    };
                 let ancestor_set: HashSet<BlockHash> = ancestor_hashes.into_iter().collect();
 
                 // Check if at least one parent is new (not in ancestor closure)

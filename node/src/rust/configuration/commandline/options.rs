@@ -362,13 +362,9 @@ pub struct RunOptions {
     #[arg(long = "validator-private-key-path")]
     pub validator_private_key_path: Option<PathBuf>,
 
-    /// Interval for the casper loop to maintain requested blocks and missing dependent blocks
+    /// Interval of the engine tick that runs until casper is initialized
     #[arg(long = "casper-loop-interval", value_parser = ValueParser::new(parse_duration))]
     pub casper_loop_interval: Option<Duration>,
-
-    /// Timeout for blocks requests
-    #[arg(long = "requested-blocks-timeout", value_parser = ValueParser::new(parse_duration))]
-    pub requested_blocks_timeout: Option<Duration>,
 
     /// Finalization is called every `n` blocks
     #[arg(long = "finalization-rate")]

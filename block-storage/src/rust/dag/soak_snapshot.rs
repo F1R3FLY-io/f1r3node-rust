@@ -20,10 +20,11 @@ use shared::rust::store::soak_snapshot::{
 use super::block_dag_key_value_storage::{BlockDagKeyValueStorage, KeyValueDagRepresentation};
 use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
+use super::dag_history_index::MembershipRecord;
 use super::deploy_lifecycle_types::DeployLifecycleTables;
 use crate::rust::key_value_block_store::{BlockDecodeLimits, KeyValueBlockStore};
 
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 pub const SNAPSHOT_SCOPE: &str = "batch-b1-bounded-detached-capture";
 pub const EXCLUDED_STORES: [&str; 6] = [
     "blocks-approved",
@@ -117,6 +118,7 @@ pub struct SnapshotData {
     pub limits: CaptureLimits,
     pub coverage: Coverage,
     pub insertion_generation: u64,
+    pub view_sequence: u64,
     pub transactions: Vec<TransactionIdentity>,
     pub usage: ReadUsage,
     pub work: usize,
@@ -358,12 +360,12 @@ fn capture_inner(
     let access = dag.soak_capture_access(deadline, limits.lock_wait)?;
     observe(CapturePhase::GuardsHeld);
     let generation_before = access.generation();
-    let state = access
+    let mut state = access
         .metadata_store()
         .capture_state(deadline, limits.lock_wait)?;
     observe(CapturePhase::StateCopied);
 
-    let held_blocks = state.dag_set.len();
+    let mut held_blocks = state.dag_set.len();
     if held_blocks > limits.max_blocks {
         return Err(SnapshotError::LimitExceeded {
             kind: "held blocks",
@@ -417,27 +419,59 @@ fn capture_inner(
     }
     let metadata_typed = access.metadata_store().capture_typed_store();
     let latest_typed = access.latest_messages_index();
-    let invalid_typed = access.invalid_blocks_index();
     let floor_typed = access.floor_index();
     let frontier_typed = access.frontier_index();
     let metadata_raw = metadata_typed.raw_store();
     let latest_raw = latest_typed.raw_store();
-    let invalid_raw = invalid_typed.raw_store();
     let floor_raw = floor_typed.raw_store();
     let frontier_raw = frontier_typed.raw_store();
     let blocks_raw = blocks.soak_capture_store();
 
-    let stores = vec![
+    let membership_raw = access.membership_index();
+    let mut stores = vec![
         metadata_raw,
         latest_raw,
-        invalid_raw,
         floor_raw,
         frontier_raw,
         blocks_raw,
     ];
+    if let Some(raw) = membership_raw {
+        stores.push(raw);
+    }
     let mut reader = BoundedLmdbReader::open(&stores, limits.read.clone())?;
 
-    let dag_set: BTreeSet<BlockHash> = state.dag_set.iter().cloned().collect();
+    let membership = if let Some(raw) = membership_raw {
+        let rows = scan(&mut reader, raw, limits.max_blocks, &mut work)?;
+        let mut membership = BTreeMap::new();
+        for (key, value) in rows {
+            work.charge(key.len())?;
+            work.charge(value.len())?;
+            let hash = BlockHash::from(key);
+            if hash.len() != models::rust::block_hash::LENGTH {
+                return Err(malformed("Invalid membership hash length"));
+            }
+            let record: MembershipRecord = bincode::deserialize(&value).map_err(malformed)?;
+            if record.sequence <= state.sequence {
+                membership.insert(hash, record);
+            }
+        }
+        Some(membership)
+    } else {
+        None
+    };
+    let dag_set: BTreeSet<BlockHash> = match &membership {
+        Some(rows) => rows.keys().cloned().collect(),
+        None => state.dag_set.iter().cloned().collect(),
+    };
+    held_blocks = dag_set.len();
+    bounded("held blocks", held_blocks, limits.max_blocks)?;
+    if membership.is_some() {
+        state.child_map.clear();
+        state.height_map.clear();
+        state.block_number_map.clear();
+        state.main_parent_map.clear();
+        state.self_justification_map.clear();
+    }
     let mut captured_blocks: BTreeMap<BlockHash, DetachedBlock> = BTreeMap::new();
     let mut parent_edges = 0usize;
     for hash in &dag_set {
@@ -464,6 +498,46 @@ fn capture_inner(
                 hex::encode(&metadata.block_hash)
             )));
         }
+        if let Some(membership) = &membership {
+            let record = &membership[hash];
+            if record.height != metadata.block_number || record.invalid != metadata.is_invalid() {
+                return Err(malformed("Membership and metadata disagree"));
+            }
+            work.charge(7)?;
+            work.charge(hash.len().saturating_mul(5))?;
+            state.child_map.entry(hash.clone()).or_default();
+            for parent in &metadata.parents {
+                work.charge(parent.len())?;
+                work.charge(hash.len())?;
+                state
+                    .child_map
+                    .entry(parent.clone())
+                    .or_default()
+                    .insert(hash.clone());
+            }
+            if !metadata.is_invalid() {
+                state
+                    .height_map
+                    .entry(metadata.block_number)
+                    .or_default()
+                    .insert(hash.clone());
+            }
+            state
+                .block_number_map
+                .insert(hash.clone(), metadata.block_number);
+            if let Some(parent) = metadata.parents.first() {
+                state.main_parent_map.insert(hash.clone(), parent.clone());
+            }
+            if let Some(justification) = metadata
+                .justifications
+                .iter()
+                .find(|j| j.validator == metadata.sender)
+            {
+                state
+                    .self_justification_map
+                    .insert(hash.clone(), justification.latest_block_hash.clone());
+            }
+        }
         let floor = match read_value(&mut reader, floor_raw, &key, &mut work)? {
             None => Availability::Absent,
             Some(bytes) => {
@@ -487,6 +561,11 @@ fn capture_inner(
         });
     }
 
+    if membership.is_some() && state.height_map.keys().next_back().copied() != state.max_height {
+        return Err(SnapshotError::Incomplete(
+            "Captured valid-height maximum differs from the published view".into(),
+        ));
+    }
     let latest_rows = scan(&mut reader, latest_raw, limits.max_validators, &mut work)?;
     if latest_rows.len() > limits.max_validators {
         return Err(SnapshotError::LimitExceeded {
@@ -505,20 +584,11 @@ fn capture_inner(
         latest_messages.insert(validator, hash);
     }
 
-    let invalid_rows = scan(&mut reader, invalid_raw, limits.max_blocks, &mut work)?;
-    let mut invalid_blocks: BTreeMap<BlockHash, BlockMetadata> = BTreeMap::new();
-    let mut invalid_parent_edges = 0usize;
-    for (key, value) in invalid_rows {
-        work.charge(1)?;
-        work.charge(key.len())?;
-        let hash = BlockHash::from(decode_length_prefixed(&key)?);
-        preflight_metadata(&value, limits, &mut invalid_parent_edges, &mut work)?;
-        let metadata: BlockMetadata = invalid_typed.decode_value(&value).map_err(malformed)?;
-        if metadata.block_hash != hash {
-            return Err(malformed("The invalid metadata key differs."));
-        }
-        invalid_blocks.insert(hash, metadata);
-    }
+    let invalid_blocks: BTreeMap<BlockHash, BlockMetadata> = captured_blocks
+        .iter()
+        .filter(|(_, block)| block.metadata.is_invalid())
+        .map(|(hash, block)| (hash.clone(), block.metadata.clone()))
+        .collect();
 
     let mut bodies: BTreeMap<BlockHash, BlockBody> = BTreeMap::new();
     for hash in request.bodies {
@@ -583,6 +653,7 @@ fn capture_inner(
             requested_bodies: request.bodies.len(),
         },
         insertion_generation: generation_before,
+        view_sequence: state.sequence,
         transactions,
         usage,
         work: work.used,
@@ -720,6 +791,8 @@ impl SnapshotData {
         enc.u64(self.coverage.requested_bodies as u64)?;
         enc.tag("generation")?;
         enc.u64(self.insertion_generation)?;
+        enc.tag("view_sequence")?;
+        enc.u64(self.view_sequence)?;
         enc.tag("transactions")?;
         enc.u64(self.transactions.len() as u64)?;
         for txn in &self.transactions {
@@ -918,6 +991,9 @@ impl DetachedDagSnapshot {
         frontier_index.put(frontier_rows).map_err(read_failed)?;
 
         let representation = KeyValueDagRepresentation {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set: self.dag_set.iter().cloned().collect(),
             latest_messages_map: self
                 .latest_messages
@@ -959,8 +1035,6 @@ impl DetachedDagSnapshot {
                 .iter()
                 .map(|(hash, justification)| (hash.clone(), justification.clone()))
                 .collect(),
-            sequence_map: metadata_store.sequence_map(),
-            invalid_blocks_set: self.invalid_blocks.values().cloned().collect(),
             last_finalized_block_hash,
             finalized_blocks_set: self.finalized_block_set.iter().cloned().collect(),
             block_metadata_index: Arc::new(RwLock::new(metadata_store)),
@@ -1012,7 +1086,7 @@ mod tests {
         let stores = [
             "block-metadata",
             "latest-messages",
-            "invalid-blocks",
+            "dag-equivocations-v1",
             "floor-index",
             "frontier-index",
             "deploy-lifecycle-events",
@@ -1023,6 +1097,12 @@ mod tests {
             "genesis-hash",
             "blocks",
             "blocks-approved",
+            "dag-membership-v1",
+            "dag-height-v1",
+            "dag-children-v1",
+            "dag-history-state-v1",
+            "dag-gc-retry-v1",
+            "dag-sequence-v1",
         ];
         let mapping = stores
             .into_iter()

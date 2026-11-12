@@ -1,6 +1,5 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperCommunicationSpec.scala
 
-use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
@@ -49,17 +48,9 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {
     // When node(2) tries to add signedBlock2, it should request signedBlock1
     let _ = nodes[2].add_block(signed_block2.clone()).await;
 
-    // Scala: r <- nodes(2).requestedBlocks.get.map(v => v.get(signedBlock1.blockHash)).map { ... }
-    // Check if signedBlock1 is in requestedBlocks of node(2)
-    // TestNode.requested_blocks should be shared with BlockRetriever.requested_blocks
-    let is_requested = {
-        let state = nodes[2].requested_blocks.lock().unwrap();
-        state.contains_key(&signed_block1.block_hash)
-    };
-
     assert!(
-        is_requested,
-        "signedBlock1 should be in requestedBlocks of node(2)"
+        nodes[2].ingest_view.is_awaited(&signed_block1.block_hash),
+        "node(2) must be asking for signedBlock1"
     );
 }
 
@@ -248,12 +239,13 @@ async fn multi_parent_casper_should_handle_a_long_chain_of_block_requests_approp
         construct_deploy::basic_deploy_data(10, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
 
-    let _block11 = nodes[0]
+    let block11 = nodes[0]
         .add_block_from_deploys(&[deploy_data10])
         .await
         .unwrap();
 
-    // Cycle of requesting and passing blocks until block #3 from nodes(0) to nodes(1)
+    // nodes(1) hears of block #11 only; each round it asks for the next
+    // missing ancestor and nodes(0) answers.
     for _i in 0..=8 {
         nodes[1].handle_receive().await.unwrap();
         nodes[0].handle_receive().await.unwrap();
@@ -263,23 +255,8 @@ async fn multi_parent_casper_should_handle_a_long_chain_of_block_requests_approp
         nodes[0].handle_receive().await.unwrap();
     }
 
-    // We simulate a network failure here by not allowing block #2 to get passed to nodes(1)
-
-    // And then we assume fetchDependencies eventually gets called
-    {
-        let casper = nodes[1].casper.clone();
-        casper.fetch_dependencies().await.unwrap();
-    }
-
-    nodes[0].handle_receive().await.unwrap();
-    nodes[0].handle_receive().await.unwrap();
-
-    // Scala: nodes(1).logEff.infos.count(_ startsWith "Requested missing block") should be(10)
-    // Scala: nodes(0).logEff.infos.count(s => (s startsWith "Received request for block") && (s endsWith "Response sent.")) should be(10)
-
-    // TODO: In Rust we don't have LogStub, so we can't check log counts
-    // This test would need to be rewritten to check actual behavior instead of logs
-    // For now, we just verify the operations completed without errors
-
-    println!("Note: This test needs log capturing implementation to fully match Scala behavior");
+    assert!(
+        nodes[1].contains(&block11.block_hash),
+        "nodes(1) must fetch the whole missing chain up to block #11"
+    );
 }

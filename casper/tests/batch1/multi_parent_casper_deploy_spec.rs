@@ -189,8 +189,11 @@ async fn validator_bond_check_uses_selected_parent_metadata() {
     unbonded_parent.block_hash = Bytes::from(vec![42; 32]);
     unbonded_parent.body.state.bonds.clear();
 
+    snapshot.dag = snapshot.dag.detached_fixture().unwrap().build();
+
     snapshot
         .dag
+        .fixture_mut()
         .dag_set
         .insert(unbonded_parent.block_hash.clone());
     snapshot
@@ -717,7 +720,7 @@ async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
         genesis.genesis_block.body.state.bonds
     );
     for node in &nodes {
-        assert!(node.casper.dag_contains(&block.block_hash));
+        assert!(node.casper.dag_contains(&block.block_hash).unwrap());
         let metadata = node
             .block_dag_storage
             .get_representation()
@@ -838,7 +841,7 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
         );
         paid += fee;
         for node in &nodes {
-            assert!(node.casper.dag_contains(&block.block_hash));
+            assert!(node.casper.dag_contains(&block.block_hash).unwrap());
             let hash = &block.body.state.post_state_hash;
             assert_eq!(
                 rspace_util::get_data_at_public_channel_block(&block, 1, &node.runtime_manager)

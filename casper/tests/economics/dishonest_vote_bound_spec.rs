@@ -36,7 +36,7 @@ async fn a_restarted_node_rebuilds_the_view_it_had() {
 
     let restarted = super::support::restart(node).await;
     assert!(
-        restarted.contains(&last.block_hash),
+        restarted.dag_contains(&last.block_hash).expect("dag read"),
         "the restarted node still holds the blocks"
     );
     assert_eq!(
@@ -56,13 +56,16 @@ async fn deliver(
     let mut delivered = 0;
     loop {
         let next = pending.iter().find(|block| {
-            !node.casper.dag_contains(&block.block_hash)
+            !node
+                .casper
+                .dag_contains(&block.block_hash)
+                .expect("dag read")
                 && block
                     .header
                     .parents_hash_list
                     .iter()
                     .chain(block.justifications.iter().map(|j| &j.latest_block_hash))
-                    .all(|dependency| node.casper.dag_contains(dependency))
+                    .all(|dependency| node.casper.dag_contains(dependency).expect("dag read"))
         });
         let Some(block) = next.cloned() else {
             return;

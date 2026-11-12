@@ -351,7 +351,7 @@ where
             if visited.contains(&parent) {
                 continue;
             }
-            match dag.block_number(&parent) {
+            match dag.block_number(&parent)? {
                 Some(number) if number < block_number => {}
                 Some(_) => match dag.lookup(&parent).map_err(CasperError::from)? {
                     Some(meta) => {
@@ -934,59 +934,6 @@ pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
         .collect()
 }
 
-// Return hashes of all blocks that are yet to be seen by the passed in block
-pub fn unseen_block_hashes(
-    dag: &KeyValueDagRepresentation,
-    justifications: &Vec<Justification>,
-    current_block_hash: Option<&BlockHash>,
-) -> Result<HashSet<BlockHash>, KvStoreError> {
-    let dags_latest_messages = dag.latest_messages()?;
-    let blocks_latest_messages = to_latest_message(justifications, dag)?;
-
-    // From input block perspective we want to find what latest messages are not seen
-    //  that are in the DAG latest messages.
-    // - if validator is not in the justification of the block
-    // - if justification contains validator's newer latest message
-    let unseen_latest_messages =
-        dags_latest_messages
-            .into_iter()
-            .filter(|(validator, dag_latest_message)| {
-                let validator_in_justification = blocks_latest_messages.contains_key(validator);
-                let block_has_newer_latest_message =
-                    blocks_latest_messages
-                        .get(validator)
-                        .map(|block_latest_message| {
-                            dag_latest_message.sequence_number
-                                > block_latest_message.sequence_number
-                        });
-
-                !validator_in_justification
-                    || (validator_in_justification
-                        && block_has_newer_latest_message.unwrap_or(false))
-            });
-
-    // Collect all unseen block hashes
-    let mut all_unseen_blocks = HashSet::new();
-    for (validator, unseen_latest_message) in unseen_latest_messages {
-        let validator_latest_message = blocks_latest_messages.get(&validator);
-        let creator_blocks =
-            get_creator_blocks_between(dag, &unseen_latest_message, validator_latest_message)?;
-        all_unseen_blocks.extend(creator_blocks);
-    }
-
-    // Remove blocks that are already in the block's justifications
-    for block_metadata in blocks_latest_messages.values() {
-        all_unseen_blocks.remove(&block_metadata.block_hash);
-    }
-
-    // Remove the current block hash (at block creation the block does not exist yet)
-    if let Some(h) = current_block_hash {
-        all_unseen_blocks.remove(h);
-    }
-
-    Ok(all_unseen_blocks)
-}
-
 /// The invalid-blocks map (cited block hash -> offender) the PoS slash deploys
 /// of a set of slashes read through `rho:casper:invalidBlocks`. Taken from the
 /// slashes' own evidence, so creation and replay on any node produce the same
@@ -1018,64 +965,6 @@ pub fn slash_evidence(block: &BlockMessage) -> impl Iterator<Item = &Equivocatio
             } => Some(evidence.as_ref()),
             _ => None,
         })
-}
-
-fn get_creator_blocks_between(
-    dag: &KeyValueDagRepresentation,
-    top_block: &BlockMetadata,
-    bottom_block: Option<&BlockMetadata>,
-) -> Result<HashSet<BlockHash>, KvStoreError> {
-    match bottom_block {
-        Some(bottom_block) => {
-            // Use the bf_traverse function from dag_ops for breadth-first traversal
-            let neighbor_fn = |block: &BlockMetadata| -> Vec<BlockMetadata> {
-                get_creator_justification_unless_goal(dag, block, bottom_block).unwrap_or_default()
-            };
-
-            // Start traversal from top_block
-            let traversal_result =
-                shared::rust::dag::dag_ops::bf_traverse(vec![top_block.clone()], neighbor_fn);
-
-            // Collect all block hashes into a HashSet
-            let blocks_set: HashSet<BlockHash> = traversal_result
-                .into_iter()
-                .map(|block| block.block_hash.clone())
-                .collect();
-
-            Ok(blocks_set)
-        }
-
-        None => Ok(HashSet::from([top_block.block_hash.clone()])),
-    }
-}
-
-fn get_creator_justification_unless_goal(
-    dag: &KeyValueDagRepresentation,
-    block: &BlockMetadata,
-    goal: &BlockMetadata,
-) -> Result<Vec<BlockMetadata>, KvStoreError> {
-    match creator_justification_block_metadata(block) {
-        Some(Justification {
-            validator: _,
-            latest_block_hash,
-        }) => match dag.lookup(&latest_block_hash) {
-            Ok(Some(creator_justification)) => {
-                if creator_justification == *goal {
-                    Ok(vec![])
-                } else {
-                    Ok(vec![creator_justification])
-                }
-            }
-
-            _ => Err(KvStoreError::KeyNotFound(format!(
-                "BlockDAG is missing justification {} for {}",
-                PrettyPrinter::build_string_bytes(&latest_block_hash),
-                PrettyPrinter::build_string_bytes(&block.block_hash)
-            ))),
-        },
-
-        None => Ok(vec![]),
-    }
 }
 
 pub fn justification_to_justification_info(justification: &Justification) -> JustificationInfo {
@@ -1149,7 +1038,10 @@ mod fork_choice_b1_repro_tests {
         for b in blocks {
             assert!(bms.add(b).is_ok(), "test DAG metadata insert failed");
         }
-        KeyValueDagRepresentation {
+        block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -1157,8 +1049,6 @@ mod fork_choice_b1_repro_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            sequence_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -1172,6 +1062,7 @@ mod fork_choice_b1_repro_tests {
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
+        .build()
     }
 
     /// The sixth restore-horizon walk (#306). On an LFS-restored node a held

@@ -2,7 +2,7 @@
 //! `record_dag_cardinality_metrics`, `estimator`.
 //!
 //! Phase 3 Step 3 — extracted from `engine::multi_parent_casper`. Each
-//! function takes the casper instance as a `&MultiParentCasperImpl<T>`
+//! function takes the casper instance as a `&MultiParentCasperImpl`
 //! reference (rather than `&self`) so the implementation can live in this
 //! module while the trait method is a one-line delegate in `traits.rs`.
 
@@ -10,7 +10,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -101,18 +100,19 @@ fn deploy_scope_cache_key_matches(
 }
 
 pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
+    let resident = dag.resident_counts();
     metrics::gauge!(DAG_BLOCKS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .set(dag.dag_set.len() as f64);
+        .set(resident.blocks as f64);
     metrics::gauge!(DAG_CHILDREN_INDEX_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .set(dag.child_map.len() as f64);
+        .set(resident.child_keys as f64);
     metrics::gauge!(DAG_HEIGHTS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .set(dag.height_map.len() as f64);
+        .set(resident.heights as f64);
     metrics::gauge!(DAG_FINALIZED_BLOCKS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .set(dag.finalized_blocks_set.len() as f64);
+        .set(dag.resident_counts().finalized as f64);
 }
 
-pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn compute_snapshot(
+    this: &MultiParentCasperImpl,
 ) -> Result<CasperSnapshot, CasperError> {
     let mut dag = this.block_dag_storage.get_representation()?;
 
@@ -138,9 +138,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     }
     // Storage errors during snapshot construction must propagate: a
     // silent empty `valid_latest_metas` would feed wrong fork-choice on
-    // the consensus hot path. Bug #17 / T-9.20 hardened this contract
-    // for crash-window drift; same discipline applies to general
-    // storage I/O.
+    // the consensus hot path.
     let mut valid_latest_metas: HashMap<Validator, BlockMetadata> =
         HashMap::with_capacity(valid_latest_msgs.len());
     // A slot that is unheld, or whose held target the validator never signed,
@@ -215,7 +213,22 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             Some(this.chain_parameters.max_parent_depth),
         )
         .await?;
-    let ghost_main_parent = fork_choice.tips.into_iter().next();
+    // Fork choice's head is where its descent stops, which need not be anyone's
+    // latest message, so the main parent is the best-ranked tip that is a
+    // candidate.
+    let ghost_main_parent = fork_choice
+        .tips
+        .iter()
+        .find(|tip| parent_blocks_list.iter().any(|b| b.block_hash == **tip))
+        .cloned();
+    if ghost_main_parent.is_none() && !parent_blocks_list.is_empty() {
+        tracing::warn!(
+            target: "f1r3fly.casper.parent_selection",
+            ranked_tips = fork_choice.tips.len(),
+            candidates = parent_blocks_list.len(),
+            "fork choice ranked none of the candidate parents; the main parent falls back to block-hash order"
+        );
+    }
     let mut sorted_parents_list = parent_blocks_list;
     sorted_parents_list.sort_by(|a, b| {
         let a_main = ghost_main_parent.as_ref() == Some(&a.block_hash);
@@ -224,17 +237,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             .cmp(&a_main)
             .then_with(|| a.block_hash.cmp(&b.block_hash))
     });
-    // The candidate set IS the latest-message frontier, and merging it is
-    // what makes a branch unorphanable: a block that merges every tip keeps
-    // every branch in its cone — the property the finality oracle rests on,
-    // since it infers "cannot be orphaned" from an agreement pattern that
-    // only holds while validators follow the estimator. Parent selection
-    // therefore only ORDERS the frontier (the ghost-first sort above);
-    // it never drops tips to pick a main parent. A recovery-context
-    // collapse to the single top-sorted tip used to live here: under load
-    // it fired on essentially every proposal, the DAG stopped re-merging,
-    // and a block finalized on all five nodes was orphaned three heights
-    // later (ucc gate 38237bb7).
+    // The candidate set IS the latest-message frontier. Parent selection
+    // only ORDERS it (the ghost-first sort above) and never drops tips: a
+    // block that merges every tip keeps every branch's state in its cone,
+    // and a dropped tip's writes and deploys come back only through a later
+    // merge. Fork choice weighs main parents only and the oracle reads main
+    // chains and justifications only, so the main parent must be the GHOST
+    // head; the other parents carry state, not finality testimony. The block
+    // creator's witness block, built only above the floor-distance cap where
+    // no merge can be built at all, is the one block that lists fewer.
     let unfiltered_parents = if sorted_parents_list.is_empty() {
         vec![this.approved_block.clone()]
     } else {
@@ -256,10 +267,11 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // C15 / Smell-3: shared wire-convention constant — see
     // `crate::rust::casper::UNLIMITED_PARENTS`.
     // COUNT CAP. Truncation drops tips, so the proposer's own latest message
-    // is pulled to the front first: losing your own tip to a cap is
-    // self-orphaning, and unlike the depth cap below there is no protocol
-    // reason to allow it — the block is perfectly valid with your own tip
-    // among its parents. Only binds on a validator set larger than the cap.
+    // is pulled in right behind the main parent first: losing your own tip to
+    // a cap is self-orphaning, and unlike the depth cap below there is no
+    // protocol reason to allow it — the block is perfectly valid with your own
+    // tip among its parents. The main parent keeps index 0. Only binds on a
+    // validator set larger than the cap.
     let mut parents_after_count_limit = compacted_parents;
     if this.casper_shard_conf.max_number_of_parents != crate::rust::casper::UNLIMITED_PARENTS {
         let cap = this.casper_shard_conf.max_number_of_parents as usize;
@@ -271,7 +283,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 {
                     if idx >= cap {
                         let own_block = parents_after_count_limit.remove(idx);
-                        parents_after_count_limit.insert(0, own_block);
+                        parents_after_count_limit.insert(1, own_block);
                     }
                 }
             }
@@ -282,51 +294,79 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let parents = if this.chain_parameters.max_parent_depth != i32::MAX
         && parents_after_count_limit.len() > 1
     {
-        // C13 / Perf-2: collapse the build-then-max-then-filter triple
-        // pass into a single forward iteration that maintains
-        // `max_block_num` incrementally, followed by an in-place
-        // `retain` on the vector. Eliminates one intermediate Vec
-        // allocation per snapshot and a redundant `.iter()` walk for
-        // the max computation.
         let mut parents_with_meta: Vec<(BlockMessage, BlockMetadata)> =
             Vec::with_capacity(parents_after_count_limit.len());
-        let mut max_block_num: i64 = 0;
         for b in parents_after_count_limit {
             let meta = dag.lookup_unsafe(&b.block_hash)?;
-            if meta.block_number > max_block_num {
-                max_block_num = meta.block_number;
-            }
             parents_with_meta.push((b, meta));
         }
 
         let depth = this.chain_parameters.max_parent_depth as i64;
-        // DEPTH CAP. This one CAN drop the proposer's own latest message, and
-        // unlike the count cap it must: a parent spread further than
-        // `max_parent_depth` from the frontier makes the block InvalidParents,
-        // so a validator that has not proposed in that long genuinely cannot
-        // cite its own last block. Its own work then leaves its own cone —
-        // self-orphaning forced by the protocol rather than by policy — and
-        // the only route back for those deploys is the proposer's pool copy.
-        // Surface it, because it is otherwise silent and it is the moment work
-        // becomes recoverable only through re-proposal.
+        // DEPTH CAP. The kept parents may span at most `max_parent_depth`
+        // heights; wider is InvalidParents. The window is anchored on fork
+        // choice's head, never on the highest parent: a proposer whose own tip
+        // ran far ahead of its view of the others would otherwise drop the
+        // head, extend its own tip alone, and part its main chain from
+        // everyone else's. The parent the window cannot hold is then the
+        // proposer's own, and its deploys return only by re-proposal from the
+        // pool. Index 0 is the main parent: the sort puts it first and the
+        // count cap keeps it there.
+        let anchor_index = 0;
+        let anchor_number = parents_with_meta[anchor_index].1.block_number;
+        let mut nearest_first: Vec<usize> = (0..parents_with_meta.len())
+            .filter(|&i| i != anchor_index)
+            .collect();
+        nearest_first.sort_by(|&a, &b| {
+            let distance = |i: usize| (parents_with_meta[i].1.block_number - anchor_number).abs();
+            distance(a).cmp(&distance(b)).then_with(|| {
+                parents_with_meta[a]
+                    .0
+                    .block_hash
+                    .cmp(&parents_with_meta[b].0.block_hash)
+            })
+        });
+        let mut keep = vec![false; parents_with_meta.len()];
+        keep[anchor_index] = true;
+        let (mut low, mut high) = (anchor_number, anchor_number);
+        for i in nearest_first {
+            let number = parents_with_meta[i].1.block_number;
+            if high.max(number) - low.min(number) <= depth {
+                keep[i] = true;
+                low = low.min(number);
+                high = high.max(number);
+            }
+        }
+
         if let Some(own) = &own_latest_message {
-            if let Some((_, meta)) = parents_with_meta.iter().find(|(b, _)| b.block_hash == *own) {
-                let own_depth = max_block_num - meta.block_number;
-                if own_depth > depth {
+            if let Some(i) = parents_with_meta
+                .iter()
+                .position(|(b, _)| b.block_hash == *own)
+            {
+                if !keep[i] {
                     tracing::warn!(
                         target: "f1r3fly.casper.recovery",
                         own_latest = %PrettyPrinter::build_string_bytes(own),
-                        own_depth,
+                        own_number = parents_with_meta[i].1.block_number,
+                        head_number = anchor_number,
                         max_parent_depth = depth,
-                        "this validator's own latest message is past the parent-depth \
-                         horizon and cannot be cited: its own work leaves its own cone \
-                         and can only return by re-proposal from the pool"
+                        "this validator's own latest message is outside the parent-depth \
+                         window around fork choice's head and cannot be cited: its own work \
+                         leaves its own cone and can only return by re-proposal from the pool"
                     );
                 }
             }
         }
-        parents_with_meta.retain(|(_, meta)| max_block_num - meta.block_number <= depth);
-        parents_with_meta.into_iter().map(|(b, _)| b).collect()
+        let mut kept: Vec<BlockMessage> = Vec::with_capacity(parents_with_meta.len());
+        let mut rest: Vec<BlockMessage> = Vec::with_capacity(parents_with_meta.len());
+        for (i, (b, _)) in parents_with_meta.into_iter().enumerate() {
+            if i == anchor_index {
+                kept.push(b);
+            } else if keep[i] {
+                rest.push(b);
+            }
+        }
+        kept.extend(rest);
+        kept
     } else {
         parents_after_count_limit
     };
@@ -516,7 +556,14 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     )
     .set(deploys_in_scope_sig_bytes_estimate);
 
-    let invalid_blocks = dag.invalid_blocks_map()?;
+    let mut invalid_blocks = HashMap::new();
+    for justification in &justifications {
+        if let Some(metadata) = dag.lookup(&justification.latest_block_hash)? {
+            if metadata.is_invalid() {
+                invalid_blocks.insert(metadata.block_hash, metadata.sender);
+            }
+        }
+    }
     let last_finalized_block = dag.last_finalized_block();
     record_dag_cardinality_metrics(&dag);
     let chain_id = this.block_dag_storage.genesis_hash()?.ok_or_else(|| {
@@ -540,8 +587,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     })
 }
 
-pub(crate) async fn estimator<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn estimator(
+    this: &MultiParentCasperImpl,
     dag: &mut KeyValueDagRepresentation,
 ) -> Result<Vec<BlockHash>, CasperError> {
     // Phase 12 (PERF-5): use `into_iter` to consume the already-owned
@@ -573,8 +620,8 @@ pub(crate) async fn estimator<T: TransportLayer + Send + Sync>(
     }
 }
 
-pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn get_on_chain_state(
+    this: &MultiParentCasperImpl,
     block: &BlockMessage,
 ) -> Result<OnChainCasperState, CasperError> {
     let cache_key = block.body.state.post_state_hash.to_vec();

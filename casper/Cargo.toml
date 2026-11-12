@@ -80,7 +80,7 @@ default = []
 # tests and other workspace members' tests: the well-known DEFAULT_SEC/PUB
 # deploy keys and the default-key fallback in util/construct_deploy.rs.
 # Production builds keep it off, so those keys are never compiled in.
-test-utils = []
+test-utils = ["block-storage/test-internals"]
 schnorr_secp256k1_experimental = [
     "crypto/schnorr_secp256k1_experimental",
     "models/schnorr_secp256k1_experimental",

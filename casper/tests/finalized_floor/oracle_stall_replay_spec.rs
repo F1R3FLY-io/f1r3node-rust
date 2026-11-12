@@ -52,6 +52,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use casper::rust::estimator::Estimator;
 use casper::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
@@ -80,6 +81,8 @@ struct FxBlock {
     height: i64,
     main_parent: Option<String>,
     extra_filler_parent: bool,
+    #[serde(default)]
+    extra_parents: Vec<String>,
     era: usize,
     justifications: BTreeMap<String, String>,
 }
@@ -223,6 +226,7 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
         if b.extra_filler_parent {
             parents.push(filler_at[(b.height - 1) as usize].clone());
         }
+        parents.extend(b.extra_parents.iter().map(|p| hash_of[p].clone()));
         let justifications: Vec<Justification> = b
             .justifications
             .iter()
@@ -260,9 +264,31 @@ async fn replay_sample(
     ftt_ppm: i64,
     sample: &FxSample,
 ) -> (i64, i64, i64, bool) {
-    let target = rebuilt.hash_of[&sample.target].clone();
-    let snapshot: BTreeMap<Validator, BlockHash> = sample
-        .snapshot
+    let weight_map =
+        CliqueOracle::get_corresponding_weight_map(&rebuilt.hash_of[&sample.target], &rebuilt.dag)
+            .await
+            .expect("weight map");
+    let expected_weights = rebuilt.era_weights[sample.era]
+        .iter()
+        .map(|(key, value)| (key.clone(), (*value).into()))
+        .collect::<HashMap<_, num_bigint::BigInt>>();
+    assert_eq!(
+        weight_map, expected_weights,
+        "staging: the rebuilt target's committee must be the fixture era"
+    );
+    oracle_verdict(rebuilt, ftt_ppm, &sample.target, &sample.snapshot).await
+}
+
+/// The oracle's `(agreeing, max_clique, total, decision)` on `target_id` over
+/// the latest messages `snapshot` (validator -> fixture block id).
+async fn oracle_verdict(
+    rebuilt: &Rebuilt,
+    ftt_ppm: i64,
+    target_id: &str,
+    snapshot: &BTreeMap<String, String>,
+) -> (i64, i64, i64, bool) {
+    let target = rebuilt.hash_of[target_id].clone();
+    let snapshot: BTreeMap<Validator, BlockHash> = snapshot
         .iter()
         .map(|(v, id)| (rebuilt.validator_of[v].clone(), rebuilt.hash_of[id].clone()))
         .collect();
@@ -270,14 +296,6 @@ async fn replay_sample(
     let weight_map = CliqueOracle::get_corresponding_weight_map(&target, &rebuilt.dag)
         .await
         .expect("weight map");
-    let expected_weights = &rebuilt.era_weights[sample.era]
-        .iter()
-        .map(|(key, value)| (key.clone(), (*value).into()))
-        .collect::<HashMap<_, num_bigint::BigInt>>();
-    assert_eq!(
-        &weight_map, expected_weights,
-        "staging: the rebuilt target's committee must be the fixture era"
-    );
     let total = weight_map
         .values()
         .sum::<num_bigint::BigInt>()
@@ -362,6 +380,221 @@ async fn i1_replay_reproduces_the_ci_verdicts_exactly() {
 async fn i5_replay_reproduces_the_ci_verdicts_exactly() {
     crate::init_logger();
     assert_fidelity(&load(include_str!("../resources/stall_fixtures/i5.json"))).await;
+}
+
+const TESTNET04_426: &str = include_str!("../resources/stall_fixtures/testnet04_426.json");
+const TARGET_426: &str = "a0bf4bceab";
+const SPINE_TARGETS: usize = 32;
+
+#[tokio::test]
+async fn testnet04_426_replay_reproduces_the_logged_verdicts_exactly() {
+    crate::init_logger();
+    assert_fidelity(&load(TESTNET04_426)).await;
+}
+
+fn block<'a>(fx: &'a Fixture, id: &str) -> &'a FxBlock {
+    fx.blocks
+        .iter()
+        .find(|b| b.id == id)
+        .unwrap_or_else(|| panic!("block {id} is in the fixture"))
+}
+
+/// Fork choice over `snapshot`, scored from `floor_id`, as fixture ids:
+/// the ranked tips (head first) and every block's score.
+async fn fork_choice(
+    rebuilt: &Rebuilt,
+    floor_id: &str,
+    snapshot: &BTreeMap<String, String>,
+) -> (Vec<String>, BTreeMap<String, num_bigint::BigInt>) {
+    let mut dag = rebuilt.dag.clone();
+    let floor = dag
+        .lookup_unsafe(&rebuilt.hash_of[floor_id])
+        .expect("floor metadata");
+    let latest: HashMap<Validator, BlockHash> = snapshot
+        .iter()
+        .map(|(v, id)| (rebuilt.validator_of[v].clone(), rebuilt.hash_of[id].clone()))
+        .collect();
+    let choice = Estimator::apply()
+        .tips_with_latest_messages(&mut dag, &floor, latest, Estimator::UNLIMITED_PARENTS, None)
+        .await
+        .expect("fork choice");
+    let id_of: HashMap<&BlockHash, &String> = rebuilt
+        .hash_of
+        .iter()
+        .map(|(id, hash)| (hash, id))
+        .collect();
+    let name = |hash: &BlockHash| match id_of.get(hash) {
+        Some(id) => (*id).clone(),
+        None => format!(
+            "filler#{}",
+            dag.lookup_unsafe(hash)
+                .expect("filler metadata")
+                .block_number
+        ),
+    };
+    let tips = choice.tips.iter().map(&name).collect();
+    let scores = choice
+        .scores
+        .iter()
+        .map(|(h, s)| (name(h), s.clone()))
+        .collect();
+    (tips, scores)
+}
+
+/// What fork choice and the oracle see after `proposer` adds one block on
+/// `main_parent` (plus `co_parents`) citing every latest message. Tips are
+/// sets and the head is the set of tips tied at the top score: `rebuild` draws
+/// fresh block hashes, so equal-score tips tie-break differently between
+/// rebuilds.
+#[derive(Debug)]
+struct Observation {
+    leaders: std::collections::BTreeSet<String>,
+    tips: std::collections::BTreeSet<String>,
+    scores: BTreeMap<String, num_bigint::BigInt>,
+    verdicts: Vec<(String, (i64, i64, i64, bool))>,
+}
+
+async fn observe_after_block(
+    proposer: &str,
+    main_parent: &str,
+    co_parents: &[String],
+    spine: &[String],
+) -> Observation {
+    let mut fx = load(TESTNET04_426);
+    let sample = fx
+        .samples
+        .iter()
+        .position(|s| s.target == TARGET_426)
+        .expect("fixture carries the #426 sample");
+    let snapshot = fx.samples[sample].snapshot.clone();
+    let floor_id = block(&fx, TARGET_426)
+        .main_parent
+        .clone()
+        .expect("#426 has a main parent in the fixture");
+    let height = std::iter::once(main_parent)
+        .chain(co_parents.iter().map(String::as_str))
+        .map(|id| block(&fx, id).height)
+        .max()
+        .expect("at least the main parent")
+        + 1;
+    let id = format!("probe-{proposer}");
+    fx.blocks.push(FxBlock {
+        id: id.clone(),
+        sender: proposer.to_string(),
+        height,
+        main_parent: Some(main_parent.to_string()),
+        extra_filler_parent: false,
+        extra_parents: co_parents.to_vec(),
+        era: 0,
+        justifications: snapshot.clone(),
+    });
+    fx.max_height = fx.max_height.max(height);
+    let mut after = snapshot;
+    after.insert(proposer.to_string(), id);
+
+    let rebuilt = rebuild(&fx).await;
+    let (tips, scores) = fork_choice(&rebuilt, &floor_id, &after).await;
+    let mut verdicts = Vec::with_capacity(spine.len());
+    for target in spine {
+        verdicts.push((
+            target.clone(),
+            oracle_verdict(&rebuilt, fx.ftt_ppm, target, &after).await,
+        ));
+    }
+    let score_of = |tip: &String| {
+        scores
+            .get(tip)
+            .cloned()
+            .unwrap_or_else(|| panic!("fork choice scores every tip it ranks, but not {tip}"))
+    };
+    let top = score_of(tips.first().expect("fork choice yields a head"));
+    Observation {
+        leaders: tips
+            .iter()
+            .filter(|tip| score_of(tip) == top)
+            .cloned()
+            .collect(),
+        tips: tips.into_iter().collect(),
+        scores,
+        verdicts,
+    }
+}
+
+/// Fork choice credits weight up main-parent chains only and the oracle reads
+/// main chains and justifications only, so neither reads a block's other
+/// parents: a block listing only fork choice's main parent must leave both
+/// exactly as a block listing the whole frontier does.
+#[tokio::test]
+async fn testnet04_426_a_main_parent_only_block_is_indistinguishable_to_fork_choice_and_the_oracle()
+{
+    crate::init_logger();
+    let fx = load(TESTNET04_426);
+    let sample = fx
+        .samples
+        .iter()
+        .find(|s| s.target == TARGET_426)
+        .expect("fixture carries the #426 sample");
+    let floor_id = block(&fx, TARGET_426)
+        .main_parent
+        .clone()
+        .expect("#426 has a main parent in the fixture");
+    let rebuilt = rebuild(&fx).await;
+    let (frontier, _) = fork_choice(&rebuilt, &floor_id, &sample.snapshot).await;
+    let head = frontier[0].clone();
+    let co_parents: Vec<String> = frontier[1..].to_vec();
+    assert!(
+        !co_parents.is_empty(),
+        "staging: the frontier must hold tips besides the head"
+    );
+
+    let target_height = block(&fx, TARGET_426).height;
+    let mut chain: Vec<String> = Vec::new();
+    let mut cursor = Some(head.clone());
+    while let Some(id) = cursor {
+        let b = block(&fx, &id);
+        if b.height < target_height {
+            break;
+        }
+        chain.push(id.clone());
+        cursor = b.main_parent.clone();
+    }
+    chain.reverse();
+    assert_eq!(
+        chain.first().map(String::as_str),
+        Some(TARGET_426),
+        "staging: #426 must be on the head's main chain"
+    );
+    let spine: Vec<String> = chain.into_iter().take(SPINE_TARGETS).collect();
+
+    // The common-ancestor search runs over full DAG ancestry, so co-parents can
+    // start the scoring lower. Blocks scored by only one side must then be
+    // shared trunk: every validator's weight, on every main chain.
+    let total_stake = num_bigint::BigInt::from(fx.eras[0].values().sum::<i64>());
+    for proposer in sample.snapshot.keys() {
+        let full = observe_after_block(proposer, &head, &co_parents, &spine).await;
+        let main_only = observe_after_block(proposer, &head, &[], &spine).await;
+        let context = format!(
+            "a block from {proposer} listing only the main parent must look identical \
+             to fork choice and the oracle (frontier of {} tips)",
+            frontier.len()
+        );
+        assert_eq!(main_only.leaders, full.leaders, "head: {context}");
+        assert_eq!(main_only.tips, full.tips, "tips: {context}");
+        assert_eq!(
+            main_only.verdicts, full.verdicts,
+            "oracle verdicts: {context}"
+        );
+        for id in main_only.scores.keys().chain(full.scores.keys()) {
+            match (main_only.scores.get(id), full.scores.get(id)) {
+                (Some(a), Some(b)) => assert_eq!(a, b, "score of {id}: {context}"),
+                (Some(only), None) | (None, Some(only)) => assert_eq!(
+                    only, &total_stake,
+                    "{id} is scored by one side only and is not shared trunk: {context}"
+                ),
+                (None, None) => unreachable!("id came from one of the two maps"),
+            }
+        }
+    }
 }
 
 /// The red that drove the walk's height rule (committed red, green since):

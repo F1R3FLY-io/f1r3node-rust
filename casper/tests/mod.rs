@@ -16,7 +16,6 @@ mod merging;
 mod multi_node;
 mod repeat_deploy;
 mod slashing;
-mod sync;
 mod util;
 
 pub fn init_logger() { shared::rust::tracing_init::init_for_tests(); }

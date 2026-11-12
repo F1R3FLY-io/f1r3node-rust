@@ -102,6 +102,7 @@ impl SlashingProductionAdapter {
             .get_representation()
             .map_err(|e| format!("get_representation failed: {}", e))?
             .invalid_blocks()
+            .expect("invalid blocks")
             .iter()
             .filter_map(|block| {
                 let label_idx = validators

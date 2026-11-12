@@ -12,7 +12,7 @@ replication.
 
 | Area | Documents |
 |---|---|
-| Protocol | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) (11-stage walkthrough) · the implementation walkthrough below |
+| Protocol | [Consensus Protocol](./CONSENSUS_PROTOCOL.md) (11-stage walkthrough) · [Block ingest](./BLOCK_INGEST.md) · the implementation walkthrough below |
 | Safety | [Byzantine Fault Tolerance](./BYZANTINE_FAULT_TOLERANCE.md) · [Synchrony Constraint](./SYNC_CONSTRAINT.md) |
 | Philosophy | [Consensus Philosophy](./CONSENSUS_PHILOSOPHY.md) (principles P1–P6, remedy ladder, CBC relation) |
 | Vocabulary | [Casper Glossary](./GLOSSARY.md) (canonical casper-domain terms; repo-wide terms stay in [docs/Glossary.md](../Glossary.md)) |
@@ -139,10 +139,10 @@ pub struct CasperSnapshot {
 
 ## Block Validation
 
-**`BlockProcessor` pipeline**:
+**[Block ingest](./BLOCK_INGEST.md)**:
 1. Check interest (shard match, version, not old)
 2. Format and signature validation
-3. Dependency resolution (fetch missing parents)
+3. Dependency resolution (hold the block, fetch missing dependencies)
 4. Full validation with CasperSnapshot:
    - Block number progression
    - Sender weight verification

@@ -234,10 +234,6 @@ impl ConfigMapper<Options> for NodeConf {
                 run.casper_loop_interval,
             );
             Self::try_override_value(
-                &mut self.casper.requested_blocks_timeout,
-                run.requested_blocks_timeout,
-            );
-            Self::try_override_value(
                 &mut self.casper.fork_choice_stale_threshold,
                 run.fork_choice_stale_threshold,
             );
@@ -517,7 +513,6 @@ mod tests {
         "--validator-private-key=111111",
         "--validator-private-key-path=/var/lib/rnode/pem.key",
         "--casper-loop-interval=111111seconds",
-        "--requested-blocks-timeout=111111seconds",
         "--finalization-rate=111111",
         "--max-number-of-parents=111111",
         "--max-parent-depth=111111",
@@ -694,7 +689,6 @@ mod tests {
                 validator_private_key: Some("111111".to_string()),
                 validator_private_key_path: Some(PathBuf::from("/var/lib/rnode/pem.key")),
                 casper_loop_interval: Some(Duration::from_secs(111111)),
-                requested_blocks_timeout: Some(Duration::from_secs(111111)),
                 finalization_rate: Some(111111),
                 max_number_of_parents: Some(111111),
                 max_parent_depth: Some(111111),
@@ -836,10 +830,10 @@ mod tests {
                 shard_name: "".to_string(),
                 parent_shard_id: "/".to_string(),
                 casper_loop_interval: Duration::from_secs(1),
-                requested_blocks_timeout: Duration::from_secs(30),
                 finalization_rate: 1,
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
+                dag_hot_window_depth: 1024,
                 deploy_lifespan: 50,
                 deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),
@@ -1083,10 +1077,6 @@ mod tests {
         );
         assert_eq!(
             default_config.casper.casper_loop_interval,
-            Duration::from_secs(111111)
-        );
-        assert_eq!(
-            default_config.casper.requested_blocks_timeout,
             Duration::from_secs(111111)
         );
         assert_eq!(default_config.casper.finalization_rate, 111111);

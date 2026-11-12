@@ -125,7 +125,6 @@ mod tests {
             "blockstorage",
             "dagstorage",
             "deploystorage",
-            "casperbuffer",
             "reporting",
             "transaction",
         ] {
