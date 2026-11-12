@@ -231,6 +231,13 @@ live_canonical_path_proofs=(
   live_canonical_path_return_preserves_wf
 )
 live_canonical_path_push_proofs=(
+  canonical_path_wf_stack_lengths
+  canonical_message_push_plain_step_parts
+  canonical_message_push_indexed_step_parts
+  canonical_concrete_push_return_header
+  canonical_message_push_plain_return_header
+  canonical_message_push_indexed_return_header
+  canonical_nested_push_shape_from_parts
   canonical_message_push_plain_frame_shape
   canonical_message_push_indexed_frame_shape
   canonical_message_push_observed_frame_shape
@@ -3129,7 +3136,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: live CanonicalPath descendant Push module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 11 verified, 0 errors' "$live_canonical_path_push_log"; then
+if ! rg -q '^verification results:: 18 verified, 0 errors' "$live_canonical_path_push_log"; then
   cat "$live_canonical_path_push_log"
   echo "rpb3-admission-cursor: live CanonicalPath descendant Push module did not verify" >&2
   exit 1
