@@ -40,8 +40,13 @@ impl PriceHook for FixedPriceHook {
     fn acceptance_price(&self) -> i64 { self.price }
 }
 
-pub fn effective_price(hook: &dyn PriceHook, shard_floor: i64) -> i64 {
-    hook.acceptance_price().max(shard_floor)
+pub fn effective_price(
+    hook: &dyn PriceHook,
+    shard_floor: shared::rust::token_amount::TokenAmount,
+) -> shared::rust::token_amount::TokenAmount {
+    shared::rust::token_amount::TokenAmount::new(hook.acceptance_price().into())
+        .unwrap_or_default()
+        .max(shard_floor)
 }
 
 #[cfg(test)]
@@ -58,8 +63,8 @@ mod tests {
     #[test]
     fn the_node_never_accepts_below_the_shard_floor() {
         let hook = FixedPriceHook::from_conf(&NodePriceConf { fixed_price: 3 }).unwrap();
-        assert_eq!(effective_price(&hook, 1), 3);
-        assert_eq!(effective_price(&hook, 5), 5);
+        assert_eq!(effective_price(&hook, 1.into()), 3.into());
+        assert_eq!(effective_price(&hook, 5.into()), 5.into());
     }
 
     #[test]

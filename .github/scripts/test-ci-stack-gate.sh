@@ -98,8 +98,17 @@ run_case() {
     return 1
   }
   if [ -n "$target" ]; then
+    [ "$(grep '^target_sha=' "$output" | cut -d= -f2)" = "$target" ] || {
+      printf '%s: exact target was replaced by the workflow revision\n' "$label" >&2
+      return 1
+    }
     [ "$(grep '^merge_base_sha=' "$output" | cut -d= -f2)" = "$MERGE_BASE" ] || {
       printf '%s: exact target did not record the synthetic base\n' "$label" >&2
+      return 1
+    }
+  else
+    [ "$(grep '^target_sha=' "$output" | cut -d= -f2)" = "$SHA" ] || {
+      printf '%s: the event revision was replaced by another checkout ref\n' "$label" >&2
       return 1
     }
   fi
@@ -138,6 +147,8 @@ PR_HAS_HEAVY_LABEL=true \
 PR_HAS_HEAVY_LABEL=true \
   run_case labelled-ca-fork pull_request refs/pull/7/merge ca-canary ca/a1a fork/repository '[]' '' '' false
 run_case exact-merge workflow_dispatch refs/heads/master '' '' '' '[]' "$MERGE" 311 true
+run_case branch-dispatch workflow_dispatch refs/heads/ci/workflow-preview '' '' '' '[]' '' '' false
+run_case dev-dispatch workflow_dispatch refs/heads/dev '' '' '' '[]' '' '' false
 
 jq --arg other "$SHA" '.merge_commit_sha = $other' "$TMP/pull.json" >"$TMP/stale-pull.json"
 if run_case stale-merge workflow_dispatch refs/heads/master '' '' '' '[]' "$MERGE" 311 true "$TMP/stale-pull.json" >"$TMP/stale.out" 2>"$TMP/stale.err"; then

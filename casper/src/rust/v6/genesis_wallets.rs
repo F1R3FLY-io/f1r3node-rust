@@ -15,7 +15,7 @@ pub fn genesis_lines(vaults: &[Vault]) -> Result<Vec<(String, RevAmount)>, Caspe
     let mut lines = Vec::with_capacity(vaults.len());
     for vault in vaults {
         let address = vault.vault_address.to_base58();
-        let amount = RevAmount::try_from(vault.initial_balance)
+        let amount = RevAmount::try_from(vault.initial_balance.as_bigint())
             .ok()
             .filter(|a| *a <= MAX_AMOUNT)
             .ok_or_else(|| {
@@ -80,7 +80,7 @@ pub fn bonds_total(
     pos: &crate::rust::genesis::contracts::proof_of_stake::ProofOfStake,
 ) -> Result<RevAmount, CasperError> {
     pos.validators.iter().try_fold(0 as RevAmount, |total, v| {
-        RevAmount::try_from(v.stake)
+        RevAmount::try_from(v.stake.as_bigint())
             .ok()
             .and_then(|s| total.checked_add(s))
             .filter(|t| *t <= MAX_AMOUNT)

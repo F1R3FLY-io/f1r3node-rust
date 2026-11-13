@@ -49,7 +49,7 @@ use crate::rust::metrics_constants::{
     RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
-use crate::rust::rholang::runtime::RuntimeOps;
+use crate::rust::rholang::runtime::{ConsensusParameters, RuntimeOps};
 use crate::rust::util::bounded_cache::BoundedCache;
 use crate::rust::util::rholang::interpreter_util::MAX_PARENT_MERGE_SCOPE_BLOCKS;
 use crate::rust::util::rholang::replay_cache::{
@@ -419,7 +419,6 @@ pub struct MergedPreState {
     /// adjudicated and carries the formation-time duplicate flag. These
     /// travel to the block body as-is; the record IS the consensus content.
     pub rejected_user: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
-    pub rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
     /// User sigs whose chains the merge APPLIED from scope: their effects
     /// are in `state`, so executing any of them on top would double-apply.
     /// Empty on the non-merging shapes (genesis, single parent, covering
@@ -752,8 +751,15 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
-        self.compute_state_gated(start_hash, terms, system_deploys, block_data, invalid_blocks, None)
-            .await
+        self.compute_state_gated(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            None,
+        )
+        .await
     }
 
     pub async fn compute_state_gated(
@@ -1211,14 +1217,13 @@ impl RuntimeManager {
             .await
     }
 
-    /// On-chain consensus parameters `(max-parent-depth, deploy-lifespan,
-    /// min-phlo-price)` at `start_hash`, or `None` when the chain's genesis
-    /// predates them. Read once at casper construction (`hash_set_casper`) —
-    /// not cached here.
+    /// On-chain consensus parameters at `start_hash`, or `None` when the
+    /// chain's genesis predates them. Read once at casper construction
+    /// (`hash_set_casper`) — not cached here.
     pub async fn get_consensus_parameters(
         &self,
         start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+    ) -> Result<Option<ConsensusParameters>, CasperError> {
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops.get_consensus_parameters(start_hash).await
@@ -1447,25 +1452,6 @@ impl RuntimeManager {
                 CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
             })?;
         Ok((key_bytes, value_bytes))
-    }
-
-    /// Store a mergeable-channels entry received over the wire. Decodes the
-    /// transported bytes and writes via the typed store. Empty `value_bytes`
-    /// signals "peer had no entry" and is a no-op.
-    pub fn put_mergeable_entry_bytes(
-        &self,
-        key_bytes: Vec<u8>,
-        value_bytes: Vec<u8>,
-    ) -> Result<(), CasperError> {
-        if value_bytes.is_empty() {
-            return Ok(());
-        }
-        let value: Vec<DeployMergeableData> = bincode::deserialize(&value_bytes).map_err(|e| {
-            CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
-        })?;
-        self.mergeable_store
-            .put_one(key_bytes, value)
-            .map_err(CasperError::from)
     }
 
     /// True iff this node already holds the mergeable-channels entry for `block`.

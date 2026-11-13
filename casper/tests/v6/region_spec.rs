@@ -47,7 +47,8 @@ async fn shard(funded: &[(&Party, u128)]) -> (Arc<RuntimeManager>, StateHash) {
         .iter()
         .map(|(p, balance)| Vault {
             vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
-            initial_balance: *balance,
+            initial_balance: shared::rust::token_amount::TokenAmount::new((*balance).into())
+                .unwrap(),
         })
         .collect();
     let block = Genesis::create_genesis_block_with_policy(
@@ -65,7 +66,7 @@ fn envelope(term: &str, ts: i64, who: &Party, limit: i64, price: i64) -> Signed<
         term.to_string(),
         ts,
         Some(limit),
-        Some(price),
+        Some(shared::rust::token_amount::TokenAmount::new((price).into()).unwrap()),
         Some(who.sk.clone()),
         None,
         Some("root".to_string()),
@@ -329,7 +330,10 @@ async fn each_component_of_a_compound_pays_the_full_charge() {
     let settled = &played.settled_root;
     let total = |c: &casper::rust::v6::settle::EnvelopeCharge| c.comm_rev + c.compute_rev;
     let each = total(component);
-    assert_eq!(balance(&rm, settled, &alice).await, 100_000 - total(deployer));
+    assert_eq!(
+        balance(&rm, settled, &alice).await,
+        100_000 - total(deployer)
+    );
     assert_eq!(balance(&rm, settled, &carol).await, 100_000 - each);
     assert_eq!(
         balance(&rm, settled, &proposer).await,
@@ -544,10 +548,7 @@ async fn the_gate_admits_a_mint_of_a_kind_and_the_block_replays() {
         .expect("the block executes");
     assert_eq!(played.gate.admitted(), vec![true]);
     assert!(!played.processed[0].is_failed);
-    assert_eq!(
-        balance(&rm, &played.mid_root, &alice).await,
-        100_000
-    );
+    assert_eq!(balance(&rm, &played.mid_root, &alice).await, 100_000);
     let again = executor
         .replay(
             &pre,
@@ -694,7 +695,10 @@ async fn a_lifted_cosignature_carries_no_authority_under_another_deployer() {
     );
     let settled = &played.settled_root;
     assert_eq!(balance(&rm, settled, &carol).await, 700);
-    assert_eq!(balance(&rm, settled, &bob).await, 50_000 - 700 - paid(&played, &bob));
+    assert_eq!(
+        balance(&rm, settled, &bob).await,
+        50_000 - 700 - paid(&played, &bob)
+    );
     let again = executor
         .replay(
             &pre,
@@ -853,7 +857,10 @@ async fn data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_p
         .iter()
         .find(|sc| sc.purse == alice.owner)
         .expect("the owner's membrane is charged");
-    assert!(owner.compute > 0, "the owner pays for the continuation's work");
+    assert!(
+        owner.compute > 0,
+        "the owner pays for the continuation's work"
+    );
     let sender = second
         .settlement
         .charges
@@ -861,8 +868,7 @@ async fn data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_p
         .find(|c| c.wallet == wallet(&mallory))
         .expect("the sender pays its own part");
     assert_eq!(
-        sender.compute_phlo,
-        second.runs[0].compute_phlo,
+        sender.compute_phlo, second.runs[0].compute_phlo,
         "the client's run counts only the client's own work (Decision 86)"
     );
     let again = executor
@@ -902,7 +908,10 @@ async fn a_stack_under_a_cosigners_seal_draws_on_the_cosigner_not_the_deployer()
         100_000 - paid(&played, &alice) - 2
     );
     let top_level = paid(&played, &bob);
-    assert!(top_level > 0, "the deployer pays for the top level under its implicit seal");
+    assert!(
+        top_level > 0,
+        "the deployer pays for the top level under its implicit seal"
+    );
     assert_eq!(balance(&rm, settled, &bob).await, 100_000 - top_level);
     let again = executor
         .replay(
@@ -1059,7 +1068,11 @@ async fn a_sealed_stored_receive_that_sends_the_same_datum_on_each_firing_keeps_
     }
 }
 
-fn surface_of(who: &Party, envelope: &Signed<DeployData>, price: u64) -> rholang::rust::interpreter::accounting::comm_ledger::Surface {
+fn surface_of(
+    who: &Party,
+    envelope: &Signed<DeployData>,
+    price: u64,
+) -> rholang::rust::interpreter::accounting::comm_ledger::Surface {
     rholang::rust::interpreter::accounting::comm_ledger::Surface {
         owner: who.owner.canonical_bytes(),
         envelope: envelope.sig.to_vec(),
@@ -1079,7 +1092,11 @@ async fn each_surface_of_a_comm_pays_one_cell_at_its_origin_price() {
         .unwrap();
     let call = envelope(r#"@"svc"!(0)"#, 2, &bob, 1_000, 2);
     let second = executor
-        .execute(&first.settled_root, vec![call.clone()], block_data(&proposer))
+        .execute(
+            &first.settled_root,
+            vec![call.clone()],
+            block_data(&proposer),
+        )
         .await
         .unwrap();
     let mut expected = vec![
@@ -1092,7 +1109,10 @@ async fn each_surface_of_a_comm_pays_one_cell_at_its_origin_price() {
     let alice_cell = &second.settlement.surface_charges;
     assert_eq!(alice_cell.len(), 1);
     assert_eq!(alice_cell[0].purse, alice.owner);
-    assert_eq!((alice_cell[0].cells, alice_cell[0].owed, alice_cell[0].drawn), (1, 1, 1));
+    assert_eq!(
+        (alice_cell[0].cells, alice_cell[0].owed, alice_cell[0].drawn),
+        (1, 1, 1)
+    );
     assert!(second.settlement.is_balanced());
     assert_eq!(paid(&second, &alice), 1);
     assert_eq!(
@@ -1131,7 +1151,11 @@ async fn surfaces_under_one_seal_pay_once() {
             .await
             .unwrap();
         assert!(!played.processed[0].is_failed, "{term}");
-        assert_eq!(played.surfaces[0], vec![(Some(surface_of(&alice, &one, 1)), 1)], "{term}");
+        assert_eq!(
+            played.surfaces[0],
+            vec![(Some(surface_of(&alice, &one, 1)), 1)],
+            "{term}"
+        );
         assert!(played.settlement.surface_charges.is_empty());
         assert_eq!(played.settlement.charges[0].comm_phlo, 1);
     }
@@ -1170,10 +1194,9 @@ async fn a_datum_stored_in_an_earlier_block_is_charged_to_its_sender() {
         .await
         .expect("the receive executes");
     assert!(!second.processed[0].is_failed);
-    assert_eq!(
-        foreign_purses(&second, 0),
-        vec![alice.owner.canonical_bytes()]
-    );
+    assert_eq!(foreign_purses(&second, 0), vec![alice
+        .owner
+        .canonical_bytes()]);
     let charges = &second.settlement.surface_charges;
     assert_eq!(charges.len(), 1);
     assert_eq!(charges[0].purse, alice.owner);
@@ -1959,7 +1982,10 @@ async fn funded_process(
     RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
         .deposit(&process, amount)
         .unwrap();
-    (process, runtime.create_checkpoint().await.root.to_bytes_prost())
+    (
+        process,
+        runtime.create_checkpoint().await.root.to_bytes_prost(),
+    )
 }
 
 #[tokio::test]
@@ -1973,7 +1999,11 @@ async fn two_runs_that_each_fit_a_gated_wallet_but_not_together_pay_in_full() {
     let executor = EnvelopeExecutor::new(rm.clone(), 4);
     let sealed = format!("{{% {service} %}}[# {{ {service} }}]");
     let first = executor
-        .execute(&pre, vec![envelope(&sealed, 1, &alice, 1_000, 1)], block_data(&proposer))
+        .execute(
+            &pre,
+            vec![envelope(&sealed, 1, &alice, 1_000, 1)],
+            block_data(&proposer),
+        )
         .await
         .expect("the service installs");
     let root = first.settled_root.clone();
@@ -2017,7 +2047,11 @@ async fn the_gate_refuses_a_seal_that_resolves_only_at_run_time() {
     ];
     for (i, term) in shapes.iter().enumerate() {
         let played = executor
-            .execute(&pre, vec![cosigned(term, i as i64 + 1, &alice, &bob, 1)], block_data(&proposer))
+            .execute(
+                &pre,
+                vec![cosigned(term, i as i64 + 1, &alice, &bob, 1)],
+                block_data(&proposer),
+            )
             .await
             .expect("the block executes");
         assert_eq!(

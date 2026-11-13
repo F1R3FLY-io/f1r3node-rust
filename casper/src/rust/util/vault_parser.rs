@@ -1,8 +1,10 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
 use regex::Regex;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::genesis::contracts::vault::Vault;
 
@@ -18,6 +20,8 @@ pub enum VaultParserError {
     },
     #[error("INVALID WALLET BALANCE `{balance}`. Please put positive number.")]
     InvalidBalance { balance: String },
+    #[error("DUPLICATE WALLET ADDRESS `{address}`. Each address may appear once.")]
+    DuplicateAddress { address: String },
     #[error("FAILED PARSING WALLETS FILE: {path}\n{source}")]
     ParsingFailed {
         path: String,
@@ -43,11 +47,12 @@ impl VaultParser {
                 source: Box::new(e),
             })?;
 
-        let line_regex = Regex::new(r"^([1-9a-zA-Z]+),([0-9]+)").unwrap();
+        let line_regex = Regex::new(r"^([1-9a-zA-Z]+),([0-9]+)$").unwrap();
         let mut vaults = Vec::new();
+        let mut seen = HashSet::new();
 
         for line in content.lines() {
-            let trimmed_line = line.trim();
+            let trimmed_line = line.split_once('#').map_or(line, |(data, _)| data).trim();
             if trimmed_line.is_empty() {
                 continue;
             }
@@ -80,14 +85,17 @@ impl VaultParser {
                     source: Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, err)),
                 }
             })?;
+            if !seen.insert(vault_address.clone()) {
+                return Err(VaultParserError::DuplicateAddress {
+                    address: vault_address_str.to_string(),
+                });
+            }
 
             // Parse balance
             let initial_balance =
-                balance_str
-                    .parse::<u128>()
-                    .map_err(|_| VaultParserError::InvalidBalance {
-                        balance: balance_str.to_string(),
-                    })?;
+                TokenAmount::parse(balance_str).map_err(|_| VaultParserError::InvalidBalance {
+                    balance: balance_str.to_string(),
+                })?;
 
             tracing::info!("Wallet loaded: {}", trimmed_line);
 
@@ -127,6 +135,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn genesis_balances_cover_uint256_and_reject_invalid_amounts() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("wallets.txt");
+        let address = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
+        for value in [
+            TokenAmount::zero(),
+            1.into(),
+            TokenAmount::new(num_bigint::BigInt::from(1u8) << 128).unwrap(),
+            TokenAmount::max(),
+        ] {
+            fs::write(&path, format!("{address},{value}\n")).unwrap();
+            assert_eq!(VaultParser::parse(&path).unwrap()[0].initial_balance, value);
+        }
+        for value in [
+            "-1".to_string(),
+            "01".into(),
+            "1garbage".into(),
+            (TokenAmount::max().into_bigint() + 1u8).to_string(),
+        ] {
+            fs::write(&path, format!("{address},{value}\n")).unwrap();
+            assert!(VaultParser::parse(&path).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn genesis_wallet_comments_preserve_exact_amounts() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("wallets.txt");
+        let address = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
+        fs::write(
+            &path,
+            format!(
+                "# allocation\n  {address},{} # bootstrap node\n",
+                shared::rust::token_amount::MAX_DECIMAL
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            VaultParser::parse(&path).unwrap()[0].initial_balance,
+            TokenAmount::max()
+        );
+        for shipped in [
+            "../docker/helm/f1r3fly/configs/common/wallets.txt",
+            "../docker/genesis/wallets.txt",
+            "../run-local/genesis/standalone/wallets.txt",
+        ] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(shipped);
+            assert!(!VaultParser::parse(&path).unwrap().is_empty(), "{shipped}");
+        }
+    }
+
+    #[test]
     fn test_parse_valid_wallets_file() {
         let temp_dir = TempDir::new().unwrap();
         let wallets_file = temp_dir.path().join("wallets.txt");
@@ -141,8 +201,28 @@ mod tests {
         assert_eq!(vaults.len(), 2);
 
         for vault in vaults {
-            assert!(vault.initial_balance > 0);
+            assert!(!vault.initial_balance.is_zero());
         }
+    }
+
+    #[test]
+    fn a_repeated_wallet_address_is_refused() {
+        let temp_dir = TempDir::new().unwrap();
+        let wallets_file = temp_dir.path().join("wallets.txt");
+        let address = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
+        fs::write(
+            &wallets_file,
+            format!(
+                "{address},100\n1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M,100\n{address},200\n"
+            ),
+        )
+        .unwrap();
+
+        let result = VaultParser::parse(&wallets_file);
+        assert!(
+            matches!(&result, Err(VaultParserError::DuplicateAddress { address: a }) if a == address),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -291,7 +371,7 @@ mod tests {
         assert_eq!(vaults.len(), 1);
 
         let vault = &vaults[0];
-        assert_eq!(vault.initial_balance, 50000000000000);
+        assert_eq!(vault.initial_balance, 50_000_000_000_000u64.into());
         assert_eq!(
             vault.vault_address.to_base58(),
             "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP"

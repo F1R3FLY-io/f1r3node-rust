@@ -32,18 +32,27 @@ fn party() -> Party {
     let (sk, pk) = Secp256k1.new_key_pair();
     let owner = WalletOwner::from_public_key(&pk).unwrap();
     let address = VaultAddress::from_public_key(&pk).unwrap().to_base58();
-    Party { sk, pk, owner, address }
+    Party {
+        sk,
+        pk,
+        owner,
+        address,
+    }
 }
 
 async fn shard(funded: &[&Party]) -> (Arc<RuntimeManager>, StateHash) {
-    let rm = mk_runtime_manager("v6-genesis-records", Some(Genesis::default_mergeable_tags_arc())).await;
+    let rm = mk_runtime_manager(
+        "v6-genesis-records",
+        Some(Genesis::default_mergeable_tags_arc()),
+    )
+    .await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
     genesis.version = PROTOCOL_V6;
     genesis.vaults = funded
         .iter()
         .map(|p| Vault {
             vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
-            initial_balance: 10_000_000,
+            initial_balance: 10_000_000.into(),
         })
         .collect();
     let block = Genesis::create_genesis_block_with_policy(
@@ -67,7 +76,7 @@ async fn execute(
         term.to_string(),
         1,
         Some(5_000_000),
-        Some(1),
+        Some(1.into()),
         Some(who.sk.clone()),
         None,
         Some("root".to_string()),
@@ -84,7 +93,11 @@ async fn execute(
         .await
         .unwrap();
     assert_eq!(executed.gate.admitted(), vec![true]);
-    assert!(!executed.processed[0].is_failed, "{:?}", executed.processed[0]);
+    assert!(
+        !executed.processed[0].is_failed,
+        "{:?}",
+        executed.processed[0]
+    );
     executed
 }
 
@@ -95,7 +108,10 @@ async fn checks(rm: &RuntimeManager, root: &StateHash) -> BTreeMap<String, bool>
         .iter()
         .map(|par| {
             let (label, ok) = RhoTuple2::unapply(par).unwrap();
-            (RhoString::unapply(&label).unwrap(), RhoBoolean::unapply(&ok).unwrap())
+            (
+                RhoString::unapply(&label).unwrap(),
+                RhoBoolean::unapply(&ok).unwrap(),
+            )
         })
         .collect()
 }
@@ -238,8 +254,8 @@ new rl(`rho:registry:lookup`), d(`rho:system:deployerId`), keccak(`rho:crypto:ke
       for (@e <- epoch) { @"check"!(("getEpochLength", e > 0)) } |
       for (@q <- quarantine) { @"check"!(("getQuarantineLength", q >= 0)) } |
       for (@t <- threshold) { @"check"!(("getFaultToleranceThresholdPpm", t >= 0)) } |
-      for (@(depth, lifespan, price) <- params) {
-        @"check"!(("getConsensusParameters", depth != Nil and lifespan != Nil and price != Nil))
+      for (@(depth, lifespan, price, epochLength) <- params) {
+        @"check"!(("getConsensusParameters", depth != Nil and lifespan != Nil and price != Nil and epochLength > 0))
       } |
       @PoS!("withdraw", *d, *withdraw) |
       for (@(ok, why) <- withdraw) { @"check"!(("withdraw", not ok and why == "Unknown validator handle")) } |
@@ -278,7 +294,10 @@ async fn the_v6_utility_contracts_answer_under_seal_records() {
         "tokenMetadata",
         "treeHashMap",
     ];
-    assert_eq!(checks.keys().cloned().collect::<Vec<_>>(), labels.map(String::from).to_vec());
+    assert_eq!(
+        checks.keys().cloned().collect::<Vec<_>>(),
+        labels.map(String::from).to_vec()
+    );
     assert!(checks.values().all(|ok| *ok), "{checks:?}");
 }
 
@@ -295,9 +314,16 @@ async fn the_v6_vault_facade_finds_and_reads_under_seal_records_and_has_no_trans
         checks,
         BTreeMap::from([("balance".to_string(), true), ("find".to_string(), true)])
     );
-    assert_eq!(read_wallet_balance(&rm, &executed.settled_root, &bob.owner).await.unwrap(), 0);
     assert_eq!(
-        read_wallet_balance(&rm, &executed.settled_root, &alice.owner).await.unwrap(),
+        read_wallet_balance(&rm, &executed.settled_root, &bob.owner)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        read_wallet_balance(&rm, &executed.settled_root, &alice.owner)
+            .await
+            .unwrap(),
         10_000_000 - executed.settlement.debited()
     );
 }
@@ -326,6 +352,9 @@ async fn every_pos_v6_entry_point_answers_under_seal_records() {
         "slash",
         "withdraw",
     ];
-    assert_eq!(checks.keys().cloned().collect::<Vec<_>>(), labels.map(String::from).to_vec());
+    assert_eq!(
+        checks.keys().cloned().collect::<Vec<_>>(),
+        labels.map(String::from).to_vec()
+    );
     assert!(checks.values().all(|ok| *ok), "{checks:?}");
 }

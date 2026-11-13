@@ -10,15 +10,13 @@ pub struct SelectionContext<'a> {
     pub deploy_lifespan: i64,
     pub now_millis: i64,
     pub shard_id: &'a str,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: shared::rust::token_amount::TokenAmount,
     pub in_scope: &'a dyn Fn(&Bytes) -> bool,
     pub limits: &'a Limits,
 }
 
 pub fn select_envelopes<I>(pool: I, ctx: &SelectionContext) -> Vec<Signed<DeployData>>
-where
-    I: IntoIterator<Item = Signed<DeployData>>,
-{
+where I: IntoIterator<Item = Signed<DeployData>> {
     let earliest = ctx.next_block_number - ctx.deploy_lifespan;
     let mut candidates: Vec<Signed<DeployData>> = pool
         .into_iter()
@@ -69,10 +67,11 @@ pub fn pack_records<R: ExecutionRecord>(records: Vec<R>, limits: &Limits) -> Vec
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    use super::*;
 
     fn deploy(ts: i64, valid_after: i64, phlo_limit: i64) -> Signed<DeployData> {
         let (sk, _) = Secp256k1.new_key_pair();
@@ -80,7 +79,7 @@ mod tests {
         let data = DeployData {
             term: "Nil".to_string(),
             time_stamp: ts,
-            phlo_price: 1,
+            phlo_price: 1.into(),
             phlo_limit,
             valid_after_block_number: valid_after,
             shard_id: "root".to_string(),
@@ -98,7 +97,7 @@ mod tests {
             deploy_lifespan: 5,
             now_millis: 0,
             shard_id: "root",
-            min_phlo_price: 1,
+            min_phlo_price: 1.into(),
             in_scope,
             limits,
         }

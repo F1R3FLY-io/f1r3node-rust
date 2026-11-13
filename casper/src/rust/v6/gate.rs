@@ -28,7 +28,7 @@ pub struct GateInput {
     pub sealed: Vec<WalletOwner>,
     pub bare_stack: bool,
     pub phlo_limit: i64,
-    pub phlo_price: i64,
+    pub phlo_price: num_bigint::BigInt,
     pub prior: Option<Refusal>,
     pub static_bound: Option<u64>,
 }
@@ -67,7 +67,7 @@ impl GateInput {
             sealed: Vec::new(),
             bare_stack: false,
             phlo_limit: deploy.data.phlo_limit,
-            phlo_price: deploy.data.phlo_price,
+            phlo_price: deploy.data.phlo_price.to_bigint(),
             prior: None,
             static_bound: None,
         })
@@ -407,7 +407,7 @@ impl<'a, R: WalletReader, D: Demand> Gate<'a, R, D> {
         if input.named.iter().any(|s| !admissible(s, &signers)) {
             return Ok(refuse(0, Refusal::ForeignSignature));
         }
-        let Ok(price) = u64::try_from(input.phlo_price) else {
+        let Ok(price) = u64::try_from(&input.phlo_price) else {
             return Ok(refuse(0, Refusal::InvalidTerms));
         };
         let Some(delta) = self.demand.delta(input) else {
@@ -425,10 +425,11 @@ impl<'a, R: WalletReader, D: Demand> Gate<'a, R, D> {
             let balance = self.balance(&wallet, &owner)?;
             let have = balance.saturating_sub(self.table.committed(&wallet));
             if have < need {
-                return Ok(refuse(
-                    delta,
-                    Refusal::InsufficientFunds { wallet, need, have },
-                ));
+                return Ok(refuse(delta, Refusal::InsufficientFunds {
+                    wallet,
+                    need,
+                    have,
+                }));
             }
             if need > 0 {
                 commitments.push(Commitment {
@@ -550,7 +551,7 @@ mod tests {
             deployer: deployer.clone(),
             named: Vec::new(),
             phlo_limit: limit,
-            phlo_price: price,
+            phlo_price: price.into(),
             cosignatures_valid: true,
             cosigners: Vec::new(),
             joint: Vec::new(),
@@ -625,16 +626,12 @@ mod tests {
     fn invalid_terms_and_overflow_are_refused() {
         let os = owners(1);
         let r = reader(&os, &[u64::MAX >> 1]);
-        let out = gate_block(
-            &r,
-            &PhloLimitDemand,
-            &[
-                input(&os[0], -1, 1, 0),
-                input(&os[0], 1, -1, 1),
-                input(&os[0], i64::MAX, i64::MAX, 2),
-                input(&os[0], 5, 0, 3),
-            ],
-        )
+        let out = gate_block(&r, &PhloLimitDemand, &[
+            input(&os[0], -1, 1, 0),
+            input(&os[0], 1, -1, 1),
+            input(&os[0], i64::MAX, i64::MAX, 2),
+            input(&os[0], 5, 0, 3),
+        ])
         .unwrap();
         assert_eq!(
             out.entries[0].verdict,
@@ -647,6 +644,20 @@ mod tests {
         assert_eq!(out.entries[2].verdict, Verdict::Refused(Refusal::Overflow));
         assert!(out.entries[3].admitted());
         assert!(out.entries[3].commitments.is_empty());
+    }
+
+    #[test]
+    fn an_unrepresentable_u256_price_is_refused_without_charging() {
+        let os = owners(1);
+        let r = reader(&os, &[1_000]);
+        let mut envelope = input(&os[0], 1, 1, 0);
+        envelope.phlo_price = num_bigint::BigInt::from(1) << 200usize;
+        let out = gate_block(&r, &PhloLimitDemand, &[envelope]).unwrap();
+        assert_eq!(
+            out.entries[0].verdict,
+            Verdict::Refused(Refusal::InvalidTerms)
+        );
+        assert!(out.entries[0].commitments.is_empty());
     }
 
     struct Fixed(u64);
@@ -728,7 +739,7 @@ mod tests {
             }
             for (e, inp) in out.entries.iter().zip(&inputs) {
                 if e.admitted() {
-                    let need = (inp.phlo_limit as u64) * (inp.phlo_price as u64);
+                    let need = (inp.phlo_limit as u64) * (u64::try_from(&inp.phlo_price).unwrap());
                     let total: u64 = e.commitments.iter().map(|c| c.amount).sum();
                     prop_assert_eq!(total, need);
                 } else {
@@ -748,9 +759,22 @@ mod tests {
         let large = input(&os[0], 1_000, 2, 1).with_static_bound(Some(5_000));
         let open = input(&os[0], 1_000, 2, 2);
         let out = gate_block(&r, &BoundDemand, &[small.clone(), large, open]).unwrap();
-        assert_eq!(out.entries.iter().map(|e| e.delta).collect::<Vec<_>>(), vec![300, 1_000, 1_000]);
-        assert_eq!(out.entries[0].commitments.iter().map(|c| c.amount).sum::<u64>(), 600);
-        assert_eq!(out.table.committed(&wallet_channel_id(&os[0])), 600 + 2_000 + 2_000);
+        assert_eq!(
+            out.entries.iter().map(|e| e.delta).collect::<Vec<_>>(),
+            vec![300, 1_000, 1_000]
+        );
+        assert_eq!(
+            out.entries[0]
+                .commitments
+                .iter()
+                .map(|c| c.amount)
+                .sum::<u64>(),
+            600
+        );
+        assert_eq!(
+            out.table.committed(&wallet_channel_id(&os[0])),
+            600 + 2_000 + 2_000
+        );
         assert!(check_recorded(&r, &BoundDemand, &[small.clone()], &out.entries[..1]).is_ok());
         assert!(check_recorded(&r, &PhloLimitDemand, &[small], &out.entries[..1]).is_err());
     }

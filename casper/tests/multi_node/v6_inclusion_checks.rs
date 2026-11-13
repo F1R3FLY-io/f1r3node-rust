@@ -8,7 +8,7 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 
 use crate::helper::test_node::TestNode;
-use crate::helper::v6_network::{v6_genesis, broadcast, engine, propose, propose_and_broadcast};
+use crate::helper::v6_network::{broadcast, engine, propose, propose_and_broadcast, v6_genesis};
 
 async fn heartbeats(nodes: &mut [TestNode], turn: &mut usize, until: impl Fn(&[TestNode]) -> bool) {
     for _ in 0..240 {
@@ -59,7 +59,7 @@ async fn a_block_that_orders_an_unfunded_envelope_yields_inclusion_evidence_on_e
             .unwrap()
             .as_millis() as i64,
         Some(500_000),
-        Some(1),
+        Some(1.into()),
         Some(unfunded),
         None,
         Some(shard_id),

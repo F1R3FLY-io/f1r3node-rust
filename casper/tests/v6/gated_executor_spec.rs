@@ -49,7 +49,8 @@ async fn shard(funded: &[(&Party, u128)]) -> (Arc<RuntimeManager>, StateHash) {
         .iter()
         .map(|(p, balance)| Vault {
             vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
-            initial_balance: *balance,
+            initial_balance: shared::rust::token_amount::TokenAmount::new((*balance).into())
+                .unwrap(),
         })
         .collect();
     let block = Genesis::create_genesis_block_with_policy(
@@ -67,7 +68,7 @@ fn envelope(term: &str, ts: i64, who: &Party, limit: i64, price: i64) -> Signed<
         term.to_string(),
         ts,
         Some(limit),
-        Some(price),
+        Some(shared::rust::token_amount::TokenAmount::new((price).into()).unwrap()),
         Some(who.sk.clone()),
         None,
         Some("root".to_string()),
@@ -202,10 +203,7 @@ async fn a_run_cannot_spend_the_rev_its_block_has_committed() {
         .unwrap();
     assert_eq!(played.gate.admitted(), vec![true, true]);
     assert_eq!(balance(&rm, &played.mid_root, &bob).await, 0);
-    assert_eq!(
-        balance(&rm, &played.mid_root, &alice).await,
-        10_000
-    );
+    assert_eq!(balance(&rm, &played.mid_root, &alice).await, 10_000);
     let paid = played.settlement.debited();
     assert_eq!(
         balance(&rm, &played.settled_root, &alice).await,
@@ -281,14 +279,11 @@ async fn a_block_record_carries_the_gate_and_replays_it() {
         .await
         .expect("the block executes");
     let outcomes: Vec<_> = record.executed().iter().map(|e| e.outcome).collect();
-    assert_eq!(
-        outcomes,
-        vec![
-            EnvelopeOutcome::Completed,
-            EnvelopeOutcome::NotRun,
-            EnvelopeOutcome::Exhausted,
-        ]
-    );
+    assert_eq!(outcomes, vec![
+        EnvelopeOutcome::Completed,
+        EnvelopeOutcome::NotRun,
+        EnvelopeOutcome::Exhausted,
+    ]);
     assert_eq!(record.gate().len(), 3);
     let settlement = record
         .settlement()
@@ -516,11 +511,15 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
             .unwrap(),
         1_000
     );
-    let compute = rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner();
+    let compute =
+        rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner();
     let in_close = read_wallet_balance(&rm, &post, &compute).await.unwrap()
         - read_wallet_balance(&rm, &pre, &compute).await.unwrap()
         - settlement.compute_credit;
-    assert!(in_close > 0, "the handle continuation fired in the close is paid by its installer");
+    assert!(
+        in_close > 0,
+        "the handle continuation fired in the close is paid by its installer"
+    );
     assert_eq!(
         balance(&rm, &post, &alice).await,
         100_000 - 7_000 - settlement.debited() - in_close
@@ -547,10 +546,14 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
         .unwrap();
     assert_eq!(RhoBoolean::unapply(&answer[0]), Some(true));
     let handle = rm
-        .get_data(post.clone(), &rholang::rust::interpreter::rho_type::RhoString::create_par("handle".to_string()))
+        .get_data(
+            post.clone(),
+            &rholang::rust::interpreter::rho_type::RhoString::create_par("handle".to_string()),
+        )
         .await
         .unwrap();
-    let (admitted, _) = rholang::rust::interpreter::rho_type::RhoTuple2::unapply(&handle[0]).unwrap();
+    let (admitted, _) =
+        rholang::rust::interpreter::rho_type::RhoTuple2::unapply(&handle[0]).unwrap();
     assert_eq!(RhoBoolean::unapply(&admitted), Some(true));
 
     let decoded = BlockRecord::decode(&record.encode()).unwrap();
@@ -729,9 +732,7 @@ async fn a_self_sealed_envelope_is_paid_from_its_process_wallet_in_play_and_repl
                 bonds: vec![],
                 block_number: 1,
             },
-            deploys: vec![ProcessedDeploy::empty(envelope(
-                term, 1, &alice, 1_000, 1,
-            ))],
+            deploys: vec![ProcessedDeploy::empty(envelope(term, 1, &alice, 1_000, 1))],
             rejected_deploys: vec![],
             system_deploys: vec![],
             extra_bytes: Bytes::new(),
@@ -782,7 +783,8 @@ async fn shard_with_authority(
         .iter()
         .map(|(p, balance)| Vault {
             vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
-            initial_balance: *balance,
+            initial_balance: shared::rust::token_amount::TokenAmount::new((*balance).into())
+                .unwrap(),
         })
         .collect();
     genesis.proof_of_stake.pos_multi_sig_public_keys =
@@ -810,7 +812,12 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
     let (alice, carol, bob, dave, erin, proposer) =
         (party(), party(), party(), party(), party(), party());
     let (rm, genesis) = shard_with_authority(
-        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000), (&dave, 100_000)],
+        &[
+            (&alice, 100_000),
+            (&carol, 100_000),
+            (&bob, 100_000),
+            (&dave, 100_000),
+        ],
         &[&bob, &dave],
         2,
     )
@@ -851,10 +858,15 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
         .unwrap();
     assert_eq!(first.merged, vec![true, true]);
     assert_eq!(
-        replay(&executor, &genesis, &first, block_data(&proposer)).await.settled_root,
+        replay(&executor, &genesis, &first, block_data(&proposer))
+            .await
+            .settled_root,
         first.settled_root
     );
-    assert_eq!(shares_at(first.settled_root.clone()).await, (3_000, 1_000, 4_000));
+    assert_eq!(
+        shares_at(first.settled_root.clone()).await,
+        (3_000, 1_000, 4_000)
+    );
 
     let sealed = r#"{% @"x"!(1) %}[# { @"x"!(1) }]"#;
     let second = executor
@@ -871,11 +883,19 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
     assert_eq!(a + c, 4_000 - drawn);
     assert_eq!(held, 4_000 - drawn);
     let (from_alice, from_carol) = (3_000 - a, 1_000 - c);
-    assert!(from_alice.abs_diff(3 * from_carol) <= 3, "{from_alice} {from_carol}");
+    assert!(
+        from_alice.abs_diff(3 * from_carol) <= 3,
+        "{from_alice} {from_carol}"
+    );
     assert_eq!(
-        replay(&executor, &first.settled_root, &second, block_data(&proposer))
-            .await
-            .settled_root,
+        replay(
+            &executor,
+            &first.settled_root,
+            &second,
+            block_data(&proposer)
+        )
+        .await
+        .settled_root,
         second.settled_root
     );
 
@@ -910,7 +930,11 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
         .cosignatures
         .push(Cosignature::sign(&cosigned_only, &dave.sk, &Secp256k1.name()).unwrap());
     let outside = executor
-        .execute(&second.settled_root, vec![cosigned_only], block_data(&proposer))
+        .execute(
+            &second.settled_root,
+            vec![cosigned_only],
+            block_data(&proposer),
+        )
         .await
         .unwrap();
     assert!(outside.settlement.transfers.is_empty());
@@ -927,7 +951,10 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
         .await
         .unwrap();
     assert_eq!(third.settlement.transfers.len(), 1);
-    assert!(matches!(third.settlement.transfers[0].from, Source::Share { .. }));
+    assert!(matches!(
+        third.settlement.transfers[0].from,
+        Source::Share { .. }
+    ));
     assert_eq!(third.settlement.transfers[0].amount, c);
     assert_eq!(
         balance(&rm, &third.settled_root, &carol).await,
@@ -935,13 +962,17 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
     );
     assert_eq!(shares_at(third.settled_root.clone()).await, (a, 0, a));
     assert_eq!(
-        replay(&executor, &second.settled_root, &third, block_data(&proposer))
-            .await
-            .settled_root,
+        replay(
+            &executor,
+            &second.settled_root,
+            &third,
+            block_data(&proposer)
+        )
+        .await
+        .settled_root,
         third.settled_root
     );
 }
-
 
 #[tokio::test]
 async fn a_user_deploy_cannot_reach_the_genesis_mint_through_the_registry_lookup() {
@@ -996,7 +1027,9 @@ async fn a_user_deploy_cannot_reach_the_genesis_mint_through_the_registry_lookup
         100_000 - played.settlement.debited()
     );
     assert_eq!(
-        replay(&executor, &genesis, &played, block_data(&proposer)).await.settled_root,
+        replay(&executor, &genesis, &played, block_data(&proposer))
+            .await
+            .settled_root,
         post
     );
 }
@@ -1017,7 +1050,11 @@ async fn a_grant_settles_draws_inside_its_window_in_play_and_replay() {
         for (_ <- funded) { @"grant-slot"!(*slot) }
       }"#;
     let first = executor
-        .execute(&genesis, vec![envelope(grant, 1, &sponsor, 50_000, 1)], at(1))
+        .execute(
+            &genesis,
+            vec![envelope(grant, 1, &sponsor, 50_000, 1)],
+            at(1),
+        )
         .await
         .unwrap();
     assert_eq!(first.settlement.transfers.len(), 1);
@@ -1038,7 +1075,9 @@ async fn a_grant_settles_draws_inside_its_window_in_play_and_replay() {
     assert_eq!(inside.settlement.transfers.len(), 1);
     assert_eq!(inside.settlement.transfers[0].amount, 1_000);
     assert_eq!(
-        replay(&executor, &first.settled_root, &inside, at(3)).await.settled_root,
+        replay(&executor, &first.settled_root, &inside, at(3))
+            .await
+            .settled_root,
         inside.settled_root
     );
     let late = executor
@@ -1051,7 +1090,9 @@ async fn a_grant_settles_draws_inside_its_window_in_play_and_replay() {
         .unwrap();
     assert!(late.settlement.transfers.is_empty());
     assert_eq!(
-        replay(&executor, &inside.settled_root, &late, at(9)).await.settled_root,
+        replay(&executor, &inside.settled_root, &late, at(9))
+            .await
+            .settled_root,
         late.settled_root
     );
 }
@@ -1067,7 +1108,12 @@ async fn a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata() 
     let (alice, carol, bob, dave, erin, proposer) =
         (party(), party(), party(), party(), party(), party());
     let (rm, genesis) = shard_with_authority(
-        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000), (&dave, 100_000)],
+        &[
+            (&alice, 100_000),
+            (&carol, 100_000),
+            (&bob, 100_000),
+            (&dave, 100_000),
+        ],
         &[&bob, &dave],
         2,
     )
@@ -1089,7 +1135,11 @@ async fn a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata() 
         let (a, c) = (alice.owner.clone(), carol.owner.clone());
         async move {
             let cells = cells_at(&rm, &root).await.unwrap();
-            let held: u64 = shares(&cells, &process).unwrap().iter().map(|(_, s)| s).sum();
+            let held: u64 = shares(&cells, &process)
+                .unwrap()
+                .iter()
+                .map(|(_, s)| s)
+                .sum();
             (
                 share(&cells, &process, &a).unwrap(),
                 share(&cells, &process, &c).unwrap(),
@@ -1110,7 +1160,10 @@ async fn a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata() 
         )
         .await
         .unwrap();
-    assert_eq!(record(funded.settled_root.clone()).await, (3_000, 1_000, 4_000, 4_000));
+    assert_eq!(
+        record(funded.settled_root.clone()).await,
+        (3_000, 1_000, 4_000, 4_000)
+    );
 
     let sealed = format!("{{% {p} %}}[# {{ {p} }}]");
     let spent = executor
@@ -1131,15 +1184,25 @@ async fn a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata() 
     );
     let charge = spent.settlement.debited();
     let (a, c, held, wallet) = record(spent.settled_root.clone()).await;
-    assert_eq!(read_wallet_balance(&rm, &spent.settled_root, &sink).await.unwrap(), 20);
+    assert_eq!(
+        read_wallet_balance(&rm, &spent.settled_root, &sink)
+            .await
+            .unwrap(),
+        20
+    );
     assert_eq!(wallet, 4_000 - 20 - charge);
     assert_eq!(held, wallet);
     assert_eq!(a + c, held);
     assert!((3_000 - a).abs_diff(3 * (1_000 - c)) <= 3, "{a} {c}");
     assert_eq!(
-        replay(&executor, &funded.settled_root, &spent, block_data(&proposer))
-            .await
-            .settled_root,
+        replay(
+            &executor,
+            &funded.settled_root,
+            &spent,
+            block_data(&proposer)
+        )
+        .await
+        .settled_root,
         spent.settled_root
     );
 
@@ -1166,9 +1229,14 @@ async fn a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata() 
     );
     assert_eq!(record(refused.settled_root.clone()).await, (a, 0, a, a));
     assert_eq!(
-        replay(&executor, &spent.settled_root, &refused, block_data(&proposer))
-            .await
-            .settled_root,
+        replay(
+            &executor,
+            &spent.settled_root,
+            &refused,
+            block_data(&proposer)
+        )
+        .await
+        .settled_root,
         refused.settled_root
     );
 }
@@ -1196,7 +1264,10 @@ async fn an_expired_grant_returns_its_funders_shares_in_play_and_replay() {
     let step = |pre: StateHash, envelope: Signed<DeployData>, block: i64| {
         let (executor, rm) = (&executor, rm.clone());
         async move {
-            let played = executor.execute(&pre, vec![envelope], at(block)).await.unwrap();
+            let played = executor
+                .execute(&pre, vec![envelope], at(block))
+                .await
+                .unwrap();
             let again = replay(executor, &pre, &played, at(block)).await;
             assert_eq!(again.settled_root, played.settled_root);
             let _ = rm;
@@ -1312,7 +1383,9 @@ async fn a_process_with_new_hashes_the_same_in_every_deploy_and_is_funded_across
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
     let p = r#"new x in { x!(1) | for (_ <- x) { @"sink"!(1) } }"#;
     let under = |party: &Party| {
-        process_owner(&Compiler::source_to_adt_with_normalizer_env(p, with_deployer_id(&party.pk)).unwrap())
+        process_owner(
+            &Compiler::source_to_adt_with_normalizer_env(p, with_deployer_id(&party.pk)).unwrap(),
+        )
     };
     let process = process_owner(&Compiler::source_to_adt(p).unwrap());
     assert_eq!(under(&alice), process);
@@ -1329,7 +1402,11 @@ async fn a_process_with_new_hashes_the_same_in_every_deploy_and_is_funded_across
         let (a, c) = (alice.owner.clone(), carol.owner.clone());
         async move {
             let cells = cells_at(&rm, &root).await.unwrap();
-            let held: u64 = shares(&cells, &process).unwrap().iter().map(|(_, s)| s).sum();
+            let held: u64 = shares(&cells, &process)
+                .unwrap()
+                .iter()
+                .map(|(_, s)| s)
+                .sum();
             (
                 share(&cells, &process, &a).unwrap(),
                 share(&cells, &process, &c).unwrap(),
@@ -1340,10 +1417,17 @@ async fn a_process_with_new_hashes_the_same_in_every_deploy_and_is_funded_across
     };
 
     let first = executor
-        .execute(&genesis, vec![envelope(&fund(3_000), 1, &alice, 50_000, 1)], block_data(&proposer))
+        .execute(
+            &genesis,
+            vec![envelope(&fund(3_000), 1, &alice, 50_000, 1)],
+            block_data(&proposer),
+        )
         .await
         .unwrap();
-    assert_eq!(record(first.settled_root.clone()).await, (3_000, 0, 3_000, 3_000));
+    assert_eq!(
+        record(first.settled_root.clone()).await,
+        (3_000, 0, 3_000, 3_000)
+    );
     let second = executor
         .execute(
             &first.settled_root,
@@ -1352,11 +1436,19 @@ async fn a_process_with_new_hashes_the_same_in_every_deploy_and_is_funded_across
         )
         .await
         .unwrap();
-    assert_eq!(record(second.settled_root.clone()).await, (3_000, 1_000, 4_000, 4_000));
     assert_eq!(
-        replay(&executor, &first.settled_root, &second, block_data(&proposer))
-            .await
-            .settled_root,
+        record(second.settled_root.clone()).await,
+        (3_000, 1_000, 4_000, 4_000)
+    );
+    assert_eq!(
+        replay(
+            &executor,
+            &first.settled_root,
+            &second,
+            block_data(&proposer)
+        )
+        .await
+        .settled_root,
         second.settled_root
     );
 }
@@ -1390,7 +1482,9 @@ async fn the_close_cost_is_recorded_not_charged_and_replay_checks_it() {
                 bonds: vec![],
                 block_number: 1,
             },
-            deploys: vec![ProcessedDeploy::empty(envelope(ONE_COMM, 1, &proposer, 1_000, 1))],
+            deploys: vec![ProcessedDeploy::empty(envelope(
+                ONE_COMM, 1, &proposer, 1_000, 1,
+            ))],
             rejected_deploys: vec![],
             system_deploys: vec![],
             extra_bytes: Bytes::new(),
@@ -1407,19 +1501,32 @@ async fn the_close_cost_is_recorded_not_charged_and_replay_checks_it() {
         extra_bytes: Bytes::new(),
     };
     let executor = BlockExecutor::new(rm.clone(), 2);
-    let record = executor.execute(&pre, &block).await.expect("the block executes");
+    let record = executor
+        .execute(&pre, &block)
+        .await
+        .expect("the block executes");
     assert_eq!(record.gate()[0].verdict, Verdict::Admitted);
     assert!(record.close_phlo() > 0);
     assert_eq!(
-        read_wallet_balance(&rm, record.post_root(), &proposer.owner).await.unwrap(),
-        3_000 - record.settlement().unwrap().debited() + record.settlement().unwrap().proposer_credit
+        read_wallet_balance(&rm, record.post_root(), &proposer.owner)
+            .await
+            .unwrap(),
+        3_000 - record.settlement().unwrap().debited()
+            + record.settlement().unwrap().proposer_credit
     );
     assert_eq!(
-        &executor.replay(&record, &block).await.expect("the block replays"),
+        &executor
+            .replay(&record, &block)
+            .await
+            .expect("the block replays"),
         record.post_root()
     );
     let other = record.clone().with_close_phlo(record.close_phlo() + 1);
-    let refused = executor.replay(&other, &block).await.unwrap_err().to_string();
+    let refused = executor
+        .replay(&other, &block)
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(refused.contains("the close's cost"), "{refused}");
 }
 
@@ -1437,13 +1544,20 @@ async fn a_deployment_with_a_small_static_bound_commits_less_than_its_phlo_limit
     let bound = static_bound(TWO_COMMS).expect("a closed linear term has a bound");
     assert!(bound < 1_000_000);
     let played = executor
-        .execute(&pre, vec![envelope(TWO_COMMS, 1, &alice, 1_000_000, 3)], block_data(&proposer))
+        .execute(
+            &pre,
+            vec![envelope(TWO_COMMS, 1, &alice, 1_000_000, 3)],
+            block_data(&proposer),
+        )
         .await
         .expect("the block executes");
     let entry = &played.gate.entries[0];
     assert!(entry.admitted());
     assert_eq!(entry.delta, bound);
-    assert_eq!(entry.commitments.iter().map(|c| c.amount).sum::<u64>(), 3 * bound);
+    assert_eq!(
+        entry.commitments.iter().map(|c| c.amount).sum::<u64>(),
+        3 * bound
+    );
     assert!(played.settlement.debited() <= 3 * bound);
     assert!(!played.runs[0].failed);
     let again = replay(&executor, &pre, &played, block_data(&proposer)).await;
@@ -1456,15 +1570,23 @@ async fn a_recursive_deployment_commits_its_phlo_limit() {
     let (alice, proposer) = (party(), party());
     let (rm, pre) = shard(&[(&alice, 100_000_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
-    let recursive = r#"new loop in { contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(3) }"#;
+    let recursive =
+        r#"new loop in { contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(3) }"#;
     assert_eq!(static_bound(recursive), None);
     let played = executor
-        .execute(&pre, vec![envelope(recursive, 1, &alice, 400_000, 2)], block_data(&proposer))
+        .execute(
+            &pre,
+            vec![envelope(recursive, 1, &alice, 400_000, 2)],
+            block_data(&proposer),
+        )
         .await
         .expect("the block executes");
     let entry = &played.gate.entries[0];
     assert_eq!(entry.delta, 400_000);
-    assert_eq!(entry.commitments.iter().map(|c| c.amount).sum::<u64>(), 800_000);
+    assert_eq!(
+        entry.commitments.iter().map(|c| c.amount).sum::<u64>(),
+        800_000
+    );
     assert!(played.settlement.debited() <= 800_000);
 }
 
@@ -1487,15 +1609,25 @@ async fn a_failed_run_pays_its_commitment_and_a_run_never_spends_more() {
     assert_eq!(played.gate.entries[0].delta, bound);
     assert_eq!(played.gate.entries[1].delta, below as u64);
     assert!(played.runs[0].failed);
-    assert_eq!(played.runs[0].compute_phlo, bound, "a failed run records its commitment, not its phloLimit");
+    assert_eq!(
+        played.runs[0].compute_phlo, bound,
+        "a failed run records its commitment, not its phloLimit"
+    );
     let failed = played
         .settlement
         .charges
         .iter()
         .find(|c| c.envelope_sig == played.gate.entries[0].envelope_sig)
         .unwrap();
-    assert_eq!(failed.compute_rev + failed.comm_rev, bound, "a failed run pays its commitment (Decision 136)");
-    assert_eq!(failed.compute_phlo, played.runs[0].compute_phlo, "the record equals the debit");
+    assert_eq!(
+        failed.compute_rev + failed.comm_rev,
+        bound,
+        "a failed run pays its commitment (Decision 136)"
+    );
+    assert_eq!(
+        failed.compute_phlo, played.runs[0].compute_phlo,
+        "the record equals the debit"
+    );
     assert_eq!(
         balance(&rm, &played.settled_root, &alice).await,
         100_000_000 - played.settlement.debits[&wallet(&alice)]

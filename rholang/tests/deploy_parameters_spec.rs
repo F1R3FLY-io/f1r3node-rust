@@ -13,6 +13,12 @@ async fn deploy_parameters_execute_as_rholang_values() {
         let cases = vec![
             (RholangValue::Bool(false), "false"),
             (RholangValue::Int(-42), "-42"),
+            (RholangValue::BigInt(0.into()), "0n"),
+            (RholangValue::BigInt((-42).into()), "-42n"),
+            (
+                RholangValue::BigInt((num_bigint::BigInt::from(1) << 256usize) - 1),
+                "115792089237316195423570985008687907853269984665640564039457584007913129639935n",
+            ),
             (RholangValue::String("text".into()), "\"text\""),
             (RholangValue::Bytes(vec![0, 255]), "\"00ff\".hexToBytes()"),
             (
@@ -54,7 +60,7 @@ async fn deploy_parameters_execute_as_rholang_values() {
                 DeployData {
                     term,
                     time_stamp: 1,
-                    phlo_price: 1,
+                    phlo_price: (1).into(),
                     phlo_limit: 1_000_000,
                     valid_after_block_number: 0,
                     shard_id: "root".into(),

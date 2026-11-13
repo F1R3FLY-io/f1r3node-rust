@@ -41,7 +41,7 @@ async fn shard(funded: &[&Party]) -> (Arc<RuntimeManager>, StateHash) {
         .iter()
         .map(|p| Vault {
             vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
-            initial_balance: 100_000,
+            initial_balance: 100_000.into(),
         })
         .collect();
     let block = Genesis::create_genesis_block_with_policy(
@@ -59,7 +59,7 @@ fn envelope(term: &str, ts: i64, who: &Party, price: i64) -> Signed<DeployData> 
         term.to_string(),
         ts,
         Some(5_000),
-        Some(price),
+        Some(shared::rust::token_amount::TokenAmount::new((price).into()).unwrap()),
         Some(who.sk.clone()),
         None,
         Some("root".to_string()),
@@ -114,7 +114,11 @@ async fn play(
 
 fn charge<'a>(played: &'a ExecutedBlock, who: &Party) -> Option<&'a EnvelopeCharge> {
     let wallet = wallet_channel_id(&who.owner);
-    played.settlement.charges.iter().find(|c| c.wallet == wallet)
+    played
+        .settlement
+        .charges
+        .iter()
+        .find(|c| c.wallet == wallet)
 }
 
 fn surface<'a>(played: &'a ExecutedBlock, who: &Party) -> Option<&'a SurfaceCharge> {
@@ -189,9 +193,15 @@ async fn the_two_party_form_charges_each_surface_and_the_installer_for_its_conti
     let (form, fired, bob, alice) = two_party(&stored, sent).await;
 
     let installer = surface(&fired, &bob).expect("the installer's surface pays");
-    assert_eq!(installer.cells, 2, "the receive's cell and the COMM inside the continuation");
+    assert_eq!(
+        installer.cells, 2,
+        "the receive's cell and the COMM inside the continuation"
+    );
     assert_eq!(installer.phlo_price, 1, "at the installer's origin price");
-    assert!(installer.compute > 0, "the installer pays for the continuation's work");
+    assert!(
+        installer.compute > 0,
+        "the installer pays for the continuation's work"
+    );
     let sender = charge(&fired, &alice).expect("the sender pays");
     assert_eq!(sender.comm_phlo, 1, "the send surface pays its own cell");
     assert_eq!(sender.phlo_price, 2);
@@ -199,7 +209,10 @@ async fn the_two_party_form_charges_each_surface_and_the_installer_for_its_conti
 
     let sugar = format!(r#"for (_ <- @"x") {{ {BODY} }}"#);
     let (implicit, _, _, _) = two_party(&sugar, r#"@"x"!(1)"#).await;
-    assert_eq!(implicit, form, "the implicit seal elaborates to the two-party form");
+    assert_eq!(
+        implicit, form,
+        "the implicit seal elaborates to the two-party form"
+    );
 }
 
 #[tokio::test]
@@ -212,7 +225,10 @@ async fn the_one_party_form_pays_once_for_a_redex_under_one_seal() {
     );
     let played = play(&executor, &pre, envelope(&form, 1, &alice, 1), &proposer).await;
     let paid = charge(&played, &alice).expect("the one seal pays");
-    assert_eq!(paid.comm_phlo, 2, "one cell for each redex, not one for each surface");
+    assert_eq!(
+        paid.comm_phlo, 2,
+        "one cell for each redex, not one for each surface"
+    );
     assert!(played.settlement.surface_charges.is_empty());
     let elaborated = shape(&played, &[&alice]);
 
@@ -231,16 +247,20 @@ async fn the_lollipop_charges_the_comm_to_s1_and_the_continuation_to_s2() {
         async move {
             let (rm, pre) = shard(&[alice, carol]).await;
             let executor = EnvelopeExecutor::new(rm.clone(), 2);
-            play(&executor, &pre, cosigned(&term, 1, alice, carol, 1), proposer).await
+            play(
+                &executor,
+                &pre,
+                cosigned(&term, 1, alice, carol, 1),
+                proposer,
+            )
+            .await
         }
     };
     let names = r#"new d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`) in"#;
-    let lollipop = format!(
-        r#"{names} {{ {{% for (_ <- @"x") {{ {BODY} }} %}}[d -o c] | @"x"!(1) }}"#
-    );
-    let layers = format!(
-        r#"{names} {{ {{% for (_ <- @"x") {{ {{% {BODY} %}}[c] }} %}}[d] | @"x"!(1) }}"#
-    );
+    let lollipop =
+        format!(r#"{names} {{ {{% for (_ <- @"x") {{ {BODY} }} %}}[d -o c] | @"x"!(1) }}"#);
+    let layers =
+        format!(r#"{names} {{ {{% for (_ <- @"x") {{ {{% {BODY} %}}[c] }} %}}[d] | @"x"!(1) }}"#);
     let played = run(lollipop).await;
     let s1 = charge(&played, &alice).expect("s1 pays the COMM");
     let s2 = charge(&played, &carol).expect("s2 pays the continuation");
@@ -261,7 +281,13 @@ async fn separately_named_regions_pay_only_their_own_work() {
              {{% {BODY} %}}[d] | {{% {BODY} | {BODY} %}}[c]
            }}"#
     );
-    let played = play(&executor, &pre, cosigned(&term, 1, &alice, &carol, 1), &proposer).await;
+    let played = play(
+        &executor,
+        &pre,
+        cosigned(&term, 1, &alice, &carol, 1),
+        &proposer,
+    )
+    .await;
     assert_eq!(charge(&played, &alice).unwrap().comm_phlo, 1);
     assert_eq!(charge(&played, &carol).unwrap().comm_phlo, 2);
 }
@@ -295,7 +321,10 @@ async fn work_that_stored_code_pays_for_does_not_count_against_the_clients_limit
     );
     let client = charge(&fired, &alice).expect("the client pays its own part");
     assert!(client.comm_phlo + client.compute_phlo <= limit as u64);
-    assert!(fired.runs[0].compute_phlo <= limit as u64, "the run's meter counts the client's own work only");
+    assert!(
+        fired.runs[0].compute_phlo <= limit as u64,
+        "the run's meter counts the client's own work only"
+    );
 }
 
 mod elaboration {
@@ -342,7 +371,10 @@ mod elaboration {
     }
 
     fn elaborated(sugar: &str) -> Par {
-        ParSortMatcher::sort_match(&Compiler::source_to_adt_elaborated(sugar, env(), origin()).unwrap()).term
+        ParSortMatcher::sort_match(
+            &Compiler::source_to_adt_elaborated(sugar, env(), origin()).unwrap(),
+        )
+        .term
     }
 
     fn to_deployment(par: &mut Par) {
@@ -386,7 +418,10 @@ mod elaboration {
     #[test]
     fn the_implicit_seal_elaborates_to_the_two_party_form_for_the_installer() {
         let sugar = format!(r#"for (_ <- @"x") {{ {BODY} }}"#);
-        let explicit = format!(r#"{{% for (_ <- @"x") {{ {{% {} %}}[u1] }} %}}[u1]"#, body_under("u1"));
+        let explicit = format!(
+            r#"{{% for (_ <- @"x") {{ {{% {} %}}[u1] }} %}}[u1]"#,
+            body_under("u1")
+        );
         assert_eq!(elaborated(&sugar), form(&explicit));
     }
 
@@ -402,7 +437,8 @@ mod elaboration {
 
     #[test]
     fn the_lollipop_elaborates_to_s1_for_the_comm_and_s2_for_the_continuation() {
-        let sugar = format!(r#"{NAMES} {{ {{% for (_ <- @"x") {{ {BODY} }} %}}[d -o c] | @"x"!(1) }}"#);
+        let sugar =
+            format!(r#"{NAMES} {{ {{% for (_ <- @"x") {{ {BODY} }} %}}[d -o c] | @"x"!(1) }}"#);
         let explicit = format!(
             r#"{{% {NAMES} {{ {{% for (_ <- @"x") {{ {{% {} %}}[c] }} %}}[d] | @"x"!(1) }} %}}[u1]"#,
             body_under("c")
@@ -427,20 +463,29 @@ mod elaboration {
         let explicit = format!(r#"{{% {{% {p} %}}[# {{ {p} }}] | @"z"!(0) %}}[u1]"#);
         let par = elaborated(&sugar);
         assert_eq!(par, form(&explicit));
-        let region = &par.cost_signed_terms[0].body.as_ref().unwrap().cost_signed_terms[0];
+        let region = &par.cost_signed_terms[0]
+            .body
+            .as_ref()
+            .unwrap()
+            .cost_signed_terms[0];
         assert_eq!(region.seal.as_ref().unwrap().kind, KIND_PROCESS);
     }
 
     #[test]
     fn a_declared_limit_seals_the_region_and_its_continuations() {
-        let sugar = format!(r#"{NAMES} {{ {{% for (_ <- @"x") {{ {BODY} }} %}}[d ; 5000] | @"z"!(0) }}"#);
+        let sugar =
+            format!(r#"{NAMES} {{ {{% for (_ <- @"x") {{ {BODY} }} %}}[d ; 5000] | @"z"!(0) }}"#);
         let explicit = format!(
             r#"{{% {NAMES} {{ {{% for (_ <- @"x") {{ {{% {} %}}[d ; 5000] }} %}}[d ; 5000] | @"z"!(0) }} %}}[u1]"#,
             body_under("d ; 5000")
         );
         let par = elaborated(&sugar);
         assert_eq!(par, form(&explicit));
-        let region = &par.cost_signed_terms[0].body.as_ref().unwrap().news[0].p.as_ref().unwrap().cost_signed_terms[0];
+        let region = &par.cost_signed_terms[0].body.as_ref().unwrap().news[0]
+            .p
+            .as_ref()
+            .unwrap()
+            .cost_signed_terms[0];
         let seal = region.seal.as_ref().unwrap();
         assert_eq!((seal.kind, seal.phlo_limit), (KIND_SIGNED, 5_000));
     }
@@ -451,12 +496,32 @@ mod elaboration {
             r#"{NAMES} {{ {{% for (_ <- @"x") {{ {{% {BODY} %}}[c ; 700] }} %}}[d ; 900] | @"z"!(0) }}"#
         );
         let par = elaborated(&sugar);
-        let outer = &par.cost_signed_terms[0].body.as_ref().unwrap().news[0].p.as_ref().unwrap().cost_signed_terms[0];
-        let inner = &outer.body.as_ref().unwrap().receives[0].body.as_ref().unwrap().cost_signed_terms[0];
+        let outer = &par.cost_signed_terms[0].body.as_ref().unwrap().news[0]
+            .p
+            .as_ref()
+            .unwrap()
+            .cost_signed_terms[0];
+        let inner = &outer.body.as_ref().unwrap().receives[0]
+            .body
+            .as_ref()
+            .unwrap()
+            .cost_signed_terms[0];
         assert_eq!(outer.seal.as_ref().unwrap().phlo_limit, 900);
         assert_eq!(inner.seal.as_ref().unwrap().phlo_limit, 700);
-        let nested = &inner.body.as_ref().unwrap().news[0].p.as_ref().unwrap().receives[0].body.as_ref().unwrap().cost_signed_terms[0];
-        assert_eq!(nested.seal.as_ref().unwrap().phlo_limit, 700, "t's continuations inherit t's limit");
+        let nested = &inner.body.as_ref().unwrap().news[0]
+            .p
+            .as_ref()
+            .unwrap()
+            .receives[0]
+            .body
+            .as_ref()
+            .unwrap()
+            .cost_signed_terms[0];
+        assert_eq!(
+            nested.seal.as_ref().unwrap().phlo_limit,
+            700,
+            "t's continuations inherit t's limit"
+        );
         let explicit = format!(
             r#"{{% {NAMES} {{ {{% for (_ <- @"x") {{ {{% {} %}}[c ; 700] }} %}}[d ; 900] | @"z"!(0) }} %}}[u1]"#,
             body_under("c ; 700")
@@ -472,7 +537,11 @@ mod elaboration {
         assert_eq!(seal.kind, KIND_DEPLOYMENT);
         assert_eq!(seal.origin, origin_digest(&origin()));
         assert_eq!(seal.phlo_limit, LIMIT);
-        let continuation = &top.body.as_ref().unwrap().receives[0].body.as_ref().unwrap().cost_signed_terms[0];
+        let continuation = &top.body.as_ref().unwrap().receives[0]
+            .body
+            .as_ref()
+            .unwrap()
+            .cost_signed_terms[0];
         assert_eq!(continuation.seal, top.seal);
     }
 
@@ -480,7 +549,12 @@ mod elaboration {
     fn a_process_sent_as_data_is_not_elaborated() {
         let par = elaborated(r#"@"x"!(for (_ <- @"y") { Nil })"#);
         let sent = &par.cost_signed_terms[0].body.as_ref().unwrap().sends[0].data[0];
-        assert!(sent.receives[0].body.as_ref().unwrap().cost_signed_terms.is_empty());
+        assert!(sent.receives[0]
+            .body
+            .as_ref()
+            .unwrap()
+            .cost_signed_terms
+            .is_empty());
     }
 
     #[test]
@@ -489,7 +563,6 @@ mod elaboration {
         let error = Compiler::source_to_adt_elaborated(sugar, env(), origin()).unwrap_err();
         assert!(format!("{error:?}").contains("rebound"), "{error:?}");
     }
-
 }
 
 #[tokio::test]
@@ -506,13 +579,22 @@ async fn the_default_seal_limit_is_the_signed_limit_when_the_run_is_limited_belo
     install.phlo_limit = 50_000;
     let install = Signed::create(install, Box::new(Secp256k1), bob.sk.clone()).unwrap();
     let mut ops = RuntimeOps::new(rm.spawn_runtime().await.unwrap());
-    ops.runtime.reset(&Blake2b256Hash::from_bytes_prost(&pre)).await.unwrap();
+    ops.runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(&pre))
+        .await
+        .unwrap();
     ops.runtime.set_seal_records(true);
     let (processed, _) = ops.process_deploy_limited(install, 3_000).await.unwrap();
     assert!(!processed.is_failed, "{processed:?}");
-    assert!(processed.cost.cost <= 3_000, "the run is limited to the committed bound");
+    assert!(
+        processed.cost.cost <= 3_000,
+        "the run is limited to the committed bound"
+    );
     let space = ops.runtime.reducer.space.hot_store().unwrap();
     let waiting = space.get_continuations(&[RhoString::create_par("x".to_string())]);
     let record = of_continuation(&waiting[0].continuation).unwrap().unwrap();
-    assert_eq!(record.origin.phlo_limit, 50_000, "the stored seal carries the signed phloLimit");
+    assert_eq!(
+        record.origin.phlo_limit, 50_000,
+        "the stored seal carries the signed phloLimit"
+    );
 }

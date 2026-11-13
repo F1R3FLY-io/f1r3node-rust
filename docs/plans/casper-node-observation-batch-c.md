@@ -55,11 +55,11 @@ Source references below the table resolve each writer family.
 
 Writer source references:
 
-- [Block store](../../block-storage/src/rust/key_value_block_store.rs), [block processor](../../casper/src/rust/blocks/block_processor.rs), and [proposer](../../casper/src/rust/blocks/proposer/proposer.rs).
+- [Block store](../../block-storage/src/rust/key_value_block_store.rs), [block processor](https://github.com/F1R3FLY-io/f1r3node-rust/blob/6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a/casper/src/rust/blocks/block_processor.rs), and [proposer](../../casper/src/rust/blocks/proposer/proposer.rs).
 - [DAG storage](../../block-storage/src/rust/dag/block_dag_key_value_storage.rs) and [metadata store](../../block-storage/src/rust/dag/block_metadata_store.rs).
 - [Equivocation store](../../block-storage/src/rust/dag/equivocation_tracker_store.rs), [detector](../../casper/src/rust/equivocation_detector.rs), and [validation dispatch](../../casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs).
 - [Floor derivation](../../casper/src/rust/finality/floor.rs), [lifecycle store](../../block-storage/src/rust/dag/deploy_lifecycle_types.rs), [lifecycle evaluation](../../casper/src/rust/finality/deploy_lifecycle.rs), and [carrier index](../../block-storage/src/rust/dag/carrier_index.rs).
-- [Legacy migration](../../block-storage/src/rust/finality/last_finalized_key_value_storage.rs) and [startup setup](../../node/src/rust/runtime/setup.rs).
+- [Legacy migration](https://github.com/F1R3FLY-io/f1r3node-rust/blob/6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a/block-storage/src/rust/finality/last_finalized_key_value_storage.rs) and [startup setup](../../node/src/rust/runtime/setup.rs).
 - [Genesis engine](../../casper/src/rust/engine/engine.rs), [restore engine](../../casper/src/rust/engine/initializing.rs), and [block restore](../../casper/src/rust/engine/lfs_block_requester.rs).
 - [Runtime manager](../../casper/src/rust/util/rholang/runtime_manager.rs) and [mergeable-cache collection](../../casper/src/rust/util/mergeable_channels_gc.rs).
 
@@ -90,7 +90,7 @@ Writer source references:
 - [Deploy store and rejected buffer](../../block-storage/src/rust/deploy/key_value_deploy_storage.rs).
 - [Admission](../../casper/src/rust/engine/multi_parent_casper/block_admission.rs) and [block creation](../../casper/src/rust/blocks/proposer/block_creator.rs).
 - [Parent-state computation](../../casper/src/rust/util/rholang/interpreter_util.rs), especially `compute_parents_post_state` and its guarded `add` call.
-- [Dependency buffer](../../block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs), [combined admission](../../block-storage/src/rust/dag/buffer_dag_transition.rs), and [startup reconciliation](../../casper/src/rust/engine/casper_launch.rs).
+- [Dependency buffer](https://github.com/F1R3FLY-io/f1r3node-rust/blob/6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a/block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs), [combined admission](https://github.com/F1R3FLY-io/f1r3node-rust/blob/6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a/block-storage/src/rust/dag/buffer_dag_transition.rs), and [startup reconciliation](../../casper/src/rust/engine/casper_launch.rs).
 - [History repository](../../rspace++/src/rspace/history/history_repository_impl.rs), [root store](../../rspace++/src/rspace/history/roots_store.rs), and [radix tree](../../rspace++/src/rspace/history/radix_tree.rs).
 - [State importer](../../rspace++/src/rspace/state/instances/rspace_importer_store.rs), [tuple-space restore](../../casper/src/rust/engine/lfs_tuple_space_requester.rs), and [horizon restore](../../casper/src/rust/engine/lfs_horizon_requester.rs).
 

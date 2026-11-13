@@ -11,6 +11,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use humantime::parse_duration;
+use shared::rust::token_amount::TokenAmount;
 
 use super::cli_static_provisioning::{
     parse_cli_static_dir, parse_cli_static_file, CliStaticDirArg, CliStaticFileArg,
@@ -102,7 +103,8 @@ pub enum OptionsSubCommand {
     Repl,
     Deploy {
         phlo_limit: i64,
-        phlo_price: i64,
+        #[arg(value_parser = TokenAmount::parse)]
+        phlo_price: TokenAmount,
         valid_after_block: i64,
         #[arg(value_parser = ValueParser::new(PrivateKeyConverter::parse))]
         private_key: Option<PrivateKey>,
@@ -363,13 +365,9 @@ pub struct RunOptions {
     #[arg(long = "validator-private-key-path")]
     pub validator_private_key_path: Option<PathBuf>,
 
-    /// Interval for the casper loop to maintain requested blocks and missing dependent blocks
+    /// Interval of the engine tick that runs until casper is initialized
     #[arg(long = "casper-loop-interval", value_parser = ValueParser::new(parse_duration))]
     pub casper_loop_interval: Option<Duration>,
-
-    /// Timeout for blocks requests
-    #[arg(long = "requested-blocks-timeout", value_parser = ValueParser::new(parse_duration))]
-    pub requested_blocks_timeout: Option<Duration>,
 
     /// Finalization is called every `n` blocks
     #[arg(long = "finalization-rate")]
@@ -439,16 +437,16 @@ pub struct RunOptions {
     pub wallets_file: Option<String>,
 
     /// Minimum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-minimum")]
-    pub bond_minimum: Option<i64>,
+    #[arg(long = "bond-minimum", value_parser = TokenAmount::parse)]
+    pub bond_minimum: Option<TokenAmount>,
 
     /// Configure genesis blockNumber for hard fork
     #[arg(long = "genesis-block-number")]
     pub genesis_block_number: Option<i64>,
 
     /// Maximum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-maximum")]
-    pub bond_maximum: Option<i64>,
+    #[arg(long = "bond-maximum", value_parser = TokenAmount::parse)]
+    pub bond_maximum: Option<TokenAmount>,
 
     /// The length of the validation epoch in blocks
     #[arg(long = "epoch-length")]
@@ -531,7 +529,8 @@ pub struct RunOptions {
 
     /// MinPhloPrice
     #[arg(long = "min-phlo-price")]
-    pub min_phlo_price: Option<i64>,
+    #[arg(value_parser = TokenAmount::parse)]
+    pub min_phlo_price: Option<TokenAmount>,
 
     /// Enable ceremony master mode (creates genesis block if none found)
     #[arg(long = "ceremony-master-mode", action = ArgAction::SetTrue)]
@@ -696,7 +695,8 @@ pub struct DeployOptions {
 
     /// The price of phlo for this transaction in units dust/phlo
     #[arg(long = "phlo-price")]
-    pub phlo_price: u64,
+    #[arg(value_parser = TokenAmount::parse)]
+    pub phlo_price: TokenAmount,
 
     /// Set this value to one less than the current block height
     #[arg(long = "valid-after-block-number")]
@@ -733,7 +733,7 @@ pub struct TransferOptions {
     pub phlo_limit: i64,
 
     #[arg(long = "phlo-price", help = "REV paid per phlo")]
-    pub phlo_price: i64,
+    pub phlo_price: TokenAmount,
 
     #[arg(
         long = "valid-after-block-number",
@@ -773,7 +773,7 @@ pub enum CosignAction {
         phlo_limit: i64,
 
         #[arg(long = "phlo-price", help = "REV paid per phlo")]
-        phlo_price: i64,
+        phlo_price: TokenAmount,
 
         #[arg(
             long = "valid-after-block-number",
@@ -1087,7 +1087,10 @@ mod wallet_clap_tests {
             t.to,
             "1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5"
         );
-        assert_eq!((t.amount, t.phlo_limit, t.phlo_price), (100, 100000, 1));
+        assert_eq!(
+            (t.amount, t.phlo_limit, t.phlo_price),
+            (100, 100000, 1.into())
+        );
         assert_eq!(t.valid_after_block_number, 0);
         assert!(t.private_key.is_some());
         assert_eq!(t.shard_id, "root");
@@ -1145,7 +1148,7 @@ mod wallet_clap_tests {
         else {
             panic!("expected prepare");
         };
-        assert_eq!((phlo_limit, phlo_price), (1000, 2));
+        assert_eq!((phlo_limit, phlo_price), (1000, 2.into()));
         assert_eq!(cosigners, vec!["04aa".to_string(), "04bb".to_string()]);
         assert_eq!(
             (envelope.as_str(), location.as_str()),

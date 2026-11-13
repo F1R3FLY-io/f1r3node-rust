@@ -6,6 +6,7 @@
 // merge behavior at the unit-test layer.
 
 mod bridge_contract_concurrent_merge;
+mod integer_channel_resend_merge;
 mod registry_key_merge;
 mod foreign_genesis_rejection;
 mod store_items_flood_resilience;

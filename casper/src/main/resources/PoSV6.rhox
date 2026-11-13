@@ -83,7 +83,7 @@ in {
           for (@state <<- stateCh) {
             new zero in {
               @ListOps!("fold", state.get("allBonds").toList(), {}, *zero, *returnCh) |
-              contract zero(@(pk, _), @acc, outCh) = { outCh!(acc.set(pk, 0n)) }
+              contract zero(@(pk, _), @acc, outCh) = { outCh!(acc.set(pk, 0)) }
             }
           }
         } |
@@ -94,7 +94,12 @@ in {
         } |
         contract PoS(@"getBonds", returnCh) = {
           for (@state <<- stateCh) {
-            returnCh!(state.get("allBonds"))
+            new convertBond in {
+              contract convertBond(@(pk, amount), @acc, ret) = {
+                ret!(acc.set(pk, amount.toBigInt()))
+              } |
+              @ListOps!("fold", state.get("allBonds").toList(), {}, *convertBond, *returnCh)
+            }
           }
         } |
         contract PoS(@"getActiveValidators", returnCh) = {
@@ -122,7 +127,7 @@ in {
           returnCh!($$faultToleranceThresholdPpm$$)
         } |
         contract PoS(@"getConsensusParameters", returnCh) = {
-          returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$))
+          returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$n, $$epochLength$$))
         } |
         contract PoS(@"bond", @receipt, @amount, returnCh, handleCh) = {
           new keyCh in {
@@ -142,9 +147,9 @@ in {
                         resultCh!(state, (false, "Bond amount must be an Int."))
                       } else if (amount <= 0) {
                         resultCh!(state, (false, "Bond amount must be positive."))
-                      } else if (amount < $$minimumBond$$) {
+                      } else if (amount.toBigInt() < $$minimumBond$$n) {
                         resultCh!(state, (false, "Bond is less than minimum!"))
-                      } else if (amount > $$maximumBond$$) {
+                      } else if (amount.toBigInt() > $$maximumBond$$n) {
                         resultCh!(state, (false, "Bond is greater than maximum!"))
                       } else {
                         resultCh!(state.set("pendingBonds",

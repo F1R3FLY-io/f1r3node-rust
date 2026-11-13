@@ -22,7 +22,7 @@ fn offer(sk: &PrivateKey, ts: i64) -> Signed<DeployData> {
         "Nil".to_string(),
         ts,
         Some(1_000),
-        Some(3),
+        Some(3.into()),
         Some(sk.clone()),
         None,
         Some("root".to_string()),
@@ -43,7 +43,7 @@ async fn a_refused_offer_reports_rejected_and_leaves_the_pool() {
     genesis.version = PROTOCOL_V6;
     genesis.vaults = vec![Vault {
         vault_address: VaultAddress::from_public_key(&rich_pk).unwrap(),
-        initial_balance: 100_000,
+        initial_balance: 100_000.into(),
     }];
     let block = Genesis::create_genesis_block_with_policy(
         &rm,

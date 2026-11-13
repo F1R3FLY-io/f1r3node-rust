@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 pub struct TransferEvent {
     pub from_addr: String,
     pub to_addr: String,
-    pub amount: i64,
+    pub amount: String,
     pub success: bool,
 }
 
@@ -346,7 +346,7 @@ mod tests {
         deploy.transfers = Some(vec![TransferEvent {
             from_addr: "from".to_string(),
             to_addr: "to".to_string(),
-            amount: 5,
+            amount: "5".to_string(),
             success: true,
         }]);
 
@@ -354,7 +354,7 @@ mod tests {
         let transfer = &json["transfers"][0];
         assert_eq!(transfer["from-addr"], "from");
         assert_eq!(transfer["to-addr"], "to");
-        assert_eq!(transfer["amount"], 5);
+        assert_eq!(transfer["amount"], "5");
         assert_eq!(transfer["success"], true);
     }
 
@@ -404,7 +404,7 @@ mod tests {
                 transfers: vec![TransferEvent {
                     from_addr: "from".to_string(),
                     to_addr: "to".to_string(),
-                    amount: 11,
+                    amount: "11".to_string(),
                     success: false,
                 }],
             }]);
@@ -417,7 +417,7 @@ mod tests {
         match decoded {
             F1r3flyEvent::TransfersAvailable(data) => {
                 assert_eq!(data.block_number, 9);
-                assert_eq!(data.deploys[0].transfers[0].amount, 11);
+                assert_eq!(data.deploys[0].transfers[0].amount, "11");
             }
             other => panic!("expected TransfersAvailable, got {other:?}"),
         }

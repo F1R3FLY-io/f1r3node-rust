@@ -4,12 +4,13 @@ use std::sync::Arc;
 
 use models::rust::block::state_hash::StateHash;
 use prost::bytes::Bytes;
+use rholang::rust::interpreter::accounting::comm_ledger::Surface;
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
-use rholang::rust::interpreter::accounting::rev_stack::funders;
 use rholang::rust::interpreter::accounting::rev_stack::genesis::{genesis_supply, legacy_bonds};
 use rholang::rust::interpreter::accounting::rev_stack::journal::{JournalEntry, Source};
 use rholang::rust::interpreter::accounting::rev_stack::{
-    wallet_channel_id, CellStore, HotStoreCells, RevAmount, RevStacks, TokenKind, WalletOwner,
+    funders, wallet_channel_id, CellStore, HotStoreCells, RevAmount, RevStacks, TokenKind,
+    WalletOwner,
 };
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -19,7 +20,6 @@ use super::gate::{GateEntry, GateInput, WalletId};
 use super::hooks::{after_settlement, HookCall};
 use super::run::EnvelopeRun;
 use super::surface::{is_own, surface_purse, Surfaces};
-use rholang::rust::interpreter::accounting::comm_ledger::Surface;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -128,7 +128,7 @@ pub fn charges(
         if !entry.admitted() {
             continue;
         }
-        let price = u64::try_from(input.phlo_price).map_err(|_| overflow())?;
+        let price = u64::try_from(&input.phlo_price).map_err(|_| overflow())?;
         let payers = input.paying_wallets();
         let mut budget = entry.delta;
         let mut owed: BTreeMap<Vec<u8>, (WalletOwner, u64, u64)> = BTreeMap::new();
@@ -146,9 +146,7 @@ pub fn charges(
             let compute = compute.min(budget);
             budget -= compute;
             for payer in own {
-                let o = owed
-                    .entry(payer.canonical_bytes())
-                    .or_insert((payer, 0, 0));
+                let o = owed.entry(payer.canonical_bytes()).or_insert((payer, 0, 0));
                 o.1 = o.1.checked_add(cells).ok_or_else(overflow)?;
                 o.2 = o.2.checked_add(compute).ok_or_else(overflow)?;
             }
@@ -234,7 +232,11 @@ fn client(input: &GateInput, payers: &[WalletOwner]) -> Vec<WalletOwner> {
     }
 }
 
-fn own_payers(key: &Option<Surface>, input: &GateInput, payers: &[WalletOwner]) -> Option<Vec<WalletOwner>> {
+fn own_payers(
+    key: &Option<Surface>,
+    input: &GateInput,
+    payers: &[WalletOwner],
+) -> Option<Vec<WalletOwner>> {
     let Some(owner) = key
         .as_ref()
         .and_then(|s| WalletOwner::from_canonical_bytes(&s.owner))
@@ -356,14 +358,23 @@ pub async fn settle_block(
         CasperError::RuntimeError("the runtime's space has no native REV layer".into())
     })?;
     let cells: Arc<dyn CellStore> = Arc::new(HotStoreCells(store));
-    settlement.surface_charges = surface_charges(&RevStacks::new(cells.clone()), inputs, entries, surfaces, work, &settlement)?;
+    settlement.surface_charges = surface_charges(
+        &RevStacks::new(cells.clone()),
+        inputs,
+        entries,
+        surfaces,
+        work,
+        &settlement,
+    )?;
     for sc in &settlement.surface_charges {
         let wallet = wallet_channel_id(&sc.purse);
         if sc.drawn > 0 {
             let d = settlement.debits.entry(wallet.clone()).or_insert(0);
             *d = d.checked_add(sc.drawn).ok_or_else(overflow)?;
-            settlement.proposer_credit =
-                settlement.proposer_credit.checked_add(sc.drawn).ok_or_else(overflow)?;
+            settlement.proposer_credit = settlement
+                .proposer_credit
+                .checked_add(sc.drawn)
+                .ok_or_else(overflow)?;
         }
         owners.insert(wallet, sc.purse.clone());
     }
@@ -439,7 +450,9 @@ fn surface_charges(
             continue;
         }
         let envelope = entry.envelope_sig.as_ref();
-        for (key, (cells, compute)) in meter(tally, done, |k| !is_own(k, envelope) || gated_own(k, input)) {
+        for (key, (cells, compute)) in
+            meter(tally, done, |k| !is_own(k, envelope) || gated_own(k, input))
+        {
             let Some(surface) = key else { continue };
             let surface = &surface;
             let phlo = cells.checked_add(compute).ok_or_else(overflow)?;
@@ -783,7 +796,9 @@ impl Settlement {
                     return Err("a recorded surface charge names no envelope and no phlo");
                 }
                 let phlo = sc.cells.checked_add(sc.compute);
-                if phlo.and_then(|p| p.checked_mul(sc.phlo_price)) != Some(sc.owed) || sc.drawn > sc.owed {
+                if phlo.and_then(|p| p.checked_mul(sc.phlo_price)) != Some(sc.owed)
+                    || sc.drawn > sc.owed
+                {
                     return Err("a recorded surface charge does not add up");
                 }
                 Ok(SurfaceCharge {

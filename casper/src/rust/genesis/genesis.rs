@@ -12,6 +12,7 @@ use models::rust::casper::protocol::casper_message::{
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::mergeable_tags;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
+use shared::rust::token_amount::TokenAmount;
 
 use super::contracts::proof_of_stake::ProofOfStake;
 use super::contracts::standard_deploys;
@@ -30,7 +31,7 @@ pub struct Genesis {
     pub block_number: i64,
     pub proof_of_stake: ProofOfStake,
     pub vaults: Vec<Vault>,
-    pub supply: i64,
+    pub supply: TokenAmount,
     pub version: i64,
     /// Full display name of the native token (e.g. "F1R3CAP"). Baked into
     /// the `TokenMetadata` Rholang contract at genesis.
@@ -81,7 +82,7 @@ impl Genesis {
         timestamp: i64,
         pos_params: &ProofOfStake,
         vaults: &Vec<Vault>,
-        supply: i64,
+        supply: TokenAmount,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
@@ -108,7 +109,7 @@ impl Genesis {
         timestamp: i64,
         pos_params: &ProofOfStake,
         vaults: &Vec<Vault>,
-        supply: i64,
+        supply: TokenAmount,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
@@ -132,8 +133,8 @@ impl Genesis {
                     shard_id,
                 ));
             }
-            let authority =
-                genesis_authority(pos_params).expect("the hook authority is checked before genesis");
+            let authority = genesis_authority(pos_params)
+                .expect("the hook authority is checked before genesis");
             vault_deploys.push(standard_deploys::rev_hooks_generator(
                 authority.threshold(),
                 &authority_addresses(&authority),
@@ -157,7 +158,7 @@ impl Genesis {
 
                 let deploy = standard_deploys::vaults_generator(
                     batch_vaults,
-                    supply,
+                    supply.clone(),
                     deploy_timestamp,
                     is_last_batch,
                     shard_id,
@@ -236,7 +237,7 @@ impl Genesis {
     pub fn default_blessed_terms(
         pos_params: &ProofOfStake,
         vaults: &Vec<Vault>,
-        supply: i64,
+        supply: TokenAmount,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
@@ -261,7 +262,7 @@ impl Genesis {
     pub fn default_blessed_terms_with_policy(
         pos_params: &ProofOfStake,
         vaults: &Vec<Vault>,
-        supply: i64,
+        supply: TokenAmount,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
@@ -285,6 +286,27 @@ impl Genesis {
             consensus_fs_snapshot_cadence,
             resource_policy,
         )
+    }
+
+    /// Every token comes from a genesis wallet or bond, and transfers only
+    /// move tokens, so a total within range keeps every balance within range.
+    fn validate_total_allocation(
+        vaults: &[Vault],
+        validators: &[super::contracts::validator::Validator],
+    ) -> Result<(), CasperError> {
+        let wallets = vaults
+            .iter()
+            .map(|vault| vault.initial_balance.as_bigint())
+            .sum::<num_bigint::BigInt>();
+        let bonds = validators
+            .iter()
+            .map(|validator| validator.stake.as_bigint())
+            .sum::<num_bigint::BigInt>();
+        TokenAmount::new(wallets + bonds)
+            .map(|_| ())
+            .map_err(|error| {
+                CasperError::RuntimeError(format!("genesis wallets and bonds in total: {error}"))
+            })
     }
 
     pub async fn create_genesis_block(
@@ -315,10 +337,11 @@ impl Genesis {
                 "a protocol {PROTOCOL_V6} genesis needs a shard resource policy"
             )));
         }
+        Self::validate_total_allocation(&genesis.vaults, &genesis.proof_of_stake.validators)?;
         let blessed_terms = Self::default_blessed_terms_with_policy(
             &genesis.proof_of_stake,
             &genesis.vaults,
-            genesis.supply,
+            genesis.supply.clone(),
             &genesis.shard_id,
             &genesis.native_token_name,
             &genesis.native_token_symbol,
@@ -391,7 +414,7 @@ impl Genesis {
         let mut bonds: Vec<_> = proof_of_stake
             .validators
             .iter()
-            .map(|validator| (validator.pk.clone(), validator.stake))
+            .map(|validator| (validator.pk.clone(), validator.stake.clone()))
             .collect();
 
         bonds.sort_by_key(|(pk, _)| pk.bytes.clone());
@@ -410,6 +433,29 @@ impl Genesis {
 mod tests {
     use super::*;
 
+    #[test]
+    fn genesis_total_allocation_is_capped_at_the_token_maximum() {
+        use rholang::rust::interpreter::util::vault_address::VaultAddress;
+
+        use super::super::contracts::standard_deploys;
+        use super::super::contracts::validator::Validator;
+
+        let vault = |balance: TokenAmount| Vault {
+            vault_address: VaultAddress::from_public_key(&standard_deploys::POS_GENERATOR_PUB_KEY)
+                .unwrap(),
+            initial_balance: balance,
+        };
+        let validators = [Validator {
+            pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
+            stake: 1.into(),
+        }];
+        let below_bond = TokenAmount::new(TokenAmount::max().into_bigint() - 1u8).unwrap();
+        assert!(Genesis::validate_total_allocation(&[vault(below_bond)], &validators).is_ok());
+        assert!(
+            Genesis::validate_total_allocation(&[vault(TokenAmount::max())], &validators).is_err()
+        );
+    }
+
     /// Pin that default_blessed_terms includes a deploy signed by
     /// FS_GENERATOR_PK — the fs_generator deploy that publishes the
     /// shared Fs cap at genesis.  A regression that silently drops
@@ -422,11 +468,11 @@ mod tests {
         use super::super::contracts::validator::Validator;
 
         let pos_params = ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: TokenAmount::max(),
             validators: vec![Validator {
                 pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 10,
             quarantine_length: 20,
@@ -434,7 +480,7 @@ mod tests {
             fault_tolerance_threshold_ppm: 100_000,
             max_parent_depth: 1,
             deploy_lifespan: 1,
-            min_phlo_price: 1,
+            min_phlo_price: (1).into(),
             pos_multi_sig_public_keys: vec![hex::encode(
                 &*standard_deploys::POS_GENERATOR_PUB_KEY.bytes,
             )],
@@ -443,7 +489,7 @@ mod tests {
         let deploys = Genesis::default_blessed_terms(
             &pos_params,
             &vec![],
-            0,
+            0.into(),
             "root",
             "F1R3CAP",
             "F1R3",

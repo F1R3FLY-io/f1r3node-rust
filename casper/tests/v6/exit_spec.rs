@@ -55,13 +55,17 @@ async fn launch_with(payers: usize, workers: usize) -> Host {
         .map(|index| Vault {
             vault_address: VaultAddress::from_public_key(&Secp256k1.to_public(&payer(index)))
                 .expect("a vault address"),
-            initial_balance: BALANCE,
+            initial_balance: shared::rust::token_amount::TokenAmount::new((BALANCE).into())
+                .unwrap(),
         })
         .collect();
-    let block =
-        Genesis::create_genesis_block_with_policy(&rm, &genesis, Some(&ShardResourcePolicy::default()))
-            .await
-            .expect("the genesis block is created");
+    let block = Genesis::create_genesis_block_with_policy(
+        &rm,
+        &genesis,
+        Some(&ShardResourcePolicy::default()),
+    )
+    .await
+    .expect("the genesis block is created");
     Host {
         executor: BlockExecutor::new(Arc::new(rm), workers),
         genesis: block,
@@ -69,7 +73,11 @@ async fn launch_with(payers: usize, workers: usize) -> Host {
 }
 
 async fn replica(genesis: &BlockMessage) -> Host {
-    let rm = mk_runtime_manager("v6-exit-replica", Some(Genesis::default_mergeable_tags_arc())).await;
+    let rm = mk_runtime_manager(
+        "v6-exit-replica",
+        Some(Genesis::default_mergeable_tags_arc()),
+    )
+    .await;
     let root = rm
         .replay_compute_state(
             &RuntimeManager::empty_state_hash_fixed(),
@@ -96,7 +104,7 @@ fn offer(key: &PrivateKey, term: &str, time_stamp: i64) -> ProcessedDeploy {
             term.to_string(),
             time_stamp,
             Some(100_000),
-            Some(1),
+            Some(1.into()),
             Some(key.clone()),
             None,
             Some(host_shard()),
@@ -121,7 +129,11 @@ fn block(host: &Host, number: i64, deploys: Vec<ProcessedDeploy>) -> BlockMessag
 }
 
 fn outcomes(record: &BlockRecord) -> Vec<EnvelopeOutcome> {
-    record.entries().iter().map(|e| e.executed.outcome).collect()
+    record
+        .entries()
+        .iter()
+        .map(|e| e.executed.outcome)
+        .collect()
 }
 
 fn fixture_dir() -> PathBuf {
@@ -158,8 +170,11 @@ async fn write_cross_host_fixture() {
     assert!(seen.contains(&EnvelopeOutcome::Conflicted), "{seen:?}");
     let dir = fixture_dir();
     std::fs::create_dir_all(&dir).expect("the fixture directory");
-    std::fs::write(dir.join("genesis.bin"), host.genesis.to_proto().encode_to_vec())
-        .expect("the genesis fixture");
+    std::fs::write(
+        dir.join("genesis.bin"),
+        host.genesis.to_proto().encode_to_vec(),
+    )
+    .expect("the genesis fixture");
     std::fs::write(dir.join("block.bin"), block.to_proto().encode_to_vec())
         .expect("the block fixture");
     std::fs::write(dir.join("record.bin"), record.encode()).expect("the record fixture");
@@ -244,7 +259,13 @@ async fn phase_timings_by_block_size() {
     let host = launch(64).await;
     for size in [1usize, 4, 16, 64] {
         let deploys = (0..size)
-            .map(|index| offer(&payer(index), &format!("@\"timed-{index}\"!({index})"), index as i64 + 1))
+            .map(|index| {
+                offer(
+                    &payer(index),
+                    &format!("@\"timed-{index}\"!({index})"),
+                    index as i64 + 1,
+                )
+            })
             .collect();
         let block = block(&host, 1, deploys);
         let mut best: Option<(Duration, BlockTimings, usize)> = None;
@@ -294,7 +315,13 @@ async fn record_bytes_per_envelope_and_validation_at_the_byte_cap() {
     let mut largest = None;
     for size in [1usize, 4, 16] {
         let deploys = (0..size)
-            .map(|index| offer(&payer(index), &format!("@\"sized-{index}\"!({index})"), index as i64 + 1))
+            .map(|index| {
+                offer(
+                    &payer(index),
+                    &format!("@\"sized-{index}\"!({index})"),
+                    index as i64 + 1,
+                )
+            })
             .collect();
         let block = block(&host, 1, deploys);
         let record = host
@@ -303,7 +330,10 @@ async fn record_bytes_per_envelope_and_validation_at_the_byte_cap() {
             .await
             .expect("the block executes");
         let bytes = record.encode().len();
-        println!("envelopes={size} record_bytes={bytes} per_envelope={}", bytes / size);
+        println!(
+            "envelopes={size} record_bytes={bytes} per_envelope={}",
+            bytes / size
+        );
         assert!(bytes <= limits.max_record_bytes);
         largest = Some(record);
     }
@@ -463,12 +493,20 @@ fn cli_end_to_end_keys() {
 async fn pooled_runtimes_give_the_records_of_fresh_ones() {
     let host = launch(4).await;
     let first = block(&host, 1, vec![
-        offer(&payer(0), "new x in { x!(1) | for (_ <- x) { @\"a\"!(1) } }", 1),
+        offer(
+            &payer(0),
+            "new x in { x!(1) | for (_ <- x) { @\"a\"!(1) } }",
+            1,
+        ),
         offer(&payer(1), "@\"race\"!(1)", 2),
         offer(&payer(2), "for (@v <- @\"race\") { @\"won\"!(v) }", 3),
     ]);
     let second = block(&host, 2, vec![
-        offer(&payer(3), "new x in { contract x(@n) = { Nil } | x!(1) | x!(2) }", 4),
+        offer(
+            &payer(3),
+            "new x in { contract x(@n) = { Nil } | x!(1) | x!(2) }",
+            4,
+        ),
         offer(&payer(0), "@\"b\"!(\"x\")", 5),
     ]);
     let pooled = &host.executor;
@@ -484,7 +522,11 @@ async fn pooled_runtimes_give_the_records_of_fresh_ones() {
             events.sort();
             events
         };
-        assert_eq!(sorted(&x.executed.user_log), sorted(&y.executed.user_log), "log");
+        assert_eq!(
+            sorted(&x.executed.user_log),
+            sorted(&y.executed.user_log),
+            "log"
+        );
         assert_eq!(x.executed.footprint, y.executed.footprint, "footprint");
     }
     assert_eq!(a1.gate(), a2.gate(), "gate");
@@ -499,7 +541,11 @@ async fn pooled_runtimes_give_the_records_of_fresh_ones() {
         );
     }
     let fresh = replica(&host.genesis).await;
-    let b2 = fresh.executor.execute(&pre_root(&host), &second).await.unwrap();
+    let b2 = fresh
+        .executor
+        .execute(&pre_root(&host), &second)
+        .await
+        .unwrap();
     assert_eq!(b2.post_root(), b1.post_root());
     assert_eq!(b2.settlement(), b1.settlement());
 }
@@ -511,47 +557,79 @@ async fn outcomes_of(host: &Host, number: i64, terms: &[&str]) -> (BlockMessage,
         .map(|(i, term)| offer(&payer(i), term, number * 100 + i as i64))
         .collect();
     let target = block(host, number, deploys);
-    let record = host.executor.execute(&pre_root(host), &target).await.unwrap();
-    assert_eq!(host.executor.replay(&record, &target).await.unwrap(), *record.post_root());
+    let record = host
+        .executor
+        .execute(&pre_root(host), &target)
+        .await
+        .unwrap();
+    assert_eq!(
+        host.executor.replay(&record, &target).await.unwrap(),
+        *record.post_root()
+    );
     (target, record)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn footprints_let_commuting_runs_merge() {
     let host = launch(4).await;
-    let (_, sends) = outcomes_of(&host, 1, &["@\"queue\"!(\"a\")", "@\"queue\"!(\"b\")", "@\"queue\"!(\"c\")"]).await;
+    let (_, sends) = outcomes_of(&host, 1, &[
+        "@\"queue\"!(\"a\")",
+        "@\"queue\"!(\"b\")",
+        "@\"queue\"!(\"c\")",
+    ])
+    .await;
     assert_eq!(outcomes(&sends), vec![EnvelopeOutcome::Completed; 3]);
     let (_, numbers) = outcomes_of(&host, 4, &["@\"cell\"!(1)", "@\"cell\"!(2)"]).await;
-    assert_eq!(outcomes(&numbers), vec![EnvelopeOutcome::Completed, EnvelopeOutcome::Conflicted]);
+    assert_eq!(outcomes(&numbers), vec![
+        EnvelopeOutcome::Completed,
+        EnvelopeOutcome::Conflicted
+    ]);
     let lookup = "new rl(`rho:registry:lookup`), ret in { rl!(`rho:vault:system`, *ret) }";
     let (_, reads) = outcomes_of(&host, 2, &[lookup, lookup]).await;
     assert_eq!(outcomes(&reads), vec![EnvelopeOutcome::Completed; 2]);
-    let (_, apart) = outcomes_of(&host, 3, &["for (_ <- @\"p\") { Nil }", "for (_ <- @\"q\") { Nil }"]).await;
+    let (_, apart) = outcomes_of(&host, 3, &[
+        "for (_ <- @\"p\") { Nil }",
+        "for (_ <- @\"q\") { Nil }",
+    ])
+    .await;
     assert_eq!(outcomes(&apart), vec![EnvelopeOutcome::Completed; 2]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn footprints_reject_runs_that_touch_the_same_cell() {
     let host = launch(4).await;
-    let (_, receive_then_send) =
-        outcomes_of(&host, 1, &["for (_ <- @\"r\") { Nil }", "@\"r\"!(1)", "@\"s\"!(1)"]).await;
-    assert_eq!(
-        outcomes(&receive_then_send),
-        vec![EnvelopeOutcome::Completed, EnvelopeOutcome::Conflicted, EnvelopeOutcome::Completed]
-    );
-    let (_, two_receivers) =
-        outcomes_of(&host, 2, &["for (_ <- @\"t\") { Nil }", "for (_ <- @\"t\") { Nil }"]).await;
-    assert_eq!(
-        outcomes(&two_receivers),
-        vec![EnvelopeOutcome::Completed, EnvelopeOutcome::Conflicted]
-    );
+    let (_, receive_then_send) = outcomes_of(&host, 1, &[
+        "for (_ <- @\"r\") { Nil }",
+        "@\"r\"!(1)",
+        "@\"s\"!(1)",
+    ])
+    .await;
+    assert_eq!(outcomes(&receive_then_send), vec![
+        EnvelopeOutcome::Completed,
+        EnvelopeOutcome::Conflicted,
+        EnvelopeOutcome::Completed
+    ]);
+    let (_, two_receivers) = outcomes_of(&host, 2, &[
+        "for (_ <- @\"t\") { Nil }",
+        "for (_ <- @\"t\") { Nil }",
+    ])
+    .await;
+    assert_eq!(outcomes(&two_receivers), vec![
+        EnvelopeOutcome::Completed,
+        EnvelopeOutcome::Conflicted
+    ]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_record_carries_each_run_footprint_and_replay_checks_it() {
     let host = launch(4).await;
-    let (target, record) = outcomes_of(&host, 1, &["@\"u\"!(1)", "for (_ <- @\"v\") { Nil }"]).await;
-    let footprints: Vec<_> = record.entries().iter().map(|e| e.executed.footprint.clone()).collect();
+    let (target, record) =
+        outcomes_of(&host, 1, &["@\"u\"!(1)", "for (_ <- @\"v\") { Nil }"]).await;
+    let footprints: Vec<_> = record
+        .entries()
+        .iter()
+        .map(|e| e.executed.footprint.clone())
+        .collect();
     assert!(footprints.iter().all(|f| !f.is_empty()));
     assert!(!footprints[0].conflicts_with(&footprints[1]));
     let decoded = BlockRecord::decode(&record.encode()).unwrap();
@@ -589,7 +667,13 @@ async fn scaling_by_worker_count() {
     for w in workers {
         let host = launch_with(size, w).await;
         let deploys = (0..size)
-            .map(|index| offer(&payer(index), &format!("@\"scaled-{index}\"!(\"{index}\")"), index as i64 + 1))
+            .map(|index| {
+                offer(
+                    &payer(index),
+                    &format!("@\"scaled-{index}\"!(\"{index}\")"),
+                    index as i64 + 1,
+                )
+            })
             .collect();
         let block = block(&host, 1, deploys);
         let mut best: Option<(Duration, BlockTimings)> = None;
@@ -599,7 +683,9 @@ async fn scaling_by_worker_count() {
                 .execute_timed(&pre_root(&host), &block)
                 .await
                 .expect("the block executes");
-            assert!(outcomes(&record).iter().all(|o| *o == EnvelopeOutcome::Completed));
+            assert!(outcomes(&record)
+                .iter()
+                .all(|o| *o == EnvelopeOutcome::Completed));
             let e = t.envelopes;
             let execution = e.gate + e.runs + e.merge + e.settlement;
             if best.as_ref().is_none_or(|(b, _)| execution < *b) {
@@ -629,13 +715,29 @@ async fn scaling_by_worker_count() {
 async fn storage_charges_do_not_depend_on_the_interleaving() {
     let host = launch(4).await;
     let racing = block(&host, 2, vec![
-        offer(&payer(3), "new x in { contract x(@n) = { Nil } | x!(1) | x!(2) }", 4),
-        offer(&payer(0), "new x in { x!(1) | x!(2) | for (_ <- x) { Nil } | for (_ <- x) { Nil } }", 5),
-        offer(&payer(1), "new x in { for (_ <= x) { Nil } | x!(1) | x!(2) | x!(3) }", 6),
+        offer(
+            &payer(3),
+            "new x in { contract x(@n) = { Nil } | x!(1) | x!(2) }",
+            4,
+        ),
+        offer(
+            &payer(0),
+            "new x in { x!(1) | x!(2) | for (_ <- x) { Nil } | for (_ <- x) { Nil } }",
+            5,
+        ),
+        offer(
+            &payer(1),
+            "new x in { for (_ <= x) { Nil } | x!(1) | x!(2) | x!(3) }",
+            6,
+        ),
     ]);
     let mut charged: Vec<std::collections::BTreeSet<u64>> = vec![Default::default(); 3];
     for _ in 0..30 {
-        let record = host.executor.execute(&pre_root(&host), &racing).await.unwrap();
+        let record = host
+            .executor
+            .execute(&pre_root(&host), &racing)
+            .await
+            .unwrap();
         for (seen, entry) in charged.iter_mut().zip(record.entries()) {
             seen.insert(entry.executed.compute_phlo);
         }
@@ -659,7 +761,10 @@ async fn chain(host: &Host, blocks: &[&[&str]]) -> Vec<BlockRecord> {
             .collect();
         let target = block(host, number, deploys);
         let record = host.executor.execute(&root, &target).await.unwrap();
-        assert_eq!(host.executor.replay(&record, &target).await.unwrap(), *record.post_root());
+        assert_eq!(
+            host.executor.replay(&record, &target).await.unwrap(),
+            *record.post_root()
+        );
         root = record.post_root().clone();
         records.push(record);
     }
@@ -690,12 +795,20 @@ async fn replay_refuses_a_record_whose_surface_attribution_is_forged() {
     drop(store_block);
     let call = offer(&payer(1), "@\"svc\"!(0)", 201);
     let target = block(&host, 2, vec![call]);
-    let record = host.executor.execute(stored.post_root(), &target).await.unwrap();
-    assert_eq!(host.executor.replay(&record, &target).await.unwrap(), *record.post_root());
+    let record = host
+        .executor
+        .execute(stored.post_root(), &target)
+        .await
+        .unwrap();
+    assert_eq!(
+        host.executor.replay(&record, &target).await.unwrap(),
+        *record.post_root()
+    );
     assert_eq!(record.entries()[0].executed.surfaces.len(), 2);
     let mut forged = record.entries().to_vec();
     forged[0].executed.surfaces.retain(|(s, _)| {
-        s.as_ref().is_some_and(|s| s.envelope.as_slice() == forged_sig(&target))
+        s.as_ref()
+            .is_some_and(|s| s.envelope.as_slice() == forged_sig(&target))
     });
     let forged = BlockRecord::new(
         record.target().clone(),

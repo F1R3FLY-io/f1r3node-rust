@@ -30,7 +30,8 @@ fn fresh_vault(initial_balance: u128) -> Vault {
     let (_, pk) = Secp256k1.new_key_pair();
     Vault {
         vault_address: VaultAddress::from_public_key(&pk).unwrap(),
-        initial_balance,
+        initial_balance: shared::rust::token_amount::TokenAmount::new((initial_balance).into())
+            .unwrap(),
     }
 }
 
@@ -119,7 +120,7 @@ async fn a_v6_genesis_holds_wallets_txt_on_native_stacks() {
     let rm = runtime_manager().await;
     let (alice, bob, carol) = (fresh_vault(1_000), fresh_vault(250), fresh_vault(0));
     let duplicate = Vault {
-        initial_balance: 5,
+        initial_balance: 5.into(),
         ..alice.clone()
     };
     let vaults: Vec<Vault> = (0..230)
@@ -133,7 +134,10 @@ async fn a_v6_genesis_holds_wallets_txt_on_native_stacks() {
     assert!(block.body.deploys.iter().all(|d| !d.is_failed));
     let post = &block.body.state.post_state_hash;
 
-    let expected: u64 = vaults.iter().map(|v| v.initial_balance as u64).sum();
+    let expected: u64 = vaults
+        .iter()
+        .map(|v| u64::try_from(v.initial_balance.as_bigint()).unwrap())
+        .sum();
     assert_eq!(wallets_supply(&vaults).unwrap(), expected);
     let bonds = bonds_total(&genesis.proof_of_stake).unwrap();
     assert!(bonds > 0);
@@ -149,7 +153,7 @@ async fn a_v6_genesis_holds_wallets_txt_on_native_stacks() {
     for v in &genesis.proof_of_stake.validators {
         assert_eq!(
             read_bond_balance(&rm, post, &v.pk.bytes).await.unwrap(),
-            v.stake as u64
+            u64::try_from(v.stake.as_bigint()).unwrap()
         );
     }
 
@@ -224,10 +228,10 @@ async fn a_v6_genesis_refuses_a_supply_beyond_the_largest_amount() {
             .await
             .is_err()
     );
-    let overflow = parameters(
-        PROTOCOL_V6,
-        vec![fresh_vault(MAX_AMOUNT as u128), fresh_vault(1)],
-    );
+    let overflow = parameters(PROTOCOL_V6, vec![
+        fresh_vault(MAX_AMOUNT as u128),
+        fresh_vault(1),
+    ]);
     assert!(
         Genesis::create_genesis_block_with_policy(&rm, &overflow, Some(&policy()))
             .await
@@ -244,7 +248,7 @@ fn only_pos_v6_binds_the_bond_admin_name_and_only_the_rev_genesis_deploys_bind_t
     genesis.vaults = (0..3)
         .map(|_| Vault {
             vault_address: VaultAddress::from_public_key(&Secp256k1.new_key_pair().1).unwrap(),
-            initial_balance: 1_000,
+            initial_balance: 1_000.into(),
         })
         .collect();
     let terms: Vec<String> = Genesis::default_blessed_terms_with_policy(
@@ -262,9 +266,12 @@ fn only_pos_v6_binds_the_bond_admin_name_and_only_the_rev_genesis_deploys_bind_t
     .into_iter()
     .map(|deploy| deploy.data.term)
     .collect();
-    let binding = |urn: &str| -> Vec<&String> { terms.iter().filter(|t| t.contains(urn)).collect() };
+    let binding =
+        |urn: &str| -> Vec<&String> { terms.iter().filter(|t| t.contains(urn)).collect() };
 
-    let pos = pos_v6_generator(&genesis.proof_of_stake, &genesis.shard_id).data.term;
+    let pos = pos_v6_generator(&genesis.proof_of_stake, &genesis.shard_id)
+        .data
+        .term;
     assert_eq!(binding("rho:rev:bondAdmin"), vec![&pos]);
 
     let mints = binding("rho:rev:genesis");

@@ -13,7 +13,7 @@ pub struct Limits {
     pub max_records: usize,
     pub max_record_bytes: usize,
     pub ordered_only: bool,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: shared::rust::token_amount::TokenAmount,
 }
 
 impl Default for Limits {
@@ -21,7 +21,7 @@ impl Default for Limits {
 }
 
 impl Limits {
-    pub fn with_floor(self, min_phlo_price: i64) -> Self {
+    pub fn with_floor(self, min_phlo_price: shared::rust::token_amount::TokenAmount) -> Self {
         Limits {
             min_phlo_price,
             ..self
@@ -344,7 +344,7 @@ mod tests {
             format!("@{ts}!({ts})"),
             ts,
             Some(phlo_limit),
-            Some(0),
+            Some(0.into()),
             None,
             None,
             Some("root".to_string()),
@@ -353,12 +353,15 @@ mod tests {
         models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(signed)
     }
 
-    fn priced(ts: i64, phlo_price: i64) -> models::rust::casper::protocol::casper_message::ProcessedDeploy {
+    fn priced(
+        ts: i64,
+        phlo_price: i64,
+    ) -> models::rust::casper::protocol::casper_message::ProcessedDeploy {
         let signed = crate::rust::util::construct_deploy::source_deploy(
             format!("@{ts}!({ts})"),
             ts,
             Some(100),
-            Some(phlo_price),
+            Some(shared::rust::token_amount::TokenAmount::new((phlo_price).into()).unwrap()),
             None,
             None,
             Some("root".to_string()),
@@ -369,7 +372,7 @@ mod tests {
 
     #[test]
     fn an_envelope_below_the_shard_floor_makes_the_block_invalid() {
-        let limits = Limits::default().with_floor(5);
+        let limits = Limits::default().with_floor(5.into());
         let at_floor = ordered_block(vec![priced(1, 5), priced(2, 9)]);
         assert!(check(&at_floor, &limits).is_ok());
         let below = ordered_block(vec![priced(1, 5), priced(2, 4)]);

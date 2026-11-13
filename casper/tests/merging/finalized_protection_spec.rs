@@ -165,7 +165,10 @@ fn dag_with_finalized_sibling(
     finalized_blocks_set.insert(genesis.clone());
     finalized_blocks_set.insert(finalized_sibling.clone());
 
-    KeyValueDagRepresentation {
+    block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+        history: None,
+        view_sequence: u64::MAX,
+        view_max_height: None,
         dag_set,
         latest_messages_map: imbl::HashMap::new(),
         child_map,
@@ -184,6 +187,7 @@ fn dag_with_finalized_sibling(
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
     }
+    .build()
 }
 
 /// A settled sibling's deploy conflicts with a far more expensive scope
@@ -223,7 +227,7 @@ async fn a_finalized_siblings_deploy_is_never_rejected_by_cost_adjudication() {
     let finalized_sibling_for_index = finalized_sibling.clone();
     let contender_for_index_hash = contender.clone();
 
-    let (_state, rejected, _mergeable, _applied) = dag_merger::merge(
+    let (_state, rejected, _applied) = dag_merger::merge(
         &dag,
         &base,
         &base_post_state,
@@ -306,7 +310,7 @@ async fn a_settled_carriers_closed_window_deploy_is_not_window_rejected() {
     let settled_sibling_for_index = settled_sibling.clone();
     let late_contender_for_index = late_contender.clone();
 
-    let (_state, rejected, _mergeable, _applied) = dag_merger::merge(
+    let (_state, rejected, _applied) = dag_merger::merge(
         &dag,
         &base,
         &base_post_state,

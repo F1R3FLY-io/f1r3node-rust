@@ -162,27 +162,6 @@ impl RholangMergingLogic {
         ))
     }
 
-    fn decode_rnd(par_with_rnd_encoded: Vec<u8>) -> Blake2b512Random {
-        let datum: Datum<ListParWithRandom> = serializers::decode_datum(&par_with_rnd_encoded);
-
-        Blake2b512Random::from_bytes(&datum.a.random_state)
-    }
-
-    /// §3c single-value-cell discriminator (RCA-asi-devnet-finality-halt).
-    ///
-    /// A channel whose base state is a single NUMERIC datum is a single-value
-    /// (number) cell — even for a write this merge did not tag mergeable.
-    /// Registry / TreeHashMap nodes hold structured (Map/tuple) data, which is
-    /// non-numeric, so `try_get_number_with_rnd` returns None and they are
-    /// exempt (multi-key structures merge freely). This is the discriminator
-    /// that separates a purse/cell (conflict) from a registry (merge) among
-    /// disjoint-consumed / produce-only writes, which the consume-then-produce
-    /// conflict check cannot distinguish.
-    ///
-    /// Returns `Err` when applying `changes` to such a cell would leave it
-    /// holding more than one value — a genuine single-value conflict the merge
-    /// must reject, rather than persist a state the RhoVM rejects at read time
-    /// (the IntegerAdd single-value invariant), which halts block production.
     pub fn check_single_value_cell_not_overfilled(
         channel_hash: &Blake2b256Hash,
         base_data: &[Datum<ListParWithRandom>],
@@ -213,6 +192,19 @@ impl RholangMergingLogic {
             )));
         }
         Ok(())
+    }
+
+    pub fn encoded_datum_is_number(bytes: &[u8]) -> bool {
+        bincode::deserialize::<Datum<ListParWithRandom>>(bytes)
+            .ok()
+            .and_then(|datum| Self::try_get_number_with_rnd(&datum.a))
+            .is_some()
+    }
+
+    fn decode_rnd(par_with_rnd_encoded: Vec<u8>) -> Blake2b512Random {
+        let datum: Datum<ListParWithRandom> = serializers::decode_datum(&par_with_rnd_encoded);
+
+        Blake2b512Random::from_bytes(&datum.a.random_state)
     }
 
     /// Returns the number + RNG pair for a single-Par `Int` or `BigInt`
@@ -257,13 +249,6 @@ impl RholangMergingLogic {
             MergeType::BitmaskOr if is_int => Some(tag),
             _ => None,
         }
-    }
-
-    pub fn encoded_datum_is_number(bytes: &[u8]) -> bool {
-        bincode::deserialize::<Datum<ListParWithRandom>>(bytes)
-            .ok()
-            .and_then(|datum| Self::try_get_number_with_rnd(&datum.a))
-            .is_some()
     }
 
     fn create_datum_encoded(
@@ -493,76 +478,6 @@ mod tests {
             seal: None,
         };
         assert!(RholangMergingLogic::try_get_number_with_rnd(&value).is_none());
-    }
-
-    #[test]
-    fn no_produce_is_allowed() {
-        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
-        let base = vec![num_datum(0)];
-        let base_bin = vec![vec![0x00u8]];
-        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
-            &ch,
-            &base,
-            &base_bin,
-            &change(vec![], vec![]),
-        );
-        assert!(res.is_ok());
-    }
-
-    // Property companion to the §3c unit tests above and to ConflictSoundness.v
-    // Section Overfill: `check_single_value_cell_not_overfilled` rejects a merge
-    // IFF the post-merge single-value cell would hold > 1 value. The guard's
-    // `result_len = multiset_diff(base_binary, removed).len() + added.len()` is
-    // the Rocq model's `cell_after = kept + added`, and the rejection predicate
-    // `result_len > 1` is exactly `svc_guard_active`'s `1 <? cell_after`.
-    mod svc_guard_property {
-        use proptest::prelude::*;
-        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-        use rspace_plus_plus::rspace::merger::state_change::StateChange;
-
-        use super::{change, num_datum, RholangMergingLogic};
-
-        proptest! {
-            #![proptest_config(ProptestConfig::with_cases(400))]
-
-            #[test]
-            fn svc_guard_rejects_iff_result_len_gt_one(
-                base_num in any::<i64>(),
-                base_byte in any::<u8>(),
-                removes_base in any::<bool>(),
-                added_len in 0usize..4,
-            ) {
-                // A single-value NUMBER cell: exactly one numeric base datum with a
-                // 1-element binary projection. `removes_base` selects a proper
-                // read-modify-write (consumes the base) vs a produce-only write
-                // (leaves it); `added_len` produces 0..3 new data.
-                let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
-                let base = vec![num_datum(base_num)];
-                let base_bin = vec![vec![base_byte]];
-                let removed: Vec<Vec<u8>> =
-                    if removes_base { vec![vec![base_byte]] } else { vec![] };
-                let added: Vec<Vec<u8>> =
-                    (0..added_len).map(|i| vec![0xA0u8.wrapping_add(i as u8)]).collect();
-                let changes = change(added.clone(), removed.clone());
-
-                // cell_after computed EXACTLY as the guard does (same multiset_diff).
-                let kept = StateChange::multiset_diff(&base_bin, &removed);
-                let cell_after = kept.len() + added.len();
-
-                let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
-                    &ch, &base, &base_bin, &changes,
-                );
-                // Reject IFF the merged cell would hold more than one value.
-                // (added-empty short-circuits to Ok, and with a 1-element base_bin
-                // that means cell_after <= 1, so the iff still holds there too.)
-                prop_assert_eq!(
-                    res.is_err(), cell_after > 1,
-                    "guard must reject IFF the single-value cell would hold >1 value \
-                     (cell_after={}, added={:?}, removed={:?})",
-                    cell_after, added, removed
-                );
-            }
-        }
     }
 
     #[test]

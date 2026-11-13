@@ -76,7 +76,7 @@ async fn validate_commit_refuses_a_candidate_not_higher_than_the_current_lfb() {
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 1,
+                stake: 1.into(),
             })
             .collect();
         let genesis = create_genesis_block(
@@ -136,7 +136,7 @@ async fn validate_commit_refuses_an_off_main_chain_candidate_under_halt_policy()
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 1,
+                stake: 1.into(),
             })
             .collect();
         let genesis = create_genesis_block(

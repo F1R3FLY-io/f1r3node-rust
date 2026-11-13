@@ -33,7 +33,6 @@ use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
-use super::rho_runtime::RhoISpace;
 use super::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
     RhoSysAuthToken, RhoUri,
@@ -671,7 +670,6 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
 
 #[derive(Clone)]
 pub struct ProcessContext {
-    pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
@@ -686,7 +684,6 @@ pub struct ProcessContext {
 
 impl ProcessContext {
     pub fn create(
-        space: RhoISpace,
         dispatcher: RhoDispatch,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
@@ -699,7 +696,6 @@ impl ProcessContext {
         urn_phase: UrnPhase,
     ) -> Self {
         ProcessContext {
-            space: space.clone(),
             dispatcher: dispatcher.clone(),
             block_data: block_data.clone(),
             invalid_blocks,
@@ -707,7 +703,6 @@ impl ProcessContext {
             urn_map: urn_map.clone(),
             system_processes: SystemProcesses::create(
                 dispatcher,
-                space,
                 block_data,
                 deploy_data,
                 urn_map,
@@ -865,7 +860,7 @@ impl DeployData {
             deploy_id: template.sig.to_vec(),
             cosigners: casper_message::Cosignature::verified_cosigners(template)
                 .unwrap_or_default(),
-            phlo_price: u64::try_from(template.data.phlo_price).unwrap_or(0),
+            phlo_price: u64::try_from(template.data.phlo_price.as_bigint()).unwrap_or(0),
             phlo_limit: u64::try_from(template.data.phlo_limit).unwrap_or(0),
         }
     }
@@ -898,18 +893,22 @@ impl UrnPhase {
 }
 
 pub fn genesis_only_channels() -> [Par; 2] {
-    [FixedChannels::rev_genesis(), FixedChannels::rev_bond_admin()]
+    [
+        FixedChannels::rev_genesis(),
+        FixedChannels::rev_bond_admin(),
+    ]
 }
 
 pub fn runner_context_channels() -> [Par; 2] {
-    [FixedChannels::get_block_data(), FixedChannels::deploy_data()]
+    [
+        FixedChannels::get_block_data(),
+        FixedChannels::deploy_data(),
+    ]
 }
 
 pub fn resolved_channel(value: &Par) -> Option<&Par> {
     match value.bundles.as_slice() {
-        [bundle] if value.sends.is_empty() && value.unforgeables.is_empty() => {
-            bundle.body.as_ref()
-        }
+        [bundle] if value.sends.is_empty() && value.unforgeables.is_empty() => bundle.body.as_ref(),
         _ => None,
     }
 }
@@ -954,7 +953,6 @@ pub fn urn_refusal(
 #[derive(Clone)]
 pub struct SystemProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
     /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
@@ -973,7 +971,6 @@ pub struct SystemProcesses {
 impl SystemProcesses {
     fn create(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
         urn_map: Arc<HashMap<String, Par>>,
@@ -985,7 +982,6 @@ impl SystemProcesses {
     ) -> Self {
         SystemProcesses {
             dispatcher,
-            space,
             block_data,
             deploy_data,
             urn_map,
@@ -1000,7 +996,6 @@ impl SystemProcesses {
 
     fn is_contract_call(&self) -> ContractCall {
         ContractCall {
-            space: self.space.clone(),
             dispatcher: self.dispatcher.clone(),
         }
     }
@@ -1261,7 +1256,7 @@ impl SystemProcesses {
         let signers = self.wallet_authority().await;
         let block_number = self.block_data.read().await.block_number;
         let Some(response) = rev_stack::native::handle(
-            self.space.hot_store(),
+            self.dispatcher.reducer()?.space.hot_store(),
             &command,
             second_par,
             &signers,
@@ -1294,15 +1289,13 @@ impl SystemProcesses {
             return Err(illegal_argument_error("rev_bond"));
         };
 
-        let Some(response) =
-            rev_stack::bond::handle(
-                self.space.hot_store(),
-                &command,
-                second_par,
-                &self.wallet_authority().await,
-                &random_state,
-            )
-        else {
+        let Some(response) = rev_stack::bond::handle(
+            self.dispatcher.reducer()?.space.hot_store(),
+            &command,
+            second_par,
+            &self.wallet_authority().await,
+            &random_state,
+        ) else {
             return Err(illegal_argument_error("rev_bond"));
         };
 
@@ -1325,9 +1318,11 @@ impl SystemProcesses {
             return Err(illegal_argument_error("rev_bond_admin"));
         };
 
-        let Some(response) =
-            rev_stack::bond::admin_handle(self.space.hot_store(), &command, second_par)
-        else {
+        let Some(response) = rev_stack::bond::admin_handle(
+            self.dispatcher.reducer()?.space.hot_store(),
+            &command,
+            second_par,
+        ) else {
             return Err(illegal_argument_error("rev_bond_admin"));
         };
 
@@ -1356,9 +1351,11 @@ impl SystemProcesses {
             return Err(illegal_argument_error("rev_genesis"));
         };
 
-        let Some(response) =
-            rev_stack::genesis::handle(self.space.hot_store(), &command, second_par)
-        else {
+        let Some(response) = rev_stack::genesis::handle(
+            self.dispatcher.reducer()?.space.hot_store(),
+            &command,
+            second_par,
+        ) else {
             return Err(illegal_argument_error("rev_genesis"));
         };
 
@@ -1627,9 +1624,16 @@ impl SystemProcesses {
         };
 
         let data = deploy_data.read().await;
+        // The middle element is the deployer's pubkey as a plain ByteArray.
+        // Observational uses (URN construction, replay-protection hashes
+        // in Registry.rho::insertSigned) want the raw bytes; the canonical
+        // way to obtain a `GDeployerId` unforgeable is the
+        // `rho:system:deployerId` URN, resolved at normalization time from
+        // the deployer's own `new`-binding. Keeping the two surfaces
+        // distinct avoids callers reaching for whichever is nearest.
         let output = vec![
             Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
-            RhoDeployerId::create_par(data.deployer_id.bytes.as_ref().to_vec()),
+            RhoByteArray::create_par(data.deployer_id.bytes.as_ref().to_vec()),
             RhoDeployId::create_par(data.deploy_id.clone()),
         ];
 

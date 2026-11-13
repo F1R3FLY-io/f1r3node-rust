@@ -338,6 +338,11 @@ impl ReplayRuntimeOps {
         processed_deploy: &ProcessedDeploy,
         mergeable_channels: &mut HashMap<Par, MergeType>,
     ) -> Result<bool, CasperError> {
+        processed_deploy
+            .deploy
+            .data
+            .validate_amounts()
+            .map_err(CasperError::RuntimeError)?;
         let mut pre_charge_deploy = PreChargeDeploy {
             charge_amount: processed_deploy.deploy.data.total_phlo_charge(),
             pk: processed_deploy.deploy.pk.clone(),
@@ -660,7 +665,9 @@ impl ReplayRuntimeOps {
             Err(CasperError::SystemRuntimeError(failure)) => failure,
             Err(other) => return other,
             Ok(_) => {
-                return CasperError::ReplayFailure(ReplayFailure::replay_status_mismatch(true, false))
+                return CasperError::ReplayFailure(ReplayFailure::replay_status_mismatch(
+                    true, false,
+                ))
             }
         };
         let replayed = crate::rust::rholang::runtime::close_failure_message(&failure);

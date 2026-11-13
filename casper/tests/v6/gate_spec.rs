@@ -20,7 +20,7 @@ fn input(sec: &PrivateKey, ts: i64, limit: i64, price: i64) -> GateInput {
         "Nil".to_string(),
         ts,
         Some(limit),
-        Some(price),
+        Some(shared::rust::token_amount::TokenAmount::new((price).into()).unwrap()),
         Some(sec.clone()),
         None,
         Some("root".to_string()),
@@ -38,7 +38,7 @@ async fn the_gate_reads_wallets_natively_at_the_pre_state() {
     genesis.version = PROTOCOL_V6;
     genesis.vaults = vec![Vault {
         vault_address: VaultAddress::from_public_key(&alice_pk).unwrap(),
-        initial_balance: 10_000,
+        initial_balance: 10_000.into(),
     }];
     let block = Genesis::create_genesis_block_with_policy(
         &rm,

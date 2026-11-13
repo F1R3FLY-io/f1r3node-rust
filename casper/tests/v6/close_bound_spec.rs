@@ -28,9 +28,7 @@ use crate::util::rholang::resources::mk_runtime_manager;
 
 const FUNDS: u128 = 1_000_000_000_000_000;
 
-fn close_bound(bonds: u64) -> u64 {
-    200_000 + 13_000 * bonds
-}
+fn close_bound(bonds: u64) -> u64 { 200_000 + 13_000 * bonds }
 
 struct Party {
     sk: PrivateKey,
@@ -44,8 +42,13 @@ fn party() -> Party {
     Party { sk, pk, owner }
 }
 
-async fn shard(funded: &[&Party], validators: usize, epoch_length: i32) -> (Arc<RuntimeManager>, StateHash) {
-    let keys: Vec<(PrivateKey, PublicKey)> = (0..validators).map(|_| Secp256k1.new_key_pair()).collect();
+async fn shard(
+    funded: &[&Party],
+    validators: usize,
+    epoch_length: i32,
+) -> (Arc<RuntimeManager>, StateHash) {
+    let keys: Vec<(PrivateKey, PublicKey)> =
+        (0..validators).map(|_| Secp256k1.new_key_pair()).collect();
     shard_with(funded, keys, epoch_length, 1).await
 }
 
@@ -55,8 +58,15 @@ async fn shard_with(
     epoch_length: i32,
     quarantine_length: i32,
 ) -> (Arc<RuntimeManager>, StateHash) {
-    let rm = mk_runtime_manager("v6-close-bound", Some(Genesis::default_mergeable_tags_arc())).await;
-    let bonds: HashMap<PublicKey, i64> = keys.iter().map(|(_, pk)| (pk.clone(), 1_000)).collect();
+    let rm = mk_runtime_manager(
+        "v6-close-bound",
+        Some(Genesis::default_mergeable_tags_arc()),
+    )
+    .await;
+    let bonds: HashMap<PublicKey, shared::rust::token_amount::TokenAmount> = keys
+        .iter()
+        .map(|(_, pk)| (pk.clone(), 1_000.into()))
+        .collect();
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters(keys, &bonds);
     genesis.version = PROTOCOL_V6;
     genesis.proof_of_stake.epoch_length = epoch_length;
@@ -65,32 +75,54 @@ async fn shard_with(
         .iter()
         .map(|p| Vault {
             vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
-            initial_balance: FUNDS,
+            initial_balance: shared::rust::token_amount::TokenAmount::new((FUNDS).into()).unwrap(),
         })
         .chain(bonds.keys().map(|pk| Vault {
             vault_address: VaultAddress::from_public_key(pk).unwrap(),
-            initial_balance: FUNDS,
+            initial_balance: shared::rust::token_amount::TokenAmount::new((FUNDS).into()).unwrap(),
         }))
         .collect();
-    let block = Genesis::create_genesis_block_with_policy(&rm, &genesis, Some(&ShardResourcePolicy::default()))
-        .await
-        .unwrap();
+    let block = Genesis::create_genesis_block_with_policy(
+        &rm,
+        &genesis,
+        Some(&ShardResourcePolicy::default()),
+    )
+    .await
+    .unwrap();
     (Arc::new(rm), block.body.state.post_state_hash.clone())
 }
 
 fn envelope(term: &str, ts: i64, who: &Party, limit: i64) -> ProcessedDeploy {
     ProcessedDeploy::empty(
-        construct_deploy::source_deploy(term.to_string(), ts, Some(limit), Some(1), Some(who.sk.clone()), None, Some("root".to_string()))
-            .unwrap(),
+        construct_deploy::source_deploy(
+            term.to_string(),
+            ts,
+            Some(limit),
+            Some(1.into()),
+            Some(who.sk.clone()),
+            None,
+            Some("root".to_string()),
+        )
+        .unwrap(),
     )
 }
 
 fn block(number: i64, deploys: Vec<ProcessedDeploy>, proposer: &Party) -> BlockMessage {
     BlockMessage {
         block_hash: Bytes::from(format!("v6-close-bound-{number}").into_bytes()),
-        header: Header { parents_hash_list: vec![], timestamp: number, version: 1, extra_bytes: Bytes::new() },
+        header: Header {
+            parents_hash_list: vec![],
+            timestamp: number,
+            version: 1,
+            extra_bytes: Bytes::new(),
+        },
         body: Body {
-            state: F1r3flyState { pre_state_hash: Bytes::new(), post_state_hash: Bytes::new(), bonds: vec![], block_number: number },
+            state: F1r3flyState {
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+                bonds: vec![],
+                block_number: number,
+            },
             deploys,
             rejected_deploys: vec![],
             system_deploys: vec![],
@@ -109,10 +141,21 @@ fn block(number: i64, deploys: Vec<ProcessedDeploy>, proposer: &Party) -> BlockM
     }
 }
 
-async fn close_phlo(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord, proposer: &Party) -> u64 {
+async fn close_phlo(
+    rm: &RuntimeManager,
+    pre: &StateHash,
+    record: &BlockRecord,
+    proposer: &Party,
+) -> u64 {
     let settlement = record.settlement().unwrap();
-    let before = read_wallet_balance(rm, pre, &proposer.owner).await.unwrap() + settlement.proposer_credit;
-    assert_eq!(read_wallet_balance(rm, record.post_root(), &proposer.owner).await.unwrap(), before);
+    let before =
+        read_wallet_balance(rm, pre, &proposer.owner).await.unwrap() + settlement.proposer_credit;
+    assert_eq!(
+        read_wallet_balance(rm, record.post_root(), &proposer.owner)
+            .await
+            .unwrap(),
+        before
+    );
     assert!(record.close_phlo() > 0);
     record.close_phlo()
 }
@@ -153,18 +196,24 @@ async fn measure(validators: usize, epoch_length: i32, bonds: usize) -> u64 {
         .map(|(i, who)| envelope(&bonds_term(1), i as i64 + 1, who, 1_000_000))
         .collect();
     let b = block(1, deploys, &proposer);
-    let record = executor.execute(&genesis, &b).await.expect("the block executes");
+    let record = executor
+        .execute(&genesis, &b)
+        .await
+        .expect("the block executes");
     let merged = record
         .executed()
         .iter()
         .filter(|entry| entry.outcome == EnvelopeOutcome::Completed)
         .count();
-    assert!(record
-        .executed()
-        .iter()
-        .all(|entry| matches!(entry.outcome, EnvelopeOutcome::Completed | EnvelopeOutcome::Conflicted)));
+    assert!(record.executed().iter().all(|entry| matches!(
+        entry.outcome,
+        EnvelopeOutcome::Completed | EnvelopeOutcome::Conflicted
+    )));
     eprintln!("merged bonds: {merged} of {bonds}");
-    assert_eq!(&executor.replay(&record, &b).await.unwrap(), record.post_root());
+    assert_eq!(
+        &executor.replay(&record, &b).await.unwrap(),
+        record.post_root()
+    );
     let phlo = close_phlo(&rm, &genesis, &record, &proposer).await;
     eprintln!("close phlo: validators {validators}, epoch_length {epoch_length}, pending bonds {bonds}: {phlo}");
     phlo
@@ -193,7 +242,10 @@ async fn an_epoch_with_many_withdrawers_stays_inside_the_measured_bound() {
     for withdrawers in [10, 30] {
         for (bonds, phlo) in withdrawers_close(100, withdrawers).await {
             let bound = close_bound(bonds);
-            assert!(phlo <= bound, "{withdrawers} withdrawers, {bonds} bonds: {phlo} > {bound}");
+            assert!(
+                phlo <= bound,
+                "{withdrawers} withdrawers, {bonds} bonds: {phlo} > {bound}"
+            );
         }
     }
 }
@@ -211,7 +263,8 @@ fn withdraw_term() -> String {
 
 async fn withdrawers_close(validators: usize, withdrawers: usize) -> [(u64, u64); 2] {
     let proposer = party();
-    let keys: Vec<(PrivateKey, PublicKey)> = (0..validators).map(|_| Secp256k1.new_key_pair()).collect();
+    let keys: Vec<(PrivateKey, PublicKey)> =
+        (0..validators).map(|_| Secp256k1.new_key_pair()).collect();
     let parties: Vec<Party> = keys
         .iter()
         .map(|(sk, pk)| Party {
@@ -225,17 +278,34 @@ async fn withdrawers_close(validators: usize, withdrawers: usize) -> [(u64, u64)
     let mut root = genesis;
     for (i, who) in parties.iter().take(withdrawers).enumerate() {
         let n = i as i64 + 1;
-        let b = block(n, vec![envelope(&withdraw_term(), n, who, 1_000_000)], &proposer);
-        let record = executor.execute(&root, &b).await.expect("the withdrawal executes");
+        let b = block(
+            n,
+            vec![envelope(&withdraw_term(), n, who, 1_000_000)],
+            &proposer,
+        );
+        let record = executor
+            .execute(&root, &b)
+            .await
+            .expect("the withdrawal executes");
         assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::Completed);
         root = record.post_root().clone();
     }
     let mut closes = [(0, 0); 2];
     for (epoch, number) in [1000i64, 2000].into_iter().enumerate() {
-        let bonds = if epoch == 0 { validators } else { validators - withdrawers };
+        let bonds = if epoch == 0 {
+            validators
+        } else {
+            validators - withdrawers
+        };
         let b = block(number, vec![], &proposer);
-        let record = executor.execute(&root, &b).await.expect("the epoch close executes");
-        assert_eq!(&executor.replay(&record, &b).await.unwrap(), record.post_root());
+        let record = executor
+            .execute(&root, &b)
+            .await
+            .expect("the epoch close executes");
+        assert_eq!(
+            &executor.replay(&record, &b).await.unwrap(),
+            record.post_root()
+        );
         let phlo = close_phlo(&rm, &root, &record, &proposer).await;
         eprintln!("close phlo: validators {validators}, {withdrawers} withdrawers, epoch {} with {bonds} bonds: {phlo}", epoch + 1);
         closes[epoch] = (bonds as u64, phlo);

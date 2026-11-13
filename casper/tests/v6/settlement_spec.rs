@@ -38,7 +38,8 @@ async fn shard(funded: &[(&Party, u128)]) -> (RuntimeManager, StateHash) {
         .iter()
         .map(|(p, balance)| Vault {
             vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
-            initial_balance: *balance,
+            initial_balance: shared::rust::token_amount::TokenAmount::new((*balance).into())
+                .unwrap(),
         })
         .collect();
     let block = Genesis::create_genesis_block_with_policy(
@@ -57,7 +58,7 @@ fn input(who: &Party, ts: i64, limit: i64, price: i64) -> GateInput {
         "Nil".to_string(),
         ts,
         Some(limit),
-        Some(price),
+        Some(shared::rust::token_amount::TokenAmount::new((price).into()).unwrap()),
         Some(who.sk.clone()),
         None,
         Some("root".to_string()),
@@ -310,7 +311,10 @@ async fn settlement_releases_unspent_commitments_and_conserves_the_supply() {
 
     let (_, _, params) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
     let validators = &params.proof_of_stake.validators;
-    let bonds: u128 = validators.iter().map(|v| v.stake as u128).sum();
+    let bonds: u128 = validators
+        .iter()
+        .map(|v| u128::try_from(v.stake.as_bigint()).unwrap())
+        .sum();
     let mut wallets = vec![
         alice.owner.clone(),
         bob.owner.clone(),
@@ -427,8 +431,16 @@ async fn an_own_region_whose_owner_the_gate_did_not_commit_is_charged_to_that_ow
     )
     .await
     .unwrap();
-    let client: Vec<_> = settlement.charges.iter().map(|c| (c.comm_phlo, c.compute_phlo)).collect();
-    assert_eq!(client, vec![(2, 0)], "the client pays only for its own unsealed cells");
+    let client: Vec<_> = settlement
+        .charges
+        .iter()
+        .map(|c| (c.comm_phlo, c.compute_phlo))
+        .collect();
+    assert_eq!(
+        client,
+        vec![(2, 0)],
+        "the client pays only for its own unsealed cells"
+    );
     let region_charge = settlement
         .surface_charges
         .iter()

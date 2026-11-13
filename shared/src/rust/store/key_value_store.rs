@@ -28,15 +28,6 @@ pub trait KeyValueStore: Send + Sync + 'static {
         expected: &ByteBuffer,
     ) -> Result<bool, KvStoreError>;
 
-    fn replace_if_values(
-        &self,
-        _replacements: Vec<(ByteBuffer, ByteBuffer, ByteBuffer)>,
-    ) -> Result<usize, KvStoreError> {
-        Err(KvStoreError::InvalidArgument(
-            "Conditional record replacement is not supported by this store".into(),
-        ))
-    }
-
     fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError>;
     fn iterate_while(
         &self,

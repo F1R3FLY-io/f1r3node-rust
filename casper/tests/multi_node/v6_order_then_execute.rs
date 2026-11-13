@@ -15,9 +15,7 @@ use crate::helper::v6_network::{
 };
 use crate::util::genesis_builder::GenesisContext;
 
-async fn genesis() -> GenesisContext {
-    crate::helper::v6_network::v6_genesis().await
-}
+async fn genesis() -> GenesisContext { crate::helper::v6_network::v6_genesis().await }
 
 struct Deploys {
     shard_id: String,
@@ -305,7 +303,9 @@ async fn the_lfb_follows_the_attested_canonical_roots_below_the_order_floor() {
         let dag = node.block_dag_storage.get_representation().unwrap();
         let lfb = dag.last_finalized_block();
         let order = node.block_dag_storage.order_floor().unwrap();
-        assert!(dag.block_number(&lfb) <= dag.block_number(&order));
+        assert!(
+            dag.block_number(&lfb).unwrap().unwrap() <= dag.block_number(&order).unwrap().unwrap()
+        );
         assert!(dag.is_in_main_chain(&lfb, &order).unwrap());
         assert!(
             engine(node).executed(&lfb).is_some(),

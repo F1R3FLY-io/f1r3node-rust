@@ -35,13 +35,13 @@ pub fn snapshot_id(
     let mut latest: Vec<(Validator, BlockHash)> = dag.latest_message_hashes().into_iter().collect();
     latest.sort();
     let mut invalid: Vec<BlockHash> = dag
-        .invalid_blocks_set
+        .invalid_blocks()
         .iter()
         .map(|metadata| metadata.block_hash.clone())
         .collect();
     invalid.sort();
     let lfb = dag.last_finalized_block();
-    let lfb_number = dag.block_number(&lfb).unwrap_or(-1);
+    let lfb_number = dag.block_number(&lfb)?.unwrap_or(-1);
 
     let mut buffer = Vec::new();
     push_bytes(&mut buffer, b"f1r3-floor-snapshot-v1");
@@ -514,13 +514,9 @@ impl FloorCursor {
                     }
                 }
             }
-            Phase::Containment { derived } => finish(view_outcome_metered(
-                meter,
-                dag,
-                block_store,
-                derived,
-                current,
-            )),
+            Phase::Containment { derived } => {
+                finish(view_outcome_metered(meter, dag, block_store, derived, current, ftt).await)
+            }
             done @ Phase::Done(_) => done,
         };
     }

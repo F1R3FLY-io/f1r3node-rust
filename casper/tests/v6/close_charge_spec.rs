@@ -40,20 +40,28 @@ fn party() -> Party {
     Party { sk, pk, owner }
 }
 
-async fn shard(funded: &[&Party]) -> (Arc<RuntimeManager>, StateHash) { shard_at_floor(funded, 1).await }
+async fn shard(funded: &[&Party]) -> (Arc<RuntimeManager>, StateHash) {
+    shard_at_floor(funded, 1).await
+}
 
 async fn shard_at_floor(funded: &[&Party], floor: i64) -> (Arc<RuntimeManager>, StateHash) {
-    let rm = mk_runtime_manager("v6-close-charge", Some(Genesis::default_mergeable_tags_arc())).await;
+    let rm = mk_runtime_manager(
+        "v6-close-charge",
+        Some(Genesis::default_mergeable_tags_arc()),
+    )
+    .await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
     genesis.version = PROTOCOL_V6;
     genesis.proof_of_stake.epoch_length = 1;
     genesis.proof_of_stake.quarantine_length = 10;
-    genesis.proof_of_stake.min_phlo_price = floor;
+    genesis.proof_of_stake.min_phlo_price =
+        shared::rust::token_amount::TokenAmount::new((floor).into()).unwrap();
     genesis.vaults = funded
         .iter()
         .map(|p| Vault {
             vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
-            initial_balance: FUNDS as u128,
+            initial_balance: shared::rust::token_amount::TokenAmount::new((FUNDS as u128).into())
+                .unwrap(),
         })
         .collect();
     let block = Genesis::create_genesis_block_with_policy(
@@ -66,7 +74,9 @@ async fn shard_at_floor(funded: &[&Party], floor: i64) -> (Arc<RuntimeManager>, 
     (Arc::new(rm), block.body.state.post_state_hash.clone())
 }
 
-fn envelope(term: &str, ts: i64, who: &Party) -> ProcessedDeploy { envelope_limited(term, ts, who, 200_000) }
+fn envelope(term: &str, ts: i64, who: &Party) -> ProcessedDeploy {
+    envelope_limited(term, ts, who, 200_000)
+}
 
 fn envelope_limited(term: &str, ts: i64, who: &Party, limit: i64) -> ProcessedDeploy {
     ProcessedDeploy::empty(
@@ -74,7 +84,7 @@ fn envelope_limited(term: &str, ts: i64, who: &Party, limit: i64) -> ProcessedDe
             term.to_string(),
             ts,
             Some(limit),
-            Some(1),
+            Some(1.into()),
             Some(who.sk.clone()),
             None,
             Some("root".to_string()),
@@ -117,12 +127,22 @@ fn block(number: i64, deploys: Vec<ProcessedDeploy>, proposer: &Party) -> BlockM
     }
 }
 
-async fn run_record(executor: &BlockExecutor, root: &StateHash, block: &BlockMessage) -> BlockRecord {
-    let record = executor.execute(root, block).await.expect("the block executes");
+async fn run_record(
+    executor: &BlockExecutor,
+    root: &StateHash,
+    block: &BlockMessage,
+) -> BlockRecord {
+    let record = executor
+        .execute(root, block)
+        .await
+        .expect("the block executes");
     for entry in record.executed() {
         assert_eq!(entry.outcome, EnvelopeOutcome::Completed);
     }
-    let replayed = executor.replay(&record, block).await.expect("the block replays");
+    let replayed = executor
+        .replay(&record, block)
+        .await
+        .expect("the block replays");
     assert_eq!(&replayed, record.post_root());
     record
 }
@@ -136,11 +156,18 @@ struct Close {
     compute: u64,
 }
 
-async fn close(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord, proposer: &Party) -> Close {
+async fn close(
+    rm: &RuntimeManager,
+    pre: &StateHash,
+    record: &BlockRecord,
+    proposer: &Party,
+) -> Close {
     let settlement = record.settlement().unwrap();
     let post = record.post_root();
-    let proposer_after_settlement = balance(rm, pre, &proposer.owner).await + settlement.proposer_credit;
-    let compute_after_settlement = balance(rm, pre, &compute_wallet_owner()).await + settlement.compute_credit;
+    let proposer_after_settlement =
+        balance(rm, pre, &proposer.owner).await + settlement.proposer_credit;
+    let compute_after_settlement =
+        balance(rm, pre, &compute_wallet_owner()).await + settlement.compute_credit;
     Close {
         proposer: proposer_after_settlement - balance(rm, post, &proposer.owner).await,
         compute: balance(rm, post, &compute_wallet_owner()).await - compute_after_settlement,
@@ -176,7 +203,10 @@ async fn the_close_cost_is_recorded_and_nobody_is_charged_for_it() {
     let charged = close(&rm, &genesis, &record, &proposer).await;
     assert!(record.close_phlo() > 0, "the close's PoS code is metered");
     assert_eq!(charged.proposer, 0, "the proposer is not charged");
-    assert_eq!(charged.compute, 0, "the compute wallet gets nothing from the close");
+    assert_eq!(
+        charged.compute, 0,
+        "the compute wallet gets nothing from the close"
+    );
 
     let by_other = run_record(&executor, &genesis, &block(1, vec![], &other)).await;
     assert_eq!(by_other.close_phlo(), record.close_phlo());
@@ -188,8 +218,18 @@ async fn the_close_cost_is_phlo_and_does_not_follow_the_shard_floor() {
     let proposer = party();
     let (rm1, genesis1) = shard_at_floor(&[&proposer], 1).await;
     let (rm3, genesis3) = shard_at_floor(&[&proposer], 3).await;
-    let at1 = run_record(&charging(&rm1, &genesis1), &genesis1, &block(1, vec![], &proposer)).await;
-    let at3 = run_record(&charging(&rm3, &genesis3), &genesis3, &block(1, vec![], &proposer)).await;
+    let at1 = run_record(
+        &charging(&rm1, &genesis1),
+        &genesis1,
+        &block(1, vec![], &proposer),
+    )
+    .await;
+    let at3 = run_record(
+        &charging(&rm3, &genesis3),
+        &genesis3,
+        &block(1, vec![], &proposer),
+    )
+    .await;
     assert_eq!(at1.close_phlo(), at3.close_phlo());
     assert_eq!(close(&rm3, &genesis3, &at3, &proposer).await.proposer, 0);
 }
@@ -199,10 +239,16 @@ async fn a_record_with_another_close_cost_does_not_replay() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice, &proposer]).await;
     let executor = charging(&rm, &genesis);
-    let b = block(1, vec![envelope("new x in { x!(1) }", 1, &alice)], &proposer);
+    let b = block(
+        1,
+        vec![envelope("new x in { x!(1) }", 1, &alice)],
+        &proposer,
+    );
     let record = run_record(&executor, &genesis, &b).await;
     for kappa in [0, record.close_phlo() - 1, record.close_phlo() + 1] {
-        let forged = BlockRecord::decode(&record.encode()).unwrap().with_close_phlo(kappa);
+        let forged = BlockRecord::decode(&record.encode())
+            .unwrap()
+            .with_close_phlo(kappa);
         let refused = executor.replay(&forged, &b).await.unwrap_err().to_string();
         assert!(refused.contains("the close's cost"), "{refused}");
     }
@@ -215,8 +261,18 @@ async fn a_continuation_fired_in_the_close_charges_its_installer() {
     let executor = charging(&rm, &genesis);
     let heavy = "new y in { y!(1) | for (_ <- y) { new z in { z!(2) | for (_ <- z) { Nil } } } }";
 
-    let light = run_record(&executor, &genesis, &block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer)).await;
-    let loaded = run_record(&executor, &genesis, &block(1, vec![envelope(&bond_term(heavy), 1, &alice)], &proposer)).await;
+    let light = run_record(
+        &executor,
+        &genesis,
+        &block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer),
+    )
+    .await;
+    let loaded = run_record(
+        &executor,
+        &genesis,
+        &block(1, vec![envelope(&bond_term(heavy), 1, &alice)], &proposer),
+    )
+    .await;
 
     let light_close = close(&rm, &genesis, &light, &proposer).await;
     let loaded_close = close(&rm, &genesis, &loaded, &proposer).await;
@@ -225,7 +281,10 @@ async fn a_continuation_fired_in_the_close_charges_its_installer() {
     assert!(installer_pays(&loaded_close) > installer_pays(&light_close));
     let light_left = balance(&rm, light.post_root(), &alice.owner).await;
     let loaded_left = balance(&rm, loaded.post_root(), &alice.owner).await;
-    assert!(loaded_left < light_left, "the installer pays more for the heavier continuation");
+    assert!(
+        loaded_left < light_left,
+        "the installer pays more for the heavier continuation"
+    );
 }
 
 #[tokio::test]
@@ -266,10 +325,16 @@ async fn no_deployment_makes_the_close_fail() {
         .await
         .expect("the close runs to completion");
     assert!(!record.system_deploys().is_empty());
-    let replayed = executor.replay(&record, &b).await.expect("the block replays");
+    let replayed = executor
+        .replay(&record, &b)
+        .await
+        .expect("the block replays");
     assert_eq!(&replayed, record.post_root());
     let left = balance(&rm, record.post_root(), &alice.owner).await;
-    assert!(left < FUNDS, "the installer pays for the work that the close fired");
+    assert!(
+        left < FUNDS,
+        "the installer pays for the work that the close fired"
+    );
 }
 
 #[tokio::test]
@@ -317,8 +382,16 @@ impl casper::rust::v6::slash::SlashSource for OneSlash {
     }
 }
 
-async fn void_replays(executor: &BlockExecutor, pre: &StateHash, b: &BlockMessage, reason: VoidReason) -> BlockRecord {
-    let record = executor.execute(pre, b).await.expect("a void block executes");
+async fn void_replays(
+    executor: &BlockExecutor,
+    pre: &StateHash,
+    b: &BlockMessage,
+    reason: VoidReason,
+) -> BlockRecord {
+    let record = executor
+        .execute(pre, b)
+        .await
+        .expect("a void block executes");
     assert_eq!(record.void_reason(), Some(reason));
     assert_eq!(record.post_root(), pre);
     if reason != VoidReason::CloseFailed {
@@ -326,7 +399,10 @@ async fn void_replays(executor: &BlockExecutor, pre: &StateHash, b: &BlockMessag
             assert_eq!(entry.outcome, EnvelopeOutcome::Voided);
         }
     }
-    let replayed = executor.replay(&record, b).await.expect("the void record replays");
+    let replayed = executor
+        .replay(&record, b)
+        .await
+        .expect("the void record replays");
     assert_eq!(&replayed, pre);
     record
 }
@@ -340,7 +416,10 @@ async fn a_proposer_with_no_funds_closes_its_block_and_reason_a_stays_reserved()
     let record = run_record(&executor, &genesis, &b).await;
     assert_eq!(record.void_reason(), None);
     assert!(record.close_phlo() > 0);
-    assert_eq!(balance(&rm, record.post_root(), &proposer.owner).await, record.settlement().unwrap().proposer_credit);
+    assert_eq!(
+        balance(&rm, record.post_root(), &proposer.owner).await,
+        record.settlement().unwrap().proposer_credit
+    );
     assert!(VoidReason::from_tag(casper::rust::v6::record::RESERVED_CLOSE_UNCOVERED).is_err());
 }
 
@@ -360,7 +439,11 @@ async fn a_block_with_terms_the_gate_cannot_read_is_void_for_reason_c() {
     let executor = charging(&rm, &genesis);
     let mut unreadable = envelope("Nil", 2, &alice);
     unreadable.deploy.pk = PublicKey::from_bytes(&[1, 2, 3]);
-    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice), unreadable], &proposer);
+    let b = block(
+        1,
+        vec![envelope(&bond_term("Nil"), 1, &alice), unreadable],
+        &proposer,
+    );
     void_replays(&executor, &genesis, &b, VoidReason::UnreadableTerms).await;
 }
 
@@ -382,14 +465,22 @@ async fn a_valid_block_with_a_void_record_is_rejected() {
     let executor = charging(&rm, &genesis);
     let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
     let normal = run_record(&executor, &genesis, &b).await;
-    for reason in [
-        VoidReason::SlashRecords,
-        VoidReason::UnreadableTerms,
-    ] {
-        let forged = BlockRecord::voided(b.block_hash.clone(), genesis.clone(), normal.envelope_ids(), reason);
-        assert!(executor.replay(&forged, &b).await.is_err(), "reason ({})", reason.label());
+    for reason in [VoidReason::SlashRecords, VoidReason::UnreadableTerms] {
+        let forged = BlockRecord::voided(
+            b.block_hash.clone(),
+            genesis.clone(),
+            normal.envelope_ids(),
+            reason,
+        );
+        assert!(
+            executor.replay(&forged, &b).await.is_err(),
+            "reason ({})",
+            reason.label()
+        );
     }
-    let forged = BlockRecord::decode(&normal.encode()).unwrap().with_failed_close();
+    let forged = BlockRecord::decode(&normal.encode())
+        .unwrap()
+        .with_failed_close();
     let refused = executor.replay(&forged, &b).await.unwrap_err().to_string();
     assert!(refused.contains("the close runs"), "{refused}");
 }
@@ -414,8 +505,14 @@ async fn an_envelope_with_a_prior_status_is_refused_at_no_charge_and_replay_need
         assert_eq!(record.gate()[0].delta, 0);
         assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::NotRun);
         assert!(record.gate()[1].admitted());
-        assert_eq!(executor.replay_after(&record, &b, &prior).await.unwrap(), *record.post_root());
-        assert!(executor.replay_after(&record, &b, &Prior::new()).await.is_err());
+        assert_eq!(
+            executor.replay_after(&record, &b, &prior).await.unwrap(),
+            *record.post_root()
+        );
+        assert!(executor
+            .replay_after(&record, &b, &Prior::new())
+            .await
+            .is_err());
     }
 }
 
@@ -429,7 +526,11 @@ async fn a_failed_close_is_part_of_the_trace_and_replay_checks_it() {
     let b = block(1, vec![], &proposer);
     let record = executor.execute(&empty, &b).await.unwrap();
     assert_eq!(record.void_reason(), Some(VoidReason::CloseFailed));
-    let [ProcessedSystemDeploy::Failed { event_list, error_msg }] = record.system_deploys() else {
+    let [ProcessedSystemDeploy::Failed {
+        event_list,
+        error_msg,
+    }] = record.system_deploys()
+    else {
         panic!("a (d) record carries its failed close");
     };
     assert!(error_msg.starts_with("close failed: "), "{error_msg}");
@@ -452,7 +553,10 @@ async fn a_failed_close_is_part_of_the_trace_and_replay_checks_it() {
         proto
     };
     assert_eq!(
-        executor.replay(&forged(record.system_deploys()[0].clone()), &b).await.unwrap(),
+        executor
+            .replay(&forged(record.system_deploys()[0].clone()), &b)
+            .await
+            .unwrap(),
         empty,
         "the unaltered trace replays"
     );
@@ -470,13 +574,23 @@ async fn a_deployment_twice_in_one_block_runs_only_its_first_copy() {
     let (rm, genesis) = shard(&[&alice, &proposer]).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
     let once = envelope("Nil", 1, &alice);
-    let b = block(1, vec![once.clone(), envelope("Nil", 2, &alice), once], &proposer);
+    let b = block(
+        1,
+        vec![once.clone(), envelope("Nil", 2, &alice), once],
+        &proposer,
+    );
     let record = executor.execute(&genesis, &b).await.unwrap();
     assert!(record.gate()[0].admitted());
     assert!(record.gate()[1].admitted());
-    assert_eq!(record.gate()[2].verdict, Verdict::Refused(Refusal::AlreadyIncluded));
+    assert_eq!(
+        record.gate()[2].verdict,
+        Verdict::Refused(Refusal::AlreadyIncluded)
+    );
     assert_eq!(record.executed()[2].outcome, EnvelopeOutcome::NotRun);
-    assert_eq!(executor.replay(&record, &b).await.unwrap(), *record.post_root());
+    assert_eq!(
+        executor.replay(&record, &b).await.unwrap(),
+        *record.post_root()
+    );
 }
 
 #[tokio::test]
@@ -517,19 +631,35 @@ async fn an_honest_d_record_replays_under_one_two_and_four_workers() {
     let empty = RuntimeManager::empty_state_hash_fixed();
     let b = block(
         1,
-        vec![envelope("Nil", 1, &alice), envelope("Nil", 2, &bob), envelope("Nil", 3, &alice)],
+        vec![
+            envelope("Nil", 1, &alice),
+            envelope("Nil", 2, &bob),
+            envelope("Nil", 3, &alice),
+        ],
         &proposer,
     );
     let mut records = Vec::new();
     for workers in [1, 2, 4] {
-        let record = BlockExecutor::new(rm.clone(), workers).execute(&empty, &b).await.unwrap();
-        assert_eq!(record.void_reason(), Some(VoidReason::CloseFailed), "{workers} workers");
+        let record = BlockExecutor::new(rm.clone(), workers)
+            .execute(&empty, &b)
+            .await
+            .unwrap();
+        assert_eq!(
+            record.void_reason(),
+            Some(VoidReason::CloseFailed),
+            "{workers} workers"
+        );
         records.push(record);
     }
     for record in &records {
-        assert_eq!(record, &records[0], "the record does not depend on the workers");
+        assert_eq!(
+            record, &records[0],
+            "the record does not depend on the workers"
+        );
         for workers in [1, 2, 4] {
-            let replayed = BlockExecutor::new(rm.clone(), workers).replay(record, &b).await;
+            let replayed = BlockExecutor::new(rm.clone(), workers)
+                .replay(record, &b)
+                .await;
             assert_eq!(replayed.unwrap(), empty, "{workers} workers");
         }
     }
@@ -599,7 +729,8 @@ async fn replay_recomputes_the_cost_of_each_firing_and_rejects_a_changed_one() {
 }
 
 #[tokio::test]
-async fn a_firing_set_off_by_the_close_over_its_bound_fails_the_close_and_the_void_record_replays() {
+async fn a_firing_set_off_by_the_close_over_its_bound_fails_the_close_and_the_void_record_replays()
+{
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice, &proposer]).await;
     let executor = charging(&rm, &genesis);
@@ -608,17 +739,26 @@ async fn a_firing_set_off_by_the_close_over_its_bound_fails_the_close_and_the_vo
         doubling = format!("match s{i} ++ s{i} {{ s{} => {{ {doubling} }} }}", i + 1);
     }
     let doubling = format!(r#"match "aaaaaaaa" {{ s0 => {{ {doubling} }} }}"#);
-    let b = block(1, vec![envelope_limited(&bond_term(&doubling), 1, &alice, 200_000)], &proposer);
+    let b = block(
+        1,
+        vec![envelope_limited(&bond_term(&doubling), 1, &alice, 200_000)],
+        &proposer,
+    );
     let record = void_replays(&executor, &genesis, &b, VoidReason::CloseFailed).await;
     assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::Completed);
     assert_eq!(record.close_phlo(), 0);
     let failure = match record.system_deploys() {
-        [models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Failed { error_msg, .. }] => error_msg.clone(),
+        [models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Failed {
+            error_msg,
+            ..
+        }] => error_msg.clone(),
         other => panic!("one failed close is traced: {other:?}"),
     };
     assert!(failure.contains("FiringExhausted"), "{failure}");
     for workers in [1, 2, 4] {
-        let replayed = BlockExecutor::new(rm.clone(), workers).replay(&record, &b).await;
+        let replayed = BlockExecutor::new(rm.clone(), workers)
+            .replay(&record, &b)
+            .await;
         assert_eq!(replayed.unwrap(), genesis, "{workers} workers");
     }
 }

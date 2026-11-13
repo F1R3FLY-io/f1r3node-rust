@@ -275,13 +275,17 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     }
 
     pub fn prior(&self, target: &BlockHash) -> Prior {
-        let (Some(&index), Some(&number)) = (self.index.get(target), self.numbers.get(target)) else {
+        let (Some(&index), Some(&number)) = (self.index.get(target), self.numbers.get(target))
+        else {
             return Prior::new();
         };
         let ids = self.envelopes.get(target).cloned().unwrap_or_default();
         let in_window = |entry: &PriorEntry| {
             entry.position < index as u64
-                && entry.block_number.saturating_add(self.params.deploy_lifespan) > number
+                && entry
+                    .block_number
+                    .saturating_add(self.params.deploy_lifespan)
+                    > number
         };
         let mut prior = Prior::new();
         for id in &ids {
@@ -316,26 +320,33 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         }
     }
 
-    pub fn attested_position(&self, bonds: &[(Bytes, i64)]) -> Option<usize> {
-        let total: i128 = bonds.iter().map(|(_, stake)| (*stake).max(0) as i128).sum();
-        if total == 0 {
+    pub fn attested_position<N: Clone + Into<num_bigint::BigInt>>(
+        &self,
+        bonds: &[(Bytes, N)],
+    ) -> Option<usize> {
+        let bonds: Vec<_> = bonds
+            .iter()
+            .map(|(key, stake)| (key, stake.clone().into().max(0.into())))
+            .collect();
+        let total: num_bigint::BigInt = bonds.iter().map(|(_, stake)| stake).sum();
+        if total == 0.into() {
             return None;
         }
-        let mut support: Vec<(usize, i128)> = bonds
+        let mut support: Vec<(usize, num_bigint::BigInt)> = bonds
             .iter()
-            .filter(|(_, stake)| *stake > 0)
+            .filter(|(_, stake)| stake > &0.into())
             .filter_map(|(validator, stake)| {
-                let (_, attestation) = self.tally.get(validator)?;
+                let (_, attestation) = self.tally.get(*validator)?;
                 let position = self.store.position_of(&attestation.block_hash)?;
                 (self.store.executed(&attestation.block_hash).as_ref() == Some(&attestation.root))
-                    .then_some((position, *stake as i128))
+                    .then_some((position, stake.clone()))
             })
             .collect();
         support.sort_by(|a, b| b.0.cmp(&a.0));
-        let mut behind = 0i128;
+        let mut behind = num_bigint::BigInt::from(0);
         for (position, stake) in support {
             behind += stake;
-            if 3 * behind > 2 * total {
+            if &behind * 3u8 > &total * 2u8 {
                 return Some(position);
             }
         }
@@ -358,7 +369,9 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         registered
     }
 
-    pub fn take_voided(&mut self) -> Vec<(BlockHash, VoidReason)> { self.voided.drain(..).collect() }
+    pub fn take_voided(&mut self) -> Vec<(BlockHash, VoidReason)> {
+        self.voided.drain(..).collect()
+    }
 
     pub fn void_count(&self, proposer: &Bytes, reason: VoidReason) -> u64 {
         self.store.void_count(proposer, reason)
@@ -1301,15 +1314,25 @@ mod tests {
         core.apply_replay(&h("b1"), &h("b2"), &void, Ok(h("r0")));
         assert_eq!(core.canonical_len(), 2);
         assert_eq!(core.void_count(&h("V1"), VoidReason::UnreadableTerms), 1);
-        assert_eq!(core.take_voided(), vec![(h("b1"), VoidReason::UnreadableTerms)]);
+        assert_eq!(core.take_voided(), vec![(
+            h("b1"),
+            VoidReason::UnreadableTerms
+        )]);
         let evidence = core.take_evidence();
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].offender, h("V1"));
-        assert_eq!(evidence[0].offence, Offence::VoidBlock { reason: VoidReason::UnreadableTerms });
+        assert_eq!(evidence[0].offence, Offence::VoidBlock {
+            reason: VoidReason::UnreadableTerms
+        });
         assert!(evidence[0].offence.slashable());
     }
 
-    fn carrying(name: &str, number: i64, ids: &[&str], records: Vec<BlockRecord>) -> EmittedBlock<BlockRecord> {
+    fn carrying(
+        name: &str,
+        number: i64,
+        ids: &[&str],
+        records: Vec<BlockRecord>,
+    ) -> EmittedBlock<BlockRecord> {
         EmittedBlock {
             hash: h(name),
             sender: h("v1"),
@@ -1344,12 +1367,25 @@ mod tests {
     fn an_envelope_run_in_an_earlier_record_is_prior_inside_the_lifespan_only() {
         let mut c = core();
         c.emit(carrying("b1", 10, &["d1", "d2"], vec![]));
-        c.emit(carrying("b2", 20, &["d1"], vec![ran("b1", "r0", "r1", &["d1", "d2"])]));
+        c.emit(carrying("b2", 20, &["d1"], vec![ran("b1", "r0", "r1", &[
+            "d1", "d2",
+        ])]));
         c.emit(carrying("b3", 70, &["d2"], vec![]));
-        assert!(c.prior(&h("b2")).is_empty(), "b1 is not canonical or speculative yet");
+        assert!(
+            c.prior(&h("b2")).is_empty(),
+            "b1 is not canonical or speculative yet"
+        );
         assert!(matches!(c.next_action(), Action::Replay { .. }));
-        c.apply_replay(&h("b1"), &h("b2"), &ran("b1", "r0", "r1", &["d1", "d2"]), Ok(h("r1")));
-        assert_eq!(c.prior(&h("b2")).get(&h("d1")), Some(&PriorStatus::Included));
+        c.apply_replay(
+            &h("b1"),
+            &h("b2"),
+            &ran("b1", "r0", "r1", &["d1", "d2"]),
+            Ok(h("r1")),
+        );
+        assert_eq!(
+            c.prior(&h("b2")).get(&h("d1")),
+            Some(&PriorStatus::Included)
+        );
         assert!(c.prior(&h("b3")).is_empty(), "b1 is outside b3's lifespan");
     }
 
@@ -1360,7 +1396,10 @@ mod tests {
         c.emit(carrying("b2", 11, &["d1"], vec![]));
         assert!(matches!(c.next_action(), Action::Execute { .. }));
         c.apply_execute(ran("b1", "r0", "r1", &["d1"]));
-        assert_eq!(c.prior(&h("b2")).get(&h("d1")), Some(&PriorStatus::Included));
+        assert_eq!(
+            c.prior(&h("b2")).get(&h("d1")),
+            Some(&PriorStatus::Included)
+        );
         assert!(c.prior(&h("b1")).is_empty());
     }
 
@@ -1370,7 +1409,12 @@ mod tests {
         let mut b1 = carrying("b1", 10, &["d1", "d2"], vec![]);
         b1.unreadable = vec![h("d2")];
         c.emit(b1);
-        let void = BlockRecord::voided(h("b1"), h("r0"), &[h("d1"), h("d2")], VoidReason::UnreadableTerms);
+        let void = BlockRecord::voided(
+            h("b1"),
+            h("r0"),
+            &[h("d1"), h("d2")],
+            VoidReason::UnreadableTerms,
+        );
         c.emit(carrying("b2", 11, &["d1", "d2"], vec![void.clone()]));
         assert!(matches!(c.next_action(), Action::Replay { .. }));
         c.apply_replay(&h("b1"), &h("b2"), &void, Ok(h("r0")));
@@ -1392,7 +1436,11 @@ mod tests {
         c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
         c.emit(block("b3", "v3", vec![rec("b2", "r1", "r2")]));
         c.emit(block("b4", "v1", vec![rec("b3", "r2", "r3")]));
-        for (target, citer, pre, post) in [("b1", "b2", "r0", "r1"), ("b2", "b3", "r1", "r2"), ("b3", "b4", "r2", "r3")] {
+        for (target, citer, pre, post) in [
+            ("b1", "b2", "r0", "r1"),
+            ("b2", "b3", "r1", "r2"),
+            ("b3", "b4", "r2", "r3"),
+        ] {
             assert!(matches!(c.next_action(), Action::Replay { .. }));
             c.apply_replay(&h(target), &h(citer), &rec(target, pre, post), Ok(h(post)));
         }
@@ -1407,22 +1455,60 @@ mod tests {
         assert_eq!(c.attested_position(&bonds), None);
         c.count(&h("v1"), 5, &attests("b3", "r3"));
         c.count(&h("v2"), 5, &attests("b2", "r2"));
-        assert_eq!(c.attested_position(&bonds), None, "20 of 30 is not more than two thirds");
+        assert_eq!(
+            c.attested_position(&bonds),
+            None,
+            "20 of 30 is not more than two thirds"
+        );
         c.count(&h("v3"), 5, &attests("b1", "r1"));
         assert_eq!(c.attested_position(&bonds), Some(1));
         c.count(&h("v3"), 7, &attests("b3", "r3"));
         assert_eq!(c.attested_position(&bonds), Some(2));
         c.count(&h("v3"), 6, &attests("b1", "r1"));
-        assert_eq!(c.attested_position(&bonds), Some(2), "an older block of v3 does not replace its newer attestation");
+        assert_eq!(
+            c.attested_position(&bonds),
+            Some(2),
+            "an older block of v3 does not replace its newer attestation"
+        );
         c.count(&h("v2"), 8, &attests("b3", "wrong"));
-        assert_eq!(c.attested_position(&bonds), None, "a misattesting validator supports nothing");
-        assert_eq!(c.attested_position(&[(h("v1"), 10), (h("v3"), 10)]), Some(3));
+        assert_eq!(
+            c.attested_position(&bonds),
+            None,
+            "a misattesting validator supports nothing"
+        );
+        assert_eq!(
+            c.attested_position(&[(h("v1"), 10), (h("v3"), 10)]),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn p_star_preserves_u256_stake_and_the_strict_threshold() {
+        let weight =
+            shared::rust::token_amount::TokenAmount::new(num_bigint::BigInt::from(1) << 255usize)
+                .unwrap();
+        let bonds = vec![
+            (h("v1"), weight.clone()),
+            (h("v2"), weight.clone()),
+            (h("v3"), weight),
+        ];
+        let mut c = fixed_three();
+        c.count(&h("v1"), 5, &attests("b3", "r3"));
+        c.count(&h("v2"), 5, &attests("b2", "r2"));
+        assert_eq!(c.attested_position(&bonds), None);
+        c.count(&h("v3"), 5, &attests("b1", "r1"));
+        assert_eq!(c.attested_position(&bonds), Some(1));
     }
 
     #[test]
     fn a_rebuilt_tally_gives_the_same_p_star() {
         let bonds = vec![(h("v1"), 10), (h("v2"), 10), (h("v3"), 10)];
-        let blocks = [("v1", 5, "b3", "r3"), ("v2", 5, "b3", "r3"), ("v3", 4, "b2", "r2"), ("v3", 3, "b1", "r1")];
+        let blocks = [
+            ("v1", 5, "b3", "r3"),
+            ("v2", 5, "b3", "r3"),
+            ("v3", 4, "b2", "r2"),
+            ("v3", 3, "b1", "r1"),
+        ];
         let mut first = fixed_three();
         for (sender, seq, target, root) in blocks {
             first.count(&h(sender), seq, &attests(target, root));
@@ -1432,21 +1518,40 @@ mod tests {
             rebuilt.count(&h(sender), *seq, &attests(target, root));
         }
         assert_eq!(first.attested_position(&bonds), Some(2));
-        assert_eq!(rebuilt.attested_position(&bonds), first.attested_position(&bonds));
+        assert_eq!(
+            rebuilt.attested_position(&bonds),
+            first.attested_position(&bonds)
+        );
     }
 
     #[test]
     fn an_inclusion_counts_only_records_at_or_below_the_attested_position() {
         let mut c = core();
         c.emit(carrying("b1", 10, &["d1"], vec![]));
-        c.emit(carrying("b2", 11, &["d2"], vec![ran("b1", "r0", "r1", &["d1"])]));
-        c.emit(carrying("b3", 12, &[], vec![ran("b2", "r1", "r2", &["d2"])]));
-        for (target, citer, pre, post, ids) in [("b1", "b2", "r0", "r1", ["d1"]), ("b2", "b3", "r1", "r2", ["d2"])] {
+        c.emit(carrying("b2", 11, &["d2"], vec![ran("b1", "r0", "r1", &[
+            "d1",
+        ])]));
+        c.emit(carrying("b3", 12, &[], vec![ran("b2", "r1", "r2", &[
+            "d2",
+        ])]));
+        for (target, citer, pre, post, ids) in [
+            ("b1", "b2", "r0", "r1", ["d1"]),
+            ("b2", "b3", "r1", "r2", ["d2"]),
+        ] {
             assert!(matches!(c.next_action(), Action::Replay { .. }));
-            c.apply_replay(&h(target), &h(citer), &ran(target, pre, post, &ids), Ok(h(post)));
+            c.apply_replay(
+                &h(target),
+                &h(citer),
+                &ran(target, pre, post, &ids),
+                Ok(h(post)),
+            );
         }
         assert_eq!(c.prior_at(b"d1", &h("b1")), Some(PriorStatus::Included));
-        assert_eq!(c.prior_at(b"d2", &h("b1")), None, "b2 is above the attested position");
+        assert_eq!(
+            c.prior_at(b"d2", &h("b1")),
+            None,
+            "b2 is above the attested position"
+        );
         assert_eq!(c.prior_at(b"d2", &h("b2")), Some(PriorStatus::Included));
         assert_eq!(c.prior_at(b"d1", &h("nowhere")), None);
     }
@@ -1456,9 +1561,19 @@ mod tests {
         for later_number in [10, 9] {
             let mut c = core();
             c.emit(carrying("b1", 10, &["d1"], vec![]));
-            c.emit(carrying("b2", later_number, &["d1"], vec![ran("b1", "r0", "r1", &["d1"])]));
+            c.emit(carrying("b2", later_number, &["d1"], vec![ran(
+                "b1",
+                "r0",
+                "r1",
+                &["d1"],
+            )]));
             assert!(matches!(c.next_action(), Action::Replay { .. }));
-            c.apply_replay(&h("b1"), &h("b2"), &ran("b1", "r0", "r1", &["d1"]), Ok(h("r1")));
+            c.apply_replay(
+                &h("b1"),
+                &h("b2"),
+                &ran("b1", "r0", "r1", &["d1"]),
+                Ok(h("r1")),
+            );
             assert_eq!(
                 c.prior(&h("b2")).get(&h("d1")),
                 Some(&PriorStatus::Included),
@@ -1470,7 +1585,11 @@ mod tests {
         c.emit(carrying("b2", 10, &["d1"], vec![]));
         assert!(matches!(c.next_action(), Action::Execute { .. }));
         c.apply_execute(ran("b1", "r0", "r1", &["d1"]));
-        assert_eq!(c.prior(&h("b2")).get(&h("d1")), Some(&PriorStatus::Included), "speculative path");
+        assert_eq!(
+            c.prior(&h("b2")).get(&h("d1")),
+            Some(&PriorStatus::Included),
+            "speculative path"
+        );
     }
 
     #[test]
@@ -1484,7 +1603,12 @@ mod tests {
             .with_failed_close();
         c.emit(carrying("b3", 12, &["d1"], vec![void.clone()]));
         assert!(matches!(c.next_action(), Action::Replay { .. }));
-        c.apply_replay(&h("b1"), &h("b2"), &ran("b1", "r0", "r1", &["d1"]), Ok(h("r1")));
+        c.apply_replay(
+            &h("b1"),
+            &h("b2"),
+            &ran("b1", "r0", "r1", &["d1"]),
+            Ok(h("r1")),
+        );
         assert!(matches!(c.next_action(), Action::Replay { .. }));
         c.apply_replay(&h("b2"), &h("b3"), &void, Ok(h("r1")));
         assert_eq!(c.prior_at(b"d1", &h("b2")), Some(PriorStatus::Included));

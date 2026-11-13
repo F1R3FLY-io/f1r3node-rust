@@ -77,7 +77,7 @@ async fn prepare_fresh_initializes_a_cursor_on_an_empty_slot() {
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 1,
+                stake: 1.into(),
             })
             .collect();
         let genesis = create_genesis_block(
@@ -125,7 +125,7 @@ async fn prepare_resumed_keeps_the_same_cursor_when_the_snapshot_is_unchanged() 
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 1,
+                stake: 1.into(),
             })
             .collect();
         let genesis = create_genesis_block(
@@ -197,7 +197,7 @@ async fn prepare_reset_counts_an_invalidation_when_the_snapshot_changes() {
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 1,
+                stake: 1.into(),
             })
             .collect();
         let genesis = create_genesis_block(
@@ -255,7 +255,7 @@ async fn prepare_freezes_after_the_max_consecutive_invalidations() {
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 1,
+                stake: 1.into(),
             })
             .collect();
         let genesis = create_genesis_block(
@@ -330,7 +330,7 @@ async fn advance_to_ready_clears_the_slot_and_resets_the_invalidation_counter() 
             .iter()
             .map(|v| Bond {
                 validator: v.clone(),
-                stake: 1,
+                stake: 1.into(),
             })
             .collect();
         let genesis = create_genesis_block(

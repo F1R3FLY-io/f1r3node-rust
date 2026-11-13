@@ -12,7 +12,6 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -21,6 +20,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::blocking::in_blocking;
 use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::replay_failure::ReplayFailure;
@@ -96,7 +96,7 @@ fn block_in_base_merge_scope(
     hash: &BlockHash,
     base_hash: &BlockHash,
     base_block_number: i64,
-) -> Result<bool, CasperError> {
+) -> Result<bool, shared::rust::store::key_value_store::KvStoreError> {
     if hash == base_hash {
         return Ok(false);
     }
@@ -187,30 +187,32 @@ pub(crate) fn canonical_dispositions(
     parents: &[BlockHash],
     earliest_block_number: i64,
 ) -> Result<HashMap<Bytes, SigDisposition>, CasperError> {
-    let mut dispositions: HashMap<Bytes, SigDisposition> = HashMap::new();
-    let mut visited: HashSet<BlockHash> = HashSet::new();
-    let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
-    while let Some(hash) = queue.pop_front() {
-        if !visited.insert(hash.clone()) {
-            continue;
+    in_blocking(|| {
+        let mut dispositions: HashMap<Bytes, SigDisposition> = HashMap::new();
+        let mut visited: HashSet<BlockHash> = HashSet::new();
+        let mut queue: VecDeque<BlockHash> = parents.iter().cloned().collect();
+        while let Some(hash) = queue.pop_front() {
+            if !visited.insert(hash.clone()) {
+                continue;
+            }
+            // A block this walk cannot read is a gap, not a "no": a partial
+            // disposition map silently misreads the retry gate and the
+            // canonical-won filter. Absence keeps its name so callers defer.
+            let facts = block_facts(block_store, &hash, "parents-post-state body read")?;
+            let bn = facts.block_number;
+            if bn < earliest_block_number {
+                continue;
+            }
+            for sig in &facts.deploy_sigs {
+                note_inclusion(&mut dispositions, sig.clone(), bn, &hash, &facts.sender);
+            }
+            for rd in facts.kept_rejected() {
+                note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
+            }
+            queue.extend(facts.parents.iter().cloned());
         }
-        // A block this walk cannot read is a gap, not a "no": a partial
-        // disposition map silently misreads the retry gate and the
-        // canonical-won filter. Absence keeps its name so callers defer.
-        let facts = block_facts(block_store, &hash, "parents-post-state body read")?;
-        let bn = facts.block_number;
-        if bn < earliest_block_number {
-            continue;
-        }
-        for sig in &facts.deploy_sigs {
-            note_inclusion(&mut dispositions, sig.clone(), bn, &hash, &facts.sender);
-        }
-        for rd in facts.kept_rejected() {
-            note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
-        }
-        queue.extend(facts.parents.iter().cloned());
-    }
-    Ok(dispositions)
+        Ok(dispositions)
+    })
 }
 
 fn canonical_disposition_sigs(
@@ -619,23 +621,8 @@ async fn replay_block(
     // creation and replay (see proto_util::slashed_block_senders). A DAG-derived
     // view is node-view-dependent and makes the slash deploy fail replay
     // (ConsumeFailed) because the map is produced into a content-addressed COMM.
-    let slashed_hashes: Vec<BlockHash> = block
-        .body
-        .system_deploys
-        .iter()
-        .filter_map(|psd| match psd {
-            ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash, ..
-                    },
-                ..
-            } => Some(invalid_block_hash.clone()),
-            _ => None,
-        })
-        .collect();
     let invalid_blocks: HashMap<BlockHash, Validator> =
-        proto_util::slashed_block_senders(dag, &slashed_hashes)?;
+        proto_util::block_slash_invalid_blocks(dag, block)?;
 
     // Create block data and check if genesis
     let block_data = BlockData::from_block(block);
@@ -966,23 +953,8 @@ pub(crate) async fn ensure_scope_mergeable_present(
         // one validation/creation used (slashed_block_senders — the block's own
         // slash targets) so the replay reproduces the block's post_state_hash and
         // the entry is stored under the correct key.
-        let slashed_hashes: Vec<BlockHash> = block
-            .body
-            .system_deploys
-            .iter()
-            .filter_map(|psd| match psd {
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy:
-                        SystemDeployData::Slash {
-                            invalid_block_hash, ..
-                        },
-                    ..
-                } => Some(invalid_block_hash.clone()),
-                _ => None,
-            })
-            .collect();
         let invalid_blocks: HashMap<BlockHash, Validator> =
-            proto_util::slashed_block_senders(dag, &slashed_hashes)?;
+            proto_util::block_slash_invalid_blocks(dag, &block)?;
 
         runtime_manager
             .ensure_mergeable_entry(&block, invalid_blocks)
@@ -1005,7 +977,7 @@ pub(crate) async fn ensure_scope_mergeable_present(
 /// the same Δ. Beyond the cap, `compute_parents_post_state` returns `Err` (the
 /// proposer parks; a validator deterministically rejects) instead of silently
 /// substituting one parent's post-state and dropping the others' writes.
-pub(crate) const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
+pub const MAX_FLOOR_DISTANCE_BLOCKS: i64 = 256;
 
 pub(crate) fn floor_pacing_engaged(floor_distance: i64, pacing_distance: i64) -> bool {
     floor_distance > pacing_distance
@@ -1177,7 +1149,6 @@ pub async fn compute_parents_post_state(
             Ok(MergedPreState {
                 state,
                 rejected_user: Vec::new(),
-                rejected_slashes: Vec::new(),
                 applied_from_scope: HashSet::new(),
                 merge_base: None,
             })
@@ -1220,7 +1191,6 @@ pub async fn compute_parents_post_state(
                     return Ok(MergedPreState {
                         state,
                         rejected_user: Vec::new(),
-                        rejected_slashes: Vec::new(),
                         applied_from_scope: HashSet::new(),
                         merge_base: None,
                     });
@@ -1243,14 +1213,19 @@ pub async fn compute_parents_post_state(
                 // (Port note: 6981b37a's empty-deploys guard is deliberately NOT
                 // taken — it re-exposed ancestor-merges on linear chains here.)
                 for candidate in &parents {
-                    let covers_all = parents
+                    let mut covers_all = true;
+                    for parent in parents
                         .iter()
                         .filter(|p| p.block_hash != candidate.block_hash)
-                        .all(|p| {
-                            s.dag
-                                .is_dag_ancestor(&p.block_hash, &candidate.block_hash)
-                                .unwrap_or(false)
-                        });
+                    {
+                        if !s
+                            .dag
+                            .is_dag_ancestor(&parent.block_hash, &candidate.block_hash)?
+                        {
+                            covers_all = false;
+                            break;
+                        }
+                    }
                     if covers_all {
                         let resolved = resolve_merge_floor(
                             block_store,
@@ -1295,7 +1270,6 @@ pub async fn compute_parents_post_state(
                             return Ok(MergedPreState {
                                 state,
                                 rejected_user: Vec::new(),
-                                rejected_slashes: Vec::new(),
                                 applied_from_scope: HashSet::new(),
                                 merge_base: Some(candidate.block_hash.clone()),
                             });
@@ -1333,10 +1307,9 @@ pub async fn compute_parents_post_state(
                     .record(cache_lookup_elapsed.as_secs_f64());
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.cache",
-                    "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
+                    "compute_parents_post_state cache hit: parents={}, rejected_deploys={}",
                     cache_key.sorted_parent_hashes.len(),
-                    cached.rejected_user.len(),
-                    cached.rejected_slashes.len()
+                    cached.rejected_user.len()
                 );
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.timing",
@@ -1351,7 +1324,6 @@ pub async fn compute_parents_post_state(
                     path = "cache_hit",
                     post_state = %hex::encode(&cached.state[..8.min(cached.state.len())]),
                     n_rejected = cached.rejected_user.len(),
-                    n_rejected_slash = cached.rejected_slashes.len(),
                     // The FLOOR line carries this on a miss; without it here the
                     // block's state parent goes unrecorded.
                     base = cached.merge_base.as_ref().map(|hash| hex::encode(&hash[..8.min(hash.len())])),
@@ -1423,6 +1395,39 @@ pub async fn compute_parents_post_state(
             metrics::histogram!(PARENTS_POST_STATE_FLOOR_DERIVE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(floor_derive_elapsed.as_secs_f64());
 
+            // Δ is a pure function of the block's parents and frozen
+            // justifications, so every honest node computes the same value and
+            // the refusal cannot fork. It is checked before the scope walk,
+            // which over a stalled floor is the expensive part of a merge.
+            let floor_distance = max_parent_block_number - floor_block_number;
+            metrics::histogram!(
+                crate::rust::metrics_constants::FLOOR_DISTANCE_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .record(floor_distance as f64);
+            if merge_scope_backstop_exceeded(floor_distance) {
+                metrics::counter!(
+                    crate::rust::metrics_constants::MERGE_SCOPE_BACKSTOP_ERROR_METRIC,
+                    "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+                )
+                .increment(1);
+                tracing::warn!(
+                    target: "f1r3fly.casper.compute_parents_post_state.backstop",
+                    floor_distance,
+                    max_floor_distance = MAX_FLOOR_DISTANCE_BLOCKS,
+                    floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
+                    floor_block = floor_block_number,
+                    n_parents = parents.len(),
+                    "compute_parents_post_state backstop: floor distance exceeds cap; refusing the merge"
+                );
+                return Err(CasperError::FloorDistanceExceeded {
+                    distance: floor_distance,
+                    cap: MAX_FLOOR_DISTANCE_BLOCKS,
+                    floor_block: floor_block_number,
+                    parents: parents.len(),
+                });
+            }
+
             // The merge base is the MAIN PARENT, not the floor. A block extends
             // its main parent on the spine, so building its state from anywhere
             // else is what lets the two come apart: the spine says the parent's
@@ -1458,19 +1463,21 @@ pub async fn compute_parents_post_state(
             // when it is needed.
             let base_holds_floor_started = std::time::Instant::now();
             let mut containment_memo = crate::rust::finality::floor::IntroducedSigsMemo::new();
-            let base_holds_floor = crate::rust::finality::floor::state_contains(
-                &s.dag,
-                block_store,
-                &crate::rust::finality::floor::Floor {
-                    hash: main_parent_hash.clone(),
-                    block_number: base_block_number,
-                },
-                &crate::rust::finality::floor::Floor {
-                    hash: floor_hash.clone(),
-                    block_number: floor_block_number,
-                },
-                &mut containment_memo,
-            )?;
+            let base_holds_floor = in_blocking(|| {
+                crate::rust::finality::floor::state_contains(
+                    &s.dag,
+                    block_store,
+                    &crate::rust::finality::floor::Floor {
+                        hash: main_parent_hash.clone(),
+                        block_number: base_block_number,
+                    },
+                    &crate::rust::finality::floor::Floor {
+                        hash: floor_hash.clone(),
+                        block_number: floor_block_number,
+                    },
+                    &mut containment_memo,
+                )
+            })?;
             metrics::histogram!(PARENTS_POST_STATE_BASE_HOLDS_FLOOR_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(base_holds_floor_started.elapsed().as_secs_f64());
             // The BASE moves with the anchor, not just the scope. Widening the
@@ -1499,29 +1506,33 @@ pub async fn compute_parents_post_state(
             // validator that has not spoken) makes "seen by every other parent"
             // unsatisfiable and the walk runs to genesis.
             let base_lineage_walk_started = std::time::Instant::now();
-            let mut base_lineage_blocks: HashSet<BlockHash> = HashSet::new();
-            let mut cursor = Some(scope_anchor_hash.clone());
-            while let Some(hash) = cursor {
-                let number = s
-                    .dag
-                    .block_number_unsafe(&hash)
-                    .map_err(CasperError::from)?;
-                if number <= floor_block_number {
-                    break;
-                }
-                let mut seen_by_every_other_parent = true;
-                for other in parent_hashes.iter().skip(1) {
-                    if !s.dag.is_dag_ancestor(&hash, other)? {
-                        seen_by_every_other_parent = false;
-                        break;
+            let base_lineage_blocks =
+                in_blocking(|| -> Result<HashSet<BlockHash>, CasperError> {
+                    let mut base_lineage_blocks: HashSet<BlockHash> = HashSet::new();
+                    let mut cursor = Some(scope_anchor_hash.clone());
+                    while let Some(hash) = cursor {
+                        let number = s
+                            .dag
+                            .block_number_unsafe(&hash)
+                            .map_err(CasperError::from)?;
+                        if number <= floor_block_number {
+                            break;
+                        }
+                        let mut seen_by_every_other_parent = true;
+                        for other in parent_hashes.iter().skip(1) {
+                            if !s.dag.is_dag_ancestor(&hash, other)? {
+                                seen_by_every_other_parent = false;
+                                break;
+                            }
+                        }
+                        if seen_by_every_other_parent {
+                            break;
+                        }
+                        base_lineage_blocks.insert(hash.clone());
+                        cursor = s.dag.main_parent(&hash)?;
                     }
-                }
-                if seen_by_every_other_parent {
-                    break;
-                }
-                base_lineage_blocks.insert(hash.clone());
-                cursor = s.dag.main_parent(&hash);
-            }
+                    Ok(base_lineage_blocks)
+                })?;
             metrics::histogram!(PARENTS_POST_STATE_BASE_LINEAGE_WALK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(base_lineage_walk_started.elapsed().as_secs_f64());
 
@@ -1534,23 +1545,29 @@ pub async fn compute_parents_post_state(
             let base_state =
                 Blake2b256Hash::from_bytes_prost(&anchor_block.body.state.post_state_hash);
 
-            let include_visible_ancestor =
-                |hash: &BlockHash, dag: &KeyValueDagRepresentation| -> bool {
-                    block_in_base_merge_scope(dag, hash, &scope_anchor_hash, scope_anchor_number)
-                        .unwrap_or(false)
-                };
             // Get all ancestors of all parents (including the parents themselves)
             // Use bounded traversal that stops once the floor's represented past is reached.
             let collect_ancestors_started = std::time::Instant::now();
-            let mut visible_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> = Vec::new();
-            for parent_hash in &parent_hashes {
-                let visible_ancestors = s.dag.with_ancestors(parent_hash.clone(), |bh| {
-                    include_visible_ancestor(bh, &s.dag)
+            let visible_ancestor_sets_with_parents =
+                in_blocking(|| -> Result<Vec<HashSet<BlockHash>>, CasperError> {
+                    let mut visible_ancestor_sets_with_parents: Vec<HashSet<BlockHash>> =
+                        Vec::new();
+                    for parent_hash in &parent_hashes {
+                        let visible_ancestors =
+                            s.dag.try_with_ancestors(parent_hash.clone(), |bh| {
+                                block_in_base_merge_scope(
+                                    &s.dag,
+                                    bh,
+                                    &scope_anchor_hash,
+                                    scope_anchor_number,
+                                )
+                            })?;
+                        let mut visible_ancestors_with_parent = visible_ancestors;
+                        visible_ancestors_with_parent.insert(parent_hash.clone());
+                        visible_ancestor_sets_with_parents.push(visible_ancestors_with_parent);
+                    }
+                    Ok(visible_ancestor_sets_with_parents)
                 })?;
-                let mut visible_ancestors_with_parent = visible_ancestors;
-                visible_ancestors_with_parent.insert(parent_hash.clone());
-                visible_ancestor_sets_with_parents.push(visible_ancestors_with_parent);
-            }
             let collect_ancestors_ms = collect_ancestors_started.elapsed().as_millis();
 
             // Flatten all ancestor sets to get visible blocks
@@ -1569,10 +1586,20 @@ pub async fn compute_parents_post_state(
             } else {
                 None
             };
-            visible_blocks.retain(|bh| {
-                block_in_base_merge_scope(&s.dag, bh, &scope_anchor_hash, scope_anchor_number)
-                    .unwrap_or(true)
-            });
+            visible_blocks = in_blocking(|| -> Result<HashSet<BlockHash>, CasperError> {
+                let mut scoped_visible_blocks = HashSet::new();
+                for hash in visible_blocks {
+                    if block_in_base_merge_scope(
+                        &s.dag,
+                        &hash,
+                        &scope_anchor_hash,
+                        scope_anchor_number,
+                    )? {
+                        scoped_visible_blocks.insert(hash);
+                    }
+                }
+                Ok(scoped_visible_blocks)
+            })?;
             metrics::histogram!(PARENTS_POST_STATE_COLLECT_ANCESTORS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(collect_ancestors_started.elapsed().as_secs_f64());
             if tracing::enabled!(target: "f1r3fly.merge.cpps", tracing::Level::DEBUG) {
@@ -1626,15 +1653,7 @@ pub async fn compute_parents_post_state(
                 );
             }
 
-            let floor_distance = max_parent_block_number - floor_block_number;
             let visible_blocks_len = visible_blocks.len();
-            // Observability: the (node-deterministic) floor distance Δ and the
-            // (NOT node-deterministic) scope size. Only Δ gates admission.
-            metrics::histogram!(
-                crate::rust::metrics_constants::FLOOR_DISTANCE_METRIC,
-                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
-            )
-            .record(floor_distance as f64);
             metrics::histogram!(
                 crate::rust::metrics_constants::MERGE_SCOPE_SIZE_METRIC,
                 "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
@@ -1644,8 +1663,8 @@ pub async fn compute_parents_post_state(
                 // The scope size is NOT node-deterministic (branch width differs
                 // across each node's view), so it must NEVER gate admission — a
                 // reject that differs across nodes would fork. Log as an anomaly
-                // only; the deterministic floor-distance backstop below is what
-                // actually bounds the merge.
+                // only; the deterministic floor-distance backstop above is what
+                // gates admission.
                 tracing::warn!(
                     target: "f1r3fly.casper.compute_parents_post_state",
                     visible_blocks = visible_blocks_len,
@@ -1653,41 +1672,6 @@ pub async fn compute_parents_post_state(
                     max_scope = MAX_PARENT_MERGE_SCOPE_BLOCKS,
                     "merge scope unusually large; NOT rejecting (scope size is not node-deterministic) — watch floor distance"
                 );
-            }
-            // Deterministic backstop: the floor distance Δ is a pure function of
-            // the block's frozen justifications, so every honest node computes the
-            // same Δ. When Δ exceeds the cap we REFUSE to build a merge rather than
-            // silently substituting the single highest parent's post-state — the
-            // former behaviour dropped every other parent's committed writes and
-            // could strand a dropped co-parent's deploys as non-re-proposable
-            // (the ~400-block "fails under load" bug: S5/¬T-K1/¬T-NDA). On propose
-            // this `Err` parks the round (retried once finality advances and Δ
-            // shrinks); on validate an over-Δ block is deterministically invalid —
-            // both sides compute the same Δ, so there is no fork.
-            if merge_scope_backstop_exceeded(floor_distance) {
-                metrics::counter!(
-                    crate::rust::metrics_constants::MERGE_SCOPE_BACKSTOP_ERROR_METRIC,
-                    "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
-                )
-                .increment(1);
-                tracing::warn!(
-                    target: "f1r3fly.casper.compute_parents_post_state.backstop",
-                    floor_distance,
-                    max_floor_distance = MAX_FLOOR_DISTANCE_BLOCKS,
-                    visible_blocks = visible_blocks_len,
-                    floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
-                    floor_block = floor_block_number,
-                    n_parents = parents.len(),
-                    "compute_parents_post_state backstop: floor distance exceeds cap; refusing lossy merge"
-                );
-                return Err(CasperError::RuntimeError(format!(
-                    "finalized-floor merge backstop: floor distance {} exceeds cap {} (parents={}, floor block #{}); \
-                     refusing to build a lossy single-parent merge — finality must advance first",
-                    floor_distance,
-                    MAX_FLOOR_DISTANCE_BLOCKS,
-                    parents.len(),
-                    floor_block_number,
-                )));
             }
 
             // Every scope block's mergeable entry must be loadable before the
@@ -1809,7 +1793,7 @@ pub async fn compute_parents_post_state(
             // from the same parents. The walk reads DAG metadata only; block
             // bodies load once, inside `records_of`.
             let prior_rejection_started = std::time::Instant::now();
-            let prior_rejection_counts = {
+            let prior_rejection_counts = in_blocking(|| {
                 let mut count_visible: HashSet<BlockHash> = visible_blocks
                     .iter()
                     .chain(base_lineage_blocks.iter())
@@ -1821,7 +1805,7 @@ pub async fn compute_parents_post_state(
                     // a held-set gap, not the window edge: defer, never walk a
                     // shorter lineage. `main_parent` is `None` only for a block
                     // whose metadata is present and records no parent (genesis).
-                    let number = s.dag.block_number(&hash).ok_or_else(|| {
+                    let number = s.dag.block_number(&hash)?.ok_or_else(|| {
                         CasperError::BlockNotHeld(
                             hash.clone(),
                             MissingBlockContext::new("rejected-slash lineage walk"),
@@ -1830,14 +1814,14 @@ pub async fn compute_parents_post_state(
                     if number < settled_walk_bound {
                         break;
                     }
-                    cursor = s.dag.main_parent(&hash);
+                    cursor = s.dag.main_parent(&hash)?;
                     count_visible.insert(hash);
                 }
                 dag_merger::scope_prior_rejection_counts(count_visible, |hash: &BlockHash| {
                     block_facts(block_store, hash, "prior-rejection records read")
                         .map(|facts| facts.rejected.as_ref().clone())
-                })?
-            };
+                })
+            })?;
             let prior_rejection_elapsed = prior_rejection_started.elapsed();
             let prior_rejection_counts_ms = prior_rejection_elapsed.as_millis();
             metrics::histogram!(PARENTS_POST_STATE_PRIOR_REJECTION_COUNTS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -1894,55 +1878,58 @@ pub async fn compute_parents_post_state(
                 result
             };
             let merge_started = std::time::Instant::now();
-            let merger_result = dag_merger::merge(
-                &s.dag,
-                &scope_anchor_hash,
-                &base_state,
-                |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
-                    let block_index = block_index_f(hash)?;
-                    Ok(block_index.deploy_chains)
-                },
-                &runtime_manager.history_repo,
-                dag_merger::cost_optimal_rejection_alg(),
-                Some(visible_blocks.clone()),
-                floor_block_number,
-                s.on_chain_state.shard_conf.deploy_lifespan,
-                &sig_settled_in_base,
-                &sig_settled_in_floor,
-                &base_lineage_blocks,
-                &prior_rejection_counts,
-                crate::rust::merging::conflict_set_merger::RejectionSearch::for_block(
-                    max_parent_block_number + 1,
-                    s.on_chain_state.shard_conf.rejection_search_cap_from_height,
-                    s.on_chain_state
-                        .shard_conf
-                        .rejection_search_group_branch_cap,
-                ),
-            )?;
+            let merger_result = in_blocking(|| {
+                dag_merger::merge(
+                    &s.dag,
+                    &scope_anchor_hash,
+                    &base_state,
+                    |hash: &BlockHash| -> Result<Vec<DeployChainIndex>, CasperError> {
+                        let block_index = block_index_f(hash)?;
+                        Ok(block_index.deploy_chains)
+                    },
+                    &runtime_manager.history_repo,
+                    dag_merger::cost_optimal_rejection_alg(),
+                    Some(visible_blocks.clone()),
+                    floor_block_number,
+                    s.on_chain_state.shard_conf.deploy_lifespan,
+                    &sig_settled_in_base,
+                    &sig_settled_in_floor,
+                    &base_lineage_blocks,
+                    &prior_rejection_counts,
+                    crate::rust::merging::conflict_set_merger::RejectionSearch::for_block(
+                        max_parent_block_number + 1,
+                        s.on_chain_state.shard_conf.rejection_search_cap_from_height,
+                        s.on_chain_state
+                            .shard_conf
+                            .rejection_search_group_branch_cap,
+                    ),
+                )
+            })?;
             let merge_elapsed = merge_started.elapsed();
             let merge_ms = merge_elapsed.as_millis();
             metrics::histogram!(PARENTS_POST_STATE_MERGE_CALL_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(merge_elapsed.as_secs_f64());
             let post_merge_started = std::time::Instant::now();
 
-            let (state, mut rejected_user_records, rejected_slash_pairs, applied_user_sigs) =
-                merger_result;
+            let (state, mut rejected_user_records, applied_user_sigs) = merger_result;
             // The tripwire runs on the PRE-suppression records: suppression
             // drops a record whose identical copy is visible elsewhere in
             // scope, but the drop it testifies to still happened in THIS
             // merge — a settled chain kept out must trip regardless of
             // whether its record is re-emitted.
-            assert_no_settled_rejection(
-                block_store,
-                &settled_floors,
-                &rejected_user_records,
-                s.on_chain_state.shard_conf.deploy_lifespan,
-            )?;
-            let suppressed = suppress_already_recorded_rejections(
-                block_store,
-                &visible_blocks,
-                &mut rejected_user_records,
-            )?;
+            let suppressed = in_blocking(|| -> Result<usize, CasperError> {
+                assert_no_settled_rejection(
+                    block_store,
+                    &settled_floors,
+                    &rejected_user_records,
+                    s.on_chain_state.shard_conf.deploy_lifespan,
+                )?;
+                suppress_already_recorded_rejections(
+                    block_store,
+                    &visible_blocks,
+                    &mut rejected_user_records,
+                )
+            })?;
             if suppressed > 0 {
                 tracing::debug!(
                     target: "f1r3fly.casper.recovery",
@@ -1966,11 +1953,10 @@ pub async fn compute_parents_post_state(
                 step = "compute_parents_post_state.MERGE_POST",
                 new_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]),
                 n_rejected_user = rejected_user_records.len(),
-                n_rejected_slash = rejected_slash_pairs.len(),
                 merge_ms,
                 "merge.cpps: dag_merger::merge returned"
             );
-            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_records.len(), n_rejected_slash = rejected_slash_pairs.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
+            tracing::debug!(target: "f1r3fly.casper.compute_parents_post_state", merged_state = %hex::encode(&state.bytes()[..8.min(state.bytes().len())]), n_rejected_user = rejected_user_records.len(), merge_ms, "merge.compute_parents_post_state: DagMerger produced merged state");
 
             // Populate the rejected-deploy buffer from the records' (sig,
             // carrier) naming. Looking up the `Signed<DeployData>` from the
@@ -2110,72 +2096,10 @@ pub async fn compute_parents_post_state(
                 }
             }
 
-            // Recover rejected-slash metadata by reading each source block's
-            // system_deploys once. The block creator uses these to dedup
-            // slashes into the merge block's body; without this the slash
-            // effect would be lost to cost-optimal rejection.
-            let rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash> =
-                if rejected_slash_pairs.is_empty() {
-                    Vec::new()
-                } else {
-                    let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
-                    for (sig, src_block) in &rejected_slash_pairs {
-                        by_block
-                            .entry(src_block.clone())
-                            .or_default()
-                            .push(sig.clone());
-                    }
-                    let mut out = Vec::new();
-                    for (src_block, _sigs) in by_block {
-                        match block_store.get(&src_block) {
-                            Ok(Some(block)) => {
-                                for psd in &block.body.system_deploys {
-                                    if let models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Succeeded {
-                                    system_deploy:
-                                        models::rust::casper::protocol::casper_message::SystemDeployData::Slash {
-                                            invalid_block_hash,
-                                            issuer_public_key,
-                                            target_activation_epoch: _,
-                                        },
-                                    ..
-                                } = psd
-                                {
-                                    out.push(
-                                        crate::rust::merging::rejected_slash::RejectedSlash {
-                                            invalid_block_hash: invalid_block_hash.clone(),
-                                            issuer_public_key: issuer_public_key.clone(),
-                                            source_block_hash: src_block.clone(),
-                                        },
-                                    );
-                                }
-                                }
-                            }
-                            Ok(None) => {
-                                tracing::warn!(
-                                    "RejectedSlash extract: source block {} not in store",
-                                    PrettyPrinter::build_string_bytes(&src_block)
-                                );
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    "RejectedSlash extract: failed to load {}: {}",
-                                    PrettyPrinter::build_string_bytes(&src_block),
-                                    err
-                                );
-                            }
-                        }
-                    }
-                    // `by_block` iteration order is non-deterministic;
-                    // `sorted_for_body` makes the cached list a function of
-                    // the merge inputs alone.
-                    crate::rust::merging::rejected_slash::sorted_for_body(out)
-                };
-
             let computed_state = prost::bytes::Bytes::copy_from_slice(&state.bytes());
             let merged = MergedPreState {
                 state: computed_state.clone(),
                 rejected_user: rejected_user_records,
-                rejected_slashes,
                 applied_from_scope: applied_user_sigs,
                 merge_base: Some(scope_anchor_hash.clone()),
             };
@@ -2187,7 +2111,6 @@ pub async fn compute_parents_post_state(
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
                 n_rejected = merged.rejected_user.len(),
-                n_rejected_slash = merged.rejected_slashes.len(),
                 n_applied = merged.applied_from_scope.len(),
                 applied = %named_sigs(&merged.applied_from_scope),
                 "merge.cpps: cache put merged parents-post-state"
@@ -2198,7 +2121,7 @@ pub async fn compute_parents_post_state(
                 .record(post_merge_elapsed.as_secs_f64());
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
-                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, prior_rejection_counts_ms={}, merge_ms={}, post_merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
+                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, prior_rejection_counts_ms={}, merge_ms={}, post_merge_ms={}, visible_blocks={}, rejected_deploys={}, total_ms={}",
                 parents.len(),
                 cache_lookup_ms,
                 collect_ancestors_ms,
@@ -2209,7 +2132,6 @@ pub async fn compute_parents_post_state(
                 post_merge_elapsed.as_millis(),
                 visible_blocks_len,
                 merged.rejected_user.len(),
-                merged.rejected_slashes.len(),
                 total_started.elapsed().as_millis()
             );
             tracing::debug!(
@@ -2218,7 +2140,6 @@ pub async fn compute_parents_post_state(
                 path = "merged",
                 post_state = %hex::encode(&computed_state[..8.min(computed_state.len())]),
                 n_rejected = merged.rejected_user.len(),
-                n_rejected_slash = merged.rejected_slashes.len(),
                 "merge.cpps: exit compute_parents_post_state"
             );
             Ok(merged)
@@ -2944,7 +2865,7 @@ mod backstop_tests {
             .expect("floor metadata")
             .block_number;
 
-        assert!(dag.is_finalized(&off_main.block_hash));
+        assert!(dag.is_finalized(&off_main.block_hash).unwrap());
         assert!(!dag
             .is_in_main_chain(&off_main.block_hash, &floor.block_hash)
             .expect("main-chain query"));

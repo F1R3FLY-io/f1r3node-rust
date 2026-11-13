@@ -315,3 +315,27 @@ The tip holds FX-17 to FX-22, FX-19-format, Decisions 119 to 136, and `dev` 3b5d
   - Terms outside the estimated fragment commit their `phloLimit` (Decision 122).
 - **Parser.** rholang-rs is pinned to `rev-stacks/syntax-dev` at ad15ad2 (lane B, Q-35). The branch is not yet merged into rholang-rs master.
 - **Open for P12.** FX-18 stays parked (F53).
+
+## `dev` merge resolution (2026-11-12)
+
+The merge target is `d57a3f4501513c699887af6e457607bc928c8faa`. The parser remains pinned to `ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd`.
+
+- Keep `dev`'s block-ingest architecture and persistent DAG history. Keep protocol-6 execution, floor pacing, commit markers, and executor state.
+- Write finalization metadata, history progress, commit markers, and the LFB pointer in one storage transaction. Keep the resident finalized cache bounded.
+- Keep U256 stake weights and deploy prices. Native wallet amounts retain their protocol-6 bound, with checked conversions at each boundary.
+- Export BigInt bonds and the four consensus parameters from PoSV6. Keep its native bond accounting in Int values.
+- Keep Protobuf field 15 for `dev`'s U256 phlo price. Move the unreleased co-signature field to 17 and retain required signers at 16.
+- Check named co-signers when records enter storage and when storage reads them. Retain fingerprint checks and the current record format.
+- Keep the shared instructions in AGENTS.md and link the parser guidance from CLAUDE.md. Preserve existing evidence ledgers and signed acceptance packages.
+
+The existing `exit_spec::write_cross_host_fixture` generator rewrites the three binary replay fixtures for the merged wire format and PoSV6 term.
+
+Validation:
+
+- `cargo check --offline --workspace --tests` passes.
+- The initial release suite passed 6,010 of 6,023 tests. The final 294-test regression run passes, including all 13 previous failures and the added transaction-rollback check.
+- The regenerated cross-host fixture replays successfully.
+- `cargo clippy --offline --workspace --all-targets -- -D warnings` passes.
+- Formatting checks pass for the resolution files. The full formatter reports 52 unchanged branch files, so this merge uses the documented `SKIP_FMT=1` hook option.
+- References pass for the edited instructions and merge notes. The full Markdown check reports 149 anchor findings in the imported API and slashing documents.
+- The new prose adds no STE Check findings. Human STE Review remains pending.

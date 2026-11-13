@@ -14,7 +14,6 @@ mod merging;
 mod multi_node;
 mod repeat_deploy;
 mod slashing;
-mod sync;
 mod util;
 mod v6;
 

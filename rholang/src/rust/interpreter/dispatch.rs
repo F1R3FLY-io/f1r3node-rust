@@ -42,6 +42,13 @@ pub enum DispatchType {
 }
 
 impl RholangAndScalaDispatcher {
+    pub(super) fn reducer(&self) -> Result<Arc<DebruijnInterpreter>, InterpreterError> {
+        self.reducer
+            .get()
+            .and_then(|weak| weak.upgrade())
+            .ok_or_else(|| InterpreterError::BugFoundError("Reducer not initialized".to_string()))
+    }
+
     pub async fn dispatch(
         &self,
         continuation: TaggedContinuation,
@@ -67,13 +74,7 @@ impl RholangAndScalaDispatcher {
                     );
                     let env = build_env(data_list);
 
-                    let reducer = self
-                        .reducer
-                        .get()
-                        .and_then(|weak| weak.upgrade())
-                        .ok_or_else(|| {
-                            InterpreterError::BugFoundError("Reducer not initialized".to_string())
-                        })?;
+                    let reducer = self.reducer()?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
                     let firing = match (seal::meter(), record.as_ref()) {

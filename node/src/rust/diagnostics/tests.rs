@@ -28,10 +28,10 @@ mod tests {
             shard_name: "root".to_string(),
             parent_shard_id: "".to_string(),
             casper_loop_interval: Duration::from_secs(30),
-            requested_blocks_timeout: Duration::from_secs(120),
             finalization_rate: 1,
             max_number_of_parents: 2147483647,
             max_parent_depth: 100,
+            dag_hot_window_depth: 1024,
             deploy_lifespan: 50,
             deploy_play_budget: Duration::ZERO,
             fork_choice_stale_threshold: Duration::from_secs(30 * 60),
@@ -47,8 +47,8 @@ mod tests {
                 genesis_data_dir: "/tmp/genesis".to_string(),
                 bonds_file: "bonds.txt".to_string(),
                 wallets_file: "wallets.txt".to_string(),
-                bond_minimum: 1,
-                bond_maximum: i64::MAX,
+                bond_minimum: 1.into(),
+                bond_maximum: (i64::MAX as u64).into(),
                 epoch_length: 10000,
                 quarantine_length: 50000,
                 number_of_active_validators: 100,
@@ -69,7 +69,7 @@ mod tests {
                 genesis_validator_mode: false,
                 ceremony_master_mode: false,
             },
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             heartbeat_conf: HeartbeatConf {
                 enabled: false,
                 check_interval: Duration::from_secs(60),
@@ -105,8 +105,7 @@ mod tests {
             finalizer_timeout_reruns: casper::rust::casper_conf::default_finalizer_timeout_reruns(),
             finalizer_derivation_budget:
                 casper::rust::casper_conf::default_finalizer_derivation_budget(),
-            finalizer_step_backstop:
-                casper::rust::casper_conf::default_finalizer_step_backstop(),
+            finalizer_step_backstop: casper::rust::casper_conf::default_finalizer_step_backstop(),
             finalizer_cursor_max_invalidations:
                 casper::rust::casper_conf::default_finalizer_cursor_max_invalidations(),
             deploy_pool_blocks_of_backlog:
@@ -165,6 +164,7 @@ mod tests {
                 http_max_body_bytes: 16 * 1024 * 1024,
                 max_blocks_limit: 100,
                 enable_reporting: true,
+                report_cache_retention_blocks: 0,
                 exploratory_deploy_max_concurrent: 1,
                 exploratory_deploy_phlo_limit: 5_000_000,
                 exploratory_deploy_execution_timeout: Duration::from_secs(15),

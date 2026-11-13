@@ -25,6 +25,7 @@ async fn a_v6_genesis_runs_pos_on_native_bonds_and_the_vault_facade() {
     let (_, vault_keys, mut genesis) =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
     genesis.version = PROTOCOL_V6;
+    genesis.proof_of_stake.maximum_bond = shared::rust::token_amount::TokenAmount::max();
     let block = Genesis::create_genesis_block_with_policy(
         &rm,
         &genesis,
@@ -40,17 +41,31 @@ async fn a_v6_genesis_runs_pos_on_native_bonds_and_the_vault_facade() {
         .await
         .unwrap();
     assert_eq!(bonds.len(), 1, "PoS answers getBonds");
+    let decoded = rm.compute_bonds(post).await.unwrap();
+    assert_eq!(decoded.len(), genesis.proof_of_stake.validators.len());
+    let parameters = rm.get_consensus_parameters(post).await.unwrap().unwrap();
+    assert_eq!(parameters.epoch_length, genesis.proof_of_stake.epoch_length);
+    assert_eq!(
+        parameters.min_phlo_price,
+        genesis.proof_of_stake.min_phlo_price
+    );
     for v in &genesis.proof_of_stake.validators {
+        assert!(decoded
+            .iter()
+            .any(|bond| bond.validator == v.pk.bytes && bond.stake == v.stake));
         assert_eq!(
             read_bond_balance(&rm, post, &v.pk.bytes).await.unwrap(),
-            v.stake as u64
+            u64::try_from(v.stake.as_bigint()).unwrap()
         );
     }
     assert_eq!(read_legacy_bonds(&rm, post).await.unwrap(), 0);
 
     let funded = &genesis.vaults[0];
     let query = VAULT_FACADE_QUERY.replace("__ADDRESS__", &funded.vault_address.to_base58());
-    let (answer, _) = rm.play_exploratory_deploy(query, post, None, Vec::new()).await.unwrap();
+    let (answer, _) = rm
+        .play_exploratory_deploy(query, post, None, Vec::new())
+        .await
+        .unwrap();
     let (ok, balance) =
         rholang::rust::interpreter::rho_type::RhoTuple2::unapply(&answer[0]).unwrap();
     assert_eq!(
@@ -59,7 +74,7 @@ async fn a_v6_genesis_runs_pos_on_native_bonds_and_the_vault_facade() {
     );
     assert_eq!(
         rholang::rust::interpreter::rho_type::RhoNumber::unapply(&balance),
-        Some(funded.initial_balance as i64)
+        Some(i64::try_from(funded.initial_balance.as_bigint()).unwrap())
     );
     let _ = vault_keys;
 }
@@ -81,14 +96,20 @@ fn bonds_map(size: usize, seed: u64) -> String {
     let entries: Vec<String> = (0..size)
         .map(|i| {
             let mut key = Vec::with_capacity(65);
-            let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(i as u64);
+            let mut state = seed
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(i as u64);
             for _ in 0..65 {
                 state ^= state << 13;
                 state ^= state >> 7;
                 state ^= state << 17;
                 key.push((state & 0xff) as u8);
             }
-            format!("\"{}\".hexToBytes(): {}", hex::encode(key), (i as u64 + 1) * 1_000)
+            format!(
+                "\"{}\".hexToBytes(): {}",
+                hex::encode(key),
+                (i as u64 + 1) * 1_000
+            )
         })
         .collect();
     format!("{{{}}}", entries.join(", "))

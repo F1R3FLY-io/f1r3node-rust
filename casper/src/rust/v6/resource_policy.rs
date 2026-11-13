@@ -142,7 +142,7 @@ impl ShardResourcePolicy {
             max_records: self.block_records,
             max_record_bytes: self.block_record_bytes,
             ordered_only: true,
-            min_phlo_price: 0,
+            min_phlo_price: 0.into(),
         }
     }
 }

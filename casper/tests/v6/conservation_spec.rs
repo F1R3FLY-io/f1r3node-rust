@@ -48,7 +48,8 @@ async fn shard(funded: &[(&Party, u128)]) -> (Arc<RuntimeManager>, BlockMessage)
         .iter()
         .map(|(p, balance)| Vault {
             vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
-            initial_balance: *balance,
+            initial_balance: shared::rust::token_amount::TokenAmount::new((*balance).into())
+                .unwrap(),
         })
         .collect();
     let block = Genesis::create_genesis_block_with_policy(
@@ -111,7 +112,7 @@ fn deploy(from: &Party, term: String, timestamp: i64) -> ProcessedDeploy {
             term,
             timestamp,
             Some(1_000),
-            Some(2),
+            Some(2.into()),
             Some(from.sk.clone()),
             None,
             Some("root".to_string()),

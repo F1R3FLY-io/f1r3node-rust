@@ -4,7 +4,7 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
-use crate::helper::v6_network::{v6_genesis, engine, propose_and_broadcast, tick_until_idle};
+use crate::helper::v6_network::{engine, propose_and_broadcast, tick_until_idle, v6_genesis};
 
 const THRESHOLD: u64 = 6;
 
@@ -12,15 +12,17 @@ fn lfb_number(node: &TestNode) -> i64 {
     let dag = node.block_dag_storage.get_representation().unwrap();
     dag.block_number(&node.block_dag_storage.order_floor().unwrap())
         .unwrap()
+        .unwrap()
 }
 
 fn lag(node: &TestNode) -> i64 {
     let dag = node.block_dag_storage.get_representation().unwrap();
     let executed = dag
         .block_number(&engine(node).attestation().block_hash)
+        .unwrap()
         .unwrap();
     let order = node.block_dag_storage.order_floor().unwrap();
-    dag.block_number(&order).unwrap() - executed
+    dag.block_number(&order).unwrap().unwrap() - executed
 }
 
 async fn round(nodes: &mut [TestNode], proposer: usize, executing: &[usize]) -> BlockMessage {

@@ -47,7 +47,7 @@ async fn a_cli_transfer_deploy_runs_on_the_node_runtime() {
 
     let params = DeployParams {
         phlo_limit: 5_000_000,
-        phlo_price: 1,
+        phlo_price: 1.into(),
         valid_after_block: 0,
         shard_id: node.genesis.shard_id.clone(),
     };
@@ -106,7 +106,7 @@ async fn a_cli_transfer_deploy_runs_on_the_node_runtime() {
 fn the_cli_refuses_a_bad_transfer_before_signing() {
     let params = DeployParams {
         phlo_limit: 1,
-        phlo_price: 1,
+        phlo_price: 1.into(),
         valid_after_block: 0,
         shard_id: String::new(),
     };

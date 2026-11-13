@@ -26,6 +26,22 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+### TASK-031-1: Complete unsigned 256-bit token amount support
+
+```yaml
+id: TASK-031-1
+epic_id: EPIC-031
+status: in_progress
+branch: feature/asi-u256-amounts
+pull_request: 881
+user_story: US-015
+acceptance:
+  - "Migrate all remaining monetary paths and raise the maximum bond."
+  - "Verify boundaries, exact arithmetic, API reporting, persistence, and peer replay."
+  - "Pass the amd64 and arm64 Integration gates with clients that send the new encoding."
+```
+
+
 - **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status
@@ -212,7 +228,7 @@ tasks:
     review_requested_at: 2026-10-20
     review_type: human
     progress: "Local provenance, protected-head, tag, routing, and workflow invariant tests pass. ShellCheck passes. Hosted validation remains pending."
-    notes: "Review follow-up for issues #791 and PR #792. Preserve the accepted ca-soaked label risk."
+    notes: "Review follow-up for issues #791 and PR #792. The 2026-11-10 policy correction removes the pre-merge canary soak requirement."
     acceptance:
       - "Tests accept the release source and repeated clean base merges."
       - "Tests reject foreign sources, edited merge trees, single-parent additions, forks, and invalid metadata."
@@ -571,6 +587,21 @@ tasks:
       - "A /harmonize run with the fixed tooling keeps the frontmatter, the local STE prose, and resolvable links, and adds no STE Check findings."
       - "CLAUDE.md and AGENTS.md link the epic, user story, and ToDos standards and state the repository tasking conventions. AGENTS.md also carries the sections that harmonize adds to CLAUDE.md."
       - "The guidance states where a value stream is recorded, after the maintainer chooses the user story, the epic, or both."
+  - id: TASK-023-15
+    title: "Require explicit merge requests and protect workflow revision selection"
+    status: in_progress
+    priority: p2
+    claimed_by: codex-session-manual-queue-ci-refs
+    claimed_at: 2026-11-12T20:41:55Z
+    branch: ci/add-checkbox-merge-use-yml-from-branch
+    pr_base_branch: dev
+    decision: "The user requested manual queue controls and tests of branch CI, with existing security and release policies preserved."
+    acceptance:
+      - "Human-managed pull requests require the queue checkbox or queue comment. The scheduled release back-merge retains automatic queueing."
+      - "Focused tests preserve queue eligibility, required checks, reviews, merge methods, and temporary promotion and back-merge heads."
+      - "Focused tests verify event revision checkouts, local reusable workflows, selected-branch dispatches, and trusted master-only promotion credentials."
+      - "CI, Full OCI validation, soaks, and heartbeat tests use the exact candidate's integration pin. Credential-bearing launchers retain trusted control pins."
+      - "Existing documentation explains the behavior and the remaining rollout steps."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending
@@ -4607,12 +4638,17 @@ execution_contract:
 tasks:
   - id: TASK-016-1
     title: "Authenticated single-value-cell classification"
-    status: pending
+    status: in_progress
     priority: p1
     issues: [104]
     discovered_in: docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+    branch: fix/single-value-cell-classification
+    pull_request: 931
     claimed_by: null
     blocked_by: []
+    decision:
+      - "2026-11-08: the recorded mergeable tag (number_channels_data) is the classifier. No separate classifier function is added, and rholang_merging_logic.rs gets no cbc=mandatory because the guard it would cover is removed."
+      - "2026-11-08: a second produce onto a tagged number cell is folded by its merge type, not rejected. An untagged write to a folded channel is rejected (split_untagged_writes_to_folded_channels)."
     notes:
       - "Two classifiers exist today: binary_data_is_single_number in dag_merger.rs and check_single_value_cell_not_overfilled in rholang_merging_logic.rs. Both classify by datum shape, which is guessable from content."
       - "The Rocq section Overfill in formal/rocq/merge_algebra/theories/ConflictSoundness.v proves guard detection at merge time only. Its header must state that boundary. That edit belongs to PR #311."

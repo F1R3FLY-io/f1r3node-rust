@@ -86,10 +86,9 @@ pub fn normalizer_env_from_deploy(
         deployer_id_par,
     );
 
-    let cosigners = crate::rust::casper::protocol::casper_message::Cosignature::verified_cosigners(
-        deploy,
-    )
-    .unwrap_or_default();
+    let cosigners =
+        crate::rust::casper::protocol::casper_message::Cosignature::verified_cosigners(deploy)
+            .unwrap_or_default();
     for (index, cosigner) in cosigners.iter().enumerate() {
         env.insert(
             format!("{SYSTEM_COSIGNER_ID_URI_PREFIX}{index}"),
@@ -120,7 +119,7 @@ mod tests {
             data: DeployData {
                 term: "Nil".to_string(),
                 time_stamp: 1,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 1,
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),

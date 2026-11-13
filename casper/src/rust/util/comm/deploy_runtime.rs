@@ -26,7 +26,7 @@ pub struct DeployRuntime;
 #[derive(Debug, Clone)]
 pub struct DeployParams {
     pub phlo_limit: i64,
-    pub phlo_price: i64,
+    pub phlo_price: shared::rust::token_amount::TokenAmount,
     pub valid_after_block: i64,
     pub shard_id: String,
 }
@@ -127,7 +127,7 @@ impl DeployRuntime {
     pub async fn deploy_file_program<S: DeployService>(
         svc: &mut S,
         phlo_limit: i64,
-        phlo_price: i64,
+        phlo_price: shared::rust::token_amount::TokenAmount,
         valid_after_block: i64,
         private_key: &PrivateKey,
         file: &str,
@@ -209,7 +209,7 @@ impl DeployRuntime {
         let d = DeployData {
             term,
             time_stamp,
-            phlo_price: params.phlo_price,
+            phlo_price: params.phlo_price.clone(),
             phlo_limit: params.phlo_limit,
             valid_after_block_number: params.valid_after_block,
             shard_id: params.shard_id.clone(),
@@ -218,6 +218,7 @@ impl DeployRuntime {
             cosignatures: Vec::new(),
             required_cosigners: Vec::new(),
         };
+        d.validate_amounts()?;
         Signed::create(
             d,
             Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
@@ -359,7 +360,7 @@ mod envelope_tests {
     fn params() -> DeployParams {
         DeployParams {
             phlo_limit: 1_000,
-            phlo_price: 1,
+            phlo_price: 1.into(),
             valid_after_block: 0,
             shard_id: "root".to_string(),
         }

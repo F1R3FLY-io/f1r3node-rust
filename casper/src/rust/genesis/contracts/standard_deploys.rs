@@ -129,7 +129,7 @@ fn to_deploy(
         time_stamp: timestamp,
         term: compiled_source.code,
         phlo_limit: i64::MAX, // Equivalent to accounting.MAX_VALUE in Scala
-        phlo_price: 0,
+        phlo_price: (0).into(),
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
@@ -338,11 +338,20 @@ pub fn pos_v6_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData
         CompiledRholangTemplate::new("PoSV6.rhox", embedded_rho::POS_V6, HashMap::new(), &[
             ("minimumBond", &pos.minimum_bond.to_string()),
             ("maximumBond", &pos.maximum_bond.to_string()),
-            ("initialBonds", &ProofOfStake::initial_bonds(&pos.validators)),
+            (
+                "initialBonds",
+                &ProofOfStake::initial_bonds_with_suffix(&pos.validators, ""),
+            ),
             ("epochLength", &pos.epoch_length.to_string()),
             ("quarantineLength", &pos.quarantine_length.to_string()),
-            ("numberOfActiveValidators", &pos.number_of_active_validators.to_string()),
-            ("faultToleranceThresholdPpm", &pos.fault_tolerance_threshold_ppm.to_string()),
+            (
+                "numberOfActiveValidators",
+                &pos.number_of_active_validators.to_string(),
+            ),
+            (
+                "faultToleranceThresholdPpm",
+                &pos.fault_tolerance_threshold_ppm.to_string(),
+            ),
             ("maxParentDepth", &pos.max_parent_depth.to_string()),
             ("deployLifespan", &pos.deploy_lifespan.to_string()),
             ("minPhloPrice", &pos.min_phlo_price.to_string()),
@@ -392,7 +401,7 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
 
 pub fn vaults_generator(
     vaults: Vec<Vault>,
-    supply: i64,
+    supply: shared::rust::token_amount::TokenAmount,
     timestamp: i64,
     is_last_batch: bool,
     shard_id: &str,
@@ -446,15 +455,25 @@ pub fn rev_bonds_generator(
     sorted.sort_by(|a, b| a.pk.bytes.cmp(&b.pk.bytes));
     let list = sorted
         .iter()
-        .map(|v| format!("(\"{}\".hexToBytes(), {})", hex::encode(&v.pk.bytes), v.stake))
+        .map(|v| {
+            format!(
+                "(\"{}\".hexToBytes(), {})",
+                hex::encode(&v.pk.bytes),
+                v.stake
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
     let code = format!(
         "new revGenesis(`rho:rev:genesis`), ret in {{ revGenesis!(\"bonds\", [{list}], *ret) }}"
     );
     to_deploy(
-        CompiledRholangSource::new(code, HashMap::new(), "<synthetic rev bonds generator>".to_string())
-            .expect("Failed to compile the REV bonds generator"),
+        CompiledRholangSource::new(
+            code,
+            HashMap::new(),
+            "<synthetic rev bonds generator>".to_string(),
+        )
+        .expect("Failed to compile the REV bonds generator"),
         VAULTS_GENERATOR_PK,
         timestamp,
         shard_id,
@@ -476,8 +495,12 @@ pub fn rev_hooks_generator(
         "new revGenesis(`rho:rev:genesis`), ret in {{ revGenesis!(\"hooks\", ({threshold}, [{list}]), *ret) }}"
     );
     to_deploy(
-        CompiledRholangSource::new(code, HashMap::new(), "<synthetic rev hooks generator>".to_string())
-            .expect("Failed to compile the REV hooks generator"),
+        CompiledRholangSource::new(
+            code,
+            HashMap::new(),
+            "<synthetic rev hooks generator>".to_string(),
+        )
+        .expect("Failed to compile the REV hooks generator"),
         VAULTS_GENERATOR_PK,
         timestamp,
         shard_id,

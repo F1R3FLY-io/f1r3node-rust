@@ -19,7 +19,7 @@ fn envelope(term: &str, ts: i64, sec: &PrivateKey) -> ProcessedDeploy {
             term.to_string(),
             ts,
             Some(100_000),
-            Some(0),
+            Some(0.into()),
             Some(sec.clone()),
             None,
             Some("root".to_string()),
