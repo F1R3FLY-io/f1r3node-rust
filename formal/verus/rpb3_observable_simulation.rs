@@ -11,8 +11,8 @@ use crate::{
     rpb3_epathmap_event_refinement as epm, rpb3_epm_live_handoff as handoff,
     rpb3_epm_unwind_event_lift as unwind, rpb3_epm_unwind_product_lift as unwind_product,
     rpb3_integrated_dispatcher as dispatcher, rpb3_map_frame_refinement as map,
-    rpb3_wire_cursor_source_refinement as wire_source, LiveRuntimeProductAction,
-    LiveRuntimeProductState,
+    rpb3_score_admission_bridge as score_bridge, rpb3_wire_cursor_source_refinement as wire_source,
+    LiveRuntimeProductAction, LiveRuntimeProductState,
 };
 
 verus! {
@@ -2726,6 +2726,153 @@ pub proof fn lemma_message_epm_push_extract(
 {
     hide(dispatcher::integrated_step);
     lemma_message_epm_push_frames(before, after, action);
+}
+
+pub proof fn lemma_message_child_score_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMessageChildScore,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let top = before_frames.last();
+            let scored_top = after_frames.last();
+            &&& after is Active
+            &&& before_frames.len() > 1
+            &&& top.frame_kind == 1
+            &&& after_frames.len() == before_frames.len()
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& scored_top.frame_kind == top.frame_kind
+            &&& scored_top.region_end == top.region_end
+            &&& scored_top.cursor == top.cursor
+            &&& scored_top.last_slot == top.last_slot
+            &&& scored_top.returns == top.returns
+            &&& state_score_len(after) >= state_score_len(before)
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MessageChildScore, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && crate::live_runtime_product_message_child_score_step(product, next)) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            assert(crate::product_message_child_score_step(old, new));
+            assert(score_bridge::bridge_well_formed(old.bridge));
+            assert(admission::admission_state_wf(old.bridge.admission));
+            score_bridge::bridge_score_source_step_preserves_shape(old.bridge, new.bridge);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_message_child_score_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMessageChildScore,
+    ensures score_step(before, after),
+{
+    hide(dispatcher::integrated_step);
+    lemma_message_child_score_frames(before, after, action);
+}
+
+pub proof fn lemma_message_child_complete_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMessageChildComplete,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let completed_child = before_frames.last();
+            let waiting_parent = before_frames[before_frames.len() - 2];
+            let resumed_parent = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() >= 2
+            &&& after_frames.len() == before_frames.len() - 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 2)
+            &&& completed_child.frame_kind == 1
+            &&& waiting_parent.frame_kind == 1
+            &&& completed_child.cursor == completed_child.region_end
+            &&& resumed_parent.frame_kind == waiting_parent.frame_kind
+            &&& resumed_parent.region_end == waiting_parent.region_end
+            &&& resumed_parent.cursor == waiting_parent.cursor
+            &&& resumed_parent.slot_count == waiting_parent.slot_count
+            &&& resumed_parent.last_slot == waiting_parent.last_slot
+            &&& resumed_parent.returns.len() == waiting_parent.returns.len() + 1
+            &&& resumed_parent.returns.drop_last() == waiting_parent.returns
+            &&& waiting_parent.waiting_slot == Some(resumed_parent.returns.last().slot)
+            &&& resumed_parent.returns.last().body_bytes.len() == completed_child.region_end as nat
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MessageChildComplete, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && crate::live_runtime_product_message_child_complete_step(product, next)) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            let message = admission::ConcreteFrameActionModel::Complete;
+            assert(crate::product_map_step(
+                old, new, map::IntegratedAdmissionAction::Message { action: message },
+            ));
+            assert(admission::concrete_message_driver_step(old.map.admission, message)
+                == Some(admission::ConcreteFrameOutcomeModel::ParentAccepted {
+                    state: new.bridge.admission,
+                }));
+            assert(new.bridge.transcript == old.bridge.transcript);
+            let state = old.map.admission;
+            admission::concrete_message_complete_child_simulates(state);
+            let waiting = state.frames[state.frames.len() - 2];
+            let completed = state.frames[state.frames.len() - 1];
+            let resumed = new.bridge.admission.frames.last();
+            assert(resumed.returns.drop_last() =~= waiting.returns);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_message_child_complete_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMessageChildComplete,
+    ensures
+        accept_step(before, after),
+        state_frames(before).last().frame_kind == 1,
+        state_frames(before)[state_frames(before).len() - 2].frame_kind == 1,
+{
+    hide(dispatcher::integrated_step);
+    lemma_message_child_complete_frames(before, after, action);
 }
 
 pub proof fn lemma_accept_shape_refines(
