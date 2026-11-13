@@ -2452,6 +2452,282 @@ pub proof fn lemma_message_continue_indexed_extract(
     lemma_message_continue_indexed_frames(before, after, action);
 }
 
+pub proof fn lemma_message_push_plain_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMessagePush,
+        action->route is Plain,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let top = before_frames.last();
+            let parent = after_frames[before_frames.len() - 1];
+            let child = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len() + 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& top.frame_kind == 1
+            &&& parent.frame_kind == top.frame_kind
+            &&& parent.region_end == top.region_end
+            &&& (child.frame_kind == 1 || child.frame_kind == 2)
+            &&& child.cursor == 0
+            &&& child.last_slot is None
+            &&& child.returns.len() == 0
+            &&& child.region_end <= top.region_end
+            &&& parent.slot_count == top.slot_count
+            &&& parent.returns == top.returns
+            &&& top.cursor < parent.cursor
+            &&& parent.cursor <= top.region_end
+            &&& parent.last_slot is Some
+            &&& parent.last_slot.unwrap() < top.slot_count
+            &&& slot_order_kept(top.last_slot, parent.last_slot.unwrap())
+            &&& parent.waiting_slot == parent.last_slot
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MessagePush {
+                request, actual_top_kind, after_len, after_capacity, stats_frame_variant_bytes,
+            },
+            route: dispatcher::IntegratedPushRoute::Plain,
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && dispatcher::integrated_message_push_route_step(
+                    product, next, request, actual_top_kind, after_len, after_capacity,
+                    stats_frame_variant_bytes, dispatcher::IntegratedPushRoute::Plain,
+                )) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            let message = admission::ConcreteFrameActionModel::Push {
+                field: request.field,
+                child: request.child,
+                frame_bytes: product.source.runtime.frame_bytes,
+            };
+            assert(crate::product_map_step(
+                old, new, map::IntegratedAdmissionAction::Message { action: message },
+            ));
+            assert(admission::concrete_message_driver_step(old.map.admission, message)
+                == Some(admission::ConcreteFrameOutcomeModel::Pushed {
+                    state: new.bridge.admission,
+                }));
+            assert(new.bridge.transcript == old.bridge.transcript);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_message_push_indexed_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMessagePush,
+        action->route is Indexed,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let top = before_frames.last();
+            let parent = after_frames[before_frames.len() - 1];
+            let child = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len() + 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& top.frame_kind == 1
+            &&& parent.frame_kind == top.frame_kind
+            &&& parent.region_end == top.region_end
+            &&& (child.frame_kind == 1 || child.frame_kind == 2)
+            &&& child.cursor == 0
+            &&& child.last_slot is None
+            &&& child.returns.len() == 0
+            &&& child.region_end <= top.region_end
+            &&& parent.slot_count == top.slot_count
+            &&& parent.returns == top.returns
+            &&& top.cursor < parent.cursor
+            &&& parent.cursor <= top.region_end
+            &&& parent.last_slot is Some
+            &&& parent.last_slot.unwrap() < top.slot_count
+            &&& slot_order_kept(top.last_slot, parent.last_slot.unwrap())
+            &&& parent.waiting_slot == parent.last_slot
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MessagePush {
+                request, actual_top_kind, after_len, after_capacity, stats_frame_variant_bytes,
+            },
+            route: dispatcher::IntegratedPushRoute::Indexed,
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && dispatcher::integrated_message_push_route_step(
+                    product, next, request, actual_top_kind, after_len, after_capacity,
+                    stats_frame_variant_bytes, dispatcher::IntegratedPushRoute::Indexed,
+                )) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            let message = admission::ConcreteFrameActionModel::PushIndexed {
+                field: request.field,
+                child: request.child,
+                parent_source: crate::product_admission_source_image(old.indexed_regions.last()),
+                frame_bytes: product.source.runtime.frame_bytes,
+            };
+            assert(crate::product_map_step(
+                old, new, map::IntegratedAdmissionAction::Message { action: message },
+            ));
+            assert(admission::concrete_message_driver_step(old.map.admission, message)
+                == Some(admission::ConcreteFrameOutcomeModel::Pushed {
+                    state: new.bridge.admission,
+                }));
+            assert(new.bridge.transcript == old.bridge.transcript);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_message_push_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMessagePush,
+    ensures
+        push_step(before, after),
+        state_frames(before).last().frame_kind == 1,
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MessagePush { .. },
+            route: dispatcher::IntegratedPushRoute::Plain,
+        } => {
+            lemma_message_push_plain_frames(before, after, action);
+        },
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MessagePush { .. },
+            route: dispatcher::IntegratedPushRoute::Indexed,
+        } => {
+            lemma_message_push_indexed_frames(before, after, action);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_message_epm_push_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMessageEpmPush,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let top = before_frames.last();
+            let parent = after_frames[before_frames.len() - 1];
+            let child = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len() + 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& top.frame_kind == 1
+            &&& parent.frame_kind == top.frame_kind
+            &&& parent.region_end == top.region_end
+            &&& child.frame_kind == 3
+            &&& child.region_end <= top.region_end
+            &&& parent.slot_count == top.slot_count
+            &&& parent.returns == top.returns
+            &&& top.cursor < parent.cursor
+            &&& parent.cursor <= top.region_end
+            &&& parent.last_slot is Some
+            &&& parent.last_slot.unwrap() < top.slot_count
+            &&& slot_order_kept(top.last_slot, parent.last_slot.unwrap())
+            &&& parent.waiting_slot == parent.last_slot
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MessageEpmPush {
+                request, actual_top_kind, after_len, after_capacity, stats_frame_variant_bytes,
+            },
+            ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && crate::live_runtime_product_message_epm_push_indexed_observed_step(
+                    product, next, request, actual_top_kind, after_len, after_capacity,
+                    stats_frame_variant_bytes,
+                )) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            let message = admission::ConcreteFrameActionModel::PushIndexed {
+                field: request.field,
+                child: request.child,
+                parent_source: crate::product_admission_source_image(old.indexed_regions.last()),
+                frame_bytes: product.source.runtime.frame_bytes,
+            };
+            assert(crate::product_map_step(
+                old, new, map::IntegratedAdmissionAction::Message { action: message },
+            ));
+            assert(admission::concrete_message_driver_step(old.map.admission, message)
+                == Some(admission::ConcreteFrameOutcomeModel::Pushed {
+                    state: new.bridge.admission,
+                }));
+            assert(new.bridge.transcript == old.bridge.transcript);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_message_epm_push_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMessageEpmPush,
+    ensures
+        push_step(before, after),
+        state_frames(before).last().frame_kind == 1,
+        state_frames(after).last().frame_kind == 3,
+{
+    hide(dispatcher::integrated_step);
+    lemma_message_epm_push_frames(before, after, action);
+}
+
 pub proof fn lemma_accept_shape_refines(
     before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
     score_len: nat, score_after: nat,
