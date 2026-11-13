@@ -1863,4 +1863,232 @@ pub proof fn lemma_plain_parent_push_refines(
         == Some(observable::ObservableState::Active { frames: expected, score_len }));
 }
 
+pub proof fn lemma_message_parent_accept_refines(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+    score_len: nat, score_after: nat,
+)
+    requires
+        accept_transition(before, after),
+        before[before.len() - 2].frame_kind == 1,
+        accept_score_rule(before.last().frame_kind, score_len, score_after),
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                accept_class(before.last().frame_kind),
+                project_active(before, score_len),
+                project_active(after, score_after),
+            ),
+        ) == Some(project_active(after, score_after)),
+{
+    let child = before.len() - 1;
+    let parent = before.len() - 2;
+    let projected = project_frames(before);
+    let popped = project_frames(after);
+    lemma_project_frame_reads(before, child);
+    lemma_project_frame_reads(before, parent);
+    lemma_project_frame_reads(after, parent);
+    let wait = projected[parent].waiting.unwrap();
+    let record = observable::observable_image_record(projected);
+    let message = before[child].frame_kind == 1;
+    let expected = projected.drop_last().update(
+        parent,
+        observable::observable_parent_after_accept(projected[parent], wait, projected[child]),
+    );
+    let returned = after[parent].returns.last();
+    assert(after[parent].returns =~= before[parent].returns.push(returned));
+    lemma_project_children_push(before[parent].returns, returned);
+    assert forall|index: int| 0 <= index < after.len() implies
+        (#[trigger] popped[index]) == expected[index] by {
+        lemma_project_frame_reads(after, index);
+        if index < parent {
+            lemma_project_frame_reads(before, index);
+            lemma_project_frame_congruence(before, after, index);
+        }
+    }
+    assert(popped =~= expected);
+    assert(observable::observable_frame_finished(projected[child]));
+    assert(observable::observable_accept_record_valid(
+        projected[parent], wait, projected[child], record,
+    ));
+    assert(observable::observable_complete_next(projected, score_len, message, record, score_after)
+        == Some(observable::ObservableState::Active { frames: expected, score_len: score_after }));
+}
+
+pub proof fn lemma_map_parent_accept_refines(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+    score_len: nat, score_after: nat,
+)
+    requires
+        accept_transition(before, after),
+        before[before.len() - 2].frame_kind == 2,
+        accept_score_rule(before.last().frame_kind, score_len, score_after),
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                accept_class(before.last().frame_kind),
+                project_active(before, score_len),
+                project_active(after, score_after),
+            ),
+        ) == Some(project_active(after, score_after)),
+{
+    let child = before.len() - 1;
+    let parent = before.len() - 2;
+    let projected = project_frames(before);
+    let popped = project_frames(after);
+    lemma_project_frame_reads(before, child);
+    lemma_project_frame_reads(before, parent);
+    lemma_project_frame_reads(after, parent);
+    let wait = projected[parent].waiting.unwrap();
+    let record = observable::observable_image_record(projected);
+    let expected = projected.drop_last().update(
+        parent,
+        observable::observable_parent_after_accept(projected[parent], wait, projected[child]),
+    );
+    let returned = after[parent].returns.last();
+    assert(after[parent].returns =~= before[parent].returns.push(returned));
+    lemma_project_children_push(before[parent].returns, returned);
+    assert forall|index: int| 0 <= index < after.len() implies
+        (#[trigger] popped[index]) == expected[index] by {
+        lemma_project_frame_reads(after, index);
+        if index < parent {
+            lemma_project_frame_reads(before, index);
+            lemma_project_frame_congruence(before, after, index);
+        }
+    }
+    assert(popped =~= expected);
+    assert(observable::observable_frame_finished(projected[child]));
+    assert(observable::observable_accept_record_valid(
+        projected[parent], wait, projected[child], record,
+    ));
+    assert(observable::observable_complete_next(projected, score_len, true, record, score_after)
+        == Some(observable::ObservableState::Active { frames: expected, score_len: score_after }));
+}
+
+pub proof fn lemma_plain_parent_accept_refines(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+    score_len: nat, score_after: nat,
+)
+    requires
+        accept_transition(before, after),
+        before[before.len() - 2].frame_kind == 3 || before[before.len() - 2].frame_kind == 4,
+        accept_score_rule(before.last().frame_kind, score_len, score_after),
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                accept_class(before.last().frame_kind),
+                project_active(before, score_len),
+                project_active(after, score_after),
+            ),
+        ) == Some(project_active(after, score_after)),
+{
+    let child = before.len() - 1;
+    let parent = before.len() - 2;
+    let projected = project_frames(before);
+    let popped = project_frames(after);
+    lemma_project_frame_reads(before, child);
+    lemma_project_frame_reads(before, parent);
+    lemma_project_frame_reads(after, parent);
+    let wait = projected[parent].waiting.unwrap();
+    let record = observable::observable_image_record(projected);
+    let message = before[child].frame_kind == 1;
+    let expected = projected.drop_last().update(
+        parent,
+        observable::observable_parent_after_accept(projected[parent], wait, projected[child]),
+    );
+    assert forall|index: int| 0 <= index < after.len() implies
+        (#[trigger] popped[index]) == expected[index] by {
+        lemma_project_frame_reads(after, index);
+        if index < parent {
+            lemma_project_frame_reads(before, index);
+            lemma_project_frame_congruence(before, after, index);
+        } else {
+            assert(popped[index].children =~= expected[index].children);
+        }
+    }
+    assert(popped =~= expected);
+    assert(observable::observable_frame_finished(projected[child]));
+    assert(observable::observable_accept_record_valid(
+        projected[parent], wait, projected[child], record,
+    ));
+    assert(observable::observable_complete_next(projected, score_len, message, record, score_after)
+        == Some(observable::ObservableState::Active { frames: expected, score_len: score_after }));
+}
+
+pub proof fn lemma_root_accept_refines(
+    before: Seq<admission::AdmissionFrameState>, accepted: Seq<admission::AdmissionFrameState>,
+    score_len: nat, score_after: nat,
+)
+    requires
+        root_transition(before, accepted),
+        accept_score_rule(before[0].frame_kind, score_len, score_after),
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                accept_class(before[0].frame_kind),
+                project_active(before, score_len),
+                project_root(accepted, score_after),
+            ),
+        ) == Some(project_root(accepted, score_after)),
+{
+    let projected = project_frames(before);
+    let message = before[0].frame_kind == 1;
+    lemma_project_frame_reads(before, 0);
+    lemma_project_frame_reads(accepted, 0);
+    assert(project_frame(accepted, 0).children =~= project_frame(before, 0).children);
+    assert(project_frame(accepted, 0) == projected[0]);
+    assert(observable::observable_frame_finished(projected[0]));
+    assert(observable::observable_complete_next(
+        projected, score_len, message, observable::ObservableAcceptRecord::Root, score_after,
+    ) == Some(observable::ObservableState::Accepted { root: projected[0], score_len: score_after }));
+}
+
+pub proof fn lemma_score_then_accept_composes(
+    before: Seq<admission::AdmissionFrameState>, middle: Seq<admission::AdmissionFrameState>,
+    after: Seq<admission::AdmissionFrameState>,
+)
+    requires
+        score_transition(before, middle),
+        accept_transition(middle, after),
+    ensures accept_transition(before, after),
+{
+    let parent = before.len() - 2;
+    assert(middle[parent] == before[parent]);
+    assert forall|index: int| 0 <= index < parent implies
+        (#[trigger] after[index]) == before[index] by {
+        assert(after[index] == middle[index]);
+        assert(middle[index] == before[index]);
+    }
+}
+
+pub proof fn lemma_accept_shape_refines(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+    score_len: nat, score_after: nat,
+)
+    requires
+        accept_transition(before, after),
+        accept_score_rule(before.last().frame_kind, score_len, score_after),
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                accept_class(before.last().frame_kind),
+                project_active(before, score_len),
+                project_active(after, score_after),
+            ),
+        ) == Some(project_active(after, score_after)),
+{
+    let parent_kind = before[before.len() - 2].frame_kind;
+    if parent_kind == 1 {
+        lemma_message_parent_accept_refines(before, after, score_len, score_after);
+    } else if parent_kind == 2 {
+        lemma_map_parent_accept_refines(before, after, score_len, score_after);
+    } else {
+        lemma_plain_parent_accept_refines(before, after, score_len, score_after);
+    }
+}
+
 }
