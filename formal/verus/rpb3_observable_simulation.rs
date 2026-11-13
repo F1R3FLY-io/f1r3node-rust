@@ -1608,4 +1608,259 @@ pub proof fn lemma_coverage_names_obligation_returns(
     }
 }
 
+pub proof fn lemma_stutter_projects_equal(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+)
+    requires stutter_transition(before, after),
+    ensures project_frames(after) == project_frames(before),
+{
+    let top = before.len() - 1;
+    assert forall|index: int| 0 <= index < before.len() implies
+        (#[trigger] project_frames(after)[index]) == project_frames(before)[index] by {
+        lemma_project_frame_reads(before, index);
+        lemma_project_frame_reads(after, index);
+        if index < top {
+            lemma_project_frame_congruence(before, after, index);
+        } else {
+            assert(project_frame(after, index).children
+                =~= project_frame(before, index).children);
+        }
+    }
+    assert(project_frames(after) =~= project_frames(before));
+}
+
+pub proof fn lemma_internal_iteration_refines(
+    frames: Seq<admission::AdmissionFrameState>, score_len: nat,
+)
+    requires
+        frames.len() > 0,
+        frames.last().frame_kind == 3,
+    ensures
+        observable::observable_next(
+            project_active(frames, score_len),
+            observable::observable_image_event(
+                observable::ObservableClass::OtherContinue,
+                project_active(frames, score_len),
+                project_active(frames, score_len),
+            ),
+        ) == Some(project_active(frames, score_len)),
+{
+    lemma_project_frame_reads(frames, frames.len() - 1);
+}
+
+pub proof fn lemma_message_field_refines(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+    score_len: nat,
+)
+    requires
+        field_transition(before, after),
+        before.last().frame_kind == 1,
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                observable::ObservableClass::MessageContinue,
+                project_active(before, score_len),
+                project_active(after, score_len),
+            ),
+        ) == Some(project_active(after, score_len)),
+{
+    let top = before.len() - 1;
+    let projected = project_frames(before);
+    let moved = project_frames(after);
+    lemma_project_frame_reads(before, top);
+    lemma_project_frame_reads(after, top);
+    let field = observable::observable_image_field(projected[top], moved[top]);
+    let expected = projected.update(
+        top, observable::observable_frame_after_field(projected[top], field),
+    );
+    assert forall|index: int| 0 <= index < before.len() implies
+        (#[trigger] moved[index]) == expected[index] by {
+        lemma_project_frame_reads(before, index);
+        lemma_project_frame_reads(after, index);
+        if index < top {
+            lemma_project_frame_congruence(before, after, index);
+        }
+    }
+    assert(moved =~= expected);
+    assert(observable::observable_field_admissible(projected[top], field));
+    assert(observable::observable_continue_next(projected, score_len, true, Some(field))
+        == Some(observable::ObservableState::Active { frames: expected, score_len }));
+}
+
+pub proof fn lemma_map_key_field_refines(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+    score_len: nat,
+)
+    requires
+        field_transition(before, after),
+        before.last().frame_kind == 2,
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                observable::ObservableClass::OtherContinue,
+                project_active(before, score_len),
+                project_active(after, score_len),
+            ),
+        ) == Some(project_active(after, score_len)),
+{
+    let top = before.len() - 1;
+    let projected = project_frames(before);
+    let moved = project_frames(after);
+    lemma_project_frame_reads(before, top);
+    lemma_project_frame_reads(after, top);
+    let field = observable::observable_image_field(projected[top], moved[top]);
+    let expected = projected.update(
+        top, observable::observable_frame_after_field(projected[top], field),
+    );
+    assert forall|index: int| 0 <= index < before.len() implies
+        (#[trigger] moved[index]) == expected[index] by {
+        lemma_project_frame_reads(before, index);
+        lemma_project_frame_reads(after, index);
+        if index < top {
+            lemma_project_frame_congruence(before, after, index);
+        }
+    }
+    assert(moved =~= expected);
+    assert(observable::observable_field_admissible(projected[top], field));
+    assert(observable::observable_map_key_field(projected[top], field));
+    assert(observable::observable_continue_next(projected, score_len, false, Some(field))
+        == Some(observable::ObservableState::Active { frames: expected, score_len }));
+}
+
+pub proof fn lemma_message_parent_push_refines(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+    score_len: nat,
+)
+    requires
+        push_transition(before, after),
+        before.last().frame_kind == 1,
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                observable::ObservableClass::MessagePush,
+                project_active(before, score_len),
+                project_active(after, score_len),
+            ),
+        ) == Some(project_active(after, score_len)),
+{
+    let top = before.len() - 1;
+    let projected = project_frames(before);
+    let pushed = project_frames(after);
+    lemma_project_frame_reads(before, top);
+    lemma_project_frame_reads(after, top);
+    lemma_project_frame_reads(after, top + 1);
+    let field = observable::observable_image_field(projected[top], pushed[top]);
+    let request = observable::observable_image_request(pushed[top + 1]);
+    let expected = projected.update(
+        top, observable::observable_parent_after_push(projected[top], Some(field), request),
+    ).push(observable::observable_fresh_frame(request));
+    assert forall|index: int| 0 <= index < after.len() implies
+        (#[trigger] pushed[index]) == expected[index] by {
+        lemma_project_frame_reads(after, index);
+        if index < top {
+            lemma_project_frame_reads(before, index);
+            lemma_project_frame_congruence(before, after, index);
+        } else if index == top + 1 {
+            assert(pushed[index].children =~= expected[index].children);
+        }
+    }
+    assert(pushed =~= expected);
+    assert(observable::observable_request_admissible(projected[top], request));
+    assert(observable::observable_field_admissible(projected[top], field));
+    assert(observable::observable_push_next(projected, score_len, true, Some(field), request)
+        == Some(observable::ObservableState::Active { frames: expected, score_len }));
+}
+
+pub proof fn lemma_map_parent_push_refines(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+    score_len: nat,
+)
+    requires
+        push_transition(before, after),
+        before.last().frame_kind == 2,
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                observable::ObservableClass::OtherPush,
+                project_active(before, score_len),
+                project_active(after, score_len),
+            ),
+        ) == Some(project_active(after, score_len)),
+{
+    let top = before.len() - 1;
+    let projected = project_frames(before);
+    let pushed = project_frames(after);
+    lemma_project_frame_reads(before, top);
+    lemma_project_frame_reads(after, top);
+    lemma_project_frame_reads(after, top + 1);
+    let field = observable::observable_image_field(projected[top], pushed[top]);
+    let request = observable::observable_image_request(pushed[top + 1]);
+    let expected = projected.update(
+        top, observable::observable_parent_after_push(projected[top], Some(field), request),
+    ).push(observable::observable_fresh_frame(request));
+    assert forall|index: int| 0 <= index < after.len() implies
+        (#[trigger] pushed[index]) == expected[index] by {
+        lemma_project_frame_reads(after, index);
+        if index < top {
+            lemma_project_frame_reads(before, index);
+            lemma_project_frame_congruence(before, after, index);
+        } else if index == top + 1 {
+            assert(pushed[index].children =~= expected[index].children);
+        }
+    }
+    assert(pushed =~= expected);
+    assert(observable::observable_request_admissible(projected[top], request));
+    assert(observable::observable_field_admissible(projected[top], field));
+    assert(observable::observable_map_value_field(projected[top], field));
+    assert(observable::observable_push_next(projected, score_len, false, Some(field), request)
+        == Some(observable::ObservableState::Active { frames: expected, score_len }));
+}
+
+pub proof fn lemma_plain_parent_push_refines(
+    before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
+    score_len: nat,
+)
+    requires
+        push_transition(before, after),
+        before.last().frame_kind == 3 || before.last().frame_kind == 4,
+    ensures
+        observable::observable_next(
+            project_active(before, score_len),
+            observable::observable_image_event(
+                observable::ObservableClass::OtherPush,
+                project_active(before, score_len),
+                project_active(after, score_len),
+            ),
+        ) == Some(project_active(after, score_len)),
+{
+    let top = before.len() - 1;
+    let projected = project_frames(before);
+    let pushed = project_frames(after);
+    lemma_project_frame_reads(before, top);
+    lemma_project_frame_reads(after, top);
+    lemma_project_frame_reads(after, top + 1);
+    let request = observable::observable_image_request(pushed[top + 1]);
+    let expected = projected.update(
+        top, observable::observable_parent_after_push(projected[top], None, request),
+    ).push(observable::observable_fresh_frame(request));
+    assert forall|index: int| 0 <= index < after.len() implies
+        (#[trigger] pushed[index]) == expected[index] by {
+        lemma_project_frame_reads(after, index);
+        if index < top {
+            lemma_project_frame_reads(before, index);
+            lemma_project_frame_congruence(before, after, index);
+        } else {
+            assert(pushed[index].children =~= expected[index].children);
+        }
+    }
+    assert(pushed =~= expected);
+    assert(observable::observable_request_admissible(projected[top], request));
+    assert(observable::observable_push_next(projected, score_len, false, None, request)
+        == Some(observable::ObservableState::Active { frames: expected, score_len }));
+}
+
 }
