@@ -87,7 +87,8 @@ async fn derive_floor_context(
 /// stored without its contents judged, so a block built on one is judged
 /// only once the twin is: an invalid twin makes the block invalid, and a twin
 /// that cannot be judged yet defers it for the same reason. A valid twin's
-/// judgement replays it, so its post-state is held for the block's replay.
+/// judgement replays it, so its post-state is held for the block's replay,
+/// and records its deploys in the deploy history.
 /// A final verdict is remembered, so a twin is judged once however many
 /// blocks build on it.
 async fn equivocating_parents_verdict(
@@ -124,6 +125,7 @@ async fn equivocating_parents_verdict(
                 .await?
                 {
                     Either::Right(_) => {
+                        this.block_dag_storage.record_deploy_events(&parent)?;
                         update_mergeable_cache_after_validation(
                             this,
                             &parent,
