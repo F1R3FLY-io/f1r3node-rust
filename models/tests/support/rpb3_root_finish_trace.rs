@@ -4706,3 +4706,6 @@ pub(super) fn assert_new_finish_source(
         "{label}"
     );
 }
+
+#[path = "rpb3_finish_invariant_properties.rs"]
+mod rpb3_finish_invariant_properties;

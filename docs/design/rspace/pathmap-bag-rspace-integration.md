@@ -5125,6 +5125,244 @@ row or more than one row in the table `PUBLICATION_INVARIANT_BINDINGS`, if a row
 that the configuration does not check, or if a row names a test that is not defined exactly once as
 a test function in that file.
 
+### RPB3 admission finish invariants
+
+`formal/verus/rpb3_finish_handle_transcript.rs` is a proof file for Verus, a tool that checks
+proofs about Rust code. The file is about the step with which the RPB3 admission of the `models`
+crate ends the reading of one message. It declares 70 items: four predicates, which name conditions
+on a state of the admission, and 66 lemmas, each of which
+`bash scripts/check-rpb3-admission-cursor-verus.sh` has Verus check. Together they say that this
+step attaches to the message the handle of its score, that the handle is bound to the bytes from
+which the score was derived, and that this stays so when the message returns to the message that
+contains it or to the caller. Each of the 70 items is bound to one property test of
+`models/tests/support/rpb3_finish_invariant_properties.rs`. A property runs the production
+admission on generated input and checks the statement of its item on what the admission did.
+
+The table below defines the terms this section uses. Each definition uses only terms defined above
+it.
+
+| Term | Meaning |
+|---|---|
+| Message | One value of a protobuf message type of `RhoTypes.proto`, such as `Par`, `Send` or `Expr`, in its encoded form. A message consists of fields. A field holds a scalar or another message, which is then nested in the first. |
+| Admission run | One execution of the RPB3 admission on the encoded bytes of a message, which is the root message of the run. The run reads the bytes, refuses them unless they are a canonical encoding, and returns a summary of the root message. |
+| Frame | The record that an admission run keeps for one part of its input while it reads that part. A message frame reads one message. The other frames read the entries of a map field, the source of a path map (the content of an `EPathMap` message), or one path of such a source; they are the map frames, the EPathMap frames and the canonical path frames. The run keeps its frames on a stack of its own. The frame of a nested part lies directly above the frame of the part it is nested in, which is its parent frame. The lowest frame belongs to the root message and is the root frame; every other frame is a child frame. The highest frame is the top frame, the one being read. |
+| Score | The sort key of a message, by which the parts of a `Par` and the elements of a set or a map are put in their canonical order: a tree whose leaves are integers, strings and byte strings. |
+| Score arena | The list in which an admission run stores the scores it derives. Entries are only appended. An entry is an integer, a string, a byte string, or a node that names earlier entries as its children. |
+| Handle | The position of an entry in the score arena. A handle stands for the score whose tree starts at that entry. |
+| Transcript | The byte sequence that an entry of the score arena stands for. An integer, a string or a byte string gives a tagged encoding of its value. A node gives the transcripts of its children, in order, between a start byte and an end byte. The transcript list is the list of the transcripts of all entries; in the Verus model it is a separate component beside the score arena. |
+| Finish | The step that a message frame takes, as the top frame, when the bytes of its message end. A scored finish appends the entries of the score of the message to the score arena and attaches the handle of the last of them to the frame. An unscored finish appends nothing and attaches no handle. |
+| Top handle | The handle that a scored finish attaches to the top frame. |
+| Finish kind | One of the 43 ways to derive a score that the Verus model distinguishes. The type of the message and the fields that were present decide which kind applies. The model numbers the kinds from 1 to 43; the number of a kind is its route. |
+| EPathMap owner | The message frame of an `EPathMap` message. Its child, an EPathMap frame, reads the source of the path map and hands the owner a snapshot of it, which is a byte string. The scored finish of the owner appends four entries: the snapshot, an integer that is 1 when the field `connective_used` of the message is set and 0 otherwise, the integer 13, which marks the score of a path map, and a node whose children are, in this order, the 13, the snapshot and that integer. |
+| Summary | What a message frame hands on after its finish: the result of reading the message, the top handle if the finish was scored, and for some message types a semantic flag. |
+| Semantic flag | A truth value in the summary of a process component such as a send or a receive, of a receive bind, and of a match case. It says whether every part that the message type requires was present. |
+| Completeness | The truth value that the Verus model computes for a frame from the fields the frame has seen and from the summaries its children handed on (`admission_family_complete`). |
+| Pop | The step after a finish that removes the top frame. The pop of a child frame is a child return: the parent frame records the summary of the child as a new return. The pop of the root frame is a root return: the caller receives the summary and the score arena. |
+| Pre-pop state | The state of an admission run between a finish and the pop that follows it. |
+| Origin | For an entry of the score arena, the finish that appended it. |
+| Handle facts | The eight conditions that the predicate `finish_handle_facts` states about a frame and a handle. The list below gives them. |
+| Runtime model | The part of the Verus model that describes one step of the production driver on the top frame. |
+| Live model | The part of the Verus model, in the root module of the proofs, that relates the states before and after one operation of the production driver. |
+
+For a frame and a handle, `finish_handle_facts` states that:
+
+1. the handle is a position of the score arena;
+2. the handle is a position of the transcript list;
+3. the entry at the handle originates from the frame: the finish of the frame appended it, or the
+   frame handed on, unchanged, the score of its one returned child (the kinds
+   `cost_atom_bound_forward` and `expr_payload_forward` do that);
+4. the semantic flag that the score arena records for the entry equals the completeness of the
+   frame;
+5. the length that the score arena records for the entry equals the length of its transcript;
+6. the bytes that the score arena records for the entry are its transcript;
+7. the entry of the transcript list is well formed: a node names only earlier entries as its
+   children, the transcript is the byte sequence that the entry stands for, and the recorded
+   length is the number of its bytes;
+8. every entry of the transcript list is well formed in that way, and the transcript list returns
+   those bytes, and their number, for the handle.
+
+A lemma of the file has the form "if this step of the model applies to a state, the state after it
+satisfies a condition". Its property reads the lemma as a statement about the production
+admission: at every finish of a run to which the step applies, what the run did satisfies the
+condition. A property fails when one finish of one generated run does not.
+
+#### What a property reads from an admission run
+
+A property encodes a generated message with the production encoder and runs the production driver
+`drive_admission` of `models/src/rust/rholang/protobuf_admission.rs` on the bytes. It reads what
+the run did from the trace of `models/tests/support/rpb3_root_finish_trace.rs`, which the
+production code fills in test builds only. The diagram shows the steps of one frame from the end
+of its input, and beside each step what the trace records of it.
+
+```text
+┌──────────────────────────────────────────────┐
+│ top frame at the end of its input            │   recorded: the frame and the reducer that
+└───────────────────────┬──────────────────────┘   production selects
+                        │ finish
+                        ▼
+┌──────────────────────────────────────────────┐
+│ scored: entries appended to the score arena, │   recorded: the entries appended in the step
+│ handle of the last entry attached            │   and the summary reduced for the frame
+│ unscored: nothing appended, no handle        │
+└───────────────────────┬──────────────────────┘
+                        │
+                        ▼
+┌──────────────────────────────────────────────┐
+│ pre-pop state: the finished frame is still   │   recorded: the summary before the pop and
+│ the top frame                                │   the length of the score arena
+└──────────┬────────────────────────┬──────────┘
+           │ pop of a child         │ pop of the root
+           ▼                        ▼
+┌────────────────────┐  ┌──────────────────────┐
+│ child return: the  │  │ root return: the     │   recorded: the parent frame before and after,
+│ parent frame gains │  │ caller receives the  │   or the returned summary, the number of
+│ the summary as a   │  │ summary and the      │   frames left and the score arena
+│ new return         │  │ score arena          │
+└────────────────────┘  └──────────────────────┘
+```
+
+Legend: boxes are states of the admission run, arrows are its steps, and the text to the right of
+a box is what the trace records there.
+
+The Verus model speaks of state that the production code does not keep in one place. The next
+table says what a property reads in its stead.
+
+| In the model | Read from the production run |
+|---|---|
+| The record of the score arena for a handle: length, bytes, semantic flag and origin | The summary that production reduces for the frame gives the handle, and the length and the bytes that the production score arena serves for it. The origin is the finish in whose step the entry was appended. The semantic flag is the flag in the summary of that finish, and true when that summary has no flag. |
+| The transcript of an entry | The trace records the entries of the score arena at the root return. The property replays the transcript of each entry from them. |
+| The completeness of a frame | The property computes `admission_family_complete` from the frame that the trace records at the end of its input. |
+| The finish kind | The property computes the route of the model from the same frame, and requires that production selected the reducer that belongs to that kind. |
+| The state after a finish | The summary reduced for the frame, and the length of the score arena after the step. |
+| The pre-pop state | The record of the pop: the summary before the pop, the length of the score arena before and after it, and the parent frame before and after it. |
+| The new return of the parent | The one return that the parent frame gained at the field it was waiting on. |
+| A root return | The summary before the pop of the root, the returned summary, the number of frames left, and the summary that `drive_admission` hands to its caller. |
+
+The two computations taken from the model, completeness and route, are transcriptions in the test
+file. They say which lemma applies to a finish and what to expect of it. A wrong transcription
+shows as a failing property, because the reducer that production selected and the flag that
+production reported are compared with them.
+
+The parent of a message frame need not be a message frame. A `Par` that is the value of a map
+entry returns to a map frame; `child_return_carries_handle` is checked there as well, and requires
+that the map frame holds the summary of the `Par` with its handle and its body bytes. The child
+step of the model does not describe the return of a child to an EPathMap frame or to a canonical
+path frame. The properties check the top handle of a child of an EPathMap frame and count it, under
+`@epathmap` in the line described below, but check no child return for it. The generated inputs
+make no message the child of a canonical path frame.
+
+A property draws its input row by row. A row fixes a message and a position. At the root position
+the message is the root message. At the child position it is nested in the message that usually
+contains it. The values drawn fill the leaves: integers, truth values, strings, byte strings and
+small counts. There are rows for each of the 43 finish kinds, for 19 messages whose finish is
+unscored, for a `Par` that returns as the value of a map entry, for a nested term, and for the
+witness input of the model. Each row has its own fixed seed; the environment variable
+`PROPTEST_RNG_SEED` replaces it. A property fails if its rows never reach a finish that it is meant
+to cover. When it passes it prints one line that starts with `finish-property-census` and counts
+the finishes it checked by kind and by position.
+
+#### Bindings
+
+For each finish kind the Verus file has one lemma, named `handle_after_` followed by the kind: if
+the finish of that kind applies to a state, the state after it satisfies `finish_top_handle`. The
+first table lists these 43 lemmas by route.
+
+| Route | Kind | Message that the property generates | Lemma | Bound property |
+|---|---|---|---|---|
+| 1 | `raw_par` | A `Par` with one ground expression | `handle_after_raw_par` | `raw_par_finish_has_the_top_handle_facts` |
+| 2 | `cost_atom_absent` | A `CostSignatureAtom` without a form | `handle_after_cost_atom_absent` | `cost_atom_absent_finish_has_the_top_handle_facts` |
+| 3 | `cost_atom_bytes` | A `CostSignatureAtom` with a ground, quote or runtime-name form | `handle_after_cost_atom_bytes` | `cost_atom_bytes_finish_has_the_top_handle_facts` |
+| 4 | `cost_bound` | A `CostBoundSignature` | `handle_after_cost_bound` | `cost_bound_finish_has_the_top_handle_facts` |
+| 5 | `cost_atom_bound_forward` | A `CostSignatureAtom` with a bound form | `handle_after_cost_atom_bound_forward` | `cost_atom_bound_forward_finish_has_the_top_handle_facts` |
+| 6 | `cost_signature` | A `CostSignature` with one ground atom | `handle_after_cost_signature` | `cost_signature_finish_has_the_top_handle_facts` |
+| 7 | `cost_region` | A `CostRegion` | `handle_after_cost_region` | `cost_region_finish_has_the_top_handle_facts` |
+| 8 | `cost_token_stack` | A `CostTokenStack` with one layer | `handle_after_cost_token_stack` | `cost_token_stack_finish_has_the_top_handle_facts` |
+| 9 | `bundle` | A `Bundle` with a body | `handle_after_bundle` | `bundle_finish_has_the_top_handle_facts` |
+| 10 | `if` | An `If` with a condition and both branches | `handle_after_if` | `if_finish_has_the_top_handle_facts` |
+| 11 | `send` | A `Send` with a channel and one datum | `handle_after_send` | `send_finish_has_the_top_handle_facts` |
+| 12 | `match_component` | A `Match` with a target and one case | `handle_after_match_component` | `match_component_finish_has_the_top_handle_facts` |
+| 13 | `absent_specialized` | An `Expr` or a `GUnforgeable` without an instance | `handle_after_absent_specialized` | `absent_specialized_finish_has_the_top_handle_facts` |
+| 14 | `absent_connective` | A `Connective` without an instance | `handle_after_absent_connective` | `absent_connective_finish_has_the_top_handle_facts` |
+| 15 | `receive_bind` | A `ReceiveBind` with a source | `handle_after_receive_bind` | `receive_bind_finish_has_the_top_handle_facts` |
+| 16 | `match_case` | A `MatchCase` with a source | `handle_after_match_case` | `match_case_finish_has_the_top_handle_facts` |
+| 17 | `bool_oneof` | An `Expr` with a truth value, or a `Connective` with one of its five type flags | `handle_after_bool_oneof` | `bool_oneof_finish_has_the_top_handle_facts` |
+| 18 | `expr_atom` | An `Expr` with a string, a URI, a byte array or a big integer | `handle_after_expr_atom` | `expr_atom_finish_has_the_top_handle_facts` |
+| 19 | `expr_numeric` | An `Expr` with an integer or a double | `handle_after_expr_numeric` | `expr_numeric_finish_has_the_top_handle_facts` |
+| 20 | `expr_big_rational` | An `Expr` with a big rational | `handle_after_expr_big_rational` | `expr_big_rational_finish_has_the_top_handle_facts` |
+| 21 | `expr_fixed_point` | An `Expr` with a fixed-point number | `handle_after_expr_fixed_point` | `expr_fixed_point_finish_has_the_top_handle_facts` |
+| 22 | `sys_auth_token` | A `GUnforgeable` with a system authorization token | `handle_after_sys_auth_token` | `sys_auth_token_finish_has_the_top_handle_facts` |
+| 23 | `new_empty_collections` | A `New` without URIs and without injections | `handle_after_new_empty_collections` | `new_empty_collections_finish_has_the_top_handle_facts` |
+| 24 | `new_one_injection` | A `New` with one injection | `handle_after_new_one_injection` | `new_one_injection_finish_has_the_top_handle_facts` |
+| 25 | `new_one_absent_injection` | A `New` with one injection whose value is the empty `Par` | `handle_after_new_one_absent_injection` | `new_one_absent_injection_finish_has_the_top_handle_facts` |
+| 26 | `new_one_uri` | A `New` with one URI | `handle_after_new_one_uri` | `new_one_uri_finish_has_the_top_handle_facts` |
+| 27 | `new_collections` | A `New` with two URIs, a URI and an injection, or two injections | `handle_after_new_collections` | `new_collections_finish_has_the_top_handle_facts` |
+| 28 | `expr_payload_forward` | An `Expr` with a list, a tuple, a variable or a negation | `handle_after_expr_payload_forward` | `expr_payload_forward_finish_has_the_top_handle_facts` |
+| 29 | `expr_structural` | One of the 19 operator messages, `ENot` to `EMinusMinus`, with its operands | `handle_after_expr_structural` | `expr_structural_finish_has_the_top_handle_facts` |
+| 30 | `evar` | An `EVar` with a variable | `handle_after_evar` | `evar_finish_has_the_top_handle_facts` |
+| 31 | `ordered_sequence` | An `EList`, an `ETuple` or an `ESet` | `handle_after_ordered_sequence` | `ordered_sequence_finish_has_the_top_handle_facts` |
+| 32 | `emethod` | An `EMethod` with a target | `handle_after_emethod` | `emethod_finish_has_the_top_handle_facts` |
+| 33 | `emap_finish` | An `EMap` with two entries | `handle_after_emap_finish` | `emap_finish_finish_has_the_top_handle_facts` |
+| 34 | `connective_not` | A `Connective` with a negation | `handle_after_connective_not` | `connective_not_finish_has_the_top_handle_facts` |
+| 35 | `connective_varref` | A `Connective` with a variable reference | `handle_after_connective_varref` | `connective_varref_finish_has_the_top_handle_facts` |
+| 36 | `connective_collection` | A `Connective` with a conjunction or a disjunction | `handle_after_connective_collection` | `connective_collection_finish_has_the_top_handle_facts` |
+| 37 | `unforgeable_bytes` | A `GUnforgeable` with a private name, a deploy identifier or a deployer identifier | `handle_after_unforgeable_bytes` | `unforgeable_bytes_finish_has_the_top_handle_facts` |
+| 38 | `receive_present_condition` | A `Receive` with a condition | `handle_after_receive_present_condition` | `receive_present_condition_finish_has_the_top_handle_facts` |
+| 39 | `receive_absent_condition` | A `Receive` without a condition | `handle_after_receive_absent_condition` | `receive_absent_condition_finish_has_the_top_handle_facts` |
+| 40 | `nonsemantic` | A `Send`, `Receive`, `New`, `Match`, `Bundle`, `If` or negation that lacks a required part | `handle_after_nonsemantic` | `nonsemantic_finish_has_the_top_handle_facts` |
+| 41 | `var` | A `Var` | `handle_after_var` | `var_finish_has_the_top_handle_facts` |
+| 42 | `epathmap_owner` | An `EPathMap` | `handle_after_epathmap_owner` | `epathmap_owner_finish_has_the_top_handle_facts` |
+| 43 | `ezipper` | An `EZipper` with a path map | `handle_after_ezipper` | `ezipper_finish_has_the_top_handle_facts` |
+
+The second table states the four predicates and the other 23 lemmas, in the order of the file. The
+property bound to a predicate checks the predicate at every finish to which it applies.
+
+| Predicate or lemma | Statement | Bound property |
+|---|---|---|
+| `finish_handle_facts` | Predicate. For a frame and a handle: the handle is a position of the score arena and of the transcript list, its entry originates from the frame, the semantic flag bound to it equals the completeness of the frame, and the length and the bytes recorded for it are those of its well-formed transcript. | `scored_finish_handle_has_the_handle_facts` |
+| `finish_top_handle` | Predicate. The state has a top frame, and that frame carries a handle with the handle facts. | `selected_finish_leaves_a_top_handle_with_its_facts` |
+| `finish_child_return_facts` | Predicate. After the pop of a child, the parent's last return carries the child's handle, body identity and body bytes; without a handle it names no origin; with a handle it names the origin of the entry, and the handle has the handle facts of the child. | `child_pop_return_has_the_child_return_facts` |
+| `finish_root_return_facts` | Predicate. A root return leaves no frame, comes from a pre-pop state with one frame whose handle is the handle of the returned summary, returns the transcript of that handle as the score bytes, and that handle has the handle facts. | `scored_root_return_has_the_root_return_facts` |
+| `handle_facts_from_agreement` | If the score arena and the transcript list are consistent and the handle of a frame agrees with the frame in origin and semantic flag, the frame has a handle with the handle facts. | `score_body_agreement_gives_the_handle_facts` |
+| `top_handle_from_agreement` | If the handle of the top frame agrees with it in that way, the state satisfies `finish_top_handle`. | `top_frame_agreement_gives_the_top_handle` |
+| `attach_agreement_holds` | Attaching a handle to the top frame, when it succeeds, keeps the number of frames and the score arena, leaves that handle on the top frame, and leaves the frame in agreement with it. | `attached_finish_handle_agrees_with_its_frame` |
+| `attach_agreement_everywhere` | The same holds for every attach step, whatever the state, the handle and the body, so that it applies to the attach inside each finish. | `every_attach_of_a_nested_run_agrees_with_its_frame` |
+| `handle_routed_group_1` | If the finish that the model routes among the kinds 1 to 8 applies to a state, the state after it satisfies `finish_top_handle`. | `finish_group_1_routes_have_the_top_handle_facts` |
+| `handle_routed_group_2` | If the finish that the model routes among the kinds 9 to 16 applies to a state, the state after it satisfies `finish_top_handle`. | `finish_group_2_routes_have_the_top_handle_facts` |
+| `handle_routed_group_3` | If the finish that the model routes among the kinds 17 to 24 applies to a state, the state after it satisfies `finish_top_handle`. | `finish_group_3_routes_have_the_top_handle_facts` |
+| `handle_routed_group_4` | If the finish that the model routes among the kinds 25 to 33 applies to a state, the state after it satisfies `finish_top_handle`. | `finish_group_4_routes_have_the_top_handle_facts` |
+| `handle_routed_group_5` | If the finish that the model routes among the kinds 34 to 40 applies to a state, the state after it satisfies `finish_top_handle`. | `finish_group_5_routes_have_the_top_handle_facts` |
+| `handle_routed_group_6` | If the finish that the model routes among the kinds 41 to 43 applies to a state, the state after it satisfies `finish_top_handle`. | `finish_group_6_routes_have_the_top_handle_facts` |
+| `handle_after_selected_finish` | Whichever of the 43 kinds the model selects for a state, the state after the finish satisfies `finish_top_handle`. | `every_selected_finish_route_has_the_top_handle_facts` |
+| `handle_after_epm_source_finish` | The scored finish of an EPathMap owner, as the runtime model states it, leaves a state that satisfies `finish_top_handle`. | `epathmap_source_finish_has_the_top_handle_facts` |
+| `handle_after_product_epm_finish` | The same finish, in the form in which the root module of the proofs states it, leaves a state that satisfies `finish_top_handle`. | `epathmap_product_finish_has_the_top_handle_facts` |
+| `child_return_carries_handle` | The pop of a child keeps the score arena, gives the parent a new return of the kind of the child's summary, has a score exactly when the child carries a handle, and satisfies `finish_child_return_facts`. | `child_step_return_carries_the_child_handle` |
+| `pre_pop_return_carries_handle` | Every pop of a child in the runtime model keeps the transcript list and the score arena and satisfies `finish_child_return_facts`. | `pre_pop_child_accept_carries_the_child_handle` |
+| `eof_score_child_carries_handle` | The pop of a child that follows a scored finish keeps the transcript list and the score arena of the finished state and satisfies `finish_child_return_facts` for the finished frame. | `scored_child_eof_accept_carries_the_child_handle` |
+| `root_return_from_top_handle` | A root return from a pre-pop state with one frame that satisfies `finish_top_handle`, whose summary carries the handle of that frame and whose score bytes are the bytes recorded for the handle, satisfies `finish_root_return_facts`. | `root_return_follows_from_the_top_handle` |
+| `runtime_eof_finish_facts` | Every outcome of the runtime model at the end of a message has the facts of its finish: a scored child return, an unscored child return, a scored root return or an unscored root return. | `message_eof_outcomes_have_the_finish_facts` |
+| `runtime_epathmap_eof_finish_facts` | Every outcome of the runtime model at the end of the input of an EPathMap owner has the facts of that finish, as a child return or as a root return. | `epathmap_eof_outcomes_have_the_finish_facts` |
+| `live_root_score_has_top_handle` | The step of the live model that scores the root frame leaves a state that satisfies `finish_top_handle`. | `live_root_score_step_has_the_top_handle` |
+| `live_child_score_has_top_handle` | The step of the live model that scores a child frame before its pop leaves a state that satisfies `finish_top_handle`. | `live_child_score_step_has_the_top_handle` |
+| `live_root_complete_carries_handle` | The step of the live model that scores and returns the root in one operation leaves a state that satisfies `finish_top_handle`, returns from that state, and satisfies `finish_root_return_facts`. | `live_root_complete_carries_the_handle_to_the_return` |
+| `handle_owner_witness` | The lemmas are not vacuous: for the EPathMap owner that the model constructs, at the end of its input and with two frames on the stack, a finish is selected and the state after it satisfies `finish_top_handle`. | `nested_epathmap_owner_reaches_the_witness_finish` |
+
+The table `FINISH_INVARIANT_BINDINGS` of the test file holds the 70 pairs. The test
+`every_finish_invariant_has_exactly_one_bound_property` of the same file reads the Verus file and
+its own source. It fails if a predicate or lemma that the Verus file declares has no row or more
+than one row, if a row names an item that the Verus file does not declare or that the test file
+cannot check, if a row names a test that is not defined exactly once as a test function, if two
+rows name the same test, or if the test that a row names does not check the item of that row.
+
+A property can also be run on a forged observation. After the production run, one recorded value
+of the first finish that the item covers is changed so that the statement of the item is false of
+it: for example the handle is removed, one served byte is flipped, or the score arena is recorded
+as longer after the pop than before it. The test
+`every_finish_property_rejects_its_forged_observation` runs all 70 properties in that way and fails
+unless each of them reports a violation.
+
+`cargo test -p models --lib rpb3_finish_invariant_properties::` runs the 72 tests: the 70
+properties and the two tests just named.
+
 ## Migration and completion
 
 The typed authority foundation is now concrete rather than hypothetical. Checkpoint `7ea86db75`
