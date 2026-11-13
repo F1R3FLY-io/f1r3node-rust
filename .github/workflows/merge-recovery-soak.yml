@@ -369,7 +369,7 @@ env:
   #   #173). Its only change since f617787 repins pyf1r3fly to 014d105, the
   #   merge of pyf1r3fly #11, whose tree equals the 9fd70f0 tested above.
   #   Verified: descends from f617787; diff is pyproject.toml and poetry.lock.
-  SYSTEM_INTEGRATION_REF: cbda724b0b240dec701f82ecc5837de22c59a7c1
+  SYSTEM_INTEGRATION_REF: e155ed6d22466747a8fa73d3a2e8d0acf84e59bb
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

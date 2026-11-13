@@ -7,7 +7,7 @@
 {
   "artifact": {
     "path": "scripts/ci/check-soak-cleanup.sh",
-    "commit": "67bc1ccc4ec51ce1c5946780d2b74d72a3909b71",
+    "commit": "4b4b7cf56d1bcb83964f9431f440f82903775e0c",
     "commit_is_base": true,
     "working_tree": true
   },
@@ -20,10 +20,10 @@
     "ref": "docs/casper/cbc-evidence/soak-cleanup-report.json"
   },
   "waiver": null,
-  "verified_at": "2026-11-12T18:48:54Z",
+  "verified_at": "2026-11-13T01:34:15Z",
   "claim_id": "CLAIM-SOAK-CLEANUP-001",
   "schema": "cbc-claim/v1",
-  "verification_id": "2b879c3a-7452-46df-a90e-961b0c52505d",
+  "verification_id": "99211966-c9c8-4e66-b1e6-9618f4b02f8b",
   "inputs": {
     "artifact": "scripts/ci/check-soak-cleanup.sh",
     "source_sha256": "3e5af25a1885ab51cca4f5ff5cd7c3f059802435c9fe6c98cb06990f391fc165",
@@ -33,7 +33,7 @@
     }
   },
   "evidence_files": {
-    "docs/casper/cbc-evidence/soak-cleanup-report.json": "1ab2023913571f2ced94ee3a16e86792d36ecfc46ccff1515cbce123bbcc8d58"
+    "docs/casper/cbc-evidence/soak-cleanup-report.json": "769d1c39077d298c9595024a8a02cc5c3cf2f339e159b464fca43039266b0297"
   }
 }
 ```
