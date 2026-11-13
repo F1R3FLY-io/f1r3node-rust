@@ -1873,6 +1873,37 @@ impl BlockDagKeyValueStorage {
             .min())
     }
 
+    /// Projects `block`'s executions and rejection records into the per-sig
+    /// lifecycle rows. Each append is deduplicated per block and kind, so a
+    /// repeat writes nothing.
+    pub fn record_deploy_events(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
+        let block_number = block.body.state.block_number;
+        let lifecycle_guard = self.lifecycle.write();
+        for pd in &block.body.deploys {
+            lifecycle_guard.append_event_once(
+                &pd.deploy.sig,
+                Some(pd.deploy.data.valid_after_block_number),
+                LifecycleEvent {
+                    height: block_number,
+                    block_hash: block.block_hash.to_vec(),
+                    kind: LifecycleEventKind::Included {
+                        is_failed: pd.is_failed,
+                    },
+                },
+            )?;
+        }
+        for rd in &block.body.rejected_deploys {
+            lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+                height: block_number,
+                block_hash: block.block_hash.to_vec(),
+                kind: LifecycleEventKind::Rejected {
+                    duplicate: rd.duplicate,
+                },
+            })?;
+        }
+        Ok(())
+    }
+
     /// Internal method to insert without acquiring lock.
     /// Used when lock is already held by the caller.
     /// Public to allow IndexedBlockDagStorage to use it.
@@ -2076,43 +2107,13 @@ impl BlockDagKeyValueStorage {
                 }
             }
 
-            // Lifecycle event ingest: one body pass projects inclusion and
-            // rejection events into the per-sig lifecycle rows. Invalid
-            // blocks contribute nothing — their bodies are not canonical
-            // history (the carrier index above covers the repeat-deploy
-            // scan's view of them). Appends go through `append_event_once`:
-            // after a crash inside this ingest-first window the block is
-            // not yet DAG-visible, so its redelivery re-runs this pass —
-            // the per-(block, kind) dedup makes that retry write nothing
-            // twice.
-            {
-                let block_number = block.body.state.block_number;
-                let lifecycle_guard = self.lifecycle.write();
-                if !invalid {
-                    for pd in &block.body.deploys {
-                        lifecycle_guard.append_event_once(
-                            &pd.deploy.sig,
-                            Some(pd.deploy.data.valid_after_block_number),
-                            LifecycleEvent {
-                                height: block_number,
-                                block_hash: block.block_hash.to_vec(),
-                                kind: LifecycleEventKind::Included {
-                                    is_failed: pd.is_failed,
-                                },
-                            },
-                        )?;
-                    }
-                    for rd in &block.body.rejected_deploys {
-                        lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
-                            height: block_number,
-                            block_hash: block.block_hash.to_vec(),
-                            kind: LifecycleEventKind::Rejected {
-                                duplicate: rd.duplicate,
-                            },
-                        })?;
-                    }
-                }
-                drop(lifecycle_guard);
+            // Lifecycle event ingest, before the block is DAG-visible: a
+            // crash here leaves the block undelivered, and its redelivery
+            // re-runs this pass. An equivocation stored by validation has
+            // contents nobody has judged, so its events wait for
+            // `record_deploy_events` after a judgement finds them valid.
+            if !matches!(mode, InsertMode::Equivocation { .. }) {
+                self.record_deploy_events(block)?;
             }
 
             let block_metadata = BlockMetadata::from_block(block, equivocates, None, None);

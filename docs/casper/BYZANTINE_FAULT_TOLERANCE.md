@@ -150,6 +150,8 @@ replay, so a sibling that no block cites costs a node nothing. Before a node
 judges a block built on a stored equivocation, it judges that parent's
 contents and replays it:
 
+- Valid parent contents enter the deploy history then, not when the parent is
+  stored.
 - Invalid parent contents make the block `InvalidParents`.
 - A parent that the node cannot judge yet defers the block.
 - The node keeps a final verdict, so it judges a parent once for all blocks

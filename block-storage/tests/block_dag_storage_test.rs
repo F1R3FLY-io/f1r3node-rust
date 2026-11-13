@@ -714,10 +714,10 @@ fn dag_storage_settled_history_insert_never_touches_latest_messages() {
     );
 }
 
-/// Every deploy in a VALID inserted body resolves to its carrier; invalid
-/// bodies are not canonical history and resolve to nothing.
+/// Every deploy in a validated inserted body resolves to its carrier; an
+/// equivocation's contents are unjudged at insert and resolve to nothing.
 #[test]
-fn deploy_appearance_resolves_valid_bodies_and_ignores_invalid_ones() {
+fn deploy_appearance_resolves_validated_bodies_and_ignores_equivocations() {
     let genesis = genesis_block();
     proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10))| {
       for mode in [
@@ -1290,10 +1290,11 @@ fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
 }
 
 /// The ingest rides `insert`'s body pass: a valid block's executions and
-/// records project into per-sig lifecycle rows, an invalid block's body
-/// contributes no lifecycle events, and EVERY block's body sigs — valid
-/// and invalid alike — land in the repeat-deploy carrier index, which
-/// must cover the same block universe the ancestor scan reads.
+/// records project into per-sig lifecycle rows, an equivocation's body
+/// contributes none until `record_deploy_events` after its contents are
+/// judged, and EVERY block's body sigs — valid and invalid alike — land in
+/// the repeat-deploy carrier index, which must cover the same block
+/// universe the ancestor scan reads.
 #[test]
 fn insert_projects_lifecycle_events_and_carrier_entries() {
     use models::rust::block_implicits::processed_deploy_gen;
@@ -1416,13 +1417,13 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
             dag.deploy_lifecycle_events(&invalid_deploy.deploy.sig)
                 .expect("read row")
                 .is_none(),
-            "an invalid block's body contributes no lifecycle events"
+            "an equivocation's body contributes no lifecycle events at insert"
         );
         assert!(
             dag.deploy_canonical_appearance(&invalid_deploy.deploy.sig)
                 .expect("appearance")
                 .is_none(),
-            "an invalid block's body is not canonical history"
+            "an equivocation's unjudged body is not where a deploy appears"
         );
         assert!(
             !dag.carrier_index_proves_absence(&invalid_deploy.deploy.sig)
@@ -1438,6 +1439,33 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
             dag.carrier_index_proves_absence(b"never-carried-sig")
                 .expect("probe"),
             "a fresh sig has no carrier"
+        );
+
+        for _ in 0..2 {
+            dag_storage
+                .record_deploy_events(&invalid_block)
+                .expect("record a judged equivocation's deploys");
+        }
+        let judged_row = dag
+            .deploy_lifecycle_events(&invalid_deploy.deploy.sig)
+            .expect("read row")
+            .expect("a judged equivocation's deploy has a row");
+        assert!(
+            matches!(
+                judged_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Included { .. },
+                    ..
+                }]
+            ),
+            "one Included event however often it is recorded; got {:?}",
+            judged_row.events
+        );
+        assert_eq!(
+            dag.deploy_canonical_appearance(&invalid_deploy.deploy.sig)
+                .expect("appearance"),
+            Some(invalid_block.block_hash.clone()),
+            "a judged equivocation is where its deploy appears"
         );
     });
 }
