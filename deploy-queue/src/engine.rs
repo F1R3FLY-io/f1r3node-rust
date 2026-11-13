@@ -202,7 +202,7 @@ pub struct Engine {
     /// Queued deploys not yet valid, by (valid after, sequence).
     waiting: BTreeMap<(i64, u64), Sig>,
     /// Every placed queued deploy, by (last includable block, sequence).
-    expiry: BTreeMap<(i64, u64), Sig>,
+    expiry: DeadlineIndex,
     /// Queued deploys whose window closed before release, by (height past
     /// which no block can include them, sequence).
     closed: BTreeMap<(i64, u64), Sig>,
@@ -269,7 +269,7 @@ impl Engine {
             counts,
             ready: BTreeMap::new(),
             waiting: BTreeMap::new(),
-            expiry: BTreeMap::new(),
+            expiry: DeadlineIndex::default(),
             closed: BTreeMap::new(),
             closed_checking: HashSet::new(),
             released_index: BTreeMap::new(),
@@ -489,22 +489,24 @@ impl Engine {
             }));
         }
 
+        // Deploys sharing a deadline share their valid-after block, so each
+        // group is one slot; the new deploy, signed last, follows its own.
         let last = last_includable(valid_after, shard.deploy_lifespan);
-        let key = (last, self.next_sequence);
-        let slot = |record: &QueueRecord, last: i64| Slot {
-            releasable_from: record.valid_after.max(chain.tip),
+        let lifespan = shard.deploy_lifespan;
+        let group_slot = |last: i64| Slot {
+            releasable_from: (last - lifespan + 1).max(chain.tip),
             last,
         };
         let admitted = admits(
             self.pooled(),
-            self.expiry.range(..key).count(),
+            self.expiry.through(last),
             Slot {
                 releasable_from: valid_after.max(chain.tip),
                 last,
             },
             self.expiry
-                .range(key..)
-                .map(|((last, _), sig)| slot(&self.records[sig], *last)),
+                .after(last)
+                .map(|(last, count)| (group_slot(last), count)),
             rate,
             depth,
         );
@@ -553,10 +555,7 @@ impl Engine {
             "connected to the node"
         );
         if self.health.is_none() {
-            self.health = Some(Health::new(
-                citable_depth(&chain.shard),
-                chain.shard.max_user_deploys_per_block as usize,
-            ));
+            self.health = Some(Health::new(citable_depth(&chain.shard)));
         }
         self.chain = Some(chain);
         self.connected = true;
@@ -603,10 +602,31 @@ impl Engine {
             NodeEvent::Created {
                 number,
                 creator,
+                deploys,
                 admission,
             } => {
+                // The block is announced before the node adds it, so this
+                // queue's deploys it carries are still pooled. Of those it
+                // left, only deploys sent before its parent height were
+                // surely in the pool when it was built; later ones may have
+                // arrived after its deploys were chosen.
+                let carried: HashSet<Sig> = deploys
+                    .iter()
+                    .filter_map(|id| decode_hex("deploy id", id))
+                    .filter(|sig| {
+                        self.records
+                            .get(sig)
+                            .is_some_and(|record| record.state == QueueState::Submitted)
+                    })
+                    .collect();
+                let left = self
+                    .resend_index
+                    .range(..(number - 1, 0))
+                    .filter(|(_, sig)| !carried.contains(*sig))
+                    .count();
+                let took = carried.len();
                 if let Some(health) = self.health.as_mut() {
-                    health.on_own_block(number, &creator, admission, Instant::now());
+                    health.on_own_block(number, &creator, admission, took, left, Instant::now());
                 }
             }
             NodeEvent::Finalised { number } => self.observe_lfb(number),
@@ -1069,9 +1089,7 @@ impl Engine {
     /// Moves every queued deploy whose window has closed at `tip` out of
     /// release. Its verdict waits until no block can carry it.
     fn close_expired(&mut self, tip: i64) {
-        let open = self.expiry.split_off(&(tip + 1, 0));
-        let expired = std::mem::replace(&mut self.expiry, open);
-        for sig in expired.into_values() {
+        for sig in self.expiry.take_through(tip) {
             self.close(&sig);
         }
     }
@@ -1237,6 +1255,65 @@ impl Engine {
     }
 }
 
+/// Placed queued deploys by (deadline, sequence), with how many share each
+/// deadline, so admission walks deadlines rather than deploys.
+#[derive(Default)]
+struct DeadlineIndex {
+    deploys: BTreeMap<(i64, u64), Sig>,
+    per_deadline: BTreeMap<i64, usize>,
+}
+
+impl DeadlineIndex {
+    fn insert(&mut self, key: (i64, u64), sig: Sig) {
+        if self.deploys.insert(key, sig).is_none() {
+            *self.per_deadline.entry(key.0).or_insert(0) += 1;
+        }
+    }
+
+    fn remove(&mut self, key: &(i64, u64)) {
+        if self.deploys.remove(key).is_some() {
+            let count = self
+                .per_deadline
+                .get_mut(&key.0)
+                .expect("every indexed deploy's deadline is counted");
+            *count -= 1;
+            if *count == 0 {
+                self.per_deadline.remove(&key.0);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.deploys.clear();
+        self.per_deadline.clear();
+    }
+
+    fn len(&self) -> usize { self.deploys.len() }
+
+    /// Removes every deploy whose deadline is at or below `tip`.
+    fn take_through(&mut self, tip: i64) -> Vec<Sig> {
+        let open = self.deploys.split_off(&(tip + 1, 0));
+        let closed = std::mem::replace(&mut self.deploys, open);
+        self.per_deadline = self.per_deadline.split_off(&(tip + 1));
+        closed.into_values().collect()
+    }
+
+    /// Deploys whose deadline is at or before `last`.
+    fn through(&self, last: i64) -> usize {
+        self.per_deadline
+            .range(..=last)
+            .map(|(_, count)| count)
+            .sum()
+    }
+
+    /// Each later deadline and how many deploys share it.
+    fn after(&self, last: i64) -> impl Iterator<Item = (i64, usize)> + '_ {
+        self.per_deadline
+            .range(last + 1..)
+            .map(|(deadline, count)| (*deadline, *count))
+    }
+}
+
 /// The shard's citable depth: the span, in heights, in which a block may
 /// still build on another.
 fn citable_depth(shard: &ShardValues) -> i64 { i64::from(shard.max_parent_depth) }
@@ -1268,23 +1345,34 @@ fn lands(slot: Slot, position: usize, rate: f64, depth: i64) -> bool {
 /// Whether a new deploy may join the queue. Release takes the earliest
 /// deadline first, so the deploy waits behind every deploy in the
 /// validator's pool and the `earlier` queued deploys whose deadline comes
-/// first, and every queued deploy in `later` moves back one place. It is
-/// admitted when it lands and no later deploy that lands now would stop
-/// landing.
+/// first, and every queued deploy in `later` moves back one place. `later`
+/// holds each later deadline's slot and how many deploys share it. The
+/// deploy is admitted when it lands and no later deploy that lands now would
+/// stop landing.
 fn admits(
     pooled: usize,
     earlier: usize,
     new: Slot,
-    later: impl Iterator<Item = Slot>,
+    later: impl Iterator<Item = (Slot, usize)>,
     rate: f64,
     depth: i64,
 ) -> bool {
     let position = pooled + earlier + 1;
-    lands(new, position, rate, depth)
-        && later.enumerate().all(|(index, slot)| {
-            let without = position + index;
-            !lands(slot, without, rate, depth) || lands(slot, without + 1, rate, depth)
-        })
+    if !lands(new, position, rate, depth) {
+        return false;
+    }
+    let mut first = position;
+    for (slot, count) in later {
+        // The group holds `first..first + count` and moves back one. Landing
+        // only gets harder further back, so one of its deploys stops landing
+        // exactly when the group's first lands and the place past its last
+        // does not.
+        if lands(slot, first, rate, depth) && !lands(slot, first + count, rate, depth) {
+            return false;
+        }
+        first += count;
+    }
+    true
 }
 
 /// Deploys the queue can hold: what the validator takes at `rate` a height
@@ -1372,13 +1460,67 @@ mod tests {
 
     #[test]
     fn admission_refuses_a_deploy_that_would_push_a_landing_deploy_out() {
-        assert!(!admits(0, 0, slot(0, 1), [slot(0, 1)].into_iter(), 1.0, 0));
-        assert!(admits(0, 0, slot(0, 1), [slot(0, 2)].into_iter(), 1.0, 0));
+        assert!(!admits(
+            0,
+            0,
+            slot(0, 1),
+            [(slot(0, 1), 1)].into_iter(),
+            1.0,
+            0
+        ));
+        assert!(admits(
+            0,
+            0,
+            slot(0, 1),
+            [(slot(0, 2), 1)].into_iter(),
+            1.0,
+            0
+        ));
     }
 
     #[test]
     fn admission_ignores_a_deploy_that_already_misses_its_window() {
-        assert!(admits(0, 0, slot(0, 1), [slot(0, 0)].into_iter(), 1.0, 0));
+        assert!(admits(
+            0,
+            0,
+            slot(0, 1),
+            [(slot(0, 0), 1)].into_iter(),
+            1.0,
+            0
+        ));
+    }
+
+    #[test]
+    fn a_group_sharing_a_deadline_is_judged_as_its_deploys_would_be() {
+        let one_by_one = |pooled: usize, group: Slot, count: usize, rate: f64| {
+            admits(
+                pooled,
+                0,
+                slot(0, 400),
+                std::iter::repeat_n((group, 1), count),
+                rate,
+                25,
+            )
+        };
+        for pooled in 0..40 {
+            for count in 1..30 {
+                for rate in [0.5, 1.0, 2.5] {
+                    let group = slot(3, 60);
+                    assert_eq!(
+                        admits(
+                            pooled,
+                            0,
+                            slot(0, 400),
+                            [(group, count)].into_iter(),
+                            rate,
+                            25
+                        ),
+                        one_by_one(pooled, group, count, rate),
+                        "pooled {pooled}, group of {count}, rate {rate}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1406,7 +1548,7 @@ mod tests {
                 let new = slot(valid_after.max(tip), last);
                 let later = queue
                     .range(key..)
-                    .map(|((last, _), valid_after)| slot((*valid_after).max(tip), *last));
+                    .map(|((last, _), valid_after)| (slot((*valid_after).max(tip), *last), 1));
                 if admits(0, queue.range(..key).count(), new, later, 1.0, depth) {
                     queue.insert(key, valid_after);
                     admitted += 1;

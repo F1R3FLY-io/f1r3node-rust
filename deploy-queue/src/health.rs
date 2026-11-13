@@ -8,26 +8,40 @@ use crate::events::Admission;
 
 /// Weight of the newest sample in the wall-time-per-height average.
 const SAMPLE_WEIGHT: f64 = 0.2;
-/// Intake assumed before the validator has created a block the queue saw.
+/// Intake assumed before the validator has built a block from this queue's
+/// deploys.
 const UNMEASURED_INTAKE_PER_HEIGHT: f64 = 1.0;
 
-/// One of the validator's own blocks, as its block-created event described it.
+/// One of the validator's own blocks. `could_take` is set only for a block
+/// built while this queue had deploys in the validator's pool: one built from
+/// an empty pool says nothing about what the validator takes.
 #[derive(Debug, Clone, Copy)]
 struct OwnBlock {
     number: i64,
-    /// Fresh deploys the block could take.
-    capacity: usize,
+    could_take: Option<usize>,
+}
+
+/// The validator's latest block built while this queue had deploys in its
+/// pool.
+#[derive(Debug, Clone)]
+struct Measured {
+    admission: Admission,
+    /// This queue's deploys stayed in the pool after the block.
+    saturated: bool,
 }
 
 /// What the queue knows about its validator and about the shard, from the
 /// node's event stream, over the last `span` heights (the citable depth).
 ///
 /// The validator is the only block producer that includes this queue's
-/// deploys: deploys never gossip. Its own blocks say how many fresh deploys
-/// each could take and whether that cap bound. A block that left deploys in
-/// the pool at its cap took exactly its cap; one that took all it was offered
-/// was limited by nothing but demand, so it could have taken up to the shard's
-/// per-block ceiling.
+/// deploys: deploys never gossip. Its block creator reports the cap it
+/// applied to each block, so the queue keeps that many deploys in the pool
+/// and no more: a deploy left in the pool has no deadline order and no
+/// deployer share. A block that left this queue's deploys behind took what
+/// it could; one that took all it was offered was limited by demand, so its
+/// cap, not what it took, is what it could have taken. The validator's
+/// intake is the average of what its blocks could take, times how often it
+/// creates one.
 ///
 /// The shard is every block the node adds, from any creator: how fast heights
 /// come, and, through the validator's admission, whether the node is holding
@@ -35,13 +49,12 @@ struct OwnBlock {
 #[derive(Debug, Clone)]
 pub struct Health {
     span: i64,
-    ceiling: usize,
     own_creator: Option<String>,
     /// Heights of recent blocks from any creator, with whether the validator
     /// created them.
     blocks: VecDeque<(i64, bool)>,
     own_blocks: VecDeque<OwnBlock>,
-    latest_admission: Option<Admission>,
+    measured: Option<Measured>,
     first_tip: Option<i64>,
     tip: Option<(i64, Instant)>,
     secs_per_height: Option<f64>,
@@ -57,10 +70,11 @@ pub struct ValidatorView {
     pub intake_per_height: f64,
     /// Released deploys the queue keeps waiting in the validator's pool.
     pub pool_target: usize,
-    /// The cap of its latest block and what set it.
+    /// The cap of its latest block built from this queue's deploys, and what
+    /// set it.
     pub latest_cap: Option<usize>,
     pub latest_cap_source: Option<String>,
-    /// Its latest block left fresh deploys in the pool.
+    /// That block left this queue's deploys in the pool.
     pub saturated: bool,
 }
 
@@ -71,21 +85,19 @@ pub struct ShardView {
     /// or has stalled.
     pub backpressure: bool,
     /// Heights between the tip and the last finalized block when the
-    /// validator last created a block.
+    /// validator last built a block from this queue's deploys.
     pub finality_lag: Option<i64>,
 }
 
 impl Health {
-    /// Health over `span` heights for a shard whose blocks take at most
-    /// `ceiling` user deploys.
-    pub fn new(span: i64, ceiling: usize) -> Self {
+    /// Health over `span` heights.
+    pub fn new(span: i64) -> Self {
         Self {
             span: span.max(1),
-            ceiling: ceiling.max(1),
             own_creator: None,
             blocks: VecDeque::new(),
             own_blocks: VecDeque::new(),
-            latest_admission: None,
+            measured: None,
             first_tip: None,
             tip: None,
             secs_per_height: None,
@@ -99,25 +111,43 @@ impl Health {
         self.on_tip(number, now);
     }
 
-    /// A block the validator created, before the node validated it.
+    /// A block the validator created, before the node validated it, carrying
+    /// `took` of this queue's deploys and leaving behind `left` that were in
+    /// the pool before it was built.
     pub fn on_own_block(
         &mut self,
         number: i64,
         creator: &str,
         admission: Option<Admission>,
+        took: usize,
+        left: usize,
         now: Instant,
     ) {
         if self.own_creator.as_deref() != Some(creator) {
             self.own_creator = Some(creator.to_string());
         }
-        if let Some(admission) = admission {
-            let capacity = if admission.cap_hit || admission.byte_cap_hit {
-                admission.cap
-            } else {
-                self.ceiling
-            };
-            self.own_blocks.push_back(OwnBlock { number, capacity });
-            self.latest_admission = Some(admission);
+        let measured = match admission {
+            Some(admission) if took + left > 0 => {
+                let saturated = left > 0 || took >= admission.cap;
+                Some(Measured {
+                    admission,
+                    saturated,
+                })
+            }
+            _ => None,
+        };
+        self.own_blocks.push_back(OwnBlock {
+            number,
+            could_take: measured.as_ref().map(|m| {
+                if m.saturated {
+                    took
+                } else {
+                    m.admission.cap.max(took)
+                }
+            }),
+        });
+        if measured.is_some() {
+            self.measured = measured;
         }
         self.on_tip(number, now);
     }
@@ -151,8 +181,8 @@ impl Health {
         Some((tip - self.first_tip?).clamp(1, self.span))
     }
 
-    /// The validator took no deploys into a block over a full span while the
-    /// shard advanced through it.
+    /// The validator created no block over a full span while the shard
+    /// advanced through it.
     pub fn validator_idle(&self) -> bool {
         let watched_a_span = match (self.first_tip, self.tip) {
             (Some(first), Some((tip, _))) => tip - first >= self.span,
@@ -161,15 +191,22 @@ impl Health {
         self.own_blocks.is_empty() && watched_a_span
     }
 
-    /// Fresh deploys the validator takes per height: what its own blocks
-    /// over the span could take, over the heights watched.
+    /// Fresh deploys the validator takes per height: what its blocks built
+    /// from this queue's deploys could take, on average, times how often it
+    /// creates a block.
     pub fn intake_per_height(&self) -> f64 {
         if self.validator_idle() {
             return 0.0;
         }
-        match (self.own_blocks.is_empty(), self.observed()) {
+        let samples: Vec<usize> = self
+            .own_blocks
+            .iter()
+            .filter_map(|b| b.could_take)
+            .collect();
+        match (samples.is_empty(), self.observed()) {
             (false, Some(observed)) => {
-                self.own_blocks.iter().map(|b| b.capacity).sum::<usize>() as f64 / observed as f64
+                let per_block = samples.iter().sum::<usize>() as f64 / samples.len() as f64;
+                per_block * self.own_blocks.len() as f64 / observed as f64
             }
             _ => UNMEASURED_INTAKE_PER_HEIGHT,
         }
@@ -183,22 +220,18 @@ impl Health {
         }
     }
 
-    /// Released deploys to keep waiting in the validator's pool: its cap
-    /// while that cap binds, otherwise a full block.
+    /// Released deploys to keep waiting in the validator's pool: the cap its
+    /// block creator last applied to this queue's deploys, at least one so
+    /// the validator always has work to report a cap for.
     pub fn pool_target(&self) -> usize {
-        match &self.latest_admission {
-            Some(admission) if admission.cap_hit || admission.byte_cap_hit => admission.cap,
-            _ => self.ceiling,
-        }
+        self.measured.as_ref().map_or(1, |m| m.admission.cap).max(1)
     }
 
     /// Why deploys wait: the shard when the node is holding its validator
     /// back for finality, the validator otherwise.
     pub fn congestion(&self) -> Congestion {
-        match &self.latest_admission {
-            Some(admission) if admission.backpressure && !self.validator_idle() => {
-                Congestion::Shard
-            }
+        match &self.measured {
+            Some(m) if m.admission.backpressure && !self.validator_idle() => Congestion::Shard,
             _ => Congestion::Validator,
         }
     }
@@ -220,12 +253,12 @@ impl Health {
             block_share: (!self.blocks.is_empty()).then(|| own as f64 / self.blocks.len() as f64),
             intake_per_height: self.intake_per_height(),
             pool_target: self.pool_target(),
-            latest_cap: self.latest_admission.as_ref().map(|a| a.cap),
-            latest_cap_source: self.latest_admission.as_ref().map(|a| a.cap_source.clone()),
-            saturated: self
-                .latest_admission
+            latest_cap: self.measured.as_ref().map(|m| m.admission.cap),
+            latest_cap_source: self
+                .measured
                 .as_ref()
-                .is_some_and(|a| a.cap_hit || a.byte_cap_hit),
+                .map(|m| m.admission.cap_source.clone()),
+            saturated: self.measured.as_ref().is_some_and(|m| m.saturated),
         }
     }
 
@@ -233,10 +266,10 @@ impl Health {
         ShardView {
             secs_per_height: self.secs_per_height,
             backpressure: self
-                .latest_admission
+                .measured
                 .as_ref()
-                .is_some_and(|a| a.backpressure),
-            finality_lag: self.latest_admission.as_ref().map(|a| a.finality_lag),
+                .is_some_and(|m| m.admission.backpressure),
+            finality_lag: self.measured.as_ref().map(|m| m.admission.finality_lag),
         }
     }
 }
@@ -247,10 +280,10 @@ mod tests {
 
     use super::*;
 
-    fn admission(cap: usize, cap_hit: bool, backpressure: bool) -> Option<Admission> {
+    fn admission(cap: usize, backpressure: bool) -> Option<Admission> {
         Some(Admission {
             cap,
-            cap_hit,
+            cap_hit: false,
             byte_cap_hit: false,
             cap_source: if backpressure { "hard" } else { "normal" }.to_string(),
             backpressure,
@@ -259,30 +292,55 @@ mod tests {
     }
 
     #[test]
-    fn a_validator_that_takes_all_it_is_offered_is_offered_a_full_block() {
+    fn the_pool_holds_the_cap_the_block_creator_applies() {
         let start = Instant::now();
-        let mut health = Health::new(10, 128);
-        health.on_own_block(1, "v1", admission(4, false, false), start);
-        assert_eq!(health.pool_target(), 128);
+        let mut health = Health::new(10);
+        assert_eq!(health.pool_target(), 1, "one deploy until a cap is known");
 
-        health.on_own_block(2, "v1", admission(16, true, false), start);
-        assert_eq!(
-            health.pool_target(),
-            16,
-            "a binding cap holds the pool at the cap"
-        );
+        // A cap that took all it was offered still bounds the pool: the node
+        // can leave deploys behind without reporting its cap as hit.
+        health.on_own_block(1, "v1", admission(16, false), 3, 0, start);
+        assert_eq!(health.pool_target(), 16);
+        assert!(!health.validator_view().saturated);
+
+        health.on_own_block(2, "v1", admission(4, true), 4, 16, start);
+        assert_eq!(health.pool_target(), 4);
+        assert!(health.validator_view().saturated);
     }
 
     #[test]
-    fn intake_counts_what_the_validators_blocks_could_take_per_height() {
+    fn a_block_that_took_its_whole_cap_took_what_it_could() {
         let start = Instant::now();
-        let mut health = Health::new(10, 128);
+        let mut health = Health::new(10);
+        for number in 1..=10 {
+            health.on_own_block(number, "v1", admission(8, false), 8, 0, start);
+        }
+        assert!(health.validator_view().saturated);
+        assert_eq!(health.intake_per_height(), 8.0 * 10.0 / 9.0);
+    }
+
+    #[test]
+    fn a_block_built_from_an_empty_pool_measures_nothing() {
+        let start = Instant::now();
+        let mut health = Health::new(10);
+        health.on_own_block(1, "v1", admission(8, false), 2, 3, start);
+        // A non-leader with nothing of this queue's in its pool reports a
+        // cap of zero; that is no limit on what it would take.
+        health.on_own_block(2, "v1", admission(0, false), 0, 0, start);
+        assert_eq!(health.pool_target(), 8);
+        assert_eq!(health.validator_view().latest_cap, Some(8));
+    }
+
+    #[test]
+    fn intake_is_what_the_validators_blocks_took_per_height() {
+        let start = Instant::now();
+        let mut health = Health::new(10);
         // Four validators take turns; this one creates every fourth block,
-        // each saturated at 8.
+        // each left deploys behind after taking 8.
         for number in 1..=20 {
             let at = start + Duration::from_secs(3 * number as u64);
             if number % 4 == 0 {
-                health.on_own_block(number, "v1", admission(8, true, false), at);
+                health.on_own_block(number, "v1", admission(8, false), 8, 22, at);
             }
             health.on_block(number, if number % 4 == 0 { "v1" } else { "peer" }, at);
         }
@@ -293,10 +351,28 @@ mod tests {
     }
 
     #[test]
+    fn a_block_that_took_all_it_was_offered_could_have_taken_its_cap() {
+        let start = Instant::now();
+        let mut health = Health::new(10);
+        // Light demand is not low capacity: each block took the two it was
+        // offered under a cap of 16.
+        for number in 1..=10 {
+            health.on_own_block(number, "v1", admission(16, false), 2, 0, start);
+        }
+        assert_eq!(health.intake_per_height(), 16.0 * 10.0 / 9.0);
+
+        // Once blocks leave deploys behind, they count what they took.
+        for number in 11..=20 {
+            health.on_own_block(number, "v1", admission(16, false), 4, 26, start);
+        }
+        assert_eq!(health.intake_per_height(), 4.0 * 10.0 / 10.0);
+    }
+
+    #[test]
     fn a_validator_that_stops_proposing_while_the_shard_moves_takes_nothing() {
         let start = Instant::now();
-        let mut health = Health::new(10, 128);
-        health.on_own_block(1, "v1", admission(8, true, false), start);
+        let mut health = Health::new(10);
+        health.on_own_block(1, "v1", admission(8, false), 4, 0, start);
         for number in 1..=12 {
             health.on_block(number, "peer", start);
         }
@@ -308,16 +384,16 @@ mod tests {
     #[test]
     fn backpressure_from_the_node_names_the_shard() {
         let start = Instant::now();
-        let mut health = Health::new(10, 128);
-        health.on_own_block(1, "v1", admission(4, true, true), start);
+        let mut health = Health::new(10);
+        health.on_own_block(1, "v1", admission(4, true), 4, 5, start);
         assert_eq!(health.congestion(), Congestion::Shard);
         assert!(health.shard_view().backpressure);
 
-        health.on_own_block(2, "v1", admission(32, true, false), start);
+        health.on_own_block(2, "v1", admission(32, false), 32, 8, start);
         assert_eq!(
             health.congestion(),
             Congestion::Validator,
-            "a binding cap without backpressure is the validator's own limit"
+            "a cap that binds without backpressure is the validator's own limit"
         );
     }
 }

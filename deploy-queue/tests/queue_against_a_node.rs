@@ -72,10 +72,17 @@ fn block_added(number: i64, creator: &str, deploy_ids: &[&[u8]]) -> Value {
     })
 }
 
-/// The validator's block-created event: its block could take `cap` fresh
-/// deploys, and `cap_hit` says the cap left deploys in the pool.
-fn block_created(number: i64, cap: usize, cap_hit: bool, backpressure: bool) -> Value {
-    let mut event = block_added(number, VALIDATOR, &[]);
+/// The validator's block-created event for a block carrying `deploy_ids`: it
+/// could take `cap` fresh deploys, and `cap_hit` says the cap left deploys in
+/// the pool.
+fn block_created(
+    number: i64,
+    cap: usize,
+    cap_hit: bool,
+    backpressure: bool,
+    deploy_ids: &[&[u8]],
+) -> Value {
+    let mut event = block_added(number, VALIDATOR, deploy_ids);
     event["event"] = json!("block-created");
     event["payload"]["deploy-admission"] = json!({
         "cap": cap, "cap-hit": cap_hit, "byte-cap-hit": false,
@@ -88,7 +95,7 @@ fn block_created(number: i64, cap: usize, cap_hit: bool, backpressure: bool) -> 
 /// The validator creates block `number`, which the node then adds carrying
 /// `deploy_ids`.
 fn own_block(node: &FakeNode, number: i64, cap: usize, cap_hit: bool, deploy_ids: &[&[u8]]) {
-    node.emit(block_created(number, cap, cap_hit, false));
+    node.emit(block_created(number, cap, cap_hit, false, deploy_ids));
     node.emit(block_added(number, VALIDATOR, deploy_ids));
 }
 
@@ -162,7 +169,6 @@ async fn a_deploy_is_released_and_follows_the_node_to_its_verdict() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn release_keeps_the_validators_pool_at_what_its_next_block_takes() {
-    // The shard's blocks take at most four user deploys.
     let node = FakeNode::new(10, 9);
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
@@ -172,39 +178,41 @@ async fn release_keeps_the_validators_pool_at_what_its_next_block_takes() {
             .await
             .unwrap();
     }
-    eventually("a full block's worth is released", || async {
-        node.received().len() == 4
+    eventually("one deploy goes out until a cap is known", || async {
+        node.received().len() == 1
     })
     .await;
 
-    // The validator takes all four with room to spare. They wait in a block
-    // for verdicts that have not come, and still the next four go out:
-    // deploys in a block are the shard's to finalize, not the pool's to hold.
-    let first: Vec<Vec<u8>> = received_sigs(&node);
-    let ids: Vec<&[u8]> = first.iter().map(Vec::as_slice).collect();
-    own_block(&node, 11, 4, false, &ids);
-    eventually("the emptied pool is refilled", || async {
-        node.received().len() == 8
+    // The validator takes it under a cap of four. It waits in a block for a
+    // verdict that has not come, and still four more go out: a deploy in a
+    // block is the shard's to finalize, not the pool's to hold.
+    let first = received_sigs(&node);
+    own_block(&node, 11, 4, false, &[&first[0]]);
+    eventually("the pool fills to the cap", || async {
+        node.received().len() == 5
     })
     .await;
 
-    // The next block's cap of two binds, leaving two in the pool: the pool
-    // holds at the cap, so nothing more goes out.
-    let second: Vec<Vec<u8>> = received_sigs(&node)[4..].to_vec();
-    own_block(&node, 12, 2, true, &[&second[0], &second[1]]);
+    // The next block's cap of two leaves two behind, though the node does not
+    // report the cap as hit: the pool holds at the cap, so nothing more goes
+    // out.
+    let second: Vec<Vec<u8>> = received_sigs(&node)[1..].to_vec();
+    own_block(&node, 12, 2, false, &[&second[0], &second[1]]);
     reaches_tip(&queue, 12).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(node.received().len(), 8);
+    assert_eq!(node.received().len(), 5);
     let snapshot = queue.handle.snapshot().await.unwrap();
     assert_eq!(
         (snapshot.submitted, snapshot.in_block, snapshot.ready),
-        (2, 6, 4)
+        (2, 3, 7)
     );
-    assert_eq!(snapshot.validator.unwrap().pool_target, 2);
+    let validator = snapshot.validator.unwrap();
+    assert_eq!(validator.pool_target, 2);
+    assert!(validator.saturated);
 
-    own_block(&node, 13, 2, true, &[&second[2], &second[3]]);
+    own_block(&node, 13, 2, false, &[&second[2], &second[3]]);
     eventually("the next two go out", || async {
-        node.received().len() == 10
+        node.received().len() == 7
     })
     .await;
     queue.stop();
@@ -217,25 +225,19 @@ async fn a_refusal_names_the_validator_or_the_shard() {
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
 
-    // The validator creates one block and then none while its peers carry
-    // the shard through a full citable depth: it takes nothing.
-    own_block(&node, 11, 4, false, &[]);
-    advance(&node, 12, 40);
-    reaches_tip(&queue, 40).await;
-    assert!(matches!(
-        accept(&queue.handle, numbered_deploy(40, 1)).await,
-        Err(IntakeError::QueueFull {
-            cause: Congestion::Validator,
-            ..
-        })
-    ));
+    let pooled = accept(&queue.handle, numbered_deploy(10, 0)).await.unwrap();
+    eventually("the deploy is released", || async {
+        node.received().len() == 1
+    })
+    .await;
 
-    // It proposes again, but the node holds it to one deploy a block because
-    // finality trails the tip.
-    node.emit(block_created(41, 1, true, true));
-    node.emit(block_added(41, VALIDATOR, &[]));
-    reaches_tip(&queue, 41).await;
-    let refusal = accept(&queue.handle, numbered_deploy(41, 2)).await;
+    // The node holds the validator to no fresh deploys because finality
+    // trails the tip: its next block leaves the pooled deploy behind.
+    advance(&node, 11, 11);
+    node.emit(block_created(12, 0, true, true, &[]));
+    node.emit(block_added(12, VALIDATOR, &[]));
+    reaches_tip(&queue, 12).await;
+    let refusal = accept(&queue.handle, numbered_deploy(12, 1)).await;
     assert!(
         matches!(
             refusal,
@@ -247,8 +249,29 @@ async fn a_refusal_names_the_validator_or_the_shard() {
         "{:?}",
         refusal
     );
-    let shard = queue.handle.snapshot().await.unwrap().shard.unwrap();
-    assert!(shard.backpressure);
+    assert!(
+        queue
+            .handle
+            .snapshot()
+            .await
+            .unwrap()
+            .shard
+            .unwrap()
+            .backpressure
+    );
+
+    // Then it creates no block while its peers carry the shard through a
+    // full citable depth: the validator, not the shard, holds deploys back.
+    advance(&node, 13, 41);
+    reaches_tip(&queue, 41).await;
+    assert!(matches!(
+        accept(&queue.handle, numbered_deploy(41, 2)).await,
+        Err(IntakeError::QueueFull {
+            cause: Congestion::Validator,
+            ..
+        })
+    ));
+    assert_eq!(queue.state(&pooled).await, Some(QueueState::Submitted));
     queue.stop();
 }
 
@@ -357,19 +380,20 @@ async fn a_deploy_without_time_to_reach_the_validators_next_block_is_not_release
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
-    // Six deploys whose window runs out at block 69. Four fill the pool.
+    // Six deploys whose window runs out at block 69.
     for number in 0..6 {
         accept(&queue.handle, numbered_deploy(10, number))
             .await
             .unwrap();
     }
-    eventually("the pool is filled", || async {
-        node.received().len() == 4
+    eventually("one deploy goes out until a cap is known", || async {
+        node.received().len() == 1
     })
     .await;
 
-    // The validator creates every fourth block, each at a cap that binds and
-    // takes nothing of this queue's, so the other two wait in the queue.
+    // The validator creates every fourth block under a cap of four, each
+    // taking nothing of this queue's: the pool fills to four and the other
+    // two wait in the queue.
     for tip in 11..=66 {
         if tip % 4 == 0 {
             own_block(&node, tip, 4, true, &[]);
@@ -377,6 +401,12 @@ async fn a_deploy_without_time_to_reach_the_validators_next_block_is_not_release
             node.emit(block_added(tip, PEER, &[]));
         }
     }
+    // No block carries the pooled four past the citable depth, so they are
+    // also sent again; only distinct deploys count.
+    eventually("the pool fills to the cap", || async {
+        distinct_received(&node).len() == 4
+    })
+    .await;
     // At 67 the pool empties, but two heights of window are less than the
     // validator takes between its blocks: the two close in the queue.
     let pooled = received_sigs(&node);

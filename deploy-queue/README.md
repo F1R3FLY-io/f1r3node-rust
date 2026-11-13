@@ -14,12 +14,14 @@ The states a client reads, the refusals and the client endpoints are in
 Deploys never gossip: only the validator a queue fronts can include that queue's deploys. The queue learns
 everything else from the node's event stream:
 
-- **The validator.** Each `block-created` event carries the block creator's `deploy-admission`: the most fresh
-  deploys the block could take (`cap`), whether that cap or the byte budget left deploys in the pool, what set the
-  cap, and whether the node lowered it because finality trails the tip (`backpressure`). A block whose cap bound
-  took exactly its cap. A block that took everything it was offered was limited only by demand, so it could have
-  taken a full block (`maxUserDeploysPerBlock`). The validator's intake is what its own blocks over the last
-  citable depth (`maxParentDepth` heights) could take, per height.
+- **The validator.** Each `block-created` event carries the block's deploys and the block creator's
+  `deploy-admission`: the most fresh deploys the block could take (`cap`), what set the cap, and whether the node
+  lowered it because finality trails the tip (`backpressure`). The queue learns from a block only when this queue
+  had deploys in the validator's pool as it was built; a block built from an empty pool says nothing about what
+  the validator takes. A block that left this queue's deploys behind took what it could, whatever the event says
+  about its cap. A block that took everything it was offered was limited only by demand, so it could have taken
+  its cap. The validator's intake is the average of what its blocks could take over the last citable depth
+  (`maxParentDepth` heights), times how often it creates a block.
 - **The shard.** Every `block-added` event, from any creator: how fast heights come, and the validator's share of
   the blocks. The node's own `backpressure` says the shard's finality is holding the validator back.
 
@@ -37,7 +39,9 @@ waits behind every deploy in the validator's pool and every queued deploy with a
 accepts a deploy only when, at the validator's intake, it is taken into a block before its validity window
 closes, with one citable depth to spare, and no queued deploy with a later deadline that lands in time now would
 stop landing in time. The window is the shard's `deployLifespan`, read from the node, so the line the queue holds
-scales with it. Before the validator has created a block the queue saw, the intake is one deploy per height.
+scales with it. Before the validator has built a block from this queue's deploys, the intake is one deploy per
+height. Deploys sharing a deadline share their valid-after block, so the check walks the distinct deadlines
+ahead, not every deploy held.
 
 A deploy that does not fit gets `deploy_queue_full` with a retry-after, the time until a deploy signed now would
 fit, and a cause: the shard when the node is holding its validator back for finality, the validator otherwise
@@ -49,9 +53,9 @@ a fresh window, less the citable depth. A deployer over its share gets `deploy_q
 
 ## Release
 
-The queue keeps the validator's pool holding what its next block will take: the cap of its latest block while
-that cap binds, otherwise a full block. Deploys beyond that wait in the queue, in deadline order and within their
-deployer's share, rather than in the pool. A deploy carried by a block no longer counts against the pool; its
+The queue keeps the validator's pool holding what its next block will take: the cap its block creator last
+applied to this queue's deploys, and one deploy until a cap is known. Deploys beyond that wait in the queue, in
+deadline order and within their deployer's share, rather than in the pool. A deploy carried by a block no longer counts against the pool; its
 verdict is the shard's to reach, so how long finality takes does not slow release.
 
 Release stops while the queue is not connected and for a backoff after the node could not take a deploy (1 s,

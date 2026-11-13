@@ -25,6 +25,7 @@ pub enum NodeEvent {
     Created {
         number: i64,
         creator: String,
+        deploys: Vec<String>,
         admission: Option<Admission>,
     },
     Finalised {
@@ -69,6 +70,7 @@ struct BlockPayload {
 struct CreatedPayload {
     block_number: i64,
     creator: String,
+    deploys: Vec<DeployPayload>,
     deploy_admission: Option<Admission>,
 }
 
@@ -125,6 +127,7 @@ pub fn parse_event(text: &str) -> Result<NodeEvent, serde_json::Error> {
             NodeEvent::Created {
                 number: block.block_number,
                 creator: block.creator,
+                deploys: block.deploys.into_iter().map(|d| d.id).collect(),
                 admission: block.deploy_admission,
             }
         }
@@ -264,7 +267,8 @@ mod tests {
         let event = parse_event(
             r#"{"event":"block-created","schema-version":1,"payload":{"block-hash":"ab",
                 "block-number":7,"timestamp":1,"parent-hashes":[],"justification-hashes":[],
-                "deploys":[],"creator":"c","seq-num":1,
+                "deploys":[{"id":"01","cost":1,"deployer":"d","errored":false}],
+                "creator":"c","seq-num":1,
                 "deploy-admission":{"cap":16,"cap-hit":true,"byte-cap-hit":false,
                     "cap-source":"soft-backlog","backpressure":true,"finality-lag":5}}}"#,
         )
@@ -272,6 +276,7 @@ mod tests {
         assert_eq!(event, NodeEvent::Created {
             number: 7,
             creator: "c".to_string(),
+            deploys: vec!["01".to_string()],
             admission: Some(Admission {
                 cap: 16,
                 cap_hit: true,
