@@ -56,7 +56,7 @@ EVIDENCE="$GATES/release-evidence.json"
 CANDIDATE_TAG="$(jq -r '.candidate_tag' "$EVIDENCE")"
 cp "$TMP/ci-run.json" "$TMP/ci-jobs.json" "$GATES/"
 jq '.path = ".github/workflows/slashing-tests.yml" | .id = 555' "$TMP/ci-run.json" >"$GATES/slashing-run.json"
-jq -n '{jobs: ([{name: "Example-based UC tests"}, {name: "Property-based theorem tests"}, {name: "Loom exhaustive interleaving (T-9.2)"},
+jq -n '{jobs: ([{name: "Example-based UC tests"}, {name: "Property-based theorem tests"},
 	{name: "Pre-fix regression backstops (1)"}] | map(. + {status: "completed", conclusion: "success"}))}' >"$GATES/slashing-jobs.json"
 EVIDENCE_SHA256="$(sha256sum "$GATES/release-evidence.json" | awk '{print $1}')"
 binding() {

@@ -951,64 +951,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn slash_evidence_below_the_window_is_fetched_without_its_ancestors() {
-        use models::rust::casper::protocol::casper_message::{
-            ProcessedSystemDeploy, SystemDeployData,
-        };
-
-        let (b9, mut b8, ..) = get_blocks();
-        let evidence_hash = Bytes::from(vec![0x71; 32]);
-        let unneeded_parent = Bytes::from(vec![0x72; 32]);
-        let evidence = get_block(evidence_hash.clone(), 1, vec![unneeded_parent]);
-        b8.body.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
-            event_list: vec![],
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: evidence_hash.clone(),
-                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[1; 33]),
-                target_activation_epoch: 0,
-            },
-        }];
-
-        dag_from_block(
-            b9,
-            true,
-            std::time::Duration::from_secs(3600),
-            |mut mock| async move {
-                assert_eq!(mock.next_request().await, Some(b8.block_hash.clone()));
-                mock.receive_block(&[b8.clone()]).await?;
-                assert_eq!(
-                    mock.next_save().await.map(|saved| saved.0),
-                    Some(b8.block_hash)
-                );
-                let mut requests = HashSet::new();
-                for _ in 0..3 {
-                    requests.insert(mock.next_request().await.expect("dependency request"));
-                }
-                let (_, _, hash7, _, hash5, ..) = get_hashes();
-                assert_eq!(
-                    requests,
-                    HashSet::from([hash7, hash5, evidence_hash.clone()])
-                );
-
-                mock.receive_block(&[evidence]).await?;
-                assert_eq!(
-                    mock.next_save().await.map(|saved| saved.0),
-                    Some(evidence_hash)
-                );
-                assert!(tokio::time::timeout(
-                    std::time::Duration::from_millis(10),
-                    mock.next_request(),
-                )
-                .await
-                .is_err());
-                Ok(())
-            },
-        )
-        .await
-        .expect("slash evidence download");
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn ignored_messages_do_not_postpone_a_resend() {
         init_logger();
 

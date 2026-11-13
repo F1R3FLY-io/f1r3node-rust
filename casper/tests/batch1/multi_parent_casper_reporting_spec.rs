@@ -10,12 +10,14 @@
 
 use std::time::Duration;
 
+use casper::rust::casper::Casper;
 use casper::rust::reporting_casper;
-use casper::rust::util::construct_deploy;
+use casper::rust::util::{construct_deploy, proto_util};
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
+use crate::slashing::integration_helpers::equivocate_block;
 use crate::util::genesis_builder::GenesisBuilder;
 use crate::util::rholang::resources::mk_test_rnode_store_manager_shared;
 
@@ -59,7 +61,6 @@ async fn reporting_casper_should_behave_the_same_way_as_multi_parent_casper() {
 
     let reporter = reporting_casper::rho_reporter(
         &rspace_store,
-        &node.block_dag_storage,
         node.runtime_manager.replay_lock(),
         ExternalServices::noop(),
     );
@@ -143,7 +144,6 @@ async fn reporting_a_block_with_a_failed_deploy_still_produces_a_report() {
 
     let reporter = reporting_casper::rho_reporter(
         &rspace_store,
-        &node.block_dag_storage,
         node.runtime_manager.replay_lock(),
         ExternalServices::noop(),
     );
@@ -160,6 +160,89 @@ async fn reporting_a_block_with_a_failed_deploy_still_produces_a_report() {
     assert_eq!(
         replay.post_state_hash,
         signed_block.body.state.post_state_hash.to_vec(),
+        "reporting replay post-state must equal the block's recorded post-state"
+    );
+}
+
+/// A block that slashes is reported with the slashes its own evidence proves,
+/// by a node that holds neither block of the evidence.
+#[tokio::test]
+async fn reporting_a_slashing_block_replays_its_own_evidence() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(
+            GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3)),
+        ))
+        .await
+        .expect("Failed to build genesis");
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("Failed to create network");
+    let deploy = |nonce| {
+        construct_deploy::basic_deploy_data(nonce, None, Some(shard_id.clone())).expect("deploy")
+    };
+
+    let first = nodes[0]
+        .create_block_unsafe(&[deploy(0)])
+        .await
+        .expect("first");
+    let sibling = equivocate_block(&mut nodes[0], &first, vec![deploy(1)])
+        .await
+        .expect("sibling");
+    nodes[1].process_block(first).await.expect("first");
+    nodes[1].process_block(sibling).await.expect("sibling");
+    let slash_block = nodes[1]
+        .add_block_from_deploys(&[deploy(10)])
+        .await
+        .expect("slash block");
+    assert_eq!(
+        proto_util::slash_evidence(&slash_block).count(),
+        1,
+        "premise: the block slashes the equivocator"
+    );
+    for justification in &slash_block.justifications {
+        if !nodes[2]
+            .casper
+            .dag_contains(&justification.latest_block_hash)
+            .expect("dag lookup")
+        {
+            let cited = nodes[1]
+                .block_store
+                .get(&justification.latest_block_hash)
+                .expect("store")
+                .expect("a cited block");
+            nodes[2].process_block(cited).await.expect("cited block");
+        }
+    }
+    assert!(
+        nodes[2]
+            .block_dag_storage
+            .get_representation()
+            .expect("dag")
+            .invalid_blocks()
+            .expect("invalid blocks")
+            .is_empty(),
+        "premise: the reporting node holds no invalid block"
+    );
+
+    let mut rspace_kvm = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+    let rspace_store = rspace_kvm
+        .r_space_stores()
+        .await
+        .expect("Failed to open shared RSpace stores");
+    let reporter = reporting_casper::rho_reporter(
+        &rspace_store,
+        nodes[2].runtime_manager.replay_lock(),
+        ExternalServices::noop(),
+    );
+
+    let replay = reporter
+        .trace(&slash_block)
+        .await
+        .expect("a slashing block must report");
+    assert_eq!(
+        replay.post_state_hash,
+        slash_block.body.state.post_state_hash.to_vec(),
         "reporting replay post-state must equal the block's recorded post-state"
     );
 }
@@ -194,12 +277,8 @@ async fn reporting_replay_runs_while_a_consensus_replay_runs() {
         .acquire_consensus()
         .await
         .expect("Replay semaphore closed");
-    let reporter = reporting_casper::rho_reporter(
-        &rspace_store,
-        &node.block_dag_storage,
-        replay_lock,
-        ExternalServices::noop(),
-    );
+    let reporter =
+        reporting_casper::rho_reporter(&rspace_store, replay_lock, ExternalServices::noop());
     let replay = tokio::time::timeout(Duration::from_secs(30), reporter.trace(&signed_block))
         .await
         .expect("Reporting replay waited for the running consensus replay")

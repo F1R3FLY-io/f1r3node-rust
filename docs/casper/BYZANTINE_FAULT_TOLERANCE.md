@@ -117,36 +117,45 @@ Validator V1
         Block B (seq: 5) "Alice has 0 REV"  ← EQUIVOCATION
 ```
 
-### Simple Equivocation Detection
+### Equivocation Detection
 
-The system detects equivocations by comparing a block's creator justification with the known latest message from that validator.
+A block is an equivocation when the node already holds a different block of
+the same sender at the same sequence number. The check is a lookup in the
+DAG's `(sender, sequence number)` index. It runs after the block is
+confirmed to belong to this node's shard and chain, and before every other
+check that could discard the block. The verdict depends only on the two
+signed blocks. Every node that holds both reaches it, in any arrival order.
 
-**Implementation:**
-```scala
-maybeLatestMessageOfCreatorHash <- dag.latestMessageHash(block.sender)
-maybeCreatorJustification       = creatorJustificationHash(block)
-isNotEquivocation               = maybeCreatorJustification == maybeLatestMessageOfCreatorHash
-```
-
-**Code Location:** `casper/src/rust/equivocation_detector.rs`
+**Code Location:** `casper/src/rust/equivocation_detector.rs` (`equivocation_of`, `equivocation_verdict`)
 
 ### Equivocation Types
 
 **1. Admissible Equivocation**
-- Needed as a dependency by another block in the DAG
-- Added to the DAG but marked as invalid
-- Recorded in the equivocation tracker for future detection
-- Enables neglected equivocation detection
+- The block was requested as a dependency of another block
+- Stored in the DAG as invalid, with the held block it equivocates with
 
 **2. Ignorable Equivocation**
-- Not needed as a dependency by any block
-- Rejected immediately without adding to DAG
-- Logged but no further action required
+- The block arrived unsolicited
+- Stored in the DAG as invalid, with its sibling, like an admissible one
 
 **3. Neglected Equivocation**
-- Validator had sufficient evidence to detect equivocation but failed to slash
-- Most insidious form - represents collusion between validators
-- Both the equivocator and the validator who ignored it are punished
+- A block that sees both blocks of an equivocation in its justifications
+  and leaves their sender bonded
+- The block is rejected. The neglecting validator keeps its stake.
+
+### Blocks Built on an Equivocation
+
+An equivocation is stored without a judgement of its contents, and without a
+replay, so a sibling that no block cites costs a node nothing. Before a node
+judges a block built on a stored equivocation, it judges that parent's
+contents and replays it:
+
+- Invalid parent contents make the block `InvalidParents`.
+- A parent that the node cannot judge yet defers the block.
+- The node keeps a final verdict, so it judges a parent once for all blocks
+  built on it.
+
+**Code Location:** `casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs` (`equivocating_parents_verdict`)
 
 ### Neglected Equivocation Detection
 
@@ -160,31 +169,18 @@ Byzantine validators could collude by agreeing to ignore each other's equivocati
 
 #### The Algorithm
 
-The system maintains an `EquivocationRecord` for each detected equivocation:
+Each equivocation the node stores carries its pair: the invalid block's
+metadata names its sibling (`BlockMetadata::equivocates`). The check
+examines every pair the node holds. For each pair, it asks whether both
+blocks are in the new block's justifications, and whether their sender is
+still bonded in the new block's post-state:
 
-```scala
-case class EquivocationRecord(
-  equivocator: Validator,
-  equivocationBaseBlockSeqNum: SequenceNumber,
-  equivocationDetectedBlockHashes: Set[BlockHash]
-)
-```
+- **Both visible, sender still bonded:** the block neglected the
+  equivocation and is rejected (`NeglectedEquivocation`).
+- **Both visible, sender slashed:** the block carried the slash. No action.
+- **At most one visible:** the creator could not know. No action.
 
-When processing a new block, the system checks three conditions:
-
-**Case 1: Block has sufficient information + contains equivocator in justification**
-- Validator saw the equivocation but ignored it
-- **Action:** Slash the block creator for neglecting equivocation
-
-**Case 2: Block has sufficient information + properly excluded equivocator**
-- Validator correctly handled the equivocation
-- **Action:** Update equivocation record, no penalty
-
-**Case 3: Block lacks sufficient information**
-- Validator couldn't have known about equivocation
-- **Action:** No action taken
-
-**Code Location:** `casper/src/rust/equivocation_detector.rs` (EquivocationRecord struct)
+**Code Location:** `casper/src/rust/equivocation_detector.rs` (`check_neglected_equivocations`)
 
 #### Example Scenario
 
@@ -192,12 +188,13 @@ When processing a new block, the system checks three conditions:
 Timeline:
 1. Validator V1 equivocates (creates Block A and Block B at seq 5)
 2. Validator V2 receives both blocks (has complete evidence)
-3. V2 proposes Block C with V1 in justifications (should have excluded V1)
-4. Network detects V2 had sufficient information to slash V1 but didn't
-5. Result: V2 is slashed for neglecting the equivocation
+3. V2 proposes Block C whose justifications show A and B, without slashing V1
+4. Every node holding A and B rejects Block C as NeglectedEquivocation
 ```
 
-This mechanism creates strong incentives against collusion: helping Byzantine validators escape detection results in punishment.
+A neglecting block is rejected, but its creator keeps its stake. Neglect is
+judged against the receiver's own pairs, so two honest nodes can disagree on
+it. Only verdicts that every node reaches identically are economic evidence.
 
 #### Determining "Sufficient Information"
 
@@ -426,70 +423,53 @@ However, the clique oracle's `normalized_fault_tolerance` function computes FT f
 
 ### Purpose
 
-Slashing provides economic penalties for Byzantine behavior. Validators who equivocate or neglect to report equivocations forfeit their staked tokens, making attacks economically irrational.
+Slashing provides economic penalties for Byzantine behavior. A validator
+proven to have equivocated forfeits its stake, making the attack
+economically irrational.
 
 ### Slashing Mechanism
 
-When an invalid block is detected with equivocation:
+1. When validation judges a block an equivocation, the node stores it in
+   the DAG as invalid together with its sibling, and persists its body. A
+   pair whose blocks both arrive by restore or as settled history is stored
+   the same way, so every node that holds both blocks holds the pair.
+2. A bonded proposer slashes every bonded offender whose pair it holds. Each
+   `SlashDeploy` carries both blocks' commitments, ordered by hash. A
+   commitment holds the fields that a block's hash and signature cover, so
+   any node can check the evidence without its own DAG.
+3. A receiver accepts a block's slashes only if each slash meets all of
+   these conditions:
+   - The block's sender issued it.
+   - Its evidence is two distinct blocks that one sender signed at one
+     sequence number, on this shard and chain.
+   - Its offender holds stake at the block's floor, bonded or in withdrawal
+     quarantine.
+   - No other slash in the block targets the same offender.
 
-```scala
-case InvalidBlock.AdmissibleEquivocation =>
-  // 1. Create equivocation record
-  val equivocationRecord = EquivocationRecord(
-    equivocator = block.sender,
-    equivocationBaseBlockSeqNum = block.seqNum - 1,
-    equivocationDetectedBlockHashes = Set.empty
-  )
-  
-  // 2. Add to equivocation tracker
-  tracker.insertEquivocationRecord(equivocationRecord)
-  
-  // 3. Mark block as invalid in DAG
-  BlockDagStorage.insert(block, invalid = true)
-```
+   Otherwise the block is `UnauthorizedSlashDeploy`.
 
-The DAG insert releases the blocks that block ingest holds waiting on this block.
-
-**Code Location:** `casper/src/rust/engine/multi_parent_casper/mod.rs`
+**Code Location:** `casper/src/rust/slashing_authorization.rs`,
+`casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs`
 
 ### Stake Forfeiture
 
-Validators are removed from the bond map (active validator set) when equivocations are detected. This removal represents the loss of their staked tokens:
-
-```scala
-maybeEquivocatingValidatorBond = bonds(block).find(_.validator == equivocatingValidator)
-
-maybeEquivocatingValidatorBond match {
-  case Some(Bond(_, stake)) =>
-    // Validator still bonded, equivocation detected
-    // Will be slashed when properly excluded from future blocks
-    
-  case None =>
-    // Validator removed from bonds - equivocation acknowledged
-    // Stake has been forfeited
-    EquivocationDetected
-}
-```
-
-**Code Location:** `casper/src/rust/equivocation_detector.rs`
-
-The actual stake forfeiture is enforced through the Proof-of-Stake smart contract deployed on-chain.
+The slash runs the Proof-of-Stake contract, which sets the offender's bond
+to zero. A slash of an already-slashed validator changes nothing.
 
 **PoS Contract Location:** `casper/src/main/resources/PoS.rhox`
 
 ### Two-Level Slashing
 
-F1r3fly implements a two-tier slashing system:
-
 **Level 1: Direct Equivocators**
-- Validators who create conflicting blocks
-- Lose entire staked amount
-- Immediately removed from active validator set
+- Validators who sign two blocks at one sequence number
+- Lose their entire stake
 
 **Level 2: Neglected Equivocators**
-- Validators who had evidence of equivocation but failed to properly handle it
-- Also lose staked amount (or portion thereof)
-- Removed from active validator set
+- Blocks that see both blocks of an equivocation and leave the equivocator
+  bonded are rejected
+- The neglecting validator keeps its stake. Neglect is judged against the
+  receiver's own pairs, so it is not evidence that every node reaches
+  identically.
 
 ### Incentive Structure
 
@@ -499,15 +479,13 @@ The slashing mechanism creates the following incentive structure:
 |--------|---------|-----------|
 | Honest validation | Keep stake + earn rewards | ✓ Profitable |
 | Create equivocation | Lose entire stake | ✗ Devastating loss |
-| Ignore equivocation | Lose entire stake | ✗ Devastating loss |
+| Ignore equivocation | Block rejected, stake kept | ✗ Lost block |
 | Report equivocation | Keep stake + maintain network | ✓ Rational choice |
-| Collude with Byzantine validators | Both parties lose stake | ✗ Mutual destruction |
 
 This structure ensures that:
 1. **Honest validation is the only profitable strategy**
-2. **Byzantine behavior results in financial loss**
-3. **Collusion is economically irrational** (both parties punished)
-4. **Network security is economically incentivized**
+2. **Equivocation results in financial loss**
+3. **A block that ignores an equivocation it can see is not accepted**
 
 ---
 
@@ -666,24 +644,15 @@ for {
 
 **Code Location:** `casper/src/rust/engine/multi_parent_casper/mod.rs`
 
-### Equivocation Tracker Storage
+### Equivocation Storage
 
-The system maintains persistent storage for equivocation records:
+An equivocation is stored as the invalid block itself. Its `BlockMetadata`
+names the sibling it equivocates with (`equivocates`). The DAG's
+`(sender, sequence number)` index finds the held siblings of a block. There
+is no separate record store.
 
-```scala
-trait EquivocationsTracker[F[_]] {
-  def equivocationRecords: F[Set[EquivocationRecord]]
-  
-  def insertEquivocationRecord(record: EquivocationRecord): F[Unit]
-  
-  def updateEquivocationRecord(
-    record: EquivocationRecord,
-    blockHash: BlockHash
-  ): F[Unit]
-}
-```
-
-**Storage Location:** `block-storage/src/rust/dag/block_dag_key_value_storage.rs`
+**Storage Location:** `block-storage/src/rust/dag/block_dag_key_value_storage.rs`,
+`block-storage/src/rust/dag/block_metadata_store.rs`
 
 ### Safety Oracle Integration
 

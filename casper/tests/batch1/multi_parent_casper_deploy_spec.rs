@@ -202,7 +202,7 @@ async fn validator_bond_check_uses_selected_parent_metadata() {
         .write()
         .add(BlockMetadata::from_block(
             &unbonded_parent,
-            false,
+            None,
             None,
             None,
         ))

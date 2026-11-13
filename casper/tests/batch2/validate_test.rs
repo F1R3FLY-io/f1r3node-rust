@@ -45,7 +45,9 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
 const SHARD_ID: &str = "root-shard";
 
-fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
+fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
+    CasperSnapshot::new(dag, prost::bytes::Bytes::new())
+}
 
 fn record_metrics<T>(f: impl FnOnce() -> T) -> (T, Snapshotter) {
     let recorder = DebuggingRecorder::new();
@@ -2770,6 +2772,8 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
 
         // Use unlimited parents (-1) like in Scala tests: Estimator.UnlimitedParents
         let max_number_of_parents = -1;
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("block-summary", None).await;
 
         let result = Validate::block_summary(
             &signed_block,
@@ -2795,6 +2799,7 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             max_number_of_parents,
             i32::MAX, // max_parent_depth: disable depth check for this test
             &block_store,
+            &runtime_manager,
             false,
             &mut None,
         )
