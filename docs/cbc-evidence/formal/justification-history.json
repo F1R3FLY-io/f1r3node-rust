@@ -1,0 +1,125 @@
+{
+  "schema": "justification-history-evidence/v1",
+  "status": "pending",
+  "tested_node": "d8feacb2866ee754ea5851f52336577d4a438de2",
+  "harness": "cbda724b0b240dec701f82ecc5837de22c59a7c1",
+  "sources": [
+    {
+      "sha256": "87a0b27a552881051737acb8d8f017404faaf70ff22b785810e36774c5481949",
+      "path": "casper/src/rust/validate.rs"
+    },
+    {
+      "sha256": "e99be2f331252ef2cb365fe48457824211bd8e3a7495dea06491d6d3bb44b611",
+      "path": "casper/tests/batch2/validate_test.rs"
+    },
+    {
+      "sha256": "e74abd026b654d7854106e831edf7fc5c2066b4236088a4eefb05e014d9eda87",
+      "path": "formal/rocq/slashing/theories/BugFixSelfRegression.v"
+    },
+    {
+      "sha256": "ba885b7dca4f1acd5b146db07a7989edc1e625f5097d28757061a63a2b7cc737",
+      "path": "formal/rocq/slashing/theories/MainTheorem.v"
+    },
+    {
+      "sha256": "0256b0712e2571bccdb0d57bd812430a52b1969c4ca74283adbe240fa87612f5",
+      "path": "formal/tlaplus/justification_history/JustificationHistory.tla"
+    },
+    {
+      "sha256": "d19b608ab0a28b7c6ee5a21ff33f87b7da6e3da5e2f12ed560989165978b1024",
+      "path": "formal/tlaplus/justification_history/MC_JustificationHistory.cfg"
+    },
+    {
+      "sha256": "e20a171ec5676cd97a313a9a3b2dd94741d09a40038998d19d7ecca5e1c62951",
+      "path": "formal/tlaplus/justification_history/MC_JustificationHistory_local_latest_unsafe.cfg"
+    },
+    {
+      "sha256": "5f98cecacf073237033012ea289ef4c8a700de575ebe04e240a5f735315cccdb",
+      "path": "docs/claims/justification-history.md"
+    },
+    {
+      "sha256": "27888e9c03d769f0108ff8b008cc4fd57a4347074afa938c2bb4393824189ec0",
+      "path": "docs/casper/justification-history-investigation.md"
+    }
+  ],
+  "local_logs": [
+    {
+      "sha256": "5acaad91f1f6bdbaf3ec9d6445fbead3df3904a980b450cb49353cb8d5454c43",
+      "path": "/private/tmp/justification-red.log"
+    },
+    {
+      "sha256": "25d78772b7598613c476e470596325b7821399b88f8212f01f2c5655185a905b",
+      "path": "/private/tmp/justification-final-focused.log"
+    },
+    {
+      "sha256": "436e64ede5237b627f13440fca6a3efe59c74e850736d8989e5120916987c9c1",
+      "path": "/private/tmp/justification-validation-suite.log"
+    },
+    {
+      "sha256": "d6e6aa086be1a21086a4ebb4d21d816793ac4be3910949fbc9fff0eba1abe3ac",
+      "path": "/private/tmp/justification-clippy.log"
+    },
+    {
+      "sha256": "0a208d725b2fca9d42d1d6bdfad8fcfb1975799415a910046e56ea23b5ffa7f4",
+      "path": "/private/tmp/justification-tlc-clean.log"
+    },
+    {
+      "sha256": "86a7177fd361243bf822ab9456ac797454a81622a7e7142cf5ced0fa63d54d21",
+      "path": "/private/tmp/justification-tlc-unsafe.log"
+    },
+    {
+      "sha256": "45141798d6436586b4a6a881cb0f3670134885579a71c6d078c65bb3d9da507b",
+      "path": "/private/tmp/justification-rocq-project.log"
+    },
+    {
+      "sha256": "1a419af6c8136f18513eed667d76318b13044827df462cf5dd4f635f6f25b41e",
+      "path": "/private/tmp/justification-coqchk.log"
+    }
+  ],
+  "checks": [
+    {
+      "command": "cargo test --locked -p casper --test mod justification_regressions_",
+      "stage": "before fix",
+      "exit_code": 101,
+      "failed": 2
+    },
+    {
+      "command": "cargo test --locked -p casper --test mod justification_regression",
+      "stage": "final focused",
+      "exit_code": 0,
+      "passed": 5
+    },
+    {
+      "command": "cargo test --locked -p casper --test mod batch2::validate_test",
+      "exit_code": 0,
+      "passed": 58
+    },
+    {
+      "command": "cargo clippy --locked -p casper --tests -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "command": "TLC MC_JustificationHistory.cfg",
+      "exit_code": 0,
+      "distinct_states": 5184
+    },
+    {
+      "command": "TLC MC_JustificationHistory_local_latest_unsafe.cfg",
+      "exit_code": 12,
+      "expected_violation": "HistoryRelative"
+    },
+    {
+      "command": "rocq makefile -f _CoqProject -o Makefile; make -j1",
+      "exit_code": 0,
+      "new_theorems_closed": 4
+    },
+    {
+      "command": "coqchk -Q theories Slashing Slashing.MainTheorem",
+      "exit_code": 0
+    }
+  ],
+  "remaining": [
+    "Maintainer review of the predecessor-relative specification and Rust binding",
+    "Lifecycle integration validation through normal CI; no remote run started"
+  ],
+  "limits": "The Rocq results prove the reference selector and predicate, not the complete Rust DAG or lifecycle. Rust tests bind representative histories; TLC is bounded. No acceptance or waiver is claimed."
+}

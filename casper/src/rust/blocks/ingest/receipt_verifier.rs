@@ -584,6 +584,13 @@ mod tests {
         release_tx.send(()).expect("release first check");
         assert!(second.await.expect("second caller").is_err());
         assert_eq!(verifier.peak_active(), 1);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while verifier.tracked_peers() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("all verification tickets released");
         assert_eq!(verifier.tracked_peers(), 0);
     }
 

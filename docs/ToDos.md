@@ -587,6 +587,23 @@ tasks:
       - "A /harmonize run with the fixed tooling keeps the frontmatter, the local STE prose, and resolvable links, and adds no STE Check findings."
       - "CLAUDE.md and AGENTS.md link the epic, user story, and ToDos standards and state the repository tasking conventions. AGENTS.md also carries the sections that harmonize adds to CLAUDE.md."
       - "The guidance states where a value stream is recorded, after the maintainer chooses the user story, the epic, or both."
+  - id: TASK-023-16
+    title: "Finish the integration pin hotfix and preserve historical evidence"
+    status: in_progress
+    priority: p0
+    claimed_by: codex-session-pr1009-followup
+    claimed_at: 2026-11-13T01:21:41Z
+    branch: hotfix/system-integration-log-window-pin-cbda724b0b240dec701f82ecc5837de22c59a7c1
+    pr_base_branch: master
+    pull_request: 1009
+    decision: "The user approved the pin update, link-check fix, evidence refresh, and PR description update on this branch."
+    notes:
+      - "CI run 43350215944 exposed a pre-existing receipt-verifier cancellation test race. The test now waits for detached worker cleanup before asserting that no peer entries remain."
+    acceptance:
+      - "All three harness pins name the merged system-integration PR #182 revision."
+      - "The immutable prior ledger retains its bytes and is excluded from current-path link checks. Current evidence links remain checked."
+      - "Cleanup verification passes and renewed acceptance payloads are prepared without changing existing signatures."
+      - "The PR description covers the consensus fix, pin update, validation, and remaining maintainer review."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
     status: pending

@@ -96,3 +96,7 @@ cost-accounting precedent:
   classical lemmas appear in the trust base only.
 
 See verification doc §1.5 for the full pedigree table.
+
+## Historical justification validation
+
+[Justification history](../../tlaplus/justification_history/README.md) records the unbounded property, finite model bounds, assumptions, and pending maintainer review for the PR #1009 fix. The added `history_*` theorems in `BugFixSelfRegression.v` cover signed-predecessor selection and the regression predicate. The prior T-9.6 proofs remain intact. Their former binding to a receiver-global latest-message view does not certify historical candidates. Review of the updated Rust binding remains required.

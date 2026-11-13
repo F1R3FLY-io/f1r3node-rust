@@ -4030,3 +4030,153 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
     })
     .await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn justification_regressions_use_the_signed_predecessor_during_catch_up() {
+    with_storage(|mut block_store, mut storage| async move {
+        let sender = generate_validator(Some("Sender"));
+        let peer = generate_validator(Some("Peer"));
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let message = |author: &Bytes, seq, views: Vec<(&Bytes, &BlockMessage)>| {
+            let mut block = build_block(
+                views.iter().map(|(_, b)| b.block_hash.clone()).collect(),
+                Some(author.clone()),
+                seq as i64,
+                None,
+                Some(
+                    views
+                        .into_iter()
+                        .map(|(v, b)| Justification {
+                            validator: v.clone(),
+                            latest_block_hash: b.block_hash.clone(),
+                        })
+                        .collect(),
+                ),
+                None,
+                None,
+                None,
+                None,
+                Some(seq),
+            );
+            block.block_hash = proto_util::hash_block(&block);
+            block
+        };
+        let peer_old = message(&peer, 1, vec![(&peer, &genesis)]);
+        let predecessor = message(&sender, 1, vec![(&sender, &genesis), (&peer, &peer_old)]);
+        let candidate = message(&sender, 2, vec![
+            (&sender, &predecessor),
+            (&peer, &peer_old),
+        ]);
+        let regressive = message(&sender, 2, vec![(&sender, &predecessor), (&peer, &genesis)]);
+        for block in [&peer_old, &predecessor] {
+            storage.insert(block, InsertMode::Normal).unwrap();
+        }
+        let check = |block, storage: &IndexedBlockDagStorage| {
+            let mut snapshot = mk_casper_snapshot(storage.get_representation().unwrap());
+            assert_eq!(
+                Validate::sequence_number(block, &mut snapshot),
+                Either::Right(ValidBlock::Valid)
+            );
+            Validate::justification_regressions(block, &mut snapshot)
+        };
+        let regression = Either::Left(BlockError::Invalid(InvalidBlock::JustificationRegression));
+        assert_eq!(
+            check(&candidate, &storage),
+            Either::Right(ValidBlock::Valid)
+        );
+        assert_eq!(check(&regressive, &storage), regression);
+
+        let peer_later = message(&peer, 2, vec![(&peer, &peer_old), (&sender, &predecessor)]);
+        let sender_later = message(&sender, 3, vec![
+            (&sender, &candidate),
+            (&peer, &peer_later),
+        ]);
+        for block in [&peer_later, &sender_later] {
+            storage.insert(block, InsertMode::Normal).unwrap();
+        }
+        assert!(!storage
+            .get_representation()
+            .unwrap()
+            .contains(&candidate.block_hash)
+            .unwrap());
+        assert_eq!(
+            check(&candidate, &storage),
+            Either::Right(ValidBlock::Valid)
+        );
+        assert_eq!(check(&regressive, &storage), regression);
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn justification_regressions_defer_when_predecessor_evidence_is_missing() {
+    with_storage(|mut block_store, mut storage| async move {
+        let sender = generate_validator(Some("Sender"));
+        let peer = generate_validator(Some("Peer"));
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut witness = genesis.clone();
+        witness.sender = peer.clone();
+        witness.seq_num = 1;
+        witness.block_hash = proto_util::hash_block(&witness);
+        let mut predecessor = genesis.clone();
+        predecessor.sender = sender.clone();
+        predecessor.seq_num = 1;
+        predecessor.justifications = vec![Justification {
+            validator: peer.clone(),
+            latest_block_hash: witness.block_hash.clone(),
+        }];
+        predecessor.block_hash = proto_util::hash_block(&predecessor);
+        let mut candidate = predecessor.clone();
+        candidate.seq_num = 2;
+        candidate.justifications = vec![
+            Justification {
+                validator: sender,
+                latest_block_hash: predecessor.block_hash.clone(),
+            },
+            Justification {
+                validator: peer,
+                latest_block_hash: genesis.block_hash.clone(),
+            },
+        ];
+        candidate.block_hash = proto_util::hash_block(&candidate);
+        storage
+            .insert(&predecessor, InsertMode::SettledHistory)
+            .unwrap();
+        let mut snapshot = mk_casper_snapshot(storage.get_representation().unwrap());
+        assert_eq!(
+            Validate::justification_regressions(&candidate, &mut snapshot),
+            Either::Left(BlockError::Undecidable(witness.block_hash.clone()))
+        );
+        storage
+            .insert(&witness, InsertMode::SettledHistory)
+            .unwrap();
+        let mut snapshot = mk_casper_snapshot(storage.get_representation().unwrap());
+        assert_eq!(
+            Validate::justification_regressions(&candidate, &mut snapshot),
+            Either::Left(BlockError::Invalid(InvalidBlock::JustificationRegression))
+        );
+    })
+    .await
+}
