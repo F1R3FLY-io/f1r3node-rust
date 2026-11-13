@@ -172,3 +172,282 @@ fn retired_depth_and_stack_growth_mechanisms_are_absent_from_production() {
         violations.join("\n")
     );
 }
+
+const CAP_WORDS: &[&str] = &[
+    "MAX", "LIMIT", "LIMITS", "CAP", "CAPACITY", "BUDGET", "CEILING",
+];
+
+const CAP_SCAN_DIRECTORIES: &[(&str, usize)] = &[
+    ("rholang/src/rust/interpreter/matcher", 10),
+    ("models/src/rust/rholang", 60),
+];
+
+const CAP_SCAN_FILES: &[&str] = &[
+    "rspace++/src/rspace/data_index.rs",
+    "rspace++/src/rspace/retained_set_automaton.rs",
+    "rspace++/src/rspace/rho_path.rs",
+    "rspace++/src/rspace/space_matcher.rs",
+];
+
+const MINIMUM_CONSTANT_ITEMS: usize = 175;
+
+const PREALLOCATION_HINT: &str = "preallocation hint";
+const REUSE_POOL_OR_CACHE_BOUND: &str = "reuse-pool or cache bound";
+const FORMAT_OR_STRUCTURAL_BOUND: &str = "format or structural bound that no valid input exceeds";
+const DEBUG_ONLY_INVARIANT_CHECK: &str = "debug-only invariant check";
+
+const ADMISSIBLE_CAP_CLASSES: &[&str] = &[
+    PREALLOCATION_HINT,
+    REUSE_POOL_OR_CACHE_BOUND,
+    FORMAT_OR_STRUCTURAL_BOUND,
+    DEBUG_ONLY_INVARIANT_CHECK,
+];
+
+const CAP_DISPOSITIONS: &[(&str, &str, &str, &str)] = &[
+    (
+        "models/src/rust/rholang/bincode_decoder.rs",
+        "MAX_PREALLOC_BYTES",
+        PREALLOCATION_HINT,
+        "caps only the capacity that cautious_capacity hands to Vec::with_capacity",
+    ),
+    (
+        "models/src/rust/rholang/bincode_encoder.rs",
+        "OP_STACK_CAPACITY",
+        PREALLOCATION_HINT,
+        "initial capacity of the pooled op stack, which grows geometrically past it",
+    ),
+    (
+        "models/src/rust/rholang/bincode_encoder.rs",
+        "OUT_CAPACITY",
+        PREALLOCATION_HINT,
+        "initial capacity of an output buffer; the reused buffer shrinks back to it",
+    ),
+    (
+        "models/src/rust/rholang/bincode_encoder.rs",
+        "MAX_POOLED_OPS",
+        REUSE_POOL_OR_CACHE_BOUND,
+        "an op stack with a larger capacity is dropped instead of parked in the thread pool",
+    ),
+    (
+        "models/src/rust/rholang/canonical_source_tree.rs",
+        "RELEASE_CAPACITY",
+        FORMAT_OR_STRUCTURAL_BOUND,
+        "release frontier 1 + 2 * height of a balanced tree whose height stays below usize::BITS",
+    ),
+    (
+        "models/src/rust/rholang/drive.rs",
+        "WORK_CAPACITY",
+        PREALLOCATION_HINT,
+        "initial capacity of the work stack that drive allocates",
+    ),
+    (
+        "models/src/rust/rholang/drive.rs",
+        "VAL_CAPACITY",
+        PREALLOCATION_HINT,
+        "initial capacity of the value stack that drive allocates",
+    ),
+    (
+        "models/src/rust/rholang/drive.rs",
+        "MAX_TAILS_PER_DESCENT",
+        DEBUG_ONLY_INVARIANT_CHECK,
+        "read only by the debug_assertions Ledger; the release Ledger has empty methods",
+    ),
+    (
+        "models/src/rust/rholang/protobuf_encoder.rs",
+        "OP_STACK_CAPACITY",
+        PREALLOCATION_HINT,
+        "initial capacity of the op and frame stacks of the length pass",
+    ),
+    (
+        "models/src/rust/rholang/protobuf_encoder.rs",
+        "LEN_TABLE_CAPACITY",
+        PREALLOCATION_HINT,
+        "starting capacity of the length table, which grows geometrically past it",
+    ),
+    (
+        "models/src/rust/rholang/protobuf_encoder.rs",
+        "OUT_CAPACITY",
+        PREALLOCATION_HINT,
+        "initial capacity of the output buffer of op_stack_high_water",
+    ),
+    (
+        "models/src/rust/rholang/protobuf_schema.rs",
+        "MAX_SCHEMA_DEPTH",
+        FORMAT_OR_STRUCTURAL_BOUND,
+        "compile-time fact of the descriptor graph, not a run-time traversal limit",
+    ),
+];
+
+const CAP_FIXTURE: &str = concat!(
+    "const MAX_FIXTURE_DEPTH: usize = 1;\n",
+    "// const MAX_COMMENTED_OUT: usize = 2;\n",
+    "    /// static FIXTURE_DOCUMENTED_LIMIT: usize = 3;\n",
+    "pub(crate) static mut FIXTURE_BUDGET: u8 = 4;\n",
+    "lazy_static! { static ref FIXTURE_CAP: usize = 5; }\n",
+    "struct Ring<const CAPACITY: usize>;\n",
+    "impl<T, const LIMIT: usize> Bounded for [T; LIMIT] {}\n",
+    "const fn fixture_capacity() -> usize { 6 }\n",
+    "fn pointers<T>() where *const T: Send, &'static T: Sized {}\n",
+    "trait Bounded {\n    const FIXTURE_CEILING: usize;\n}\n",
+    "const FIXTURE_THRESHOLD: usize = 7;\n",
+);
+
+type CapLikeConstants = std::collections::BTreeMap<(String, String), usize>;
+
+fn is_identifier_byte(byte: u8) -> bool { byte.is_ascii_alphanumeric() || byte == b'_' }
+
+fn constant_item_names(code: &str) -> Vec<&str> {
+    let bytes = code.as_bytes();
+    let mut names = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if !is_identifier_byte(bytes[at]) {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while at < bytes.len() && is_identifier_byte(bytes[at]) {
+            at += 1;
+        }
+        if !matches!(&code[start..at], "const" | "static") {
+            continue;
+        }
+        if code[..start].trim_end().ends_with(['<', ',', '*', '\'']) {
+            continue;
+        }
+        let mut rest = code[at..].trim_start();
+        for qualifier in ["mut", "ref"] {
+            rest = rest
+                .strip_prefix(qualifier)
+                .filter(|tail| tail.starts_with(char::is_whitespace))
+                .map_or(rest, str::trim_start);
+        }
+        let length = rest
+            .bytes()
+            .take_while(|byte| is_identifier_byte(*byte))
+            .count();
+        let after = rest[length..].trim_start();
+        if length > 0 && after.starts_with(':') && !after.starts_with("::") {
+            names.push(&rest[..length]);
+        }
+    }
+    names
+}
+
+fn is_cap_like(name: &str) -> bool {
+    name.split('_')
+        .any(|word| CAP_WORDS.iter().any(|cap| word.eq_ignore_ascii_case(cap)))
+}
+
+fn cap_like_constants(file: &str, source: &str) -> (usize, CapLikeConstants) {
+    let code = code_without_line_comments(source);
+    let names = constant_item_names(&code);
+    let mut constants = CapLikeConstants::new();
+    for name in names.iter().filter(|name| is_cap_like(name)) {
+        *constants
+            .entry((file.to_owned(), (*name).to_owned()))
+            .or_insert(0) += 1;
+    }
+    (names.len(), constants)
+}
+
+fn constants_without_a_row(constants: &CapLikeConstants) -> Vec<String> {
+    constants
+        .keys()
+        .filter(|(file, name)| {
+            !CAP_DISPOSITIONS.iter().any(|(row_file, row_name, ..)| {
+                *row_file == file.as_str() && *row_name == name.as_str()
+            })
+        })
+        .map(|(file, name)| format!("{file}: {name}"))
+        .collect()
+}
+
+#[test]
+fn every_cap_like_constant_of_the_matcher_sources_has_a_disposition() {
+    let (fixture_items, fixture_constants) = cap_like_constants("fixture", CAP_FIXTURE);
+    assert_eq!(
+        fixture_items, 5,
+        "the fixture declares five const and static items outside comment lines and generic \
+         parameter lists"
+    );
+    assert_eq!(
+        constants_without_a_row(&fixture_constants),
+        [
+            "fixture: FIXTURE_BUDGET",
+            "fixture: FIXTURE_CAP",
+            "fixture: FIXTURE_CEILING",
+            "fixture: MAX_FIXTURE_DEPTH",
+        ],
+        "the scanner must report exactly the four cap-like constants of the fixture as unlisted"
+    );
+
+    let root = workspace_root();
+    let mut sources = Vec::new();
+    for (directory, minimum_sources) in CAP_SCAN_DIRECTORIES {
+        let found = rust_sources_below(&root.join(directory));
+        assert!(
+            found.len() >= *minimum_sources,
+            "{directory}: found {} Rust sources, expected at least {minimum_sources}",
+            found.len()
+        );
+        sources.extend(found);
+    }
+    sources.extend(CAP_SCAN_FILES.iter().map(|file| root.join(file)));
+
+    let mut items = 0usize;
+    let mut declarations = 0usize;
+    let mut constants = CapLikeConstants::new();
+    for source in &sources {
+        let file = source
+            .strip_prefix(&root)
+            .expect("a scanned source is below the workspace root")
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(source)
+            .unwrap_or_else(|error| panic!("cannot read {file}: {error}"));
+        let (found_items, found_constants) = cap_like_constants(&file, &text);
+        items += found_items;
+        declarations += found_constants.values().sum::<usize>();
+        constants.extend(found_constants);
+    }
+    assert!(
+        items >= MINIMUM_CONSTANT_ITEMS,
+        "the scan found {items} const and static items, expected at least {MINIMUM_CONSTANT_ITEMS}"
+    );
+    println!(
+        "scanned {} Rust sources and {items} const and static items; {declarations} declarations \
+         of {} cap-like constants",
+        sources.len(),
+        constants.len()
+    );
+
+    let unlisted = constants_without_a_row(&constants);
+    assert!(
+        unlisted.is_empty(),
+        "a cap-like constant has no row in CAP_DISPOSITIONS. Give it one of the four classes and \
+         a one-line reason read from the code. A bound that refuses, truncates or changes a \
+         result when a valid input reaches it has no admissible class and must not get a row:\n{}",
+        unlisted.join("\n")
+    );
+
+    let mut rows = std::collections::BTreeSet::new();
+    for (file, name, class, reason) in CAP_DISPOSITIONS {
+        assert!(
+            rows.insert((*file, *name)),
+            "{file}: {name} has more than one row in CAP_DISPOSITIONS"
+        );
+        assert!(
+            constants.contains_key(&((*file).to_owned(), (*name).to_owned())),
+            "{file}: {name} has a row in CAP_DISPOSITIONS but is not declared in that file"
+        );
+        assert!(
+            ADMISSIBLE_CAP_CLASSES.contains(class),
+            "{file}: {name} has the class `{class}`, which is not one of the four admissible ones"
+        );
+        assert!(
+            !reason.trim().is_empty() && !reason.contains('\n'),
+            "{file}: {name} needs a one-line reason"
+        );
+    }
+}
