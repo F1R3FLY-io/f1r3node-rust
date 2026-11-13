@@ -9,6 +9,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, EquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::integration_helpers::equivocate_block;
@@ -592,4 +593,77 @@ async fn nodes_holding_a_pair_by_different_paths_judge_its_neglect_alike() {
     for verdict in verdicts {
         assert_neglected(verdict);
     }
+}
+
+fn holds_post_state(node: &TestNode, block: &BlockMessage) -> bool {
+    node.runtime_manager
+        .has_root(&Blake2b256Hash::from_bytes_prost(
+            &block.body.state.post_state_hash,
+        ))
+        .expect("has_root")
+}
+
+/// A sibling no block cites is recorded without a replay, so an equivocator
+/// cannot make a node replay every block it signs.
+#[serial_test::serial]
+#[tokio::test]
+async fn an_uncited_sibling_is_not_replayed() {
+    let (mut nodes, shard_id) = network(2, None).await;
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
+    let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(1, &shard_id)])
+        .await
+        .expect("sibling");
+    accept(&mut nodes[1], &b1, "v1 accepts b1").await;
+
+    let verdict = nodes[1]
+        .process_block(sibling.clone())
+        .await
+        .expect("sibling");
+    assert!(
+        matches!(
+            verdict,
+            Either::Left(BlockError::Invalid(InvalidBlock::IgnorableEquivocation))
+        ),
+        "{verdict:?}"
+    );
+    assert!(!holds_post_state(&nodes[1], &sibling));
+}
+
+/// v1 holds the sibling as an equivocation without its post-state; v2
+/// received the sibling first and builds on it. v1 replays the sibling when
+/// v2's block needs its state, and v2's block is valid.
+#[serial_test::serial]
+#[tokio::test]
+async fn a_block_built_on_an_equivocation_replays_it_on_demand() {
+    let (mut nodes, shard_id) = network(3, None).await;
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
+    let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(1, &shard_id)])
+        .await
+        .expect("sibling");
+    accept(&mut nodes[1], &b1, "v1 accepts b1").await;
+    let recorded = nodes[1]
+        .process_block(sibling.clone())
+        .await
+        .expect("v1 sibling");
+    assert!(is_equivocation(&recorded), "{recorded:?}");
+    assert!(!holds_post_state(&nodes[1], &sibling));
+
+    accept(&mut nodes[2], &sibling, "v2 accepts the sibling").await;
+    let built_on_sibling = nodes[2]
+        .create_block_unsafe(&[deploy(2, &shard_id)])
+        .await
+        .expect("v2 block");
+    assert!(built_on_sibling
+        .header
+        .parents_hash_list
+        .contains(&sibling.block_hash));
+
+    accept(&mut nodes[1], &built_on_sibling, "v1 judges v2's block").await;
+    assert!(holds_post_state(&nodes[1], &sibling));
 }
