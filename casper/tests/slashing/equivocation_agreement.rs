@@ -786,6 +786,20 @@ async fn a_block_built_on_an_invalid_twin_is_held_by_no_node() {
         matches!(remembered_verdict(&nodes[1], &t.block_hash), Some(Err(_))),
         "v1 remembers t's contents are invalid"
     );
+    let dag = nodes[1]
+        .casper
+        .block_dag_storage
+        .get_representation()
+        .expect("dag");
+    assert!(!t.body.deploys.is_empty());
+    for processed in &t.body.deploys {
+        assert!(
+            dag.deploy_lifecycle_events(&processed.deploy.sig)
+                .expect("read row")
+                .is_none(),
+            "t's deploys stay out of v1's deploy history"
+        );
+    }
     assert_eq!(
         held_pair(&nodes[1], &c.block_hash),
         None,
