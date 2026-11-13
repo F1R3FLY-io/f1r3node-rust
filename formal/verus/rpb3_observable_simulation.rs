@@ -15,6 +15,7 @@ use crate::{
     rpb3_epm_source_accept_refinement as epm_accept, rpb3_epm_unwind_event_lift as unwind,
     rpb3_epm_unwind_product_lift as unwind_product, rpb3_integrated_dispatcher as dispatcher,
     rpb3_live_canonical_path_source_refinement as path_live, rpb3_map_frame_refinement as map,
+    rpb3_runtime_frame_source_refinement as runtime_source,
     rpb3_score_admission_bridge as score_bridge, rpb3_wire_cursor_source_refinement as wire_source,
     LiveRuntimeProductAction, LiveRuntimeProductState,
 };
@@ -4153,6 +4154,166 @@ pub proof fn lemma_canonical_path_root_complete_extract(
 {
     hide(dispatcher::integrated_step);
     lemma_canonical_path_root_complete_frames(before, after, action);
+}
+
+pub proof fn lemma_live_root_complete_product_frames(
+    pre: LiveRuntimeProductState, post: LiveRuntimeProductState,
+    returned: runtime_source::RuntimeRootReturnImage,
+)
+    requires
+        crate::live_runtime_product_root_complete_step(pre, post, returned),
+    ensures
+        ({
+            let pre_frames = live_frames(pre);
+            let post_frames = live_frames(post);
+            let root = pre_frames[0];
+            let kept = post_frames[0];
+            &&& pre_frames.len() == 1
+            &&& post_frames.len() == 1
+            &&& root.frame_kind == 1
+            &&& root.cursor == root.region_end
+            &&& kept.frame_kind == root.frame_kind
+            &&& kept.region_end == root.region_end
+            &&& kept.cursor == root.cursor
+            &&& kept.last_slot == root.last_slot
+            &&& kept.returns == root.returns
+            &&& live_score_len(post) >= live_score_len(pre)
+        }),
+{
+    let cursor = pre.cursors[0].unwrap();
+    wire_source::wire_runtime_end_is_exact(cursor);
+    assert(pre.source.wire[0] == wire_source::wire_runtime_cursor_project(cursor));
+    score_bridge::bridge_score_source_step_preserves_shape(
+        pre.source.product.bridge, post.source.product.bridge,
+    );
+}
+
+pub proof fn lemma_live_root_complete_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveRootComplete,
+    ensures
+        after is Accepted,
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let root = before_frames[0];
+            let kept = after_frames[0];
+            &&& before_frames.len() == 1
+            &&& after_frames.len() == 1
+            &&& root.frame_kind == 1
+            &&& root.cursor == root.region_end
+            &&& kept.frame_kind == root.frame_kind
+            &&& kept.region_end == root.region_end
+            &&& kept.cursor == root.cursor
+            &&& kept.last_slot == root.last_slot
+            &&& kept.returns == root.returns
+            &&& state_score_len(after) >= state_score_len(before)
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::RootComplete { returned }, ..
+        } => {
+            let pre = before->product;
+            let post = state_product(after);
+            assert(before is Active && after is Accepted
+                && crate::live_runtime_product_root_complete_step(pre, post, returned)) by {
+                reveal(dispatcher::integrated_step);
+            }
+            lemma_live_root_complete_product_frames(pre, post, returned);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_live_root_complete_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveRootComplete,
+    ensures
+        root_core_step(before, after),
+        state_frames(before)[0].frame_kind == 1,
+{
+    hide(dispatcher::integrated_step);
+    lemma_live_root_complete_frames(before, after, action);
+}
+
+pub proof fn lemma_live_root_noscore_product_frames(
+    pre: LiveRuntimeProductState, post: LiveRuntimeProductState,
+    returned: runtime_source::RuntimeNoScoreRootReturnImage,
+)
+    requires
+        crate::live_runtime_product_root_complete_noscore_step(pre, post, returned),
+    ensures
+        post == pre,
+        live_frames(pre).len() == 1,
+        live_frames(pre)[0].frame_kind == 1,
+        live_frames(pre)[0].cursor == live_frames(pre)[0].region_end,
+{
+    dispatcher::live_noscore_root_completion_is_exact(pre, post, returned);
+    reveal(crate::live_runtime_product_root_complete_noscore_step);
+    let cursor = pre.cursors[0].unwrap();
+    wire_source::wire_runtime_end_is_exact(cursor);
+    assert(pre.source.wire[0] == wire_source::wire_runtime_cursor_project(cursor));
+}
+
+pub proof fn lemma_live_root_noscore_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveRootCompleteNoScore,
+    ensures
+        after is Accepted,
+        state_frames(after) == state_frames(before),
+        state_score_len(after) == state_score_len(before),
+        state_frames(before).len() == 1,
+        state_frames(before)[0].frame_kind == 1,
+        state_frames(before)[0].cursor == state_frames(before)[0].region_end,
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::RootCompleteNoScore { returned }, ..
+        } => {
+            let pre = before->product;
+            let post = state_product(after);
+            assert(before is Active && after is Accepted
+                && crate::live_runtime_product_root_complete_noscore_step(
+                    pre, post, returned,
+                )) by {
+                reveal(dispatcher::integrated_step);
+            }
+            lemma_live_root_noscore_product_frames(pre, post, returned);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_live_root_noscore_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveRootCompleteNoScore,
+    ensures
+        root_step(before, after),
+        state_frames(before)[0].frame_kind == 1,
+{
+    hide(dispatcher::integrated_step);
+    lemma_live_root_noscore_frames(before, after, action);
 }
 
 pub proof fn lemma_accept_shape_refines(
