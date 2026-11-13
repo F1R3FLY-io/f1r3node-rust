@@ -156,8 +156,11 @@ Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-rel
 a pull request by hand. The `mergify-only` ruleset blocks a manual merge, also for an organization
 admin.
 
-Mergify queues a pull request after it has its approval and its checks pass. It then merges the
-pull request. A push starts the checks again. [Mergify](docs/ci.md#mergify) gives the conditions of
+After the required reviews and checks pass, request a merge with the Mergify queue checkbox or an `@Mergifyio queue` comment.
+Human-managed pull requests await this request.
+Scheduled release-train back-merges retain automatic queueing under their existing provenance and CI requirements.
+A push starts the checks again and requires a new queue request.
+[Mergify](docs/ci.md#mergify) gives the conditions of
 each queue.
 
 If Mergify removes your pull request from a queue, its timeline records why. Push a fix, and the

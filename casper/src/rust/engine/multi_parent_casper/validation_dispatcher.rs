@@ -7,6 +7,8 @@
 //! this module while the trait method is a one-line delegate in
 //! `traits.rs`.
 
+use std::sync::Arc;
+
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
@@ -54,6 +56,105 @@ where
     Ok((result, elapsed_str))
 }
 
+/// The finalized floor of `block`'s parents, judged from its own
+/// justifications.
+async fn derive_floor_context(
+    this: &MultiParentCasperImpl,
+    block: &BlockMessage,
+    snapshot: &CasperSnapshot,
+) -> Result<crate::rust::finality::floor_context::FloorContext, CasperError> {
+    let latest_messages: std::collections::BTreeMap<
+        models::rust::validator::Validator,
+        models::rust::block_hash::BlockHash,
+    > = block
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    crate::rust::finality::floor_context::FloorContext::derive(
+        &snapshot.dag,
+        &this.block_store,
+        &block.header.parents_hash_list,
+        &latest_messages,
+        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+            this.chain_parameters.fault_tolerance_threshold_ppm,
+        ),
+    )
+    .await
+}
+
+/// What `block`'s parents held as equivocations say about `block`. A twin is
+/// stored without its contents judged, so a block built on one is judged
+/// only once the twin is: an invalid twin makes the block invalid, and a twin
+/// that cannot be judged yet defers it for the same reason. A valid twin's
+/// judgement replays it, so its post-state is held for the block's replay,
+/// and records its deploys in the deploy history.
+/// A final verdict is remembered, so a twin is judged once however many
+/// blocks build on it.
+async fn equivocating_parents_verdict(
+    this: &MultiParentCasperImpl,
+    block: &BlockMessage,
+    snapshot: &mut CasperSnapshot,
+    local_validator: Option<&models::rust::validator::Validator>,
+) -> Result<Option<BlockError>, CasperError> {
+    for parent_hash in &block.header.parents_hash_list {
+        let held_as_equivocation = snapshot
+            .dag
+            .lookup(parent_hash)?
+            .is_some_and(|metadata| metadata.equivocates.is_some());
+        if !held_as_equivocation {
+            continue;
+        }
+        let verdict = match this.judged_twins.get(parent_hash) {
+            Some(verdict) => verdict.as_ref().clone(),
+            None => {
+                let parent = this.block_store.get(parent_hash)?.ok_or_else(|| {
+                    CasperError::RuntimeError(format!(
+                        "equivocation {} is held without its body",
+                        PrettyPrinter::build_string_bytes(parent_hash)
+                    ))
+                })?;
+                let verdict = match Box::pin(validate_contents(
+                    this,
+                    &parent,
+                    snapshot,
+                    false,
+                    local_validator,
+                    "stored equivocation",
+                ))
+                .await?
+                {
+                    Either::Right(_) => {
+                        this.block_dag_storage.record_deploy_events(&parent)?;
+                        update_mergeable_cache_after_validation(
+                            this,
+                            &parent,
+                            "stored equivocation",
+                        )
+                        .await;
+                        Ok(())
+                    }
+                    Either::Left(BlockError::Invalid(reason)) => Err(reason),
+                    Either::Left(deferred) => return Ok(Some(deferred)),
+                };
+                this.judged_twins
+                    .insert(parent_hash.clone(), Arc::new(verdict.clone()));
+                verdict
+            }
+        };
+        if let Err(reason) = verdict {
+            tracing::warn!(
+                block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                parent = %PrettyPrinter::build_string_bytes(parent_hash),
+                ?reason,
+                "block built on an equivocation whose contents are invalid"
+            );
+            return Ok(Some(BlockError::Invalid(InvalidBlock::InvalidParents)));
+        }
+    }
+    Ok(None)
+}
+
 /// Runs the validator chain that's shared between `dispatch_validate` and
 /// `dispatch_validate_self_created`. The two callers differ only in
 /// whether they run `validate_block_checkpoint` + `bonds_cache` (the
@@ -96,6 +197,13 @@ async fn run_validation_steps(
         }
     }
 
+    // This node's identity for the owner-scoped buffer populate inside the
+    // checkpoint recompute; observers pass None and buffer nothing.
+    let local_validator: Option<models::rust::validator::Validator> = this
+        .validator_id
+        .as_ref()
+        .map(|id| prost::bytes::Bytes::copy_from_slice(&id.public_key.bytes));
+
     // A second signed block at a held sequence number is an equivocation
     // whatever else is wrong with it, so it is judged before every check
     // that could discard it.
@@ -117,15 +225,38 @@ async fn run_validation_steps(
         return Ok(Either::Left(block_error));
     }
 
+    validate_contents(
+        this,
+        block,
+        snapshot,
+        skip_checkpoint_and_bonds,
+        local_validator.as_ref(),
+        &t0,
+    )
+    .await
+}
+
+/// Judges everything about `block` but whether it equivocates: its parents
+/// held as equivocations, its summary, its replay, its bonds, the
+/// equivocations it neglects and its phlo price. `equivocation_time` is the
+/// timing of the equivocation step, for the breakdown log.
+async fn validate_contents(
+    this: &MultiParentCasperImpl,
+    block: &BlockMessage,
+    snapshot: &mut CasperSnapshot,
+    skip_checkpoint_and_bonds: bool,
+    local_validator: Option<&models::rust::validator::Validator>,
+    equivocation_time: &str,
+) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    if let Some(block_error) =
+        equivocating_parents_verdict(this, block, snapshot, local_validator).await?
+    {
+        return Ok(Either::Left(block_error));
+    }
+
     // The per-validate derivation slot: block_summary fills it at the first
     // floor-consuming step; the checkpoint and bonds steps below reuse it.
     let mut floor_ctx: Option<crate::rust::finality::floor_context::FloorContext> = None;
-    // This node's identity for the owner-scoped buffer populate inside the
-    // checkpoint recompute; observers pass None and buffer nothing.
-    let local_validator: Option<models::rust::validator::Validator> = this
-        .validator_id
-        .as_ref()
-        .map(|id| prost::bytes::Bytes::copy_from_slice(&id.public_key.bytes));
     let (block_summary_result, t1) = timed_step(
         "block-summary",
         BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
@@ -157,25 +288,7 @@ async fn run_validation_steps(
         // block never filled it, so derive here — same frozen inputs, same
         // result, same BlockException class on failure.
         if floor_ctx.is_none() && !block.header.parents_hash_list.is_empty() {
-            let latest_messages: std::collections::BTreeMap<
-                models::rust::validator::Validator,
-                models::rust::block_hash::BlockHash,
-            > = block
-                .justifications
-                .iter()
-                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-                .collect();
-            match crate::rust::finality::floor_context::FloorContext::derive(
-                &snapshot.dag,
-                &this.block_store,
-                &block.header.parents_hash_list,
-                &latest_messages,
-                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    this.chain_parameters.fault_tolerance_threshold_ppm,
-                ),
-            )
-            .await
-            {
+            match derive_floor_context(this, block, snapshot).await {
                 Ok(ctx) => floor_ctx = Some(ctx),
                 Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
             }
@@ -212,7 +325,7 @@ async fn run_validation_steps(
                 &this.runtime_manager,
                 Some(&this.rejected_deploy_buffer),
                 floor_ctx.as_ref(),
-                local_validator.as_ref(),
+                local_validator,
             ),
         )
         .await?;
@@ -323,12 +436,12 @@ async fn run_validation_steps(
     let timing_breakdown = match (t2_opt, t3_opt) {
         (Some(t2), Some(t3)) => format!(
             "equiv={}, summary={}, checkpoint={}, bonds={}, neglected-equiv={}, phlo={}",
-            t0, t1, t2, t3, t5, t6
+            equivocation_time, t1, t2, t3, t5, t6
         ),
         _ => format!(
             "equiv={}, summary={}, neglected-equiv={}, phlo={} \
              (checkpoint and bonds-cache skipped — self-created)",
-            t0, t1, t5, t6
+            equivocation_time, t1, t5, t6
         ),
     };
     tracing::debug!(target: "f1r3fly.casper", "Validation timing breakdown: {}", timing_breakdown);

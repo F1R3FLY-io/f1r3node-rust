@@ -257,3 +257,62 @@ async fn a_deploys_status_does_not_depend_on_which_twin_arrived_first() {
         "(carrying twin first, empty twin first)"
     );
 }
+
+/// A twin's contents are judged only when a block builds on it, so a twin
+/// nobody builds on adds nothing to the deploy history: one that copies a
+/// finalized deploy is not reported as that deploy's block.
+#[tokio::test]
+async fn a_twin_nobody_builds_on_is_not_where_a_deploy_appears() {
+    let (mut nodes, shard_id) = network().await;
+    let deploy = construct_deploy::source_deploy_now_full(
+        r#"@"twin_arrival_order"!(2)"#.to_string(),
+        None,
+        None,
+        None,
+        Some(0),
+        Some(shard_id.to_string()),
+    )
+    .expect("deploy");
+    let carrier = nodes[0]
+        .create_block_unsafe(std::slice::from_ref(&deploy))
+        .await
+        .expect("block creation");
+    admit_everywhere(&mut nodes, &carrier).await;
+    let empty = propose(&mut nodes[EQUIVOCATOR]).await;
+    admit_everywhere(&mut nodes, &empty).await;
+    let mut copied = empty.clone();
+    copied.body.deploys = carrier.body.deploys.clone();
+    let twin = nodes[EQUIVOCATOR]
+        .validator_id_opt
+        .as_ref()
+        .expect("validator")
+        .sign_block(&copied);
+    for node in nodes.iter_mut() {
+        let verdict = node.add_block(twin.clone()).await.expect("process");
+        assert!(
+            matches!(
+                verdict,
+                Either::Left(BlockError::Invalid(
+                    InvalidBlock::IgnorableEquivocation | InvalidBlock::AdmissibleEquivocation
+                ))
+            ),
+            "the copying twin is an equivocation: {verdict:?}"
+        );
+    }
+
+    for _ in 0..12 {
+        for index in [0, 2, 3] {
+            let block = propose(&mut nodes[index]).await;
+            admit_everywhere(&mut nodes, &block).await;
+        }
+    }
+    for _ in 0..12 {
+        nodes[3].casper.finalize().await.expect("finalizer cycle");
+    }
+    let dag = nodes[3].casper.block_dag().await.expect("dag");
+    let status =
+        deploy_finalization_status::resolve(&dag, nodes[3].casper.block_store(), &deploy.sig, None)
+            .expect("resolve");
+    assert_eq!(status.state, DeployFinalizationState::Finalized);
+    assert_eq!(status.latest_block_hash, Some(carrier.block_hash.clone()));
+}

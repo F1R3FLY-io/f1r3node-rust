@@ -160,22 +160,33 @@ fn test_lookup_elements_result(
         latest_block_number,
     } = lookup_result;
 
-    let real_latest_messages =
-        block_elements
+    let expected_metadata = |index: usize| {
+        let element = &block_elements[index];
+        let sibling = block_elements[..index]
             .iter()
-            .fold(HashMap::new(), |mut acc, block_element| {
-                if !block_element.sender.is_empty() {
-                    acc.insert(
-                        block_element.sender.clone(),
-                        BlockMetadata::from_block(block_element, None, None, None),
-                    );
-                }
-                acc
-            });
+            .filter(|earlier| {
+                !element.sender.is_empty()
+                    && earlier.sender == element.sender
+                    && earlier.seq_num == element.seq_num
+                    && earlier.block_hash != element.block_hash
+            })
+            .map(|earlier| earlier.block_hash.clone())
+            .min();
+        BlockMetadata::from_block(element, sibling, None, None)
+    };
 
-    list.iter()
-        .zip(block_elements.iter())
-        .for_each(|(block_lookup, block_element)| {
+    let real_latest_messages = block_elements.iter().enumerate().fold(
+        HashMap::new(),
+        |mut acc, (index, block_element)| {
+            if !block_element.sender.is_empty() {
+                acc.insert(block_element.sender.clone(), expected_metadata(index));
+            }
+            acc
+        },
+    );
+
+    list.iter().zip(block_elements.iter()).enumerate().for_each(
+        |(index, (block_lookup, block_element))| {
             let BlockLookup {
                 block_metadata,
                 latest_message_hash,
@@ -183,10 +194,7 @@ fn test_lookup_elements_result(
                 children,
                 contains,
             } = block_lookup;
-            assert_eq!(
-                *block_metadata,
-                Some(BlockMetadata::from_block(block_element, None, None, None))
-            );
+            assert_eq!(*block_metadata, Some(expected_metadata(index)));
 
             assert_eq!(
                 *latest_message_hash,
@@ -220,7 +228,8 @@ fn test_lookup_elements_result(
 
             assert_eq!(children_set, Some(expected_children));
             assert!(*contains);
-        });
+        },
+    );
 
     let filtered_latest_message_hashes: HashMap<_, _> = latest_message_hashes
         .iter()
@@ -257,7 +266,9 @@ fn test_lookup_elements_result(
 
     let real_topo_sort = normalize(&[block_elements
         .iter()
-        .map(|b| b.block_hash.clone())
+        .enumerate()
+        .filter(|(index, _)| !expected_metadata(*index).is_invalid())
+        .map(|(_, b)| b.block_hash.clone())
         .collect::<Vec<_>>()]);
 
     assert_eq!(topo_sort.len(), real_topo_sort.len());
@@ -703,11 +714,10 @@ fn dag_storage_settled_history_insert_never_touches_latest_messages() {
     );
 }
 
-/// Every deploy in a stored body resolves to its carrier, an equivocation's
-/// included: which twin is stored as the equivocation depends on arrival
-/// order.
+/// Every deploy in a validated inserted body resolves to its carrier; an
+/// equivocation's contents are unjudged at insert and resolve to nothing.
 #[test]
-fn deploy_appearance_resolves_every_stored_body() {
+fn deploy_appearance_resolves_validated_bodies_and_ignores_equivocations() {
     let genesis = genesis_block();
     proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10))| {
       for mode in [
@@ -736,8 +746,11 @@ fn deploy_appearance_resolves_every_stored_body() {
               .map(|sig| dag.deploy_canonical_appearance(sig).unwrap())
               .collect();
 
-          let expected: Vec<Option<BlockHash>> =
-              block_hashes.iter().map(|h| Some(h.clone())).collect();
+          let expected: Vec<Option<BlockHash>> = match mode {
+              block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Equivocation { .. } =>
+                  vec![None; deploy_sigs.len()],
+              _ => block_hashes.iter().map(|h| Some(h.clone())).collect(),
+          };
           assert_eq!(deploy_lookups, expected, "mode {:?}", mode);
       }
     });
@@ -1276,11 +1289,12 @@ fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
     });
 }
 
-/// The ingest rides `insert`'s body pass: every stored block's executions
-/// and records project into per-sig lifecycle rows, an equivocation's
-/// included, since which twin is stored as the equivocation depends on
-/// arrival order. Every block's body sigs land in the repeat-deploy carrier
-/// index, which must cover the same block universe the ancestor scan reads.
+/// The ingest rides `insert`'s body pass: a valid block's executions and
+/// records project into per-sig lifecycle rows, an equivocation's body
+/// contributes none until `record_deploy_events` after its contents are
+/// judged, and EVERY block's body sigs — valid and invalid alike — land in
+/// the repeat-deploy carrier index, which must cover the same block
+/// universe the ancestor scan reads.
 #[test]
 fn insert_projects_lifecycle_events_and_carrier_entries() {
     use models::rust::block_implicits::processed_deploy_gen;
@@ -1399,26 +1413,17 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
             rejected_row.events
         );
 
-        let equivocation_row = dag
-            .deploy_lifecycle_events(&invalid_deploy.deploy.sig)
-            .expect("read row")
-            .expect("an equivocation's deploy has a row");
         assert!(
-            matches!(
-                equivocation_row.events.as_slice(),
-                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
-                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Included { .. },
-                    ..
-                }]
-            ),
-            "one Included event for the equivocation; got {:?}",
-            equivocation_row.events
+            dag.deploy_lifecycle_events(&invalid_deploy.deploy.sig)
+                .expect("read row")
+                .is_none(),
+            "an equivocation's body contributes no lifecycle events at insert"
         );
-        assert_eq!(
+        assert!(
             dag.deploy_canonical_appearance(&invalid_deploy.deploy.sig)
-                .expect("appearance"),
-            Some(invalid_block.block_hash.clone()),
-            "the equivocation is where the deploy appears"
+                .expect("appearance")
+                .is_none(),
+            "an equivocation's unjudged body is not where a deploy appears"
         );
         assert!(
             !dag.carrier_index_proves_absence(&invalid_deploy.deploy.sig)
@@ -1434,6 +1439,33 @@ fn insert_projects_lifecycle_events_and_carrier_entries() {
             dag.carrier_index_proves_absence(b"never-carried-sig")
                 .expect("probe"),
             "a fresh sig has no carrier"
+        );
+
+        for _ in 0..2 {
+            dag_storage
+                .record_deploy_events(&invalid_block)
+                .expect("record a judged equivocation's deploys");
+        }
+        let judged_row = dag
+            .deploy_lifecycle_events(&invalid_deploy.deploy.sig)
+            .expect("read row")
+            .expect("a judged equivocation's deploy has a row");
+        assert!(
+            matches!(
+                judged_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Included { .. },
+                    ..
+                }]
+            ),
+            "one Included event however often it is recorded; got {:?}",
+            judged_row.events
+        );
+        assert_eq!(
+            dag.deploy_canonical_appearance(&invalid_deploy.deploy.sig)
+                .expect("appearance"),
+            Some(invalid_block.block_hash.clone()),
+            "a judged equivocation is where its deploy appears"
         );
     });
 }
@@ -2067,6 +2099,34 @@ async fn an_equivocation_insert_is_found_by_its_sender() {
         .map(|metadata| metadata.block_hash)
         .collect();
     assert_eq!(held, vec![invalid_block.block_hash.clone()]);
+}
+
+#[tokio::test]
+async fn a_held_pair_is_recorded_whatever_path_delivered_its_second_block() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    for mode in [InsertMode::Normal, InsertMode::SettledHistory] {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+        let first = chain_block(1, vec![genesis.block_hash.clone()]);
+        let mut second = first.clone();
+        second.block_hash = BlockHash::from(vec![0xAB; 32]);
+        second.extra_bytes = vec![1].into();
+        dag_storage.insert(&first, InsertMode::Normal).unwrap();
+        dag_storage.insert(&second, mode.clone()).unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        let recorded: Vec<_> = dag
+            .equivocations_of(&first.sender)
+            .unwrap()
+            .into_iter()
+            .map(|metadata| (metadata.block_hash, metadata.equivocates))
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![(second.block_hash.clone(), Some(first.block_hash.clone()))],
+            "{mode:?}"
+        );
+    }
 }
 
 #[tokio::test]

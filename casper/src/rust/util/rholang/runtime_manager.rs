@@ -279,6 +279,7 @@ pub struct RuntimeManager {
     pub bonds_cache: Arc<BoundedCache<StateHash, Vec<Bond>>>,
     pub floor_state_cache: Arc<BoundedCache<StateHash, FloorState>>,
     pub claim_book_cache: Arc<BoundedCache<StateHash, ClaimBook>>,
+    pub quarantined_cache: Arc<BoundedCache<StateHash, Vec<Bond>>>,
     /// Cache for merged parent post-state computation keyed by parent-set snapshot context.
     pub parents_post_state_cache:
         Arc<BoundedCache<ParentsPostStateCacheKey, ParentsPostStateCacheVal>>,
@@ -1293,8 +1294,14 @@ impl RuntimeManager {
     /// Every withdrawn validator at `hash` with the stake it still holds in
     /// quarantine, until it is paid out.
     pub async fn quarantined_stakes(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
+        if let Some(cached) = self.quarantined_cache.get(hash) {
+            return Ok((*cached).clone());
+        }
         let runtime = self.spawn_runtime().await?;
-        RuntimeOps::new(runtime).compute_quarantined(hash).await
+        let computed = RuntimeOps::new(runtime).compute_quarantined(hash).await?;
+        self.quarantined_cache
+            .insert(hash.clone(), Arc::new(computed.clone()));
+        Ok(computed)
     }
 
     // Executes deploy as user deploy with immediate rollback
@@ -1777,6 +1784,7 @@ impl RuntimeManager {
             bonds_cache: Arc::new(BoundedCache::new(Self::MAX_BONDS_CACHE_ENTRIES)),
             floor_state_cache: Arc::new(BoundedCache::new(Self::MAX_FLOOR_STATE_CACHE_ENTRIES)),
             claim_book_cache: Arc::new(BoundedCache::new(Self::MAX_CLAIM_BOOK_CACHE_ENTRIES)),
+            quarantined_cache: Arc::new(BoundedCache::new(Self::MAX_BONDS_CACHE_ENTRIES)),
             parents_post_state_cache: Arc::new(BoundedCache::new(
                 Self::MAX_PARENTS_POST_STATE_CACHE_ENTRIES,
             )),

@@ -9,8 +9,10 @@
 //! ## Slashing-protocol position
 //!
 //! An equivocation is stored as an invalid block whose metadata names its
-//! sibling (`InsertMode::Equivocation`); that pair is the evidence a slash
-//! carries.
+//! sibling; that pair is the evidence a slash carries. A block inserted while
+//! its sender's other block at the same sequence number is held is stored as
+//! an equivocation whatever path delivered it, so every node holding a pair
+//! records it.
 //!
 //! ## Lock discipline (P1-3 + P2-12)
 //!
@@ -1870,6 +1872,71 @@ impl BlockDagKeyValueStorage {
         result
     }
 
+    /// The sender's other held block at `block`'s sequence number, the one
+    /// with the lowest hash.
+    fn held_sibling(&self, block: &BlockMessage) -> Result<Option<BlockHash>, KvStoreError> {
+        if block.sender.is_empty() {
+            return Ok(None);
+        }
+        let held = match &self.persistence {
+            Some(persistence) => {
+                persistence
+                    .history
+                    .blocks_at_sequence(&block.sender, block.seq_num, u64::MAX)?
+            }
+            None => {
+                let guard = self.block_metadata_index.read();
+                let dag_set = guard.dag_state().read().dag_set.clone();
+                let mut held = Vec::new();
+                for hash in dag_set {
+                    if let Some(metadata) = guard.get(&hash)? {
+                        if metadata.sender == block.sender
+                            && metadata.sequence_number == block.seq_num
+                        {
+                            held.push(hash);
+                        }
+                    }
+                }
+                held
+            }
+        };
+        Ok(held
+            .into_iter()
+            .filter(|hash| *hash != block.block_hash)
+            .min())
+    }
+
+    /// Projects `block`'s executions and rejection records into the per-sig
+    /// lifecycle rows. Each append is deduplicated per block and kind, so a
+    /// repeat writes nothing.
+    pub fn record_deploy_events(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
+        let block_number = block.body.state.block_number;
+        let lifecycle_guard = self.lifecycle.write();
+        for pd in &block.body.deploys {
+            lifecycle_guard.append_event_once(
+                &pd.deploy.sig,
+                Some(pd.deploy.data.valid_after_block_number),
+                LifecycleEvent {
+                    height: block_number,
+                    block_hash: block.block_hash.to_vec(),
+                    kind: LifecycleEventKind::Included {
+                        is_failed: pd.is_failed,
+                    },
+                },
+            )?;
+        }
+        for rd in &block.body.rejected_deploys {
+            lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+                height: block_number,
+                block_hash: block.block_hash.to_vec(),
+                kind: LifecycleEventKind::Rejected {
+                    duplicate: rd.duplicate,
+                },
+            })?;
+        }
+        Ok(())
+    }
+
     /// Internal method to insert without acquiring lock.
     /// Used when lock is already held by the caller.
     /// Public to allow IndexedBlockDagStorage to use it.
@@ -1883,7 +1950,8 @@ impl BlockDagKeyValueStorage {
         // shim survived a Phase-4 transition; it is no longer needed.
         let equivocates = match &mode {
             InsertMode::Equivocation { sibling } => Some(sibling.clone()),
-            _ => None,
+            InsertMode::Approved => None,
+            InsertMode::Normal | InsertMode::SettledHistory => self.held_sibling(block)?,
         };
         let invalid = equivocates.is_some();
         let approved = matches!(mode, InsertMode::Approved);
@@ -2072,41 +2140,13 @@ impl BlockDagKeyValueStorage {
                 }
             }
 
-            // Lifecycle event ingest: one body pass projects inclusion and
-            // rejection events into the per-sig lifecycle rows. An
-            // equivocation contributes too: which twin is stored as the
-            // equivocation depends on arrival order, and the settle pass
-            // decides from the finalized lineage, not from the events.
-            // Appends go through `append_event_once`: after a crash inside
-            // this ingest-first window the block is not yet DAG-visible, so
-            // its redelivery re-runs this pass — the per-(block, kind) dedup
-            // makes that retry write nothing twice.
-            {
-                let block_number = block.body.state.block_number;
-                let lifecycle_guard = self.lifecycle.write();
-                for pd in &block.body.deploys {
-                    lifecycle_guard.append_event_once(
-                        &pd.deploy.sig,
-                        Some(pd.deploy.data.valid_after_block_number),
-                        LifecycleEvent {
-                            height: block_number,
-                            block_hash: block.block_hash.to_vec(),
-                            kind: LifecycleEventKind::Included {
-                                is_failed: pd.is_failed,
-                            },
-                        },
-                    )?;
-                }
-                for rd in &block.body.rejected_deploys {
-                    lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
-                        height: block_number,
-                        block_hash: block.block_hash.to_vec(),
-                        kind: LifecycleEventKind::Rejected {
-                            duplicate: rd.duplicate,
-                        },
-                    })?;
-                }
-                drop(lifecycle_guard);
+            // Lifecycle event ingest, before the block is DAG-visible: a
+            // crash here leaves the block undelivered, and its redelivery
+            // re-runs this pass. An equivocation stored by validation has
+            // contents nobody has judged, so its events wait for
+            // `record_deploy_events` after a judgement finds them valid.
+            if !matches!(mode, InsertMode::Equivocation { .. }) {
+                self.record_deploy_events(block)?;
             }
 
             // An equivocation's votes are recorded too: which twin is stored

@@ -16,7 +16,7 @@ Record metadata := {
   metadata_weights : list (wire * wire);
   metadata_block_number : N;
   metadata_sequence_number : N;
-  metadata_invalid : bool;
+  metadata_equivocates : option wire;
   metadata_directly_finalized : bool;
   metadata_finalized : bool;
   metadata_fault_tolerance_bits : N;
@@ -33,15 +33,15 @@ Definition metadata_tuple_codec :=
     (pair_codec blob blob))
     (pair_codec (uint 8)
     (pair_codec (uint 4)
-    (pair_codec (boolean)
+    (pair_codec (optional blob)
     (pair_codec (boolean)
     (pair_codec (boolean)
     (pair_codec (uint 4) ((blob)))))))))))).
 
 Definition metadata_unpack (value : metadata) :=
-  (metadata_block_hash value, (metadata_parents value, (metadata_sender value, (metadata_justifications value, (metadata_weights value, (metadata_block_number value, (metadata_sequence_number value, (metadata_invalid value, (metadata_directly_finalized value, (metadata_finalized value, (metadata_fault_tolerance_bits value, metadata_merge_base value))))))))))).
+  (metadata_block_hash value, (metadata_parents value, (metadata_sender value, (metadata_justifications value, (metadata_weights value, (metadata_block_number value, (metadata_sequence_number value, (metadata_equivocates value, (metadata_directly_finalized value, (metadata_finalized value, (metadata_fault_tolerance_bits value, metadata_merge_base value))))))))))).
 
-Definition metadata_pack (value : ((wire) * ((list wire) * ((wire) * ((list (wire * wire)) * ((list (wire * wire)) * ((N) * ((N) * ((bool) * ((bool) * ((bool) * ((N) * (wire))))))))))))%type) : metadata :=
+Definition metadata_pack (value : ((wire) * ((list wire) * ((wire) * ((list (wire * wire)) * ((list (wire * wire)) * ((N) * ((N) * ((option wire) * ((bool) * ((bool) * ((N) * (wire))))))))))))%type) : metadata :=
   let '(v0, (v1, (v2, (v3, (v4, (v5, (v6, (v7, (v8, (v9, (v10, v11))))))))))) := value in
   {| metadata_block_hash := v0;
      metadata_parents := v1;
@@ -50,7 +50,7 @@ Definition metadata_pack (value : ((wire) * ((list wire) * ((wire) * ((list (wir
      metadata_weights := v4;
      metadata_block_number := v5;
      metadata_sequence_number := v6;
-     metadata_invalid := v7;
+     metadata_equivocates := v7;
      metadata_directly_finalized := v8;
      metadata_finalized := v9;
      metadata_fault_tolerance_bits := v10;
