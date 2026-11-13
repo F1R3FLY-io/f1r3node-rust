@@ -3379,6 +3379,830 @@ result while reducing spatial-oracle calls from 256 to 1. The malformed-input an
 128 KiB-stack gates establish executable robustness; formal superset and replay closure remain
 open.
 
+#### Termination and resource accounting of the AC search
+
+A pattern collection can match an unordered target collection (the members of one `Par` field,
+the binds of a receive, the elements of an `ESet`, the entries of an `EMap`) only if its members
+can be assigned to pairwise distinct target members so that every assigned pair matches. The
+order and the grouping of the members carry no meaning, which makes this an
+associative-commutative (AC) matching problem. The matcher decides it as a maximum bipartite
+matching: one side of the graph holds the pattern members, the other side the target members, and
+the patterns are taken one at a time, each by a search for an *augmenting path*, a chain of
+reassignments that frees a target for it (Berge 1957; the comments in the code call the traversal
+Kuhn's, a name that goes back to Kuhn 1955). The search keeps its frames in a heap vector instead
+of on the native stack, and it evaluates the match relation lazily: two members are matched
+against each other when a frame first needs the answer. This subsection states why the search
+terminates without a depth, arity, iteration or backtrack cap, and what bounds the memory that it
+holds.
+
+**Status of the argument.** This is a paper argument. It was derived by reading the Rust sources
+at commit `70e7dbbe8`, to which every line number below refers. Nothing in it is mechanised, and
+no test was run for it. The cited tests were read at the same commit; each citation says what the
+test asserts and where that is weaker than the bound beside it.
+
+**Which code is covered.** The code holds an augmenting search with heap frames in three places.
+The argument covers the first two, which share the lazy relation of
+[`lazy_relation.rs`](../../../rholang/src/rust/interpreter/matcher/lazy_relation.rs) and whose
+loops have the same arms.
+
+- The *production search* is `step_list` (`spatial_matcher_pda.rs:5840-5989`) over the state
+  `ListMachine` (`spatial_matcher_pda.rs:5600-5614`) in
+  [`spatial_matcher_pda.rs`](../../../rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs).
+  That file is the pushdown automaton (PDA) behind all spatial matching: a *driver* loop over
+  jobs with an explicit heap stack of *driver frames* (`drive_job`,
+  `spatial_matcher_pda.rs:970-1020`). Every `SpatialMatcher::spatial_match` implementation
+  delegates to it (`spatial_matcher.rs:83-120` in
+  [`spatial_matcher.rs`](../../../rholang/src/rust/interpreter/matcher/spatial_matcher.rs)). It
+  turns the members of a `Par` field (eight of its fields, `spatial_matcher_pda.rs:2963-3091`),
+  the binds of a receive, the elements of an `ESet` and the entries of an `EMap` into a list
+  request (`ListRequest`, `spatial_matcher_pda.rs:4754-4778`), which `init_list`
+  (`spatial_matcher_pda.rs:5616-5750`) answers at once or hands to `step_list`.
+- The *compatibility search* is `MaximumBipartiteMatch::augment`
+  (`maximum_bipartite_match.rs:161-242`) in
+  [`maximum_bipartite_match.rs`](../../../rholang/src/rust/interpreter/matcher/maximum_bipartite_match.rs),
+  driven by `find_indexed_matches` (`maximum_bipartite_match.rs:96-152`) and called by
+  `ListMatch::list_match` (`list_match.rs:115-205`) in
+  [`list_match.rs`](../../../rholang/src/rust/interpreter/matcher/list_match.rs). At this commit
+  `list_match` is reached only from tests and from the recursive reference matcher that the tests
+  keep under `rholang/tests/support/spatial_matcher_oracle`.
+- The *EPathMap search* is `step_path` (`spatial_matcher_pda.rs:6384-6469`) over the state
+  `PathMachine` (`spatial_matcher_pda.rs:6158-6167`); it matches the entries of an `EPathMap`.
+  Its loop has the same arms, but it uses no lazy relation and keeps its visited set and its
+  assignments in `PathMap`s keyed by the target key. The argument does not cover it; the last
+  part of this subsection says what would be needed.
+
+The
+[D-E4 ledger](../../scientific-ledger/d-e4-lazy-relational-ac-edge-reuse-2026-08-09-2026-08-10.md)
+records the division between the first two: "production uses `spatial_matcher_pda::ListMachine`"
+and "`MaximumBipartiteMatch` is a compatibility surface that now shares the same `LazyRelation`
+utility". The argument is therefore stated once, for Algorithm 12 below, and every step names the
+lines of both instances.
+
+**Definitions.** The input of one search is a list of *term patterns* and a list of *targets*,
+optionally with a *remainder variable* that captures the targets which no term pattern takes. A
+wildcard in the place of the remainder variable discards those targets and adds nothing to the
+search.
+
+- *Sizes.* $`P`$ is the number of term patterns and $`T`$ the number of targets. The entry points
+  `list_match_single_` and `init_list` refuse the match before any search when there are more
+  term patterns than targets (`list_match.rs:86-91`, `spatial_matcher_pda.rs:5621-5626`), so
+  $`P \le T`$ in every search that they start.
+- *Remainder occurrences.* A target is *locally closed* when its set of locally free variables is
+  empty; only such a target can be captured. With a remainder variable, exactly $`T - P`$ targets
+  are left to it, and each of them must be locally closed. $`\rho`$ is the number of these
+  remainder occurrences: $`\rho = T - P`$ with a remainder variable and $`\rho = 0`$ without
+  one.
+- *Pattern vertices.* The term patterns and the remainder occurrences are the pattern vertices of
+  the bipartite graph, and $`V = P + \rho`$ is their number.
+- *Assignment table.* `assignments` has one slot per target. A slot is *free*, or it is
+  *occupied* by one pattern vertex, in which case it also stores the bindings that the matched
+  pair contributes.
+- *Roots.* The search handles its *roots* one after another, and $`n`$ is their number. The
+  compatibility search turns every remainder occurrence into a filler pattern in front of the
+  term patterns, so every pattern vertex is a root and $`n = V`$ (`list_match.rs:127-131`). The
+  production search makes only the term patterns roots, $`n = P`$, and represents the remainder
+  occurrences as `Remainder` marks, which it writes into the assignment table before the first
+  root (`spatial_matcher_pda.rs:5718-5732`).
+- *Target identities.* Two targets with byte-identical canonical encodings have the same
+  *identity*. $`G`$ is the number of distinct identities among the targets, and $`m(g)`$ is the
+  number of targets with identity $`g`$. A `Bag` is a `PathMap` from keys to multiplicities. The
+  production search may build a *target index* that groups the target positions by identity and
+  holds a `Bag` with multiplicity $`m(g)`$ at the key of $`g`$ (`ListTargetIndex`,
+  `spatial_matcher_pda.rs:4830-4901`).
+- *Candidate domain.* The candidate domain of term pattern $`i`$ is the list of target positions
+  that the search may test against it, and $`d_i`$ is its length. In the compatibility search it
+  is the list of all positions. In the production search it is the list of all positions or a
+  list of pairwise distinct positions in ascending order that the target index selected for the
+  pattern (`ListCandidateDomain`, `spatial_matcher_pda.rs:4780-4800`,
+  `spatial_matcher_pda.rs:5691-5703`, `spatial_matcher_pda.rs:5393-5479`). $`C`$ is the number of
+  *candidate pairs*, the sum of all $`d_i`$, and $`C_{\mathrm{idx}}`$ is the part of that sum
+  which belongs to domains stored as explicit position lists.
+- *Edge predicate, edges.* Evaluating the *edge predicate* on a pattern vertex and a target
+  decides whether the two match and, if they do, yields the *edge result*, the bindings that the
+  pair contributes. A candidate pair of a term pattern whose evaluation succeeded is an *edge*,
+  and $`E`$ is the number of edges found so far.
+- *Lazy relation, frontier.* `LazyRelation` keeps one *row* per pattern vertex that it is given.
+  A row is its *frontier* `scanned_targets`, the number of candidates of the row's domain that
+  have been evaluated, together with `edges`, the successful ones in the order of their
+  evaluation (`lazy_relation.rs:81-85`). A failed pair leaves nothing behind except the advanced
+  frontier. The rows of term patterns are *retaining*: they keep their edges. A filler pattern of
+  the compatibility search has a row that keeps nothing (`list_match.rs:153-155`), and a
+  `Remainder` mark of the production search has no row (`spatial_matcher_pda.rs:5714`); both are
+  called *plain* vertices below.
+- *Frame.* A frame is one record of the explicit stack of the search: a pattern vertex, a cursor
+  over the candidates of that vertex, and a *pending edge*, the edge by which the frame asks for
+  an occupied target (`SearchFrame`, `maximum_bipartite_match.rs:30-37`; `ListSearchFrame`,
+  `spatial_matcher_pda.rs:5497-5510`). The stack is a `Vec`, so the frames live on the heap.
+- *Root search, visited set.* A root search is the run of the frame loop for one root. Its
+  *visited set* `seen_targets` holds the targets to which a frame of this root search has
+  accepted an edge. It is emptied when the next root starts.
+- *Augmenting path.* The frames from the bottom of the stack to its top form a path: the bottom
+  frame holds the root, and every other frame holds the vertex that occupies the target of the
+  pending edge of the frame below it. The path is *augmenting* when the top frame accepts an edge
+  to a free target; committing all pending edges then moves every displaced vertex to its new
+  target and gives the root a target.
+- *Search state, frontier memory.* The search state is everything that the search holds beyond
+  its inputs: the frames, the visited set, the relation, the assignment table and, in the
+  production search, the candidate domains and the target index. Its size is the *frontier
+  memory* of the search, the cost that grows with the width of the collection.
+
+In formulae:
+
+```math
+P \le T, \qquad
+\rho \in \{0,\, T - P\}, \qquad
+V = P + \rho \le T, \qquad
+n \in \{P,\, V\}, \qquad
+d_i \le T, \qquad
+C = \sum_{i=1}^{P} d_i \le P\,T, \qquad
+C_{\mathrm{idx}} \le C, \qquad
+E \le C, \qquad
+G \le T, \qquad
+\sum_{g} m(g) = T .
+```
+
+**Algorithm 12 (Heap-frame augmenting search).** `SEARCH` decides one unordered collection match.
+It is presented in the literate style of Knuth (1984), in six numbered steps that mirror the
+control flow of both instances; each step is followed by the lines that implement it and by the
+sentence of the argument that rests on it. `assign` is the assignment table, `rel` the lazy
+relation, `seen` the visited set and `stack` the frame stack.
+
+*Step 1: enter a root.*
+
+```pseudocode
+SEARCH(patterns, targets):
+    assign[t] := free for every target t
+    -- production search with a remainder variable: mark the first T - P locally closed targets
+    rel[v] := (frontier 0, no edges) for every vertex v that has a row
+    for root := 0, 1, ..., n - 1:
+        seen := {}
+        stack := [FRAME(root)]
+        if LOOP() = fail: return no match
+    return FINISH(assign)
+
+FRAME(v):
+    return (vertex v, next := 0, limit := number of edges of rel[v] now, plain := 0, pending := none)
+```
+
+Implemented by the loop over the patterns and the entry of `augment`
+(`maximum_bipartite_match.rs:102-117`, `maximum_bipartite_match.rs:169-179`), and by `init_list`
+with `start_next_root` (`spatial_matcher_pda.rs:5714-5749`, `spatial_matcher_pda.rs:5776-5781`).
+A production frame holds only the cursor that its kind of vertex uses (`ListSearchCursor`).
+`init_list` builds no `ListMachine` in six cases: the sizes rule the match out; one pattern faces
+one target and there is neither a remainder variable nor a wildcard; both lists are empty; there
+is no term pattern and the remainder variable takes every target; a candidate domain is empty;
+fewer than $`\rho`$ targets are locally closed (`spatial_matcher_pda.rs:5621-5663`,
+`spatial_matcher_pda.rs:5708-5713`, `spatial_matcher_pda.rs:5729-5731`). `list_match_single_`
+answers the first, third and fourth of these cases itself (`list_match.rs:86-105`). `FINISH`
+folds the bindings of the matching into the binding map and collects the remainder
+(`maximum_bipartite_match.rs:119-151` with `list_match.rs:170-204`; `finish_list`,
+`spatial_matcher_pda.rs:6011-6122`). *The argument uses:* a root is entered once, after every
+earlier root has been matched, and entering a root is the only way to empty the visited set or to
+put a frame on an empty stack.
+
+*Step 2: the frame loop.*
+
+```pseudocode
+LOOP():
+    loop:
+        if stack is empty: return fail
+        f := top of stack
+        e := ADVANCE(f)                                   -- step 3
+        if e = none:
+            FAIL_AND_POP()                                -- step 6
+        else:
+            (t, result) := e
+            seen := seen + {t}
+            if assign[t] is free:
+                return SUCCEED_AND_UNWIND(f, t, result)   -- step 5
+            DESCEND(f, t, result)                         -- step 4
+```
+
+Implemented by the loop of `augment` (`maximum_bipartite_match.rs:181-241`) and by the loop of
+`step_list` (`spatial_matcher_pda.rs:5849-5988`), whose accepting half is `accept_edge`
+(`spatial_matcher_pda.rs:5802-5837`). *The argument uses:* the loop has no other arm. Every
+iteration runs step 3 and then exactly one of the steps 4, 5 and 6; the loop is left only through
+`return fail` and through step 5; and nothing in it reads a depth, a width, an iteration count or
+a budget.
+
+*Step 3: advance to the next candidate.*
+
+```pseudocode
+ADVANCE(f):
+    v := f.vertex
+    if v is plain:                                        -- 3c: a vertex without retained edges
+        while f.plain < T:
+            t := f.plain;  f.plain := f.plain + 1
+            if t is not in seen:
+                result := EVALUATE(v, t)                  -- remainder: is t locally closed?
+                if result is a match: return (t, result)
+        return none
+    while f.next < f.limit:                               -- 3a: replay the edges known at the push
+        (t, result) := rel[v].edges[f.next];  f.next := f.next + 1
+        if t is not in seen: return (t, result)
+    while rel[v].frontier < d_v:                          -- 3b: scan the unevaluated suffix
+        k := rel[v].frontier;  rel[v].frontier := k + 1
+        t := domain_v[k]
+        result := EVALUATE(v, t)                          -- lazy edge evaluation, assumption H1
+        if result is a match:
+            append (t, result) to rel[v].edges
+            if t is not in seen: return (t, result)
+    return none
+```
+
+Implemented by `next_edge` (`maximum_bipartite_match.rs:249-299`, with 3c at
+`maximum_bipartite_match.rs:257-273`, 3a at `maximum_bipartite_match.rs:275-282` and 3b at
+`maximum_bipartite_match.rs:284-296`) over the row operations `next_cached`, `next_unscanned` and
+`record_success` (`lazy_relation.rs:128-181`), and inline in `step_list` (3c at
+`spatial_matcher_pda.rs:5854-5890`, 3a at `spatial_matcher_pda.rs:5906-5937`, 3b at
+`spatial_matcher_pda.rs:5939-5973`). `EVALUATE` is the edge predicate. The production search
+cannot evaluate in place a pattern that needs the full matcher: it moves the whole machine into a
+driver frame `Frame::ListEdge`, returns the job that matches the two members
+(`spatial_matcher_pda.rs:5974-5987`), and continues when the driver hands the verdict to that
+frame (`spatial_matcher_pda.rs:1150-1193`). On a match it appends the edge; it then yields the
+edge if the candidate was unvisited when it was claimed, and re-enters the loop otherwise. *The
+argument uses:* every iteration of each of the three loops consumes one candidate of the top
+frame, because `f.plain`, `f.next` or the frontier of the row grows by one and nothing else
+changes. A frame consumes at most $`T`$ candidates while it lives: a plain frame because
+`f.plain` runs from zero to $`T`$; a frame with a retaining row because every edge was appended
+by a scan that had advanced the frontier, so that `f.limit` is at most the frontier at the push,
+and replay and scan together consume at most $`d_v \le T`$ candidates. The frontier never moves
+back, so no candidate pair of a retaining row is evaluated twice.
+
+*Step 4: descend.*
+
+```pseudocode
+DESCEND(f, t, result):
+    f.pending := (t, result)
+    push FRAME(the vertex that occupies assign[t])
+```
+
+Implemented at `maximum_bipartite_match.rs:213-228` and at `spatial_matcher_pda.rs:5828-5835`
+with `push_search` (`spatial_matcher_pda.rs:5753-5774`). *The argument uses:* a descent always
+follows the insertion into the visited set of a target that was outside it and that is occupied,
+and the pushed frame belongs to the vertex that occupies that target.
+
+*Step 5: succeed and unwind.*
+
+```pseudocode
+SUCCEED_AND_UNWIND(f, t, result):
+    assign[t] := (f.vertex, result)
+    pop f
+    while stack is not empty:
+        g := pop
+        assign[g.pending.target] := (g.vertex, g.pending.result)
+    return matched
+```
+
+Implemented at `maximum_bipartite_match.rs:192-211` and at `spatial_matcher_pda.rs:5814-5826`,
+where the production search also advances `root_pattern` and enters the next root. *The argument
+uses:* this is the only step that writes the assignment table. It commits the augmenting path,
+so that every occupied target stays occupied and one free target becomes occupied, and it ends
+the root search.
+
+*Step 6: fail and pop.*
+
+```pseudocode
+FAIL_AND_POP():
+    pop the top frame
+    if stack is not empty: (top of stack).pending := none
+```
+
+Implemented at `maximum_bipartite_match.rs:235-240`, and at `spatial_matcher_pda.rs:5894-5899`
+for a `Remainder` frame and `spatial_matcher_pda.rs:5944-5949` for a `Term` frame. *The argument
+uses:* the popped frame had consumed all its candidates, and it is not pushed again in this root
+search, because the target through which it was reached stays in the visited set.
+
+The figure shows the third root search of the smallest chain: three patterns and three targets,
+where pattern $`p_0`$ matches $`t_0`$ and $`t_1`$, pattern $`p_1`$ matches $`t_1`$ and $`t_2`$,
+and pattern $`p_2`$ matches only $`t_0`$. The first two roots took $`t_0`$ and $`t_1`$ without a
+descent.
+
+```text
+          stack (heap vector)          pending edge     assignment table
+                                                        before step 5    after step 5
+        ┌──────────────────────┐
+   top  │ frame 2: vertex p1   │─────► t2               t2: free         t2: p1
+        ├──────────────────────┤
+        │ frame 1: vertex p0   │─────► t1               t1: p1           t1: p0
+        ├──────────────────────┤
+ bottom │ frame 0: vertex p2   │─────► t0               t0: p0           t0: p2
+        └──────────────────────┘
+
+   visited set after each accepted edge:   {t0}   {t0, t1}   {t0, t1, t2}
+```
+
+Legend: each box is one frame of the root search for $`p_2`$; the frames were pushed from the
+bottom up. An arrow is the pending edge of its frame; for the top frame it is the edge that
+step 5 has just accepted. The two columns on the right show every slot of the assignment table
+before and after step 5 commits the path.
+
+**The measure.** A state of the search is the content of its variables between two transitions.
+Four natural numbers describe it, each a function of the Rust fields in the table.
+
+| Component | Meaning | Compatibility search | Production search |
+|---|---|---|---|
+| $`R`$ | roots that are not yet matched | `patterns.len()` minus the loop variable `pattern_index` while `augment` runs for it (`maximum_bipartite_match.rs:107`) | `patterns.len()` minus `root_pattern` (`spatial_matcher_pda.rs:5606`, `spatial_matcher_pda.rs:5824`) |
+| $`U`$ | targets outside the visited set | number of `false` entries of `seen_targets` (`maximum_bipartite_match.rs:169`) | number of `false` entries of `ListSeenTargets::Positions`, or $`T`$ minus the cardinality of the `Multiplicities` Bag (`spatial_matcher_pda.rs:5530-5598`) |
+| $`D`$ | live frames | `stack.len()` | `search.len()` |
+| $`K`$ | candidates that the top frame can still consume | from `next_target`, `relation_cursor` and the row's `scanned_targets` | from `next_target` of a `Remainder` cursor, or from `relation_cursor` of a `Term` cursor and the row's `scanned_targets` |
+
+With the names of Algorithm 12, for the top frame $`f`$ and its vertex $`v`$:
+
+```math
+K =
+\begin{cases}
+T - f.\mathit{plain} & \text{if } v \text{ is plain,} \\
+(f.\mathit{limit} - f.\mathit{next}) + (d_v - \mathit{frontier}_v) & \text{if } v \text{ has a retaining row,} \\
+0 & \text{if the stack is empty.}
+\end{cases}
+```
+
+The measure is the quadruple $`\mu = (R, U, D, K)`$. Quadruples are ordered lexicographically:
+$`\mu' \prec \mu`$ holds when the first component in which the two differ is smaller in
+$`\mu'`$.
+
+```math
+(R', U', D', K') \prec (R, U, D, K)
+\iff
+R' < R
+\;\lor\; (R' = R \land U' < U)
+\;\lor\; (R' = R \land U' = U \land D' < D)
+\;\lor\; (R' = R \land U' = U \land D' = D \land K' < K) .
+```
+
+A transition *decreases* the measure when the measure after it precedes, in this order, the
+measure before it. In the root search of the figure ($`n = 3`$, $`T = 3`$, every row retaining,
+root 2, hence $`R = 1`$) the measure takes the following values: a scan by $`p_2`$, a descent, a
+replay and a scan by $`p_0`$, a descent, a replay and a scan by $`p_1`$, and the success.
+
+```math
+(1,3,1,3) \succ (1,3,1,2) \succ (1,2,2,3) \succ (1,2,2,2) \succ (1,2,2,1)
+\succ (1,1,3,2) \succ (1,1,3,1) \succ (1,1,3,0) \succ (0,\cdot,\cdot,\cdot)
+```
+
+**Assumptions.** The results below use two assumptions. This subsection states them and does not
+prove them.
+
+- **H1 (edge evaluations return).** Every evaluation of the edge predicate that step 3 starts
+  ends after finitely many steps of its own and delivers exactly one verdict to the step that
+  started it. For a remainder occurrence the evaluation is one query whether the target is
+  locally closed (`list_match.rs:316-317`, `spatial_matcher_pda.rs:5883`). For a term pattern
+  whose `connective_used` flag is false it is one comparison of the two members for equality
+  (`list_match.rs:286`, `spatial_matcher_pda.rs:5959-5960`). For every other term pattern it is
+  a full spatial match of the two members: a nested call of `spatial_match` in the compatibility
+  search (`list_match.rs:302`), and a job that the driver runs above the suspended machine in the
+  production search (`spatial_matcher_pda.rs:5974-5987`). Such a match can enter every job kind
+  of the driver, including a new AC search for a collection nested inside the two members. H1 is
+  left open here for all three kinds. A proof would be an induction on the size of the pattern
+  member whose step case needs a termination argument for every job kind of the driver;
+  Theorem AC-5 supplies the case of the AC search and no other.
+- **H2 (preparation and finalization return).** Before the first root, `init_list` compiles a
+  candidate plan for every term pattern, builds at most one target index and expands the
+  candidate domains (`spatial_matcher_pda.rs:5674-5713`), and `list_match` builds the filler
+  patterns and the matcher object (`list_match.rs:127-160`). After the last root, `FINISH` runs.
+  Both run once per search, outside the frame loop. The finalization was read as a fixed number
+  of passes over the $`T`$ slots, one sort and one fold over at most $`P`$ results; the compiler
+  of the candidate plans was not analysed. Neither is proved to return here, and the transient
+  memory of neither is part of the bounds below.
+
+**Lemma AC-1 (the order is well-founded).** There is no infinite sequence
+$`\mu_0 \succ \mu_1 \succ \mu_2 \succ \cdots`$ of quadruples of natural numbers.
+
+*Proof.* Suppose that there is one. From each quadruple to the next the first component decreases
+or stays equal, so the first components form a non-increasing sequence of natural numbers, which
+is constant from some index on. From that index on the second component decreases or stays equal
+at every step, so it is constant from some later index on, and by the same argument so is the
+third. From then on every step keeps the first three components and must therefore decrease the
+fourth, which no infinite sequence of natural numbers can do. ∎
+
+**Lemma AC-2 (an accepted edge visits exactly one new target).** Step 2 inserts a target into the
+visited set only if step 3 found it outside the set, and after the insertion the set contains
+that target and no other new one. When the production search represents the visited set by a
+Bag, the visited targets of identity $`g`$ are the first $`s(g)`$ positions of its group, where
+$`s(g)`$ is the multiplicity of $`g`$ in that Bag, and $`0 \le s(g) \le m(g)`$ holds at all
+times.
+
+*Proof.* Every `return (t, result)` of step 3 is guarded by the test that $`t`$ is outside the
+visited set: at `maximum_bipartite_match.rs:261`, `maximum_bipartite_match.rs:279` and
+`maximum_bipartite_match.rs:293`, and at `spatial_matcher_pda.rs:5875-5880`,
+`spatial_matcher_pda.rs:5921-5925` and `spatial_matcher_pda.rs:5953-5955`. The result of the last
+test is used at `spatial_matcher_pda.rs:5970` or, after a suspended evaluation, at
+`spatial_matcher_pda.rs:1184`; the suspended driver frame owns the machine in between, so the
+visited set cannot have changed. The insertion is one assignment of `true`
+(`maximum_bipartite_match.rs:189`) or one call of `ListSeenTargets::insert`
+(`spatial_matcher_pda.rs:5803-5804`), which proves the claim for the two representations by
+flags. In the Bag representation let $`o(q)`$ be the rank of position $`q`$ within its group,
+counted from zero in ascending order of position. A position $`q`$ of identity $`g`$ is reported
+visited exactly when $`o(q) < s(g)`$ (`spatial_matcher_pda.rs:5552-5567`). Suppose
+$`s(g) \le m(g)`$, which holds for the empty Bag. Then the visited positions of $`g`$ are its
+first $`s(g)`$, and an unvisited position $`q`$ has $`s(g) \le o(q) \le m(g) - 1`$. The insertion
+asserts $`o(q) = s(g)`$ with `assert_eq!`, which is compiled in every build profile
+(`spatial_matcher_pda.rs:5586-5590`), and then adds one unit at the key of $`g`$
+(`spatial_matcher_pda.rs:5591`). After it $`s(g) \le m(g)`$ holds again, and the one position
+that newly counts as visited is $`q`$. A run in which the assertion failed would end there with
+a panic; this subsection does not prove that it cannot fail. ∎
+
+**Lemma AC-3 (the assignments form a matching that only grows).** At every moment of a run of
+`SEARCH`:
+
+1. only step 5 writes the assignment table, apart from the marks that the production search
+   writes before the first root;
+2. no pattern vertex occupies two targets, and in the production search exactly $`\rho`$ targets
+   carry a `Remainder` mark;
+3. step 5 leaves every occupied target occupied and occupies exactly one target that was free.
+
+Consequently the number $`a_r`$ of occupied targets is constant during root search $`r`$, with
+roots numbered from zero: $`a_r = r`$ in the compatibility search and $`a_r = r + \rho`$ in the
+production search. In both,
+
+```math
+1 + a_r \le V \qquad \text{for } 0 \le r < n .
+```
+
+*Proof.* Part 1 is read off the code: the table is written at
+`maximum_bipartite_match.rs:193-196` and `maximum_bipartite_match.rs:206-209`, and at
+`spatial_matcher_pda.rs:5815` and `spatial_matcher_pda.rs:5822`, all inside step 5, and by the
+marks at `spatial_matcher_pda.rs:5725`. For parts 2 and 3 let the stack at the start of step 5
+hold the frames $`g_0, \dots, g_k`$ from bottom to top. Every frame below the top has a pending
+edge, because step 4 sets it when it pushes the frame above and only step 6 clears it, after it
+has popped that frame. Let $`t_j`$ be the target of the pending edge of $`g_j`$ for $`j < k`$,
+and let $`t_k`$ be the free target that $`g_k`$ has just accepted. The targets
+$`t_0, \dots, t_k`$ are pairwise distinct, because each was outside the visited set when it was
+accepted and entered the set at once (Lemma AC-2). For $`j < k`$, step 4 pushed $`g_{j+1}`$ for
+the vertex that occupied $`t_j`$, and by part 1 that vertex still occupies $`t_j`$. Step 5
+writes the vertex of $`g_j`$ into the slot of $`t_j`$ for every $`j \le k`$. Hence every $`t_j`$
+with $`j < k`$ stays occupied, $`t_k`$ becomes occupied and no other slot changes, which is
+part 3. Assume part 2 before the step. The vertex of $`g_{j+1}`$ then occupies $`t_j`$ and no
+other target; after the step it occupies $`t_{j+1}`$ and no other target. The root was never
+written into the table before, because a root is entered once; it now occupies $`t_0`$ and no
+other target. A `Remainder` frame writes a `Remainder` mark
+(`spatial_matcher_pda.rs:5798-5800`), so the number of marks is unchanged. Part 2 therefore
+holds after the step; it holds before the first root, when the table is empty or holds $`\rho`$
+marks on $`\rho`$ distinct targets (`spatial_matcher_pda.rs:5717-5728`). Every matched root adds
+one occupied target, which gives the value of $`a_r`$. Finally $`1 + a_r \le V`$ because
+$`r \le n - 1`$, with $`n = V`$ in the compatibility search and $`n + \rho = V`$ in the
+production search. ∎
+
+**Lemma AC-4 (one live frame per occupied target).** Root search $`r`$ pushes at most
+$`1 + a_r`$ frames. In particular, at every moment,
+
+```math
+D \le 1 + a_r \le V \le T .
+```
+
+*Proof.* Step 1 pushes one frame. Every other push is step 4, which follows the insertion into
+the visited set of a target that was outside it (Lemma AC-2) and that is occupied. During a root
+search the visited set only grows, and by Lemma AC-3 the set of occupied targets does not change
+before step 5, which ends the root search. Step 4 therefore runs at most once per occupied
+target, that is, at most $`a_r`$ times. ∎
+
+The lemma uses $`P \le T`$ only for its last inequality. `MaximumBipartiteMatch` itself does not
+check the sizes; a direct caller that passes more patterns than targets, as one of the tests
+cited below does, gets $`D \le 1 + a_r \le T + 1`$ by the same proof, and the first root search
+that finds every target occupied fails.
+
+The chain of the figure exists for every width $`w`$: pattern $`p_{w-1}`$ matches only $`t_0`$,
+and every other pattern $`p_i`$ matches $`t_i`$ and $`t_{i+1}`$. The first $`w - 1`$ roots take
+their own targets without a descent, and the last root search pushes one frame for every pattern
+before it reaches the free target $`t_{w-1}`$. There $`D`$ reaches $`w = V`$, so the bound of
+the lemma is attained. The test `a_deep_augmenting_chain_uses_heap_frames` in
+[`rholang/tests/maximum_bipartite_match_stack.rs`](../../../rholang/tests/maximum_bipartite_match_stack.rs)
+runs the compatibility search on this family with $`w = 4096`$, every row retaining, on a thread
+whose native stack is 64 KiB, and asserts that a matching is returned and that it has 4,096
+entries (`maximum_bipartite_match_stack.rs:21-51`). It exercises the lemma at equality, with
+4,096 live frames by the derivation above, and shows that such a path completes on a small native
+stack. It asserts neither the number of frames nor any heap size, so it is weaker than the
+lemma: it would not notice a stack that grew beyond the bound.
+
+**Theorem AC-5 (termination).** Assume H1. Then every transition of the frame loop decreases the
+measure, every root search ends after finitely many transitions with `matched` or with `fail`,
+and a run of `SEARCH` performs at most $`n`$ root searches. The search needs no cap on depth,
+arity, iterations or backtracking. Root search $`r`$ performs at most $`(1 + a_r)(T + 2)`$
+transitions, so that for the whole run
+
+```math
+\#\mathrm{transitions} \;\le\; \sum_{r=0}^{n-1} (1 + a_r)(T + 2) \;\le\; n\,V\,(T + 2) .
+```
+
+If H2 also holds, `SEARCH` returns.
+
+*Proof.* The components of the measure are natural numbers. $`R`$ is not negative because
+`pattern_index` ranges over the patterns and `root_pattern` grows only in step 5, which needs a
+frame, and frames exist only while `root_pattern` is below the number of patterns
+(`spatial_matcher_pda.rs:5776-5781`). $`U`$ is not negative by Lemma AC-2, $`D`$ is a length, and
+$`K`$ is not negative because `f.plain`, `f.next` and the frontier grow only under the test that
+they are below their limits (`maximum_bipartite_match.rs:258-260`,
+`spatial_matcher_pda.rs:5864-5869`, `lazy_relation.rs:133-137`, `lazy_relation.rs:150-154`).
+The steps of Algorithm 12 are of five kinds.
+
+1. *Enter:* step 1. For root 0 it runs before the first transition and produces the initial
+   state, with $`R = n`$, $`U = T`$, $`D = 1`$ and $`K \le T`$. For every later root it runs
+   directly after step 5, with no other step between the two (`maximum_bipartite_match.rs:211`,
+   then the loop at `maximum_bipartite_match.rs:107` and the entry at
+   `maximum_bipartite_match.rs:169-179`; `spatial_matcher_pda.rs:5824-5825`), and it is counted
+   as the second half of kind 4.
+2. *Advance:* one iteration of a loop of step 3. Exactly one of `f.plain`, `f.next` and the
+   frontier of the row of the top frame grows by one, so $`K`$ decreases by one, and $`R`$,
+   $`U`$ and $`D`$ do not change. The edge that 3b appends does not change $`K`$, because
+   `f.limit` was fixed when the frame was pushed (`lazy_relation.rs:121-126`). An iteration that
+   evaluates the edge predicate completes by H1.
+3. *Descend:* the insertion of step 2 followed by step 4. By Lemma AC-2 the visited set gains
+   one target, so $`U`$ decreases by one, and $`R`$ does not change. $`D`$ grows by one and
+   $`K`$ takes the value of the new frame; both are less significant than $`U`$.
+4. *Succeed and unwind, then enter:* the insertion of step 2 followed by step 5 and, if a root
+   is left, by step 1 for it. By Lemma AC-3 one more root is matched, so $`R`$ decreases by one
+   (`maximum_bipartite_match.rs:211` with the loop at `maximum_bipartite_match.rs:107`;
+   `spatial_matcher_pda.rs:5824`); the new values of $`U`$, $`D`$ and $`K`$ are less
+   significant. When $`R`$ reaches zero the search leaves through `FINISH`.
+5. *Fail and pop:* step 6. It runs only after step 3 returned `none`, removes the top frame and
+   changes neither $`R`$ nor $`U`$, so $`D`$ decreases by one. If the stack is then empty the
+   search leaves with `fail` (`maximum_bipartite_match.rs:238-240` and
+   `maximum_bipartite_match.rs:115`; `spatial_matcher_pda.rs:5899`,
+   `spatial_matcher_pda.rs:5949`).
+
+By step 2 the transitions of the frame loop are exactly the kinds 2 to 5, and each of them
+decreases the measure, so by Lemma AC-1 the transitions of a run are finitely many. For the
+count, charge every advance to the frame that performs it, every push to the frame that is pushed
+and every removal to the frame that is removed. A frame is pushed once, is removed once and
+performs at most $`T`$ advances (step 3), so it is charged at most $`T + 2`$ transitions, and
+root search $`r`$ pushes at most $`1 + a_r \le V`$ frames (Lemma AC-4). ∎
+
+**Proposition AC-6 (edge evaluations).** In one run of `SEARCH`:
+
+1. the edge predicate is evaluated at most once for every candidate pair of a retaining row,
+   hence at most $`C`$ times for all retaining rows together, and $`E \le C`$;
+2. a plain frame evaluates it at most $`T`$ times, and a search that the list matcher started
+   has at most $`\rho`$ plain frames per root search, hence at most $`n \rho T`$ evaluations of
+   the remainder predicate in all.
+
+*Proof.* Part 1. Only 3b evaluates a pair of a retaining row, and it evaluates the pair at index
+$`k`$ of the row's domain in the iteration that moves the frontier from $`k`$ to $`k + 1`$. The
+frontier is written by its initialisation to zero (`lazy_relation.rs:108`) and by that increment
+(`lazy_relation.rs:154`) and by nothing else: `clear` (`lazy_relation.rs:185-189`) empties
+`edges` only, and it runs after the last root (`maximum_bipartite_match.rs:119`,
+`spatial_matcher_pda.rs:6022`). So no index is claimed twice. Every edge is a successful
+evaluation, so $`E \le C`$. Part 2. A plain frame evaluates only in 3c, at most once per
+iteration, and 3c iterates at most $`T`$ times in the life of the frame. In a search that the
+list matcher started, the plain vertices are the $`\rho`$ remainder occurrences, and each has at
+most one frame per root search: a filler pattern is the root or occupies one target, a
+`Remainder` frame belongs to one marked target, and step 4 runs at most once per occupied target
+(Lemma AC-4). ∎
+
+The test `production_list_pda_relational_counters_meet_preregistered_controls` in
+[`rholang/tests/support/spatial_matcher_pda_equivalence.rs`](../../../rholang/tests/support/spatial_matcher_pda_equivalence.rs)
+measures part 1 for the production search (`spatial_matcher_pda_equivalence.rs:1755-1834`). It
+starts the driver at `init_list` with 128 patterns and 128 targets and reads the work counters
+that the test build increments where step 3 claims and replays candidates. On the diagonal
+family, the integers 0 to 127 against themselves, it requires exactly 128 edge evaluations, one
+build of the target index, no reused row and no replayed edge. On the chain family, where
+pattern 0 is the integer 1, pattern $`i`$ is the disjunction of the integers $`i`$ and
+$`i + 1`$, and the target 0 therefore has no edge, the match must fail, and each of 51
+repetitions requires exactly $`254 = 1 + 2 \cdot 126 + 1`$ edge evaluations, which the comment
+of the test derives as the sum of the sizes of the candidate domains, that is $`C`$; it also
+requires at least one reused row, at least one replayed edge and at most 256 successful
+evaluations. Both families must stay below the count of a reference traversal without a
+relation, which the test computes itself. The chain reaches the bound of part 1 with equality
+although its last root search walks the whole chain of displacements before it fails, and the
+limit on successful evaluations keeps $`E`$ at most 256 where a dense table would hold 16,384
+entries. The test counts evaluations; it measures no memory. For the compatibility search with
+every row retaining, the test `exhaustive_bounded_graphs_preserve_the_exact_nominal_assignment`
+in
+[`rholang/tests/maximum_bipartite_match_relational.rs`](../../../rholang/tests/maximum_bipartite_match_relational.rs)
+requires, for every bipartite graph with at most four patterns and at most four targets, no more
+calls of the edge predicate than there are pairs of a pattern and a target, and the same matching
+as a reference traversal without a relation (`maximum_bipartite_match_relational.rs:133-155`).
+
+**Proposition AC-7 (frontier memory).** Call an *element* one record whose size is fixed at
+compile time: an assignment slot, a visited flag, a frame, a row header, an edge record, a
+domain header, a position, a group identifier, a group record, or one value cell of a `PathMap`.
+At every moment of the frame loop the search state holds at most
+
+```math
+N_{\mathrm{compat}}
+= \underbrace{T}_{\text{slots}} + \underbrace{T}_{\text{flags}} + \underbrace{V}_{\text{frames}}
++ \underbrace{V}_{\text{rows}} + \underbrace{E}_{\text{edges}}
+= 2T + 2V + E
+```
+
+elements in the compatibility search and at most
+
+```math
+N_{\mathrm{prod}}
+= \underbrace{T}_{\text{slots}} + \underbrace{T}_{\text{visited}} + \underbrace{V}_{\text{frames}}
++ \underbrace{P + E}_{\text{relation}} + \underbrace{P + C_{\mathrm{idx}}}_{\text{domains}}
++ \underbrace{2T + 3G}_{\text{index}}
+= 4T + 3G + 2P + V + E + C_{\mathrm{idx}}
+```
+
+elements in the production search. Because $`G`$, $`P`$ and $`V`$ are at most $`T`$, and $`E`$
+and $`C_{\mathrm{idx}}`$ are at most $`C`$, both numbers are at most $`10T + 2C`$: linear in the
+number of targets plus the number of candidate pairs, and at most $`10T + 2PT`$.
+
+| Structure | Compatibility search | Production search | Elements | Lifetime |
+|---|---|---|---|---|
+| Assignment table | `assignments` (`maximum_bipartite_match.rs:102-103`) | `assignments` (`spatial_matcher_pda.rs:5717`) | $`T`$ slots | the whole search |
+| Visited set | `seen_targets`, a new vector for every root (`maximum_bipartite_match.rs:169`) | `seen_targets`, reset in place for every root (`spatial_matcher_pda.rs:5536-5550`): flags, or a Bag when a target index exists and some target repeats | $`T`$ flags, or at most $`G`$ cells | one root search |
+| Frames | `stack` (`maximum_bipartite_match.rs:174-179`, `maximum_bipartite_match.rs:222-227`) | `search` (`spatial_matcher_pda.rs:5753-5774`) | at most $`V`$ (Lemma AC-4) | one root search |
+| Relation rows | one per pattern vertex (`maximum_bipartite_match.rs:104-105`) | one per term pattern (`spatial_matcher_pda.rs:5714`) | $`V`$, respectively $`P`$ | the whole search |
+| Retained edges | one record in the vector of the row for every successful pair of a retaining row (`lazy_relation.rs:170-181`) | the same (`spatial_matcher_pda.rs:5965-5969`, `spatial_matcher_pda.rs:1173-1183`) | $`E`$ | until `clear` after the last root |
+| Failed pairs | nothing | nothing | none | not applicable |
+| Candidate domains | none | `candidate_domains` (`spatial_matcher_pda.rs:5691-5703`) | $`P`$ headers and $`C_{\mathrm{idx}}`$ positions | the whole search |
+| Target index | none | `ListTargetIndex` (`spatial_matcher_pda.rs:4830-4901`), built when a remainder variable is present or a candidate plan asks for it (`spatial_matcher_pda.rs:5680-5690`) | $`T`$ group identifiers, $`T`$ positions, $`G`$ group records and $`2G`$ cells | the whole search |
+
+*Proof.* Each row of the table names the lines that create the structure. The assignment table,
+the flags, the group identifiers and the positions have length $`T`$ by construction; every
+position belongs to exactly one group (`spatial_matcher_pda.rs:4844-4889`). The frames are
+bounded by Lemma AC-4 and the edges by Proposition AC-6. A domain that is stored as a list has
+$`d_i`$ positions. The Bag and the map from keys to group identifiers of the index hold one cell
+per identity, and so does a visited Bag at most. No structure grows with the number of failed
+pairs, of transitions or of root searches: the frames are popped, the visited set is replaced or
+reset, and the relation only gains edges. ∎
+
+The formulae count elements. The following are not elements and are bounded separately.
+
+- *Edge results.* A compatibility search that `list_match` started holds at most
+  $`E + 2\rho + 1`$ results at once: one per retained edge, shared by `Rc` with the assignment or
+  pending edge that uses it (`lazy_relation.rs:159-166`), one owned by every assignment of a
+  filler pattern and by every pending edge of a filler frame, and one in transit. Each of them
+  is a copy of the whole binding map (`list_match.rs:286`, `list_match.rs:308-309`,
+  `list_match.rs:317`). The production search holds at most $`E + 1`$: one binding delta per
+  retained edge, which contains only the bindings that the evaluation of that edge wrote
+  (`free_map_transaction.rs:289-353` in
+  [`free_map_transaction.rs`](../../../rholang/src/rust/interpreter/matcher/free_map_transaction.rs))
+  and is shared by `Rc` in the same way, and one empty delta that all edges without bindings
+  share (`spatial_matcher_pda.rs:5743`). The size of one result is not bounded by $`P`$, $`T`$
+  and $`E`$.
+- *Keys.* For each of the $`G`$ identities the target index stores the canonical key and its
+  structure prefix in the group record, and the key again as a path of its Bag and of its map
+  from keys to group identifiers (`spatial_matcher_pda.rs:4868-4884`); a visited Bag stores the
+  keys of the identities visited in the current root search. These byte strings depend on the
+  encoded size of the distinct targets and on nothing else.
+- *Inputs.* The production machine takes ownership of the two lists
+  (`spatial_matcher_pda.rs:5733-5737`); `list_match` copies its lists and its matcher context
+  once (`list_match.rs:127-135`, `list_match.rs:165`).
+- *Capacity.* A vector may reserve more capacity than its length; the counts are lengths.
+
+What the code allocates, and when:
+
+- *Per frame:* nothing of its own. A frame is one element of the stack vector, which reallocates
+  as it grows. In the production search every accepted edge and every suspended evaluation also
+  moves the machine record into a new box (`spatial_matcher_pda.rs:5826`,
+  `spatial_matcher_pda.rs:5834`, `spatial_matcher_pda.rs:5979`), which is freed when the machine
+  is taken out again (`spatial_matcher_pda.rs:1008`, `spatial_matcher_pda.rs:1187`): a transient
+  block of constant size that leaves the live state unchanged.
+- *Per successful pair of a retaining row:* one edge record, and one `Rc` that holds the result
+  (`lazy_relation.rs:165`); production edges with an empty delta share one `Rc`
+  (`spatial_matcher_pda.rs:1173-1178`, `spatial_matcher_pda.rs:5965-5969`).
+- *Per failed pair:* nothing.
+- *Per target:* one assignment slot and one visited flag and, with a target index, one group
+  identifier and one position; per identity, one group record with its key.
+- *Per root search:* the compatibility search allocates one vector of $`T`$ flags and one stack
+  vector and frees both when the root search ends (`maximum_bipartite_match.rs:169-179`). The
+  production search resets its flags in place or replaces its visited Bag by an empty one
+  (`spatial_matcher_pda.rs:5545-5550`).
+- *Per evaluation:* whatever the edge predicate allocates while it runs, in the production
+  search including copies of the two members (`spatial_matcher_pda.rs:5975-5976`) and the
+  journal entries of the bindings that it writes, which are rolled back when the verdict arrives
+  (`spatial_matcher_pda.rs:1157`, `spatial_matcher_pda.rs:1190`). This memory belongs to the
+  evaluation and not to the search state.
+
+**Nested searches.** The evaluation of an edge can start another AC search, for an unordered
+collection nested inside the two members. The outer search is then suspended: in the production
+search its machine is owned by its `Frame::ListEdge`, a driver frame of fixed size of which a
+machine has at most one, and in the compatibility search its loop waits for a native call.
+Proposition AC-7 holds for each search separately, with its own sizes, and the live total is the
+sum over the chain of suspended searches and the innermost one. By reading the constructors of
+the jobs, each search of the chain is started for a collection inside a member of the search
+before it; this is not proved here. The test
+`recursive_family_cursor_allocation_growth_is_subquadratic` in
+[`rholang/tests/matcher_recursive_family_cursor.rs`](../../../rholang/tests/matcher_recursive_family_cursor.rs)
+measures the direction of nesting (`matcher_recursive_family_cursor.rs:546-607`). For each of 15
+recursive families, each a nest of one constructor around a terminal capture and among them
+`ESet` and `EMap`, it matches a nest of depth 128 and a nest of depth 1,024 with the production
+matcher under a counting allocator. It requires that the number of allocations and the number of
+allocated bytes of the deeper match are each at most 12 times those of the shallower match, that
+is, 1.5 times the factor 8 by which the depth grows, and that the same rule rejects a synthetic
+quadratic control. The quantity is cumulative allocation, which bounds the live heap from above.
+The nests of `ESet` and of `EMap` have one member on every level and no remainder
+(`matcher_recursive_family_cursor.rs:892-957`); at that size `init_list` compares the single
+pair directly (`spatial_matcher_pda.rs:5627-5642`) and builds no `ListMachine`. The test
+therefore shows that a nest of collections of width one costs heap linear in its depth. It is
+weaker than Proposition AC-7: it varies none of $`P`$, $`T`$, $`E`$ and $`C`$, and it exercises
+none of the structures of the table.
+
+**Proposition AC-8 (multiplicity deltas and remainders).** A *multiplicity delta* is a Bag that
+records, for each identity, how many of its occurrences a part of the search has taken out of the
+target Bag. The multiplicity deltas and the remainder occurrences stay inside the terms $`T`$,
+$`G`$ and $`V`$ of Proposition AC-7; they add no term that depends on $`C`$, on the number of
+transitions or on the number of root searches.
+
+1. *Visited multiplicities.* The visited Bag of a root search of the production search is a
+   multiplicity delta with $`s(g) \le m(g)`$ for every identity and with cardinality $`T - U`$,
+   at most $`T`$, over at most $`G`$ keys. It is the term for the visited set of
+   $`N_{\mathrm{prod}}`$.
+2. *Consumed and residual multiplicities.* When a remainder variable is present and the target
+   index exists, `finish_list` builds the consumed Bag, one unit for every target that a term
+   pattern occupies, and subtracts it from the target Bag (`spatial_matcher_pda.rs:6024-6038`).
+   The consumed Bag has cardinality $`P`$, the residual Bag has cardinality $`T - P = \rho`$,
+   and each has at most $`G`$ keys. Both exist only inside `finish_list`, after the last root.
+   The frame loop itself keeps no delta of the targets that term patterns occupy.
+3. *Remainder occurrences in the production search.* The $`\rho`$ marks are slots of the
+   assignment table. They have no row, no edge and no result, and step 5 conserves their number
+   (Lemma AC-3). A displaced mark is one plain frame, inside the bound of Lemma AC-4.
+   `finish_list` collects the marked targets with $`T`$ flags and $`\rho`$ target values, which
+   become the remainder binding (`spatial_matcher_pda.rs:6040-6071`,
+   `spatial_matcher_pda.rs:6109-6121`).
+4. *Remainder occurrences in the compatibility search.* The $`\rho`$ filler patterns are
+   $`\rho`$ of the $`V`$ rows and keep no edge. They are roots, so they count among the $`n`$
+   root searches and the $`V`$ frames, and their results are the $`2\rho + 1`$ owned results
+   named above. `list_match` collects the remainder with $`T`$ flags and $`\rho`$ target values
+   (`list_match.rs:180-193`).
+
+*Proof.* Part 1 is Lemma AC-2, summed over the identities: the cardinality of the visited Bag is
+the number of visited targets, and the Bag has a key only for an identity of a visited target.
+Part 2. `finish_list` runs when all $`P`$ roots are matched (`spatial_matcher_pda.rs:5845-5847`),
+so by Lemma AC-3 exactly $`P`$ distinct targets are occupied by term patterns, and the loop at
+`spatial_matcher_pda.rs:6027-6034` inserts one unit for each of them. Distinct positions of one
+identity are distinct occurrences, so the consumed Bag has at most $`m(g)`$ units at the key of
+$`g`$, and the subtraction leaves $`T - P`$ units. `ListMachine` has no field for a delta of
+occupied targets (`spatial_matcher_pda.rs:5600-5614`). Parts 3 and 4 are read off the lines that
+they cite, together with Lemma AC-3 for the number of marks and Lemma AC-4 for the frames. ∎
+
+The test `production_list_pda_computes_remainder_as_bag_difference_without_filler_edges`, in the
+same file as the counter test above, measures part 3 on one input
+(`spatial_matcher_pda_equivalence.rs:3356-3403`): 128 distinct sends, one term pattern equal to
+the last of them, and a remainder variable. It requires one build of the target index, exactly
+one edge evaluation, exactly one successful evaluation and a remainder binding that holds the
+other 127 sends. On this input no mark is displaced, so the test shows that 127 remainder
+occurrences cost no row, no edge and no evaluation; it does not exercise a `Remainder` frame.
+
+**Summary of the bounds and of what measures them.**
+
+| Quantity | Bound | Result | Measured by |
+|---|---|---|---|
+| Live frames | $`D \le 1 + a_r \le V \le T`$ | Lemma AC-4 | `a_deep_augmenting_chain_uses_heap_frames`: one input at equality; the frames are not counted |
+| Transitions of the frame loop | $`n V (T + 2)`$ | Theorem AC-5 | no test |
+| Evaluations by retaining rows | $`C \le P T`$ | Proposition AC-6 | `production_list_pda_relational_counters_meet_preregistered_controls`: two inputs, the chain at equality with $`C`$ |
+| Elements of the search state | $`N_{\mathrm{compat}}`$ and $`N_{\mathrm{prod}}`$, at most $`10T + 2C`$ | Proposition AC-7 | no test of the width; `recursive_family_cursor_allocation_growth_is_subquadratic` measures nesting depth at width one |
+| Multiplicity deltas and remainder occurrences | inside the terms $`T`$, $`G`$ and $`V`$ | Proposition AC-8 | `production_list_pda_computes_remainder_as_bag_difference_without_filler_edges`: one input without a displaced mark |
+
+**What the argument does not cover.**
+
+- *A mechanised model.* The argument was not mechanised. A case-insensitive search of `formal/`
+  at this commit for `ListMachine`, `step_list`, `LazyRelation`, `seen_targets`, `augment` and
+  `bipartite` finds only the word "augmented", in two files that do not concern matching. The
+  search was by name only. The theorem `spatial_match_pda_equivalent_to_recursive_match` of
+  [`SpatialMatcher.v`](../../../formal/rocq/stack_safe_pda/theories/SpatialMatcher.v) relates the
+  PDA to a recursive matcher for exact, binding, sequence, conjunction, disjunction and negation
+  patterns and has no case for an unordered collection. The D-E4 ledger cites a Rocq theory of
+  single relation rows, `LazyRelationalAcEdges.v`, which is kept in another repository. It
+  concerns the evaluated prefix and the unseen suffix of one row, it was not rechecked for this
+  subsection, and nothing above depends on it.
+- *Constrained-first search and residual memoization.* Neither is implemented. Both instances
+  take their roots in list order (`maximum_bipartite_match.rs:107`,
+  `spatial_matcher_pda.rs:5776-5781`). The candidate domains filter the candidates of a row and
+  refuse a match early when one of them is empty (`spatial_matcher_pda.rs:5708-5713`), but they
+  do not order the roots. No structure records a residual state that has already failed: the
+  visited set is discarded at every root. The owner question of 2026-11-12 on these two
+  techniques is open, and this argument says nothing about a search that used them.
+- *What the search finds.* This is an argument about termination and resources. That a failed
+  root search means that no assignment of all patterns exists is the augmenting-path theorem
+  (Berge 1957), which is not derived again here. The search computes one matching; when the edge
+  results of that matching do not merge into one binding map, the collection match is refused
+  and no other matching is tried (`spatial_matcher_pda.rs:6105-6107`, `list_match.rs:175`).
+- *The assumptions.* The evaluation of an edge (H1) and the preparation and finalization (H2)
+  are assumed to return. Their time and their transient memory are outside every bound above.
+- *Aborts.* The search contains assertions and `expect` calls, among them the assertion of
+  Lemma AC-2 (`spatial_matcher_pda.rs:5586-5590`). The argument treats a failed assertion as the
+  end of the run and does not prove that none can fail.
+- *The EPathMap search.* `step_path` has the arms of Algorithm 12: it enters a root
+  (`spatial_matcher_pda.rs:6319-6339`), advances a key cursor past visited keys
+  (`spatial_matcher_pda.rs:6397-6408`), descends (`spatial_matcher_pda.rs:6371-6379`), succeeds
+  and unwinds (`spatial_matcher_pda.rs:6352-6370`), and fails and pops
+  (`spatial_matcher_pda.rs:6397-6404`). Every vertex of it is plain in the sense above. The
+  measure would carry over with $`K`$ the number of target keys after the cursor of the top
+  frame, provided that the cursor only moves forward through finitely many keys. That proviso,
+  the memory of the two `PathMap`s and the repeated evaluation of one pair in different frames
+  were not examined, and none of the tests cited here drives this search.
+- *Other enumerations.* The splits of a `Par` that a connective pattern is tried against are
+  enumerated by `sub_pars` in
+  [`sub_pars.rs`](../../../rholang/src/rust/interpreter/matcher/sub_pars.rs) and stepped by the
+  driver (`spatial_matcher_pda.rs:2901-2961`). That enumeration is not Algorithm 12, and its
+  size is not bounded here; it is part of what H1 assumes.
+- *Bytes and measurements.* The bounds count elements, not bytes, and they are derived, not
+  measured. The cited tests check one instance of the frame bound, counts of evaluations, and
+  cumulative allocation along nesting depth. None of them measures the heap of the search state
+  against $`P`$, $`T`$, $`E`$ or $`C`$.
+
+Cited works: C. Berge, "Two theorems in graph theory", *Proceedings of the National Academy of
+Sciences* 43(9):842–844, 1957,
+[doi:10.1073/pnas.43.9.842](https://doi.org/10.1073/pnas.43.9.842); D. E. Knuth, "Literate
+programming", *The Computer Journal* 27(2):97–111, 1984,
+[doi:10.1093/comjnl/27.2.97](https://doi.org/10.1093/comjnl/27.2.97); H. W. Kuhn, "The Hungarian
+method for the assignment problem", *Naval Research Logistics Quarterly* 2(1–2):83–97, 1955,
+[doi:10.1002/nav.3800020109](https://doi.org/10.1002/nav.3800020109).
+
 ## Native PathMap operations
 
 PathMap operations fall into two semantic families that must not be conflated:
