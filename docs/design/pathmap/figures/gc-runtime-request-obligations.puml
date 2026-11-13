@@ -1,0 +1,130 @@
+@startuml gc-runtime-request-obligations
+' ============================================================================
+' GC protection matrix, runtime request mapping (task 7944, leaf GC2): one
+' block replay on the Durable backend with the reset, the soft-checkpoint
+' revert and the checkpoint that it contains, then a deferred reclamation and
+' a restart. R1 to R6 are the rows of the mapping table of
+' docs/design/pathmap/gc-protection-matrix-2026-10-01.md.
+'   SOLID  arrow    code that exists at the mapped commit, which only the
+'                   document names (the Durable backend is selected by
+'                   tests only)
+'   DASHED arrow    a call that the named leaf must add; at the mapped commit
+'                   the sequence stops at the first dashed arrow at the latest
+'   BLUE   #1565C0  call from Casper into the view
+'   GREEN  #2E7D32  read of old state: resolution, reader, cache miss
+'   TEAL   #00695C  durable write and its publication in memory, or durable
+'                   read at restart
+'   ORANGE #E65100  lease taken, replaced, released or found to overlap
+'   AMBER  #FFE0B2  process-local state, lost when the process ends
+'   TEAL   #B2DFDB  durable state
+'   GREY   #E0E0E0  no WAL position is read
+'   PURPLE #E1BEE7  the published core, the in-memory image of the owner's
+'                   last publication
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ParticipantBorderColor #455A64
+skinparam DatabaseBorderColor #455A64
+skinparam SequenceGroupBorderColor #455A64
+skinparam SequenceGroupBackgroundColor #F4F7FA
+skinparam SequenceLifeLineBorderColor #78909C
+skinparam NoteBorderColor #455A64
+
+title <b>Runtime requests that read old state, on the Durable backend</b>\nobligation class, exact generation and WAL start in one block replay, a deferred reclamation and a restart\n<i>the sequence as it runs once the leaves named on the dashed arrows have landed; at the mapped commit it stops at the first dashed arrow at the latest</i>
+
+participant "Casper\n<font:monospaced>ReplayRuntimeOps</font>" as Cas #BBDEFB
+participant "Replay view\n<font:monospaced>ReplayRSpace</font>" as View #C8E6C9
+participant "Published core\n<font:monospaced>DurablePublishedCoreV1</font>" as Core #E1BEE7
+participant "Lease registry\n<font:monospaced>GenerationLeaseRegistryV1</font>" as Reg #FFE0B2
+participant "Owner, holds the writer lease\n<font:monospaced>DurableRSpaceAuthorityV1</font>" as Own #B2DFDB
+database "Store files\ncatalog, log packs, index" as Files #B2DFDB
+
+group R3 and R1: reset to the pre-state of the block (local to the view, nothing is written)
+Cas -[#1565C0]> View : reset(pre-state root)
+View -[#2E7D32]> Core : read_handle(pre-state root)
+Core -[#E65100]> Reg : acquire(key of the slot that the core appoints)
+note right of Reg #FFE0B2
+  lease on the generation <latex>(e, f, a, i)</latex>:
+  process-local, held until the
+  read handle is dropped
+end note
+Core -[#2E7D32]> Core : resolve the root among\nthe retained states
+View -[#2E7D32]-> View : install a lazy hot store over the handle\n<i>rspace-replay-reset-durable-wiring</i>
+end
+
+group R1 and R2: each deploy of the block
+Cas -[#1565C0]> View : rig(event log of the deploy, from the block)
+note right of View #E0E0E0
+  no WAL start: the events are arguments
+  and stay in memory (replay_data)
+end note
+Cas -[#1565C0]> View : create_soft_checkpoint()
+note left of Cas #FFE0B2
+  the value holds no root,
+  no reader and no lease
+end note
+Cas -[#1565C0]> View : evaluate the deploy
+View -[#2E7D32]> Core : a cache miss reads the base through the handle
+alt the deploy failed
+Cas -[#1565C0]> View : revert_to_soft_checkpoint(value)
+View -[#2E7D32]-> View : rebuild the store over the same reader and\nrebase the journals; no new lease\n<i>rspace-soft-revert-durable-rebase</i>
+end
+end
+
+group R4: checkpoint from the base of the view
+Cas -[#1565C0]> View : create_checkpoint()
+View -[#00695C]-> Own : checkpoint_view_from_base(base of the view)\n<i>rspace-hard-checkpoint-durable-wiring, and for a replay</i>\n<i>space rspace-replay-checkpoint-durable-wiring</i>
+Own -[#2E7D32]> Own : refuse unless the base is still retained;\nread the difference between the\ncurrent state and the base
+Own -[#00695C]> Files : append one transaction at the WAL tail;\ncompare-and-swap the catalog
+note right of Files #B2DFDB
+  durable: the successor of
+  the base of the view is
+  the current state
+end note
+Own -[#E65100]> Reg : acquire(key of the successor slot);\nrelease the owner's previous lease
+Own -[#00695C]> Core : install(successor core)
+View -[#E65100]-> Core : read_handle(returned root); drop the old handle\n<i>rspace-replay-checkpoint-durable-wiring</i>
+end
+
+group Reclamation of a superseded generation while a view reads it (called by tests only at the mapped commit)
+Own -[#E65100]> Reg : retire_pack_range_if_unleased(old pack range)
+note right of Reg #FFE0B2
+  a lease overlaps the range:
+  deferred, nothing is deleted,
+  the candidate stays for a retry
+end note
+end
+
+group R6: crash and restart
+note over Cas, Reg #FFE0B2
+  every lease and descriptor pin, the replay log and every soft checkpoint are gone
+end note
+Own -[#00695C]> Files : select the catalog slot; scan its packs\nfrom the WAL head to the durable tail
+note right of Files #B2DFDB
+  durable: the WAL head is <latex>(f, 128)</latex>;
+  the range belongs to the Current
+  state row, not to walStarts
+end note
+Own -[#E65100]> Reg : finish a recorded reclamation of the\nsuperseded generation: no lease is left
+Own -[#E65100]> Reg : acquire(key of the selected slot)
+View -[#2E7D32]> Core : read_handle(current state), for each new view
+end
+
+legend bottom
+  |= Colour or line |= Meaning |
+  |<#BBDEFB> | the caller: Casper |
+  |<#C8E6C9> | the view: a replay space with its repository and hot store |
+  |<#E1BEE7> | the published core: the in-memory image of the owner's last publication |
+  |<#FFE0B2> | process-local: the lease registry and everything that a crash ends |
+  |<#B2DFDB> | durable: the owner's publications and the store files |
+  |<#E0E0E0> | no WAL position is read |
+  | <color:#1565C0><b>——▶</b></color> | call from Casper into the view |
+  | <color:#2E7D32><b>——▶</b></color> | read of old state |
+  | <color:#00695C><b>——▶</b></color> | durable write and its publication in memory, or durable read at restart |
+  | <color:#E65100><b>——▶</b></color> | lease taken, replaced, released or found to overlap |
+  | <b>——▶</b> | solid line: code that exists at the mapped commit |
+  | <b>- - ▶</b> | dashed line: a call that the named leaf must add |
+endlegend
+@enduml
