@@ -441,6 +441,7 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
         "TX-02",
         "duplicate_reordered_truncated_and_corrupted_pages_are_refused_and_leave_the_frontier_unchanged",
     ),
+    ("TX-03", "a_complete_closure_is_admitted_and_one_with_a_dangling_join_is_refused"),
     ("CB-01", "a_cross_base_capture_is_acknowledged_only_at_the_successor_of_its_publication_base"),
     ("CB-02", "a_wrong_origin_or_registry_is_refused_and_a_changed_journal_fails_validation"),
     ("CB-03", "a_cross_base_capture_observes_what_a_same_base_capture_at_the_origin_observes"),

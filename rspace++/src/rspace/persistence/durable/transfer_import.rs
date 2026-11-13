@@ -6,6 +6,9 @@ use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
+
 use super::io::{
     DurableIoError, DurableIoOperation, open_directory_handle, validate_authority_file,
 };
@@ -22,6 +25,10 @@ use crate::rspace::persistence::checksum::{
 use crate::rspace::persistence::closure::StructuralValidationLimits;
 use crate::rspace::persistence::manifest::SEMANTIC_PROFILE_ID_LEN;
 use crate::rspace::persistence::object::CanonicalObjectView;
+use crate::rspace::persistence::semantic::{
+    SemanticValidationLimits, SemanticValidationReport, verify_rspace_semantics,
+};
+use crate::rspace::persistence::store::ImmutableObjectStore;
 use crate::rspace::persistence::{
     CanonicalFormatError, CanonicalObjectKind, EndpointValue, ObjectDigest, ObjectRefV1,
     SemanticProfile, SemanticProfileId,
@@ -250,6 +257,16 @@ pub(crate) enum TransferImportErrorV1 {
         position: u64,
         refusal: TransferObjectRefusalV1,
     },
+    IncompleteClosure {
+        position: u64,
+        outstanding: u64,
+    },
+    StagedObjectBound {
+        digest: ObjectDigest,
+        staged: u64,
+        limit: u64,
+    },
+    ColdAdmission(CanonicalFormatError),
 }
 
 impl Display for TransferImportErrorV1 {
@@ -350,6 +367,26 @@ impl Display for TransferImportErrorV1 {
             Self::Object { position, refusal } => {
                 write!(formatter, "transfer object {position} is refused: {refusal}")
             }
+            Self::IncompleteClosure {
+                position,
+                outstanding,
+            } => write!(
+                formatter,
+                "a staging at position {position} with {outstanding} announced objects not staged \
+                 holds no complete closure to seal"
+            ),
+            Self::StagedObjectBound {
+                digest,
+                staged,
+                limit,
+            } => write!(
+                formatter,
+                "staged object {digest} holds {staged} bytes, above the read bound of {limit} \
+                 bytes"
+            ),
+            Self::ColdAdmission(error) => {
+                write!(formatter, "cold admission refuses the staged closure: {error}")
+            }
         }
     }
 }
@@ -376,6 +413,8 @@ impl std::error::Error for TransferImportErrorV1 {
             Self::PageBinding { .. } |
             Self::PositionMismatch { .. } |
             Self::IncompleteAtEnd { .. } => None,
+            Self::ColdAdmission(error) => Some(error),
+            Self::IncompleteClosure { .. } | Self::StagedObjectBound { .. } => None,
         }
     }
 }
@@ -1031,6 +1070,285 @@ impl<P: SemanticProfile> DurableImportSessionV1<P> {
     }
 
     pub(crate) fn abort(self) -> Result<(), TransferImportErrorV1> { self.staging.remove() }
+
+    pub(crate) fn seal(
+        mut self,
+        limits: SemanticValidationLimits,
+    ) -> Result<DurableSealedImportV1<P>, Box<(Self, TransferImportErrorV1)>> {
+        let manifest = match self.complete_manifest() {
+            Ok(manifest) => manifest,
+            Err(error) => return Err(Box::new((self, error))),
+        };
+        let locations = match index_staged_objects(
+            &mut self.objects.file,
+            &self.staging.objects_path,
+            self.frontier,
+            self.staged_len,
+            self.limits,
+        ) {
+            Ok(locations) => locations,
+            Err(error) => return Err(Box::new((self, error))),
+        };
+        let Self {
+            staging,
+            objects,
+            limits: page_limits,
+            closure,
+            frontier,
+            staged_len,
+            failed,
+            profile,
+        } = self;
+        let store = StagedObjectStoreV1 {
+            path: staging.objects_path.clone(),
+            log: objects,
+            locations,
+        };
+        match verify_rspace_semantics::<P, _>(&store, manifest, limits) {
+            Ok(admission) => Ok(DurableSealedImportV1 {
+                staging,
+                store,
+                manifest,
+                admission,
+                profile,
+            }),
+            Err(error) => {
+                let session = Self {
+                    staging,
+                    objects: store.log,
+                    limits: page_limits,
+                    closure,
+                    frontier,
+                    staged_len,
+                    failed,
+                    profile,
+                };
+                Err(Box::new((session, cold_admission_refusal(error))))
+            }
+        }
+    }
+
+    fn complete_manifest(&self) -> Result<ObjectRefV1, TransferImportErrorV1> {
+        let root = self.closure.binding.root_digest();
+        match (
+            self.failed,
+            self.frontier,
+            self.closure.counters.outstanding,
+            self.closure.known.get(&root),
+        ) {
+            (true, ..) => Err(TransferImportErrorV1::SessionFailed),
+            (
+                false,
+                1..,
+                0,
+                Some(KnownObjectV1 {
+                    encoded_len,
+                    staged: true,
+                }),
+            ) => ObjectRefV1::new(root, *encoded_len).map_err(TransferImportErrorV1::ColdAdmission),
+            (false, position, outstanding, _) => Err(TransferImportErrorV1::IncompleteClosure {
+                position,
+                outstanding,
+            }),
+        }
+    }
+}
+
+pub(crate) struct DurableSealedImportV1<P: SemanticProfile> {
+    staging: StagingDirectoryV1,
+    store: StagedObjectStoreV1,
+    manifest: ObjectRefV1,
+    admission: SemanticValidationReport,
+    profile: PhantomData<fn() -> P>,
+}
+
+impl<P: SemanticProfile> DurableSealedImportV1<P> {
+    pub(crate) const fn manifest(&self) -> ObjectRefV1 { self.manifest }
+
+    pub(crate) const fn admission(&self) -> SemanticValidationReport { self.admission }
+
+    pub(crate) const fn store(&self) -> &StagedObjectStoreV1 { &self.store }
+
+    pub(crate) fn abort(self) -> Result<(), TransferImportErrorV1> { self.staging.remove() }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StagedObjectLocationV1 {
+    offset: u64,
+    encoded_len: u64,
+}
+
+pub(crate) struct StagedObjectStoreV1 {
+    log: StagedLogV1,
+    path: PathBuf,
+    locations: HashMap<ObjectDigest, StagedObjectLocationV1>,
+}
+
+impl StagedObjectStoreV1 {
+    fn read(&self, location: StagedObjectLocationV1) -> Result<Box<[u8]>, TransferImportErrorV1> {
+        let object_len = usize::try_from(location.encoded_len)
+            .expect("a staged object is bounded by the page limit, which fits the address space");
+        let mut object = Vec::new();
+        object
+            .try_reserve_exact(object_len)
+            .map_err(|_| TransferImportErrorV1::Allocation {
+                resource: "staged object buffer",
+                requested: location.encoded_len,
+            })?;
+        object.resize(object_len, 0);
+        super::io::read_exact_at_with(
+            &self.path,
+            location.offset,
+            &mut object,
+            |buffer, position| {
+                super::io::positioned_read(&self.log.file, buffer, position, &self.path)
+            },
+        )
+        .map_err(TransferImportErrorV1::Io)?;
+        Ok(object.into_boxed_slice())
+    }
+}
+
+impl ImmutableObjectStore for StagedObjectStoreV1 {
+    type Error = TransferImportErrorV1;
+    type Object = Box<[u8]>;
+
+    fn get_bounded(
+        &self,
+        digest: &ObjectDigest,
+        max_encoded_len: u64,
+    ) -> Result<Option<Self::Object>, Self::Error> {
+        match self.locations.get(digest) {
+            None => Ok(None),
+            Some(location) if location.encoded_len > max_encoded_len => {
+                Err(TransferImportErrorV1::StagedObjectBound {
+                    digest: *digest,
+                    staged: location.encoded_len,
+                    limit: max_encoded_len,
+                })
+            }
+            Some(location) => self.read(*location).map(Some),
+        }
+    }
+}
+
+fn cold_admission_refusal(
+    error: crate::rspace::persistence::ClosureError<TransferImportErrorV1>,
+) -> TransferImportErrorV1 {
+    use crate::rspace::persistence::ClosureError;
+
+    match error {
+        ClosureError::Format(error) => TransferImportErrorV1::ColdAdmission(error),
+        ClosureError::Store(error) => error,
+    }
+}
+
+fn index_staged_objects(
+    objects: &mut File,
+    path: &Path,
+    frontier: u64,
+    staged_len: u64,
+    limits: TransferPageLimitsV1,
+) -> Result<HashMap<ObjectDigest, StagedObjectLocationV1>, TransferImportErrorV1> {
+    let log_len = objects
+        .metadata()
+        .map_err(io_error(DurableIoOperation::Metadata, path))
+        .map_err(TransferImportErrorV1::Io)?
+        .len()
+        .min(staged_len);
+    let indexed = frontier.min(log_len / MIN_STAGED_RECORD_LEN);
+    let capacity = usize::try_from(indexed).unwrap_or(usize::MAX);
+    let mut locations = HashMap::new();
+    locations
+        .try_reserve(capacity)
+        .map_err(|_| TransferImportErrorV1::Allocation {
+            resource: "staged object index",
+            requested: indexed,
+        })?;
+    objects
+        .seek(SeekFrom::Start(0))
+        .map_err(io_error(DurableIoOperation::PositionalRead, path))
+        .map_err(TransferImportErrorV1::Io)?;
+    let reader_capacity = usize::try_from(log_len.min(STAGED_READ_BUFFER_LEN))
+        .expect("the staged read buffer length fits the address space");
+    let mut reader = BufReader::with_capacity(reader_capacity, &*objects);
+    let mut offset = 0_u64;
+    for position in 0..frontier {
+        let remaining = log_len - offset;
+        if remaining < STAGED_LENGTH_FIELD_LEN as u64 {
+            return Err(TransferImportErrorV1::StagedObjectsMissing {
+                frontier,
+                staged: position,
+            });
+        }
+        let mut length_field = [0_u8; STAGED_LENGTH_FIELD_LEN];
+        reader
+            .read_exact(&mut length_field)
+            .map_err(io_error(DurableIoOperation::PositionalRead, path))
+            .map_err(TransferImportErrorV1::Io)?;
+        let len = u64::from_le_bytes(length_field);
+        if len < OBJECT_ENVELOPE_HEADER_LEN || len > limits.max_page_bytes() {
+            return Err(TransferImportErrorV1::StagedRecordLength {
+                position,
+                len,
+                max_page_bytes: limits.max_page_bytes(),
+            });
+        }
+        if len > remaining - STAGED_LENGTH_FIELD_LEN as u64 {
+            return Err(TransferImportErrorV1::StagedObjectsMissing {
+                frontier,
+                staged: position,
+            });
+        }
+        let digest =
+            digest_staged_object(&mut reader, len, path).map_err(TransferImportErrorV1::Io)?;
+        let location = StagedObjectLocationV1 {
+            offset: offset + STAGED_LENGTH_FIELD_LEN as u64,
+            encoded_len: len,
+        };
+        match locations.entry(digest) {
+            Entry::Vacant(entry) => {
+                entry.insert(location);
+            }
+            Entry::Occupied(_) => {
+                return Err(TransferImportErrorV1::StagedObject {
+                    position,
+                    refusal: TransferObjectRefusalV1::Duplicate { digest },
+                });
+            }
+        }
+        offset += STAGED_LENGTH_FIELD_LEN as u64 + len;
+    }
+    Ok(locations)
+}
+
+fn digest_staged_object(
+    reader: &mut BufReader<&File>,
+    len: u64,
+    path: &Path,
+) -> Result<ObjectDigest, DurableIoError> {
+    let mut remaining = usize::try_from(len)
+        .expect("a staged object is bounded by the page limit, which fits the address space");
+    let mut hasher = Blake2b::<U32>::new();
+    while remaining > 0 {
+        let buffered = match io::BufRead::fill_buf(reader) {
+            Ok(buffered) => buffered,
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => continue,
+            Err(source) => return Err(io_error(DurableIoOperation::PositionalRead, path)(source)),
+        };
+        let taken = remaining.min(buffered.len());
+        if taken == 0 {
+            return Err(io_error(DurableIoOperation::PositionalRead, path)(
+                io::ErrorKind::UnexpectedEof.into(),
+            ));
+        }
+        hasher.update(&buffered[..taken]);
+        io::BufRead::consume(reader, taken);
+        remaining -= taken;
+    }
+    let mut digest = [0_u8; OBJECT_DIGEST_LEN];
+    digest.copy_from_slice(&hasher.finalize());
+    Ok(ObjectDigest::from_array(digest))
 }
 
 pub(crate) fn abort_import(store_directory: &Path) -> Result<(), TransferImportErrorV1> {

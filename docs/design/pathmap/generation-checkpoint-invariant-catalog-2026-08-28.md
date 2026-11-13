@@ -9110,6 +9110,369 @@ store that `create_empty_store_v1` creates.
 |---|---|---|
 | TX-02 | Refused pages leave no trace. On a session that has staged two pages of a 60-object stream, fourteen malformed pages are refused, each by the check it fails: a replay of the last staged page and the page after the next (`PositionMismatch`); a page that repeats a staged object (`Duplicate`); a page that holds its next object twice (`Duplicate` at the second copy, after the first was admitted); a reordered page whose object no staged object references (`Unreferenced`); the next page cut below its header, without its last byte and inside its first object, and with its count raised or lowered by one (the page decoder's refusals); with a bit flipped under its old checksum (`Checksum`) or in its first object and resealed (`Unreferenced`, since the digest is no longer announced); and with a corrupted version or position. Each refusal leaves the frontier, the outstanding count, the frontier record, the staging log and the staging directory's entries as they were, and the honest stream then stages to completion with a log equal to its records. | `duplicate_reordered_truncated_and_corrupted_pages_are_refused_and_leave_the_frontier_unchanged` |
 
+### Durable state transfer import seal (2026-11-13)
+
+Task 14434 builds the second step of the importing side of task 7939: the
+*seal* of a completely staged state. `DurableImportSessionV1::seal`, in
+[`transfer_import.rs`](../../../rspace++/src/rspace/persistence/durable/transfer_import.rs),
+consumes an import session. If the session's staged closure is complete, it
+runs the full cold admission of the session binding's manifest over the
+staging log alone and answers a *sealed import*, which holds the staging, a
+store of the staged objects and the reference of the admitted manifest. If
+the closure is incomplete, or if admission refuses the state, it hands the
+session back as it was, with a typed error. This is the cold admission that
+the import staging section leaves to a later task, without the publication.
+A seal publishes nothing and writes nothing: it reads `objects.v1` through
+the session's own descriptor, opens no file of the store, and changes no
+byte of the staging or of the store directory outside it. Publishing a
+sealed import is the next task, `rspace-dag-import-adoption`. Only unit
+tests call the seal; outside test builds it stays under the module's
+dead-code expectation, which names task `rspace-dag-transfer-trait-binding`.
+
+**Terms.** The terms of the import staging section apply: the closure
+$`C(M)`$ of the state whose semantic manifest is $`M`$ and its size
+$`n = |C(M)|`$; a session's binding, its frontier $`f`$ and its token; the
+staged and the announced objects; *outstanding*, the number of announced
+objects; and $`\lambda_q`$, the length of the log's first $`q`$ records. A
+staging is *complete* when $`f \ge 1`$ and nothing is outstanding. *Cold
+admission* of a manifest reference over an object store is
+`verify_rspace_semantics`, which trusts neither the store nor the state. It
+has two phases. The *structural closure* walks every object that the
+manifest reaches, reads each one by its reference, which is a digest and a
+length, and checks that the bytes read have that length and that digest and
+are a canonical object of the expected kind, within the structural limits.
+The *semantic rules* then walk the three namespaces of the state, its data
+bag, its join bag and its continuation map; check every endpoint against the
+session's semantic profile; and require, for every continuation, a join-bag
+membership for each of its distinct channels. A state that breaks this last
+rule has a *dangling join*: a continuation waits on a channel under which
+the join bag does not list the continuation's channel group, so a datum that
+arrives on that channel does not find it. Such a state is structurally
+closed, and only the semantic rules refuse it.
+
+**Sealing.** `seal(limits)` takes the caller's `SemanticValidationLimits`,
+the limits of cold admission, whose `structural` part bounds the closure
+walk. It takes these steps in order.
+
+```text
+seal(limits):
+    1. refuse SessionFailed if a write step of an earlier page failed
+    2. refuse IncompleteClosure(f, outstanding) unless f >= 1 and
+       outstanding = 0
+    3. M = the reference of the binding's root: its digest, and the length
+       under which the session staged it at position 0
+    4. locations = index(objects.v1, f)      -- the staged-object store
+                                             -- below, with its refusals
+    5. store = (the session's open log, locations)
+    6. report = verify_rspace_semantics::<P>(store, M, limits)
+          -- a refusal e of admission is answered as ColdAdmission(e);
+          -- a refusal of the store (StagedObjectBound, Allocation or an
+          -- I/O error) is answered as it is
+    7. answer the sealed import (staging, store, M, report)
+```
+
+Step 2 is the test by which `stage_page` answers the end page of a stream
+(`Complete` or `IncompleteAtEnd`), but a seal does not need the end page: a
+session may be sealed as soon as its last object page is staged, after the
+end page, and after `resume_import` re-derived it from a complete staging.
+A refusal in any step returns the session together with the error, as the
+pair `Box<(session, error)>`, and the session is as it was: a seal changes
+neither its in-memory closure, its frontier or its failed flag nor a byte of
+its staging, so the session can stage its next page, be sealed again or be
+aborted. The file position of the session's descriptor, which step 4 moves,
+is not session state: `stage_page` seeks to $`\lambda_f`$ before it writes.
+
+**The staged-object store.** `StagedObjectStoreV1` is the object store that
+admission reads. It consists of the session's open, locked log and of a map
+from the digest of every staged object to the offset and the length of that
+object's canonical bytes in the log. For example, with lengths invented for
+the illustration:
+
+```text
+objects.v1 at a complete frontier f = 3          the map of the store
+
+offset   content
+     0   length 150               (8 bytes)
+     8   the manifest M         (150 bytes)      digest(M)   -> (8, 150)
+   158   length 61                (8 bytes)
+   166   a DAG node o1           (61 bytes)      digest(o1)  -> (166, 61)
+   227   length 40                (8 bytes)
+   235   a blob o2               (40 bytes)      digest(o2)  -> (235, 40)
+   275   = lambda_3, the end of the log
+```
+
+`index` builds the map in one sequential pass over the first $`f`$ records.
+As in a resume, everything read back is untrusted.
+
+```text
+index(log, f):
+    L = min(the length of the log file, lambda_f as the session counts it)
+    locations = an empty map with room for min(f, L div 40) entries
+                                                      -- Allocation
+    offset = 0
+    for q = 0, 1, ..., f - 1:
+        refuse StagedObjectsMissing(f, q) if L - offset < 8
+        len = the 8-byte little-endian length at offset
+        refuse StagedRecordLength(q, len) unless 32 <= len <= max_page_bytes
+        refuse StagedObjectsMissing(f, q) if len > L - offset - 8
+        d = Blake2b-256 of the len bytes at offset + 8
+        refuse StagedObject(q, Duplicate(d)) if locations holds d
+        locations[d] = (offset + 8, len)
+        offset = offset + 8 + len
+    answer locations
+```
+
+The map's room is bounded by the frontier and by the log's real length, 40
+bytes being the shortest record, and never by a length field; a failed
+reservation is a refusal (`Allocation`). The digest $`d`$ is computed from
+the bytes that the log holds now, as they pass through the read buffer, and
+not from what the session remembers, so the map describes the log as it is
+read back. A digest that occurs twice is refused, because the second record
+could not be reached by its digest.
+
+```text
+get_bounded(d, bound):
+    if locations holds no d:        answer None
+    (offset, len) = locations[d]
+    if len > bound:                 refuse StagedObjectBound(d, len, bound)
+    buffer = len reserved bytes                        -- Allocation
+    read exactly len bytes at offset into buffer       -- a positional read
+    answer buffer
+```
+
+`get_bounded` is the one method that the store trait `ImmutableObjectStore`
+requires. The bound is checked before a byte is reserved, as the durable
+store's own reader checks it (`MaterializationLimit`). The read is
+positional (`pread` on Unix): it goes through a shared reference and moves
+no file position, so the store is `Send + Sync`, as the trait requires. Each
+call answers a buffer that the caller owns; the store keeps no object and no
+cache.
+
+**Claim (a complete staging holds exactly the closure).** Let a session be
+at a complete frontier $`f`$, let $`M`$ be the manifest of its binding, and
+let its log hold the $`f`$ records that the session staged. Then `index`
+refuses nothing, $`f = n`$, and the keys of `locations` are exactly the
+digests of the objects of $`C(M)`$, each with the offset and the length of
+its object's canonical bytes.
+
+*Proof.* Write $`o_q`$ for the object staged at position $`q`$ and $`S`$ for
+the set of staged objects. (i) $`S \subseteq C(M)`$, by induction on $`q`$.
+`admit` accepts $`o_0`$ only if its digest is the binding's root, so
+$`o_0 = M`$. It accepts $`o_q`$ with $`q \ge 1`$ only if $`o_q`$ is
+announced, that is, referenced by some $`o_p`$ with $`p < q`$, and $`o_p`$
+is in $`C(M)`$ by the induction hypothesis. (ii) $`C(M) \subseteq S`$, by
+induction on the length of a reference path from $`M`$. $`M = o_0`$ is in
+$`S`$ because $`f \ge 1`$. If an object of $`S`$ references $`r`$, then
+`admit` recorded $`r`$ as announced unless $`r`$ was recorded already; a
+recorded object is staged or outstanding; and nothing is outstanding. So
+$`r`$ is in $`S`$. (iii) `admit` refuses an object whose digest is staged
+(`Duplicate`), so the $`f`$ records have $`f`$ distinct digests, and with
+(i) and (ii)
+
+```math
+f \;=\; |S| \;=\; |C(M)| \;=\; n.
+```
+
+(iv) The pass reads record $`q`$ at offset $`\lambda_q`$. Its length field
+and its bytes are present, because the log is $`\lambda_f`$ bytes long. Its
+length is at least 32 and at most `max_page_bytes`, because the session
+staged the record in a page within its page limits or re-admitted it under
+them in a resume. Its digest is the digest of $`o_q`$, which by (iii) is not
+yet a key. So no refusal applies, and the pass records
+$`(\lambda_q + 8, |o_q|)`$ under the digest of $`o_q`$ for every
+$`q < f`$. $`\blacksquare`$
+
+*Consequences.* Cold admission asks the store only for objects of
+$`C(M)`$, each by a reference whose length `admit` compared with the staged
+object's length (`LengthMismatch`). Over a complete staging every read is
+therefore answered, none meets `StagedObjectBound`, and admission decides as
+it does over any store that holds $`C(M)`$: the staged log alone suffices,
+and the structural part of the report counts $`n`$ distinct objects.
+Conversely, admission checks the length and the digest of every object that
+it reads, in both phases, so a log that was changed behind the session is
+not admitted as the state of $`M`$. A record that was changed before the
+pass is indexed under the digest of its changed bytes and is missing under
+its own (`MissingObject`); a record that is changed after the pass fails the
+digest check of its read (`DigestMismatch`).
+
+**The sealed import.** `DurableSealedImportV1<P>` holds the staging
+directory; the staged-object store, which owns the open log and with it the
+session's lock; the manifest reference $`M`$; and the report that admission
+returned. `manifest()`, `admission()` and `store()` read the last three. The
+admission is not durable. No byte records that a staging was admitted, so a
+state is admitted exactly as long as its sealed import lives.
+
+- `abort(self)` consumes the sealed import and removes the staging as a
+  session's `abort` does: `frontier.v1`, `frontier.v1.tmp` and `objects.v1`
+  by name, then the directory, then a synchronization of the store
+  directory. It publishes nothing.
+- Dropping a sealed import publishes nothing and removes nothing. It unlocks
+  and closes the log, and the staging stays byte for byte: `resume_import`
+  resumes it at the complete frontier, where it can be sealed again, and
+  `abort_import` removes it.
+- While a sealed import lives it holds the lock, so `resume_import` and
+  `abort_import` are refused (`StagingInUse`) and `begin_import` is refused
+  (`StagingExists`). Nothing outside the sealed import discards or replaces
+  the staging that it admitted.
+
+```text
+       begin_import, resume_import
+                    │
+                    ▼
+            ┌───────────────┐   stage_page
+            │    session    │◀────────────┐
+            │  frontier f   │─────────────┘
+            └─┬───────────┬─┘
+              │           │ seal(limits)
+        abort │           ├──── refused ────▶ the same session, as it was
+              │           ▼
+              │   ┌───────────────┐
+              │   │ sealed import │──── dropped ────▶ the staging, kept and
+              │   └───────┬───────┘                   unlocked: resume_import
+              │           │ abort                     or abort_import
+              ▼           ▼
+        ┌───────────────────────┐
+        │      no staging       │
+        └───────────────────────┘
+```
+
+**Memory and cost.** The store holds its map and nothing else: for each
+staged object a 32-byte digest, an 8-byte offset and an 8-byte length,
+reserved once for the smaller of $`f`$ and the log's length divided by 40.
+The pass reads the log once, sequentially, through a buffer of 64 KiB or of
+the log's length if that is smaller, and digests every record from that
+buffer as it passes; it allocates no object buffer. A read reserves exactly
+the indexed length, which is at most `max_page_bytes`, after the caller's
+bound was checked, so no length field of the log sizes an allocation
+unchecked, and it costs one positional read. Because the store keeps no
+object, the only object bytes in memory are those that the verifier itself
+holds, and an object that admission reads a second time is read from the
+log a second time. A seal costs the pass, which is $`n`$ digests over
+$`\lambda_n`$ bytes, and one cold admission, whose work the caller's limits
+bound. It writes nothing and calls no `fsync`.
+
+**Relation to the models.** `RSpaceDagStateTransfer.tla` admits the closure
+in `AdmitClosure`, whose guard is the complete frontier with the whole
+closure of the session binding staged and which stages the capability's
+terminal page, and it seals the capability afterwards in the inherited
+`SealComplete` of `RSpaceAffineImportLifecycle.tla`, which requires the
+verified closure. The implementation's seal is both steps at once: step 2 is
+the guard, step 6 the verification, and the sealed import the sealed phase.
+The model's `closureVerified` flag has no durable counterpart, so
+`ColdAdmissionRequiresCompleteClosure` reads here: an admission report
+exists only inside a sealed import, and a sealed import is made only from a
+session at a complete frontier. The model's `Abort` abandons a token only
+before admission, and after admission the capability is consumed by the
+abort of `RSpaceStateImportFfiBoundary.tla`
+(`AbortConsumesWithoutPublishing`). Here the first is a session's `abort` or
+`abort_import`, and the second is the sealed import's `abort`; the FFI
+boundary itself is task 7940. None of the three models is among the
+derivation matrix's TLA+ sources, and none represents canonical objects, the
+staging log or the semantic rules of a state, so the TX row below is
+executable-only.
+
+**Changes outside the module.** Two functions of the durable I/O layer
+become visible to its sibling modules (`pub(super)`), on four lines of
+[`io.rs`](../../../rspace++/src/rspace/persistence/durable/io.rs):
+`read_exact_at_with`, the loop that fills a buffer from a position and
+refuses a short read, and `positioned_read`, the positional read, in its
+Unix, Windows and other-platform forms. The staged-object store reads
+through them instead of copying them; the layer's other positional readers
+are methods of its pack and index file types. `durable/mod.rs` is unchanged:
+the module stays under its dead-code expectation, the seal's refusals are
+three new variants of the re-exported `TransferImportErrorV1`
+(`IncompleteClosure`, `StagedObjectBound` and `ColdAdmission`), and the
+tests reach the sealed import and its store by type inference. No persisted
+record kind, byte layout, magic number or file name changes, the staging
+gains no file, and the crate gains no dependency.
+
+**The tests.** The module `persistence::tests::transfer_import_seal`
+publishes one state through the durable owner: 8 values on each of three
+channels, and three continuations that wait on one, two and three of the
+channels and so need six join memberships. It exports the state in pages of
+at most 2048 bytes and 6 objects, which gives a stream of 45 objects in 8
+object pages, and stages it into an empty store that `create_empty_store_v1`
+creates. The *store image* that the tests compare is every file, with its
+bytes, and every directory of the store directory outside
+`transfer-import.v1/`.
+
+- `an_incomplete_closure_cannot_be_sealed` witnesses DT-08. A session that
+  failed in the write of its second page (failpoint `PhysicalWrite`) is
+  refused as `SessionFailed` and handed back failed, with its staging
+  unchanged. A new session is then sealed before each of its 8 object pages,
+  at the frontiers 0, 6, 12, 18, 24, 30, 36 and 42. Every seal is refused as
+  `IncompleteClosure` with that frontier and with the outstanding count that
+  the session reported before the seal, which is 0 at frontier 0, where
+  nothing is announced yet, and at least 1 at every later frontier; and
+  every refusal leaves the frontier, the count and every file of the staging
+  as they were. At the complete frontier 45, before the end page, the test
+  rewrites the log behind the session seven times: without its last byte,
+  cut inside its last length field, and with its last length one byte beyond
+  the log (`StagedObjectsMissing`, 44 whole records of 45); with a first
+  length of 31 and of 2049 (`StagedRecordLength`); with the manifest's
+  record in place of the second record (`Duplicate` at position 1); and with
+  a bit of its last object flipped (`MissingObject` for that object's
+  digest, from cold admission). Each refusal leaves the rewritten log and
+  the session as they were. With the log put back, the staging is sealed
+  three times: by the session that staged it, before the end page; after
+  that sealed import is dropped, by a resumed session; and, after that one
+  is dropped, by a second resumed session to which the end page first
+  answers `Complete`. Each sealed import holds the manifest of the exported
+  state, and the store image equals the image before the first import.
+- `a_complete_closure_is_admitted_and_one_with_a_dangling_join_is_refused`
+  is TX-03 below. It reads the six entries of the state's join bag from the
+  exported objects and builds, for each entry, the state without it: a join
+  bag that the tests' canonical rebuild oracle rebuilds from the other five
+  entries, under a manifest that keeps the state's data bag and continuation
+  map. The oracle is first required to rebuild the state's own join bag
+  from all six. In memory, cold admission refuses each of the six states as
+  semantically incoherent (`SemanticCoherence`), and the structural closure
+  accepts each. A state with a dangling join cannot be published through
+  the durable owner, whose transaction applies the same rule to every
+  changed continuation, so the test installs the six as the retained
+  history, generations 1 to 6, of a synthetic source store whose current
+  state is the empty state. Restart recovery applies the semantic rules to
+  a store's current state and the structural closure to every retained
+  state, so the source store recovers, and the production export session
+  serves each of the six states.
+- `abort_before_and_after_sealing_leaves_no_trace` witnesses DT-10 in four
+  cases, each of which must leave no trace: no staging directory, the store
+  image of before the first import, a resume refused for want of a staging
+  (`NoStaging`), and a new session of the same binding at frontier 0 with
+  nothing outstanding and an empty log. (1) A session that staged 4 of the 8
+  object pages, and whose seal was refused, is aborted. (2) A completely
+  staged session is dropped without a seal, and `abort_import` removes its
+  staging. (3) Beside a living sealed import, `abort_import` and
+  `resume_import` are refused (`StagingInUse`) and `begin_import` is refused
+  (`StagingExists`), with the staging and the store image unchanged; the
+  sealed import is then aborted. (4) A sealed import is dropped, which
+  leaves the staging and the store image byte for byte; the staging is
+  resumed at the complete frontier with nothing outstanding and sealed
+  again, with the same manifest, and that sealed import is aborted.
+
+**Red controls.** Each control is one textual fault in `transfer_import.rs`,
+run against the three tests in debug and then removed.
+
+| Control | Fault | Only failing test | Message of the failure |
+|---|---|---|---|
+| Admission without the semantic rules | Step 6 runs the structural closure alone (`verify_structural_closure_with_limits`) in place of `verify_rspace_semantics`. | `a_complete_closure_is_admitted_and_one_with_a_dangling_join_is_refused` | `a staged state with a dangling join was sealed` |
+| No completeness check | Step 2 accepts any outstanding count at a frontier of at least 1. | `an_incomplete_closure_cannot_be_sealed` | `a staging that has not staged every announced object is refused as an incomplete closure at its own position, and the refusal leaves the session and its staging unchanged` |
+| Sealed abort keeps the staging | The sealed import's `abort` answers success without removing the staging. | `abort_before_and_after_sealing_leaves_no_trace` | `aborting a sealed import removes its staging and leaves no trace` |
+
+Under the first fault the first staging of a state with a dangling join was
+sealed. Under the second the seal at frontier 0 was still refused as
+incomplete, and the seals at the frontiers 6 to 42 ran cold admission over
+the incomplete log and were refused for a missing object. Under the third
+the staging outlived the abort and was resumed at position 45. The other two
+tests passed under each control, and the faulted file was restored and
+compared with its copy after each run.
+
+**The TX row.**
+
+| ID | Required property | Test |
+|---|---|---|
+| TX-03 | A complete closure seals, a dangling join does not, and neither changes anything. The completely staged export of a generated state, 8 values on each of three channels and three continuations with their six join memberships in a stream of 45 objects, is sealed. The sealed import holds the manifest of the binding and the report of the full cold admission of its closure, which equals the report of `verify_rspace_semantics` over the stream's objects in memory and counts 6 join entries and 3 continuation entries. Its store reads every object of the stream by its digest, answers nothing for another digest, and refuses a read whose bound is below the object's length (`StagedObjectBound`). For each of the six join memberships, the state without that membership, exported from a source store that retains it, stages completely, because it is structurally closed, and its seal is refused by cold admission (`ColdAdmission`) with the refusal that the same admission gives in memory (`SemanticCoherence`); the refused session is handed back complete, answers `Complete` to the end page and is aborted. A seal under limits one endpoint below the state's is refused with admission's `ResourceLimit`, and the same session is then sealed. After every refused seal of the six and after the final seal, the store directory outside the staging and the files of the staging are byte-identical to what they were before, and beside the sealed import the store recovers at its genesis catalog slot. | `a_complete_closure_is_admitted_and_one_with_a_dangling_join_is_refused` |
+
 ### Durable history repository (2026-11-11)
 
 Task 14294 implements `HistoryRepository` over the durable journal owner, so
@@ -12141,6 +12504,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-05 | `OperationRootRoleQuotient` | `EXEC_ONLY` | P | Partially entailed (task 12437): the invariant states that the reader, export and import tokens have their roles, are not WAL ids, need the same object closure and the exact generation, and need no WAL bytes. The store realizes each role as a `RetainedRootRegistryV1` row with a generation lease on the exact admitted generation. The executable refinement obligation is that the role changes no closure seed, revision, lease identity, release, reclamation deferral or store byte. Reclamation does not consult the process-local `RetainedRootRegistryV1`, so the generation lease realizes `exactGeneration`; registration writes no durable byte and pins nothing beyond the exact generation, which realizes the false `walBytes`. |
 | TX-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14302): the closure, every object once and parent-first, carried by the pages of a pinned export of a retained durable state. `RSpaceDagStateTransfer.tla` states the transfer contract over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents canonical objects, the export order or the page layout. |
 | TX-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14303): a refused transfer page changes neither the import session's frontier and in-memory closure nor its staging log, frontier record or staging directory. `RSpaceDagStateTransfer.tla` rejects an out-of-order page over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents pages, their decoding, canonical objects or the staging's files. |
+| TX-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14434): the seal of a completely staged state is its full cold admission over the staging log alone, a staged state with a dangling join is refused by it, and neither a seal nor its refusal changes the staging or the store directory outside it. `RSpaceDagStateTransfer.tla` admits an abstract closure of two objects at its complete frontier, `RSpaceAffineImportLifecycle.tla` seals a session whose closure is verified, and neither is among this matrix's TLA+ sources; no cited model represents canonical objects, the staging log or the semantic rules of a state. |
 | HR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the contents that a view reset to a retained root reads. No model represents a durable view, its reset or its lazy reader's results. |
 | HR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the refusal, from every view, of roots that the owner's current ledger does not count, with no change to the store directory. No model states a lookup of a retained state by its manifest digest. |
 | HR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): a reset reaches no directory failpoint and changes no file. The failpoints are a test seam of the Rust I/O layer, which no model represents. |
@@ -13328,6 +13692,54 @@ regenerated with it. No persisted byte, record kind, root, identity or wire
 message changed, and the crate has no new dependency. See the transition
 memo section.
 
+The 2026-11-13 durable state transfer import seal slice of task 7939 (task
+14434) adds TX-03, so the catalog/derivation/binding registry now contains
+**292** IDs, and its tests witness clauses of DT-08 and DT-10, which stay
+**Future** (see the seal witnesses of the source-bound DAG transfer
+contract). The manifest test's executable sources gain
+`transfer_import_seal.rs`. On an export of the candidate tree, which already
+holds the transition memo slice and the channel image adapter of the key
+grammar (task 14396), the three tests of the new module, the seven tests of
+the import staging module, the eight tests of the export module and the
+manifest test passed in debug and in release (19 passed, none ignored), and
+the whole library test target passed in both profiles with 1040 tests (1030
+passed, 10 ignored). The tests stage the export of one generated state, a
+stream of 45 objects in 8 object pages of at most 2048 bytes and 6 objects,
+and the TX test also stages the six exports of that state without one of its
+join memberships. Three controls were each applied to the export's
+`transfer_import.rs`, run against the three tests of the new module in debug
+and removed:
+
+- With the structural closure alone in place of `verify_rspace_semantics`,
+  the TX-03 test was the only test to fail, with the message
+  `a staged state with a dangling join was sealed`: the first staging of a
+  state without one of its join memberships was sealed.
+- With a completeness check that accepts any outstanding count, the DT-08
+  test `an_incomplete_closure_cannot_be_sealed` was the only test to fail,
+  at its comparison of the refusals before each object page: the seals at
+  the frontiers 6 to 42 ran cold admission over the incomplete log and were
+  refused for a missing object, not as incomplete closures.
+- With an `abort` of the sealed import that answers success without
+  removing the staging, the DT-10 test
+  `abort_before_and_after_sealing_leaves_no_trace` was the only test to
+  fail, with the message
+  `aborting a sealed import removes its staging and leaves no trace`: the
+  staging was left and was resumed at position 45.
+
+The other two tests passed under each control. Each faulted file was
+restored from the candidate tree, and the export was compared with that tree
+after the runs. Clippy of
+`rspace_plus_plus` with every target lists no finding in the files of this
+slice, and `rustfmt --check` passes on its Rust files. The
+workspace-regression registry hashes the manifest test's file and the
+persistence test module, both of which change, so that registry and the
+PathMap aggregate, which holds the same two digests, are regenerated with
+this slice. No Rocq or TLA+ file changed, and no proof or model was run for
+this slice. No persisted format of the store, record kind, staging file,
+root, identity or wire message changed, and the crate has no new
+dependency: a seal reads the staging log and writes nothing. See the durable
+state transfer import seal section.
+
 ## Caller-authority contract (2026-09-06)
 
 **Status: verified abstract contract; legacy caller observations exercised; durable
@@ -14034,6 +14446,28 @@ frontier moves from a page's position to the position after it.
 | DT-03 | `a_token_resumes_only_on_a_stream_of_its_transfer_version_binding_and_profile` | A token resumes only under its transfer version, root and profile. A resume under the binding of another retained state or under another profile is refused and keeps the frontier record and the log byte for byte, and so is a resume of a frontier record whose version field reads 2, or whose profile field names another profile, each with a valid checksum. A new import of a foreign profile is refused before any staging. A resumed session refuses pages of another root, of another profile and of transfer version 2 without effect, and its stream then completes. | The bridge clause, legacy-only and epoch peers, and the unactivated bridge: no session holds a bridge version (ruling D1), and negotiation with a peer is task 7940. |
 | DT-06 | `staging_and_frontier_never_cross_sessions_and_a_new_session_starts_empty_at_frontier_zero` | While a session lives, a second begin of the same or another binding is refused (`StagingExists`), a resume or an abort from outside it is refused (`StagingInUse`), and its frontier and staging stay unchanged. After abort its token resumes nothing. A session begun after an abort, or after a refused resume and an abort, starts at frontier 0 with an empty log, refuses the earlier session's pages and holds only its own stream. A begin interrupted before its first frontier record (failpoint `CandidateWrite`) resumes nothing (`IncompleteStaging`) and blocks a new begin until abort removes it. | None. |
 | DT-07 | `a_crash_between_object_sync_and_token_write_leaves_at_most_one_page_beyond_the_frontier_and_replay_is_idempotent` | A page beyond the next position is refused without effect. Staging of the first, a middle and the last object page of a 60-object stream is interrupted at each of the seven failpoints of the claim in the import staging section, in 30 cases: every failpoint with its visible effects surviving, and the three failpoints that leave an unsynchronized effect also with that effect lost, the page's appended records at `PhysicalSync` and the rename at `AfterReplaceBeforeDirectorySync` and `DirectorySync`. In every case the frontier record acknowledges no record that the log lacks, the log holds at most one page beyond it, resume continues at the predicted position with the predicted log length, and the replayed staging equals an uninterrupted one byte for byte. A torn record tail beyond the frontier is discarded on resume. | None. |
+
+### Seal witnesses (task 14434, 2026-11-13)
+
+Task 14434 builds the seal of a completely staged state, described in the
+durable state transfer import seal section. Its tests witness clauses of two
+rows above, and both rows stay **Future**: a row is marked **Executable**
+only when every clause of its required executable property is realized, and
+each of the two has a clause that is not. DT-08 names retention metadata
+closure and history rules. Under ruling D1, which binds a session to the
+direct manifest root of one state, a stream carries the closure of that
+state and neither a retention manifest nor historical states, so a seal has
+neither to check. DT-10 names the FFI abort, whose boundary is task 7940.
+The model admits the closure when the capability stages its terminal page
+(`AdmitClosure`) and seals it in a second step (`SealComplete`); the
+implementation's seal does both at once and does not need the end page. Its
+admission is not durable: a state is admitted exactly as long as its sealed
+import, the value that holds the admission report, lives.
+
+| ID | Witness test | Clause witnessed | Clause not realized |
+|---|---|---|---|
+| DT-08 | `an_incomplete_closure_cannot_be_sealed`, `a_complete_closure_is_admitted_and_one_with_a_dangling_join_is_refused` | Cold admission runs only at the complete frontier and over the complete closure of the session binding. A seal at frontier 0 and after every object page but the last of a 45-object stream is refused as an incomplete closure that names its frontier and its outstanding count, and not by an admission over the partial log; a session that failed while staging is refused as failed. Each refusal hands the session back with its frontier, its outstanding count and its staging unchanged. At the complete frontier admission reads the staged log alone: a log that is cut, that holds a length below 32 bytes or above the page limit, that repeats an object or that lacks an object of the closure is refused and stays as it was. The complete closure is sealed by the session that staged it, before the end page, by a resumed session, and after the end page, and each sealed import holds the manifest of the binding. The admission is the full cold admission of the state, its closure walk and its semantic rules: the sealed import's report equals the report of `verify_rspace_semantics` over the same objects in memory, a completely staged state with a dangling join is refused, and so is a state beyond the limits passed to the seal. | Retention metadata closure and history rules: a session is bound to one state's direct manifest root (ruling D1), and its stream carries neither a retention manifest nor historical states. |
+| DT-10 | `abort_before_and_after_sealing_leaves_no_trace` | Abort before admission discards the staging and its token: a session that a refused seal handed back is aborted, and a complete staging that was never sealed is removed by `abort_import`. After admission the sealed import is consumed by its own abort, which publishes nothing. In each case no staging directory is left, the store directory outside the staging is byte-identical to its image before the first import, a resume finds no staging, and a new session of the same binding starts at frontier 0 with an empty log. While a sealed import lives, nothing outside it discards its token: an abort and a resume from outside are refused (`StagingInUse`) and a new import is refused (`StagingExists`), with the staging and the store unchanged. Dropping a sealed import is not an abort: the staging stays byte for byte, is resumed at the complete frontier and sealed again, and that sealed import is aborted without a trace. | The capability of the FFI boundary: no FFI handle exists, so that an abort leaves the capability unused, and that the capability is consumed through the FFI abort as `RSpaceStateImportFfiBoundary.tla` states it, are not exercised. Here the session and the sealed import are Rust values that their `abort` consumes. The FFI boundary is task 7940. |
 
 ## Refinement completion rule
 

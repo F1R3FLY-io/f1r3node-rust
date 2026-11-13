@@ -2194,7 +2194,7 @@ pub(super) fn validate_authority_file(
     })
 }
 
-fn read_exact_at_with(
+pub(super) fn read_exact_at_with(
     path: &Path,
     offset: u64,
     bytes: &mut [u8],
@@ -2310,7 +2310,7 @@ fn write_all_at_with<Authority>(
 }
 
 #[cfg(unix)]
-fn positioned_read(
+pub(super) fn positioned_read(
     file: &File,
     bytes: &mut [u8],
     offset: u64,
@@ -2327,7 +2327,7 @@ fn positioned_read(
 }
 
 #[cfg(windows)]
-fn positioned_read(
+pub(super) fn positioned_read(
     file: &File,
     bytes: &mut [u8],
     offset: u64,
@@ -2344,7 +2344,7 @@ fn positioned_read(
 }
 
 #[cfg(not(any(unix, windows)))]
-fn positioned_read(
+pub(super) fn positioned_read(
     _file: &File,
     _bytes: &mut [u8],
     _offset: u64,

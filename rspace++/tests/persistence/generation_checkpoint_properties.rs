@@ -750,6 +750,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("kg_trait_v1.rs"),
         include_str!("../hot_store/journal_rebase.rs"),
         include_str!("owner_transition_memo.rs"),
+        include_str!("transfer_import_seal.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {
