@@ -1012,6 +1012,160 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
     .await
 }
 
+/// Two distinct deploys by one key whose name seeds are equal: same
+/// timestamp and valid-after block, different phlo limit.
+fn seed_sharing_pair() -> (
+    casper_message::ProcessedDeploy,
+    casper_message::ProcessedDeploy,
+) {
+    let deploy = |phlo_limit: i64| {
+        casper_message::ProcessedDeploy::empty(
+            construct_deploy::source_deploy(
+                "new x in { x!(1) }".to_string(),
+                7,
+                Some(phlo_limit),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("deploy"),
+        )
+    };
+    let (first, second) = (deploy(100_000), deploy(100_001));
+    assert_ne!(first.deploy.sig, second.deploy.sig);
+    (first, second)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_seed_reuse_rejects_a_deploy_reusing_an_ancestors_name_seed() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let (first, second) = seed_sharing_pair();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![first]),
+            None,
+            None,
+            None,
+            None,
+        );
+        let block = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![second]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
+
+        assert_eq!(
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_seed_reuse_rejects_two_deploys_sharing_a_name_seed_in_one_block() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let (first, second) = seed_sharing_pair();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let block = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![first, second]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
+
+        assert_eq!(
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
+/// The same signature again is the same deploy: seed reuse does not apply
+/// (repeat-deploy validation judges re-inclusion).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deploy_seed_reuse_accepts_the_same_deploy_and_distinct_seeds() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let (first, _) = seed_sharing_pair();
+        let other = construct_deploy::basic_processed_deploy(1, None).expect("deploy");
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![first.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+        let block = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![first, other]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let snapshot = mk_casper_snapshot(block_dag_storage.get_representation().expect("dag"));
+
+        assert_eq!(
+            Validate::deploy_seed_reuse(&block, &snapshot, &block_store),
+            Either::Right(ValidBlock::Valid)
+        );
+    })
+    .await
+}
+
 //Test 18: "Repeat deploy validation" should "not accept blocks with a repeated deploy"
 // +
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

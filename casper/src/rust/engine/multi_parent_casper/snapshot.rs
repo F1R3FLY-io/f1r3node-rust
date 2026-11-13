@@ -442,11 +442,16 @@ pub(crate) async fn compute_snapshot(
         )
         .collect::<HashMap<_, _>>();
 
-    let (deploys_in_scope, rejected_in_scope) = {
+    let (deploys_in_scope, rejected_in_scope, seeds_in_scope) = {
         let current_dag_generation = this.block_dag_storage.current_generation();
         let snapshot_lfb_hash = dag.last_finalized_block();
 
-        let cached: Option<(Arc<dashmap::DashSet<Bytes>>, Arc<dashmap::DashSet<Bytes>>)> = {
+        type ScopeSets = (
+            Arc<dashmap::DashSet<Bytes>>,
+            Arc<dashmap::DashSet<Bytes>>,
+            Arc<dashmap::DashMap<Vec<u8>, Vec<Bytes>>>,
+        );
+        let cached: Option<ScopeSets> = {
             // C16: `deploys_in_scope_cache` is a `parking_lot::Mutex` —
             // no poison propagation, `.lock()` returns the guard
             // directly. The prior `std::sync::Mutex` migration's
@@ -457,7 +462,7 @@ pub(crate) async fn compute_snapshot(
             // out of one cache hit.
             let cache_guard = this.deploys_in_scope_cache.lock();
             cache_guard.as_ref().and_then(
-                |(gen, cached_lfb, cached_parents, deploys_set, rejected_set)| {
+                |(gen, cached_lfb, cached_parents, deploys_set, rejected_set, seeds)| {
                     if deploy_scope_cache_key_matches(
                         *gen,
                         cached_lfb,
@@ -466,7 +471,7 @@ pub(crate) async fn compute_snapshot(
                         &snapshot_lfb_hash,
                         &parent_hashes,
                     ) {
-                        Some((deploys_set.clone(), rejected_set.clone()))
+                        Some((deploys_set.clone(), rejected_set.clone(), seeds.clone()))
                     } else {
                         None
                     }
@@ -474,8 +479,8 @@ pub(crate) async fn compute_snapshot(
             )
         };
 
-        if let Some(pair) = cached {
-            pair
+        if let Some(sets) = cached {
+            sets
         } else {
             // P2-9: checked arithmetic — alignment with T-9.14.
             let current_block_number = max_block_num.checked_add(1).ok_or_else(|| {
@@ -495,6 +500,7 @@ pub(crate) async fn compute_snapshot(
             // detection.
             let all_deploys = Arc::new(dashmap::DashSet::new());
             let all_rejected = Arc::new(dashmap::DashSet::new());
+            let all_seeds = Arc::new(dashmap::DashMap::new());
             in_blocking(|| -> Result<(), CasperError> {
                 let mut traversal_result: Vec<BlockHash> = Vec::new();
                 proto_util::walk_blocks_in_scope(
@@ -509,15 +515,25 @@ pub(crate) async fn compute_snapshot(
                 )?;
 
                 for block_hash in traversal_result {
-                    let block_deploy_sigs =
-                        this.block_store.deploy_sigs(&block_hash)?.ok_or_else(|| {
+                    let block_deploys = this
+                        .block_store
+                        .deploy_identities(&block_hash)?
+                        .ok_or_else(|| {
                             CasperError::RuntimeError(format!(
                                 "Missing block {} during deploys_in_scope traversal",
                                 PrettyPrinter::build_string_bytes(&block_hash)
                             ))
                         })?;
-                    for deploy_sig in block_deploy_sigs {
-                        all_deploys.insert(deploy_sig.into());
+                    for identity in block_deploys.iter() {
+                        let deploy_sig: Bytes = identity.sig.clone().into();
+                        let mut holders = all_seeds
+                            .entry(identity.seed.clone())
+                            .or_insert_with(Vec::new);
+                        if !holders.contains(&deploy_sig) {
+                            holders.push(deploy_sig.clone());
+                        }
+                        drop(holders);
+                        all_deploys.insert(deploy_sig);
                     }
                     // Merge of dev: a deploy that was executed in this block
                     // and rejected by a descendant merge contributes to the
@@ -543,8 +559,9 @@ pub(crate) async fn compute_snapshot(
                 parent_hashes.clone(),
                 all_deploys.clone(),
                 all_rejected.clone(),
+                all_seeds.clone(),
             ));
-            (all_deploys, all_rejected)
+            (all_deploys, all_rejected, all_seeds)
         }
     };
     let deploys_in_scope_len = deploys_in_scope.len();
@@ -577,6 +594,7 @@ pub(crate) async fn compute_snapshot(
         invalid_blocks,
         deploys_in_scope,
         rejected_in_scope,
+        seeds_in_scope,
         max_block_num,
         max_seq_nums,
         on_chain_state,

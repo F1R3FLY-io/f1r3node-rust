@@ -654,6 +654,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
         match BlockAPI::preview_private_names(
             &request.user.to_vec(),
             request.timestamp,
+            request.valid_after_block_number,
             request.name_qty,
         ) {
             Ok(ids) => {
@@ -1485,13 +1486,15 @@ mod tests {
                 user: vec![1u8; 32].into(),
                 timestamp: 1,
                 name_qty: 2,
+                valid_after_block_number: 9,
             }))
             .await
             .unwrap();
         match response.into_inner().message.unwrap() {
             models::casper::v1::private_name_preview_response::Message::Payload(payload) => {
-                assert_eq!(payload.ids.len(), 2);
-                assert!(!payload.ids[0].is_empty());
+                let expected = BlockAPI::preview_private_names(&vec![1u8; 32], 1, 9, 2).unwrap();
+                let ids: Vec<Vec<u8>> = payload.ids.iter().map(|id| id.to_vec()).collect();
+                assert_eq!(ids, expected);
             }
             other => panic!("expected Payload, got {:?}", other),
         }

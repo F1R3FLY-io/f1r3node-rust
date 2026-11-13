@@ -1793,9 +1793,14 @@ impl BlockAPI {
     pub fn preview_private_names(
         deployer: &ByteString,
         timestamp: i64,
+        valid_after_block_number: i64,
         name_qty: i32,
     ) -> ApiErr<Vec<ByteString>> {
-        let mut rand = Tools::unforgeable_name_rng(&PublicKey::from_bytes(deployer), timestamp);
+        let mut rand = Tools::unforgeable_name_rng(
+            &PublicKey::from_bytes(deployer),
+            timestamp,
+            valid_after_block_number,
+        );
         let safe_qty = name_qty.clamp(0, 1024) as usize;
         let ids: Vec<BlockHash> = (0..safe_qty)
             .map(|_| rand.next().into_iter().map(|b| b as u8).collect())

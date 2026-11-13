@@ -35,7 +35,7 @@ use casper::rust::slashing_authorization::{
 };
 use casper::rust::validate::Validate;
 use crypto::rust::public_key::PublicKey;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::history::Either;
@@ -86,6 +86,7 @@ fn snapshot_from_fixture(
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
+        seeds_in_scope: Arc::new(DashMap::new()),
         max_block_num,
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {

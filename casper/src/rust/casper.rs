@@ -14,7 +14,7 @@ use block_storage::rust::deploy::key_value_deploy_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
@@ -418,6 +418,10 @@ pub struct CasperSnapshot {
     /// was executed in one block and rejected during a descendant merge; the block
     /// creator uses this set to know which in-scope deploys are eligible for re-inclusion.
     pub rejected_in_scope: Arc<DashSet<Bytes>>,
+    /// Unforgeable-name seed of each deploy in the ancestry window, mapped to
+    /// the signatures of the deploys carrying it. A deploy whose seed maps to
+    /// another signature would create that deploy's names.
+    pub seeds_in_scope: Arc<DashMap<Vec<u8>, Vec<Bytes>>>,
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
@@ -444,6 +448,7 @@ impl CasperSnapshot {
             invalid_blocks: HashMap::new(),
             deploys_in_scope: Arc::new(DashSet::new()),
             rejected_in_scope: Arc::new(DashSet::new()),
+            seeds_in_scope: Arc::new(DashMap::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),

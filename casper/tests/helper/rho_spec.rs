@@ -602,7 +602,7 @@ async fn eval_deploy(
     use models::rust::normalizer_env::normalizer_env_from_deploy;
     use rholang::rust::interpreter::system_processes::DeployData as SystemProcessDeployData;
 
-    let rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
+    let rand = Tools::deploy_name_rng(deploy);
     let deploy_data = SystemProcessDeployData::from_deploy(deploy);
 
     runtime.set_deploy_data(deploy_data).await;

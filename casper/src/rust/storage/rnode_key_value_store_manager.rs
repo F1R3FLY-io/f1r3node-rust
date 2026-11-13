@@ -115,6 +115,12 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            // Seed carrier index: per unforgeable-name seed, the carriers of
+            // deploys with that seed and their sigs.
+            Db::new("carrier-index-seeds".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             // Carrier-index metadata: the write-once engagement watermark and
             // the prune stride cursor.
             Db::new("carrier-index-meta".to_string(), None),

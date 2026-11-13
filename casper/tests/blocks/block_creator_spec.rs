@@ -16,7 +16,7 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
@@ -235,6 +235,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
+        seeds_in_scope: Arc::new(DashMap::new()),
         max_block_num,
         max_seq_nums,
         on_chain_state,

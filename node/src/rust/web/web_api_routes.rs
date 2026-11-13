@@ -1445,11 +1445,22 @@ mod router_tests {
 
         let (status, json) = post_response(
             "/prepare-deploy",
-            r#"{"deployer":"04aa","timestamp":1,"nameQty":1}"#,
+            r#"{"deployer":"04aa","timestamp":1,"validAfterBlockNumber":3,"nameQty":1}"#,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["names"][0], "04aa");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_deploy_post_requires_the_valid_after_block_number() {
+        let (status, json) = post_response(
+            "/prepare-deploy",
+            r#"{"deployer":"04aa","timestamp":1,"nameQty":1}"#,
+        )
+        .await;
+        assert!(status.is_client_error());
+        assert_eq!(json["error"], "invalid_request_body");
     }
 
     #[tokio::test(flavor = "multi_thread")]

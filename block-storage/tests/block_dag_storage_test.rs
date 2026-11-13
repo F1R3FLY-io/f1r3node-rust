@@ -1606,7 +1606,12 @@ fn insert_retry_after_ingest_first_crash_does_not_duplicate_events() {
         let dag = dag_storage.get_representation().unwrap();
         dag.carrier_index
             .write()
-            .record_once(&deploy.deploy.sig, 1, block.block_hash.to_vec())
+            .record_once(
+                &deploy.deploy.sig,
+                &models::rust::deploy_seed::deploy_name_seed(&deploy.deploy),
+                1,
+                block.block_hash.to_vec(),
+            )
             .unwrap();
         dag.lifecycle
             .write()
@@ -1669,7 +1674,7 @@ fn orphan_lifecycle_event_is_not_a_canonical_appearance() {
         let phantom_block: Vec<u8> = vec![0xEE; 32];
         dag.carrier_index
             .write()
-            .record_once(b"orphan-sig", 1, phantom_block.clone())
+            .record_once(b"orphan-sig", b"orphan-seed", 1, phantom_block.clone())
             .unwrap();
         dag.lifecycle
             .write()

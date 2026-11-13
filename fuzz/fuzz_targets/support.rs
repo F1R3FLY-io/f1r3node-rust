@@ -23,7 +23,7 @@ use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use crypto::rust::public_key::PublicKey;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{
@@ -258,6 +258,7 @@ pub fn snapshot(
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
+        seeds_in_scope: Arc::new(DashMap::new()),
         max_block_num,
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {

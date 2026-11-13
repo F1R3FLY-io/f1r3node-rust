@@ -212,6 +212,7 @@ impl RhoTrieTraverser {
         let mut rand = Tools::unforgeable_name_rng(
             &standard_deploys::REGISTRY_PUB_KEY,
             standard_deploys::REGISTRY_TIMESTAMP,
+            standard_deploys::GENESIS_VALID_AFTER_BLOCK_NUMBER,
         );
 
         // Call rand.next() 6 times (0 to 5 inclusive)

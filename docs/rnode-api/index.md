@@ -663,6 +663,7 @@ Note: deploys are uniquely keyed by `user`, `timestamp`.
 | user | [bytes](#bytes) |  | public key a la DeployData |
 | timestamp | [int64](#int64) |  | millisecond timestamp |
 | nameQty | [int32](#int32) |  | how many names to preview? (max: 1024) |
+| validAfterBlockNumber | [int64](#int64) |  | the deploy's validAfterBlockNumber |
 
 
 

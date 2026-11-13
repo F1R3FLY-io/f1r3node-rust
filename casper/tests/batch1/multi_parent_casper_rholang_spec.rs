@@ -2,8 +2,8 @@
 
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signed::Signed;
+use models::rust::casper::protocol::casper_message::DeployData;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -75,10 +75,8 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
         )
     }
 
-    fn calculate_unforgeable_name(timestamp: i64) -> String {
-        let secp256k1 = Secp256k1;
-        let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-        let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+    fn calculate_unforgeable_name(deploy: &Signed<DeployData>) -> String {
+        let unforgeable_id = Tools::deploy_name_rng(deploy).next();
         let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
         hex::encode(unforgeable_id_u8)
     }
@@ -101,7 +99,7 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
 
     let registry_id = rspace_util::get_data_at_private_channel(
         &block0,
-        &calculate_unforgeable_name(register_deploy.data.time_stamp),
+        &calculate_unforgeable_name(&register_deploy),
         &standalone_node.runtime_manager,
     )
     .await;
@@ -123,7 +121,7 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
 
     let data = rspace_util::get_data_at_private_channel(
         &block1,
-        &calculate_unforgeable_name(call_deploy.data.time_stamp),
+        &calculate_unforgeable_name(&call_deploy),
         &standalone_node.runtime_manager,
     )
     .await;

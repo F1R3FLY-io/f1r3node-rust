@@ -33,9 +33,8 @@ use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::vault_parser::VaultParser;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use comm::rust::test_instances::{LogStub, LogicalTime};
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use crypto::rust::signatures::signed::Signed;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, DeployData};
 use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -108,6 +107,7 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Default::default(),
         rejected_in_scope: Default::default(),
+        seeds_in_scope: Default::default(),
         max_block_num: 0,
         max_seq_nums: Default::default(),
         on_chain_state: OnChainCasperState {
@@ -513,11 +513,9 @@ new ret, rl(`rho:registry:lookup`), RevVaultCh, vaultCh, balanceCh in {
 // spec proves the read needs > 3000) while staying below the 9_000_000 default deployer vault.
 const BALANCE_QUERY_PHLO_LIMIT: i64 = 4_000_000;
 
-// Reconstructs the unforgeable id of the first `new`-bound name of a deploy signed by DEFAULT_SEC.
-fn calculate_unforgeable_name(timestamp: i64) -> String {
-    let secp256k1 = Secp256k1;
-    let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-    let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+// Reconstructs the unforgeable id of the first `new`-bound name of a deploy.
+fn calculate_unforgeable_name(deploy: &Signed<DeployData>) -> String {
+    let unforgeable_id = Tools::deploy_name_rng(deploy).next();
     let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
     hex::encode(unforgeable_id_u8)
 }
@@ -543,7 +541,7 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
 
     let data = rspace_util::get_data_at_private_channel(
         &block,
-        &calculate_unforgeable_name(deploy.data.time_stamp),
+        &calculate_unforgeable_name(&deploy),
         &node.runtime_manager,
     )
     .await;
