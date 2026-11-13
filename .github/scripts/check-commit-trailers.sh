@@ -137,7 +137,7 @@ check_range() {
 		status=1
 	done
 	if [ "$status" -ne 0 ]; then
-		printf 'Reword or re-author the commits (git rebase -i). A co-author is ratified after a merged pull request that they authored.\n' >&2
+		printf 'See docs/ci.md#commit-policy for accepted history and contributor or maintainer author exemptions.\n' >&2
 	fi
 	return "$status"
 }
