@@ -9,17 +9,22 @@ use std::sync::OnceLock;
 use proptest::prelude::*;
 use proptest::test_runner::{RngAlgorithm, TestCaseError, TestRng, TestRunner};
 
-use super::checkpoint_wal::fixture_with_retained_union_cardinality;
+use super::checkpoint_wal::{
+    fixture as checkpoint_source_fixture, fixture_with_retained_union_cardinality,
+};
 use super::durable_publication::{
     FORMAL_PUBLICATION_PHASE_ORDER, directory_snapshot, install_checkpoint_image,
+    publish_data_successor,
 };
 use super::durable_recovery::{checkpoint_image_from_source, limits};
 use super::support::{TestSemanticProfile, trial_scratch};
 use crate::rspace::persistence::durable::{
-    DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError,
+    DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError, DurablePublishedCoreV1,
+    DurableStateRootV1, DurableViewReadHandleV1,
     GenerationCheckpointPublicationHookPointV1 as PublicationPoint, ReclamationCandidateV1,
     SemanticallyAdmittedDurableWriterV1, arm_generation_checkpoint_publication_failpoint,
     arm_generation_checkpoint_publication_hook, index_file_name, pack_file_name,
+    recover_read_authority,
 };
 use crate::rspace::persistence::retention::{
     RetainedRootKind, RetainedRootRegistryV1, RetainedRootV1, RetentionRegistryError, RootLeaseV1,
@@ -1234,4 +1239,143 @@ fn reader_export_and_import_roots_share_one_protection_quotient() {
         coverage.releases,
     );
     assert!(coverage.deferred > 0, "no operation held its generation across publication");
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewTarget {
+    Current,
+    Retained,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DurableView {
+    PublishedCore(ViewTarget),
+    RecoveredAuthority,
+    RecoveredAuthorityAt(ViewTarget),
+}
+
+const DURABLE_VIEWS: [DurableView; 5] = [
+    DurableView::PublishedCore(ViewTarget::Current),
+    DurableView::PublishedCore(ViewTarget::Retained),
+    DurableView::RecoveredAuthority,
+    DurableView::RecoveredAuthorityAt(ViewTarget::Current),
+    DurableView::RecoveredAuthorityAt(ViewTarget::Retained),
+];
+
+#[derive(Debug, PartialEq, Eq)]
+struct ViewPinRecord {
+    successor_is_fresh: bool,
+    old_generation_while_alive: Presence,
+    leases_while_alive: usize,
+    exact_lease_while_alive: Result<bool, GenerationLeaseError>,
+    retired_while_alive: Result<bool, GenerationLeaseError>,
+    leases_after_drop: usize,
+    retired_after_drop: Result<bool, GenerationLeaseError>,
+}
+
+fn hold_durable_view(
+    view: DurableView,
+    root: &Path,
+    writer: GcWriter,
+    retained: DurableStateRootV1,
+    current: DurableStateRootV1,
+) -> Result<(DurableViewReadHandleV1<TestSemanticProfile>, GcWriter), String> {
+    let state = |target: ViewTarget| match target {
+        ViewTarget::Current => current,
+        ViewTarget::Retained => retained,
+    };
+    let recover = || {
+        recover_read_authority::<TestSemanticProfile>(
+            root,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .map_err(|error| format!("the read authority does not recover: {error:?}"))
+    };
+    match view {
+        DurableView::PublishedCore(target) => {
+            let (_, handle) = DurablePublishedCoreV1::detached_for_test(
+                writer.shared_core(),
+                writer.generation_leases(),
+            )
+            .read_handle(Some(state(target)))
+            .map_err(|error| format!("the published core refused the view: {error:?}"))?;
+            Ok((handle, writer))
+        }
+        DurableView::RecoveredAuthority => {
+            drop(writer);
+            let authority = recover()?;
+            let handle = authority
+                .read_handle()
+                .map_err(|error| format!("the authority refused the view: {error:?}"))?;
+            drop(authority);
+            Ok((handle, admit_checkpoint(root)?))
+        }
+        DurableView::RecoveredAuthorityAt(target) => {
+            drop(writer);
+            let authority = recover()?;
+            let resolved = authority
+                .resolve(state(target))
+                .map_err(|error| format!("the authority does not resolve the state: {error:?}"))?;
+            let handle = authority
+                .read_handle_at(&resolved)
+                .map_err(|error| format!("the authority refused the view: {error:?}"))?;
+            drop(authority);
+            Ok((handle, admit_checkpoint(root)?))
+        }
+    }
+}
+
+fn pin_durable_view(view: DurableView) -> Result<ViewPinRecord, String> {
+    let scratch = trial_scratch("gc-view-pin-");
+    let root = scratch.path();
+    install_checkpoint_image(root, &checkpoint_image_from_source(checkpoint_source_fixture()));
+    let first = admit_checkpoint(root)?;
+    let retained = DurableStateRootV1::of_manifest(first.catalog().state().manifest());
+    let writer = publish_data_successor(first, "gc-view-pin");
+    let current = DurableStateRootV1::of_manifest(writer.catalog().state().manifest());
+    let old = GenerationLeaseKeyV1::from_catalog(writer.catalog());
+    let old_files = generation_files(root, old)?;
+    let (handle, writer) = hold_durable_view(view, root, writer, retained, current)?;
+    let writer = publish_checkpoint(writer)?;
+    let successor = GenerationLeaseKeyV1::from_catalog(writer.catalog());
+    let registry = writer.generation_leases();
+    drop(writer);
+    let old_generation_while_alive = generation_presence(&old_files);
+    let leases_while_alive = registry.active_lease_count_for_test();
+    let exact_lease_while_alive = registry.has_active(old);
+    let retired_while_alive = registry.retire_pack_range_if_unleased(old);
+    drop(handle);
+    Ok(ViewPinRecord {
+        successor_is_fresh: successor.first_live_pack() > old.active_pack(),
+        old_generation_while_alive,
+        leases_while_alive,
+        exact_lease_while_alive,
+        retired_while_alive,
+        leases_after_drop: registry.active_lease_count_for_test(),
+        retired_after_drop: registry.retire_pack_range_if_unleased(old),
+    })
+}
+
+#[test]
+fn durable_views_on_an_old_generation_defer_reclamation_until_dropped() {
+    let observed = DURABLE_VIEWS.map(|view| (view, pin_durable_view(view)));
+    let expected = DURABLE_VIEWS.map(|view| {
+        let protected = ViewPinRecord {
+            successor_is_fresh: true,
+            old_generation_while_alive: Presence::Present,
+            leases_while_alive: 1,
+            exact_lease_while_alive: Ok(true),
+            retired_while_alive: Ok(false),
+            leases_after_drop: 0,
+            retired_after_drop: Ok(true),
+        };
+        (view, Ok::<ViewPinRecord, String>(protected))
+    });
+    assert_eq!(
+        observed, expected,
+        "GP-04: every durable view must keep its exact old generation present and unretired while \
+         it lives, and give it up when it drops"
+    );
 }
