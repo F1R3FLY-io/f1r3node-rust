@@ -975,4 +975,194 @@ pub proof fn lemma_project_snapshot(state: dispatcher::IntegratedState)
     }
 }
 
+pub proof fn lemma_backward_structural(
+    state: dispatcher::IntegratedState, event: observable::ObservableEvent,
+)
+    requires
+        dispatcher::integrated_wf(state),
+        observable::observable_next(project(state), event) is Some,
+    ensures raw_event_shape(state, event),
+{
+    hide(dispatcher::integrated_wf);
+    let frames = state_frames(state);
+    let score_len = state_score_len(state);
+    let shadow = project_frames(frames);
+    let next = observable::observable_next(project(state), event).unwrap();
+    assert(state is Active);
+    assert(project(state) == observable::ObservableState::Active { frames: shadow, score_len });
+    assert(observable::observable_core_next(project(state), event) == Some(next));
+    assert(observable::observable_event_after(event) == observable::observable_snapshot(next));
+    lemma_project_snapshot(state);
+    assert(observable::observable_event_before(event) == raw_snapshot(frames, score_len));
+    assert(shadow.len() == frames.len());
+    assert(frames.len() > 0);
+    let last = frames.len() - 1;
+    let top = frames.last();
+    let shadow_top = shadow.last();
+    lemma_project_frame_reads(frames, last);
+    assert(shadow_top == project_frame(frames, last));
+    assert(shadow_top.kind == top.frame_kind);
+    assert(shadow_top.body_len == top.region_end as nat);
+    assert(shadow_top.waiting is None);
+    let message = event is MessageContinue || event is MessagePush || event is MessageComplete;
+    let field = match event {
+        observable::ObservableEvent::MessageContinue { field, .. } => Some(field),
+        observable::ObservableEvent::OtherContinue { field, .. } => field,
+        observable::ObservableEvent::MessagePush { field, .. } => Some(field),
+        observable::ObservableEvent::OtherPush { field, .. } => field,
+        _ => None,
+    };
+    let pushed = match event {
+        observable::ObservableEvent::MessagePush { child, .. } => Some(child),
+        observable::ObservableEvent::OtherPush { child, .. } => Some(child),
+        _ => None,
+    };
+    assert(field is Some && observable::observable_field_admissible(shadow_top, field.unwrap())
+        ==> raw_field_guard(top, field.unwrap())) by {
+        if field is Some && observable::observable_field_admissible(shadow_top, field.unwrap()) {
+            let moved = field.unwrap();
+            assert(top.frame_kind == 1 || top.frame_kind == 2);
+            assert(shadow_top.cursor == Some(top.cursor as nat));
+            assert(shadow_top.slot_count == top.slot_count as nat);
+            assert(shadow_top.last_slot == project_slot(top.last_slot));
+            assert(moved.slot < top.slot_count as nat);
+            assert((moved.slot as usize) as nat == moved.slot);
+            lemma_slot_admissible_projects(
+                top.last_slot, moved.slot as usize, top.slot_count, moved.repeated,
+            );
+        }
+    }
+    if event is MessageContinue || event is OtherContinue {
+        assert(observable::observable_continue_next(shadow, score_len, message, field)
+            == Some(next));
+        assert(observable::observable_class_matches(message, shadow_top.kind));
+        if top.frame_kind == 3 {
+            assert(field is None);
+            assert(next == project(state));
+        } else {
+            assert(field is Some);
+            let moved = field.unwrap();
+            assert(observable::observable_field_admissible(shadow_top, moved));
+            assert(raw_field_guard(top, moved));
+            if top.frame_kind == 2 {
+                assert(observable::observable_map_key_field(shadow_top, moved));
+                assert(shadow_top.slot_count == top.slot_count as nat);
+                assert(top.slot_count == 2 && moved.slot == 0 && !moved.repeated);
+            }
+            let moved_top = observable::observable_frame_after_field(shadow_top, moved);
+            let next_frames = shadow.update(last, moved_top);
+            assert(next == observable::ObservableState::Active { frames: next_frames, score_len });
+            assert(next_frames.last() == moved_top);
+        }
+        assert(raw_continue_shape(frames, message, field));
+        assert(observable::observable_snapshot(next) == raw_snapshot(frames, score_len));
+        assert(raw_event_shape(state, event));
+    } else if event is MessagePush || event is OtherPush {
+        let request = pushed.unwrap();
+        assert(observable::observable_push_next(shadow, score_len, message, field, request)
+            == Some(next));
+        assert(observable::observable_class_matches(message, shadow_top.kind));
+        assert(observable::observable_request_admissible(shadow_top, request));
+        assert(observable::observable_push_allowed(shadow_top.kind, request.kind));
+        assert(raw_push_kind_allowed(top.frame_kind, request.kind));
+        assert(request.body_len <= top.region_end as nat);
+        assert(observable::observable_push_parent_ok(shadow_top, field));
+        if top.frame_kind == 1 || top.frame_kind == 2 {
+            assert(field is Some);
+            let moved = field.unwrap();
+            assert(observable::observable_field_admissible(shadow_top, moved));
+            assert(raw_field_guard(top, moved));
+            if top.frame_kind == 2 {
+                assert(observable::observable_map_value_field(shadow_top, moved));
+                assert(shadow_top.slot_count == top.slot_count as nat);
+                assert(top.slot_count == 2 && moved.slot == 1 && !moved.repeated);
+            }
+        } else {
+            assert(field is None);
+        }
+        assert(raw_push_shape(frames, message, field, request));
+        let parent_after = observable::observable_parent_after_push(shadow_top, field, request);
+        let child_frame = observable::observable_fresh_frame(request);
+        let next_frames = shadow.update(last, parent_after).push(child_frame);
+        assert(next == observable::ObservableState::Active { frames: next_frames, score_len });
+        assert(next_frames.len() == frames.len() + 1);
+        assert(next_frames.last() == child_frame);
+        assert(observable::observable_snapshot(next)
+            == raw_after_push(frames, request.kind, score_len));
+        assert(raw_event_shape(state, event));
+    } else {
+        let record = observable::observable_event_record(event).unwrap();
+        let score_after = observable::observable_event_after(event).score_len;
+        assert(observable::observable_complete_next(shadow, score_len, message, record, score_after)
+            == Some(next));
+        assert(observable::observable_class_matches(message, shadow_top.kind));
+        assert(observable::observable_frame_finished(shadow_top));
+        assert(observable::observable_score_ok(message, score_len, score_after));
+        assert(top.frame_kind == 1 || top.frame_kind == 2 ==> top.cursor == top.region_end) by {
+            if top.frame_kind == 1 || top.frame_kind == 2 {
+                assert(shadow_top.cursor == Some(top.cursor as nat));
+                assert(shadow_top.cursor == Some(shadow_top.body_len));
+            }
+        }
+        if frames.len() == 1 {
+            assert(record is Root);
+            assert(top.frame_kind == 1 || top.frame_kind == 4);
+            assert(next == observable::ObservableState::Accepted {
+                root: shadow_top,
+                score_len: score_after,
+            });
+        } else {
+            let below = frames.len() - 2;
+            let parent = frames[below];
+            let shadow_parent = shadow[below];
+            lemma_project_frame_reads(frames, below);
+            assert(shadow_parent == project_frame(frames, below));
+            assert(shadow_parent.kind == parent.frame_kind);
+            assert(shadow_parent.waiting is Some);
+            let wait = shadow_parent.waiting.unwrap();
+            assert(observable::observable_accept_record_valid(
+                shadow_parent, wait, shadow_top, record,
+            ));
+            assert(observable::observable_tracks_fields(parent.frame_kind)
+                ==> wait.slot == project_slot(parent.waiting_slot));
+            match record {
+                observable::ObservableAcceptRecord::Root => {
+                    assert(!observable::observable_accept_record_valid(
+                        shadow_parent, wait, shadow_top, record,
+                    ));
+                },
+                observable::ObservableAcceptRecord::MessageSlot { slot, .. } => {
+                    assert(parent.frame_kind == 1);
+                    assert(project_slot(parent.waiting_slot) == Some(slot));
+                    assert(parent.waiting_slot is Some);
+                    assert(parent.waiting_slot.unwrap() as nat == slot);
+                },
+                observable::ObservableAcceptRecord::MapValue => {
+                    assert(parent.frame_kind == 2);
+                    assert(top.frame_kind == 1);
+                    assert(project_slot(parent.waiting_slot) == Some(1nat));
+                    assert(parent.waiting_slot == Some(1usize));
+                },
+                observable::ObservableAcceptRecord::Reduced => {
+                    assert(parent.frame_kind == 3 || parent.frame_kind == 4);
+                },
+            }
+            let parent_after = observable::observable_parent_after_accept(
+                shadow_parent, wait, shadow_top,
+            );
+            let next_frames = shadow.drop_last().update(below, parent_after);
+            assert(next == observable::ObservableState::Active {
+                frames: next_frames,
+                score_len: score_after,
+            });
+            assert(next_frames.len() == frames.len() - 1);
+            assert(next_frames.last() == parent_after);
+            assert(parent_after.kind == parent.frame_kind);
+        }
+        assert(raw_complete_shape(frames, message, record, score_len, score_after));
+        assert(observable::observable_snapshot(next) == raw_after_complete(frames, score_after));
+        assert(raw_event_shape(state, event));
+    }
+}
+
 }
