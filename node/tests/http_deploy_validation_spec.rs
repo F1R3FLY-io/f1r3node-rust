@@ -11,8 +11,11 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::peer_node::{NodeIdentifier, PeerNode};
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::{RPConf, RPConfCell};
-use node::rust::api::web_api::{WebApi, WebApiImpl};
+use node::rust::api::admin_web_api::AdminWebApiImpl;
+use node::rust::api::web_api::WebApiImpl;
+use node::rust::web::shared_handlers::AppState;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 struct StubNodeDiscovery;
 
@@ -25,7 +28,7 @@ impl NodeDiscovery for StubNodeDiscovery {
     fn remove_peer(&self, _peer: &PeerNode) -> Result<(), comm::rust::errors::CommError> { Ok(()) }
 }
 
-fn web_api(engine_cell: EngineCell) -> WebApiImpl {
+fn app_state(engine_cell: EngineCell) -> AppState {
     let local = PeerNode::new(
         NodeIdentifier::new("0a0b0c0d00000000000000000000000000000000")
             .expect("valid test node ID"),
@@ -58,7 +61,8 @@ fn web_api(engine_cell: EngineCell) -> WebApiImpl {
     let node_discovery: Arc<dyn NodeDiscovery + Send + Sync> = Arc::new(StubNodeDiscovery);
     let is_ready = Arc::new(AtomicBool::new(true));
 
-    WebApiImpl::new(
+    let engine_cell = Arc::new(engine_cell);
+    let web_api = WebApiImpl::new(
         10,
         false,
         "testnet".to_string(),
@@ -69,16 +73,27 @@ fn web_api(engine_cell: EngineCell) -> WebApiImpl {
         8,
         true,
         false,
-        block_report_api,
+        block_report_api.clone(),
         models::rhoapi::Par::default(),
-        Arc::new(engine_cell),
-        rp_conf_cell,
-        connections_cell,
-        node_discovery,
+        engine_cell.clone(),
+        rp_conf_cell.clone(),
+        connections_cell.clone(),
+        node_discovery.clone(),
         None,
         100,
         10,
         is_ready,
+    );
+    let events = F1r3flyEvents::new();
+    AppState::new(
+        Arc::new(AdminWebApiImpl::new(None, None, engine_cell)),
+        Arc::new(web_api),
+        Arc::new(block_report_api),
+        rp_conf_cell,
+        Arc::new(connections_cell),
+        node_discovery,
+        Arc::new(events.consume()),
+        events.startup_buffer(),
     )
 }
 
@@ -87,9 +102,7 @@ mod http_deploy_validation {
 
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode};
-    use axum::response::IntoResponse;
-    use axum::routing::post;
-    use axum::{Json, Router};
+    use axum::Router;
     use casper::rust::api::block_api::DeployValidationError;
     use casper::rust::casper::MultiParentCasper;
     use casper::rust::engine::engine::Engine;
@@ -99,7 +112,7 @@ mod http_deploy_validation {
     use crypto::rust::signatures::signed::Signed;
     use models::rust::casper::protocol::casper_message::{CasperMessage, DeployData};
     use node::rust::api::web_api::DeployRequest;
-    use node::rust::web::shared_handlers::{AppError, AppJson};
+    use node::rust::web::web_api_routes::WebApiRoutes;
     use serde_json::{json, Value};
     use shared::rust::token_amount::TokenAmount;
     use tower::ServiceExt;
@@ -156,20 +169,7 @@ mod http_deploy_validation {
         let calls = Arc::new(AtomicUsize::new(0));
         let engine = EngineCell::init();
         engine.set(Arc::new(AdmissionProbe(calls.clone()))).await;
-        let web = web_api(engine);
-        let web = Arc::new(web);
-        let router = Router::new().route(
-            "/deploy",
-            post(move |AppJson(request): AppJson<DeployRequest>| {
-                let web = web.clone();
-                async move {
-                    match web.deploy(request).await {
-                        Ok(id) => Json(id).into_response(),
-                        Err(error) => AppError(error).into_response(),
-                    }
-                }
-            }),
-        );
+        let router = WebApiRoutes::create_router().with_state(app_state(engine));
         (router, calls)
     }
 
@@ -215,6 +215,14 @@ mod http_deploy_validation {
         let mut signature = valid.clone();
         signature.signature = "0011".into();
         cases.push((signature, "Invalid signature or public key"));
+        let mut signature = valid.clone();
+        let mut signature_bytes = hex::decode(&signature.signature).unwrap();
+        signature_bytes[10] ^= 0xFF;
+        signature.signature = hex::encode(signature_bytes);
+        cases.push((signature, "Invalid signature or public key"));
+        let mut timestamp = valid.clone();
+        timestamp.data.time_stamp = 2;
+        cases.push((timestamp, "Invalid signature or public key"));
         let mut tampered = valid;
         tampered.data.term = "new x in { x!(1) }".into();
         cases.push((tampered, "Invalid signature or public key"));
@@ -289,6 +297,12 @@ mod http_deploy_validation {
             assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
             assert_eq!(body["error"], "invalid_request_body");
         }
+        let mut invalid_name = valid;
+        invalid_name["data"]["parameters"][0]["name"] = json!("invalid:name");
+        let (status, body) =
+            response(router.clone(), invalid_name.to_string(), "application/json").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"], "invalid_request_body");
         for (text, content_type, expected) in [
             ("{", "application/json", StatusCode::BAD_REQUEST),
             ("{}", "text/plain", StatusCode::UNSUPPORTED_MEDIA_TYPE),
@@ -302,7 +316,7 @@ mod http_deploy_validation {
 
     #[tokio::test]
     async fn programmatic_invalid_parameters_retain_validation_error_type() {
-        let web = web_api(EngineCell::init());
+        let web = app_state(EngineCell::init()).web_api;
         let mut request = signed_request();
         request.data.parameters[0].name = "invalid:name".into();
         let error = web.deploy(request).await.unwrap_err();
