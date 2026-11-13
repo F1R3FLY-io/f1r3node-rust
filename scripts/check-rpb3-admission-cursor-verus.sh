@@ -1921,6 +1921,13 @@ proofs_rpb3_observable_simulation=(
   lemma_slot_admissible_projects
   lemma_project_snapshot
   lemma_backward_structural
+  lemma_observable_wf_bounds_canonical_path
+  lemma_coverage_of_continue
+  lemma_coverage_of_push
+  lemma_coverage_of_message_complete
+  lemma_coverage_of_other_complete
+  lemma_structural_coverage
+  lemma_coverage_names_obligation_returns
 )
 proofs_rpb3_path_parser_refinement=(
   initial_parser_source_snapshot_has_witness
@@ -5208,7 +5215,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: observable simulation module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 6 verified, 0 errors' "$observable_simulation_log"; then
+if ! rg -q '^verification results:: 13 verified, 0 errors' "$observable_simulation_log"; then
   cat "$observable_simulation_log"
   echo "rpb3-admission-cursor: observable simulation module did not verify" >&2
   exit 1

@@ -1165,4 +1165,447 @@ pub proof fn lemma_backward_structural(
     }
 }
 
+pub proof fn lemma_observable_wf_bounds_canonical_path(state: dispatcher::IntegratedState)
+    requires observable::observable_wf(project(state)),
+    ensures canonical_path_top_is_root(state),
+{
+    let frames = state_frames(state);
+    if state is Active && frames.len() >= 2 {
+        let top = frames.len() - 1;
+        let projected = project_frames(frames);
+        lemma_project_frame_reads(frames, top);
+        assert(observable::observable_stack_wf(projected));
+        assert(observable::observable_link_wf(projected[top - 1], projected[top]));
+        assert(observable::observable_push_allowed(
+            projected[top - 1].kind, frames[top].frame_kind,
+        ));
+    }
+}
+
+pub proof fn lemma_coverage_of_continue(
+    state: dispatcher::IntegratedState, event: observable::ObservableEvent,
+)
+    requires
+        dispatcher::integrated_wf(state),
+        observable::observable_next(project(state), event) is Some,
+        event is MessageContinue || event is OtherContinue,
+    ensures integrated_lane_exists(state, event),
+{
+    let product = state_product(state);
+    let frames = state_frames(state);
+    let projected = project_frames(frames);
+    let score_len = state_score_len(state);
+    assert(state is Active);
+    assert(observable::observable_core_next(project(state), event) is Some);
+    assert(frames.len() > 0);
+    let top = frames.len() - 1;
+    lemma_project_frame_reads(frames, top);
+    let top_kind = frames[top].frame_kind;
+    assert(projected.last().kind == top_kind);
+    match event {
+        observable::ObservableEvent::MessageContinue { field, .. } => {
+            assert(observable::observable_continue_next(
+                projected, score_len, true, Some(field),
+            ) is Some);
+            assert(top_kind == 1);
+            let witness = dispatcher::IntegratedAction::Live {
+                live_action: LiveRuntimeProductAction::Continue,
+                route: dispatcher::IntegratedPushRoute::Plain,
+            };
+            assert(event_lane(frames, event, action_arm(witness)));
+            assert(dispatcher::integrated_kind_guard(product, witness));
+        },
+        observable::ObservableEvent::OtherContinue { field, .. } => {
+            assert(observable::observable_continue_next(
+                projected, score_len, false, field,
+            ) is Some);
+            if field is Some {
+                assert(top_kind == 2);
+                let witness = dispatcher::IntegratedAction::Live {
+                    live_action: LiveRuntimeProductAction::MapKey,
+                    route: dispatcher::IntegratedPushRoute::Plain,
+                };
+                assert(event_lane(frames, event, action_arm(witness)));
+                assert(dispatcher::integrated_kind_guard(product, witness));
+            } else {
+                assert(top_kind == 3);
+                let witness = dispatcher::IntegratedAction::Live {
+                    live_action: LiveRuntimeProductAction::EpmContinue { event: arbitrary() },
+                    route: dispatcher::IntegratedPushRoute::Plain,
+                };
+                assert(event_lane(frames, event, action_arm(witness)));
+                assert(dispatcher::integrated_kind_guard(product, witness));
+            }
+        },
+        _ => {},
+    }
+    assert forall|action: dispatcher::IntegratedAction|
+        event_lane(frames, event, action_arm(action))
+        implies #[trigger] dispatcher::integrated_kind_guard(product, action) by {}
+}
+
+pub proof fn lemma_coverage_of_push(
+    state: dispatcher::IntegratedState, event: observable::ObservableEvent,
+)
+    requires
+        dispatcher::integrated_wf(state),
+        observable::observable_next(project(state), event) is Some,
+        event is MessagePush || event is OtherPush,
+    ensures integrated_lane_exists(state, event),
+{
+    let product = state_product(state);
+    let frames = state_frames(state);
+    let projected = project_frames(frames);
+    let score_len = state_score_len(state);
+    assert(state is Active);
+    assert(observable::observable_core_next(project(state), event) is Some);
+    assert(frames.len() > 0);
+    let top = frames.len() - 1;
+    lemma_project_frame_reads(frames, top);
+    let top_kind = frames[top].frame_kind;
+    assert(projected.last().kind == top_kind);
+    match event {
+        observable::ObservableEvent::MessagePush { field, child, .. } => {
+            assert(observable::observable_push_next(
+                projected, score_len, true, Some(field), child,
+            ) is Some);
+            assert(top_kind == 1);
+            if child.kind == 3 {
+                let witness = dispatcher::IntegratedAction::Live {
+                    live_action: LiveRuntimeProductAction::MessageEpmPush {
+                        request: arbitrary(),
+                        actual_top_kind: arbitrary(),
+                        after_len: arbitrary(),
+                        after_capacity: arbitrary(),
+                        stats_frame_variant_bytes: arbitrary(),
+                    },
+                    route: dispatcher::IntegratedPushRoute::Plain,
+                };
+                assert(event_lane(frames, event, action_arm(witness)));
+                assert(dispatcher::integrated_kind_guard(product, witness));
+            } else {
+                let witness = dispatcher::IntegratedAction::Live {
+                    live_action: LiveRuntimeProductAction::MessagePush {
+                        request: arbitrary(),
+                        actual_top_kind: arbitrary(),
+                        after_len: arbitrary(),
+                        after_capacity: arbitrary(),
+                        stats_frame_variant_bytes: arbitrary(),
+                    },
+                    route: dispatcher::IntegratedPushRoute::Plain,
+                };
+                assert(event_lane(frames, event, action_arm(witness)));
+                assert(dispatcher::integrated_kind_guard(product, witness));
+            }
+        },
+        observable::ObservableEvent::OtherPush { field, child, .. } => {
+            assert(observable::observable_push_next(
+                projected, score_len, false, field, child,
+            ) is Some);
+            assert(top_kind == 2 || top_kind == 3 || top_kind == 4);
+            if top_kind == 2 {
+                let witness = dispatcher::IntegratedAction::Live {
+                    live_action: LiveRuntimeProductAction::MapValuePush {
+                        request: arbitrary(),
+                        actual_top_kind: arbitrary(),
+                        after_len: arbitrary(),
+                        after_capacity: arbitrary(),
+                        stats_frame_variant_bytes: arbitrary(),
+                    },
+                    route: dispatcher::IntegratedPushRoute::Plain,
+                };
+                assert(event_lane(frames, event, action_arm(witness)));
+                assert(dispatcher::integrated_kind_guard(product, witness));
+            } else if top_kind == 3 {
+                let witness = dispatcher::IntegratedAction::Live {
+                    live_action: LiveRuntimeProductAction::EpmPush { observed: arbitrary() },
+                    route: dispatcher::IntegratedPushRoute::Plain,
+                };
+                assert(event_lane(frames, event, action_arm(witness)));
+                assert(dispatcher::integrated_kind_guard(product, witness));
+            } else {
+                let witness = dispatcher::IntegratedAction::CanonicalPath {
+                    driver_before: arbitrary(),
+                    driver_action: path_driver::CanonicalPathDriverSourceAction::Push {
+                        storage_observed: arbitrary(),
+                        source_before: arbitrary(),
+                        loop_events: arbitrary(),
+                        source_after_scan: arbitrary(),
+                        source: arbitrary(),
+                        child: arbitrary(),
+                        storage: arbitrary(),
+                        child_image: arbitrary(),
+                        child_reader: arbitrary(),
+                    },
+                };
+                assert(event_lane(frames, event, action_arm(witness)));
+                assert(dispatcher::integrated_kind_guard(product, witness));
+            }
+        },
+        _ => {},
+    }
+    assert forall|action: dispatcher::IntegratedAction|
+        event_lane(frames, event, action_arm(action))
+        implies #[trigger] dispatcher::integrated_kind_guard(product, action) by {}
+}
+
+pub proof fn lemma_coverage_of_message_complete(
+    state: dispatcher::IntegratedState, event: observable::ObservableEvent,
+)
+    requires
+        dispatcher::integrated_wf(state),
+        observable::observable_next(project(state), event) is Some,
+        event is MessageComplete,
+    ensures integrated_lane_exists(state, event),
+{
+    let product = state_product(state);
+    let frames = state_frames(state);
+    let projected = project_frames(frames);
+    let score_len = state_score_len(state);
+    assert(state is Active);
+    assert(observable::observable_core_next(project(state), event) is Some);
+    assert(frames.len() > 0);
+    let top = frames.len() - 1;
+    lemma_project_frame_reads(frames, top);
+    let top_kind = frames[top].frame_kind;
+    assert(projected.last().kind == top_kind);
+    match event {
+        observable::ObservableEvent::MessageComplete { record, after, .. } => {
+            assert(observable::observable_complete_next(
+                projected, score_len, true, record, after.score_len,
+            ) is Some);
+            assert(top_kind == 1);
+            if frames.len() == 1 {
+                assert(record is Root);
+                let witness = dispatcher::IntegratedAction::Live {
+                    live_action: LiveRuntimeProductAction::RootComplete { returned: arbitrary() },
+                    route: dispatcher::IntegratedPushRoute::Plain,
+                };
+                assert(event_lane(frames, event, action_arm(witness)));
+                assert(dispatcher::integrated_kind_guard(product, witness));
+            } else {
+                let parent = frames.len() - 2;
+                lemma_project_frame_reads(frames, parent);
+                let parent_kind = frames[parent].frame_kind;
+                assert(projected[parent].kind == parent_kind);
+                assert(projected[parent].waiting is Some);
+                match record {
+                    observable::ObservableAcceptRecord::Root => {
+                        assert(false);
+                    },
+                    observable::ObservableAcceptRecord::MessageSlot { .. } => {
+                        let witness = dispatcher::IntegratedAction::Live {
+                            live_action: LiveRuntimeProductAction::MessageChildComplete,
+                            route: dispatcher::IntegratedPushRoute::Plain,
+                        };
+                        assert(event_lane(frames, event, action_arm(witness)));
+                        assert(dispatcher::integrated_kind_guard(product, witness));
+                    },
+                    observable::ObservableAcceptRecord::MapValue => {
+                        let witness = dispatcher::IntegratedAction::Live {
+                            live_action: LiveRuntimeProductAction::MapValueAccept,
+                            route: dispatcher::IntegratedPushRoute::Plain,
+                        };
+                        assert(event_lane(frames, event, action_arm(witness)));
+                        assert(dispatcher::integrated_kind_guard(product, witness));
+                    },
+                    observable::ObservableAcceptRecord::Reduced => {
+                        assert(parent_kind == 3 || parent_kind == 4);
+                        if parent_kind == 3 {
+                            let witness = dispatcher::IntegratedAction::EpmRawParReturn;
+                            assert(event_lane(frames, event, action_arm(witness)));
+                            assert(dispatcher::integrated_kind_guard(product, witness));
+                        } else {
+                            let witness = dispatcher::IntegratedAction::CanonicalPath {
+                                driver_before: arbitrary(),
+                                driver_action:
+                                    path_driver::CanonicalPathDriverSourceAction::ChildReturn {
+                                        storage_observed: arbitrary(),
+                                        source_before_accept: arbitrary(),
+                                        source_after_accept: arbitrary(),
+                                        observed: arbitrary(),
+                                    },
+                            };
+                            assert(event_lane(frames, event, action_arm(witness)));
+                            assert(dispatcher::integrated_kind_guard(product, witness));
+                        }
+                    },
+                }
+            }
+        },
+        _ => {},
+    }
+    assert forall|action: dispatcher::IntegratedAction|
+        event_lane(frames, event, action_arm(action))
+        implies #[trigger] dispatcher::integrated_kind_guard(product, action) by {}
+}
+
+pub proof fn lemma_coverage_of_other_complete(
+    state: dispatcher::IntegratedState, event: observable::ObservableEvent,
+)
+    requires
+        dispatcher::integrated_wf(state),
+        observable::observable_next(project(state), event) is Some,
+        canonical_path_top_is_root(state),
+        event is OtherComplete,
+    ensures integrated_lane_exists(state, event),
+{
+    let product = state_product(state);
+    let frames = state_frames(state);
+    let projected = project_frames(frames);
+    let score_len = state_score_len(state);
+    assert(state is Active);
+    assert(observable::observable_core_next(project(state), event) is Some);
+    assert(frames.len() > 0);
+    let top = frames.len() - 1;
+    lemma_project_frame_reads(frames, top);
+    let top_kind = frames[top].frame_kind;
+    assert(projected.last().kind == top_kind);
+    match event {
+        observable::ObservableEvent::OtherComplete { record, after, .. } => {
+            assert(observable::observable_complete_next(
+                projected, score_len, false, record, after.score_len,
+            ) is Some);
+            assert(top_kind == 2 || top_kind == 3 || top_kind == 4);
+            if frames.len() == 1 {
+                assert(record is Root);
+                assert(top_kind == 4);
+                let witness = dispatcher::IntegratedAction::CanonicalPath {
+                    driver_before: arbitrary(),
+                    driver_action: path_driver::CanonicalPathDriverSourceAction::RootComplete {
+                        storage_observed: arbitrary(),
+                        source_before: arbitrary(),
+                        loop_events: arbitrary(),
+                        source_after_scan: arbitrary(),
+                        observed: arbitrary(),
+                    },
+                };
+                assert(event_lane(frames, event, action_arm(witness)));
+                assert(dispatcher::integrated_kind_guard(product, witness));
+            } else {
+                let parent = frames.len() - 2;
+                lemma_project_frame_reads(frames, parent);
+                let parent_kind = frames[parent].frame_kind;
+                assert(projected[parent].kind == parent_kind);
+                assert(projected[parent].waiting is Some);
+                assert(top_kind != 4);
+                match record {
+                    observable::ObservableAcceptRecord::Root => {
+                        assert(false);
+                    },
+                    observable::ObservableAcceptRecord::MessageSlot { .. } => {
+                        if top_kind == 2 {
+                            let witness = dispatcher::IntegratedAction::Live {
+                                live_action: LiveRuntimeProductAction::MapEntryFinish,
+                                route: dispatcher::IntegratedPushRoute::Plain,
+                            };
+                            assert(event_lane(frames, event, action_arm(witness)));
+                            assert(dispatcher::integrated_kind_guard(product, witness));
+                        } else {
+                            let witness = dispatcher::IntegratedAction::Live {
+                                live_action: LiveRuntimeProductAction::EpmFinishAccept,
+                                route: dispatcher::IntegratedPushRoute::Plain,
+                            };
+                            assert(event_lane(frames, event, action_arm(witness)));
+                            assert(dispatcher::integrated_kind_guard(product, witness));
+                        }
+                    },
+                    observable::ObservableAcceptRecord::MapValue => {
+                        assert(false);
+                    },
+                    observable::ObservableAcceptRecord::Reduced => {
+                        assert(parent_kind == 3 || parent_kind == 4);
+                        if parent_kind == 3 {
+                            if top_kind == 2 {
+                                let map_state = product.source.product.map;
+                                assert(map_state.admission.frames == frames);
+                                assert(map_state.map_frames[top] is Some);
+                                assert(frames[parent].waiting_slot == Some(3usize));
+                                assert(admission::admission_frame_wf(frames[parent]));
+                                assert(false);
+                            }
+                            let witness = dispatcher::IntegratedAction::EpmNestedReturn;
+                            assert(event_lane(frames, event, action_arm(witness)));
+                            assert(dispatcher::integrated_kind_guard(product, witness));
+                        } else {
+                            let witness = dispatcher::IntegratedAction::CanonicalPath {
+                                driver_before: arbitrary(),
+                                driver_action:
+                                    path_driver::CanonicalPathDriverSourceAction::ChildReturn {
+                                        storage_observed: arbitrary(),
+                                        source_before_accept: arbitrary(),
+                                        source_after_accept: arbitrary(),
+                                        observed: arbitrary(),
+                                    },
+                            };
+                            assert(event_lane(frames, event, action_arm(witness)));
+                            assert(dispatcher::integrated_kind_guard(product, witness));
+                        }
+                    },
+                }
+            }
+        },
+        _ => {},
+    }
+    assert forall|action: dispatcher::IntegratedAction|
+        event_lane(frames, event, action_arm(action))
+        implies #[trigger] dispatcher::integrated_kind_guard(product, action) by {}
+}
+
+pub proof fn lemma_structural_coverage(
+    state: dispatcher::IntegratedState, event: observable::ObservableEvent,
+)
+    requires
+        dispatcher::integrated_wf(state),
+        observable::observable_next(project(state), event) is Some,
+        canonical_path_top_is_root(state),
+    ensures integrated_lane_exists(state, event),
+{
+    if event is MessageContinue || event is OtherContinue {
+        lemma_coverage_of_continue(state, event);
+    } else if event is MessagePush || event is OtherPush {
+        lemma_coverage_of_push(state, event);
+    } else if event is MessageComplete {
+        lemma_coverage_of_message_complete(state, event);
+    } else {
+        lemma_coverage_of_other_complete(state, event);
+    }
+}
+
+pub proof fn lemma_coverage_names_obligation_returns(
+    state: dispatcher::IntegratedState, event: observable::ObservableEvent,
+)
+    requires
+        dispatcher::integrated_wf(state),
+        observable::observable_next(project(state), event) is Some,
+        canonical_path_top_is_root(state),
+    ensures
+        raw_par_return_event(state_frames(state), event) ==> {
+            &&& event_lane(state_frames(state), event, IntegratedArm::EpmRawParReturn)
+            &&& dispatcher::integrated_kind_guard(
+                state_product(state), dispatcher::IntegratedAction::EpmRawParReturn,
+            )
+        },
+        nested_return_event(state_frames(state), event) ==> {
+            &&& event_lane(state_frames(state), event, IntegratedArm::EpmNestedReturn)
+            &&& dispatcher::integrated_kind_guard(
+                state_product(state), dispatcher::IntegratedAction::EpmNestedReturn,
+            )
+        },
+{
+    let product = state_product(state);
+    let frames = state_frames(state);
+    lemma_structural_coverage(state, event);
+    if raw_par_return_event(frames, event) {
+        let returning = dispatcher::IntegratedAction::EpmRawParReturn;
+        assert(event_lane(frames, event, action_arm(returning)));
+        assert(dispatcher::integrated_kind_guard(product, returning));
+    }
+    if nested_return_event(frames, event) {
+        let returning = dispatcher::IntegratedAction::EpmNestedReturn;
+        assert(event_lane(frames, event, action_arm(returning)));
+        assert(dispatcher::integrated_kind_guard(product, returning));
+    }
+}
+
 }
