@@ -9,10 +9,13 @@ use crate::{
     admission_observable_spec as observable, rpb3_admission_cursor as admission,
     rpb3_canonical_path_driver_product_integration as path_driver,
     rpb3_epathmap_event_refinement as epm, rpb3_epm_live_handoff as handoff,
-    rpb3_epm_unwind_event_lift as unwind, rpb3_epm_unwind_product_lift as unwind_product,
-    rpb3_integrated_dispatcher as dispatcher, rpb3_map_frame_refinement as map,
-    rpb3_score_admission_bridge as score_bridge, rpb3_wire_cursor_source_refinement as wire_source,
-    LiveRuntimeProductAction, LiveRuntimeProductState,
+    rpb3_epm_push_live_action_refinement as epm_push_live,
+    rpb3_epm_push_source_action_refinement as epm_push_source,
+    rpb3_epm_source_accept_refinement as epm_accept, rpb3_epm_unwind_event_lift as unwind,
+    rpb3_epm_unwind_product_lift as unwind_product, rpb3_integrated_dispatcher as dispatcher,
+    rpb3_map_frame_refinement as map, rpb3_score_admission_bridge as score_bridge,
+    rpb3_wire_cursor_source_refinement as wire_source, LiveRuntimeProductAction,
+    LiveRuntimeProductState,
 };
 
 verus! {
@@ -3382,6 +3385,342 @@ pub proof fn lemma_map_entry_finish_extract(
 {
     hide(dispatcher::integrated_step);
     lemma_map_entry_finish_frames(before, after, action);
+}
+
+pub proof fn lemma_epm_push_product_frames(
+    old: crate::ProductScoreState, new: crate::ProductScoreState, event: epm::EpmEvent,
+    request: epm::ChildRequest, child: admission::AdmissionFrameState,
+)
+    requires
+        crate::product_source_step(
+            old, new,
+            crate::ProductSourceAction::EpmPush {
+                event, action: epm::EpmAction::Push(request), child,
+            },
+        ),
+    ensures
+        ({
+            let old_frames = old.bridge.admission.frames;
+            let new_frames = new.bridge.admission.frames;
+            let epm_top = old_frames.last();
+            let epm_parent = new_frames[old_frames.len() - 1];
+            let pushed_child = new_frames.last();
+            &&& new.bridge.transcript == old.bridge.transcript
+            &&& old_frames.len() > 0
+            &&& new_frames.len() == old_frames.len() + 1
+            &&& lower_frames_kept(old_frames, new_frames, old_frames.len() - 1)
+            &&& epm_top.frame_kind == 3
+            &&& epm_parent.frame_kind == epm_top.frame_kind
+            &&& epm_parent.region_end == epm_top.region_end
+            &&& (pushed_child.frame_kind == 1 || pushed_child.frame_kind == 3)
+            &&& pushed_child.cursor == 0
+            &&& pushed_child.last_slot is None
+            &&& pushed_child.returns.len() == 0
+        }),
+{
+    let action = epm::EpmAction::Push(request);
+    let prior = crate::product_linked_top(old).unwrap();
+    let next = crate::product_linked_parent(new).unwrap();
+    assert(crate::product_epm_push_step(old, new, event, action, child));
+    assert(epm::linked_epm_push(prior, next, event, action, child));
+    let frames = old.bridge.admission.frames;
+    let return_id = epm::request_return_id(request);
+    let waiting_parent = epm::epm_parent_waiting(
+        epm::epm_advanced_admission_cursor(frames.last(), next.epm.cursor.value_table_offset),
+        return_id, epm::request_frame_kind(request),
+    );
+    assert(new.bridge.admission.frames == frames.update(frames.len() - 1, waiting_parent)
+        .push(epm::epm_assigned_child(child, return_id)));
+}
+
+pub proof fn lemma_epm_push_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveEpmPush,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let epm_top = before_frames.last();
+            let epm_parent = after_frames[before_frames.len() - 1];
+            let pushed_child = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len() + 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& epm_top.frame_kind == 3
+            &&& epm_parent.frame_kind == epm_top.frame_kind
+            &&& epm_parent.region_end == epm_top.region_end
+            &&& (pushed_child.frame_kind == 1 || pushed_child.frame_kind == 3)
+            &&& pushed_child.cursor == 0
+            &&& pushed_child.last_slot is None
+            &&& pushed_child.returns.len() == 0
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::EpmPush { observed }, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            let prior = crate::product_linked_top(product.source.product).unwrap();
+            let request = epm_push_source::epm_push_source_request(prior, observed.push).unwrap();
+            assert(before is Active && after is Active
+                && crate::product_source_step(
+                    product.source.product, next.source.product,
+                    crate::ProductSourceAction::EpmPush {
+                        event: observed.push.terminal_event,
+                        action: epm::EpmAction::Push(request),
+                        child: observed.push.child,
+                    },
+                )) by {
+                reveal(dispatcher::integrated_step);
+                epm_push_live::epm_push_live_action_is_checked(product, observed);
+            }
+            lemma_epm_push_product_frames(
+                product.source.product, next.source.product, observed.push.terminal_event,
+                request, observed.push.child,
+            );
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_epm_push_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveEpmPush,
+    ensures
+        push_core_step(before, after),
+        state_frames(before).last().frame_kind == 3,
+{
+    hide(dispatcher::integrated_step);
+    lemma_epm_push_frames(before, after, action);
+}
+
+pub proof fn lemma_epm_finish_accept_product_frames(
+    old: crate::ProductScoreState, new: crate::ProductScoreState,
+)
+    requires
+        crate::product_epm_finish_accept_step(old, new),
+    ensures
+        ({
+            let old_frames = old.bridge.admission.frames;
+            let new_frames = new.bridge.admission.frames;
+            let epm_child = old_frames.last();
+            let snapshot_parent = old_frames[old_frames.len() - 2];
+            let resumed_parent = new_frames.last();
+            &&& new.bridge.transcript == old.bridge.transcript
+            &&& old_frames.len() >= 2
+            &&& new_frames.len() == old_frames.len() - 1
+            &&& lower_frames_kept(old_frames, new_frames, old_frames.len() - 2)
+            &&& epm_child.frame_kind == 3
+            &&& snapshot_parent.frame_kind == 1
+            &&& resumed_parent.frame_kind == snapshot_parent.frame_kind
+            &&& resumed_parent.region_end == snapshot_parent.region_end
+            &&& resumed_parent.cursor == snapshot_parent.cursor
+            &&& resumed_parent.slot_count == snapshot_parent.slot_count
+            &&& resumed_parent.last_slot == snapshot_parent.last_slot
+            &&& resumed_parent.returns.len() == snapshot_parent.returns.len() + 1
+            &&& resumed_parent.returns.drop_last() == snapshot_parent.returns
+            &&& snapshot_parent.waiting_slot == Some(resumed_parent.returns.last().slot)
+            &&& resumed_parent.returns.last().body_bytes.len() == epm_child.region_end as nat
+        }),
+{
+    let prior = crate::product_linked_top(old).unwrap();
+    let accepted = epm_accept::epm_source_finish_accept(prior).unwrap();
+    assert(new.bridge.admission == accepted);
+    let state = old.bridge.admission;
+    let child = state.frames.last();
+    let base = admission::admission_complete_child_step(
+        state, child.return_id.unwrap(), 3, admission::AdmissionReturnedKind::Other,
+    ).unwrap();
+    assert(admission::admission_frame_wf(child));
+    assert(child.source_bytes.len() == child.region_end as int);
+    let waiting = state.frames[state.frames.len() - 2];
+    let completed = base.frames.last();
+    let resumed = accepted.frames.last();
+    assert(completed.returns.drop_last() =~= waiting.returns);
+    assert(resumed.returns.drop_last() =~= completed.returns.drop_last());
+}
+
+pub proof fn lemma_epm_finish_accept_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveEpmFinishAccept,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let epm_child = before_frames.last();
+            let snapshot_parent = before_frames[before_frames.len() - 2];
+            let resumed_parent = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() >= 2
+            &&& after_frames.len() == before_frames.len() - 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 2)
+            &&& epm_child.frame_kind == 3
+            &&& snapshot_parent.frame_kind == 1
+            &&& resumed_parent.frame_kind == snapshot_parent.frame_kind
+            &&& resumed_parent.region_end == snapshot_parent.region_end
+            &&& resumed_parent.cursor == snapshot_parent.cursor
+            &&& resumed_parent.slot_count == snapshot_parent.slot_count
+            &&& resumed_parent.last_slot == snapshot_parent.last_slot
+            &&& resumed_parent.returns.len() == snapshot_parent.returns.len() + 1
+            &&& resumed_parent.returns.drop_last() == snapshot_parent.returns
+            &&& snapshot_parent.waiting_slot == Some(resumed_parent.returns.last().slot)
+            &&& resumed_parent.returns.last().body_bytes.len() == epm_child.region_end as nat
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::EpmFinishAccept, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && crate::product_epm_finish_accept_step(
+                    product.source.product, next.source.product,
+                )) by {
+                reveal(dispatcher::integrated_step);
+            }
+            lemma_epm_finish_accept_product_frames(product.source.product, next.source.product);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_epm_finish_accept_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveEpmFinishAccept,
+    ensures
+        accept_step(before, after),
+        state_frames(before).last().frame_kind == 3,
+        state_frames(before)[state_frames(before).len() - 2].frame_kind == 1,
+{
+    hide(dispatcher::integrated_step);
+    lemma_epm_finish_accept_frames(before, after, action);
+}
+
+pub proof fn lemma_epm_map_value_accept_product_frames(
+    old: crate::ProductScoreState, new: crate::ProductScoreState,
+    summary: epm::ChildSummary, admission_summary: admission::AdmissionReturnedKind,
+)
+    requires
+        crate::product_epm_child_return_step(old, new, summary, admission_summary, None),
+    ensures
+        ({
+            let old_frames = old.bridge.admission.frames;
+            let new_frames = new.bridge.admission.frames;
+            let value_entry = old_frames.last();
+            let epm_parent = old_frames[old_frames.len() - 2];
+            let resumed_epm = new_frames.last();
+            &&& new.bridge.transcript == old.bridge.transcript
+            &&& old_frames.len() >= 2
+            &&& new_frames.len() == old_frames.len() - 1
+            &&& lower_frames_kept(old_frames, new_frames, old_frames.len() - 2)
+            &&& value_entry.frame_kind == 1
+            &&& epm_parent.frame_kind == 3
+            &&& value_entry.cursor == value_entry.region_end
+            &&& resumed_epm.frame_kind == epm_parent.frame_kind
+            &&& resumed_epm.region_end == epm_parent.region_end
+        }),
+{
+    let prior = crate::product_linked_parent(old).unwrap();
+    let next = crate::product_linked_top(new).unwrap();
+    assert(epm::linked_epm_child_return(
+        prior, next, summary, admission_summary, old.epm_frames.last(), None,
+    ));
+    let frames = old.bridge.admission.frames;
+    assert(new.bridge.admission.frames == frames.subrange(0, frames.len() - 1).update(
+        frames.len() - 2, epm::epm_parent_resolved(frames[frames.len() - 2]),
+    ));
+}
+
+pub proof fn lemma_epm_map_value_accept_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveEpmMapValueAccept,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let value_entry = before_frames.last();
+            let epm_parent = before_frames[before_frames.len() - 2];
+            let resumed_epm = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() >= 2
+            &&& after_frames.len() == before_frames.len() - 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 2)
+            &&& value_entry.frame_kind == 1
+            &&& epm_parent.frame_kind == 3
+            &&& value_entry.cursor == value_entry.region_end
+            &&& resumed_epm.frame_kind == epm_parent.frame_kind
+            &&& resumed_epm.region_end == epm_parent.region_end
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::EpmMapValueAccept {
+                summary, admission_summary,
+            }, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && crate::product_epm_child_return_step(
+                    product.source.product, next.source.product, summary, admission_summary,
+                    None,
+                )) by {
+                reveal(dispatcher::integrated_step);
+            }
+            lemma_epm_map_value_accept_product_frames(
+                product.source.product, next.source.product, summary, admission_summary,
+            );
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_epm_map_value_accept_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveEpmMapValueAccept,
+    ensures
+        accept_step(before, after),
+        state_frames(before).last().frame_kind == 1,
+        state_frames(before)[state_frames(before).len() - 2].frame_kind == 3,
+{
+    hide(dispatcher::integrated_step);
+    lemma_epm_map_value_accept_frames(before, after, action);
 }
 
 pub proof fn lemma_accept_shape_refines(
