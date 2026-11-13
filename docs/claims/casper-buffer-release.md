@@ -41,7 +41,7 @@ TASK-021-18 (stall-loop item A7) extends the claim with C5 and C6. A code readin
 
 ## Definitions
 
-- **Validated:** a block hash is in the block DAG, in the equivocation tracker, or in the invalid-block set.
+- **Validated:** a block hash is in the block DAG or in the invalid-block set.
 - **Ready:** every dependency of a buffered block is validated.
 - **Released:** a ready block is given to the processing pipeline.
 - **Stale link:** a buffer relation from a block to a dependency that is already validated.
@@ -67,7 +67,7 @@ TASK-021-18 (stall-loop item A7) extends the claim with C5 and C6. A code readin
 ## Seam premises (documented, not proven)
 
 - **Dependency closure.** A block is processed only after all its dependencies are validated. C4 depends on this premise: validation of a block reads only the block and its validated dependencies.
-- **Equivocation and invalid sets.** A dependency in the equivocation tracker or the invalid-block set counts as validated for release. The rules that put a hash into those sets are outside this claim.
+- **Invalid set.** A dependency in the invalid-block set counts as validated for release. The rules that put a hash into that set are outside this claim.
 - **Bounded buffer.** The buffer keeps its existing size limits and its stale prune as a safety net. C1 and C2 make the stale prune unnecessary for correct release, but this claim does not remove it.
 
 ## Discharge plan

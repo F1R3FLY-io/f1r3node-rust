@@ -1465,7 +1465,7 @@
           "tests": [
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "request_without_display_preserves_legacy_fields_and_ignores_tracker_rows"
+              "name": "request_without_display_preserves_legacy_fields"
             },
             {
               "source": "casper/tests/soak_observer.rs",
@@ -1485,7 +1485,7 @@
           "tests": [
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "display_admission_rejects_null_duplicates_and_invalid_limits"
+              "name": "display_admission_rejects_null_duplicates_and_unknown_fields"
             },
             {
               "source": "node/tests/soak_observer.rs",
@@ -1505,11 +1505,11 @@
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "tracker_rows_are_captured_in_the_dag_transaction"
+              "name": "capture_copies_the_held_dag_with_ordered_parents_and_availability_states"
             },
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "display_refuses_tracker_inputs_from_a_different_capture_interval"
+              "name": "display_bits_use_shared_arithmetic_and_record_multiplicity_without_live_calls"
             }
           ],
           "theorems": [
@@ -1525,15 +1525,11 @@
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "malformed_tracker_rows_and_oversized_values_refuse_the_capture"
+              "name": "metadata_collections_are_bounded_before_typed_decoding"
             },
             {
               "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "tracker_parser_refuses_invalid_keys_hash_order_and_hash_count_before_copy"
-            },
-            {
-              "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "tracker_row_limits_and_invalid_admission_refuse_capture"
+              "name": "malformed_nested_metadata_lengths_and_trailing_bytes_are_rejected"
             }
           ],
           "theorems": [],
@@ -1549,7 +1545,11 @@
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "tracker_write_between_open_and_validation_rejects_the_capture"
+              "name": "finalization_row_write_without_generation_change_is_rejected"
+            },
+            {
+              "source": "block-storage/tests/soak_snapshot.rs",
+              "name": "cache_row_write_without_global_lock_is_rejected"
             }
           ],
           "theorems": [
@@ -1565,15 +1565,11 @@
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "tracker_rows_are_captured_in_the_dag_transaction"
+              "name": "production_store_bytes_are_unchanged_by_successful_and_rejected_captures"
             },
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "display_bits_use_shared_arithmetic_and_record_multiplicity_without_live_calls"
-            },
-            {
-              "source": "casper/tests/soak_observer.rs",
-              "name": "display_checked_sums_refuse_total_and_record_multiplicity_overflow"
+              "name": "display_digest_changes_with_held_equivocations_without_store_writes"
             }
           ],
           "theorems": [
@@ -1586,24 +1582,11 @@
           "property": 7,
           "invariants": [],
           "coverage": "source-bound-tests-and-bounded-models-not-refinement",
-          "tests": [
-            {
-              "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "equivocation_digest_is_order_independent_and_binds_each_field"
-            },
-            {
-              "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "equivocation_digest_binds_validator_sequence_hashes_count_and_generation"
-            },
-            {
-              "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "tracker_rows_are_captured_in_the_dag_transaction"
-            }
-          ],
+          "tests": [],
           "theorems": [],
           "harnesses": [],
           "gaps": [
-            "No tracker wire construction proof."
+            "Withdrawn: the equivocation inputs are captured block metadata and have no encoding separate from the snapshot."
           ]
         },
         {
@@ -1615,11 +1598,11 @@
           "tests": [
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "display_digest_changes_with_tracker_inputs_without_store_writes"
+              "name": "display_digest_changes_with_held_equivocations_without_store_writes"
             },
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "display_response_binds_separate_values_and_contains_no_tracker_rows"
+              "name": "display_response_binds_separate_values"
             }
           ],
           "theorems": [
@@ -1685,11 +1668,7 @@
             },
             {
               "source": "casper/src/rust/safety/initial_fault.rs",
-              "name": "helpers_match_frozen_handoff_arithmetic_on_boundary_inputs"
-            },
-            {
-              "source": "casper/src/rust/safety/initial_fault.rs",
-              "name": "shared_arithmetic_preserves_record_multiplicity_and_display_bits"
+              "name": "initial_fault_preserves_duplicate_record_weights"
             }
           ],
           "theorems": [
@@ -1706,18 +1685,15 @@
           "property": 12,
           "invariants": [],
           "coverage": "source-bound-tests-and-bounded-models-not-refinement",
-          "tests": [
-            {
-              "source": "casper/tests/soak_observer.rs",
-              "name": "display_checked_sums_refuse_total_and_record_multiplicity_overflow"
-            }
-          ],
+          "tests": [],
           "theorems": [
             "display_weight_sum_checked",
             "display_overflow_refuses"
           ],
           "harnesses": [],
-          "gaps": []
+          "gaps": [
+            "Withdrawn: weights are arbitrary-precision integers, so the weight sum has no range to refuse."
+          ]
         },
         {
           "property": 13,
@@ -1732,11 +1708,7 @@
             },
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "display_checked_sums_refuse_total_and_record_multiplicity_overflow"
-            },
-            {
-              "source": "casper/tests/soak_observer.rs",
-              "name": "display_refuses_tracker_inputs_from_a_different_capture_interval"
+              "name": "display_typed_missing_history_uses_minimum_without_a_fabricated_original"
             }
           ],
           "theorems": [
@@ -1754,7 +1726,7 @@
           "tests": [
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "display_response_binds_separate_values_and_contains_no_tracker_rows"
+              "name": "display_response_binds_separate_values"
             },
             {
               "source": "casper/tests/soak_observer.rs",
@@ -1774,18 +1746,16 @@
           "tests": [
             {
               "source": "block-storage/tests/soak_snapshot.rs",
-              "name": "tracker_rows_are_captured_in_the_dag_transaction"
+              "name": "capture_copies_the_held_dag_with_ordered_parents_and_availability_states"
             },
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "request_without_display_preserves_legacy_fields_and_ignores_tracker_rows"
+              "name": "request_without_display_preserves_legacy_fields"
             }
           ],
           "theorems": [],
           "harnesses": [],
-          "gaps": [
-            "No tracker wire construction proof."
-          ]
+          "gaps": []
         },
         {
           "property": 16,
@@ -1794,15 +1764,11 @@
           "tests": [
             {
               "source": "casper/src/rust/safety/initial_fault.rs",
-              "name": "helpers_match_frozen_handoff_arithmetic_on_boundary_inputs"
+              "name": "initial_fault_preserves_duplicate_record_weights"
             },
             {
               "source": "casper/src/rust/safety/initial_fault.rs",
-              "name": "ordinary_sum_overflow_matches_the_compiler_profile"
-            },
-            {
-              "source": "casper/src/rust/safety/initial_fault.rs",
-              "name": "shared_arithmetic_preserves_record_multiplicity_and_display_bits"
+              "name": "initial_fault_is_scale_invariant_above_float_and_integer_ranges"
             }
           ],
           "theorems": [],
@@ -1826,7 +1792,7 @@
             },
             {
               "source": "casper/tests/soak_observer.rs",
-              "name": "display_response_binds_separate_values_and_contains_no_tracker_rows"
+              "name": "display_response_binds_separate_values"
             }
           ],
           "theorems": [],
