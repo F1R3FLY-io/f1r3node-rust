@@ -10,7 +10,9 @@ use crate::{
     rpb3_canonical_path_driver_product_integration as path_driver,
     rpb3_epathmap_event_refinement as epm, rpb3_epm_live_handoff as handoff,
     rpb3_epm_unwind_event_lift as unwind, rpb3_epm_unwind_product_lift as unwind_product,
-    rpb3_integrated_dispatcher as dispatcher, LiveRuntimeProductAction, LiveRuntimeProductState,
+    rpb3_integrated_dispatcher as dispatcher, rpb3_map_frame_refinement as map,
+    rpb3_wire_cursor_source_refinement as wire_source, LiveRuntimeProductAction,
+    LiveRuntimeProductState,
 };
 
 verus! {
@@ -2279,6 +2281,175 @@ pub proof fn lemma_internal_step_preserves_projection(
     assert(before is Active) by {
         reveal(dispatcher::integrated_step);
     }
+}
+
+pub proof fn lemma_message_continue_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveContinue,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let top = before_frames.last();
+            let after_top = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len()
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& top.frame_kind == 1
+            &&& after_top.frame_kind == top.frame_kind
+            &&& after_top.region_end == top.region_end
+            &&& after_top.slot_count == top.slot_count
+            &&& after_top.returns == top.returns
+            &&& top.cursor < after_top.cursor
+            &&& after_top.cursor <= top.region_end
+            &&& after_top.last_slot is Some
+            &&& after_top.last_slot.unwrap() < top.slot_count
+            &&& slot_order_kept(top.last_slot, after_top.last_slot.unwrap())
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::Continue, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && crate::live_runtime_product_continue_step(product, next)) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            assert(crate::live_source_product_continue_step(product.source, next.source));
+            let field = wire_source::wire_source_next_field(
+                product.source.wire.last().unwrap(),
+            )->field;
+            let message = admission::ConcreteFrameActionModel::Continue { field };
+            assert(crate::product_map_step(
+                old, new, map::IntegratedAdmissionAction::Message { action: message },
+            ));
+            assert(admission::concrete_message_driver_step(old.map.admission, message)
+                == Some(admission::ConcreteFrameOutcomeModel::Continued {
+                    state: new.bridge.admission,
+                }));
+            assert(new.bridge.transcript == old.bridge.transcript);
+            let view = admission::concrete_message_view(old.map.admission).unwrap();
+            let continued = admission::concrete_message_continue(view, field).unwrap();
+            assert(new.bridge.admission == continued.projection);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_message_continue_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveContinue,
+    ensures
+        field_step(before, after),
+        state_frames(before).last().frame_kind == 1,
+{
+    hide(dispatcher::integrated_step);
+    lemma_message_continue_frames(before, after, action);
+}
+
+pub proof fn lemma_message_continue_indexed_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveContinueIndexed,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let top = before_frames.last();
+            let after_top = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len()
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& top.frame_kind == 1
+            &&& after_top.frame_kind == top.frame_kind
+            &&& after_top.region_end == top.region_end
+            &&& after_top.slot_count == top.slot_count
+            &&& after_top.returns == top.returns
+            &&& top.cursor < after_top.cursor
+            &&& after_top.cursor <= top.region_end
+            &&& after_top.last_slot is Some
+            &&& after_top.last_slot.unwrap() < top.slot_count
+            &&& slot_order_kept(top.last_slot, after_top.last_slot.unwrap())
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::ContinueIndexed, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && crate::live_runtime_product_continue_indexed_step(product, next)) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            assert(crate::live_source_product_continue_indexed_step(product.source, next.source));
+            let field = wire_source::wire_source_next_field(
+                product.source.wire.last().unwrap(),
+            )->field;
+            let parent_source = crate::product_admission_source_image(old.indexed_regions.last());
+            let message = admission::ConcreteFrameActionModel::ContinueIndexed {
+                field, parent_source,
+            };
+            assert(crate::product_map_step(
+                old, new, map::IntegratedAdmissionAction::Message { action: message },
+            ));
+            assert(admission::concrete_message_driver_step(old.map.admission, message)
+                == Some(admission::ConcreteFrameOutcomeModel::Continued {
+                    state: new.bridge.admission,
+                }));
+            assert(new.bridge.transcript == old.bridge.transcript);
+            let view = admission::concrete_message_view(old.map.admission).unwrap();
+            let continued = admission::concrete_message_continue_indexed(
+                view, field, parent_source,
+            ).unwrap();
+            assert(new.bridge.admission == continued.projection);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_message_continue_indexed_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveContinueIndexed,
+    ensures
+        field_step(before, after),
+        state_frames(before).last().frame_kind == 1,
+{
+    hide(dispatcher::integrated_step);
+    lemma_message_continue_indexed_frames(before, after, action);
 }
 
 pub proof fn lemma_accept_shape_refines(
