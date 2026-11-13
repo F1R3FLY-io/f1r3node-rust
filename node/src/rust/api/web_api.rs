@@ -515,8 +515,12 @@ impl WebApi for WebApiImpl {
         let names = if let Some(req) = request {
             let deployer_bytes = hex::decode(&req.deployer)
                 .map_err(|e| eyre!("Deployer is not valid hex format: {}", e))?;
-            let name_bytes =
-                BlockAPI::preview_private_names(&deployer_bytes, req.timestamp, req.name_qty)?;
+            let name_bytes = BlockAPI::preview_private_names(
+                &deployer_bytes,
+                req.timestamp,
+                req.valid_after_block_number,
+                req.name_qty,
+            )?;
             name_bytes.into_iter().map(hex::encode).collect()
         } else {
             vec![]
@@ -1435,6 +1439,8 @@ pub struct RhoDataResponse {
 pub struct PrepareRequest {
     pub deployer: String,
     pub timestamp: i64,
+    #[serde(rename = "validAfterBlockNumber")]
+    pub valid_after_block_number: i64,
     #[serde(rename = "nameQty")]
     pub name_qty: i32,
 }

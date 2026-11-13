@@ -22,6 +22,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
     ProcessedSystemDeploy, RejectedDeploy,
 };
+use models::rust::deploy_seed::deploy_name_seed;
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
 use prost::bytes::Bytes;
@@ -1087,10 +1088,44 @@ async fn prepare_user_deploys_with_policy(
         .filter(|deploy| canonical_won.contains(&deploy.sig) || blocked_by_scope(deploy))
         .map(|deploy| (*deploy).clone())
         .collect();
-    let valid_unique: HashSet<Signed<DeployData>> = valid
+    let mut seed_reused_in_scope: Vec<Signed<DeployData>> = Vec::new();
+    let mut by_seed: HashMap<Vec<u8>, Signed<DeployData>> = HashMap::new();
+    for deploy in valid
         .into_iter()
         .filter(|deploy| !canonical_won.contains(&deploy.sig) && !blocked_by_scope(deploy))
-        .collect();
+    {
+        let seed = deploy_name_seed(&deploy);
+        let seed_used_by_another = casper_snapshot
+            .seeds_in_scope
+            .get(&seed)
+            .is_some_and(|holders| holders.iter().any(|sig| *sig != deploy.sig));
+        if seed_used_by_another {
+            seed_reused_in_scope.push(deploy);
+            continue;
+        }
+        match by_seed.entry(seed) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(deploy);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if deploy.sig < entry.get().sig {
+                    entry.insert(deploy);
+                }
+            }
+        }
+    }
+    let valid_unique: HashSet<Signed<DeployData>> = by_seed.into_values().collect();
+    for deploy in &seed_reused_in_scope {
+        quarantine_deploy(&deploy_storage, &rejected_deploy_buffer, &deploy.sig)?;
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "storage_removed",
+            deploy_sig = %hex::encode(&deploy.sig),
+            reason = "name_seed_in_scope",
+            next_block = block_number,
+            "deploy lifecycle"
+        );
+    }
 
     let already_in_scope_count = already_in_scope.len();
     for deploy in &recovered_canonical_wins {
@@ -2024,13 +2059,20 @@ fn quarantine_refund_failure_deploy(
     let Some(sig) = extract_deploy_sig_from_refund_failure(failure_msg) else {
         return Ok((false, false));
     };
+    quarantine_deploy(&deploy_storage, &rejected_deploy_buffer, &sig)
+}
 
+fn quarantine_deploy(
+    deploy_storage: &KeyValueDeployStorage,
+    rejected_deploy_buffer: &Mutex<KeyValueRejectedDeployBuffer>,
+    sig: &[u8],
+) -> Result<(bool, bool), CasperError> {
     let removed_from_deploy_storage = deploy_storage
-        .remove_by_sig(&sig)
+        .remove_by_sig(sig)
         .map_err(CasperError::from)?;
     let removed_from_rejected_buffer = rejected_deploy_buffer
         .lock()?
-        .remove_by_sig(&sig)
+        .remove_by_sig(sig)
         .map_err(CasperError::from)?;
 
     Ok((removed_from_deploy_storage, removed_from_rejected_buffer))
@@ -3414,7 +3456,7 @@ pub async fn create_with_progress(
 
     // Compute checkpoint data
     let checkpoint_started = std::time::Instant::now();
-    let ordered_user_deploys = ordered_user_deploys(&user_deploys);
+    let mut ordered_user_deploys = ordered_user_deploys(&user_deploys);
     let original_user_deploys = ordered_user_deploys.len();
     let mut user_deploy_limit = original_user_deploys;
     let mut retry_count = 0usize;
@@ -3492,19 +3534,45 @@ pub async fn create_with_progress(
                 return Ok(BlockCreatorResult::NoNewDeploys);
             }
             Err(err) if is_retryable_single_value_batch_error(&err) => {
-                let Some(next_limit) = next_checkpoint_retry_limit(&err, user_deploy_limit) else {
-                    return Err(err);
-                };
                 retry_count += 1;
-                tracing::warn!(
-                    "Checkpoint merge rejected selected deploy batch for block #{}; retrying with fewer user deploys: attempted_user_deploys={}, attempted_total_deploys={}, next_user_deploys={}, error={}",
-                    next_block_num,
-                    attempted_user_deploys,
-                    attempted_total_deploys,
-                    next_limit,
-                    err
+                if let Some(next_limit) = next_checkpoint_retry_limit(&err, user_deploy_limit) {
+                    tracing::warn!(
+                        "Checkpoint merge rejected selected deploy batch for block #{}; retrying with fewer user deploys: attempted_user_deploys={}, attempted_total_deploys={}, next_user_deploys={}, error={}",
+                        next_block_num,
+                        attempted_user_deploys,
+                        attempted_total_deploys,
+                        next_limit,
+                        err
+                    );
+                    user_deploy_limit = next_limit;
+                    continue;
+                }
+                if user_deploy_limit != 1 {
+                    return Err(err);
+                }
+                // The oldest selected deploy fails on this pre-state by itself,
+                // so no block built on it can include that deploy.
+                let unexecutable = ordered_user_deploys.remove(0);
+                let (removed_from_deploy_storage, removed_from_rejected_buffer) =
+                    quarantine_deploy(&deploy_storage, &rejected_deploy_buffer, &unexecutable.sig)?;
+                tracing::error!(
+                    target: "f1r3fly.casper.recovery",
+                    deploy_sig = %hex::encode(&unexecutable.sig),
+                    block_number = next_block_num,
+                    removed_from_deploy_storage,
+                    removed_from_rejected_buffer,
+                    error = %err,
+                    "Quarantined a deploy that fails the checkpoint on its own; building the block without it"
                 );
-                user_deploy_limit = next_limit;
+                user_deploy_limit = ordered_user_deploys.len();
+                if user_deploy_limit == 0
+                    && dummy_deploys.is_empty()
+                    && !has_slashing_deploys
+                    && !allow_empty_blocks
+                {
+                    record_empty_block_skip();
+                    return Ok(BlockCreatorResult::NoNewDeploys);
+                }
             }
             Err(err) => return Err(err),
         }

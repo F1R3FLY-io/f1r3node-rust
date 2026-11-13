@@ -15,7 +15,7 @@ use casper::rust::errors::CasperError;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use lazy_static::lazy_static;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
@@ -482,6 +482,7 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
         invalid_blocks: HashMap::new(),
         deploys_in_scope: Arc::new(DashSet::new()),
         rejected_in_scope: Arc::new(DashSet::new()),
+        seeds_in_scope: Arc::new(DashMap::new()),
         max_block_num: 0,
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {

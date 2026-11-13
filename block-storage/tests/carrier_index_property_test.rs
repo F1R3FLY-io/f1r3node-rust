@@ -38,7 +38,7 @@ proptest! {
             match operation {
                 Operation::Record { sig, height, block } => {
                     index
-                        .record_once(&[sig], i64::from(height), vec![block; 32])
+                        .record_once(&[sig], &[sig], i64::from(height), vec![block; 32])
                         .expect("record carrier");
                     carriers
                         .entry(sig)

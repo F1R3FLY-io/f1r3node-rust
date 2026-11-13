@@ -668,6 +668,80 @@ pub fn partition_base_conflicts(
         .partition(|chain| !merging_logic::are_conflicting(&chain.event_log_index, base_event_log))
 }
 
+/// The unforgeable-name seeds a merge needs to keep at most one deploy per
+/// seed: the seed of every user deploy in the scope, and, for those seeds,
+/// the deploy already carrying each one in the base's ancestry.
+#[derive(Debug, Default)]
+pub struct NameSeeds {
+    pub of_scope_deploys: HashMap<Bytes, Vec<u8>>,
+    pub held_by_base: HashMap<Vec<u8>, Bytes>,
+}
+
+impl NameSeeds {
+    fn seed_of(&self, deploy_id: &Bytes) -> Result<&Vec<u8>, CasperError> {
+        self.of_scope_deploys.get(deploy_id).ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "no name seed for scope deploy {}; the caller must supply the seed of every \
+                 user deploy in the merge scope",
+                hex::encode(&deploy_id[..8.min(deploy_id.len())])
+            ))
+        })
+    }
+
+    /// `(kept, dropped)`: a chain is dropped when it carries a deploy whose
+    /// seed another deploy keeps. The base's holder keeps its seed; otherwise
+    /// the smallest signature does, the order the proposer selects in.
+    pub fn split_reused(
+        &self,
+        chains: Vec<DeployChainIndex>,
+    ) -> Result<(Vec<DeployChainIndex>, Vec<DeployChainIndex>), CasperError> {
+        let mut keeper: HashMap<Vec<u8>, Bytes> = HashMap::new();
+        for chain in &chains {
+            for deploy in &chain.deploys_with_cost.0 {
+                if is_system_deploy_id(&deploy.deploy_id) {
+                    continue;
+                }
+                let seed = self.seed_of(&deploy.deploy_id)?;
+                let candidate = match self.held_by_base.get(seed) {
+                    Some(base_holder) => base_holder,
+                    None => &deploy.deploy_id,
+                };
+                keeper
+                    .entry(seed.clone())
+                    .and_modify(|kept| {
+                        if !self.held_by_base.contains_key(seed) && candidate < kept {
+                            *kept = candidate.clone();
+                        }
+                    })
+                    .or_insert_with(|| candidate.clone());
+            }
+        }
+        let mut kept = Vec::with_capacity(chains.len());
+        let mut dropped = Vec::new();
+        for chain in chains {
+            let mut reuses = false;
+            for deploy in &chain.deploys_with_cost.0 {
+                if is_system_deploy_id(&deploy.deploy_id) {
+                    continue;
+                }
+                let kept_for_seed = keeper
+                    .get(self.seed_of(&deploy.deploy_id)?)
+                    .expect("the first pass entered every scope deploy's seed");
+                if *kept_for_seed != deploy.deploy_id {
+                    reuses = true;
+                    break;
+                }
+            }
+            if reuses {
+                dropped.push(chain);
+            } else {
+                kept.push(chain);
+            }
+        }
+        Ok((kept, dropped))
+    }
+}
+
 /// Merge the scope onto `base`.
 ///
 /// `base` is the merging block's state parent — its main parent, or the
@@ -713,6 +787,7 @@ pub fn merge(
     // adjudication sites, so a repeatedly rejected deploy gains priority
     // instead of starving to expiry.
     prior_rejection_counts: &HashMap<Bytes, u64>,
+    name_seeds: &NameSeeds,
 ) -> Result<
     (
         Blake2b256Hash,
@@ -1002,6 +1077,25 @@ pub fn merge(
                 pre_dedup_count,
                 post_dedup_count,
                 collateral_lost_pairs.len(),
+            );
+        }
+
+        // Deploys sharing a name seed create the same unforgeable names, so
+        // keeping two would apply both to one set of private cells.
+        let (kept, reused) = name_seeds.split_reused(std::mem::take(&mut actual_set_vec))?;
+        actual_set_vec = kept;
+        for chain in &reused {
+            for deploy in chain.deploys_with_cost.0.iter() {
+                if !is_system_deploy_id(&deploy.deploy_id) {
+                    collateral_lost_pairs
+                        .push((deploy.deploy_id.clone(), chain.source_block_hash.clone()));
+                }
+            }
+        }
+        if !reused.is_empty() {
+            tracing::info!(
+                "DagMerger dedup: dropped {} chain(s) reusing another deploy's name seed",
+                reused.len(),
             );
         }
     }

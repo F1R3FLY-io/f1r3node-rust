@@ -1,10 +1,11 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/InterpreterUtil.scala
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::key_value_block_store::{DeployIdentity, KeyValueBlockStore};
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
 use models::rust::block::state_hash::StateHash;
@@ -920,6 +921,90 @@ pub async fn compute_deploys_checkpoint(
         applied_from_scope,
         merge_base,
         block_hash_leaves,
+    })
+}
+
+/// The name seeds of every user deploy in `scope`, and for each, the deploy
+/// already holding it in the base's state. Deploys sharing a seed share a
+/// valid-after block and land only above it, so the walk down the base's
+/// ancestry stops below the scope's lowest one.
+fn merge_name_seeds(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    scope: &HashSet<BlockHash>,
+    base: &BlockHash,
+    settled_in_base: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
+) -> Result<dag_merger::NameSeeds, CasperError> {
+    let identities_of = |hash: &BlockHash| -> Result<Arc<Vec<DeployIdentity>>, CasperError> {
+        block_store.deploy_identities(hash)?.ok_or_else(|| {
+            CasperError::BlockNotHeld(hash.clone(), MissingBlockContext::new("merge name seeds"))
+        })
+    };
+    let mut of_scope_deploys: HashMap<Bytes, Vec<u8>> = HashMap::new();
+    let mut lowest_valid_after: Option<i64> = None;
+    for hash in scope {
+        for identity in identities_of(hash)?.iter() {
+            lowest_valid_after = Some(
+                lowest_valid_after.map_or(identity.valid_after_block_number, |lowest| {
+                    lowest.min(identity.valid_after_block_number)
+                }),
+            );
+            of_scope_deploys.insert(identity.sig.clone().into(), identity.seed.clone());
+        }
+    }
+    let mut held_by_base: HashMap<Vec<u8>, Bytes> = HashMap::new();
+    if let Some(lowest_valid_after) = lowest_valid_after {
+        let scan_start = lowest_valid_after + 1;
+        let scan_seeds: HashSet<&Vec<u8>> = match proto_util::seeds_needing_scan(
+            dag,
+            of_scope_deploys
+                .iter()
+                .map(|(sig, seed)| (seed, sig.as_ref())),
+            scan_start,
+        )? {
+            Some(needing) => of_scope_deploys
+                .values()
+                .filter(|seed| needing.contains(*seed))
+                .collect(),
+            None => of_scope_deploys.values().collect(),
+        };
+        if !scan_seeds.is_empty() {
+            let base_metadata = dag.lookup(base)?.ok_or_else(|| {
+                CasperError::BlockNotHeld(
+                    base.clone(),
+                    MissingBlockContext::new("merge name seeds"),
+                )
+            })?;
+            proto_util::walk_blocks_in_scope(
+                dag,
+                [base_metadata],
+                scan_start,
+                proto_util::UnheldParent::Surface,
+                |hash| {
+                    for identity in identities_of(hash)?.iter() {
+                        if !scan_seeds.contains(&identity.seed) {
+                            continue;
+                        }
+                        let sig: Bytes = identity.sig.clone().into();
+                        if settled_in_base(&sig)? {
+                            held_by_base
+                                .entry(identity.seed.clone())
+                                .and_modify(|held| {
+                                    if sig < *held {
+                                        *held = sig.clone();
+                                    }
+                                })
+                                .or_insert(sig);
+                        }
+                    }
+                    Ok(false)
+                },
+            )?;
+        }
+    }
+    Ok(dag_merger::NameSeeds {
+        of_scope_deploys,
+        held_by_base,
     })
 }
 
@@ -1873,6 +1958,15 @@ pub async fn compute_parents_post_state(
                 settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);
                 result
             };
+            let name_seeds = in_blocking(|| {
+                merge_name_seeds(
+                    &s.dag,
+                    block_store,
+                    &visible_blocks,
+                    &main_parent_hash,
+                    &sig_settled_in_base,
+                )
+            })?;
             let merge_started = std::time::Instant::now();
             let merger_result = in_blocking(|| {
                 dag_merger::merge(
@@ -1892,6 +1986,7 @@ pub async fn compute_parents_post_state(
                     &sig_settled_in_floor,
                     &base_lineage_blocks,
                     &prior_rejection_counts,
+                    &name_seeds,
                 )
             })?;
             let merge_elapsed = merge_started.elapsed();

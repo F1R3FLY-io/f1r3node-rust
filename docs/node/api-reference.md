@@ -531,7 +531,7 @@ curl http://localhost:40403/api/prepare-deploy
 
 #### `POST /api/prepare-deploy`
 
-Same as GET, but additionally pre-generates unforgeable private names for a given deployer and timestamp. Equivalent to gRPC `previewPrivateNames`.
+Same as GET, but additionally pre-generates the unforgeable private names a deploy will create. A deploy's names derive from its deployer, timestamp and `validAfterBlockNumber`. Equivalent to gRPC `previewPrivateNames`.
 
 **Request body:**
 
@@ -539,12 +539,13 @@ Same as GET, but additionally pre-generates unforgeable private names for a give
 |-------|------|----------|-------------|
 | `deployer` | string | yes | Deployer public key (hex) |
 | `timestamp` | int | yes | Deploy timestamp (ms since epoch) |
+| `validAfterBlockNumber` | int | yes | The deploy's `validAfterBlockNumber` |
 | `nameQty` | int | yes | Number of unforgeable names to generate (max 1024) |
 
 ```bash
 curl -X POST http://localhost:40403/api/prepare-deploy \
   -H 'Content-Type: application/json' \
-  -d '{"deployer": "04abc...", "timestamp": 1700000000000, "nameQty": 2}'
+  -d '{"deployer": "04abc...", "timestamp": 1700000000000, "validAfterBlockNumber": 120, "nameQty": 2}'
 ```
 
 ```json
@@ -984,7 +985,7 @@ curl -X POST http://localhost:40405/api/propose
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only. No block created, no phlo consumed. Returns result `Par`s, block context, and cost. Readonly only |
 | `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Validates that the key is a 65-byte uncompressed secp256k1 point; returns error on invalid input. HTTP: `GET /api/bond-status/{pubkey}` |
-| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate unforgeable names from deployer key + timestamp. Allows clients to compute signatures over names before deploying. Max 1024 names |
+| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate unforgeable names from deployer key + timestamp + validAfterBlockNumber. Allows clients to compute signatures over names before deploying. Max 1024 names |
 | `getEventByHash` | `ReportQuery` | `EventInfoResponse` | Get full block execution trace — every COMM/produce/consume event per deploy and system deploy. Takes block hash + `forceReplay` flag. Used for debugging and auditing |
 | `visualizeDag` | `VisualizeDagQuery` | `stream VisualizeBlocksResponse` | DAG visualization in DOT format. Takes depth + startBlockNumber + showJustificationLines |
 | `machineVerifiableDag` | `MachineVerifyQuery` | `MachineVerifyResponse` | Machine-parseable DAG representation |

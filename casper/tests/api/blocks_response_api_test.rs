@@ -577,18 +577,21 @@ async fn every_api_entry_point_reports_a_missing_casper_instance() {
 fn preview_private_names_is_deterministic_and_clamped() {
     let deployer: Vec<u8> = vec![7u8; 33];
 
-    let first = BlockAPI::preview_private_names(&deployer, 42, 3).unwrap();
-    let second = BlockAPI::preview_private_names(&deployer, 42, 3).unwrap();
+    let first = BlockAPI::preview_private_names(&deployer, 42, 10, 3).unwrap();
+    let second = BlockAPI::preview_private_names(&deployer, 42, 10, 3).unwrap();
     assert_eq!(first.len(), 3);
     assert_eq!(
         first, second,
-        "the same deployer and timestamp must yield the same names"
+        "the same deployer, timestamp and valid-after block must yield the same names"
     );
 
-    let different_time = BlockAPI::preview_private_names(&deployer, 43, 3).unwrap();
+    let different_time = BlockAPI::preview_private_names(&deployer, 43, 10, 3).unwrap();
     assert_ne!(first, different_time);
 
-    assert!(BlockAPI::preview_private_names(&deployer, 42, -5)
+    let different_valid_after = BlockAPI::preview_private_names(&deployer, 42, 11, 3).unwrap();
+    assert_ne!(first, different_valid_after);
+
+    assert!(BlockAPI::preview_private_names(&deployer, 42, 10, -5)
         .unwrap()
         .is_empty());
 }
