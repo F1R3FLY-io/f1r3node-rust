@@ -202,6 +202,20 @@ where
                 };
                 let moved_past = super::moved_past_by_every_validator(&pass.dag, minimum)?;
                 let cursor = pass.retry_cursor.clone();
+                // Advance the effective-anchor atomic before any body
+                // deletion in the pass. If the atomic advances AFTER the
+                // first body is deleted, a walker that lands on the
+                // missing body during the window reads anchor=0 and
+                // `guard_deferral` promotes to BlockException — the
+                // failure PR #1010's integration tests surfaced.
+                // `fetch_max` is monotone; a crash mid-pass leaves the
+                // atomic at `pass.target` without the matching metadata
+                // eviction (the latter runs at Complete), which is the
+                // valid state "anchor advanced, pruning not yet
+                // finished".
+                if pass.conf.enable_block_store_gc && pass.target >= 0 {
+                    effective_anchor.fetch_max(pass.target, Ordering::Release);
+                }
                 sweep.phase = Phase::Delete {
                     pass,
                     moved_past,
@@ -264,16 +278,16 @@ where
                     }
                     None => {
                         sweep.pending_len = 0;
-                        // Body pruning only — the mergeable-only path leaves
-                        // bodies on disk, so walks cannot descend into a
-                        // missing body and no anchor advancement is needed.
-                        // Order: evict DAG metadata BEFORE flipping the
-                        // atomic so no walker can read metadata, then fetch
-                        // a body that is already gone, under the new
-                        // effective_anchor.
+                        // All bodies in this pass are deleted; evict DAG
+                        // metadata below the cutoff so subsequent walks
+                        // (`lookup`, `contains`) do not descend past the
+                        // anchor into blocks whose bodies are gone. The
+                        // atomic was raised at Delete entry so the race
+                        // between "body deleted, anchor still zero" is
+                        // already closed; this eviction tightens the walk
+                        // behavior to match.
                         if pass.conf.enable_block_store_gc && pass.target >= 0 {
                             storage.advance_pruning_cutoff(pass.target)?;
-                            effective_anchor.fetch_max(pass.target, Ordering::Release);
                         }
                         return Ok(GcProgress::Complete {
                             deleted,

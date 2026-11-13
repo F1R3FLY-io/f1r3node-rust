@@ -345,6 +345,18 @@ impl KeyValueDagRepresentation {
         after: Option<&[u8]>,
         limit: usize,
     ) -> Result<HistoryPage<BlockHash>, KvStoreError> {
+        // Below the pruning cutoff the metadata is evicted and `lookup`
+        // returns None; returning those hashes would surface pruned blocks
+        // to callers (e.g. `topo_sort`'s `block_number_unsafe` walk,
+        // `block_api`'s fallback deploy scan), which then fail. Clamp the
+        // scan start to the cutoff so pruned heights are quietly skipped.
+        let start = start.max(self.pruning_cutoff);
+        if start > end {
+            return Ok(HistoryPage {
+                rows: Vec::new(),
+                next: None,
+            });
+        }
         if let Some(history) = &self.history {
             return history.scan_height_range(
                 start,
