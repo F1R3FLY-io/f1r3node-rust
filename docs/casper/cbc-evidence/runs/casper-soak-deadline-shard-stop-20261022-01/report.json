@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "scope": "bounded-harness-residual-writer-stop",
+  "phase": "pre_pr216_merge",
+  "status": "change-verified-pending-acceptance",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "change": {
+    "task": "TASK-021-27 (stop the subprocess nodes of a deadline-stopped soak session, and fail closed when a writer remains)",
+    "branch": "fix/soak-deadline-shard-stop",
+    "base": "f9340ed6115c5d7101c7edddc4a4400abc5881e5",
+    "origin": "Daily soak 39711861154 targeted dev f9340ed61 (the PR #811 merge) and stopped at the host disk floor after 18.3 h. The nodes of sessions 58 and 92, which a segment deadline stopped, ran until the end of the job. The scheduled soak runs the driver and host-control of ci-control at github.workflow_sha, which was master 679e2b4c1. master did not contain PR #811, so the owner stop of PR #811 did not run in that soak. This change adds a second stop that does not depend on the owner marker. Evidence: issue #24 comment 6354292291 and its correction.",
+    "driver": "After the owner stop, the end of each segment runs host-control stop-under on .subprocess-data. A residual writer that does not stop writes writer-stop-failure.txt, records writer_stop_failed unless an earlier reason exists, and changes a failure count of 0 to 1. Under .subprocess-data, the failure-evidence copy prunes the session directories that existed before the iteration started. After a host protection breach, the driver passes --quiet-ms 0 and bounds the residual stop by DISK_STOP_SECONDS, so the failure still publishes within the emergency budget.",
+    "host_control": "New stop-under command. It scans /proc for same-user processes whose arguments (a path or a --option=path value with a path boundary) or working directory are under the directory. It excludes its own process and its ancestors, including PID 1. A process whose working directory cannot be read (EACCES or EPERM) and whose arguments do not name the directory is recorded as uninspected and is not stopped. Each matched process is recorded with its name, match reason, environment readability, and owner-marker state, killed through its pidfd, and its exit is confirmed within 750 ms. After the stop, the inode, size, modification time, and change time of every entry under the directory must not change, and no entry may be added or removed, during a 2 s window. same_user, pids, and reaped are extracted from owned and stop without a change of behavior.",
+    "fixture": "Scenario 2 adds a detached node without the owner marker that names its session directory in its arguments. Scenario 6 adds a stale .subprocess-data session that a running writer appends to while a failed iteration runs."
+  },
+  "guarantee_change": {
+    "before": "At the end of a segment, only same-user processes with a readable environment that contains the owner marker of the segment are stopped.",
+    "after": "At the end of a segment, every same-user process whose arguments or working directory are under .subprocess-data is also stopped, whatever its owner marker, and recorded in residual-writers.txt. The stop fails when an entry under .subprocess-data changes, appears, or disappears during a 2 s window after the stop.",
+    "limitation": [
+      "A same-user process that names a path under .subprocess-data in its arguments is stopped, also when it is not a soak writer. The soak runner is dedicated to one soak.",
+      "An uninspected writer that writes less often than once in 2 s can pass the write check. It is not stopped.",
+      "After a host protection breach, the residual stop kills and records within the disk stop budget and skips the write check."
+    ],
+    "claim_record": "docs/claims/casper-soak-harness.md, the paragraph of 2026-10-22"
+  },
+  "source_digests_before_change": {
+    "scripts/run-merge-recovery-soak.sh": "8486972f4b7ea2c2ba3433d0dc1c3b2cdd1efa58de01feebbe7e6726548b2758",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "3ff8305f3323e950c9a474b57dd24936de10461d6a5b6318cf129aef6ee953ba",
+    "scripts/casper-soak/src/host_control.rs": "3c4c637574f6624f4e1d08518cee22eb8a99e76383f1fc92d0f489db6ed540a8"
+  },
+  "source_digests": {
+    "scripts/run-merge-recovery-soak.sh": "431094a0d64c5d2923474948e22112ef27292889b4c91d08bb7343d2be9fd12e",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "d70933e3d37af22aa0a0cd819d909ee86cdc700a43e820ff95153d1babb23a60",
+    "scripts/casper-soak/src/host_control.rs": "31c99688f2475b8d9756cd6fdd2f49af54981e50a07160c8a3f479ad8e80cfed"
+  },
+  "claim_digests_before_change": {
+    "docs/claims/casper-soak-harness.md": "d195ca6afe951e6806ccd9724a63bc5171374d3e0809196827661e2cb70bc855"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "e3fb7c0ffd6cd0fe7da47bb585b1ffda73032c775f458d90782d4b301e775527"
+  },
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verification": {
+    "fixture_local": {
+      "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+      "environment": "rust:bookworm container on arm64, run as UID 1000 (non-root), with a 12 GB tmpfs /tmp and the casper-soak binary built from the same tree. A 6 GB /tmp is inside the 8 GB disk hygiene band and makes scenario 1 stop at the disk floor.",
+      "exit": 0
+    },
+    "fixture_before_fix": {
+      "tree": "the fixture of this change with the driver and host_control.rs at the base",
+      "result": "failed: a node without the owner marker survived the segment"
+    },
+    "driver_mutations": {
+      "method": "Each mutation edits a scratch copy of the driver. The fixture of the same tree runs against it.",
+      "results": {
+        "no-stale-prune": "failed: the failure-evidence copy took the files of a stale session",
+        "no-residual-stop": "failed: a node without the owner marker survived the segment (the run before the fix)"
+      },
+      "survived": 0
+    },
+    "host_control_unit_tests": {
+      "command": "casper-soak unit test binary, host_control tests, --test-threads=1, 4 GB tmpfs /tmp",
+      "as_uid_65534": "18 passed, 1 ignored",
+      "as_root": "18 passed, 1 ignored",
+      "red_before_implementation": "the five new tests did not compile without names, residual, owner_state, ancestors, and stop_under",
+      "parallel_note": "Run in parallel at the base, stop_kills_only_exact_owner_markers and stop_skips_a_process_whose_environment_is_unreadable failed in 1 of 3 runs, as the PR #811 package recorded.",
+      "red_before_review_fix": "residual_stop_fails_when_an_uninspectable_writer_keeps_writing failed as root and as UID 65534 before the uninspected reason and the write check existed",
+      "uninspectable_control": "residual_stop_accepts_an_uninspectable_process_that_writes_elsewhere passes: an unrelated non-dumpable process does not fail the stop"
+    },
+    "static": {
+      "clippy": "cargo clippy -p casper-soak --all-targets -D warnings on Linux: no findings",
+      "rustfmt": "no changes",
+      "shellcheck": "no new findings in the driver or the fixture (19 and 1 at the base and after the change)",
+      "check_casper_claims": "exit 0",
+      "ste": "the claim paragraph passes the STE Check; human STE Review pending"
+    }
+  },
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "f7a2696bd91224ac237f52664b9df406d8420c98",
+    "run_id": 39895663118,
+    "jobs": {
+      "Soak Harness Tests": {
+        "job_id": 120225593475,
+        "conclusion": "success",
+        "note": "includes the driver fixture and the stop-timeout scenario of test-soak-disk-admission.sh that failed in run 39889530851"
+      },
+      "Static Checks": {
+        "job_id": 120225593512,
+        "conclusion": "success"
+      },
+      "Script Tests": {
+        "job_id": 120225593584,
+        "conclusion": "success"
+      },
+      "Test Gate (casper)": {
+        "job_id": 120236807303,
+        "conclusion": "success"
+      },
+      "Integration Gate (amd64)": {
+        "job_id": 120248590544,
+        "conclusion": "success"
+      },
+      "Integration Gate (arm64)": {
+        "job_id": 120248590624,
+        "conclusion": "success"
+      }
+    },
+    "conclusion": "success"
+  },
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "the pull request of fix/soak-deadline-shard-stop",
+    "scope": "One acceptance covers the driver, host_control.rs, the fixture, the claim paragraph, and the wider guarantee with its limitation."
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The three ledger records keep their accepted digests until a maintainer accepts this package.",
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "soak": "pending",
+  "waiver": null,
+  "verified_at": "2026-10-23",
+  "review_findings": [
+    {
+      "source": "Pi agent review of 793ca6c13",
+      "severity": "P2",
+      "finding": "A same-user writer with PR_SET_DUMPABLE=0 and no target path in its arguments was silently excluded, and stop-under returned 0 while it kept appending inside the directory.",
+      "resolution": "Unreadable working directories are recorded as uninspected, and the write check after the stop fails the call. The test residual_stop_fails_when_an_uninspectable_writer_keeps_writing failed at its is_err assertion before the fix, as root and as UID 65534, and passes after it."
+    },
+    {
+      "source": "Pi agent review of 621507755",
+      "severity": "P2",
+      "finding": "The write check compared only the newest modification time. A future-dated file kept the maximum unchanged while another file received writes, and stop-under returned 0.",
+      "resolution": "The check compares a per-entry snapshot of inode, size, modification time, and change time. The kernel sets the change time on every write, and a process cannot set it. residual_stop_detects_writes_beside_a_future_dated_file failed at its is_err assertion before the fix, as root and as UID 65534, and passes after it. residual_stop_accepts_an_unchanged_tree_with_a_future_dated_file shows that a quiet tree with a future-dated file passes."
+    },
+    {
+      "source": "Hosted CI run 39889530851, Soak Harness Tests",
+      "severity": "regression",
+      "finding": "The stop-timeout scenario of test-soak-disk-admission.sh failed: stalled stop commands prevented failure publication within the 5 s fixture deadline. The residual stop added its scan and the 2 s write check after the bounded owner stop, before the summary.",
+      "resolution": "stop-under has a --quiet-ms option (default 2000). After a host protection breach the driver passes 0 and bounds the call by DISK_STOP_SECONDS. residual_stop_without_a_quiet_window_still_kills_and_returns_promptly covers the option. The local Docker disk was full, so the stop-timeout scenario is verified by the next hosted run."
+    }
+  ]
+}

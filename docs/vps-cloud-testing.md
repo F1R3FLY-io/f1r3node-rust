@@ -79,6 +79,7 @@ First build can take 10-30 minutes depending on Rust cache warmth. Subsequent re
 ## Bring up the shard
 
 ```bash
+cp -n docker/.env.example docker/.env
 F1R3FLY_RUST_IMAGE=f1r3fly-rust:local docker compose -f docker/shard.yml up -d
 ```
 

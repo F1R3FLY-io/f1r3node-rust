@@ -5,6 +5,7 @@ use heed::types::SerdeBincode;
 use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
 
 use super::key_value_store::{KeyValueStore, KvStoreError};
+use crate::rust::blocking::in_blocking;
 use crate::rust::ByteBuffer;
 
 // `heed::Database` is a `Copy` handle (a `u32` dbi) and is `Send + Sync`; it
@@ -21,28 +22,16 @@ pub struct LmdbKeyValueStore {
     pub db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
 }
 
-fn in_blocking<T>(f: impl FnOnce() -> T) -> T {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(f)
-        }
-        _ => f(),
-    }
-}
-
 impl KeyValueStore for LmdbKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
+    // Point reads run on the calling worker. A caller that loops over many of
+    // them hands the worker off around the whole loop with `in_blocking`.
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
-        in_blocking(|| {
-            let reader = self.env.read_txn()?;
-            let results = keys
-                .iter()
-                .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
-                .collect();
-            drop(reader);
-            results
-        })
+        let reader = self.env.read_txn()?;
+        keys.iter()
+            .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
+            .collect()
     }
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
@@ -71,6 +60,22 @@ impl KeyValueStore for LmdbKeyValueStore {
                 Err(HeedError::Mdb(MdbError::KeyExist)) => Ok(false),
                 Err(error) => Err(error.into()),
             }
+        })
+    }
+
+    fn delete_if_value(
+        &self,
+        key: &ByteBuffer,
+        expected: &ByteBuffer,
+    ) -> Result<bool, KvStoreError> {
+        in_blocking(|| {
+            let mut writer = self.env.write_txn()?;
+            if self.db.get(&writer, key)?.as_ref() != Some(expected) {
+                return Ok(false);
+            }
+            let removed = self.db.delete(&mut writer, key)?;
+            writer.commit()?;
+            Ok(removed)
         })
     }
 
@@ -321,6 +326,18 @@ mod batched_put_tests {
             }
         }
 
+        fn delete_if_value(
+            &self,
+            key: &ByteBuffer,
+            expected: &ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            let mut map = self.map.lock().unwrap();
+            if map.get(key) != Some(expected) {
+                return Ok(false);
+            }
+            Ok(map.remove(key).is_some())
+        }
+
         fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
             let mut map = self.map.lock().unwrap();
             Ok(keys.iter().filter(|k| map.remove(*k).is_some()).count())
@@ -470,6 +487,53 @@ mod store_tests {
     }
 
     #[test]
+    fn conditional_delete_preserves_different_and_absent_values() {
+        let store = seeded_store();
+        let key = b"k1".to_vec();
+        assert!(!store.delete_if_value(&key, &b"other".to_vec()).unwrap());
+        assert_eq!(store.get_one(&key).unwrap(), Some(b"v1".to_vec()));
+        assert!(store.delete_if_value(&key, &b"v1".to_vec()).unwrap());
+        assert!(!store.delete_if_value(&key, &b"v1".to_vec()).unwrap());
+        assert_eq!(
+            store.get_one(&b"k2".to_vec()).unwrap(),
+            Some(b"v2".to_vec())
+        );
+    }
+
+    #[test]
+    fn concurrent_conditional_deletes_remove_one_lmdb_record() {
+        let env = open_env();
+        let stores = [open_store(&env, "shared"), open_store(&env, "shared")];
+        stores[0]
+            .put_one(b"key".to_vec(), b"value".to_vec())
+            .unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = stores
+            .into_iter()
+            .map(|store| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .delete_if_value(&b"key".to_vec(), &b"value".to_vec())
+                        .unwrap()
+                })
+            })
+            .collect();
+        let removed = handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(removed, 1);
+        assert_eq!(
+            open_store(&env, "shared")
+                .get_one(&b"key".to_vec())
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn iterate_visits_every_entry() {
         static VISITED: AtomicUsize = AtomicUsize::new(0);
         fn visit(_key: ByteBuffer, _value: ByteBuffer) { VISITED.fetch_add(1, Ordering::SeqCst); }
@@ -558,5 +622,52 @@ mod store_tests {
             store.get_one(&b"k9".to_vec()).unwrap(),
             Some(b"fresh".to_vec())
         );
+    }
+
+    // Run manually:
+    // cargo test -p shared --release concurrent_point_reads -- --ignored --nocapture
+    //
+    // Point reads per second from 1, 16 and 64 concurrent tasks on a runtime
+    // with a worker per core. Throughput should grow with the readers; a read
+    // path that serializes callers caps it near the single-reader rate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore]
+    async fn concurrent_point_reads_scale_with_readers() {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+        let store = open_store(&open_env(), "reads");
+        let keys: Arc<Vec<ByteBuffer>> =
+            Arc::new((0..1024u32).map(|i| i.to_be_bytes().to_vec()).collect());
+        store
+            .put(keys.iter().map(|key| (key.clone(), key.clone())).collect())
+            .unwrap();
+
+        for readers in [1usize, 16, 64] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let window = std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + window;
+            let tasks: Vec<_> = (0..readers)
+                .map(|reader| {
+                    let (store, keys, reads) = (store.clone(), keys.clone(), reads.clone());
+                    tokio::spawn(async move {
+                        let mut index = reader;
+                        while std::time::Instant::now() < deadline {
+                            store.get_one(&keys[index % keys.len()]).unwrap();
+                            reads.fetch_add(1, Ordering::Relaxed);
+                            index += readers;
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.await.unwrap();
+            }
+            tracing::info!(
+                target: "f1r3.bench.lmdb_point_reads",
+                readers,
+                reads_per_second = reads.load(Ordering::Relaxed) as f64 / window.as_secs_f64(),
+                "concurrent point reads"
+            );
+        }
     }
 }

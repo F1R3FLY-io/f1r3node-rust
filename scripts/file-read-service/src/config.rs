@@ -1,11 +1,21 @@
 // HOCON config schema for the file-read sidecar.
 //
 // Mirrors the subset of `node::rust::configuration::file_io_provisioning`
-// the sidecar needs — specifically the two Oracular buckets.
-// Consensus-static entries are present in the schema (so the HOCON
-// parse accepts an operator-shared config file) but routed to a
-// separate map that the handler converts into a 503 response per
-// the plan.
+// the sidecar needs.  Supported buckets served over HTTP:
+//
+//   * `oracle-static-files`   — operator-local, no WAL.
+//   * `oracle-static-dirs`    — operator-local, no WAL.
+//   * `consensus-static-dirs` — operator-declared on-disk path
+//     that the node WAL-replicates writes into.  Sidecar serves
+//     from the SAME `entry.path` the node registers (see
+//     `register_consensus_bundle_roots_core`).  Co-located per-node
+//     sidecar gets a locally-consistent view that advances as the
+//     node's WAL replay materialises bytes.
+//
+// `consensus-static-files` are accepted at parse but routed to a
+// 503: writes stage through `fs_bundle_staging` before an atomic
+// rename, so the logical→on-disk mapping isn't stable from HOCON
+// alone and the sidecar would need the node's registry to resolve.
 //
 // # Why not depend on `node::file_io_provisioning` directly
 //

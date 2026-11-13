@@ -268,6 +268,9 @@ The node listens on `localhost` ports 40400-40405. See [`run-local/README.md`](r
 ### Run With Docker
 
 ```bash
+# docker/.env is not tracked: copy the development template (public keys, local use only)
+cp -n docker/.env.example docker/.env
+
 # Standalone (single node, instant finalization)
 docker compose -f docker/standalone.yml up
 

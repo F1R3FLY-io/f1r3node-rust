@@ -5,20 +5,21 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::errors::CommError;
 use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, MergeableEntryResponse, NoApprovedBlockAvailable,
-    StoreItemsMessage,
+    ApprovedBlock, BlockMessage, CasperMessage, NoApprovedBlockAvailable, StoreItemsMessage,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
@@ -26,9 +27,8 @@ use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
-use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
+use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
-use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::running::Running;
 use crate::rust::errors::CasperError;
@@ -196,11 +196,50 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
     Ok(())
 }
 
+/// Publish this node's chain identity before it enters the Running state.
+///
+/// A running node refuses peers of another chain only while it knows its own
+/// chain identity, so it does not run without one. The identity is the genesis
+/// block hash from storage: the held height-0 block, or the hash that a
+/// restored node learned from its bootstrap. It must agree with any identity
+/// the node already published, for example one adopted from the bootstrap.
+///
+/// A disagreement is a `CommError::WrongChainId`. Both identities are
+/// write-once, so the caller can know that a retry fails the same way.
+pub(crate) fn publish_chain_identity(
+    genesis: Result<Option<BlockHash>, CasperError>,
+    chain_id: &ChainIdCell,
+) -> Result<(), CasperError> {
+    let genesis = genesis
+        .map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "Refusing to run: could not read this node's genesis hash. {}",
+                e
+            ))
+        })?
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "Refusing to run: this node does not know its genesis hash, so it could \
+                 not refuse peers of another chain"
+                    .to_string(),
+            )
+        })?;
+    chain_id.set_once(genesis).map_err(|e| match e {
+        CommError::WrongChainId(peer, reason) => CasperError::CommError(CommError::WrongChainId(
+            peer,
+            format!(
+                "Refusing to run: this node's chain identity is inconsistent. {}",
+                reason
+            ),
+        )),
+        other => CasperError::CommError(other),
+    })
+}
+
 // NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
-    blocks_in_processing: Arc<InFlightBlocks>,
+    ingest: IngestHandle,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
     the_init: Arc<
@@ -209,7 +248,6 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     disable_state_exporter: bool,
     transport: Arc<U>,
     conf: RPConf,
-    block_retriever: BlockRetriever<U>,
     // Phase 7b-1: optional snapshot chunk-fetch context.  When
     // `Some`, the running engine's packet dispatch routes
     // snapshot-related CasperMessage variants to the sync driver
@@ -251,16 +289,17 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     let block_hash_string =
         PrettyPrinter::build_string_no_limit(&approved_block.candidate.block.block_hash);
 
+    publish_chain_identity(casper.genesis_block_hash(), &conf.chain_id)?;
+    ingest.attach_casper(casper.clone()).await?;
+
     let running = Arc::new(Running::new(
-        block_processing_queue_tx,
-        blocks_in_processing,
+        ingest,
         casper,
         approved_block,
         the_init,
         disable_state_exporter,
         transport,
         conf,
-        block_retriever,
         state_items_tx,
     ));
 
@@ -303,8 +342,7 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
 // NOTE: Parameter types adapted to match GenesisValidator changes (Arc wrappers, trait objects)
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
-    blocks_in_processing: &Arc<InFlightBlocks>,
+    ingest: &IngestHandle,
     casper_shard_conf: &CasperShardConf,
     validator_id: &Option<ValidatorIdentity>,
     init: Arc<
@@ -320,10 +358,8 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     block_dag_storage: &BlockDagKeyValueStorage,
     deploy_storage: &KeyValueDeployStorage,
     rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    casper_buffer_storage: &CasperBufferKeyValueStorage,
     rspace_state_manager: &RSpaceStateManager,
     event_publisher: F1r3flyEvents,
-    block_retriever: BlockRetriever<U>,
     engine_cell: &Arc<EngineCell>,
     runtime_manager_arc: &Arc<RuntimeManager>,
     estimator: &Estimator,
@@ -331,11 +367,9 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
 ) -> Result<(), CasperError> {
     // Create bounded channels and return senders so caller can feed LFS responses (Scala: expose queues).
-    // Scala uses size-50 bounded queues; we add a third for the
-    // mergeable-channels store sync.
+    // Scala uses size-50 bounded queues.
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
-    let (mergeable_tx, mergeable_rx) = mpsc::channel::<MergeableEntryResponse>(50);
 
     // RuntimeManager is now Arc<Mutex<RuntimeManager>>, so we clone the Arc instead of taking
     let runtime_manager = runtime_manager_arc.clone();
@@ -349,10 +383,8 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         block_dag_storage.clone(),
         deploy_storage.clone(),
         rejected_deploy_buffer.clone(),
-        casper_buffer_storage.clone(),
         rspace_state_manager.clone(),
-        block_processing_queue_tx.clone(),
-        blocks_in_processing.clone(),
+        ingest.clone(),
         casper_shard_conf.clone(),
         validator_id.clone(),
         init,
@@ -360,12 +392,9 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         block_rx,
         tuple_tx.clone(),
         tuple_rx,
-        mergeable_tx.clone(),
-        mergeable_rx,
         trim_state,
         disable_state_exporter,
         event_publisher.clone(),
-        block_retriever.clone(),
         engine_cell.clone(),
         runtime_manager,
         estimator.clone(),
@@ -380,4 +409,62 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     initializing.init().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+
+    #[test]
+    fn a_node_runs_with_its_genesis_hash_as_chain_identity() {
+        let chain_id = ChainIdCell::unknown();
+
+        publish_chain_identity(Ok(Some(Bytes::from_static(b"genesis"))), &chain_id).unwrap();
+
+        assert_eq!(chain_id.get(), Some(&Bytes::from_static(b"genesis")));
+    }
+
+    #[test]
+    fn a_node_confirms_an_identity_adopted_from_its_bootstrap() {
+        let chain_id = ChainIdCell::known(Bytes::from_static(b"genesis"));
+
+        publish_chain_identity(Ok(Some(Bytes::from_static(b"genesis"))), &chain_id).unwrap();
+
+        assert_eq!(chain_id.get(), Some(&Bytes::from_static(b"genesis")));
+    }
+
+    #[test]
+    fn a_node_does_not_run_without_a_genesis_hash() {
+        let unread = ChainIdCell::unknown();
+        assert!(publish_chain_identity(Ok(None), &unread).is_err());
+        assert!(unread.get().is_none());
+
+        let unreadable = ChainIdCell::unknown();
+        assert!(publish_chain_identity(
+            Err(CasperError::RuntimeError("storage".to_string())),
+            &unreadable
+        )
+        .is_err());
+        assert!(unreadable.get().is_none());
+
+        let adopted = ChainIdCell::known(Bytes::from_static(b"genesis"));
+        assert!(
+            publish_chain_identity(Ok(None), &adopted).is_err(),
+            "an identity adopted from the bootstrap is not verified, so it does not \
+             replace the node's own genesis hash"
+        );
+    }
+
+    #[test]
+    fn a_node_does_not_run_with_an_identity_that_disagrees_with_its_genesis() {
+        let chain_id = ChainIdCell::known(Bytes::from_static(b"adopted"));
+
+        assert!(matches!(
+            publish_chain_identity(Ok(Some(Bytes::from_static(b"genesis"))), &chain_id),
+            Err(CasperError::CommError(CommError::WrongChainId(..)))
+        ));
+        assert_eq!(chain_id.get(), Some(&Bytes::from_static(b"adopted")));
+    }
 }

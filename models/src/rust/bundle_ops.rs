@@ -5,11 +5,10 @@ use crate::rhoapi::Bundle;
 pub struct BundleOps;
 
 impl BundleOps {
-    pub fn merge(b: &Bundle, other: &Bundle) -> Bundle {
-        let mut other_mut = other.clone();
-        other_mut.read_flag = b.read_flag && other.read_flag;
-        other_mut.write_flag = b.write_flag && other.write_flag;
-        other_mut
+    pub fn merge(b: &Bundle, mut other: Bundle) -> Bundle {
+        other.read_flag &= b.read_flag;
+        other.write_flag &= b.write_flag;
+        other
     }
 
     pub fn show(bundle: &Bundle) -> String {

@@ -107,8 +107,6 @@ Proposals are triggered by the [heartbeat proposer](#8-liveness-heartbeat-propos
 
 **Why snapshot first?** The snapshot is immutable once created. This prevents race conditions — the proposal works against a consistent view of the DAG even as new blocks arrive concurrently.
 
-**Guard**: If finalization is in progress (`finalization_in_progress` flag), snapshot creation fails. This prevents proposing against a stale view that the finalizer is about to advance.
-
 ### Step 2: Check Constraints
 
 Before building a block, the proposer verifies:
@@ -158,16 +156,31 @@ Finally: `create_checkpoint()` produces the post-state hash.
 
 - Header: version, timestamp, sender, block number (max parent + 1), sequence number
 - Body: pre-state hash, post-state hash, processed deploys, rejected deploys, system deploys
-- Justifications: One per bonded validator
+- Justifications: One per bonded validator, in strictly ascending validator order
 - Bonds cache: Current validator set with stakes
-- Hash the block via Blake2b256
-- Sign with validator's Secp256k1 key
+- Hash the block with the Merkle block hash, scheme version 3 (`proto_util::hash_block`). The top hash combines a header leaf and a Merkle root of the processed and system deploys. The header leaf includes Merkle roots of the bonds, the justifications, the rejected deploys, and the applied-from-scope signatures. Each variable-length field of the header leaf is preceded by its length, so bytes cannot move between adjacent fields. The hash covers every field except `blockHash` and `sig`.
+- Sign the block hash with validator's Secp256k1 key
 
 **Timestamp hardening**: If current time < max parent timestamp (clock skew), the timestamp is clamped to the parent's timestamp. This prevents `InvalidTimestamp` validation errors.
 
 ### Step 6: Self-Validate
 
 The proposer validates its own block before broadcasting. If pre/post-state hashes don't match expectations, the block is rejected as `BlockException` (not panicked).
+
+### Block Hash Compatibility
+
+The fix for issue #679 changed the block hash rule. The old rule and the new rule give different hashes for the same block, so builds before and after the fix are not compatible:
+
+- A node of the new build refuses blocks, approved blocks, and genesis blocks that an older build hashed.
+- A node of an older build refuses blocks of the new build as `InvalidBlockHash`.
+- A node of the new build does not start on a data directory that an older build created. It stops with an error that names the stored approved block.
+
+There is no compatibility setting. To upgrade a network to the new build:
+
+1. Stop all nodes.
+2. Remove the data directory of each node.
+3. Install the new build on all nodes.
+4. Start a new network from a new genesis ceremony.
 
 ---
 
@@ -178,36 +191,38 @@ The proposer validates its own block before broadcasting. If pre/post-state hash
 3. Proposer streams the full `BlockMessage` to requesting peer
 4. Receiving peer enters the [validation pipeline](#4-block-validation)
 
-The block retriever (`block_retriever.rs`) handles missing dependencies:
-- Tracks pending requests per block hash
-- Implements retry budgets, cooldowns, and quarantine for stuck requests
-- Deduplicates requests to avoid flooding
+[Block ingest](./BLOCK_INGEST.md) fetches missing dependencies. One owner keeps what the node needs and asks peers for it on a paced schedule.
 
 ---
 
 ## 4. Block Validation
 
-`BlockProcessor` runs an 8-step pipeline on received blocks:
+[Block ingest](./BLOCK_INGEST.md) takes a received block through these steps.
+
+Before a block enters ingest, the node recomputes the block hash and verifies the signature. If the hash or the signature does not match, the node drops the copy and changes nothing keyed by that block hash, so the original block can still arrive.
+
+The node limits these checks. It runs at most 2 checks at a time, and one at a time for each peer. It keeps at most 512 blocks in this stage, and at most 16 blocks from one peer. If a limit is full, the node drops the block, and block ingest asks for it again if the node needs it. Copies of one block hash are checked one at a time. Once a copy passes, the others are skipped.
 
 ### Step 1: Interest Check
-- Already in DAG or casper buffer? Skip.
+- Already in the DAG or held by block ingest? Skip.
 - Shard ID and version match the approved block? Required.
-- Block number >= approved block number? Required (no ancient blocks).
+- Block number >= approved block number? Required (no ancient blocks), unless the node asked for the block.
 
-### Step 2: Format & Signature
-- Verify cryptographic signature (Secp256k1, Schnorr, or FROST)
+### Step 2: Format
 - Check field validity: hash length, timestamp within ±15s of local time, required fields present
+- Require justifications in strictly ascending validator order. This also refuses a duplicate validator.
 
 ### Step 3: Dependency Resolution
-- All parent blocks must be in the DAG
-- If missing: store block in **casper buffer** (max ~16K entries), request missing parents from peers
-- Casper buffer tracks retry attempts per dependency and quarantines blocks after budget exhaustion
+- All dependencies must be in the DAG before the block is validated
+- If one is missing: block ingest holds the block, and the missing block becomes a need that it fetches from peers
+- The insert of the last missing dependency releases the block for validation
 
 ### Step 4: Snapshot Computation
 - Recompute `CasperSnapshot` with the block's actual parents as tips
 - This ensures validation uses the same state the proposer had
 
 ### Step 5: Block Summary
+- Recompute the block hash again
 - Structural consistency: block number progression, sender weight, justification format
 
 ### Step 6: Checkpoint Validation (Deploy Replay)
@@ -224,8 +239,9 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 ### Step 8: Deploy & State Validation
 - Deploys are within scope, not duplicated
   - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window, without a validity qualifier: a signature carried only by an invalid ancestor is still a repeat
+  - The scan starts at `min(tip_start, max(oldest_valid_after + 1, floor - deploy_lifespan + 2))`, where `tip_start` is `max_parent_height + 1 - deploy_lifespan` and `oldest_valid_after` is the lowest `valid_after_block_number` in the block. The expiry check reads the floor clock, so a live deploy can have a copy below the tip window. The retry exemption and the retry gate read the same start, and so does the proposer's retry gate
   - A rejected-in-scope signature is exempt when its retry gate is open (see the glossary); a closed gate returns `PrematureDeployRetry`
-  - The repeat-deploy signature index (see the glossary) may skip the scan for a signature with no in-window carrier; an index hit or read failure falls back to scope-verified scanning, so index-served and scan-served verdicts are equal
+  - The repeat-deploy signature index (see the glossary) may skip the scan for a signature with no in-window carrier when the scan starts at or above the index watermark and the recorded prune cutoff; an index hit or read failure falls back to scope-verified scanning, so index-served and scan-served verdicts are equal
 - Phlogiston price meets minimum
 - Invalid block tracking applied
 
@@ -248,7 +264,7 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 3. **Compute LCA**: Lowest Common Ancestor of all latest messages (iterative LUCA-many algorithm)
 4. **Score**: BFS from each latest message up to LCA. Each validator's stake weight flows down through the main-parent chain.
 5. **Rank recursively**: Starting from LCA, greedily pick the highest-scored child. Repeat until no higher-scored descendants exist.
-6. **Apply depth filter**: Main parent (rank 1) always included. Secondary parents filtered to within `max_parent_depth` of main parent.
+6. **Apply depth filter**: Main parent (rank 1) always included. The kept parents span at most `max_parent_depth` heights around the main parent; a parent outside that window is dropped, including the proposer's own tip.
 
 ### Why LMD GHOST?
 
@@ -287,7 +303,7 @@ The merge scope is bounded by the finalized floor of the block. The floor is a p
 
 - Merge cost: O(visible_blocks^2 x deploys^2) for conflict resolution
 - Floor scoping keeps visible_blocks bounded
-- **Δ-backstop**: When the floor distance `Δ = num(maxParent) − num(floor)` exceeds the cap (`MAX_FLOOR_DISTANCE_BLOCKS` = 256), `compute_parents_post_state` refuses the merge with a deterministic error keyed on Δ alone. On propose the round parks and retries after finality advances. On validate an over-Δ block is deterministically invalid. The merge never substitutes a lossy single-parent post-state (R-BACKSTOP — the former fallback dropped co-parent writes, the ~400-block bug).
+- **Δ-backstop**: When the floor distance `Δ = num(maxParent) − num(floor)` exceeds the cap (`MAX_FLOOR_DISTANCE_BLOCKS` = 256), `compute_parents_post_state` refuses the merge with a deterministic error keyed on Δ alone. On validate an over-Δ block is deterministically invalid. On propose, a proposal that may be empty becomes a single-parent witness block: it declares only fork choice's main parent, cites every latest message, and carries no user deploys, so it builds no merge. A proposal that must carry deploys is held (`FloorDistanceHold`, HTTP 503 `floor_distance_hold`) until finality advances. The merge never substitutes a lossy single-parent post-state (R-BACKSTOP — the former fallback dropped co-parent writes, the ~400-block bug). A witness is not such a substitution: it declares one parent, so there is no co-parent write to drop.
 - The visible-scope size (`MAX_PARENT_MERGE_SCOPE_BLOCKS` = 512) is an advisory metric only. Branch width is not node-deterministic, so scope size never gates admission.
 
 ### Validation progress evidence
@@ -320,7 +336,7 @@ Finalization determines when a block is **mathematically irreversible**. Once fi
 
 ### Trigger
 
-Finalization runs asynchronously after each valid block is added to the DAG. A single-flight guard (`finalizer_task_in_progress`) prevents concurrent runs. A `finalization_in_progress` flag prevents snapshot creation during finalization (avoids stale proposals).
+Finalization runs asynchronously after each valid block is added to the DAG. Every cycle runs on the casper instance's one finalizer task, one cycle at a time, so the LFB has one writer; reading the LFB never advances it. After every cycle, the same task writes the deploy verdicts the floor of the persisted LFB decides and releases the pool copy of every deploy with a verdict. The floor, not the LFB, is the verdict basis: two blocks at one height can both be finalized, and the merge above them can reject the deploys of the one it does not base on, so only the floor's state is settled. Snapshot creation does not wait for a cycle.
 
 ### Algorithm (`floor.rs::floor_of_view` + `finalization_runner.rs`)
 
@@ -334,7 +350,7 @@ operation uses.
    - Build an agreement graph: edge between validators A and B if they "never eventually see disagreement" about the target block
    - Find the maximum weighted clique (largest fully-connected subgraph by stake)
    - Decide finalization with exact integer arithmetic (`2·q·den ⋛ S·(den+num)` — the integer form of `FT = (2·clique_weight − total_stake) / total_stake ≥ θ`)
-4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the current LFB's settled effects — the read surface can never designate a state missing settled content
+4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the state of the current LFB's floor — the read surface can never designate a state missing settled content. A restored node that does not hold that floor checks against the LFB itself
 5. **LFB advancement**: Update last finalized block, clean up deploy storage, emit `BlockFinalised` event
 
 ### "Never Eventually See Disagreement"
@@ -352,7 +368,7 @@ A finalizer cycle that derives a higher floor but does not adopt it ends in
 one of two holds:
 
 - **ContainmentHold** — the derived floor's state is missing effects settled
-  under the current LFB. One refusal is routine (a rejected-then-recovered
+  under the current LFB's floor. One refusal is routine (a rejected-then-recovered
   deploy legitimately fails containment until its re-homed carrier
   finalizes); a streak of refusals with RISING derived floors means the
   shard is finalizing without this node. The `DivergenceMonitor` detects
@@ -555,7 +571,7 @@ See [F1R3FLY-io/f1r3node issues](https://github.com/F1R3FLY-io/f1r3node/issues) 
 |------|------|
 | `casper/src/rust/blocks/proposer/proposer.rs` | Proposal orchestration, constraint checks |
 | `casper/src/rust/blocks/proposer/block_creator.rs` | Deploy selection, block assembly |
-| `casper/src/rust/blocks/block_processor.rs` | 8-step validation pipeline, casper buffer |
+| `casper/src/rust/blocks/ingest/` | Block ingest: intake, dependency tracking, fetching, validation dispatch |
 | `casper/src/rust/validate.rs` | Individual validation rules |
 
 ### Fork Choice & Safety

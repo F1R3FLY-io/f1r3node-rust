@@ -1,11 +1,9 @@
 // Per-runtime handler-dispatch surface.  Every fs_* native handler
 // dispatches through an `FsProcesses` instance that bundles the
-// five pieces of state a handler body touches:
+// four pieces of state a handler body touches:
 //
 //   - `dispatcher: RhoDispatch` — reducer handle used by handler
 //     bodies to invoke the ack-channel continuation.
-//   - `space: RhoISpace` — tuplespace handle for produce / consume
-//     calls inside the handler body.
 //   - `handles: FileHandleTable` — fd allocation + shadow state +
 //     per-deploy sweep.
 //   - `mode: ConsensusMode` — Consensus vs. Oracular; threaded
@@ -18,7 +16,7 @@
 //
 // # Clone semantics
 //
-// All five fields are cheap-to-clone (Arc-backed internally).
+// All four fields are cheap-to-clone (Arc-backed internally).
 // `FsProcesses: Clone` so the
 // [`dispatch_via_trait_owned`](super::dispatch::dispatch_via_trait_owned)
 // adapter (slice 4.10) can accept an owned copy as its first arg
@@ -29,7 +27,7 @@
 //
 // Each field is already individually Arc-backed, so wrapping the
 // struct in an outer Arc would add a redundant indirection.  The
-// clone cost is 5 Arc-bumps, which is < 100 ns on typical hardware
+// clone cost is 4 Arc-bumps, which is < 100 ns on typical hardware
 // and amortized across the ~microsecond dispatch cost.  Simpler to
 // clone the struct than to deal with an outer Arc at every call
 // site.
@@ -37,7 +35,7 @@
 // # `is_contract_call()` method
 //
 // Returns a per-call `ContractCall` instance (shape:
-// `{ space, dispatcher }`) that the dispatcher calls
+// `{ dispatcher }`) that the dispatcher calls
 // `.unapply(contract_args)` on at step 1 (slice 4.10's
 // `dispatch_via_trait_owned`).  Centralized here so the dispatcher
 // doesn't reach into `FsProcesses` field-wise — matches fileio's
@@ -53,33 +51,29 @@ use crate::rust::interpreter::dispatch::RhoDispatch;
 use crate::rust::interpreter::io::handle_table::FileHandleTable;
 use crate::rust::interpreter::io::handler_trait::syscall_ctx::SyscallCtx;
 use crate::rust::interpreter::io::ConsensusMode;
-use crate::rust::interpreter::rho_runtime::RhoISpace;
 
 /// The per-runtime handler-dispatch surface.  See the module
 /// docstring for field roles and clone semantics.
 #[derive(Clone)]
 pub struct FsProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
     pub handles: FileHandleTable,
     pub mode: ConsensusMode,
     pub metering: Arc<dyn Metering>,
 }
 
 impl FsProcesses {
-    /// Construct the dispatch surface from the five pieces of
+    /// Construct the dispatch surface from the four pieces of
     /// per-runtime state.  Called at runtime assembly in
     /// `rho_runtime::fs_handlers_to_definitions` (slice 5.31).
     pub fn new(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
         handles: FileHandleTable,
         mode: ConsensusMode,
         metering: Arc<dyn Metering>,
     ) -> Self {
         FsProcesses {
             dispatcher,
-            space,
             handles,
             mode,
             metering,
@@ -88,12 +82,11 @@ impl FsProcesses {
 
     /// Per-call `ContractCall` instance for the dispatcher's
     /// step-1 `unapply` call.  Each call to this method clones
-    /// `space` and `dispatcher` (Arc bumps — cheap).  Centralized
+    /// `dispatcher` (an Arc bump — cheap).  Centralized
     /// here so the dispatcher doesn't reach into `FsProcesses`
     /// field-wise.
     pub fn is_contract_call(&self) -> ContractCall {
         ContractCall {
-            space: self.space.clone(),
             dispatcher: self.dispatcher.clone(),
         }
     }
@@ -107,13 +100,12 @@ impl SyscallCtx<'_> {
     /// matches fileio's `SyscallCtx::new(fs, ack)` entry point.
     ///
     /// Named `from_fs_processes` (not `new`) so the existing
-    /// positional `SyscallCtx::new(dispatcher, space, handles,
-    /// mode, metering, ack)` constructor stays in place for test
+    /// positional `SyscallCtx::new(dispatcher, handles, mode,
+    /// metering, ack)` constructor stays in place for test
     /// fixtures that build the context field-wise.
     pub fn from_fs_processes<'a>(fs: &'a FsProcesses, ack: &'a Par) -> SyscallCtx<'a> {
         SyscallCtx {
             dispatcher: &fs.dispatcher,
-            space: &fs.space,
             handles: &fs.handles,
             mode: fs.mode,
             metering: &fs.metering,
@@ -143,9 +135,8 @@ const _FS_PROCESSES_IS_SEND_SYNC: fn() = || {
 };
 
 // Compile-time witness that `FsProcesses::is_contract_call` returns
-// something with `space` + `dispatcher` fields of the expected
-// types.  A refactor that changed the method's return type (e.g.,
-// to `(RhoISpace, RhoDispatch)` tuple) would break the dispatcher's
+// something with a `dispatcher` field of the expected type.  A
+// refactor that changed the method's return type would break the dispatcher's
 // step-1 `.unapply()` call site; this witness catches the drift
 // before the dispatcher slice (4.10+) tries to use it.
 const _IS_CONTRACT_CALL_RETURN_SHAPE: fn() = || {
@@ -156,7 +147,7 @@ const _IS_CONTRACT_CALL_RETURN_SHAPE: fn() = || {
 #[cfg(test)]
 mod tests {
     // Full-fixture construction of `FsProcesses` requires an async
-    // rspace init (RhoDispatch + RhoISpace) that pulls in the whole
+    // runtime init (RhoDispatch) that pulls in the whole
     // runtime assembly path — too much setup for a unit test on a
     // pure data carrier.  The compile-time witnesses above cover
     // the `Clone` + `Send + Sync` + field-shape invariants.
@@ -172,18 +163,17 @@ mod tests {
     //      ones that have a visible delegate on `SyscallCtx`).
     //      Exercised via a manually-constructed `FsProcesses` that
     //      uses `NoopMetering` + a fresh `FileHandleTable`.  The
-    //      `dispatcher` + `space` fields pass through by reference
-    //      with no delegate method to observe — their forwarding
+    //      `dispatcher` field passes through by reference
+    //      with no delegate method to observe — its forwarding
     //      is covered by the compile-time witness
     //      `_SYSCALL_CTX_SHAPE_WITNESS` in `syscall_ctx.rs`.
     //
     // Note that constructing `FsProcesses` requires `RhoDispatch`
-    // (`Arc<RholangAndScalaDispatcher>`) + `RhoISpace`
-    // (`Arc<Box<dyn ISpace<...>>>`) which have no simple test
-    // fixtures.  The tests below work around this by exercising
+    // (`Arc<RholangAndScalaDispatcher>`), which has no simple test
+    // fixture.  The tests below work around this by exercising
     // `from_fs_processes` through a hand-rolled trivial impl that
-    // doesn't need the dispatcher/space fields' behavior — only
-    // their shape (type + Arc indirection).
+    // doesn't need the dispatcher field's behavior — only its
+    // shape (type + Arc indirection).
 
     use super::*;
     use crate::rust::interpreter::accounting::noop::NoopMetering;
@@ -213,7 +203,7 @@ mod tests {
     #[test]
     fn metering_field_accepts_noop_metering_via_arc() {
         let _m: Arc<dyn Metering> = Arc::new(NoopMetering::new());
-        // Not instantiating FsProcesses (needs RhoDispatch + RhoISpace);
+        // Not instantiating FsProcesses (needs RhoDispatch);
         // the coercion itself is the pin.
     }
 

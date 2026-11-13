@@ -1,0 +1,213 @@
+{
+  "schema": "soak-cleanup-verification/v1",
+  "verified_at": "2026-10-25T19:55:20Z",
+  "control_revision": "c894695f42923f2d1b8ba2e24d8b41946b71750b",
+  "source_digests": {
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    ".github/.gitattributes": "911bd4dbe5d38d1680f672628ae58454b1c6a5be6d847ab44bd2a4720d005426",
+    ".github/actions/soak-segment/action.yml": "55d657083eeb8f8a1f793bae4c600b8823d0318780c83dfa983c064e89e8e2ef",
+    ".github/workflows/ci.yml": "3dca206d354670fae4fc9d35510d657fd3c1a1b17f863c71b1d9a827ee5747dd",
+    ".github/workflows/merge-recovery-soak.yml": "06a13e95e2ecdacbaa11dc774715e3b49d718eaf5862cd070f5ff156355d86f3",
+    "Cargo.lock": "0668882a7c67b8095a7f4c8af59e28961faa9eb084b531f3f2ab8bca2e4e9d01",
+    "Cargo.toml": "0cbf91c585bb155e5c545f814ce5d35cd30d061ba74c351762580cc9baeb64b4",
+    "docs/.gitattributes": "f2d3a3e70c1ef2635eeb64bb29e695d9a9f17aada1f152e9aac94e05efe6a2e7",
+    "docs/casper/soak-cleanup.json": "36bdcbdcc3904580539129784c9581dba7cd5f2493548d5e115da4f70b039982",
+    "docs/claims/casper-campaign-execution.md": "1574f70fc5b1f432b7bf1fa98a6deca125d3221e3b29864686a42da70a2b31bb",
+    "docs/claims/casper-soak-harness.md": "670e2867bf40fb941a7e762b8624550c0feb8cdc45fe7efcfc7b69f3cc0cabc8",
+    "docs/claims/soak-segment-cleanup.md": "76d21c461e55290ad6abca40ae18b5def403780ce497af5cc36ec0188452ea3a",
+    "formal/.gitattributes": "842e06f1dca1d98891a607ee0cad4729e2540ca5fce9534ff11d56ded893ecfa",
+    "formal/tlaplus/soak_cleanup/EraseReason.cfg": "780cd403582eb1935d416588b4e80c89024c65f8fe2b6d0ef39e9c7d74e8a35b",
+    "formal/tlaplus/soak_cleanup/IgnoreStopFailure.cfg": "a7ea8598dcf6738b7ee395fb6f504cdd176a24181d0b58f17fbc03c307cd0d9b",
+    "formal/tlaplus/soak_cleanup/SkipOwnerStop.cfg": "74b614953db737e3d1ec39c4148047aab84042dfa1da12397e1cded8f7bf753c",
+    "formal/tlaplus/soak_cleanup/SkipResidualStop.cfg": "8595e5fa25e28c0bb41727407e1c048e0cf60a93f1b0ad792a04a192b36e4481",
+    "formal/tlaplus/soak_cleanup/SoakCleanup.tla": "94e773ed8aa4b847b3110850e0ebe3d1d0ff17a62026ee5ab2778b1e29080c43",
+    "formal/tlaplus/soak_cleanup/clean.cfg": "8e691e15db5e5240418fe2ec605e9dca77c5c3c4ce7f49097d7497a532b86059",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    "scripts/.gitattributes": "2181860a4b0e98cabb5bc83cb25344435aca5d637ede6b202d9b9656b0fb6be3",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "d70933e3d37af22aa0a0cd819d909ee86cdc700a43e820ff95153d1babb23a60",
+    "scripts/bench/test-soak-segment-cleanup.sh": "d1b875c34b3d61ed5eab0ebafb4c11d2e19ad233bd72b1d678bb47679d817686",
+    "scripts/casper-soak/Cargo.toml": "7282d2a9c1ebb41148ef08d73f2ff35923d1d372923618fee1584585e82c48d3",
+    "scripts/casper-soak/src/authority_execution.rs": "a07a3d8694582ee876ea4c474e9aff21e87365d46434d4bfa5b432f1191e189f",
+    "scripts/casper-soak/src/authority_incarnation.rs": "96f8a93c8194cc7ea624e53ada7d51d983d359460df6d76d2de5d2e0c20f9d9f",
+    "scripts/casper-soak/src/authority_live.rs": "b1b83e9cd5a862fbbd55d71b8ac258c1507d63fc34eea1c0564454b0c2ddd005",
+    "scripts/casper-soak/src/authority_mapping.rs": "a43281ff65e88ff071c8e619eadf97f6e647380c62cf5d382d0e736b13529736",
+    "scripts/casper-soak/src/authority_observer.rs": "9c475f185cbd829d37fbb33fa408358564a2500ea9582ff234f6c51bf9a72d6f",
+    "scripts/casper-soak/src/authority_p2p.rs": "b63ec8af444fea70ca81be8e57551eb6b09996887c9ac69a2d7a67f6d3824353",
+    "scripts/casper-soak/src/authority_process.rs": "a50eae1c5ccf7c587759408b941faefe6d5b285fa8554bd9c255aa35be1179fc",
+    "scripts/casper-soak/src/bin/casper-authority-finality.rs": "73336f04e3e0ac965bfe20de6f9c667a90a53034cab7e9febf55afec8a8e8a81",
+    "scripts/casper-soak/src/bin/casper-authority-live.rs": "b50320266f6a1ceae4a5b54bf142122245df458a88f970ad2cc9a04587bdba09",
+    "scripts/casper-soak/src/bin/casper-authority-observe.rs": "3b64e0c68dd46f410fcd98716decc99032aaf416c2a95912fa3343cd3a46572f",
+    "scripts/casper-soak/src/bin/casper-authority-p2p.rs": "7532566087870b365420adba1857bb4b8e0622cecc4d4c7800c0250462dfd2b1",
+    "scripts/casper-soak/src/bin/casper-authority-process.rs": "caad12c3290b4875e1de0bc6a5fe9fc0170e0b76da4fe922b76068013e7696ba",
+    "scripts/casper-soak/src/bin/casper-campaign-control.rs": "dbf6d2e263744217e66ada6cca0f8308b534e9e22e5a7f3065bc29999f48c515",
+    "scripts/casper-soak/src/bin/casper-campaign-models.rs": "c1b825ef51102de1331825c887366396ca4ccde31e83acdf7db8f561713b4bc6",
+    "scripts/casper-soak/src/bin/casper-campaign-reservation.rs": "e4dddfadbb59809be991522ebc5360226b17248487016045e30489ff4990a778",
+    "scripts/casper-soak/src/bin/casper-campaign-supervisor.rs": "33015a2fd6765f55301ac04540f842eb3cdb59ace9c53b09b8c19a9773b7305e",
+    "scripts/casper-soak/src/bin/casper-carrier-index.rs": "012a3c217cbc39ddf2d31d4236e46f85272af2d352ece9d52e96b831e131617c",
+    "scripts/casper-soak/src/bin/casper-merge-accounting.rs": "127b1e4ffffa0047bb0860ee08ba52f3ce2affc980e330652d95b99ef46de506",
+    "scripts/casper-soak/src/bin/casper-publication.rs": "2f0e7767e52c0d9decdf1572ddfb38ae41849088aadeed643e7d6ec9b02fb687",
+    "scripts/casper-soak/src/bin/casper-recovery.rs": "636bd7304910cda4dc400a1903f168ee324171574c7f7f9a7269332c75125d65",
+    "scripts/casper-soak/src/bin/casper-slashing.rs": "fbc7cb4f303f79f57aa8bc57a6c837f2507def6388fb789ffb3aafb062996b5a",
+    "scripts/casper-soak/src/bin/casper-version-phlo.rs": "ae9211deb4c0d519c241463209a01ed3ebb301e4bf1f3a8037663dab2c50db40",
+    "scripts/casper-soak/src/bin/check-casper-bindings.rs": "73f02925700815dddaecd3a5353b4a5a161cb77955ada1f06b76626dcb1e6c0a",
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": "ba7301dd0bdd1e8b2e93c04e12dbd44665196d0a5c680b731c9ae951ba83be24",
+    "scripts/casper-soak/src/campaign_control/mod.rs": "1131012be392236d3ccaaf0e3df4bc36cc8686d3fdd019342b5fc5d465a5662b",
+    "scripts/casper-soak/src/campaign_control/models.rs": "872945c189eb45c8845c22088e7697203ab80216f24cf7be533baf987e84da78",
+    "scripts/casper-soak/src/campaign_control/operations.rs": "a4e9d61ab8acedb102f34c4df58fdb25ef0ea593d11592885160bafad20b3358",
+    "scripts/casper-soak/src/campaign_control/results.rs": "499553cb313edd93b363a134eddac3a7b49dba29a07ed3bef8e69b9d893ee8fb",
+    "scripts/casper-soak/src/campaign_control/transport.rs": "e0b8843bb7d9fe2f0e1580441ba6e89c09a21bdabaa52c21c9b97e7fc0530f64",
+    "scripts/casper-soak/src/host_control.rs": "31c99688f2475b8d9756cd6fdd2f49af54981e50a07160c8a3f479ad8e80cfed",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/main.rs": "23d092ca695cde2aa3a78b242c13435c2f1cf73ac3532b8a0a96688b441696e8",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/src/profiles/authority_finality.rs": "76e7dc2cf1797718bec67e3aaf93aa77e446b60d4696b1b6f5bc16a79541fa30",
+    "scripts/casper-soak/src/profiles/carrier_index.rs": "4deffb17e398490678d4c5ecc09eb486c9110c4cbbf541da5a65cf2669cdfa62",
+    "scripts/casper-soak/src/profiles/merge_accounting.rs": "2e7e96dbfefd77688bb8f6c69ca7a6cd86782d5c00dab40b653ef1bd2884ca8f",
+    "scripts/casper-soak/src/profiles/publication.rs": "21848ac903ddf4cdcacfbc4ce3b31b1bd1033f64dc034c1bc11604cc544502c1",
+    "scripts/casper-soak/src/profiles/recovery.rs": "9bfa28120b773ac9e55b181d6f4d5c9f40e7b06ef5f86d5c5c41055d57b1e84e",
+    "scripts/casper-soak/src/profiles/slashing.rs": "00203010bcad782b9c9631aa72e5052f4d49830ca9ba08b0f7fcaf78c5dfd4c2",
+    "scripts/casper-soak/src/profiles/version_phlo.rs": "a43d719598ecce30c5be73a91db8bfe3d5930566e6ed22742aeb7fdc43a5f843",
+    "scripts/casper-soak/src/runtime.rs": "7fd98a56a01d42af70d2c0a988da27a9ef35b861c1d164663d75ac675743f85a",
+    "scripts/cbc-runtime.lock.json": "6982a02c314dc6e8dbe53b495e2bb10ae902891650b5f9a65bec6804a6c51665",
+    "scripts/cbc.sh": "3783e13d6f600a3e41523ff73ca4fc5611babc34b7677b4eb9ee45cce2f7a5fd",
+    "scripts/ci/check-soak-cleanup.sh": "483a938affa08e2a97ffcf9323e151ae8b4dc1da86aaf77dc2066f793ee5f9bd",
+    "scripts/ci/configure-cbc-trust.sh": "564f6500fc32de088eaf7ee2d8fc54eae6f651f5f5dcd58fc7e333a4337c4d80",
+    "scripts/ci/install-cbc-runtime.sh": "27fc4caa1bf2916f6f80dcd9f89a57d38ad803ce5699a4aed5438467b2c4e549",
+    "scripts/ci/test-cbc-runtime.sh": "669f08fbda6eb17d21978fe6464e5b8b6a50a305821487c9d84abbdbcd24072a",
+    "scripts/ci/test-soak-cleanup-model.sh": "619b1d7ba46247e88b1d5c31ebf1797a2f47cc735eaad4a7a3a0e02bc5f3488b",
+    "scripts/ci/test-soak-cleanup-regressions.sh": "4aba9165144827793a7505991f358b0ce699b17b63aaf506a08f139fc3f56177",
+    "scripts/ci/test-soak-cleanup.sh": "7117b95e482d897a040ce8cc83376a2612f53aa1c39b8b6836c8cc05080f5d72",
+    "scripts/ci/verify-soak-cleanup.sh": "eb5978aea0de5d5ad2b07408918d5ab4dd100289fe051122ad9e29c67a46fbd9",
+    "scripts/run-merge-recovery-soak.sh": "431094a0d64c5d2923474948e22112ef27292889b4c91d08bb7343d2be9fd12e"
+  },
+  "runtime": {
+    "repository": "https://gitlab.com/smart-assets.io/gitlab-profile.git",
+    "revision": "04a8badb8399ea7d54c477b153fa957161743072",
+    "source_directory": "AItools/scripts",
+    "sha256": {
+      "cbc.sh": "0c00f5e1566448198098fde8c0438296de620474df4b9c56bba3471dd7a71426",
+      "lib/cbc-identify.sh": "8bd0590afd899ebf62a4edd9abef755a0a040b2d48299a37bb3f7596efaf5553",
+      "lib/cbc-verify.sh": "b8576020f41c8d7a2161737eed9fcd22a9ce462c3efefed7d694301687eacbe5",
+      "lib/cbc-gate.sh": "d81313672435bc387fd3998427b8059c699b69cc4e82b34e4066f92df9f5e863",
+      "lib/cbc-ledger.sh": "ea9c3fc73307b450df3adc065dbb12ab9563bb40c8455a4ce0d7cee6fce6753e",
+      "lib/cbc-acceptance.py": "9982e4dd4372c53f08cd94c36580b7347b7cef8363f8ced63d1a261e6af1702f",
+      "lib/cbc-attributes.py": "a4b803895ff0f3be96ae0a9ba05297fb09b8c77f7125950a6bb043c528d6c63d",
+      "lib/cbc-adapters/mock.sh": "e670073d6ccd5dda561e14ee68ddd6605e192e1fa1150158426873122658d52f",
+      "lib/cbc-adapters/embedded.sh": "e6a8440f01ea53f9b0fb7c28454f52926e7702b063b2a0d0cbaf7e17dcbd959f",
+      "lib/cbc-adapters/agentic.sh": "10232d98c5b586130f41fb4887f24776441363c1537ffb369851f4bf79b4f1ce",
+      "lib/llm-client.sh": "65e6b7b8376e35f9f5f968027bd9f8734a9ef3edb662e0a57bf21a94526f2221",
+      "lib/providers/abacusai.sh": "f28be08138036f55df009a9547b34aa08881764e9ace273eae37337eb8608c10",
+      "lib/providers/anthropic.sh": "177112e80a11cc5af325fe7e6ad5a93ca6edc65632a383cd51a3a49b5f73b024",
+      "lib/providers/bedrock.sh": "dff39e8b50badc87d2143b6036f12c15649e4c97d8acf7fad1644e2d135f383f",
+      "lib/providers/gemini.sh": "193787bf97815aeea67c906949473027d72ce1c83e392bd53694e75f8c0f19da",
+      "lib/providers/local.sh": "9f64d99c9de6b7cac7e516c7d078fb20e5bf37f5416ee886d4eee838ac3c6ad5",
+      "lib/providers/nano-banana.sh": "3613a1c00304df20712483f32f5ef7c779d82ddddaf7f9cc16e421222bed60aa",
+      "lib/providers/openai.sh": "38d834dfa4b39ca91f0c34bd8b8e0f531366f2b06f1fe817f64afb7281c0d09b",
+      "lib/providers/openrouter.sh": "f621a3690ed91fa5be311703b4616f3a166206b81ecdb556447c705b7e670e73",
+      "lib/providers/xai.sh": "9b5b68cf56a33c637b4cfc31467954ce917cc30597f1711c7797f98370eae783"
+    }
+  },
+  "checks": [
+    {
+      "command": [
+        "bash",
+        "scripts/ci/test-soak-cleanup.sh"
+      ],
+      "exit": 0,
+      "log_sha256": "6b63861f2c30e38589a6d18b5ce74cb8eed95b22369b389f46cfc72656a5d6be"
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/ci/test-soak-cleanup-model.sh",
+        "model.json"
+      ],
+      "exit": 0,
+      "log_sha256": "6b2e649151cbdb17d52875ff86c244422d7863da4008aa456a8946af40ffb17e"
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/ci/test-soak-cleanup-regressions.sh",
+        "regressions.json"
+      ],
+      "exit": 0,
+      "log_sha256": "db75baefb94de3294e73916144033c5fa5bfb8a2b4933a3c7c7d145907e8883e"
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/bench/test-run-merge-recovery-soak.sh"
+      ],
+      "exit": 0,
+      "log_sha256": "f8cb92475fbd947870403b57c88a720c931f0cd9e0684f9012ee0abbf88a30d0"
+    }
+  ],
+  "model": {
+    "schema": "soak-cleanup-model/v1",
+    "results": [
+      {
+        "case": "clean",
+        "exit": 0,
+        "invariant": ""
+      },
+      {
+        "case": "SkipOwnerStop",
+        "exit": 12,
+        "invariant": "NoSuccessfulLeak"
+      },
+      {
+        "case": "SkipResidualStop",
+        "exit": 12,
+        "invariant": "NoSuccessfulLeak"
+      },
+      {
+        "case": "IgnoreStopFailure",
+        "exit": 12,
+        "invariant": "StopFailurePersists"
+      },
+      {
+        "case": "EraseReason",
+        "exit": 12,
+        "invariant": "ReasonPersists"
+      }
+    ]
+  },
+  "regressions": {
+    "schema": "soak-cleanup-regressions/v1",
+    "results": [
+      {
+        "case": "clean",
+        "exit": 0,
+        "assertion": ""
+      },
+      {
+        "case": "missing-owner-stop",
+        "exit": 1,
+        "assertion": "FAIL: owned writer survived"
+      },
+      {
+        "case": "missing-residual-stop",
+        "exit": 1,
+        "assertion": "FAIL: residual writer survived"
+      },
+      {
+        "case": "ignored-stop-failure",
+        "exit": 1,
+        "assertion": "FAIL: unconfirmed stop passed"
+      },
+      {
+        "case": "overwritten-reason",
+        "exit": 1,
+        "assertion": "FAIL: earlier reason overwritten"
+      }
+    ]
+  },
+  "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "harness_binary_sha256": "3948f1b3f0d3162b5b366f6dddffce167155ba3894de6ddbda3d73dceca84f4a",
+  "scope": "bounded-segment-cleanup",
+  "node_execution": false,
+  "maintainer_acceptance": "pending",
+  "live_soak": "pending"
+}

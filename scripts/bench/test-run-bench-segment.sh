@@ -131,11 +131,45 @@ grep -Fq "http://localhost:14413/api/status" "$TMP/probes4" || {
 }
 grep -Fq 'no host port for validator1 HTTP' "$TMP/stderr4" || { echo "fallback is not reported on stderr" >&2; cat "$TMP/stderr4" >&2; exit 1; }
 
+# docker/.env is not tracked (#745). A checkout with only the development
+# template must start the shard from it and take the deployer key from it. A
+# missing deployer key exits 2 before compose, so reaching compose up shows
+# that the key came from the template.
+mkdir -p "$TMP/repo5/docker" "$TMP/out5"
+: >"$TMP/repo5/docker/shard.yml"
+: >"$TMP/repo5/docker/ci-ports.shard.yml"
+printf 'BOOTSTRAP_PRIVATE_KEY=fixture-example\n' >"$TMP/repo5/docker/.env.example"
+status=0
+env -u DEPLOYER_KEY CONFIG_JSON="$TMP/config-ok.json" CALLS="$TMP/calls5" PROBES="$TMP/probes5" READY_TIMEOUT=1 \
+	PATH="$TMP/bin2:$PATH" NODE_REPO_DIR="$TMP/repo5" OUT_DIR="$TMP/out5" \
+	"$ROOT/scripts/bench/run-bench-segment.sh" >"$TMP/stdout5" 2>"$TMP/stderr5" || status=$?
+[ "$status" -eq 1 ] || { echo "expected exit 1 (shard not ready) with only docker/.env.example, got $status" >&2; cat "$TMP/stderr5" >&2; exit 1; }
+grep -Fq "compose --env-file $TMP/repo5/docker/.env.example -f $TMP/repo5/docker/shard.yml -f $TMP/repo5/docker/ci-ports.shard.yml -p soak-bench up -d" "$TMP/calls5" || {
+	echo "compose up does not read the shard keys from docker/.env.example" >&2
+	cat "$TMP/calls5" >&2
+	exit 1
+}
+
+# Without docker/.env, docker/.env.example and DEPLOYER_KEY, the segment
+# stops before compose and names the env file it read.
+mkdir -p "$TMP/repo6/docker" "$TMP/out6"
+: >"$TMP/repo6/docker/shard.yml"
+: >"$TMP/repo6/docker/ci-ports.shard.yml"
+: >"$TMP/calls6"
+status=0
+env -u DEPLOYER_KEY CONFIG_JSON="$TMP/config-ok.json" CALLS="$TMP/calls6" PROBES="$TMP/probes6" READY_TIMEOUT=1 \
+	PATH="$TMP/bin2:$PATH" NODE_REPO_DIR="$TMP/repo6" OUT_DIR="$TMP/out6" \
+	"$ROOT/scripts/bench/run-bench-segment.sh" >"$TMP/stdout6" 2>"$TMP/stderr6" || status=$?
+[ "$status" -eq 2 ] || { echo "expected exit 2 without a deployer key, got $status" >&2; cat "$TMP/stderr6" >&2; exit 1; }
+grep -Fq "no BOOTSTRAP_PRIVATE_KEY in $TMP/repo6/docker/.env" "$TMP/stderr6" || { echo "missing deployer key is not reported" >&2; cat "$TMP/stderr6" >&2; exit 1; }
+[ ! -s "$TMP/calls6" ] || { echo "compose ran without a deployer key" >&2; cat "$TMP/calls6" >&2; exit 1; }
+
 # The real compose files must merge to host ports below the ephemeral floor.
 # This needs docker compose. CI runs this test where Docker exists, so a
-# missing docker compose fails in CI and only skips locally.
+# missing docker compose fails in CI and only skips locally. The shard keys
+# come from docker/.env.example, because docker/.env is not tracked (#745).
 if docker compose version >/dev/null 2>&1; then
-	docker compose -f "$ROOT/docker/shard.yml" -f "$ROOT/docker/ci-ports.shard.yml" -p soak-bench \
+	docker compose --env-file "$ROOT/docker/.env.example" -f "$ROOT/docker/shard.yml" -f "$ROOT/docker/ci-ports.shard.yml" -p soak-bench \
 		config --format json >"$TMP/real-config.json"
 	jq -e '
 	  ([.services[].ports[]? | .published | tonumber] | length) > 0

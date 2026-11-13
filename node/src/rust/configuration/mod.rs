@@ -15,10 +15,23 @@ pub use commandline::Options;
 pub use model::{NodeConf, Profile};
 
 /// Embedded HOCON defaults — what every node starts from before applying
-/// the optional `<data-dir>/rnode.conf` override and CLI flags. Baked in
+/// the optional `<data-dir>/f1r3fly.conf` override and CLI flags. Baked in
 /// at compile time so the binary is self-contained (no `DEFAULT_DIR` env
 /// var, no on-disk `node/src/main/resources/defaults.conf` lookup).
 const EMBEDDED_DEFAULTS: &str = include_str!("../../main/resources/defaults.conf");
+
+/// Default config file name, checked at `<data-dir>/DEFAULT_CONFIG_FILE_NAME`
+/// when `--config-file` is not given.
+const DEFAULT_CONFIG_FILE_NAME: &str = "f1r3fly.conf";
+
+/// Legacy config file name from before the F1R3FLY rename. Used only as a
+/// fallback when the default file is absent.
+///
+/// TODO(#246): remove this fallback once `asi-chain-testbed` and
+/// `system-integration` stop mounting `rnode.conf` — both still hardcode
+/// that path as of this writing, so dropping it today would silently
+/// strand every container built from either repo on embedded defaults.
+const LEGACY_CONFIG_FILE_NAME: &str = "rnode.conf";
 
 /// Configuration building and parsing functionality
 pub mod builder {
@@ -48,7 +61,7 @@ pub mod builder {
             .and_then(|p| profiles().get(p).cloned())
             .unwrap_or_else(|| default_profile());
 
-        let (data_dir, config_file_path) = options
+        let (data_dir, explicit_config_file) = options
             .subcommand
             .as_ref()
             .and_then(|subcommand| match &subcommand {
@@ -57,29 +70,17 @@ pub mod builder {
                         .data_dir
                         .clone()
                         .unwrap_or_else(|| profile.data_dir.0.clone()),
-                    run_options
-                        .config_file
-                        .clone()
-                        .unwrap_or_else(|| profile.data_dir.0.join("rnode.conf")),
+                    run_options.config_file.clone(),
                 )),
                 _ => None,
             })
-            .unwrap_or_else(|| {
-                (
-                    profile.data_dir.0.clone(),
-                    profile.data_dir.0.join("rnode.conf"),
-                )
-            });
+            .unwrap_or_else(|| (profile.data_dir.0.clone(), None));
 
-        let config_file: Option<PathBuf> = if config_file_path.exists() {
-            Some(config_file_path)
-        } else {
-            None
-        };
+        let (config_file, mut warnings) = resolve_config_file_path(&data_dir, explicit_config_file);
 
         // Build configuration from multiple sources with proper precedence:
         // 1. CLI options (highest priority)
-        // 2. Config file (`<data-dir>/rnode.conf` or `--config-file <path>`)
+        // 2. Config file (`<data-dir>/f1r3fly.conf` or `--config-file <path>`)
         // 3. Embedded defaults baked into the binary (lowest priority)
         let default_config = hocon::HoconLoader::new().load_str(super::EMBEDDED_DEFAULTS)?;
 
@@ -117,7 +118,7 @@ pub mod builder {
 
         // Validate configuration, collecting non-fatal warnings to emit
         // after the tracing subscriber is installed.
-        let mut warnings = validate_config(&node_conf)?;
+        warnings.extend(validate_config(&node_conf)?);
 
         let (node_conf, dev_warnings) = check_dev_mode(node_conf);
         warnings.extend(dev_warnings);
@@ -225,12 +226,12 @@ pub mod builder {
             }
         }
 
-        // A dropped delivery freezes the receiver's view until the retriever
-        // recovers it, and the recovery that must fit inside the citability
-        // window is the FULL re-request ladder (every backoff interval until
-        // the retry budget exhausts), not just the first anchor interval.
+        // A dropped delivery freezes the receiver's view until block ingest
+        // asks for it again; the recovery that must fit inside the
+        // citability window is the re-request ladder up to its slowest
+        // interval, not just the first one.
         let recovery_span = std::time::Duration::from_millis(
-            casper::rust::engine::block_retriever::total_unresolved_rerequest_span_ms(),
+            casper::rust::blocks::ingest::fetch_scheduler::total_unresolved_rerequest_span_ms(),
         );
         if max_parent_depth != i32::MAX && max_parent_depth > 0 {
             let citability_window = node_conf
@@ -242,7 +243,7 @@ pub mod builder {
                 warnings.push(format!(
                     "the citability window (max-parent-depth {} x heartbeat.check-interval \
                     {:?} = {:?}) is smaller than the full dependency-recovery re-request \
-                    span ({:?} across the whole retry budget): a lost block delivery \
+                    span ({:?} until re-requests reach their slowest interval): a lost block delivery \
                     cannot finish recovering before its blocks fall below the parent-depth \
                     horizon, converting a dropped packet into a finality stall. Raise \
                     max-parent-depth or slow the cadence.",
@@ -264,17 +265,14 @@ pub mod builder {
                 max_parent_depth,
             ));
         }
+        if node_conf.casper.dag_hot_window_depth <= 0 {
+            return Err(eyre::eyre!("casper.dag-hot-window-depth must be positive"));
+        }
         if node_conf.casper.deploy_lifespan <= 0 {
             return Err(eyre::eyre!(
                 "casper.deploy-lifespan ({}) must be positive: a non-positive validity \
                 window inverts the expiry and repeat-deploy rules",
                 node_conf.casper.deploy_lifespan,
-            ));
-        }
-        if node_conf.casper.min_phlo_price < 0 {
-            return Err(eyre::eyre!(
-                "casper.min-phlo-price ({}) must be non-negative",
-                node_conf.casper.min_phlo_price,
             ));
         }
         if node_conf.casper.genesis_block_data.epoch_length <= 0 {
@@ -379,6 +377,58 @@ pub mod builder {
         Ok(warnings)
     }
 
+    /// Resolves the config file path, checking existence exactly once so
+    /// the caller never re-checks it. An explicit `--config-file` wins
+    /// outright. Otherwise, defaults to `<data-dir>/f1r3fly.conf`, falling
+    /// back to the legacy `<data-dir>/rnode.conf` (with a warning) when the
+    /// default is absent but the legacy file exists. Returns `None` when
+    /// no file was found at the resolved location, in which case the
+    /// caller loads embedded defaults only.
+    fn resolve_config_file_path(
+        data_dir: &std::path::Path,
+        explicit_config_file: Option<PathBuf>,
+    ) -> (Option<PathBuf>, Vec<String>) {
+        if let Some(path) = explicit_config_file {
+            if path.exists() {
+                return (Some(path), Vec::new());
+            }
+            // An operator asked for this exact file by name, so its
+            // absence is worth a warning even though embedded defaults
+            // are not themselves wrong — unlike the "nothing mounted at
+            // all" case below, this is never a normal supported startup.
+            let warning = format!(
+                "Config file {} not found; starting from embedded defaults only.",
+                path.display(),
+            );
+            return (None, vec![warning]);
+        }
+
+        let default_path = data_dir.join(DEFAULT_CONFIG_FILE_NAME);
+        if default_path.exists() {
+            return (Some(default_path), Vec::new());
+        }
+
+        let legacy_path = data_dir.join(LEGACY_CONFIG_FILE_NAME);
+        if legacy_path.exists() {
+            let warning = format!(
+                "{} not found; falling back to legacy {}. Rename it to {} — the \
+                fallback will be removed once every deployment that still mounts \
+                the legacy name has been updated.",
+                default_path.display(),
+                legacy_path.display(),
+                DEFAULT_CONFIG_FILE_NAME,
+            );
+            return (Some(legacy_path), vec![warning]);
+        }
+
+        // Neither name is mounted and nothing was asked for explicitly.
+        // Running on embedded defaults alone is a normal, supported mode
+        // (a fresh dev run, a container that intentionally ships no
+        // config) rather than a sign of misconfiguration, so this stays
+        // silent instead of warning on every such start.
+        (None, Vec::new())
+    }
+
     /// Check dev mode and adjust configuration accordingly. Returns the
     /// (possibly modified) NodeConf along with any non-fatal warnings.
     fn check_dev_mode(node_conf: NodeConf) -> (NodeConf, Vec<String>) {
@@ -432,6 +482,93 @@ pub mod builder {
         map.insert(def.name.to_string(), def);
         map.insert(dock.name.to_string(), dock);
         map
+    }
+
+    #[cfg(test)]
+    mod resolve_config_file_path_tests {
+        use super::*;
+
+        /// Every test gets its own UUID-suffixed directory, even the ones
+        /// that never create files, so a stale or concurrently-running
+        /// checkout (this repo's CI and local runs both land under the
+        /// shared system temp dir) can never collide with another run's
+        /// leftovers.
+        fn fresh_test_dir(label: &str) -> PathBuf {
+            std::env::temp_dir()
+                .join(label)
+                .join(uuid::Uuid::new_v4().to_string())
+        }
+
+        #[test]
+        fn explicit_path_wins_but_warns_if_absent() {
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-explicit");
+            let explicit = data_dir.join("custom.conf");
+            let (path, warnings) = resolve_config_file_path(&data_dir, Some(explicit.clone()));
+            assert_eq!(path, None);
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains(&explicit.display().to_string()));
+        }
+
+        #[test]
+        fn explicit_path_present_emits_no_warning() {
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-explicit-present");
+            std::fs::create_dir_all(&data_dir).expect("create test data dir");
+            let explicit = data_dir.join("custom.conf");
+            std::fs::write(&explicit, "").expect("write explicit config file");
+
+            let (path, warnings) = resolve_config_file_path(&data_dir, Some(explicit.clone()));
+
+            assert_eq!(path, Some(explicit));
+            assert!(warnings.is_empty());
+
+            std::fs::remove_dir_all(&data_dir).expect("clean up test data dir");
+        }
+
+        #[test]
+        fn is_silent_when_neither_default_nor_legacy_file_exists() {
+            // Embedded-defaults-only is a normal, supported startup (a
+            // fresh dev run, a container that ships no config on
+            // purpose) rather than a misconfiguration, so this must not
+            // warn on every such start.
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-neither");
+            let (path, warnings) = resolve_config_file_path(&data_dir, None);
+            assert_eq!(path, None);
+            assert!(warnings.is_empty());
+        }
+
+        #[test]
+        fn falls_back_to_legacy_rnode_conf_with_a_warning() {
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-legacy");
+            std::fs::create_dir_all(&data_dir).expect("create test data dir");
+            let legacy_path = data_dir.join(LEGACY_CONFIG_FILE_NAME);
+            std::fs::write(&legacy_path, "").expect("write legacy config file");
+
+            let (path, warnings) = resolve_config_file_path(&data_dir, None);
+
+            assert_eq!(path, Some(legacy_path));
+            assert_eq!(warnings.len(), 1);
+            assert!(warnings[0].contains(LEGACY_CONFIG_FILE_NAME));
+            assert!(warnings[0].contains(DEFAULT_CONFIG_FILE_NAME));
+
+            std::fs::remove_dir_all(&data_dir).expect("clean up test data dir");
+        }
+
+        #[test]
+        fn prefers_the_default_over_the_legacy_file_when_both_exist() {
+            let data_dir = fresh_test_dir("f1r3fly-config-path-test-both");
+            std::fs::create_dir_all(&data_dir).expect("create test data dir");
+            let default_path = data_dir.join(DEFAULT_CONFIG_FILE_NAME);
+            std::fs::write(&default_path, "").expect("write default config file");
+            std::fs::write(data_dir.join(LEGACY_CONFIG_FILE_NAME), "")
+                .expect("write legacy config file");
+
+            let (path, warnings) = resolve_config_file_path(&data_dir, None);
+
+            assert_eq!(path, Some(default_path));
+            assert!(warnings.is_empty());
+
+            std::fs::remove_dir_all(&data_dir).expect("clean up test data dir");
+        }
     }
 }
 
@@ -585,6 +722,7 @@ mod heartbeat_conf_hocon_tests {
 mod embedded_defaults_tests {
     use std::time::Duration;
 
+    use shared::rust::token_amount::TokenAmount;
     use shared::rust::tracing_init::{LogFormat, LogRotation, LogSink};
 
     use super::*;
@@ -599,7 +737,7 @@ mod embedded_defaults_tests {
 
         assert_eq!(
             cfg.logging.filter,
-            "info,tonic=error,hyper=error,tower=error,reqwest=error,heed=error,h2=error,comm::rust::transport::transport_layer=warn,casper::rust::engine::block_retriever=warn,casper::rust::engine::multi_parent_casper::validation_dispatcher=warn,casper::rust::util::rholang::interpreter_util=warn"
+            "info,tonic=error,hyper=error,tower=error,reqwest=error,heed=error,h2=error,comm::rust::transport::transport_layer=warn,casper::rust::engine::multi_parent_casper::validation_dispatcher=warn,casper::rust::util::rholang::interpreter_util=warn"
         );
         assert!(matches!(cfg.logging.format, LogFormat::Json));
         assert!(matches!(cfg.logging.sink, LogSink::Stdout));
@@ -631,6 +769,29 @@ mod embedded_defaults_tests {
     }
 
     #[test]
+    fn report_cache_retention_outside_its_range_is_rejected() {
+        for value in ["-1", "4294967296"] {
+            let override_config = format!("api-server.report-cache-retention-blocks = {value}");
+            let result: Result<NodeConf, _> = hocon::HoconLoader::new()
+                .load_str(EMBEDDED_DEFAULTS)
+                .unwrap()
+                .load_str(&override_config)
+                .unwrap()
+                .resolve();
+            assert!(result.is_err(), "{value}");
+        }
+
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .load_str("api-server.report-cache-retention-blocks = 4294967295")
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(cfg.api_server.report_cache_retention_blocks, u32::MAX);
+    }
+
+    #[test]
     fn negative_logging_byte_limits_are_rejected() {
         for field in ["max-file-size-bytes", "max-total-size-bytes"] {
             let override_config = format!("logging.file.{} = -1", field);
@@ -642,6 +803,100 @@ mod embedded_defaults_tests {
                 .resolve();
             assert!(result.is_err(), "{field}");
         }
+    }
+
+    #[test]
+    fn cli_accepts_uint256_bond_and_fee_limits() {
+        use clap::Parser;
+
+        use super::commandline::options::{Options, OptionsSubCommand};
+        let max = shared::rust::token_amount::MAX_DECIMAL;
+        let parsed = Options::try_parse_from([
+            "node",
+            "run",
+            "--bond-maximum",
+            max,
+            "--min-phlo-price",
+            max,
+        ])
+        .unwrap();
+        match parsed.subcommand.unwrap() {
+            OptionsSubCommand::Run(run) => {
+                assert_eq!(run.bond_maximum, Some(TokenAmount::max()));
+                assert_eq!(run.min_phlo_price, Some(TokenAmount::max()));
+            }
+            _ => panic!("expected run command"),
+        }
+        for flag in ["--bond-maximum", "--min-phlo-price"] {
+            for value in [
+                "-1".to_string(),
+                (TokenAmount::max().into_bigint() + 1u8).to_string(),
+            ] {
+                assert!(Options::try_parse_from(["node", "run", flag, &value]).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn token_amount_limits_reject_values_outside_the_token_range() {
+        for field in [
+            "genesis-block-data.bond-minimum",
+            "genesis-block-data.bond-maximum",
+            "min-phlo-price",
+        ] {
+            for value in [
+                "-1".to_string(),
+                (TokenAmount::max().into_bigint() + 1u8).to_string(),
+            ] {
+                let override_config = format!("casper.{field} = \"{value}\"");
+                let result: Result<NodeConf, _> = hocon::HoconLoader::new()
+                    .load_str(EMBEDDED_DEFAULTS)
+                    .unwrap()
+                    .load_str(&override_config)
+                    .unwrap()
+                    .resolve();
+                assert!(result.is_err(), "{field}={value}");
+            }
+        }
+    }
+
+    #[test]
+    fn bigint_bond_limits_preserve_defaults_and_explicit_overrides() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(base.casper.genesis_block_data.bond_minimum, 1.into());
+        assert_eq!(
+            base.casper.genesis_block_data.bond_maximum,
+            TokenAmount::max()
+        );
+        let configured: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .load_str(
+                "casper.genesis-block-data { bond-minimum = \"100000000000000000000\", bond-maximum = \"1000000000000000000000\" }",
+            )
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(
+            configured
+                .casper
+                .genesis_block_data
+                .bond_minimum
+                .to_string(),
+            "100000000000000000000"
+        );
+        assert_eq!(
+            configured
+                .casper
+                .genesis_block_data
+                .bond_maximum
+                .to_string(),
+            "1000000000000000000000"
+        );
     }
 
     /// A negative fault-tolerance threshold weakens "finalized" from a BFT
@@ -791,13 +1046,6 @@ mod embedded_defaults_tests {
         assert!(
             builder::validate_config(&cfg).is_err(),
             "deploy-lifespan 0 must fail startup"
-        );
-
-        let mut cfg = base.clone();
-        cfg.casper.min_phlo_price = -1;
-        assert!(
-            builder::validate_config(&cfg).is_err(),
-            "negative min-phlo-price must fail startup"
         );
 
         let mut cfg = base;
@@ -1033,13 +1281,13 @@ mod embedded_defaults_tests {
         let shipped = &cfg.casper.heartbeat_conf;
 
         assert!(shipped.enabled);
-        assert_eq!(shipped.check_interval, Duration::from_secs(5));
-        assert_eq!(shipped.max_lfb_age, Duration::from_secs(5));
+        assert_eq!(shipped.check_interval, Duration::from_secs(3));
+        assert_eq!(shipped.max_lfb_age, Duration::from_secs(3));
         assert_eq!(shipped.self_propose_cooldown, Duration::from_secs(3));
         assert_eq!(shipped.stale_recovery_min_interval, None);
         assert_eq!(
             shipped.resolved_stale_recovery_min_interval(),
-            Duration::from_millis(7_500)
+            Duration::from_millis(4_500)
         );
         assert_eq!(shipped.finality_progress_timeout, Duration::from_secs(30));
         assert_eq!(shipped.deploy_finalization_grace, Duration::from_secs(25));
@@ -1052,8 +1300,8 @@ mod embedded_defaults_tests {
             .load_str(
                 r#"
                 enabled = true
-                check-interval = 5 seconds
-                max-lfb-age = 5 seconds
+                check-interval = 3 seconds
+                max-lfb-age = 3 seconds
                 "#,
             )
             .expect("load sparse heartbeat conf")

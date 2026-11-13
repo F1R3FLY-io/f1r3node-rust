@@ -1,6 +1,5 @@
 pub mod approve_block_protocol;
 pub mod block_approver_protocol;
-pub mod block_retriever;
 pub mod casper_launch;
 pub mod engine;
 pub mod engine_cell;

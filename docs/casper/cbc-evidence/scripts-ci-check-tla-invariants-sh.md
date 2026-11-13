@@ -7,6 +7,8 @@ The prior harness evidence remains recorded below. This package does not automat
 
 ```json
 {
+  "schema": "cbc-claim/v1",
+  "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-001",
   "artifact": {
     "path": "scripts/ci/check-tla-invariants.sh",
     "id": "scripts-ci-check-tla-invariants-sh",
@@ -77,6 +79,89 @@ The prior harness evidence remains recorded below. This package does not automat
     "archive_sha256": "b595d2a87fc11dadec09f4d8ac50cc09a977ffc537b945edf06900c742e2243d",
     "member": "docs/casper/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
     "sha256": "4f00bf92dc209855ab2a55e880742a51ac07d967e48530317ee370e459e35d14"
+  }
+}
+```
+
+## Claim CLAIM-CASPER-NODE-OBSERVATION-005
+
+This record moved from `docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md` during the EPIC-026 R8 migration. The original bytes are Git blob `c4a7284a05682aedf155d606f23bd5dd5e1ae1d1` at `docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md` in commit `a59d92667685e3d655f269afd6a010df2fb720a9`.
+
+```json
+{
+  "schema": "cbc-claim/v1",
+  "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-005",
+  "artifact": {
+    "path": "scripts/ci/check-tla-invariants.sh",
+    "id": "scripts-ci-check-tla-invariants-sh",
+    "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
+    "commit_is_base": true,
+    "working_tree": false,
+    "sha256": "e66529c2356c4cbca0f10da9b3e72495450178f99f5c45699f7750a1083bf0b6",
+    "sha256_at_registration": "ca116baad47417a16dc7ad4f60cacf18cdb54fb5e7916bbb174965459632a3ed",
+    "sha256_before_refresh": "ca116baad47417a16dc7ad4f60cacf18cdb54fb5e7916bbb174965459632a3ed",
+    "sha256_before_verification_refresh": "e66529c2356c4cbca0f10da9b3e72495450178f99f5c45699f7750a1083bf0b6"
+  },
+  "claim": "docs/claims/casper-node-display-projection.md",
+  "claim_ids": [
+    "CLAIM-SOAK-GATE-001",
+    "CLAIM-CASPER-NODE-OBSERVATION-005"
+  ],
+  "claim_digests": {
+    "docs/claims/casper-node-display-projection.md": "6310f626415a6ba2d1250e2d656fdcb576415c6153deda1a26da55c617b8faad"
+  },
+  "status": "discharged",
+  "scope": "batch-e-acceptance-01",
+  "previous_record": {
+    "artifact": "scripts/ci/check-tla-invariants.sh",
+    "path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+    "sha256": "48ab8170ab49c620e1eb01d1b587a28138238736e1921a195c0503f570204cd7",
+    "commit": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f"
+  },
+  "evidence": {
+    "kind": "tiered-evidence-accepted",
+    "ref": "docs/cbc-evidence/runs/casper-node-display-projection-batch-e-01/report.json",
+    "sha256": "52f766491135dcf59b72d935e8ef697251fba1cebbe2a5d3f11ae5d47f87393a"
+  },
+  "tiers": {
+    "refutation": "recorded",
+    "construction": "recorded-partial",
+    "binding": "recorded"
+  },
+  "soak": "pending",
+  "waiver": null,
+  "verified_at": "2026-10-01T03:59:08+00:00",
+  "previous_refresh_record": {
+    "path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+    "commit": "7b023678c8ab6e32fe8266624cf10e087ef89d57",
+    "sha256": "c20e890a0430bad7e0ab6d70065368c54e11e8e2d3cd67902bf5d573a995cd41"
+  },
+  "claim_digests_before_refresh": {
+    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
+  },
+  "refreshed_at": "2026-10-01T01:06:08.639Z",
+  "refresh_scope": "batch-e-final-source-evidence-renewal",
+  "claim_digests_before_verification_refresh": {
+    "docs/claims/casper-node-display-projection.md": "ace855346324009b5f08972b5c12e043abaf8889ff40501b525d0fa09cd49dce"
+  },
+  "verification_refresh_record": {
+    "path": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+    "commit": "c83b16f30b28fd9ef3fb7dcdccaa1ff4876cbd03",
+    "sha256": "845d77d915ca90f43ce8b3aa9efbed516f45442ef09a247233f3ce6c05403ea2"
+  },
+  "verification_observation": {
+    "scope": "batch-e-final-source-verification-20261001-01",
+    "refutation": "bounded-models-passed",
+    "construction": "scoped-integer-proofs-passed-with-declared-gaps",
+    "binding": "named-source-tests-passed-not-refinement",
+    "adapter_discharge": false
+  },
+  "acceptance": {
+    "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-005",
+    "accepted_by": "jltatbeach",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/447#issuecomment-5924422936",
+    "revision": "1a9839b0e52e494e20ab13c0a79a55bd2164e34f",
+    "reviewed_at": "2026-10-01T03:56:25Z"
   }
 }
 ```

@@ -986,7 +986,13 @@ new
   // before edge between the mutator and any subsequent lookup in
   // the same deploy; genesis is the sole registrant under this
   // pk_hex/proj pair by construction so it cannot collide.
-  v1Api(`rho:registry:v1:internal`), insertVerRet, allocInsertVerRet
+  v1Api(`rho:registry:v1:internal`), insertVerRet, allocInsertVerRet,
+  // Mutator argument for the VersionedRegistry inserts below. Bound
+  // here so its GDeployerId carries the fs_generator's pubkey; the
+  // store key the mutator derives matches FS_GENERATOR_PUB_KEY_HEX.
+  // See VersionedRegistry.rho's Identity comment for the mutator
+  // deployerId-param rationale.
+  deployerId(`rho:system:deployerId`)
 in {{
   {file_body}
   |
@@ -1046,7 +1052,7 @@ in {{
     // resolution pinned by
     // `fs_cap_is_resolvable_via_versioned_registry_uri` in
     // `casper/tests/genesis/contracts/fileio_fs_spec.rs`.
-    v1Api!("insertVersion", "serve", "fs", "1.0.0", fs, *insertVerRet) |
+    v1Api!("insertVersion", "serve", "fs", "1.0.0", fs, *deployerId, *insertVerRet) |
     for (@_ <- insertVerRet) {{ Nil }}
   }} |
   // PB-B-5 (2026-09-02): mint one shared Allocator instance and
@@ -1068,7 +1074,7 @@ in {{
   // constructors on module-scope agents already lexically in the
   // outer `new` binding, so no ordering constraint between them.
   for (@alloc <- Allocator!?()) {{
-    v1Api!("insertVersion", "serve", "buffer", "1.0.0", alloc, *allocInsertVerRet) |
+    v1Api!("insertVersion", "serve", "buffer", "1.0.0", alloc, *deployerId, *allocInsertVerRet) |
     for (@_ <- allocInsertVerRet) {{ Nil }}
   }}
 }}
@@ -1581,8 +1587,11 @@ mod tests {
             let _ = write!(acc, "{b:02x}");
             acc
         });
-        // Byte-identity with fileio canonical as of slice 5.16 port.
-        const EXPECTED: &str = "7c77708966b08f594c469510a2645bd34d490ca67aa465b19e5dabcac3e107cb";
+        // Byte-identity with fileio canonical as of the rho:deploy:data
+        // output-shape consolidation (middle slot is a ByteArray; mutator
+        // calls thread *deployerId explicitly from the generator's own
+        // `new`).
+        const EXPECTED: &str = "30b1ad0f203b8facd8aceb9e4307eeb91122645895cfab15d85d72fce086f22e";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash changed.  If intentional \
@@ -1707,6 +1716,7 @@ mod tests {
             ("lockSequential", 5), // (fd, holder, cmode, wait, ack)
             ("releaseLock", 3), // (lockId, holder, ack)
             ("releaseAllForHolder", 2), // (holder, ack)
+            ("mkdir", 6),     // (root, rel, mode, parents, cmode, ack)
         ];
 
         // Every FS_HANDLERS entry must have a golden-table row with
@@ -2427,13 +2437,13 @@ mod tests {
             let _ = write!(acc, "{b:02x}");
             acc
         });
-        // Byte-identity with fileio canonical as of slice 5.26 port.
-        // Regenerate via
+        // Byte-identity with fileio canonical as of the rho:deploy:data
+        // output-shape consolidation. Regenerate via
         //   cargo test -p casper --lib -- --nocapture \
         //     compose_fs_genesis_source_golden_hex_with_non_empty_bundle
         // ONLY when intentionally hard-forking the Genesis composition
         // OR the bundle format (both are hard-fork surfaces).
-        const EXPECTED: &str = "765003e0e57c1b428fb9c60ae03126d20ee3fd57dd0869b0a1cb5e806fba7ef6";
+        const EXPECTED: &str = "9c8ad9596d95446ba57a38fcc0ff44d75d32376047c7a86c79cefa82c5d00702";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash for non-empty bundle changed. \
@@ -2508,13 +2518,13 @@ mod tests {
             let _ = write!(acc, "{b:02x}");
             acc
         });
-        // Byte-identity with fileio canonical as of slice 5.27 port.
-        // Regenerate via
+        // Byte-identity with fileio canonical as of the rho:deploy:data
+        // output-shape consolidation. Regenerate via
         //   cargo test -p casper --lib -- --nocapture \
         //     compose_fs_genesis_source_golden_hex_with_sort_tie_bundle
         // ONLY when intentionally hard-forking Genesis composition
         // OR bundle format.
-        const EXPECTED: &str = "14c48a0f71dabc160f4b280b916c4b5f8a750eda6efa7b4160e3f6ee087255c7";
+        const EXPECTED: &str = "706bef599eb5b6f89179b56c61a72deba3f90752c7a254b2461ba90c3ea64c87";
         assert_eq!(
             hex, EXPECTED,
             "compose_fs_genesis_source() hash for sort-tie bundle changed. \

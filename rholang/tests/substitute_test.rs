@@ -80,6 +80,40 @@ fn substitute_should_retain_all_non_empty_par_ed_connectives() {
             connective_instance: Some(ConnectiveInstance::ConnByteArray(true)),
         },
         Connective {
+            connective_instance: Some(ConnectiveInstance::ConnInt32(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnUint64(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnUint32(false)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnUint16(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnUint8(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnFloat64(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnFloat32(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnBigInt(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnBigRat(true)),
+        },
+        Connective {
+            connective_instance: Some(ConnectiveInstance::ConnFixedPointBody(
+                models::rhoapi::ConnFixedPointBody {
+                    scale: Some(Par::default()),
+                },
+            )),
+        },
+        Connective {
             connective_instance: Some(ConnectiveInstance::ConnOrBody(ConnectiveBody {
                 ps: vec![],
             })),

@@ -1,177 +1,100 @@
-# F1R3node Rust — Pure Rust Blockchain Node
+---
+cross_references:
+  - purpose: current
+    repository: https://gitlab.com/smart-assets.io/gitlab-profile
+    checkout: ../../SA/top-level-gitlab-profile
+    revision: master
+    path: docs/common/git-interaction-policy.md
+    url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/git-interaction-policy.md
+  - purpose: current
+    repository: https://gitlab.com/smart-assets.io/gitlab-profile
+    checkout: ../../SA/top-level-gitlab-profile
+    revision: master
+    path: docs/common/core-prompt/simplified-technical-english.md
+    url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/core-prompt/simplified-technical-english.md
+  - purpose: current
+    repository: https://gitlab.com/smart-assets.io/gitlab-profile
+    checkout: ../../SA/top-level-gitlab-profile
+    revision: master
+    path: docs/common/cross-reference-standards.md
+    url: https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/cross-reference-standards.md
+---
 
-AI assistant guidance for F1R3node Rust — Pure Rust Blockchain Node. This file follows the Agentic AI Foundation (Linux Foundation) standard for AI coding assistants.
-
-## Project Context
-- Pure Rust implementation of the F1R3FLY.io blockchain platform
-- Extracted from the `rust/dev` branch of [f1r3fly](https://github.com/F1R3FLY-io/f1r3fly) as a standalone Rust workspace
-- **No Nix, no SBT, no Scala** — this repo builds with standard Rust tooling (cargo + system deps)
-- Implements concurrent smart contract execution with Byzantine Fault Tolerant consensus
-- If the user does not provide enough information with their prompts, ask the user to clarify before executing the task
-
-## Code Style and Standards
-
-- **No comments** unless explicitly requested by user
-- Zero-cost abstractions, proper ownership
-- Async/await with Tokio runtime
-- Error handling: `eyre` for application errors, `thiserror` for library errors
-- Logging: `tracing` crate throughout
-- Serialization: `prost` for protobuf, `serde` for JSON/bincode
-
-Three crates have `build.rs` for protobuf code generation:
-- `node/build.rs` — `repl.proto`, `lsp.proto`
-- `models/build.rs` — `RhoTypes.proto`, `CasperMessage.proto`, `DeployServiceV1.proto`, etc.
-- `comm/build.rs` — `kademlia.proto`
-
-- `.cargo/config.toml` — stack size (8MB for rholang recursion), native CPU features
-- `rust-toolchain.toml` — nightly channel pin
-- `Cross.toml` — cross-compilation for amd64/arm64
+# F1R3node Agent Instructions
 
 <!-- ste-policy: required -->
 
-## Simplified Technical English
-<!-- ste-policy: full -->
+This repository implements a pure Rust blockchain node with CBC Casper consensus.
+Use Cargo and system dependencies. Do not introduce Nix, SBT, or Scala.
+`CLAUDE.md` loads this file. Keep shared instructions here and detailed policies in their existing sources.
 
-Smart Assets uses ASD-STE100 Simplified Technical English, Issue 9, dated January 2025, for applicable English technical prose.
+## Start here
 
-This policy is a Smart Assets applicability profile. The ASD standard remains the authoritative source for its rules and controlled dictionary.
+1. Read [ToDos](docs/ToDos.md) and related work logs for task status, claims, and earlier progress.
+2. Read the [contribution guide](CONTRIBUTING.md) before changing the repository.
+3. Follow the applicable sources in the reference map below.
 
-Get the current standard from the [official ASD-STE100 website](https://www.asd-ste100.org/) or its [official downloads page](https://www.asd-ste100.org/STE_downloads.html).
+Follow the user's current instructions when repository guidance conflicts with them.
+Trace new policy requirements to user instructions or an approved decision.
+Existing code, generated claims, and historical evidence do not establish authorization for a new requirement.
 
-ASD owns the standard and the ASD-STE100 trademark. Do not copy its controlled dictionary, examples, or substantial rule text into this repository.
+Do only the requested work. Ask for clarification when required information is missing.
+Before code changes, identify the affected files, method, and assumptions.
+Use a subagent only when the user explicitly requests delegation.
 
-### Applicability
+## Git controls
 
-Use this policy for English technical prose that an assistant creates or substantially rewrites, including:
+Follow the workspace Git policy declared in the frontmatter before changing repository state.
+Interactive mode is the default. A user-created worktree does not select agentic mode.
 
-- Assistant responses
-- Technical documentation
-- Plans and specifications
-- Procedures and instructions
-- Warnings and cautions
-- Review findings
-- User-facing explanations and status messages.
+- Run GitHub CLI commands as `env -u GITHUB_TOKEN gh ...` to use stored credentials.
+- Use the harness commit and push commands. Do not directly stage, commit, or push unless explicitly requested.
+- Commit consent permits one commit, including merge commits and equivalent plumbing operations.
+- Resolve merge conflicts without a merge commit unless the user separately authorizes that commit.
+- Work in this checkout. Do not create a worktree without an explicit user request in interactive mode.
+- Get confirmation before moving files with Git or removing or pruning worktrees.
+- Get confirmation before stash mutations. Do not use stash `pop`, `drop`, `clear`, or `branch`.
+- Do not commit or move another agent's changes.
+- Do not add assistant attribution, emoji, `Co-Authored-By`, or `Claude-Session` trailers. Disable harness co-author attribution.
+- Use the `[agent]` commit prefix in explicitly selected agentic mode.
+- Let Mergify merge pull requests. Merges into `ca-canary` require no pre-merge soak status or label.
+- Open new pull requests with `--label ci-heavy`, unless the documented maintainer waiver applies.
 
-Preserve unaffected legacy prose. Apply this policy to the text that the assistant adds or substantially changes.
+## Development controls
 
-If the user explicitly requests another language, use that language. If you report STE status, mark STE as not applicable to that output.
+- Use Rust and Bash for new work. Do not add code comments unless the user requests them.
+- Keep the pinned shared CbC runtime outside this repository. Keep its launcher, installer, and checks in Rust or Bash.
+- Preserve the scoped Python exception for `scripts/bench/extend-issue24-metrics.py` and its test.
+- Remove legacy Python when its formal witnesses or older inline scripts next change.
+- Never expose credentials, private keys, or personal data in source, examples, logs, or errors.
+- Reuse existing JSONC or JSON5 configuration. Prefer JSONC for new configuration when comments help maintenance.
+- Keep harness settings personal. Disable checkpoints that run stash or hard reset around tool events.
+- Set shell timeouts to at least 20 minutes, with a maximum of 30 minutes, for the pre-push gate.
 
-This policy does not apply to:
+For React tests, assert user-observable structure, state, and behavior through accessible queries.
+Use `data-testid` when no accessible handle exists, or for stable component boundaries.
+Assert literal copy or values only when copy, formatting, or content transformation is the requirement.
+Avoid display-copy counts and CSS classes as substitutes for behavior assertions.
 
-- Code, identifiers, commands, flags, paths, URLs, and schema keys
-- Data formats, exact test fixtures, and machine-generated text
-- Verbatim quotations and user-supplied text
-- Third-party names, standard titles, and legal or license text.
+## Writing controls
 
-Do not change technical meaning, safety controls, legal meaning, or exact user requirements only to satisfy a language rule.
+Read and follow the STE and cross-reference policies declared in the frontmatter before writing technical prose.
+Use Markdown and Mermaid as the canonical artifact format. Generate HTML exports when requested.
+Use document-relative links within this repository and structured records for references to other repositories.
+Run the STE Check for changed prompt or policy files and the reference checker for changed Markdown files.
+An automated STE Check does not replace human STE Review.
 
-### Words and terminology
+## Reference map
 
-Use the official Issue 9 dictionary as the source for general approved words. Do not copy the dictionary into project files.
+| When needed | Existing source |
+| --- | --- |
+| Branches, commits, security, and contributions | [Contribution guide](CONTRIBUTING.md) |
+| Setup, toolchain, hooks, commands, and workspace layout | [Developer guide](DEVELOPER.md) |
+| Rust patterns, async work, errors, logging, and serialization | [Patterns](docs/patterns/README.md) |
+| Crates and component architecture | [Documentation index](docs/README.md) |
+| Canonical terminology | [Glossary](docs/Glossary.md) |
+| Commit identities, transfers, CI, waivers, and queues | [CI guide](docs/ci.md) |
+| Stories, epics, claims, coordination, and skill names | [Task tracking](docs/task-tracking.md) |
+| Correctness claims and evidence | [CbC verification tiers](docs/cbc-verification-tiers.md) |
 
-Use a word only with its approved part of speech, meaning, and form. Use American English spelling unless another directive controls the text.
-
-Use approved technical nouns and technical verbs for the applicable subject field. Record recurring Smart Assets terms in `docs/Glossary.md`.
-
-Use one technical noun for one concept. Do not replace a canonical term with a synonym only for stylistic variation.
-
-Keep a new technical noun short and easy to understand. Use no more than three words unless an approved term requires more words.
-
-Do not use regional words, slang, or unexplained jargon. Define an unavoidable abbreviation at its first use.
-
-Use technical nouns as nouns. Use technical verbs as verbs and only in their approved software-development meaning.
-
-### Grammar and sentences
-
-Use active voice. In descriptive text, use passive voice only when the agent is unknown or technically unimportant.
-
-Use simple verb forms and tenses. Avoid progressive and other complex constructions unless an exempt technical term requires them.
-
-Use a direct verb to describe an action. Do not hide an action in an abstract noun phrase.
-
-Write complete sentences. Do not omit articles, subjects, verbs, or necessary nouns to make a sentence shorter.
-
-Do not use contractions. Do not use semicolons.
-
-Keep each sentence focused on one subject. Use a vertical list when one sentence would contain complex items or actions.
-
-Make each pronoun refer to one clear noun. Repeat the technical noun when a pronoun can have more than one meaning.
-
-### Procedures
-
-Use a maximum of 20 words in each procedural sentence. Use one instruction in each sentence unless actions occur at the same time.
-
-Start each instruction with an imperative verb. Put a necessary condition before the instruction and separate it with a comma.
-
-Use numbered steps when sequence is important. Keep information-only notes separate from instructions, requirements, limits, and safety information.
-
-### Descriptions
-
-Use a maximum of 25 words in each descriptive sentence. Give information gradually and keep one topic in each paragraph.
-
-Start each paragraph with its topic. Use no more than six sentences in one paragraph.
-
-Use consistent key words to connect related sentences. Start a new paragraph when the topic changes.
-
-### Safety information
-
-Use the project-approved risk word or symbol. Start with a clear command or condition, and then state the risk or possible result.
-
-Do not hide safety information in a note. Keep safety controls and their consequences explicit.
-
-### Verification
-
-An **STE Check** is deterministic. It can check policy coverage, sentence limits, paragraph limits, contractions, semicolons, and selected exemptions.
-
-An **STE Review** is semantic. A human reviewer must check vocabulary, meaning, active voice, referents, terminology, and technical accuracy.
-
-For committed prompt and policy files, run the repository STE Check. Review all applicable new or substantially rewritten prose before completion.
-
-A checker cannot establish full ASD-STE100 conformance. Do not claim that text is ASD-STE100 compliant only because an automated check passes.
-
-## Git Interaction
-
-- Do not run `git add`, `git commit`, or `git push` unless explicitly requested
-- Commit consent applies to one commit. Do not create a commit without a clear request for that commit.
-- This rule includes merge commits and plumbing equivalents such as `commit-tree` and `update-ref`.
-- Consent from a plan, an earlier commit, or a prior merge does not apply.
-- A request to resolve merge conflicts authorizes conflict resolution only.
-- Resolve the files, verify the build, report the result, and stop before the merge commit.
-- Do not use `git stash pop|drop|clear|branch`. These commands can lose changes.
-- Other stash writes require user confirmation. You can use `stash list` and `stash show`.
-- See `CLAUDE.md` § "Git Interaction Policy" for the full rules
-
-## Subagent Usage
-
-- Only use a subagent if the user has explicitly told you to do so
-- Do not delegate work to subagents on your own initiative. Perform tasks directly by default
-
-## Project Workflow
-
-- Coordinate with other agents through shared Markdown files. Read `docs/ToDos.md` before you start, and claim a task there before you work on it.
-- For a significant feature, write the user story, the design, and the specification before the code. Then add the epic and its tasks to `docs/ToDos.md`.
-- Task identifiers use the form `TASK-NNN-N`, where `NNN` is the epic number. Give each task an `acceptance` list of measurable conditions.
-- Record the value stream on the user story. An epic gets its value stream through its `user_story` field.
-- See `CLAUDE.md` § "Project Workflow" for the claim format, the optional task fields, and the workspace standards.
-
-## Cross-Repository References
-
-- Use a document-relative Markdown link for a file in this repository.
-- Use a `yaml cross-reference` record for current guidance in another repository. Do not write a Markdown link to a file in another repository.
-- See `CLAUDE.md` § "Cross-Repository References" for the record fields and the check command.
-
-## Development Modes
-
-| Mode | Command | Git access |
-|------|---------|------------|
-| Safe | `claude` / `claude-safe` | Through `/quick-commit` and `/recursive-push` only |
-| Agentic | `claude-agentic` | Direct git access |
-| YOLO | `claude-agentic` in a worktree that the human created | Full autonomy in isolation |
-
-Safe mode is the default. Agents never create worktrees outside agentic mode.
-
-## Security
-- Never log or expose private keys
-- Validate all user inputs and state transitions
-- TLS 1.3 for P2P communications
-- Capability-based security in Rholang contracts
+Load each source when its subject applies. Update the existing source instead of copying its policy into another file.

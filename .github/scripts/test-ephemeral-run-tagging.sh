@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-WORKFLOW="$ROOT/.github/workflows/_integration-pipeline.yml"
+WORKFLOW="${1:-$ROOT/.github/workflows/_integration-pipeline.yml}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 

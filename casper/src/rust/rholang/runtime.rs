@@ -24,6 +24,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
+use models::rust::deploy_parameters::DeployParameter;
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
@@ -40,7 +41,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::rho_type::{bytes_to_bigint, RhoNumber};
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
@@ -51,6 +52,7 @@ use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -82,6 +84,15 @@ static EXPLORATORY_KEY_PAIR: OnceLock<(PrivateKey, PublicKey)> = OnceLock::new()
 
 fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
     EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
+}
+
+/// The parameters validity rules fork on, as genesis baked them into PoS.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsensusParameters {
+    pub max_parent_depth: i32,
+    pub deploy_lifespan: i64,
+    pub min_phlo_price: TokenAmount,
+    pub epoch_length: i32,
 }
 
 pub struct RuntimeOps {
@@ -439,6 +450,10 @@ impl RuntimeOps {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
+        deploy
+            .data
+            .validate_amounts()
+            .map_err(CasperError::RuntimeError)?;
         let mut eval_collector_state = EvalCollector::new();
 
         let deploy_pk = deploy.pk.bytes.clone();
@@ -605,6 +620,24 @@ impl RuntimeOps {
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
+        // Per-deploy filesystem RAII guard.  Brackets WAL + lock-
+        // registry + handle-table state for this deploy; Drop sweeps
+        // on either the happy path (after `commit()`) or any error-
+        // return path (uncommitted → WAL truncates + locks/fds swept).
+        // The constructor derives a per-execution unique scope from
+        // the deploy sig + an internal 128-bit nonce, so concurrent
+        // play+replay of the same signature against a manager-shared
+        // `SharedLockRegistry` never share scopes.  Caller holds the
+        // guard for the full `process_deploy` body.
+        let mut wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                &deploy.sig,
+                deploy.sig.to_vec(),
+                self.runtime.fs_handles.clone(),
+            );
+
         // Keep a soft checkpoint before user deploy execution so failed deploy rollback
         // preserves pre-charge side effects required by refundDeploy.
         let fallback = self.runtime.create_soft_checkpoint().await;
@@ -630,9 +663,16 @@ impl RuntimeOps {
             system_deploy_error: None,
         };
 
-        if !eval_succeeded {
+        if eval_succeeded {
+            // Preserve this deploy's WAL contributions for the block
+            // snapshot.  Lock + handle sweeps still fire on Drop.
+            wal_scope.commit();
+        } else {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
             interpreter_util::print_deploy_errors(&deploy_sig, &eval_result.errors);
+            // Guard stays uncommitted — Drop at function return
+            // truncates WAL, cancels + releases locks under this
+            // scope, and spawns the fd/dir-stream sweep.
         }
 
         Ok((deploy_result, eval_result.mergeable))
@@ -813,6 +853,30 @@ impl RuntimeOps {
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
             .await?;
+
+        // Per-system-deploy filesystem RAII guard.  System deploys
+        // (slash, closeBlock) have no primary-signer sig, so the
+        // scope seed combines a system-deploy marker + the input
+        // `state_hash`.  The constructor mixes in a 128-bit nonce so
+        // concurrent executions still derive distinct scopes.
+        // Guard is bound and never committed: system deploys don't
+        // contribute to the block-level WAL (handlers are expected
+        // not to touch fs-native URNs today), so Drop truncates any
+        // leaked entries, cancels + releases any locks taken, and
+        // spawns the fd/dir-stream sweep.
+        let scope_seed = [b"system-deploy:" as &[u8], state_hash].concat();
+        let _wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                &scope_seed,
+                // System deploys have no signer sig; empty vector
+                // signals journal_write to skip its payload-source
+                // record step while still letting payload_hash land
+                // in the WAL.
+                Vec::new(),
+                self.runtime.fs_handles.clone(),
+            );
 
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;
@@ -999,17 +1063,18 @@ impl RuntimeOps {
         hash: &StateHash,
         deployer: Option<PublicKey>,
         phlo_limit: i64,
+        parameters: Vec<DeployParameter>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
             let data = DeployData {
                 term,
                 time_stamp: 0,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit,
                 valid_after_block_number: 0,
                 shard_id: String::new(),
                 expiration_timestamp: None,
-                parameters: Vec::new(),
+                parameters,
             };
 
             let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
@@ -1512,14 +1577,13 @@ impl RuntimeOps {
         })
     }
 
-    /// The on-chain consensus parameters `(max-parent-depth, deploy-lifespan,
-    /// min-phlo-price)` baked into the PoS contract at `start_hash`. Returns
-    /// `None` when the contract does not expose the getter (a chain whose
-    /// genesis predates the parameters).
+    /// The on-chain consensus parameters baked into the PoS contract at
+    /// `start_hash`. Returns `None` when the contract does not expose the
+    /// getter (a chain whose genesis predates the parameters).
     pub async fn get_consensus_parameters(
         &mut self,
         start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+    ) -> Result<Option<ConsensusParameters>, CasperError> {
         // STRICT query — same rationale as the protocol-FTT read: a runtime
         // failure must fail startup, never degrade into the local-config arm.
         let pars = self
@@ -1557,10 +1621,20 @@ impl RuntimeOps {
         };
 
         match pars[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 3 => {
+            Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 4 => {
                 let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
                 let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
-                let min_phlo = int_at(tuple, 2).ok_or_else(|| bad("non-integer minPhloPrice"))?;
+                let min_phlo = match tuple.ps[2]
+                    .exprs
+                    .first()
+                    .and_then(|expr| expr.expr_instance.as_ref())
+                {
+                    Some(ExprInstance::GBigInt(bytes)) => TokenAmount::new(bytes_to_bigint(bytes))
+                        .map_err(|error| bad(&format!("minPhloPrice: {error}")))?,
+                    _ => return Err(bad("non-BigInt minPhloPrice")),
+                };
+                let epoch_length =
+                    int_at(tuple, 3).ok_or_else(|| bad("non-integer epochLength"))?;
                 // RANGE GATES at the single read choke point. The parent-spread
                 // rule takes mpd as i32 (i32::MAX = depth check disabled); a
                 // window of zero or less inverts the expiry and repeat rules;
@@ -1577,14 +1651,20 @@ impl RuntimeOps {
                         "deployLifespan out of range [1, i32::MAX]: {lifespan}"
                     )));
                 }
-                if min_phlo < 0 {
+                // Epochs divide block numbers; zero or less has no epoch.
+                if !(1..=i32::MAX as i64).contains(&epoch_length) {
                     return Err(bad(&format!(
-                        "minPhloPrice out of range [0, i64::MAX]: {min_phlo}"
+                        "epochLength out of range [1, i32::MAX]: {epoch_length}"
                     )));
                 }
-                Ok(Some((mpd as i32, lifespan, min_phlo)))
+                Ok(Some(ConsensusParameters {
+                    max_parent_depth: mpd as i32,
+                    deploy_lifespan: lifespan,
+                    min_phlo_price: min_phlo,
+                    epoch_length: epoch_length as i32,
+                }))
             }
-            other => Err(bad(&format!("expected a 3-tuple, got {other:?}"))),
+            other => Err(bad(&format!("expected a 4-tuple, got {other:?}"))),
         }
     }
 
@@ -1691,9 +1771,10 @@ impl RuntimeOps {
                 }?;
 
                 let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
-                    ExprInstance::GInt(g_int) => Ok(*g_int),
+                    ExprInstance::GBigInt(bytes) => TokenAmount::new(bytes_to_bigint(bytes))
+                        .map_err(|error| CasperError::RuntimeError(format!("stake: {error}"))),
                     _ => Err(CasperError::RuntimeError(
-                        "Expected GInt in stake data".to_string(),
+                        "Expected BigInt in stake data".to_string(),
                     )),
                 }?;
 

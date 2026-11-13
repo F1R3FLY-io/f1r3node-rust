@@ -13,28 +13,15 @@
 // `FileHandle` for the fd's lifetime; `fs_size` doesn't take a
 // cmode arg, so this is the only source.
 //
-// # WAL state-read journaling (Wave 6 scope)
+// # WAL state-read journaling
 //
-// Fileio's fs_size calls `journal_state_read_via_table(handles,
-// cmode, WalOp::Size, canon_path, reply, ack, None)` inside its
-// `journal` method.  That helper (in `handlers_helpers.rs` on
-// fileio) writes a `WalOp::Size` entry recording the leader's
-// observation so the follower can anchor its replay against the
-// same WAL event.
-//
-// `journal_state_read_via_table` has NOT been ported to dev yet
-// — it's part of the handlers_helpers slice that fs_open +
-// fs_stat + other verifying handlers also need.  Under Wave 4
-// + 5 with NoopMetering, WAL journaling is a dormant surface
-// (the WAL exists but no cost-accounted-rho replay reconciliation
-// consumes it yet).  The verifying path still works via
-// `verify_reply_hash_matches_cached` (dispatcher step 7) —
-// follower re-executes `fstat` and verifies its fresh reply hash
-// against the leader's cached reply hash directly.
-//
-// This handler's `journal` method is a documented no-op for Wave
-// 4 + 5.  Wave 6 lands the helper + flips this to the full
-// journal call.
+// `journal` writes a `WalOp::Size` entry with the leader's reply
+// hash + the fd's shadow `canon_path` so a follower can anchor
+// its re-execution against the same WAL event.  Consensus-only
+// (self-guarded in `journal_state_read_via_table`).  The
+// verifying path still gates reply-hash agreement via
+// `verify_reply_hash_matches_cached` (dispatcher step 7); the WAL
+// entry is the durable record of that observation for joiners.
 //
 // # park_external_during deferral
 //
@@ -58,8 +45,10 @@ use crate::rust::interpreter::io::handler_trait::{
     dispatch_via_trait_owned, FsHandler, FsHandlerEntry, HandlerFamily, HandlerReply, JournalPath,
     SyscallCtx, FS_HANDLERS,
 };
+use crate::rust::interpreter::io::handlers::helpers::journal_state_read_via_table;
 use crate::rust::interpreter::io::path::io_msg_scrub;
 use crate::rust::interpreter::io::response::ok_u64;
+use crate::rust::interpreter::io::wal::WalOp;
 use crate::rust::interpreter::io::ConsensusMode;
 use crate::rust::interpreter::rho_type::RhoNumber;
 use crate::rust::interpreter::system_processes::{BodyRefs, FixedChannels};
@@ -153,30 +142,41 @@ impl FsHandler for FsSizeHandler {
         })
     }
 
-    /// WAL state-read journal — Wave 6 scope.
-    ///
-    /// Fileio calls `journal_state_read_via_table(handles,
-    /// cmode, WalOp::Size, canon_path, reply, ack, None)` here
-    /// to record the leader's observation.  That helper lives
-    /// in `handlers_helpers.rs` on fileio and has NOT been
-    /// ported to dev — it's part of the handlers_helpers slice
-    /// that other verifying handlers (fs_stat, fs_exists, fs_read,
-    /// etc.) also need.
-    ///
-    /// Under Wave 4 + 5 (NoopMetering), WAL journaling is a
-    /// dormant surface — the verifying path still works via
-    /// `verify_reply_hash_matches_cached` (dispatcher step 7).
-    /// This method stays as a no-op until the helper slice lands.
+    /// WAL state-read journal.  Looks up `(cmode, canon_path)`
+    /// from the fd's shadow and writes a `WalOp::Size` entry with
+    /// the leader's reply hash.  Unknown fd → silently drops the
+    /// journal (dispatch already surfaced `FSERR_CLOSED` to the
+    /// caller).  `length = None` because the reply's `[true, n]`
+    /// outcome fully encodes the observable in the hash.
     fn journal<'a>(
-        _ctx: SyscallCtx<'a>,
-        _raw_args: &'a [Par],
-        _path: JournalPath<'a>,
+        ctx: SyscallCtx<'a>,
+        raw_args: &'a [Par],
+        path: JournalPath<'a>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        // Wave 4 + 5: no-op.
-        // Wave 6: journal_state_read_via_table(ctx.handles, cmode,
-        // WalOp::Size, canon_path, path.produce_reply(), ctx.ack,
-        // None) — see module docstring.
-        Box::pin(async {})
+        let reply = path.produce_reply();
+        Box::pin(async move {
+            let [fd_par, ..] = raw_args else {
+                return;
+            };
+            let Some(fd) = RhoNumber::unapply(fd_par) else {
+                return;
+            };
+            if let Some((cmode, canon_path)) = ctx
+                .handles
+                .with_mut(fd as u64, |h| (h.cmode, h.canon_path.clone()))
+                .await
+            {
+                journal_state_read_via_table(
+                    ctx.handles,
+                    cmode,
+                    WalOp::Size,
+                    canon_path,
+                    reply,
+                    ctx.ack,
+                    None,
+                );
+            }
+        })
     }
 }
 

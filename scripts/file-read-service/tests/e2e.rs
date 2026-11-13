@@ -76,10 +76,10 @@ async fn unknown_logical_returns_404() {
     );
 }
 
-/// Consensus-mode logical → 503 with the specific diagnostic
-/// the plan calls out.
+/// Consensus-static-FILE logical → 503.  File entries pass through
+/// `fs_bundle_staging` so the sidecar can't resolve them from HOCON.
 #[tokio::test]
-async fn consensus_logical_returns_503() {
+async fn consensus_static_file_returns_503() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.conf");
     write_file(
@@ -96,9 +96,40 @@ async fn consensus_logical_returns_503() {
     assert_eq!(resp.status(), 503);
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains("Consensus-mode") && body.contains("RootIdentityRegistry"),
-        "503 body must explain the Consensus-mode skip; got {body}"
+        body.contains("consensus-static-FILE") && body.contains("fs_bundle_staging"),
+        "503 body must explain the file-staging skip; got {body}"
     );
+}
+
+/// Consensus-static-DIRS resolves the same as oracle-static-dirs.
+/// The node writes WAL-replicated bytes directly into `entry.path`,
+/// so the sidecar can serve them from the operator-declared path.
+#[tokio::test]
+async fn consensus_static_dir_with_sub_rel_reads_subfile() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("bundle");
+    std::fs::create_dir(&bundle).unwrap();
+    let sub_file = bundle.join("note.txt");
+    write_file(&sub_file, b"wal-replicated bytes");
+
+    let config_path = dir.path().join("config.conf");
+    let config_body = format!(
+        r#"
+        consensus-static-dirs = {{
+          root = {{ path = "{}", mode = "r+" }}
+        }}
+        "#,
+        bundle.display()
+    );
+    write_file(&config_path, config_body.as_bytes());
+
+    let (base, _handle) = start_server(&config_path).await;
+    let resp = reqwest::get(format!("{base}/files/root?sub_rel=note.txt&length=1024"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let actual_bytes = resp.bytes().await.unwrap();
+    assert_eq!(actual_bytes.as_ref(), b"wal-replicated bytes");
 }
 
 /// Dir entry requires `?sub_rel`.  Without it, 400.

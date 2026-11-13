@@ -5,7 +5,7 @@
 //
 // # Field sharing shape
 //
-//   - `dispatcher`, `space`, `handles`, `metering` — borrowed
+//   - `dispatcher`, `handles`, `metering` — borrowed
 //     refs; the construction site (`SyscallCtx::new`) holds them
 //     alive for the lifetime of the future.
 //   - `mode` — [`ConsensusMode`], `Copy`.
@@ -28,7 +28,7 @@
 //
 // Fileio's `SyscallCtx::new(fs: &FsProcesses, ack: &Par)` takes a
 // `FsProcesses` struct (the per-runtime handler-dispatch surface)
-// as its single source for the five borrowed fields.  `FsProcesses`
+// as its single source for the borrowed fields.  `FsProcesses`
 // has not yet been ported to dev — it lands with the dispatcher
 // slice (4.6 / 4.7).  Until then, the `new` constructor here takes
 // the fields individually.  A follow-up convenience constructor
@@ -45,13 +45,11 @@ use crate::rust::interpreter::dispatch::RhoDispatch;
 use crate::rust::interpreter::io::handle_table::FileHandleTable;
 use crate::rust::interpreter::io::lock::DeployScope;
 use crate::rust::interpreter::io::ConsensusMode;
-use crate::rust::interpreter::rho_runtime::RhoISpace;
 
 /// Borrowed per-call context threaded into every fs_* handler's
 /// `dispatch` method + per-step hooks.
 pub struct SyscallCtx<'a> {
     pub dispatcher: &'a RhoDispatch,
-    pub space: &'a RhoISpace,
     pub handles: &'a FileHandleTable,
     pub mode: ConsensusMode,
     pub metering: &'a Arc<dyn Metering>,
@@ -70,7 +68,6 @@ impl<'a> SyscallCtx<'a> {
     /// port) without touching this signature.
     pub fn new(
         dispatcher: &'a RhoDispatch,
-        space: &'a RhoISpace,
         handles: &'a FileHandleTable,
         mode: ConsensusMode,
         metering: &'a Arc<dyn Metering>,
@@ -78,7 +75,6 @@ impl<'a> SyscallCtx<'a> {
     ) -> Self {
         SyscallCtx {
             dispatcher,
-            space,
             handles,
             mode,
             metering,
@@ -102,7 +98,6 @@ const _SYSCALL_CTX_SHAPE_WITNESS: fn() = || {
     #[allow(dead_code)]
     fn assert_shape<'a>(ctx: &SyscallCtx<'a>) {
         let _: &RhoDispatch = ctx.dispatcher;
-        let _: &RhoISpace = ctx.space;
         let _: &FileHandleTable = ctx.handles;
         let _: ConsensusMode = ctx.mode;
         let _: &Arc<dyn Metering> = ctx.metering;
@@ -117,13 +112,12 @@ const _SYSCALL_CTX_NEW_SIG_WITNESS: fn() = || {
     #[allow(dead_code)]
     fn assert_new_sig<'a>(
         dispatcher: &'a RhoDispatch,
-        space: &'a RhoISpace,
         handles: &'a FileHandleTable,
         mode: ConsensusMode,
         metering: &'a Arc<dyn Metering>,
         ack: &'a Par,
     ) -> SyscallCtx<'a> {
-        SyscallCtx::new(dispatcher, space, handles, mode, metering, ack)
+        SyscallCtx::new(dispatcher, handles, mode, metering, ack)
     }
 };
 
@@ -135,8 +129,8 @@ mod tests {
 
     // # Scope of these tests
     //
-    // Constructing a full `SyscallCtx` requires `dispatcher` +
-    // `space`, which need async rspace init — too much setup for a
+    // Constructing a full `SyscallCtx` requires `dispatcher`,
+    // which needs async runtime init — too much setup for a
     // unit test on a one-liner delegate.  The behavior of
     // `SyscallCtx::current_deploy_scope` is pinned by:
     //

@@ -37,7 +37,7 @@ services:
       - --validator-public-key=${VALIDATOR4_PUBLIC_KEY:-04d26c6103d7269773b943d7a9c456f9eb227e0d8b1fe30bccee4fca963f4446e3385d99f6386317f2c1ad36b9e6b0d5f97bb0a0041f05781c60a5ebca124a251d}
       - >-
         --validator-private-key=${VALIDATOR4_PRIVATE_KEY:?VALIDATOR4_PRIVATE_KEY
-        must be set}
+        must be set, copy docker/.env.example to docker/.env}
     ports:
       - "40440:40400"
       - "40441:40401"

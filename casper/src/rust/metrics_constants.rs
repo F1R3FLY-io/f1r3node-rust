@@ -18,22 +18,28 @@ pub const REPORTING_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.rholang.reportingRun
 
 // Casper counter metrics
 pub const BLOCK_HASH_RECEIVED_METRIC: &str = "block.hash.received";
-pub const BLOCK_INFLIGHT_CAP_DROP_METRIC: &str = "block.inflight-cap.drops";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
-pub const BLOCK_REQUESTS_RECOVERY_METRIC: &str = "block.requests.recovery";
-pub const BLOCK_REQUESTS_RETRY_ACTION_METRIC: &str = "block.requests.retry.action";
-pub const BLOCK_REQUESTS_STALE_EVICTIONS_METRIC: &str = "block.requests.stale-evictions";
-pub const BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC: &str =
-    "block.retriever.dep-recovery-tracking.size";
-pub const BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC: &str =
-    "block.retriever.broadcast-tracking.size";
-pub const BLOCK_RETRIEVER_REQUESTED_BLOCKS_SIZE_METRIC: &str =
-    "block.retriever.requested-blocks.size";
-pub const BLOCK_RETRIEVER_WAITING_LIST_TOTAL_SIZE_METRIC: &str =
-    "block.retriever.waiting-list.total.size";
-pub const BLOCK_RETRIEVER_PEERS_TOTAL_SIZE_METRIC: &str = "block.retriever.peers.total.size";
+pub const BLOCK_INGEST_METRICS_SOURCE: &str = "f1r3fly.casper.block-ingest";
+pub const BLOCK_INGEST_HELD_METRIC: &str = "block.ingest.held";
+pub const BLOCK_INGEST_DISK_ENTRIES_METRIC: &str = "block.ingest.disk-entries";
+pub const BLOCK_INGEST_NEEDS_METRIC: &str = "block.ingest.needs";
+pub const BLOCK_INGEST_UNCITED_NEEDS_METRIC: &str = "block.ingest.uncited-needs";
+pub const BLOCK_INGEST_ROOT_NEEDS_METRIC: &str = "block.ingest.root-needs";
+pub const BLOCK_INGEST_REQUESTS_OUTSTANDING_METRIC: &str = "block.ingest.requests.outstanding";
+pub const BLOCK_INGEST_EVICTIONS_METRIC: &str = "block.ingest.evictions";
+pub const BLOCK_INGEST_DROPPED_METRIC: &str = "block.ingest.dropped";
+pub const BLOCK_INGEST_NEEDS_DROPPED_METRIC: &str = "block.ingest.needs.dropped";
+pub const BLOCK_INGEST_INSERTS_PENDING_METRIC: &str = "block.ingest.inserts-pending";
+pub const BLOCK_INGEST_LANE_DROPS_METRIC: &str = "block.ingest.lane-drops";
+pub const BLOCK_INGEST_OUTBOUND_DROPS_METRIC: &str = "block.ingest.outbound-drops";
+pub const BLOCK_INGEST_PEER_REPUTATION_STRIKES_METRIC: &str =
+    "block.ingest.peer-reputation.strikes";
+pub const BLOCK_INGEST_PEER_REPUTATION_IGNORED_PEERS_METRIC: &str =
+    "block.ingest.peer-reputation.ignored-peers";
+pub const BLOCK_INGEST_PEER_REPUTATION_DROPPED_MESSAGES_METRIC: &str =
+    "block.ingest.peer-reputation.dropped-messages";
 pub const ACTIVE_VALIDATORS_CACHE_SIZE_METRIC: &str = "active-validators-cache.size";
 pub const DEPLOYS_IN_SCOPE_SIZE_METRIC: &str = "deploys-in-scope.size";
 pub const DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC: &str = "deploys-in-scope.sig-bytes-estimate";
@@ -65,12 +71,9 @@ pub const CASPER_INIT_RETRY_NO_APPROVED_BLOCK_METRIC: &str = "casper.init.retry.
 pub const CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC: &str = "casper.init.approved-block.received";
 pub const CASPER_INIT_TRANSITION_TO_RUNNING_METRIC: &str = "casper.init.transition-to-running";
 pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
-pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
+pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
-pub const CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC: &str = "casper.buffer.release-scan.time";
-pub const CASPER_BUFFER_RELEASE_SCAN_CANDIDATES_METRIC: &str =
-    "casper.buffer.release-scan.candidates";
 pub const BLOCK_PROCESSING_IN_FLIGHT_METRIC: &str = "block-processing.in-flight";
 pub const BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC: &str =
     "block-processing.in-flight.oldest-age-seconds";
@@ -83,6 +86,7 @@ pub const BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC: &str =
     "block.processing.stage.validation-setup.time";
 pub const BLOCK_VALIDATION_TIME_METRIC: &str = "block.validation.time";
 pub const BLOCK_PROCESSING_STORAGE_TIME_METRIC: &str = "block.processing.stage.storage.time";
+pub const BLOCK_INTEGRITY_REJECTED_METRIC: &str = "block.integrity.rejected";
 pub const BLOCK_PROCESSING_REPLAY_TIME_METRIC: &str = "block.processing.stage.replay.time";
 pub const BLOCK_PROCESSING_PARENTS_POST_STATE_TIME_METRIC: &str =
     "block.processing.stage.parents-post-state.time";
@@ -327,10 +331,6 @@ pub const BLOCK_CREATOR_EMPTY_BLOCK_BUILT_METRIC: &str = "block-creator.empty-bl
 // timestamp to the block creation time, in seconds.
 pub const DEPLOY_SELECTION_AGE_TIME_METRIC: &str = "deploy.selection.age.time";
 // Issue #24 Track A metrics (CLAIM-CASPER-STAGE-METRICS-001, TASK-021-17).
-// Histograms, seconds: the wait for the deploy-pool lock and its hold time in
-// one proposal preparation.
-pub const DEPLOY_POOL_LOCK_WAIT_TIME_METRIC: &str = "deploy-pool.lock-wait.time";
-pub const DEPLOY_POOL_LOCK_HOLD_TIME_METRIC: &str = "deploy-pool.lock-hold.time";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_FRESH_LOCAL_METRIC: &str =
     "block-creator.deploy-admission.fresh-local";
 pub const BLOCK_CREATOR_DEPLOY_ADMISSION_OLDEST_FRESH_AGE_MS_METRIC: &str =
@@ -459,19 +459,12 @@ pub const FINALITY_DIVERGENCE_DETECTED_METRIC: &str = "finality.divergence.detec
 pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
 // Counter: cycles that returned an error.
 pub const FINALIZER_RUN_FAILURES_METRIC: &str = "finalizer.run.failures";
-// Counter: cycles abandoned by the backstop timeout of run_queued_finalizer.
+// Counter: cycles abandoned by the finalizer's backstop compute timeout.
 pub const FINALIZER_RUN_TIMEOUTS_METRIC: &str = "finalizer.run.timeouts";
-// Counter: extra cycles a run made because a trigger arrived during it.
+// Counter: cycles that ended with a trigger pending, so another cycle follows.
 pub const FINALIZER_RUN_RERUNS_METRIC: &str = "finalizer.run.reruns";
 // Counter: triggers that arrived while a finalizer run was in progress.
 pub const FINALIZER_RUN_QUEUED_METRIC: &str = "finalizer.run.queued";
-// Counter: LFB computations requested through the API (bond_status,
-// exploratory_deploy), which bypass the single-flight finalizer guard.
-pub const FINALIZER_API_LFB_CALLS_METRIC: &str = "finalizer.api-lfb.calls";
-// Histogram: duration of each API-requested LFB computation.
-pub const FINALIZER_API_LFB_TIME_METRIC: &str = "finalizer.api-lfb.time";
-// Counter: API-requested LFB computations that started during a finalizer run.
-pub const FINALIZER_API_LFB_OVERLAPS_METRIC: &str = "finalizer.api-lfb.overlaps";
 /// A shipped genesis refused during LFS restore (claimed hash or content
 /// re-hash failed against the learned register) — peer equivocation on the
 /// restore channel, visible on dashboards.
@@ -520,7 +513,14 @@ pub const PROPOSER_CONSTRAINTS_TIME_METRIC: &str = "proposer.constraints.time";
 pub const PROPOSER_CREATE_TIME_METRIC: &str = "proposer.create.time";
 pub const PROPOSER_VALIDATE_TIME_METRIC: &str = "proposer.validate.time";
 pub const PROPOSER_EFFECT_TIME_METRIC: &str = "proposer.effect.time";
-// Histograms in seconds: one deploy-lifecycle observe, and the carrier prune
-// inside it when the adopted floor advances.
-pub const DEPLOY_LIFECYCLE_OBSERVE_TIME_METRIC: &str = "deploy-lifecycle.observe.time";
+// Histograms in seconds: one deploy-lifecycle settle per finalizer cycle, and
+// the carrier prune, which runs only on a cycle that advanced the LFB.
+pub const DEPLOY_LIFECYCLE_SETTLE_TIME_METRIC: &str = "deploy-lifecycle.settle.time";
 pub const DEPLOY_LIFECYCLE_CARRIER_PRUNE_TIME_METRIC: &str = "deploy-lifecycle.carrier-prune.time";
+// Counter: pool copies of terminal deploys whose removal failed; each is
+// retried on the next finalizer cycle.
+pub const DEPLOY_LIFECYCLE_RELEASE_FAILURES_METRIC: &str = "deploy-lifecycle.release.failures";
+// Counter: open lifecycle rows a settle could not decide because of an error;
+// each is retried by the next settle.
+pub const DEPLOY_LIFECYCLE_SETTLE_ROW_FAILURES_METRIC: &str =
+    "deploy-lifecycle.settle.row-failures";

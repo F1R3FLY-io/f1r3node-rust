@@ -23,6 +23,8 @@
 - Single-flight is the default. `finalization_in_progress` stays a flag on `dev`.
 - Open question 1 is answered by the test condition. Open question 2 stays open.
 
+**Correction (2026-10-21).** On `dev` the `finalization_in_progress` flag never blocked snapshot creation: its only reader logged a debug line. PR #769 removes the flag. Single-flight finalization stays the default: each casper instance runs one finalizer task, one cycle at a time.
+
 **Edits that follow.** The Consensus Protocol section 7 trigger text, its FT caching text, and the BFT propagation paragraph record the five invariants. They also record the single-flight default. The `FinalizationAtomicity.tla` gate item applies only when the ledger architecture is used.
 
 ## 1. Question

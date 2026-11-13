@@ -33,7 +33,7 @@ pub enum BlockError {
     Undecidable(BlockHash),
     /// Flow signal, not a verdict: the block is settled history below this
     /// node's sync anchor and was admitted hash-checked and unjudged — the
-    /// same door LFS restore used. See `block_processor::admit_as_settled`.
+    /// same door LFS restore used. See block ingest's `Validation::admit_settled`.
     AdmittedSettled,
     /// Validation could not reach a verdict: replay needed the named state
     /// root and this node does not hold it. The state twin of

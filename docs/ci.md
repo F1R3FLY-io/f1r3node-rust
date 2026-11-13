@@ -10,7 +10,7 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | Static check | Reads files and history. It runs no program under test. |
 | Script test | Runs a behavioral test of a CI, release, or soak script. It needs no Rust build. |
 | Soak harness test | Builds the `casper-soak` harness and runs the real soak driver, also in Docker containers. |
-| Unit test | Runs `cargo test` for a crate. |
+| Unit test | Runs the tests of a crate once under `cargo llvm-cov` and records the line coverage of that run. |
 | Build | Builds a release artifact or a Docker image. |
 | Integration test | Runs a node network on ephemeral runners. |
 | Setup | Resolves the target commit and the run decisions for the other jobs. |
@@ -29,17 +29,26 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | `markdown_link_check` | Markdown Link Check | Static check | `build_base` |
 | `test` | Test (*crate*) | Unit test | `build_base`, `static_checks` |
 | `test_casper` | Test (casper *n*/2) | Unit test | `build_base`, `static_checks` |
-| `coverage` | Coverage (*crate*) | Unit test | `build_base`, `static_checks` |
-| `coverage_summary` | Coverage Summary | Gate | `build_base`, `coverage` |
+| `coverage_summary` | Coverage Summary | Gate | `build_base`, `test`, `test_casper` |
 | `test_casper_gate` | Test Gate (casper) | Gate | `test_casper`, `coverage_summary` |
-| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests`, `soak_harness_tests` |
+| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests` |
 | `integration_tests_amd64` | Integration Gate (amd64) | Gate | `build_base`, `pipeline` |
 | `integration_tests_arm64` | Integration Gate (arm64) | Gate | `build_base`, `pipeline` |
 | `notify_queue_failure` | Notify Queue Failure | Notification | `pipeline`, both integration gates |
 | `release_docker_image` | Release Docker Image | Build | the checks above |
 | `release_packages` | Release Packages | Build | the checks above |
 
-The Integration Pipeline waits for all three of Static Checks, Script Tests, and Soak Harness Tests. A failed inexpensive check therefore does not start ephemeral OCI runners.
+The Integration Pipeline waits for Static Checks and Script Tests. A failed inexpensive check therefore does not start ephemeral OCI runners. Script Tests covers the runner launch, tagging, and reclaim scripts that the pipeline uses.
+
+The Integration Pipeline does not wait for Soak Harness Tests. That job tests only the casper-soak tool, which the pipeline does not run, and it takes approximately 18 minutes. The merge queues and the release jobs still require it.
+
+### Unit tests and coverage
+
+Each Test job runs the tests of its crate one time, under `cargo llvm-cov`, with `.github/scripts/run-crate-tests.sh`. The job writes the line coverage of that run as an lcov file and uploads it as the `coverage-<crate>` artifact. The two casper shards upload `coverage-casper-1` and `coverage-casper-2`. The job writes the report before the doctests run, so doctests do not count toward coverage.
+
+On a pull request, Coverage Summary reads these files with `.github/scripts/coverage-summary.sh`. The script counts each source line of a crate one time, from the `DA` records of the lcov files. A line is covered when any shard ran it. Each crate and the workspace must have at least 80% line coverage. Test Gate (casper) fails when Coverage Summary fails.
+
+The `DA` count can be different from the line totals that `cargo llvm-cov report --json` prints. Across the crates, it gives a result from 0.03 points lower to 1.8 points higher. The script uses the `DA` count because the shards of one crate can be merged line by line only from those records.
 
 ### Static Checks
 
@@ -51,15 +60,44 @@ The Integration Pipeline waits for all three of Static Checks, Script Tests, and
 
 ### Commit Policy
 
-The job verifies the commit identities of pull request commits (pull requests only). It reads the pull request head SHA, so it has no cache step. A cache step in the same job is the pattern that the CodeQL rule `actions/cache-poisoning/poisonable-step` reports. The step fetches commit objects only. It runs the commit identity checker and reads the denied identities list from the base commit, so a pull request cannot weaken its own check. Before these files reach the base branch, the step uses the copies in the pull request.
+The job verifies commit identities in pull requests. It reads the pull request head SHA, so it has no cache step. A cache step in the same job matches the CodeQL rule `actions/cache-poisoning/poisonable-step`. The step fetches commit objects only.
+
+Ordinary pull requests use the base commit's checker and denied identities list. Before these files reach the base branch, the step uses the copies in the pull request. Approved workflow transfers can use verified source policy as described below.
 
 `.github/scripts/commit-policy-exemptions.sh` lists the exempt commits: the commits of a human pull request author, and the contributor commits of an imported fork pull request. The step runs the base copy of that script.
 
+Approved branch transfers can also use source history to ratify identities. This prevents a target branch from rejecting authors already accepted on the source.
+
+| Target | Temporary head | Protected source |
+|---|---|---|
+| `master` | `promote/*` | `dev` |
+| `dev` | `backmerge/master-*` | `master` |
+| `ca-canary` | `ca/sync-dev-*` | `dev` |
+| `ca-canary` | `backmerge/ca-release-*` | `ca-release` |
+| `ca-release` | `promote/ca-release-*` | `ca-canary` |
+
+The base copy of `.github/scripts/commit-policy-source.sh` normally validates each transfer. Both PR repositories must match the workflow repository. The API head must match the event head. The source must be protected.
+
+After validation, the checker finds all merge bases between the PR head and the protected source tip. Those shared ancestors add accepted source authors to the ratified set. This supports snapshots and later base updates. PR-only commits and later source commits cannot ratify identities absent from shared history. Denied identities and forbidden trailers still fail. Ordinary feature PRs and forks retain their existing checks.
+
+Workflow transfers can install policy when the target lacks the source validator. This also replaces the older checker used by such targets. The PR author must be `f1r3node-promotion[bot]`, with account type `Bot`. The temporary head must match an approved route above.
+
+Before loading source code, inline workflow checks verify both repositories, branch names, commit SHAs, and the author against the event. The source branch must be protected. The job selects a common ancestor of the event head and the captured source tip as the policy revision. This revision belongs to accepted source history and the transferred history.
+
+The job loads the source validator, checker, and exemption script from that verified revision. It combines the target and source denied lists. Target history and shared source history both ratify identities. A missing policy file or failed validator stops the job. Unmerged head edits and later source policy cannot replace the selected policy.
+
+Targets with the source validator retain their existing policy. Other PRs into targets without the validator use target-only ratification and report a notice. They never execute a PR copy of the source validator. A trusted validator failure stops the job.
+
+After this fix reaches `dev`, the normal promotion workflow can transfer its policy into `ca-canary`. No separate policy-only PR or force push is required. An existing sync needs the updated CI workflow in its head before it can use this behavior.
+
 ### Script Tests
 
-The job runs 21 script tests:
+The job runs these script tests:
 
 - Commit trailer check
+- Commit Policy exemptions
+- Commit Policy source history
+- Commit Policy bootstrap
 - Pre-push hook
 - Stack CI gate
 - Image publish tags
@@ -80,7 +118,13 @@ The job runs 21 script tests:
 - Soak verdicts
 - Latency benchmark readiness and finalization
 - Integration preflight driver
+- Heartbeat timing driver
 - Soak dashboard restoration
+- Casper crash backtraces
+
+### Casper crash backtraces
+
+The `Test (casper N/2)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
 
 ### Soak Harness Tests
 
@@ -88,6 +132,33 @@ The job runs 21 script tests:
 2. Verify soak fail-closed driver (`scripts/bench/test-run-merge-recovery-soak.sh`)
 3. Verify isolated disk admission and emergency scenarios (`scripts/bench/test-soak-disk-admission.sh`)
 4. Verify the disk admission failure report and bounded-command liveness (`scripts/bench/test-soak-disk-admission-timing.sh`, with `SOAK_DISK_TEST_SKIP_TIMING=1`)
+
+### Heartbeat timing benchmark
+
+Routine integration preflight excludes the optional heartbeat timing benchmark from collection and execution.
+The preflight still rejects a skipped test in its selected suites.
+
+The manual `Heartbeat Timing Benchmark` workflow runs the timing benchmark against a selected node revision.
+It uses one 64 GB OCI runner and defaults to 20 measured repetitions after one warm-up.
+The timing test has a 45-minute limit.
+The full runner job has a 100-minute limit, which includes the node image build and artifact upload.
+The workflow records the node revision, harness revision, image identity, test output, and timing measurements.
+Runner cleanup applies after success, failure, or cancellation.
+The benchmark does not publish a preflight or release-gate result.
+
+Select `Heartbeat Timing Benchmark` in GitHub Actions, then select `Run workflow`.
+Set `target_ref` to the node branch, tag, or commit.
+Set `repetitions` to an integer from 1 to 20.
+The workflow enables `HEARTBEAT_TIMING=1` for this benchmark only.
+No repository variable is required.
+The workflow must reach the default branch before GitHub exposes its manual entry point.
+
+The `target_ref` input must resolve to a commit that a branch or a tag of this repository contains.
+The commits API also resolves a commit that only a fork or a pull request ref holds.
+The workflow rejects a commit that no branch or tag of this repository contains.
+The check runs after the launch approval and before the runner launch.
+A fork head that a maintainer pushes to a branch of this repository is accepted.
+`.github/scripts/require-repository-commit.sh` makes this check from the commit graph of the branches and tags.
 
 ## Jobs of the integration pipeline
 
@@ -189,16 +260,16 @@ The cost-accounting release train of issue #764 adds two long-lived branches. `c
 
 | Flow | Command | Temporary branch |
 |---|---|---|
-| Promotion from `ca-canary` to `ca-release` | `just ca-promote` | `promote/ca-release-<UTC timestamp>` |
+| Promotion from `ca-canary` to `ca-release` | `just ca-promote`, or operation `ca-promote` | `promote/ca-release-<UTC timestamp>` |
 | Back-merge from `ca-release` to `ca-canary` | `just ca-backmerge` | `backmerge/ca-release-<12-character SHA>` |
-| Occasional sync from `dev` to `ca-canary` | `just ca-sync` | `ca/sync-dev-<12-character SHA>` |
+| Occasional sync from `dev` to `ca-canary` | `just ca-sync`, or operation `ca-sync` | `ca/sync-dev-<12-character SHA>` |
 
-The commands run the same scripts as `just promote` and `just backmerge`. The scripts accept only these three pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
+The commands run the same scripts as `just promote` and `just backmerge`. The operations are inputs of the **Promote and Back-merge** workflow, which runs the same scripts from `master` with the promotion app token. Do not open a pull request with head `dev` into `ca-canary`, because the protected head guard closes it. Use `ca-sync` instead. The scripts accept only these three pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
 
 CI treats the two branches like `dev` and `master`:
 
 - A push to `ca-canary` or `ca-release` runs the heavy pipeline. The merge group reuse applies to `dev` only, so every push runs the OCI integration tests.
-- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to an approved pull request. Its head must not be a protected branch.
+- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to every pull request when it opens. Its head must not be a protected branch.
 - An accepted `ca-release` commit gets a tag of the form `ca-v<version>`, for example `ca-v0.5.0-rc.1`. The tag runs the heavy pipeline. It does not match `v*`, so the GitHub release job does not run for it.
 
 Image publication:
@@ -216,7 +287,7 @@ Only `dev` and `master` publish without reviewer approval, through `protected-br
 
 ### Dev sync
 
-`dev` reaches the release train only through an occasional sync. A maintainer runs `just ca-sync`. The command opens a pull request from `dev` into `ca-canary` with the `ci-heavy` label. Its `ca/` head puts it in the `ca-item` queue, so it needs the 22-hour soak and an approval like any item. `ca-release` gets `dev` code only through a promotion from `ca-canary`.
+`dev` reaches the release train only through an occasional sync. A maintainer runs `just ca-sync`. The command opens a pull request from `dev` into `ca-canary` with the `ci-heavy` label. Its `ca/` head puts it in the `ca-item` queue, which uses the existing CI and review requirements. A merge into `ca-canary` does not require a soak. `ca-release` gets `dev` code only through a promotion from `ca-canary`.
 
 ### Daily back-merge
 
@@ -228,24 +299,52 @@ The workflow uses the promotion app token from `release-credentials`, as the Pro
 
 Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-release`. Every merge is a merge commit. Each queue checks one pull request at a time. Mergify first merges the current base into the pull request, and then it waits for the checks on the pull request head.
 
-Mergify adds the `ci-heavy` label to an approved pull request of this repository. The label runs the heavy pipeline on the pull request. A queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`, so a pull request without a heavy run cannot merge.
+The rulesets require a branch to be up to date before a merge. Mergify then accepts only in-place checks on the pull request head, not checks on a temporary draft pull request. A draft pull request has no `ci-heavy` label, so it would get no Integration Gate result. `.mergify.yml` therefore sets these values:
 
-| Queue | Pull requests | Merge conditions |
+- `merge_queue.mode: serial` and `merge_queue.max_parallel_checks: 1`
+- `batch_size: 1` and `max_checks_retries: 0` in each queue
+- `merge_conditions` identical to `queue_conditions` in each queue
+
+Each queue lists its checks in both condition lists. A pull request therefore enters a queue only after its checks pass.
+
+Mergify adds the `ci-heavy` label to every open pull request of this repository into `dev`, `master`, `ca-canary`, and `ca-release`. It does not label a protected head, or a `ca-canary` pull request that is not a `ca/` item. A draft gets the label when it is ready for review. If someone removes the label without a valid waiver, Mergify adds it again. The label runs the heavy pipeline on the pull request.
+
+Each push to a labeled pull request runs the heavy pipeline again. Each heavy run uses OCI instances from the shared daily quota, so push in batches. A `LimitExceeded` error means that the quota is used up for the day.
+
+Without a waiver, a queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`.
+
+A member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run on the member's own pull request into `dev`, `master`, or `ca-canary`. To waive, remove the `ci-heavy` label. To avoid any heavy run, open the pull request with `--label ci-heavy-waived`.
+
+When the author removes `ci-heavy`, the **CI Heavy Label** workflow adds `ci-heavy-waived`. If Mergify adds `ci-heavy` again before it sees the waiver, the workflow removes `ci-heavy` one more time. The workflow then cancels the running CI run, including its OCI jobs, and reruns CI with the current labels. The heavy pipeline is skipped, and the Integration Gate checks report skipped. Failed gate results of an earlier heavy run are replaced in the same way. If `ci-heavy` is back after that, the workflow reports a warning, and the heavy pipeline runs.
+
+The `dev`, `master`, and `ca-item` queues accept the waiver only when the author is a ci-maintainers member. The workflow records a removal as a waiver only when the remover is the author and an organization member. For another author, Mergify adds `ci-heavy` again and keeps it, so the heavy pipeline runs. `devProtect` requires both Integration Gate checks, and GitHub counts a skipped gate job as passing, so a waived pull request can merge into `dev`. `masterProtect` does not require the gates. The `ca-release` queue has no waiver.
+
+On `master`, the waiver covers a hotfix that a ci-maintainers member authored. The promotion app is the author of every promotion, so a promotion always needs `ci-heavy` and both gates. A waiver into `master` skips only the heavy run before the merge. The push to `master` runs the heavy pipeline. A release needs a CI run of its source that has all Integration Pipeline jobs.
+
+CI does not run on a `labeled` event. A run for a label replaces the checks of the pull request head with pending checks. The merge queue adds the `queued` label when it queues a pull request, so the required checks became pending and the merge failed (pull request #826).
+
+The **CI Heavy Label** workflow reruns the newest CI run of the head when the `ci-heavy` label is added, and when a waiver takes effect. It does not rerun a run whose heavy pipeline already runs or passed, so the label that Mergify adds at open does not restart CI. The rerun keeps the `pull_request` event, and Resolve Target reads the current labels to start or skip the heavy pipeline. Other labels, for example `queued` and `dequeued`, do not start CI. An edit of the pull request still starts CI, because a base change arrives as an edit.
+
+| Queue | Pull requests | Queue and merge conditions |
 |---|---|---|
-| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | To enter the queue: an approving review, no requested changes, and the `ci-heavy` label. To merge: the `devProtect` checks, Promotion Source, and the Integration Gates. |
-| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | To enter the queue: as for `dev`. To merge: the `masterProtect` checks, the casper shards, and the Integration Gates. |
-| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | To enter the queue: as for `dev`, and also the `ca-soaked` label. To merge: as for `dev`. |
+| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approval or a `ci-maintainers` author, requested reviews, no requested changes, the `devProtect` checks, Promotion Source, and `ci-heavy` with the gates, or a maintainer waiver |
+| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | An approving review, no requested changes, the `masterProtect` checks, Promotion Source, the casper shards, and `ci-heavy` with the Integration Gates, or a maintainer waiver |
+| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`. No pre-merge soak requirement. |
 | `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
-| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | To enter the queue: as for `dev`. To merge: as for `dev`. |
+| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | An approving review, no requested changes, the `ci-heavy` label with the Integration Gates and no waiver, and the `dev` checks |
 
-To merge a pull request into `dev`, `master`, or `ca-release`, get an approving review. Mergify adds `ci-heavy`, queues the pull request, and merges it after the checks pass. A push to the pull request starts the checks again.
+To merge a pull request into `master` or `ca-release`, get an approving review.
+
+A member of `@F1R3FLY-io/ci-maintainers` can merge a pull request into `dev` or `ca-canary` without an approval. Any other author needs an approving review. In both cases, each requested reviewer or team must submit a review, and no review can request changes. A reviewer who does not agree must use **Request changes**. A comment-only review removes the request and does not block the merge.
+
+To merge any other pull request into `dev`, get an approving review. Mergify adds `ci-heavy` when the pull request opens, queues it, and merges it after the checks pass. A push to the pull request starts the checks again.
 
 To merge a `ca/<item>` pull request:
 
-1. Add the `ca-soak` label to start its 22-hour soak. A passed soak adds the `ca-soaked` label.
-2. Get an approving review.
+1. Get an approving review, or be a member of `@F1R3FLY-io/ci-maintainers`. Each requested reviewer must submit a review.
+2. Wait for the required CI checks to pass.
 
-Mergify then adds `ci-heavy` and queues the pull request.
+Mergify queues the pull request. It added `ci-heavy` when the pull request opened.
 
 A pull request from a fork gets no heavy run, so no queue accepts it. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with this body line:
 
@@ -255,13 +354,26 @@ Imports fork pull request #<N>.
 
 Commit Policy then exempts each commit that the fork pull request lists and attributes to its author. The commit must also be in the new pull request. A rebase or an amended commit gets a new SHA, so it loses the exemption.
 
-`test-mergify-config.sh` checks the queues. It holds copies of the required checks of `devProtect` and `masterProtect`. A change of a ruleset changes that copy and the `merge_conditions` of `.mergify.yml` in the same pull request.
+#### Queue priority
+
+The priority rules of `.mergify.yml` set the order of the queued pull requests across all queues. The queue order in the file does not set a priority. In each tier, the pull requests keep the order in which they entered the queue.
+
+| Priority | Pull requests | Interrupts running checks |
+|---|---|---|
+| 6000 | Security fixes: the `security` label, or a head that contains `security` or `rustsec` | Yes |
+| 5000 | `fix/*` into `dev`, and `hotfix/*` into `master` | No |
+| 4000 | The release flow: `promote/*`, `backmerge/*`, and `ca/*` heads | No |
+| 3000 | `perf/*` into any branch | No |
+| 2500 | `ci/*` | No |
+| 2000 | Every other head, for example `feat/*`, `feature/*`, `docs/*`, and `chore/*` | No |
+
+Name a security fix `hotfix/security-<topic>` into `master` or `fix/security-<topic>` into `dev`. Mergify then adds the `security` label. If a security fix has another name, add the `security` label by hand. A security fix interrupts the checks of the pull request that Mergify checks, and that pull request goes back into the queue. Its heavy run starts again later. A pull request of a lower tier waits until the running checks complete.
+
+`test-mergify-config.sh` checks the queues. It holds copies of the required checks of `devProtect` and `masterProtect`. A change of a ruleset changes that copy and both condition lists of `.mergify.yml` in the same pull request. The test also checks the serial in-place settings.
 
 The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`.
 
-The `ca-soaked` label stays on the pull request when Mergify merges a new `ca-canary` base into it. A back-merge or a merged sync therefore does not need a new soak. A push by the author removes the label, so a code change needs a new soak. A commit status cannot do this, because a new head commit has no status and Mergify then removes the pull request from the queue.
-
-A person with triage access can add the label by hand. The 60-hour soak of `ca-release` still gates each `ca-v*` tag.
+An optional item soak can record diagnostic results for a `ca/*` head. Its `ca-soaked` label does not control queue entry or merge into `ca-canary`. The 60-hour soak of `ca-release` still gates each `ca-v*` tag.
 
 ### Merge rulesets
 
@@ -269,7 +381,7 @@ On 2026-10-21, PR #794 merged into `dev` outside the merge queue. An organizatio
 
 | Ruleset | Change |
 |---|---|
-| `mergify-only` (new) | Targets `dev` and `master`. The **Restrict updates** rule blocks every update of the branch. The bypass actors are the Mergify app (10562) and the CI automation app (4428544) only. |
+| `mergify-only` (new) | Targets `dev`, `master`, `ca-canary`, and `ca-release`. The **Restrict updates** rule blocks every update of the branch. The bypass actors are the Mergify app (10562) and the CI automation app (4428544) only. |
 | `devProtect` | Remove the `merge_queue` rule, so Mergify can merge. Keep the pull request and required check rules. |
 | `masterProtect` | No change. |
 
@@ -309,7 +421,7 @@ The [design](plans/ca-daily-provenance.md) gives the verification scope.
 
 | Event | Action |
 |---|---|
-| The `ca-soak` label on a `ca/*` pull request into `ca-canary` | Removes `ca-soaked` and starts the 22-hour soak of the head, gate `ca-item` |
+| The `ca-soak` label on a `ca/*` pull request into `ca-canary` | Removes `ca-soaked` and starts an optional 22-hour soak of the head, gate `ca-item` |
 | A push to that pull request by Mergify | Nothing. Mergify only merges the base. |
 | A push to that pull request by anyone else | Removes `ca-soak` and `ca-soaked` and cancels the queued and running soaks of the pull request. A new soak needs the `ca-soak` label again. |
 | A push to `ca-release` | Starts the 60-hour soak of the pushed commit, gate `ca-release` |
@@ -340,7 +452,7 @@ These rulesets are a plan. They are not applied.
 | Rule | `ca-canary` | `ca-release` |
 |---|---|---|
 | Deletion and non-fast-forward | Blocked | Blocked |
-| Required checks | The `devProtect` checks. The `ca-soaked` label in Mergify gates the soak. | The `masterProtect` checks. `just ca-tag` requires `Soak Gate (60h)` on the `ca-release` head. |
+| Required checks | The `devProtect` checks. Mergify requires no soak status or label. | The `masterProtect` checks. `just ca-tag` requires `Soak Gate (60h)` on the `ca-release` head. |
 | Pull request review | One code-owner approval for `ca/*` heads | One code-owner approval for `promote/ca-release-*` heads |
 | Merge method | Merge commit only | Merge commit only |
 | GitHub merge queue | None (Mergify) | None (Mergify) |
