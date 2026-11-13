@@ -1979,6 +1979,11 @@ proofs_rpb3_observable_simulation=(
   lemma_epm_map_value_accept_product_frames
   lemma_epm_map_value_accept_frames
   lemma_epm_map_value_accept_extract
+  lemma_epm_raw_par_return_frames
+  lemma_epm_raw_par_return_extract
+  lemma_epm_nested_return_product_frames
+  lemma_epm_nested_return_frames
+  lemma_epm_nested_return_extract
 )
 proofs_rpb3_path_parser_refinement=(
   initial_parser_source_snapshot_has_witness
@@ -5266,7 +5271,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: observable simulation module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 64 verified, 0 errors' "$observable_simulation_log"; then
+if ! rg -q '^verification results:: 69 verified, 0 errors' "$observable_simulation_log"; then
   cat "$observable_simulation_log"
   echo "rpb3-admission-cursor: observable simulation module did not verify" >&2
   exit 1

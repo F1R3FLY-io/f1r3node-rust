@@ -9,6 +9,7 @@ use crate::{
     admission_observable_spec as observable, rpb3_admission_cursor as admission,
     rpb3_canonical_path_driver_product_integration as path_driver,
     rpb3_epathmap_event_refinement as epm, rpb3_epm_live_handoff as handoff,
+    rpb3_epm_obligation_return_live as obligation_return,
     rpb3_epm_push_live_action_refinement as epm_push_live,
     rpb3_epm_push_source_action_refinement as epm_push_source,
     rpb3_epm_source_accept_refinement as epm_accept, rpb3_epm_unwind_event_lift as unwind,
@@ -3721,6 +3722,174 @@ pub proof fn lemma_epm_map_value_accept_extract(
 {
     hide(dispatcher::integrated_step);
     lemma_epm_map_value_accept_frames(before, after, action);
+}
+
+pub proof fn lemma_epm_raw_par_return_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is EpmRawParReturn,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let par_child = before_frames.last();
+            let epm_parent = before_frames[before_frames.len() - 2];
+            let resumed_epm = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() >= 2
+            &&& after_frames.len() == before_frames.len() - 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 2)
+            &&& par_child.frame_kind == 1
+            &&& epm_parent.frame_kind == 3
+            &&& par_child.cursor == par_child.region_end
+            &&& resumed_epm.frame_kind == epm_parent.frame_kind
+            &&& resumed_epm.region_end == epm_parent.region_end
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::EpmRawParReturn => {
+            let product = before->product;
+            let next = after->product;
+            let derived = obligation_return::epm_obligation_derived(product.source.product)
+                .unwrap();
+            assert(before is Active && after is Active
+                && crate::product_epm_child_return_step(
+                    product.source.product, next.source.product, derived.summary,
+                    derived.admission_summary, None,
+                )) by {
+                reveal(dispatcher::integrated_step);
+                reveal(obligation_return::live_runtime_epm_raw_par_return_step);
+            }
+            lemma_epm_map_value_accept_product_frames(
+                product.source.product, next.source.product, derived.summary,
+                derived.admission_summary,
+            );
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_epm_raw_par_return_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is EpmRawParReturn,
+    ensures
+        accept_step(before, after),
+        state_frames(before).last().frame_kind == 1,
+        state_frames(before)[state_frames(before).len() - 2].frame_kind == 3,
+{
+    hide(dispatcher::integrated_step);
+    lemma_epm_raw_par_return_frames(before, after, action);
+}
+
+pub proof fn lemma_epm_nested_return_product_frames(
+    old: crate::ProductScoreState, new: crate::ProductScoreState,
+    summary: epm::ChildSummary, admission_summary: admission::AdmissionReturnedKind,
+    nested: epm::EpmFrame,
+)
+    requires
+        crate::product_epm_child_return_step(old, new, summary, admission_summary, Some(nested)),
+    ensures
+        ({
+            let old_frames = old.bridge.admission.frames;
+            let new_frames = new.bridge.admission.frames;
+            let nested_child = old_frames.last();
+            let epm_parent = old_frames[old_frames.len() - 2];
+            let resumed_epm = new_frames.last();
+            &&& new.bridge.transcript == old.bridge.transcript
+            &&& old_frames.len() >= 2
+            &&& new_frames.len() == old_frames.len() - 1
+            &&& lower_frames_kept(old_frames, new_frames, old_frames.len() - 2)
+            &&& nested_child.frame_kind == 3
+            &&& epm_parent.frame_kind == 3
+            &&& resumed_epm.frame_kind == epm_parent.frame_kind
+            &&& resumed_epm.region_end == epm_parent.region_end
+        }),
+{
+    let prior = crate::product_linked_parent(old).unwrap();
+    let next = crate::product_linked_top(new).unwrap();
+    assert(epm::linked_epm_child_return(
+        prior, next, summary, admission_summary, old.epm_frames.last(), Some(nested),
+    ));
+    let frames = old.bridge.admission.frames;
+    assert(new.bridge.admission.frames == frames.subrange(0, frames.len() - 1).update(
+        frames.len() - 2, epm::epm_parent_resolved(frames[frames.len() - 2]),
+    ));
+}
+
+pub proof fn lemma_epm_nested_return_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is EpmNestedReturn,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let nested_child = before_frames.last();
+            let epm_parent = before_frames[before_frames.len() - 2];
+            let resumed_epm = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() >= 2
+            &&& after_frames.len() == before_frames.len() - 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 2)
+            &&& nested_child.frame_kind == 3
+            &&& epm_parent.frame_kind == 3
+            &&& resumed_epm.frame_kind == epm_parent.frame_kind
+            &&& resumed_epm.region_end == epm_parent.region_end
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::EpmNestedReturn => {
+            let product = before->product;
+            let next = after->product;
+            let derived = obligation_return::epm_obligation_derived(product.source.product)
+                .unwrap();
+            assert(before is Active && after is Active && derived.nested_after is Some
+                && crate::product_epm_child_return_step(
+                    product.source.product, next.source.product, derived.summary,
+                    derived.admission_summary, derived.nested_after,
+                )) by {
+                reveal(dispatcher::integrated_step);
+                reveal(obligation_return::live_runtime_epm_nested_return_step);
+            }
+            lemma_epm_nested_return_product_frames(
+                product.source.product, next.source.product, derived.summary,
+                derived.admission_summary, derived.nested_after.unwrap(),
+            );
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_epm_nested_return_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is EpmNestedReturn,
+    ensures
+        accept_step(before, after),
+        state_frames(before).last().frame_kind == 3,
+        state_frames(before)[state_frames(before).len() - 2].frame_kind == 3,
+{
+    hide(dispatcher::integrated_step);
+    lemma_epm_nested_return_frames(before, after, action);
 }
 
 pub proof fn lemma_accept_shape_refines(
