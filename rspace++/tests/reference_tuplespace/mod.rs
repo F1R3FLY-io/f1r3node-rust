@@ -1051,12 +1051,13 @@ pub struct ConformanceReport {
 #[derive(Clone, Copy, Debug)]
 struct TraceLabel {
     mode: &'static str,
-    seed: u64,
+    source: &'static str,
+    number: u64,
 }
 
 impl Display for TraceLabel {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} seed {}", self.mode, self.seed)
+        write!(formatter, "{} {} {}", self.mode, self.source, self.number)
     }
 }
 
@@ -1319,6 +1320,56 @@ async fn compare_staged_state(
         });
 }
 
+async fn play_and_replay(
+    pair: SpacePair,
+    matcher: &TestMatch,
+    program: &[TestOperation],
+    reissue_depth_limit: usize,
+    play_label: TraceLabel,
+    report: &mut ConformanceReport,
+) {
+    let replay_label = TraceLabel {
+        mode: "replay",
+        ..play_label
+    };
+    let start_root = pair.play.get_root().await;
+    let play_completed =
+        run_trace(&*pair.play, matcher, program, reissue_depth_limit, play_label, &mut report.play)
+            .await;
+    if !play_completed {
+        report
+            .replay
+            .failures
+            .push(format!("{replay_label}: not run because play stopped"));
+        return;
+    }
+    let log = pair.play.take_event_log().await;
+    if let Err(error) = pair.replay.rig_and_reset(start_root, log).await {
+        report
+            .replay
+            .failures
+            .push(format!("{replay_label}: rig_and_reset failed: {error}"));
+        return;
+    }
+    let replay_completed = run_trace(
+        &*pair.replay,
+        matcher,
+        program,
+        reissue_depth_limit,
+        replay_label,
+        &mut report.replay,
+    )
+    .await;
+    if replay_completed {
+        if let Err(error) = pair.replay.check_replay_data().await {
+            report
+                .replay
+                .failures
+                .push(format!("{replay_label}: check_replay_data failed: {error}"));
+        }
+    }
+}
+
 pub async fn run_conformance<Factory>(
     factory: Factory,
     matcher: &TestMatch,
@@ -1331,66 +1382,28 @@ where
     for seed in plan.trace_seeds.clone() {
         let pair = factory().await;
         let program = generate_program(seed, plan.operations_per_trace);
-        let start_root = pair.play.get_root().await;
-        let play_label = TraceLabel { mode: "play", seed };
-        let play_completed = run_trace(
-            &*pair.play,
-            matcher,
-            &program,
-            plan.reissue_depth_limit,
-            play_label,
-            &mut report.play,
-        )
-        .await;
-        if !play_completed {
-            report
-                .replay
-                .failures
-                .push(format!("replay seed {seed}: not run because play stopped"));
-            continue;
-        }
-        let log = pair.play.take_event_log().await;
-        if let Err(error) = pair.replay.rig_and_reset(start_root, log).await {
-            report
-                .replay
-                .failures
-                .push(format!("replay seed {seed}: rig_and_reset failed: {error}"));
-            continue;
-        }
-        let replay_label = TraceLabel {
-            mode: "replay",
-            seed,
+        let play_label = TraceLabel {
+            mode: "play",
+            source: "seed",
+            number: seed,
         };
-        let replay_completed = run_trace(
-            &*pair.replay,
-            matcher,
-            &program,
-            plan.reissue_depth_limit,
-            replay_label,
-            &mut report.replay,
-        )
-        .await;
-        if replay_completed {
-            if let Err(error) = pair.replay.check_replay_data().await {
-                report
-                    .replay
-                    .failures
-                    .push(format!("replay seed {seed}: check_replay_data failed: {error}"));
-            }
-        }
+        play_and_replay(pair, matcher, &program, plan.reissue_depth_limit, play_label, &mut report)
+            .await;
     }
     for seed in plan.staged_seeds.clone() {
         let pair = factory().await;
         let staged = generate_staged_state(seed);
         let play_label = TraceLabel {
             mode: "staged play",
-            seed,
+            source: "seed",
+            number: seed,
         };
         compare_staged_state(&*pair.play, matcher, &staged, play_label, &mut report.staged_play)
             .await;
         let replay_label = TraceLabel {
             mode: "staged replay",
-            seed,
+            source: "seed",
+            number: seed,
         };
         compare_staged_state(
             &*pair.replay,
@@ -1398,6 +1411,36 @@ where
             &staged,
             replay_label,
             &mut report.staged_replay,
+        )
+        .await;
+    }
+    report
+}
+
+#[allow(dead_code)]
+pub async fn run_programs<Factory>(
+    factory: Factory,
+    matcher: &TestMatch,
+    programs: &[Vec<TestOperation>],
+    reissue_depth_limit: usize,
+) -> ConformanceReport
+where
+    Factory: AsyncFn() -> SpacePair,
+{
+    let mut report = ConformanceReport::default();
+    for (number, program) in (0..).zip(programs) {
+        let play_label = TraceLabel {
+            mode: "play",
+            source: "program",
+            number,
+        };
+        play_and_replay(
+            factory().await,
+            matcher,
+            program,
+            reissue_depth_limit,
+            play_label,
+            &mut report,
         )
         .await;
     }
