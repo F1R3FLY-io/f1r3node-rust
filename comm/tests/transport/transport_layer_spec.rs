@@ -824,10 +824,12 @@ async fn stream_with_spoofed_sender_should_close_the_connection() {
     init_logger();
 
     let runtime = TransportLayerTestRuntime::new("test".to_string());
-    let local_port = get_free_port().await.unwrap();
-    let remote_port = get_free_port().await.unwrap();
-    let local = runtime.create_environment(local_port).await.unwrap();
-    let remote = runtime.create_environment(remote_port).await.unwrap();
+    let local = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let remote = runtime.create_bound_environment().await.unwrap();
+    let remote_port = remote.port;
 
     let server = runtime.create_transport_layer_server(&remote);
     let stream_dispatcher = TestStreamDispatcher::new();

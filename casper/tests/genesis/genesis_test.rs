@@ -122,11 +122,11 @@ fn validators() -> Vec<(String, usize)> {
     vec![
         (
             "299670c52849f1aa82e8dfe5be872c16b600bf09cc8983e04b903411358f2de6".to_string(),
-            0,
+            1,
         ),
         (
             "6bf1b2753501d02d386789506a6d93681d2299c6edfd4455f596b97bc5725968".to_string(),
-            1,
+            2,
         ),
     ]
 }

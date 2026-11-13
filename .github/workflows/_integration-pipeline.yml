@@ -55,7 +55,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 012bfdac07539b86d58e1a5b2a8e4bab00389e75
+  SYSTEM_INTEGRATION_REF: 43732580f6d51c81d9297f4f665991bcc8b226b3
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -85,7 +85,7 @@ jobs:
   # rather than on each other.
   build_docker_image:
     name: Build Docker Image (${{ matrix.arch }})
-    needs: await_approval
+    needs: [await_approval, resolve_harness]
     outputs:
       build_id: ${{ steps.identity.outputs.build_id }}
       node_version: ${{ steps.identity.outputs.node_version }}
@@ -245,6 +245,35 @@ jobs:
       - name: Approval recorded
         shell: bash -e {0}
         run: echo "Ephemeral launch approved for this run; proceeding to OCI launch."
+
+  resolve_harness:
+    name: Resolve Candidate Integration Pin
+    needs: await_approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      system_integration_ref: ${{ steps.pin.outputs.system_integration_ref }}
+    steps:
+      - name: Checkout pin reader
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Read candidate integration pin
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
+          SOURCE_SHA: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          pin="$(bash .github/scripts/read-system-integration-pin.sh --repository "$SOURCE_REPOSITORY" "$SOURCE_SHA")"
+          echo "system_integration_ref=$pin" >> "$GITHUB_OUTPUT"
+          echo "integration suite pin: $pin"
 
   # Launch ephemeral OCI VMs that will pick up the integration-tests matrix
   # jobs. Each VM boots from a baked image, registers as a GitHub Actions runner
@@ -523,7 +552,7 @@ jobs:
   # in ci.yml / ci-fork-pr.yml match on contains("Integration Tests (amd64-").
   integration_tests:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})
-    needs: [build_docker_image, launch_ephemeral_runners]
+    needs: [build_docker_image, launch_ephemeral_runners, resolve_harness]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
@@ -607,7 +636,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
-          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          ref: ${{ needs.resolve_harness.outputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
 
@@ -695,7 +724,7 @@ jobs:
   # ci-fork-pr.yml count these legs without modification.
   ucc_tests:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}, ucc)
-    needs: [build_docker_image, launch_ephemeral_runners]
+    needs: [build_docker_image, launch_ephemeral_runners, resolve_harness]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
@@ -743,7 +772,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
-          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          ref: ${{ needs.resolve_harness.outputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
 

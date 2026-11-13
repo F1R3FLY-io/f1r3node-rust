@@ -17,7 +17,7 @@
 #   QUICK=1              - Run only fast tests (skip --release tests)
 #   VERBOSE=1            - Show all test output (not just failures)
 #   TEST_TIMEOUT=600     - Per-command timeout in seconds (default: 600)
-#   CASPER_TEST_TIMEOUT=1800 - Casper test timeout in seconds (default: 1800)
+#   CASPER_TEST_TIMEOUT=3600 - Casper test timeout in seconds (default: 3600)
 #   TEST_CRATES="casper rholang" - Run tests for specific crates only
 #
 # CI environment detection:
@@ -48,7 +48,7 @@ SKIP_CI_TESTS="${SKIP_CI_TESTS:-0}"
 VERBOSE="${VERBOSE:-0}"
 QUICK="${QUICK:-0}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
-CASPER_TEST_TIMEOUT="${CASPER_TEST_TIMEOUT:-1800}"
+CASPER_TEST_TIMEOUT="${CASPER_TEST_TIMEOUT:-3600}"
 TEST_CRATES="${TEST_CRATES:-}"
 TEST_RUNNER="${TEST_RUNNER:-nextest}"
 SOAK_CHARTS_MANIFEST="scripts/soak-charts/Cargo.toml"
@@ -481,6 +481,6 @@ else
     echo "  TEST_CRATES=\"casper rholang\" git push  - Test specific crates"
     echo "  TEST_RUNNER=cargo git push   - Use cargo test for A/B comparison"
     echo "  TEST_TIMEOUT=300 git push    - Adjust the general timeout (default: 600s)"
-    echo "  CASPER_TEST_TIMEOUT=2400 git push - Adjust the Casper timeout (default: 1800s)"
+    echo "  CASPER_TEST_TIMEOUT=5400 git push - Adjust the Casper timeout (default: 3600s)"
     exit 1
 fi

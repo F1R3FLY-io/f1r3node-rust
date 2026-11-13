@@ -2,6 +2,81 @@
 
 This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fork-pr.yml`, and `.github/workflows/_integration-pipeline.yml`. Each job has one purpose, and its name states that purpose. A red check therefore tells the reader which kind of work failed.
 
+## Workflow revisions and branch previews
+
+Ordinary `pull_request` CI already runs the proposed merge revision.
+`Resolve Target` selects `github.sha`, and the test jobs check out that revision.
+The local call to `_integration-pipeline.yml` uses the same revision as its caller.
+Its code checkouts receive the resolved target SHA.
+CI changes can therefore be tested in a pull request before promotion to `master`.
+
+For a manual branch preview, select **CI**, select **Run workflow**, and choose the pushed branch under **Use workflow from**.
+Leave `target_sha` and `top_pull_request` empty.
+The workflow and source checkout then use the selected branch revision.
+The equivalent command is:
+
+```bash
+env -u GITHUB_TOKEN gh workflow run ci.yml --ref ci/workflow-preview
+```
+
+Replace `ci/workflow-preview` with the pushed branch name.
+This dispatch runs the existing GitHub-hosted checks.
+Full OCI validation still uses a pull request with `ci-heavy` and the existing eligibility rules.
+Manual previews do not publish images or releases.
+The workflow must already exist on the default branch for GitHub to offer its dispatch entry point.
+
+Trusted execution keeps separate revision rules:
+
+| Path | Workflow and script revision | Reason |
+| --- | --- | --- |
+| Protected Head Guard and CI Heavy Label | Trusted base branch under `pull_request_target` | Pull request changes cannot supply scripts to their write tokens. |
+| Fork integration validation | Trusted workflow, approved fork source, and candidate harness pin | Existing launch approval and credential isolation remain required. |
+| Promote and Back-merge and Release Train Daily Back-merge | `master` only | The protected `release-credentials` environment holds the promotion app credentials. |
+| Deployment Train exact-merge CI | Trusted default-branch workflow, separate candidate `target_sha` | Release evidence binds the control revision separately from the candidate revision. |
+
+The deployment train dispatch intentionally retains the trusted default branch, currently `master`.
+Use ordinary PR CI or a plain branch dispatch to test workflow changes.
+Promotion operations retain temporary `promote/*` and `backmerge/*` heads.
+Their operation input selects the direction, while their workflow branch remains `master`.
+
+`test-ci-workflow-refs.sh` checks these boundaries.
+`test-ci-stack-gate.sh` checks event revision selection and exact-target dispatches with mocked GitHub responses.
+See the GitHub documentation for [workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows) and [local reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+
+### Candidate integration pins
+
+The test harness follows `SYSTEM_INTEGRATION_REF` in `.github/oci-validation.env` at the exact node commit under test.
+The workflow branch does not override this value.
+
+| Test path | Pin source |
+| --- | --- |
+| Ordinary PR CI | Proposed merge commit |
+| Plain manual CI dispatch | Selected branch commit |
+| Deployment Train exact-merge CI | Candidate `target_sha`, even when the workflow runs from `master` |
+| Approved fork CI and Full OCI PR validation | Reviewed head commit in its source repository |
+| Full OCI candidate validation | Candidate source commit, checked against the release evidence |
+| Soak integration preflight and segments | Resolved soak target commit |
+| Heartbeat benchmark | Resolved benchmark target commit |
+
+The [pin reader](../.github/scripts/read-system-integration-pin.sh) treats candidate configuration as data.
+It requests the file at the full commit SHA and requires exactly one valid pin declaration.
+A missing or malformed pin fails validation without a fallback to the workflow pin.
+The reader does not execute the configuration file or candidate scripts.
+
+Credential-bearing runner launch and cleanup jobs retain the pin from their trusted workflow or control revision.
+Candidate pins select the test harness in jobs that do not hold OCI or promotion app credentials.
+Promotion and back-merge credentials remain restricted to `master`.
+The soak workflow already separates its candidate harness from its trusted launcher.
+
+[Candidate-pin tests](../.github/scripts/test-system-integration-pin.sh) execute the CI and Full OCI resolution steps with different candidate and control pins.
+The heartbeat tests exercise the same separation.
+Workflow revision tests preserve the soak target-pin wiring and credential boundaries.
+
+Existing queued or completed runs retain their original workflow revision.
+Push these changes to test ordinary PR CI.
+Promote the trusted control changes through `dev` to `master` before validating the default-branch dispatch paths.
+Then confirm that the reported integration pin matches each selected candidate.
+
 ## Categories
 
 | Category | Meaning |
@@ -10,7 +85,7 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | Static check | Reads files and history. It runs no program under test. |
 | Script test | Runs a behavioral test of a CI, release, or soak script. It needs no Rust build. |
 | Soak harness test | Builds the `casper-soak` harness and runs the real soak driver, also in Docker containers. |
-| Unit test | Runs `cargo test` for a crate. |
+| Unit test | Runs the tests of a crate once under `cargo llvm-cov` and records the line coverage of that run. |
 | Build | Builds a release artifact or a Docker image. |
 | Integration test | Runs a node network on ephemeral runners. |
 | Setup | Resolves the target commit and the run decisions for the other jobs. |
@@ -29,17 +104,26 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | `markdown_link_check` | Markdown Link Check | Static check | `build_base` |
 | `test` | Test (*crate*) | Unit test | `build_base`, `static_checks` |
 | `test_casper` | Test (casper *n*/2) | Unit test | `build_base`, `static_checks` |
-| `coverage` | Coverage (*crate*) | Unit test | `build_base`, `static_checks` |
-| `coverage_summary` | Coverage Summary | Gate | `build_base`, `coverage` |
+| `coverage_summary` | Coverage Summary | Gate | `build_base`, `test`, `test_casper` |
 | `test_casper_gate` | Test Gate (casper) | Gate | `test_casper`, `coverage_summary` |
-| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests`, `soak_harness_tests` |
+| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests` |
 | `integration_tests_amd64` | Integration Gate (amd64) | Gate | `build_base`, `pipeline` |
 | `integration_tests_arm64` | Integration Gate (arm64) | Gate | `build_base`, `pipeline` |
 | `notify_queue_failure` | Notify Queue Failure | Notification | `pipeline`, both integration gates |
 | `release_docker_image` | Release Docker Image | Build | the checks above |
 | `release_packages` | Release Packages | Build | the checks above |
 
-The Integration Pipeline waits for all three of Static Checks, Script Tests, and Soak Harness Tests. A failed inexpensive check therefore does not start ephemeral OCI runners.
+The Integration Pipeline waits for Static Checks and Script Tests. A failed inexpensive check therefore does not start ephemeral OCI runners. Script Tests covers the runner launch, tagging, and reclaim scripts that the pipeline uses.
+
+The Integration Pipeline does not wait for Soak Harness Tests. That job tests only the casper-soak tool, which the pipeline does not run, and it takes approximately 18 minutes. The merge queues and the release jobs still require it.
+
+### Unit tests and coverage
+
+Each Test job runs the tests of its crate one time, under `cargo llvm-cov`, with `.github/scripts/run-crate-tests.sh`. The job writes the line coverage of that run as an lcov file and uploads it as the `coverage-<crate>` artifact. The two casper shards upload `coverage-casper-1` and `coverage-casper-2`. The job writes the report before the doctests run, so doctests do not count toward coverage.
+
+On a pull request, Coverage Summary reads these files with `.github/scripts/coverage-summary.sh`. The script counts each source line of a crate one time, from the `DA` records of the lcov files. A line is covered when any shard ran it. Each crate and the workspace must have at least 80% line coverage. Test Gate (casper) fails when Coverage Summary fails.
+
+The `DA` count can be different from the line totals that `cargo llvm-cov report --json` prints. Across the crates, it gives a result from 0.03 points lower to 1.8 points higher. The script uses the `DA` count because the shards of one crate can be merged line by line only from those records.
 
 ### Static Checks
 
@@ -89,6 +173,8 @@ The job runs these script tests:
 - Commit Policy exemptions
 - Commit Policy source history
 - Commit Policy bootstrap
+- Workflow revision selection
+- Candidate integration pin selection
 - Pre-push hook
 - Stack CI gate
 - Image publish tags
@@ -115,7 +201,7 @@ The job runs these script tests:
 
 ### Casper crash backtraces
 
-The `Test (casper N/2)` and `Coverage (casper)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The `Test (casper N/2)` jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
+The `Test (casper N/2)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
 
 ### Soak Harness Tests
 
@@ -293,10 +379,34 @@ Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-rel
 The rulesets require a branch to be up to date before a merge. Mergify then accepts only in-place checks on the pull request head, not checks on a temporary draft pull request. A draft pull request has no `ci-heavy` label, so it would get no Integration Gate result. `.mergify.yml` therefore sets these values:
 
 - `merge_queue.mode: serial` and `merge_queue.max_parallel_checks: 1`
+- `merge_queue.queue_controls_comment: true` and `merge_queue.status_comments: all`
 - `batch_size: 1` and `max_checks_retries: 0` in each queue
 - `merge_conditions` identical to `queue_conditions` in each queue
 
-Each queue lists its checks in both condition lists. A pull request therefore enters a queue only after its checks pass.
+Each queue lists its checks in both condition lists.
+A pull request enters a queue only after its checks pass.
+
+Human-managed pull requests require an explicit merge request, including features, fixes, promotions, manual back-merges, and `ca/` items.
+Use either Mergify control:
+
+- Tick **Queue this pull request** in the Mergify comment.
+- Post `@Mergifyio queue` in a pull request comment.
+
+Both controls select an eligible queue and preserve its reviews, required checks, branch restrictions, and merge method.
+The initial checkbox appears when the pull request is ready to queue.
+A comment command can wait for the eligibility conditions.
+A human push cancels a pending request or removes a queued pull request.
+Review the new commits and request the queue again.
+See the [Mergify queue command](https://docs.mergify.com/commands/queue/).
+
+The daily release-train back-merge retains automatic queueing.
+Its rule requires `ca-canary`, a `backmerge/ca-release-<12-character SHA>` head, and the promotion app author.
+It also requires the scheduled-workflow marker in the generated PR body.
+Only the schedule event sets that marker.
+A manual dispatch of the daily workflow names its initiator and waits for an explicit queue request.
+
+Its existing queue still requires `CA Daily Provenance` and all its CI checks.
+No other pull request rule queues automatically.
 
 Mergify adds the `ci-heavy` label to every open pull request of this repository into `dev`, `master`, `ca-canary`, and `ca-release`. It does not label a protected head, or a `ca-canary` pull request that is not a `ca/` item. A draft gets the label when it is ready for review. If someone removes the label without a valid waiver, Mergify adds it again. The label runs the heavy pipeline on the pull request.
 
@@ -328,14 +438,31 @@ To merge a pull request into `master` or `ca-release`, get an approving review.
 
 A member of `@F1R3FLY-io/ci-maintainers` can merge a pull request into `dev` or `ca-canary` without an approval. Any other author needs an approving review. In both cases, each requested reviewer or team must submit a review, and no review can request changes. A reviewer who does not agree must use **Request changes**. A comment-only review removes the request and does not block the merge.
 
-To merge any other pull request into `dev`, get an approving review. Mergify adds `ci-heavy` when the pull request opens, queues it, and merges it after the checks pass. A push to the pull request starts the checks again.
+To merge any other pull request into `dev`, get an approving review.
+Mergify adds `ci-heavy` when the pull request opens.
+After the checks pass, tick the queue checkbox or post `@Mergifyio queue`.
+A push to the pull request starts the checks again.
 
 To merge a `ca/<item>` pull request:
 
 1. Get an approving review, or be a member of `@F1R3FLY-io/ci-maintainers`. Each requested reviewer must submit a review.
 2. Wait for the required CI checks to pass.
+3. Tick the queue checkbox or post `@Mergifyio queue`.
 
-Mergify queues the pull request. It added `ci-heavy` when the pull request opened.
+Mergify adds `ci-heavy` when the pull request opens.
+It queues the pull request after the explicit request and all eligibility conditions.
+
+#### Rollout of merge controls
+
+The queue controls take effect after this configuration reaches the default branch, currently `master`.
+Validate the configuration in the pull request, merge it into `dev`, and promote it through the existing protected workflow.
+Until promotion completes, the deployed Mergify configuration can still queue human-managed pull requests automatically.
+
+During rollout, inspect existing queued human-managed pull requests and remove entries that have no explicit merge request.
+After promotion, check the initial checkbox and comment command on an eligible human-managed pull request.
+Confirm that the scheduled daily back-merge still queues automatically.
+No live repository protection changes are required.
+Mergify documents the default-branch requirement in its [configuration reference](https://docs.mergify.com/configuration/file-format/).
 
 A pull request from a fork gets no heavy run, so no queue accepts it. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with this body line:
 
