@@ -466,6 +466,12 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("XB-04", "every_refusal_precedes_the_first_write_and_changes_nothing"),
     ("XB-05", "a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor"),
     ("KG-01", "v1_builders_equal_the_rhopathv1_functions_byte_for_byte"),
+    ("TM-01", "a_memoised_transition_is_returned_without_a_write_a_sync_or_a_walk"),
+    ("TM-02", "every_checkpoint_result_equals_that_of_an_owner_without_a_memo"),
+    (
+        "TM-03",
+        "the_memo_is_bounded_evicts_its_oldest_transition_and_is_empty_after_close_and_a_reopen",
+    ),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {

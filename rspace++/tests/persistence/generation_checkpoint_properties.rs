@@ -400,7 +400,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
         "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI", "SW", "OG", "VR", "DI", "SG",
-        "GC", "TX", "HR", "DF", "CB", "XB", "KG",
+        "GC", "TX", "HR", "DF", "CB", "XB", "KG", "TM",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -749,6 +749,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("owner_cross_base_checkpoint.rs"),
         include_str!("kg_trait_v1.rs"),
         include_str!("../hot_store/journal_rebase.rs"),
+        include_str!("owner_transition_memo.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {

@@ -73,3 +73,4 @@ mod durable_authority_backend;
 mod durable_backend_selection;
 mod owner_cross_base_checkpoint;
 mod kg_trait_v1;
+mod owner_transition_memo;

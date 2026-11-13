@@ -1,7 +1,13 @@
+use std::collections::{HashMap, VecDeque};
+use std::convert::Infallible;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
+use pathmap::PathMap;
+use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration, ZipperValues};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 #[cfg(test)]
@@ -28,9 +34,12 @@ use crate::rspace::hot_store::{
     CapturedHotJournalV1, HotStore, PendingDeltas, mutation_batch_from_observation,
     stage_pending_continuation_sources,
 };
+use crate::rspace::persistence::canonical::{
+    CanonicalSink, OBJECT_DIGEST_LEN, ObjectDigest, ObjectRefV1, write_u64,
+};
 use crate::rspace::persistence::difference::{StateDifferenceLimits, visit_state_difference};
-use crate::rspace::persistence::manifest::LegacyHistoryRoot;
-use crate::rspace::persistence::mutation::{MutationBatchViewV1, MutationError};
+use crate::rspace::persistence::manifest::{LegacyHistoryRoot, SemanticNamespace};
+use crate::rspace::persistence::mutation::{ContentTransition, MutationBatchViewV1, MutationError};
 use crate::rspace::persistence::{
     CanonicalEncode, CanonicalFormatError, ClosureError, DagTransactionError, DagTransactionLimits,
     DurableLimits, GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseRegistryV1,
@@ -378,6 +387,137 @@ impl<P: SemanticProfile> DurablePublishedCoreV1<P> {
     }
 }
 
+const VIEW_TRANSITION_MEMO_CAPACITY: usize = 4_096;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ViewTransitionKeyV1 {
+    base: ObjectRefV1,
+    journal: ObjectDigest,
+}
+
+impl ViewTransitionKeyV1 {
+    fn of(base: ObjectRefV1, captured: &CapturedHotJournalV1) -> Option<Self> {
+        let observation = captured.observation();
+        let continuations = observation.pending.continuation_content.as_ref()?;
+        let mut digest = JournalAfterValuesDigestV1(Blake2b::<U32>::new());
+        match write_journal_after_values(
+            &mut digest,
+            &observation.data_counts,
+            continuations,
+            &observation.join_counts,
+        ) {
+            Ok(()) => {
+                let journal: [u8; OBJECT_DIGEST_LEN] = digest.0.finalize().into();
+                Some(Self {
+                    base,
+                    journal: ObjectDigest::from_array(journal),
+                })
+            }
+            Err(never) => match never {},
+        }
+    }
+}
+
+struct JournalAfterValuesDigestV1(Blake2b<U32>);
+
+impl CanonicalSink for JournalAfterValuesDigestV1 {
+    type Error = Infallible;
+
+    fn write_all(&mut self, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.0.update(bytes);
+        Ok(())
+    }
+}
+
+fn write_journal_after_values<S: CanonicalSink>(
+    sink: &mut S,
+    data: &PathMap<u64>,
+    continuations: &PathMap<ContentTransition>,
+    joins: &PathMap<u64>,
+) -> Result<(), S::Error> {
+    write_after_values(sink, SemanticNamespace::DataBag, data, |sink, after| {
+        write_u64(sink, *after)
+    })?;
+    write_after_values(
+        sink,
+        SemanticNamespace::ContinuationMap,
+        continuations,
+        |sink, transition| match transition.after() {
+            None => sink.write_all(&[0]),
+            Some(reference) => {
+                sink.write_all(&[1])?;
+                reference.write(sink)
+            }
+        },
+    )?;
+    write_after_values(sink, SemanticNamespace::JoinBag, joins, |sink, after| {
+        write_u64(sink, *after)
+    })
+}
+
+fn write_after_values<S, T>(
+    sink: &mut S,
+    namespace: SemanticNamespace,
+    entries: &PathMap<T>,
+    mut write_after: impl FnMut(&mut S, &T) -> Result<(), S::Error>,
+) -> Result<(), S::Error>
+where
+    S: CanonicalSink,
+    T: Clone + Send + Sync + Unpin,
+{
+    write_u64(sink, namespace as u64)?;
+    write_u64(sink, entries.val_count() as u64)?;
+    let mut write_entry = |path: &[u8], after: &T| {
+        write_u64(sink, path.len() as u64)?;
+        sink.write_all(path)?;
+        write_after(sink, after)
+    };
+    let mut cursor = entries.read_zipper_at_borrowed_path(&[]);
+    if let Some(after) = cursor.val() {
+        write_entry(cursor.path(), after)?;
+    }
+    while let Some(after) = cursor.to_next_get_val() {
+        write_entry(cursor.path(), after)?;
+    }
+    Ok(())
+}
+
+struct ViewTransitionMemoV1 {
+    capacity: usize,
+    order: VecDeque<ViewTransitionKeyV1>,
+    successors: HashMap<ViewTransitionKeyV1, ResolvedDurableStateV1>,
+}
+
+impl ViewTransitionMemoV1 {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: VecDeque::with_capacity(capacity),
+            successors: HashMap::with_capacity(capacity),
+        }
+    }
+
+    fn record(&mut self, key: Option<ViewTransitionKeyV1>, successor: ResolvedDurableStateV1) {
+        let Some(key) = key.filter(|_| self.capacity > 0) else {
+            return;
+        };
+        match self.successors.get_mut(&key) {
+            Some(memoised) => *memoised = successor,
+            None => {
+                if self.order.len() == self.capacity {
+                    let oldest = self
+                        .order
+                        .pop_front()
+                        .expect("a full memo of positive capacity holds its oldest key");
+                    self.successors.remove(&oldest);
+                }
+                self.order.push_back(key);
+                self.successors.insert(key, successor);
+            }
+        }
+    }
+}
+
 pub(crate) struct DurableRSpaceAuthorityV1<P: SemanticProfile>
 where P::Channel: Clone + Hash + Eq
 {
@@ -386,6 +526,7 @@ where P::Channel: Clone + Hash + Eq
     source: Arc<DurableAuthorityCoreV1<P>>,
     published: DurablePublishedCoreV1<P>,
     pending: Option<Box<PendingJournalPublicationV1<P>>>,
+    transitions: ViewTransitionMemoV1,
 }
 
 struct PendingJournalPublicationV1<P: SemanticProfile>
@@ -440,6 +581,15 @@ where P::Channel: Clone + Hash + Eq
         hot: &OwnerHotStoreV1<P>,
         incarnations: &OwnerIncarnationAllocatorV1,
     ) -> Result<Self, Box<(DurableAuthorityViewV1<P>, DurableRSpaceTransactionError)>> {
+        Self::open(view, hot, incarnations, VIEW_TRANSITION_MEMO_CAPACITY)
+    }
+
+    fn open(
+        view: DurableAuthorityViewV1<P>,
+        hot: &OwnerHotStoreV1<P>,
+        incarnations: &OwnerIncarnationAllocatorV1,
+        memo_capacity: usize,
+    ) -> Result<Self, Box<(DurableAuthorityViewV1<P>, DurableRSpaceTransactionError)>> {
         if let Err(error) =
             hot.validate_journal_authority(view.catalog(), &view.generation_leases())
         {
@@ -467,7 +617,16 @@ where P::Channel: Clone + Hash + Eq
             source,
             published,
             pending: None,
+            transitions: ViewTransitionMemoV1::with_capacity(memo_capacity),
         })
+    }
+
+    fn memoised_successor(
+        &self,
+        key: Option<ViewTransitionKeyV1>,
+    ) -> Option<ResolvedDurableStateV1> {
+        key.and_then(|key| self.transitions.successors.get(&key).copied())
+            .filter(|successor| self.source.require_retained(successor).is_ok())
     }
 
     fn pending_phase(&self) -> Option<JournalPublicationPhaseV1> {
@@ -618,6 +777,7 @@ where P::Channel: Clone + Hash + Eq
             Some(phase) => Err(DurableRSpaceTransactionError::Unresolved(phase)),
             None => {
                 self.lifecycle = OwnerLifecycleV1::Closed { generation };
+                self.transitions = ViewTransitionMemoV1::with_capacity(0);
                 Ok(())
             }
         }
@@ -631,7 +791,18 @@ where P::Channel: Clone + Hash + Eq
         hot: &OwnerHotStoreV1<P>,
         limits: DurableRSpacePublicationLimitsV1,
     ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
-        if !Arc::ptr_eq(OwnedRwLockWriteGuard::rwlock(&permit), gate) {
+        let (predecessor, captured) = self.capture_bound_journal(&permit, attachment, gate, hot)?;
+        self.publish_bound_journal(permit, hot, predecessor, captured, limits, None)
+    }
+
+    fn capture_bound_journal(
+        &self,
+        permit: &OwnedRwLockWriteGuard<()>,
+        attachment: ViewAttachmentV1,
+        gate: &Arc<RwLock<()>>,
+        hot: &OwnerHotStoreV1<P>,
+    ) -> Result<(CatalogSlotV1, CapturedHotJournalV1), DurableRSpaceTransactionError> {
+        if !Arc::ptr_eq(OwnedRwLockWriteGuard::rwlock(permit), gate) {
             return Err(DurableRSpaceTransactionError::ForeignPermit);
         }
         self.validate_attachment(attachment)?;
@@ -641,6 +812,18 @@ where P::Channel: Clone + Hash + Eq
         self.validate_base(hot)?;
         let predecessor = self.source.authority().slot();
         let captured = hot.capture_pending_journal(predecessor)?;
+        Ok((predecessor, captured))
+    }
+
+    fn publish_bound_journal(
+        &mut self,
+        permit: OwnedRwLockWriteGuard<()>,
+        hot: &OwnerHotStoreV1<P>,
+        predecessor: CatalogSlotV1,
+        captured: CapturedHotJournalV1,
+        limits: DurableRSpacePublicationLimitsV1,
+        prebuilt: Option<RSpaceMutationBatchV1>,
+    ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
         self.pending = Some(Box::new(PendingJournalPublicationV1 {
             permit,
             hot: Arc::clone(hot),
@@ -652,7 +835,7 @@ where P::Channel: Clone + Hash + Eq
         }));
         #[cfg(test)]
         hooks::run(hooks::JournalOwnerHookPoint::AfterCapture);
-        let publication = self.publish_captured(hot, limits, None);
+        let publication = self.publish_captured(hot, limits, prebuilt);
         if let (Err(_), Some(JournalPublicationPhaseV1::Captured)) =
             (&publication, self.pending_phase())
         {
@@ -694,10 +877,31 @@ where P::Channel: Clone + Hash + Eq
         if view.state.manifest() == predecessor.state().manifest() {
             hot.bind_journal_authority(predecessor)?;
             let attachment = self.attach(hot)?;
-            let reached = self
-                .checkpoint_view(permit, attachment, gate, hot, limits.publication)
-                .await?;
-            return self.resolve_state(reached);
+            let (predecessor, captured) =
+                self.capture_bound_journal(&permit, attachment, gate, hot)?;
+            let (journalled, key) = match mutation_batch_from_observation(
+                predecessor.state(),
+                captured.observation(),
+            ) {
+                Ok(journalled) => {
+                    (Some(journalled), ViewTransitionKeyV1::of(view.state.manifest(), &captured))
+                }
+                Err(_) => (None, None),
+            };
+            if let Some(memoised) = self.memoised_successor(key) {
+                return Ok(memoised);
+            }
+            let reached = self.publish_bound_journal(
+                permit,
+                hot,
+                predecessor,
+                captured,
+                limits.publication,
+                journalled,
+            )?;
+            let reached = self.resolve_state(reached)?;
+            self.transitions.record(key, reached);
+            return Ok(reached);
         }
         let current = self.inheritable_current_manifest(&view.state)?;
         let captured =
@@ -708,6 +912,10 @@ where P::Channel: Clone + Hash + Eq
                 Err(MutationError::EmptyBatch) => return Ok(view.state),
                 Err(error) => return Err(error.into()),
             };
+        let key = ViewTransitionKeyV1::of(view.state.manifest(), &captured);
+        if let Some(memoised) = self.memoised_successor(key) {
+            return Ok(memoised);
+        }
         visit_state_difference(
             self.source.verified_state().object_store(),
             current.roots(),
@@ -720,7 +928,9 @@ where P::Channel: Clone + Hash + Eq
             },
         )?;
         if mutation.is_empty() {
-            return self.resolve_state(predecessor.state());
+            let reached = self.resolve_state(predecessor.state())?;
+            self.transitions.record(key, reached);
+            return Ok(reached);
         }
         self.pending = Some(Box::new(PendingJournalPublicationV1 {
             permit,
@@ -742,19 +952,21 @@ where P::Channel: Clone + Hash + Eq
         }
         publication?;
         let reached = self.acknowledge_successor()?;
-        self.resolve_state(reached)
+        let reached = self.resolve_state(reached)?;
+        self.transitions.record(key, reached);
+        Ok(reached)
     }
 
     fn publish_captured(
         &mut self,
         hot: &OwnerHotStoreV1<P>,
         limits: DurableRSpacePublicationLimitsV1,
-        rebased: Option<RSpaceMutationBatchV1>,
+        prebuilt: Option<RSpaceMutationBatchV1>,
     ) -> Result<(), DurableRSpaceTransactionError> {
         let pending = self.pending.as_mut().expect("checkpoint owns its capture");
         hot.validate_pending_journal(&pending.captured)?;
         let observation = pending.captured.observation();
-        let mutation = match rebased.map_or_else(
+        let mutation = match prebuilt.map_or_else(
             || mutation_batch_from_observation(pending.predecessor.state(), observation),
             Ok,
         ) {
@@ -938,6 +1150,46 @@ where P::Channel: Clone + Hash + Eq
         *current_pin = generation_lease.expect("successor pin precedes acknowledgement");
         drop(permit);
         self.state(&hot)
+    }
+}
+
+#[cfg(test)]
+impl<P: SemanticProfile> DurableRSpaceAuthorityV1<P>
+where P::Channel: Clone + Hash + Eq
+{
+    pub(crate) fn from_view_with_transition_memo_for_test(
+        view: DurableAuthorityViewV1<P>,
+        hot: &OwnerHotStoreV1<P>,
+        capacity: usize,
+    ) -> Result<Self, Box<(DurableAuthorityViewV1<P>, DurableRSpaceTransactionError)>> {
+        Self::open(view, hot, &OWNER_INCARNATIONS, capacity)
+    }
+
+    pub(crate) fn disable_transition_memo_for_test(&mut self) {
+        self.transitions = ViewTransitionMemoV1::with_capacity(0);
+    }
+
+    pub(crate) fn transition_memo_lengths_for_test(&self) -> (usize, usize) {
+        (self.transitions.order.len(), self.transitions.successors.len())
+    }
+
+    pub(crate) fn transition_memo_capacity_for_test(&self) -> usize { self.transitions.capacity }
+
+    pub(crate) fn transition_memo_reserved_for_test(&self) -> usize {
+        self.transitions
+            .order
+            .capacity()
+            .min(self.transitions.successors.capacity())
+    }
+
+    pub(crate) fn replace_memoised_successors_for_test(
+        &mut self,
+        successor: ResolvedDurableStateV1,
+    ) {
+        self.transitions
+            .successors
+            .values_mut()
+            .for_each(|memoised| *memoised = successor);
     }
 }
 

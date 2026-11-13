@@ -81,8 +81,8 @@ const MAX_STEPS: usize = 6;
 const BASE_SELECTORS: usize = 8;
 const CATALOG_FILE: &str = "catalog.v1";
 const INTERRUPTION: &str = "the owner task stops at a journal owner hook point";
-const ARMED_FAILPOINT_REFUSAL: &str = "durable I/O failpoint already armed";
-const DIRECTORY_FAILPOINTS: [DurableIoFailpointV1; 16] = [
+pub(super) const ARMED_FAILPOINT_REFUSAL: &str = "durable I/O failpoint already armed";
+pub(super) const DIRECTORY_FAILPOINTS: [DurableIoFailpointV1; 16] = [
     DurableIoFailpointV1::PhysicalWrite,
     DurableIoFailpointV1::PhysicalSync,
     DurableIoFailpointV1::CandidateWrite,
@@ -130,7 +130,7 @@ fn datum(channel_name: &str, value: &str) -> Datum<String> {
     Datum::create(&channel(channel_name), value.to_owned(), false)
 }
 
-fn continuation(names: &[&str], body: &str) -> Continuation {
+pub(super) fn continuation(names: &[&str], body: &str) -> Continuation {
     let patterns: Vec<String> = names.iter().map(|name| format!("pattern-{name}")).collect();
     WaitingContinuation::create(&group(names), &patterns, &body.to_owned(), false, BTreeSet::new())
 }
@@ -155,7 +155,7 @@ fn stored_group<T: AsRef<str>>(channels: &[T]) -> usize {
         .expect("a stored channel group belongs to the test universe")
 }
 
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
+pub(super) fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
     match (payload.downcast_ref::<&'static str>(), payload.downcast_ref::<String>()) {
         (Some(text), _) => text,
         (None, Some(text)) => text.as_str(),
@@ -189,7 +189,7 @@ fn join_path(channel_name: &str, names: &[&str]) -> Vec<u8> {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Contents {
+pub(super) struct Contents {
     data: [[u64; VALUES.len()]; CHANNELS.len()],
     continuations: [[bool; BODIES.len()]; GROUPS.len()],
     joins: BTreeSet<(usize, usize)>,
@@ -327,7 +327,7 @@ fn withdraw(hot: &Store, group_index: usize, body_index: usize) {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Step {
+pub(super) enum Step {
     Put {
         channel_index: usize,
         value_index: usize,
@@ -347,28 +347,28 @@ enum Step {
 }
 
 impl Step {
-    fn put(channel_name: &str, value: &str) -> Self {
+    pub(super) fn put(channel_name: &str, value: &str) -> Self {
         Self::Put {
             channel_index: index_of(&CHANNELS, channel_name),
             value_index: index_of(&VALUES, value),
         }
     }
 
-    fn take(channel_name: &str, value: &str) -> Self {
+    pub(super) fn take(channel_name: &str, value: &str) -> Self {
         Self::Take {
             channel_index: index_of(&CHANNELS, channel_name),
             value_index: index_of(&VALUES, value),
         }
     }
 
-    fn install(names: &[&str], body: &str) -> Self {
+    pub(super) fn install(names: &[&str], body: &str) -> Self {
         Self::Install {
             group_index: stored_group(names),
             body_index: index_of(&BODIES, body),
         }
     }
 
-    fn withdraw(names: &[&str], body: &str) -> Self {
+    pub(super) fn withdraw(names: &[&str], body: &str) -> Self {
         Self::Withdraw {
             group_index: stored_group(names),
             body_index: index_of(&BODIES, body),
@@ -419,13 +419,13 @@ fn apply(hot: &Store, contents: &mut Contents, step: Step) {
     contents.derive_joins();
 }
 
-fn apply_all(hot: &Store, contents: &mut Contents, steps: &[Step]) {
+pub(super) fn apply_all(hot: &Store, contents: &mut Contents, steps: &[Step]) {
     for &step in steps {
         apply(hot, contents, step);
     }
 }
 
-fn generated_steps() -> impl Strategy<Value = Step> {
+pub(super) fn generated_steps() -> impl Strategy<Value = Step> {
     let datum_steps = (0..CHANNELS.len(), 0..VALUES.len());
     let continuation_steps = (0..GROUPS.len(), 0..BODIES.len());
     prop_oneof![
@@ -453,13 +453,13 @@ fn generated_steps() -> impl Strategy<Value = Step> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct DirectoryImage {
+pub(super) struct DirectoryImage {
     directory_modified: SystemTime,
     entries: BTreeMap<String, (u64, SystemTime)>,
     store_files: StoreFiles,
 }
 
-fn directory_image(root: &Path) -> DirectoryImage {
+pub(super) fn directory_image(root: &Path) -> DirectoryImage {
     let entries = fs::read_dir(root)
         .expect("list the store directory")
         .map(|entry| {
@@ -512,7 +512,7 @@ fn journal_is_empty(hot: &Store) -> bool {
         pending.joins.is_some_and(|delta| delta.is_empty())
 }
 
-fn view_limits() -> ViewCheckpointLimitsV1 {
+pub(super) fn view_limits() -> ViewCheckpointLimitsV1 {
     ViewCheckpointLimitsV1 {
         publication: publication_limits(),
         difference: StateDifferenceLimits {
@@ -524,7 +524,7 @@ fn view_limits() -> ViewCheckpointLimitsV1 {
     }
 }
 
-fn read_contents(owner: &Owner, root: DurableStateRootV1) -> Contents {
+pub(super) fn read_contents(owner: &Owner, root: DurableStateRootV1) -> Contents {
     let (resolved, handle) = owner
         .published_core()
         .read_handle(Some(root))
@@ -553,26 +553,36 @@ fn lazy_store(
     (resolved, Arc::new(hot))
 }
 
-struct View {
-    base: ViewBaseV1,
-    hot: Store,
-    contents: Contents,
+pub(super) struct View {
+    pub(super) base: ViewBaseV1,
+    pub(super) hot: Store,
+    pub(super) contents: Contents,
 }
 
-struct Trial {
+pub(super) struct Trial {
     hot: Store,
-    gate: Arc<RwLock<()>>,
-    owner: Owner,
+    pub(super) gate: Arc<RwLock<()>>,
+    pub(super) owner: Owner,
     genesis: ViewBaseV1,
     contents: Contents,
     bound_root: DurableStateRootV1,
-    states: Vec<(DurableStateRootV1, Contents)>,
+    pub(super) states: Vec<(DurableStateRootV1, Contents)>,
+    memoised: Vec<(DurableStateRootV1, Contents, ResolvedDurableStateV1)>,
     scratch: PersistenceTrialDir,
 }
 
 impl Trial {
-    fn open() -> Self {
+    pub(super) fn open() -> Self {
         let (scratch, hot, gate, owner) = fixture();
+        Self::over(scratch, hot, gate, owner)
+    }
+
+    pub(super) fn over(
+        scratch: PersistenceTrialDir,
+        hot: Store,
+        gate: Arc<RwLock<()>>,
+        owner: Owner,
+    ) -> Self {
         let attachment = owner
             .attach(&hot)
             .expect("the bound store attaches to its fresh owner");
@@ -591,13 +601,14 @@ impl Trial {
             contents: Contents::default(),
             bound_root: genesis.root(),
             states,
+            memoised: Vec::with_capacity(MAX_CHECKPOINTS + 1),
             scratch,
         }
     }
 
-    fn path(&self) -> &Path { self.scratch.path() }
+    pub(super) fn path(&self) -> &Path { self.scratch.path() }
 
-    fn slot(&self) -> CatalogSlotV1 { catalog_token(self.path()).slot() }
+    pub(super) fn slot(&self) -> CatalogSlotV1 { catalog_token(self.path()).slot() }
 
     fn current_contents(&self) -> Contents {
         self.states
@@ -617,7 +628,7 @@ impl Trial {
         ViewBaseV1::new(self.genesis.incarnation(), state)
     }
 
-    fn publish(&mut self, steps: &[Step]) -> DurableStateRootV1 {
+    pub(super) fn publish(&mut self, steps: &[Step]) -> DurableStateRootV1 {
         apply_all(&self.hot, &mut self.contents, steps);
         let state =
             poll_checkpoint_with(&mut self.owner, &self.gate, &self.hot, publication_limits())
@@ -628,7 +639,7 @@ impl Trial {
         root
     }
 
-    fn view(&self, root: DurableStateRootV1, contents: Contents) -> View {
+    pub(super) fn view(&self, root: DurableStateRootV1, contents: Contents) -> View {
         let (state, hot) = lazy_store(&self.owner, root, self.owner.generation_leases());
         View {
             base: ViewBaseV1::new(self.genesis.incarnation(), state),
@@ -650,7 +661,7 @@ impl Trial {
         }
     }
 
-    fn checkpoint_with(
+    pub(super) fn checkpoint_with(
         &mut self,
         base: ViewBaseV1,
         hot: &Store,
@@ -729,7 +740,7 @@ struct Scenario {
     closing: Vec<Step>,
 }
 
-fn seed_scenarios() -> [Scenario; 4] {
+fn seed_scenarios() -> [Scenario; 5] {
     [
         Scenario {
             batches: vec![vec![Step::put("a", "v0"), Step::install(&["a", "b"], "k0")], vec![
@@ -777,6 +788,15 @@ fn seed_scenarios() -> [Scenario; 4] {
             checkpoints: vec![(0, vec![Step::put("b", "v0")]), (0, vec![Step::put("a", "v0")])],
             closing: vec![Step::put("c", "v1")],
         },
+        Scenario {
+            batches: vec![vec![Step::put("a", "v0")]],
+            checkpoints: vec![
+                (1, vec![Step::put("b", "v0")]),
+                (1, vec![Step::put("c", "v1")]),
+                (1, vec![Step::put("b", "v0")]),
+            ],
+            closing: Vec::new(),
+        },
     ]
 }
 
@@ -814,6 +834,7 @@ struct Coverage {
     continuations_staged_from_the_journal: u32,
     joins_cancelled: u32,
     joins_restored: u32,
+    transitions_returned_from_the_memo: u32,
 }
 
 impl Coverage {
@@ -837,6 +858,7 @@ impl Coverage {
             continuations_staged_from_the_journal,
             joins_cancelled,
             joins_restored,
+            transitions_returned_from_the_memo,
         } = other;
         self.scenarios += scenarios;
         self.checkpoints += checkpoints;
@@ -859,6 +881,7 @@ impl Coverage {
         self.continuations_staged_from_the_journal += continuations_staged_from_the_journal;
         self.joins_cancelled += joins_cancelled;
         self.joins_restored += joins_restored;
+        self.transitions_returned_from_the_memo += transitions_returned_from_the_memo;
     }
 
     fn assert_complete(&self) {
@@ -881,6 +904,7 @@ impl Coverage {
             continuations_staged_from_the_journal,
             joins_cancelled,
             joins_restored,
+            transitions_returned_from_the_memo,
         } = *self;
         assert!(
             [
@@ -902,6 +926,7 @@ impl Coverage {
                 continuations_staged_from_the_journal,
                 joins_cancelled,
                 joins_restored,
+                transitions_returned_from_the_memo,
             ]
             .into_iter()
             .all(|count| count > 0),
@@ -972,6 +997,7 @@ fn check_checkpoint(
         "a second store built to the base's contents must reach the base's root and the model"
     );
     let journals = journal_bags(&view.hot);
+    let binding = trial.owner.state(&view.hot).ok();
     let reached = trial.checkpoint(view.base, &view.hot).map_err(|refusal| {
         TestCaseError::fail(format!(
             "the owner refused a view checkpoint from a retained base: {refusal:?}"
@@ -989,7 +1015,12 @@ fn check_checkpoint(
         "the returned state must hold the base's contents with the journal applied"
     );
     let same_state = base_root == current_root;
-    let published = expected != base_contents && expected != current_contents;
+    let memoised = trial
+        .memoised
+        .iter()
+        .find(|(root, contents, _)| *root == base_root && *contents == expected)
+        .map(|(_, _, first)| *first);
+    let published = expected != base_contents && expected != current_contents && memoised.is_none();
     let mut coverage = Coverage {
         checkpoints: 1,
         ..Coverage::default()
@@ -1019,6 +1050,7 @@ fn check_checkpoint(
             coverage.successors_equal_to_an_earlier_state =
                 u32::from(trial.states.iter().any(|(root, _)| *root == reached.root()));
             trial.states.push((reached.root(), expected.clone()));
+            trial.memoised.push((base_root, expected.clone(), reached));
             match same_state {
                 true => {
                     coverage.same_base_publications = 1;
@@ -1039,15 +1071,29 @@ fn check_checkpoint(
                 "a view checkpoint without effect must leave the catalog slot, the current state \
                  and the journal unchanged"
             );
-            match (same_state, expected == base_contents) {
-                (true, _) => {}
-                (false, true) => {
+            match (memoised, same_state, expected == base_contents) {
+                (Some(first), _, _) => {
+                    prop_assert_eq!(
+                        (reached, trial.owner.state(&view.hot).ok()),
+                        (first, match same_state {
+                            true => Some(before.state()),
+                            false => binding,
+                        }),
+                        "a memoised transition must return the state that its first publication \
+                         returned and leave the view's store bound as it was, or bound to the \
+                         current slot when its base is the current state"
+                    );
+                    coverage.transitions_returned_from_the_memo = 1;
+                }
+                (None, true, _) => {}
+                (None, false, true) => {
                     prop_assert_eq!(reached, view.base.state());
                     coverage.journals_without_effect_at_a_superseded_base = 1;
                 }
-                (false, false) => {
+                (None, false, false) => {
                     prop_assert_eq!(reached.root(), current_root);
                     coverage.successors_equal_to_the_current_state = 1;
+                    trial.memoised.push((base_root, expected.clone(), reached));
                 }
             }
         }
@@ -1470,6 +1516,7 @@ fn an_empty_journal_and_an_unchanged_current_state_write_and_sync_nothing() {
         "the failpoint list must hold every directory failpoint once"
     );
     let mut trial = Trial::open();
+    trial.owner.disable_transition_memo_for_test();
     let retained_root = trial.publish(&[Step::put("a", "v0"), Step::install(&["b", "a"], "k1")]);
     let current_root = trial.publish(&[Step::put("c", "v1"), Step::take("a", "v0")]);
     let mut views = [

@@ -10839,9 +10839,9 @@ the catalog.
 
 | ID | Required property | Test |
 |---|---|---|
-| XB-01 | Root and contents of the successor. Four seeded scenarios and then 24 generated ones each publish batches from the bound store, then checkpoint lazy views, each at one of the states published so far, and finally checkpoint the bound store from the state at which it last published. For every checkpoint, a twin store built to the base's contents reaches the base's root, the returned root is the root that the twin returns for the same journal, and the returned state reads the base's contents with the journal applied. A publishing checkpoint advances the generation and the catalog epoch by one to the returned state, acknowledges the journal and leaves the view's store bound to the successor. A checkpoint whose successor is its base or the current state returns that state and leaves the catalog slot, the current state and the journal unchanged. Every state published so far still reads its own contents, and two states have equal roots exactly when their contents are equal. The seeded scenarios alone must show every class: publications on the cross-base and on the same-base path; a journal without effect at a superseded base; a successor equal to the current state and one equal to an earlier state; the bound store published from a superseded state, and rebound at a later slot of its own state; a datum whose journal transition is rebased on a third current value, one whose transition is dropped because the current state already holds its after value, and one restored to the base's value; a continuation dropped in the same way, one restored with its source read from the store, one removed, and one staged from the journal; a join dropped and a join restored. | `a_view_checkpoint_from_any_retained_base_returns_the_twin_stores_root` |
+| XB-01 | Root and contents of the successor. Five seeded scenarios and then 24 generated ones each publish batches from the bound store, then checkpoint lazy views, each at one of the states published so far, and finally checkpoint the bound store from the state at which it last published. For every checkpoint, a twin store built to the base's contents reaches the base's root, the returned root is the root that the twin returns for the same journal, and the returned state reads the base's contents with the journal applied. A publishing checkpoint advances the generation and the catalog epoch by one to the returned state, acknowledges the journal and leaves the view's store bound to the successor. A checkpoint whose successor is its base or the current state returns that state and leaves the catalog slot, the current state and the journal unchanged. A checkpoint that repeats a transition, that is, a base and a successor's contents that an earlier checkpoint of the scenario published or found equal to the current state, is answered from the owner's transition memo: it returns the state that the earlier checkpoint returned and leaves the catalog slot, the current state and the journal unchanged, and the view's store bound as it was, or bound to the current slot when its base is the current state. Every state published so far still reads its own contents, and two states have equal roots exactly when their contents are equal. The seeded scenarios alone must show every class: publications on the cross-base and on the same-base path; a journal without effect at a superseded base; a successor equal to the current state and one equal to an earlier state; the bound store published from a superseded state, and rebound at a later slot of its own state; a datum whose journal transition is rebased on a third current value, one whose transition is dropped because the current state already holds its after value, and one restored to the base's value; a continuation dropped in the same way, one restored with its source read from the store, one removed, and one staged from the journal; a join dropped and a join restored; and a transition answered from the memo, which the fifth scenario shows with three views at one base, the third repeating the first while the second's successor is current. | `a_view_checkpoint_from_any_retained_base_returns_the_twin_stores_root` |
 | XB-02 | One record pair and one compare-and-swap. A lazy view at a superseded base checkpoints a journal that takes one datum and puts another, while the current state differs from the base in two data, one continuation and its two joins. A walk limited to one object read is first refused with `Rebase`, with the store directory unchanged and the gate returned. The checkpoint then runs exactly the phases of one trusted incremental publication, with no cold admission and no index construction. It creates and removes no file. The active pack and its index are appended in place and end at the catalog's durable tails. The appended pack bytes are exactly one incremental prepare record and the incremental commit record that the successor's slot names; the commit verifies the prepare and the slot verifies the commit; the receipt runs from the previous current state to the returned successor; sequence, generation and catalog epoch advance by one; and the catalog image is the previous image with the successor written to its inactive slot. The recorded batch is exactly the rebased batch: every before is the previous current state's value, the journal's endpoints end at the journal's values and the other differing endpoints at the base's. The source of the restored continuation is not written again. The successor, the previous current state and the base each still read their own contents. With 96 shared data instead of one, the previous current state is larger and the appended pack and index bytes are equal. | `a_cross_base_checkpoint_appends_one_record_pair_and_swaps_the_catalog_once` |
-| XB-03 | No effect, no write. Four views are checkpointed: an empty journal at a superseded base, a journal from the genesis state whose successor is the current state, an empty journal at the current state, and a journal at a superseded base whose steps cancel each other. They return the base, the current state, the current state and the base. Each of the 16 failpoints of the durable directory I/O layer is then armed in its own thread: the four outcomes are unchanged and the failpoint is still armed afterwards, so no write, length change, sync, replacement or directory sync of the store was attempted. The directory image, with the length and modification time of every entry, the catalog slot, the current state, the journals and the gate are as before. As the liveness control, a publishing view checkpoint with the physical-write failpoint armed trips and clears it; `reconcile` then returns the previous current state, and the retried checkpoint publishes the twin store's root one generation later. | `an_empty_journal_and_an_unchanged_current_state_write_and_sync_nothing` |
+| XB-03 | No effect, no write. Four views are checkpointed, by an owner whose transition memo is disabled so that the second view takes the walk and the exit of a batch without effect in every round: an empty journal at a superseded base, a journal from the genesis state whose successor is the current state, an empty journal at the current state, and a journal at a superseded base whose steps cancel each other. They return the base, the current state, the current state and the base. Each of the 16 failpoints of the durable directory I/O layer is then armed in its own thread: the four outcomes are unchanged and the failpoint is still armed afterwards, so no write, length change, sync, replacement or directory sync of the store was attempted. The directory image, with the length and modification time of every entry, the catalog slot, the current state, the journals and the gate are as before. As the liveness control, a publishing view checkpoint with the physical-write failpoint armed trips and clears it; `reconcile` then returns the previous current state, and the retried checkpoint publishes the twin store's root one generation later. | `an_empty_journal_and_an_unchanged_current_state_write_and_sync_nothing` |
 | XB-04 | Refusals precede the first write. Each refusal of rows 1 to 5 and row 7 is observed twice, with the view's store and with a store of another lease registry, whose journal the owner cannot capture: a call that passes those rows is refused by that store's journal. The two refusals are equal, so the journal was not read, and both leave the directory image, the journal, the owner's root, generation key, pending terminal and phase unchanged, reach no capture and no publication phase, and return the permit. The cases are a permit of another gate; a base that the store does not retain, resolved in a second store; a pending record, left by a publication stopped after its catalog sync, which refuses another view's checkpoint as unresolved until `reconcile` reaches its terminal, after which that view publishes; a closed owner; an attachment of the closed owner's incarnation at the reopened owner, after which the same journal publishes the twin store's root under the new incarnation; a current manifest with a legacy-history root against a base without one; and a current manifest of one profile against a retained base of another profile. | `every_refusal_precedes_the_first_write_and_changes_nothing` |
 | XB-05 | Crash at every owner hook point. For each `JournalOwnerHookPoint`, a lazy view at a superseded base checkpoints a journal while a hook at that point copies the store files and stops the owner's task by a panic. A store recovered from the copy is at the previous current state, with files equal byte for byte to those before the call, for the points after the capture and after the preparation, and at the exact successor that the twin store returns, one generation later, for the points before and after the successor's pin and after the acknowledgement. The gate stays held by the pending record. `reconcile` then completes the record at that same state without writing, releases the gate, and leaves the journal intact before the write and acknowledged after it. A retry publishes the successor where the previous state was recovered. In every case the store settles on the successor, which reads the base's contents with the journal applied, with the view's store bound to it and every earlier state still readable. The hook point after the published-core load is not on the checkpoint's path: the checkpoint completes with the hook still armed, the next read handle stops there, and the copy recovers the successor. | `a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor` |
 
@@ -11540,6 +11540,344 @@ added in the order in which their leaves land.
 | OG-04 | One read per member of the domain. A rebase calls the reader of the receiving base exactly once for each captured member and once for each further member that a key of the captured journals names, and makes no other call. For a captured payload these are exactly the members of its cache. | `a_rebase_reads_the_receiving_base_once_per_domain_member` |
 | OG-05 | An FFI-shaped payload is rebased from its records. With five empty captured journals, the rebase installs the journals that OG-01 requires for the payload's cache over the receiving base. | `an_ffi_shaped_payload_rebases_to_the_overlay_difference` |
 
+### Memo of view checkpoint transitions in the durable owner (2026-11-13)
+
+Task 14350, leaf `rspace-owner-transition-memo`, gives the durable owner a
+memo of the view checkpoints that it has completed. A call of
+`DurableRSpaceAuthorityV1::checkpoint_view_from_base` in
+[`rspace_authority.rs`](../../../rspace++/src/rspace/persistence/durable/rspace_authority.rs)
+that repeats a completed transition, which is the same journal effect from
+the same base, returns the state that was reached then. It writes nothing,
+syncs nothing and does not walk the difference of two states. The technique
+is memoisation, the keeping of results that a function has already computed
+(Michie, "'Memo' Functions and Machine Learning", *Nature* 218, 19-22, 1968,
+[doi:10.1038/218019a0](https://doi.org/10.1038/218019a0)).
+
+The case becomes frequent once the runtime's checkpoints go through the
+owner. Every runtime that Casper spawns bootstraps the registry with a fixed
+seed and then checkpoints (`create_runtime` in
+[`rho_runtime.rs`](../../../rholang/src/rust/interpreter/rho_runtime.rs),
+which `spawn_runtime` and `spawn_replay_runtime` in
+[`runtime_manager.rs`](../../../casper/src/rust/util/rholang/runtime_manager.rs)
+reach with `init_registry` set), so every spawn from one base records the
+same journal, and a replay repeats the transition of its play.
+
+The memo exists only in the memory of one owner. No persisted byte, record
+kind, root, identity or wire message changes, the crate gains no dependency,
+and the memo has no lock of its own. This section builds on the
+[cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12)
+section. It uses the terms of that section (endpoint, current state $`C`$,
+base $`X`$, journal $`J`$, successor $`X + J`$, same-base path and
+cross-base path) and the rows 1 to 12 of its decision sequence.
+
+**Terms.**
+
+| Term | Meaning |
+|---|---|
+| After value | The value that an endpoint named by the journal has in the view: a multiplicity for a datum or a join, and for a continuation the reference of its canonical source object, or absent. |
+| Transition | A base together with the after values of a journal that was recorded against it. A transition determines its successor, as **Soundness of the key** shows. |
+| Key | What the memo keeps of a transition: the reference of the base's manifest and a digest of the after values. |
+| Completed transition | A transition whose checkpoint returned a state after an acknowledged publication, or after the walk found that the current state already is the successor (row 11). |
+| Hit, miss | A lookup is a hit when the memo holds the key and the store still retains the state kept under it. Every other lookup is a miss. |
+| Walk read budget | The limits `max_object_reads` and `max_object_read_bytes` of the `StateDifferenceLimits` that the caller passes for the difference walk. |
+
+**The key.** `ViewTransitionKeyV1 { base, journal }` holds the `ObjectRefV1`
+of the manifest of $`X`$, which is its digest and its encoded length, and the
+Blake2b-256 digest of the journal's after values in the encoding below.
+Blake2b-256 is BLAKE2b with a digest of 32 bytes
+([RFC 7693](https://doi.org/10.17487/RFC7693)), in the crate
+`blake2::Blake2b<U32>`, the hash of the store's object digests. The bytes are
+streamed into the hasher through a `CanonicalSink`; no buffer is built.
+
+```text
+after values   ≡  section(1, data)  section(2, continuations)  section(3, joins)
+section(n, m)  ≡  u64(n)  u64(number of entries of m)  entry ...
+entry          ≡  u64(length of the path)  path  after
+after          ≡  u64(count)                   -- a datum or a join
+                |  00                          -- a continuation that the view lacks
+                |  01  digest  u64(length)     -- the reference of a continuation's source
+```
+
+`u64` is the eight-byte little-endian form that `write_u64` writes. The
+section numbers are the values of `SemanticNamespace` for `DataBag`,
+`ContinuationMap` and `JoinBag`. The entries of a section are written in the
+order in which the map's read zipper visits them, by ascending path bytes, as
+the canonical encoding of a mutation batch orders its entries. The reference
+is written as `ObjectRefV1::write` writes it: the 32 bytes of the digest and
+the length. The three maps are `data_counts`, `pending.continuation_content`
+and `join_counts` of the capture's observation, the maps from which
+`mutation_batch_from_observation` builds the journal's batch. A key is
+computed only after that function has returned a batch, so whether a journal
+is empty is decided as before.
+
+The digest of the batch's own canonical encoding cannot be the key. That
+encoding carries the version of the state that the batch rewrites, the
+target generation and both values of every entry, so it differs between two
+publications of the same transition.
+
+**Soundness of the key.** Write $`m(X)`$ for the reference of the manifest of
+$`X`$, and $`A(J)`$ for the set of the triples of a namespace, a path and an
+after value that the journal holds.
+
+1. *The journal holds exactly the endpoints that differ.*
+   `BagDelta::record_change` nets an addition against a removal of the same
+   path, and `record_content_transition` removes a content transition that
+   returns to its before value. The three maps therefore hold an entry for
+   exactly the endpoints whose value in the view differs from their value in
+   $`X`$, and steps that cancel each other leave none.
+2. *Every before value is the base's.* The same-base capture requires the
+   store to be bound to the current slot, whose state is $`X`$ on that path,
+   and the cross-base capture requires the journal to have been recorded
+   against its origin $`X`$. As the cross-base section states,
+   $`b_J(e) = x(e)`$ for every endpoint $`e`$ that the journal names.
+3. *The successor is a function of the transition.* By 1 and 2 the value
+   $`s(e)`$ of an endpoint in the successor, which **Rebased batch** in the
+   cross-base section defines as $`a_J(e)`$ where $`J`$ names $`e`$ and as
+   $`x(e)`$ elsewhere, depends on $`X`$ and $`A(J)`$ alone. The successor's
+   manifest carries the schema epoch, the profile and the legacy-history root
+   of the state that the publication rewrites. On the same-base path that
+   state is $`X`$. On the cross-base path it is $`C`$, and row 7 has made
+   the three fields of $`C`$ and $`X`$ equal. The canonical DAG of a set of
+   endpoints is unique. The manifest of the successor is therefore a function
+   of $`m(X)`$ and $`A(J)`$, whatever state is current.
+4. *The encoding is injective.* Every section states its number and its
+   count, every entry states the length of its path, and each form of an
+   after value has a fixed length: 8 bytes, 1 byte, or 41 bytes that begin
+   with `01`. Different sets $`A(J)`$ therefore have different encodings, and
+   equal digests mean equal sets unless Blake2b-256 collides.
+
+Together, for bases $`X`$ and $`X'`$ and journals $`J`$ and $`J'`$:
+
+```math
+\bigl(m(X),\, A(J)\bigr) = \bigl(m(X'),\, A(J')\bigr)
+\;\Longrightarrow\; X + J = X' + J' .
+```
+
+Conversely, by 1, two journals at one base that lead to the same contents
+hold the same entries, and so have the same key. The models of the tests use
+this: they predict a hit from the base's root and the successor's contents.
+
+**The memo.** `ViewTransitionMemoV1 { capacity, order, successors }` is a
+private field of the owner.
+
+- `successors` is a `HashMap` from a key to the `ResolvedDurableStateV1` that
+  the completed checkpoint returned. `order` is a `VecDeque` of the keys in
+  the order in which they were first recorded.
+- Both are created with room for `capacity` entries when the owner is built.
+  `from_view_with` passes `VIEW_TRANSITION_MEMO_CAPACITY`, which is 4,096.
+  The memo never holds more than `capacity` keys, so neither collection grows
+  afterwards.
+- `record(key, state)` does nothing without a key or with capacity zero. A
+  key that the memo holds keeps its place in `order` and takes the new state.
+  For a new key, if `order` already holds `capacity` keys, its front key,
+  which is the one recorded first, is removed from both collections; the new
+  key is then appended. Eviction is first in, first out: a hit does not move
+  a key.
+- `memoised_successor(key)` returns the state kept under the key if
+  `require_retained` still counts its root, which is a lookup in the
+  retained-closure ledger in memory. A state that the store no longer
+  retains is never returned: the call takes the path of a miss, and its
+  `record` replaces the state.
+- `checkpoint_view_from_base` and `close` reach the memo through the owner's
+  exclusive borrow, which the caller holds under the owner's mutex. Nothing
+  else in production code reads or writes it, and nothing shares it.
+- `close` replaces it with a memo of capacity zero, which drops its entries
+  and its storage. Reopening a directory builds a new owner, whose memo is
+  empty.
+- Nothing of the memo is written to the store. A restarted process starts
+  with an empty memo and fills it by publishing or by walking.
+
+**Where the memo is read and filled.** Rows 1 to 12 keep their order and
+their outcomes. The lookup and the places of `record` are added:
+
+| Step | Same-base path, row 6 | Cross-base path, rows 7 to 12 |
+|---|---|---|
+| Before the lookup | Rows 1 to 5, the binding and the attachment of row 6, the refusals of `checkpoint_view`, and its capture. | Rows 1 to 5, 7 and 8, and the capture. |
+| A journal without a transition | No key and no lookup: the path of `checkpoint_view` returns the current state. | No key and no lookup: row 9 returns $`X`$. |
+| Lookup | After the journal's batch has been built from the capture, which is the capture that a publication validates and acknowledges. | After the journal's batch has been built from the capture, before the walk of row 10. |
+| Hit | The memoised state is returned. | The memoised state is returned. |
+| Miss | The batch is published as before. After the acknowledgement the state reached is resolved, recorded and returned. | The walk runs. Row 11 resolves $`C`$, records it and returns it. Row 12 publishes, and after the acknowledgement the successor is resolved, recorded and returned. |
+
+A call that is refused or interrupted records nothing, because every refusal
+returns before `record`. `reconcile`, which completes an interrupted
+publication, records nothing either: the next call of that transition
+publishes, or walks and finds the current state unchanged, and is recorded
+then. A direct call of `checkpoint_view` neither reads nor fills the memo.
+
+For the same-base path, `checkpoint_view` is split at its capture into two
+private functions that keep its statements in their order:
+`capture_bound_journal`, with the checks and the capture, and
+`publish_bound_journal`, with the pending record, the hook after the capture,
+`publish_captured` and the acknowledgement. `checkpoint_view` calls one after
+the other. Row 6 calls the first, builds the journal's batch, consults the
+memo and, on a miss, calls the second with that batch. `publish_captured`
+receives it through the parameter `prebuilt`, through which the cross-base
+path passes its rebased batch, so the batch is built once.
+
+**Algorithm.** This is the algorithm of the cross-base section with the memo
+added. The chunks for rows 1 to 5, 7 and 12 are defined there.
+
+```text
+checkpoint_view_from_base(permit, view, gate, hot, limits):   -- owner mutex held
+    ⟨refuse before the journal is read: rows 1 to 5⟩
+    current := the catalog's current slot
+    if manifest(view.state) = manifest(current.state):
+        ⟨publish on the same base or answer from the memo: row 6⟩
+    ⟨refuse an uninheritable manifest: row 7⟩
+    captured := hot.capture_cross_base_journal(manifest(view.state), current, registry)
+    batch := mutation_batch_from_observation(current.state, captured.observation)
+    if the journal is empty: return view.state                     -- row 9
+    key := ⟨key of the captured transition⟩
+    ⟨answer from the memo⟩
+    visit_state_difference(...)                                    -- row 10, as before
+    if batch is empty:                                             -- row 11
+        reached := resolve(current.state)
+        memo.record(key, reached)
+        return reached
+    ⟨publish the rebased batch: row 12⟩            -- up to reached := resolve(reached)
+    memo.record(key, reached)
+    return reached
+
+⟨publish on the same base or answer from the memo: row 6⟩ ≡
+    hot.bind_journal_authority(current)
+    attachment := attach(hot)
+    (current, captured) := capture_bound_journal(permit, attachment, gate, hot)
+    match mutation_batch_from_observation(current.state, captured.observation):
+        a batch:    key := ⟨key of the captured transition⟩
+        a refusal:  batch := none; key := none    -- publish_captured reports it as before
+    ⟨answer from the memo⟩
+    reached := resolve(publish_bound_journal(permit, hot, current, captured,
+                                             limits.publication, batch))
+    memo.record(key, reached)
+    return reached
+
+⟨key of the captured transition⟩ ≡
+    ( manifest(view.state),
+      Blake2b-256(after values of captured.observation) )
+
+⟨answer from the memo⟩ ≡
+    if key is not none and memo.successors holds a state under key
+           and require_retained(state):
+        return state                                               -- hit
+```
+
+**Flow.** The same call as a diagram. A box is a decision or a step, an arrow
+to the right is an exit of the call, and $`S`$ is the state that the call
+returns.
+
+```text
+ checkpoint_view_from_base(permit, view = (incarnation, X), gate, hot, limits)
+                               │
+       ┌───────────────────────▼───────────────────────┐
+       │ rows 1-5; then row 6 (bind, attach, checks)   │ refused
+       │ or rows 7-8; capture of the journal J         ├────────▶ refusal
+       └───────────────────────┬───────────────────────┘
+       ┌───────────────────────▼───────────────────────┐ no      row 6: the current state
+       │ does J hold a transition ?                    ├────────▶ row 9: X
+       └───────────────────────┬───────────────────────┘
+                               │ yes
+       ┌───────────────────────▼───────────────────────┐
+       │ key := (manifest(X),                          │
+       │         Blake2b-256(after values of J))       │
+       └───────────────────────┬───────────────────────┘
+       ┌───────────────────────▼───────────────────────┐ yes
+       │ memo holds key ↦ S and S is retained ?        ├────────▶ S    hit: no write,
+       └───────────────────────┬───────────────────────┘               no sync, no walk
+                               │ no (miss)
+       ┌───────────────────────▼───────────────────────┐
+       │ row 6: publish J on C = X                     │ refused or
+       │ rows 10-12: walk from C to X, then publish    │ interrupted
+       │ the rebased batch, or find it empty           ├────────▶ refusal, nothing
+       └───────────────────────┬───────────────────────┘          recorded
+                               │ S := resolve(state reached)
+       ┌───────────────────────▼───────────────────────┐
+       │ memo.record(key, S); the key recorded first   │
+       │ leaves when capacity keys are held            │
+       └───────────────────────┬───────────────────────┘
+                               ▼
+                               S
+```
+
+**What a hit does and what it leaves.** A hit returns before a pending record
+exists. It runs no publication phase and no owner hook, writes and syncs
+nothing, and reads no object for a difference, because the walk is not
+started. On the cross-base path the two manifest loads of row 7 precede the
+capture and are the hit's only reads of the store; on the same-base path
+there is none. The catalog slot, the current state, the store directory and
+the memo are as before, and the permit is dropped with the return, so the
+view's gate is free.
+
+The view's store keeps its journal, which is not acknowledged. On the
+cross-base path its binding is unchanged. On the same-base path the store is
+bound to the current slot, because row 6 binds every store of that path
+before its capture. The returned state is the successor $`X + J`$, which the
+store retains. It need not be the current state, and a hit does not move the
+current state: a hit on the same-base path returns $`X + J`$ while
+$`C = X`$ stays current. As after rows 9 and 11, a caller that continues from
+the returned state takes a store of that state.
+
+**Cost.** A lookup makes one pass over the journal's entries to count them
+and one to hash them, one probe of the hash map and one lookup in the
+ledger. Its time is linear in the journal and does not depend on the size of
+$`C`$ or $`X`$ or of their difference; a miss adds this to the path that it
+then takes. The space is the storage reserved when the owner is built: room
+for 4,096 keys in the queue and for 4,096 pairs of a key and a state in the
+map, for each open owner.
+
+**The TM rows.** TM is the transition memo family. The tests are in
+`owner_transition_memo.rs` and use the fixture, the steps, the lazy views and
+the helpers of the XB tests. The owner has no counter of hits, so the tests
+recognise a hit from outside:
+
+- On the cross-base path a journal with a transition is answered with a
+  state under a walk read budget of zero. A miss under that budget is refused
+  with `Rebase` by the first object read of the walk and changes nothing,
+  since the walk reads the root of the first namespace in which $`C`$ and
+  $`X`$ differ before it visits an endpoint.
+- On the same-base path a journal with a transition is answered with a state
+  while the catalog slot stays as it was. A miss publishes and moves the
+  slot.
+
+| ID | Required property | Test |
+|---|---|---|
+| TM-01 | A hit writes nothing, syncs nothing and walks nothing. A lazy view at the first published state publishes a journal on the same-base path, and a second view at that state publishes another journal, now from a superseded base; the memo then holds two transitions. A third view repeats the first journal while the second successor is current, and a fourth repeats it after a publication has returned the current state to the base's contents, so that its base is the current state. Each of the two is checkpointed 17 times with a walk read budget of zero: once alone, and once for each of the 16 failpoints of the durable directory I/O layer, armed in a thread of its own. Every call returns the state that the first publication returned, and the failpoint is still armed afterwards, so no write, length change, sync, replacement or directory sync of the store was attempted. No publication phase, cold admission or index construction is observed, and the hook after the capture does not run. The directory image, with the length and modification time of every entry, the catalog slot, the current state, the lengths of the memo and the view's journal are as before, and the gate is free. The store of the view at the superseded base stays bound to no slot, the store of the view at the current state is bound to the current slot, and each still reads the datum that its journal put. On the cross-base path the two manifest loads of row 7 precede the capture and the lookup; they are the hit's only reads of the store and are not counted, because the durable object store has no read counter. As the control of the budget, a transition that the memo does not hold is refused under the same budget with `Rebase`, at the first object read of the walk, and changes nothing. As the liveness control, its publication with the physical-write failpoint armed trips and clears the failpoint and memoises nothing; `reconcile` then returns the previous current state, and the retried checkpoint publishes one generation later and is memoised. | `a_memoised_transition_is_returned_without_a_write_a_sync_or_a_walk` |
+| TM-02 | Results equal those of an owner without a memo. Two stores are opened on the same image. The owner of the first is built by the production constructor, and the owner of the second by a test-only constructor with a memo of capacity zero, which records nothing. Four seeded sequences and then 24 generated ones publish the same batches in both stores and then checkpoint, in both, lazy views at the states published so far. A generated sequence draws its journals from a pool of at most three, so that journals repeat across bases and at one base, and repeats every one of its checkpoints once. At every checkpoint the two owners return the same state, and that state reads the base's contents with the journal applied in both stores. A model of the completed transitions, which are pairs of a base's root and a successor's contents, predicts how each owner answers. The owner with the memo answers from it exactly when the pair was completed before, on the path that its own current state selects, and its memo holds one key for each pair. The owner without a memo never answers from one and holds none: it publishes, or walks to a batch without effect, where the other answers from the memo, after which the current states of the two stores can differ while the returned states stay equal. The seeded sequences alone must be answered from the memo twice on the same-base path and seven times on the cross-base path, and must take every other exit of a view checkpoint: a journal without a transition, a publication on each path, and a batch without effect, which is memoised as well. Each seeded sequence checkpoints from a repeated base and from distinct bases, and the first checkpoints one journal from two bases, which is the case of the first red control. | `every_checkpoint_result_equals_that_of_an_owner_without_a_memo` |
+| TM-03 | Bounded, first in first out, empty after `close` and after a reopen. An owner built by the production constructor has a memo of capacity 4,096 that holds nothing and has room reserved for at least 4,096 keys in each of its two collections. An owner built with capacity two then publishes three transitions from one base, and its memo holds one key, two keys and again two. The first transition is answered from the memo directly before the third is recorded. It is nevertheless the one that the third displaces: afterwards it is refused under a walk read budget of zero, while the second and the third are answered. Publishing the first again records it as the newest and displaces the second. A last repetition is answered from the memo, and after `close` the memo holds no key and no reserved storage. An owner reopened on the same directory with capacity two starts with an empty memo: the transition that the closed owner held is refused under the zero budget, takes the walk under the full limits and returns the same state, and the memo then holds one key. The test does not publish 4,097 transitions: the production capacity is asserted as the constructor's value, and the bound and the order are observed at capacity two, through the same code. | `the_memo_is_bounded_evicts_its_oldest_transition_and_is_empty_after_close_and_a_reopen` |
+
+Three more tests bind no ID.
+`equal_after_values_share_a_key_and_one_value_path_or_domain_apart_do_not`
+publishes two transitions from one base, a datum and a continuation with its
+joins, and then checkpoints eleven more views at that base under the zero
+budget. A journal that also puts and takes another datum, and one that also
+installs and withdraws another continuation, leave the after values of a
+memoised transition and are answered from the memo. A journal that differs
+from a memoised one in a count, in the value or the channel of its datum, by
+one further entry, in the body of its continuation or in its channel group
+is refused by the walk, and so is a store that holds only the continuation
+entry of the second transition and one that holds only its join entries;
+the journal that holds both is answered from the memo. The refused journals
+are not recorded.
+`a_memoised_state_that_the_store_does_not_retain_is_not_returned` replaces
+the states kept in the memo by a state of another store, which this store
+does not retain. The repeated transition is then refused by the walk under
+the zero budget and changes nothing. Under the full limits it publishes its
+successor again, which replaces the state in the memo without adding a key,
+and it is answered from the memo afterwards.
+`a_publication_completed_by_reconcile_is_not_memoised` stops a cross-base
+publication after its catalog sync, so that a pending record remains, and
+lets `reconcile` complete the record at its terminal. The memo holds nothing
+after the interrupted call and nothing after the reconciliation. The
+repeated transition is refused by the walk under the zero budget; under the
+full limits the walk finds the current state unchanged, the call returns it
+and is memoised, and the next repetition is answered from the memo.
+
+The red controls change `rspace_authority.rs`. A key whose base is built
+from the journal's digest no longer names the base, so a journal that was
+memoised from one base answers the same journal from another base with the
+wrong successor: TM-02 fails in a seeded sequence. A `close` that keeps the
+memo leaves its keys in the closed owner: TM-03 fails. The verification
+record gives their results.
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -11834,6 +12172,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | XB-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): each refusal of the cross-base entry point is decided before the journal is read and changes nothing. The owner model refuses a foreign permit and a stale incarnation in `CheckRequest`, but it has no journal read, no first write, no unretained base and no manifest fields; the order of the refusals is a property of the Rust entry point. |
 | XB-05 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14349): an owner task that stops at each `JournalOwnerHookPoint` of a cross-base checkpoint leaves store files that recover the previous current state or the exact successor, and `reconcile` completes the record. The owner model resolves a pending record in `ReconcilePending` by comparing the owner's root with the record's predecessor, as `reconcile` compares the recovered slot with it, but the model has no store files, no hook points and no recovery of a copy. |
 | KG-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14393): the V1 implementation of the RhoPath grammar traits returns the bytes, views and errors of the `RhoPathV1` functions that it delegates to. This matrix cites no model of RhoPathV1 keys, as DF-03 notes for its group prefixes, and no model states a property of Rust trait dispatch. |
+| TM-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14350): a view checkpoint that repeats a completed transition is answered from the owner's memo without a directory write, a sync or a difference walk, and leaves the catalog slot, the current state and the journal as they were. In the owner model `CheckRequest` captures a record for every target that differs from the owner's root; the model keeps no completed transitions and has no directory I/O, no difference walk and no read budget to count. |
+| TM-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14350): the state that `checkpoint_view_from_base` returns is the same with and without the memo, over sequences of checkpoints from repeated and distinct bases. In the owner model the target `Succ(base, view)` is a function of the record's base and view by definition. That the memo's key determines the successor rests on the netting of the journal, on the anchoring of both captures at the base and on the injective encoding of the after values, which are properties of the Rust hot store and owner; XB-01 carries the obligation that the returned state is a function of the base and the journal alone. |
+| TM-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14350): the memo holds at most its capacity, which is 4,096 for an owner built by the production constructor, displaces the key that it recorded first, and is empty after `close` and in a reopened owner. Capacity, eviction order and the lifetime of a process-local memo are properties of the Rust owner; the owner model keeps no completed transitions. |
 
 ## Generator discipline
 
@@ -12942,6 +13283,50 @@ they now name its tests. No Rocq or TLA+ file changed, and the proofs were
 not run again for this slice. No production code calls the operation. No
 persisted byte, record kind, root, identity or wire message changed. See
 the hot-store journal rebase section.
+
+The 2026-11-13 transition memo slice of task 14350 adds TM-01 to TM-03, the
+first TM rows, so the catalog/derivation/binding registry now contains
+**291** IDs. The manifest test's family list gains `TM`, and its executable
+sources gain `owner_transition_memo.rs`. The slice also changes the module
+of the XB tests: the model of XB-01 learns the memo and gains a fifth seeded
+scenario and the class of a transition answered from the memo, XB-03
+disables the memo of its owner, and helpers of the module become visible to
+the new module. On an export of the candidate tree, which already holds the
+key grammar trait slice and the hot-store journal rebase slice, the six
+tests of the new module, the seven tests of the cross-base checkpoint
+module, the four owner checkpoint view tests and the manifest test passed
+in debug and in release (18 passed, none ignored), and the whole library
+test target passed in both profiles with 1036 tests (1026 passed, 10
+ignored). The two repeated transitions of TM-01 were each
+answered from the memo 17 times, and the seeded sequences of TM-02 twice on
+the same-base path and seven times on the cross-base path, as the tests
+assert. The five seeded scenarios of XB-01 show by themselves every class
+that the test requires, the memo class included. Two controls were each
+applied to the export's `rspace_authority.rs`, run against the six tests of
+the new module in debug with `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` and
+removed:
+
+- With the base of the key replaced by a reference that is built from the
+  journal's digest, so that the key no longer names the base, TM-02 was the
+  only test to fail. It failed in one of its seeded sequences, where the
+  states that the two owners returned are compared, with the message
+  `the owner with the memo and the owner without one must return the same state`.
+  The first seeded sequence checkpoints one journal from two bases: its
+  second checkpoint repeats from the first published state the journal that
+  its first checkpoint published from the genesis state.
+- With the replacement of the memo removed from `close`, TM-03 was the only
+  test to fail, with the message
+  `a closed owner must hold no memoised transition`: the closed owner still
+  held two keys.
+
+The other five tests passed under each control. Each faulted file was
+restored from the candidate tree, and the export was compared with that
+tree after the runs. Clippy of `rspace_plus_plus` with every target lists no
+finding in the files of this slice, and `rustfmt --check` passes on its Rust
+files. The obligation registries that hash a file of this slice are
+regenerated with it. No persisted byte, record kind, root, identity or wire
+message changed, and the crate has no new dependency. See the transition
+memo section.
 
 ## Caller-authority contract (2026-09-06)
 
