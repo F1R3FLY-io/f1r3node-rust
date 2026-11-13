@@ -17,6 +17,7 @@ use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::safety_oracle::CliqueOracleImpl;
+use casper::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::validator_identity::ValidatorIdentity;
@@ -39,6 +40,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::helper::inline_ingest::InlineIngest;
@@ -68,6 +70,38 @@ pub struct ShardOverrides {
     pub with_read_only_size: Option<usize>,
     pub deploy_lifespan: Option<i64>,
     pub finalization_rate: Option<i32>,
+    /// Each node keeps its own RSpace, seeded with the genesis state, so it
+    /// holds only the state roots it computed itself. Otherwise the nodes
+    /// share one RSpace.
+    pub own_rspace: bool,
+}
+
+/// Copies every RSpace store of `from_scope` into `to_scope`.
+async fn seed_rspace(from_scope: &str, to_scope: &str) {
+    let mut from = resources::mk_test_rnode_store_manager_with_dual_scope(
+        resources::generate_scope_id(),
+        from_scope.to_string(),
+    );
+    let mut to = resources::mk_test_rnode_store_manager_with_dual_scope(
+        resources::generate_scope_id(),
+        to_scope.to_string(),
+    );
+    for (db, _) in rnode_db_mapping(None) {
+        if !db.id().starts_with("rspace-") {
+            continue;
+        }
+        let entries = from
+            .store(db.id().to_string())
+            .await
+            .expect("genesis RSpace store")
+            .to_map()
+            .expect("genesis RSpace entries");
+        to.store(db.id().to_string())
+            .await
+            .expect("node RSpace store")
+            .put(entries.into_iter().collect())
+            .expect("seed node RSpace");
+    }
 }
 
 pub struct TestNode {
@@ -920,12 +954,18 @@ impl TestNode {
         // With shared LMDB, we don't need to copy storage directories.
         // Use the shared LMDB path for data_dir (for logging/debugging purposes only).
         let _new_storage_dir = resources::get_shared_lmdb_path();
-        // Use mk_test_rnode_store_manager_with_shared_rspace to get a new scope with genesis data copied
-        // This ensures test isolation for blocks/DAG (each TestNode has its own scope)
-        // while sharing RSpace scope so all nodes in this test can see each other's state
+        // Each TestNode has its own block and DAG scope. The RSpace scope is
+        // the genesis one, shared by every node, unless the node keeps its own.
+        let rspace_scope = if overrides.own_rspace {
+            let scope = resources::generate_scope_id();
+            seed_rspace(&genesis_context.rspace_scope_id, &scope).await;
+            scope
+        } else {
+            genesis_context.rspace_scope_id.clone()
+        };
         let mut kvm = resources::mk_test_rnode_store_manager_with_shared_rspace(
             genesis_context,
-            &genesis_context.rspace_scope_id,
+            &rspace_scope,
         )
         .await
         .expect("Failed to create store manager with shared RSpace");

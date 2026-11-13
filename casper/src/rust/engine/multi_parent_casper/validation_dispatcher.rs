@@ -54,6 +54,84 @@ where
     Ok((result, elapsed_str))
 }
 
+/// The finalized floor of `block`'s parents, judged from its own
+/// justifications.
+async fn derive_floor_context(
+    this: &MultiParentCasperImpl,
+    block: &BlockMessage,
+    snapshot: &CasperSnapshot,
+) -> Result<crate::rust::finality::floor_context::FloorContext, CasperError> {
+    let latest_messages: std::collections::BTreeMap<
+        models::rust::validator::Validator,
+        models::rust::block_hash::BlockHash,
+    > = block
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    crate::rust::finality::floor_context::FloorContext::derive(
+        &snapshot.dag,
+        &this.block_store,
+        &block.header.parents_hash_list,
+        &latest_messages,
+        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+            this.casper_shard_conf.fault_tolerance_threshold_ppm,
+        ),
+    )
+    .await
+}
+
+/// Replays an equivocating block so this node holds its post-state. A
+/// validator that received this block first may build on it, and its block
+/// replays from that state. The equivocation verdict stands whatever the
+/// replay finds: a block whose state does not replay is one no honest
+/// validator builds on.
+async fn replay_equivocation(
+    this: &MultiParentCasperImpl,
+    block: &BlockMessage,
+    snapshot: &mut CasperSnapshot,
+    local_validator: Option<&models::rust::validator::Validator>,
+) {
+    let floor_ctx = if block.header.parents_hash_list.is_empty() {
+        None
+    } else {
+        match derive_floor_context(this, block, snapshot).await {
+            Ok(ctx) => Some(ctx),
+            Err(error) => {
+                tracing::warn!(
+                    block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                    %error,
+                    "equivocation not replayed: its floor cannot be derived"
+                );
+                return;
+            }
+        }
+    };
+    match validate_block_checkpoint(
+        block,
+        &this.block_store,
+        snapshot,
+        &this.runtime_manager,
+        Some(&this.rejected_deploy_buffer),
+        floor_ctx.as_ref(),
+        local_validator,
+    )
+    .await
+    {
+        Ok(Either::Right(Some(_))) => {}
+        Ok(verdict) => tracing::warn!(
+            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            ?verdict,
+            "equivocation's state does not replay"
+        ),
+        Err(error) => tracing::warn!(
+            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            %error,
+            "equivocation not replayed"
+        ),
+    }
+}
+
 /// Runs the validator chain that's shared between `dispatch_validate` and
 /// `dispatch_validate_self_created`. The two callers differ only in
 /// whether they run `validate_block_checkpoint` + `bonds_cache` (the
@@ -96,6 +174,13 @@ async fn run_validation_steps(
         }
     }
 
+    // This node's identity for the owner-scoped buffer populate inside the
+    // checkpoint recompute; observers pass None and buffer nothing.
+    let local_validator: Option<models::rust::validator::Validator> = this
+        .validator_id
+        .as_ref()
+        .map(|id| prost::bytes::Bytes::copy_from_slice(&id.public_key.bytes));
+
     // A second signed block at a held sequence number is an equivocation
     // whatever else is wrong with it, so it is judged before every check
     // that could discard it.
@@ -114,18 +199,15 @@ async fn run_validation_steps(
     )
     .await?;
     if let Either::Left(block_error) = equivocation_result {
+        if !skip_checkpoint_and_bonds {
+            replay_equivocation(this, block, snapshot, local_validator.as_ref()).await;
+        }
         return Ok(Either::Left(block_error));
     }
 
     // The per-validate derivation slot: block_summary fills it at the first
     // floor-consuming step; the checkpoint and bonds steps below reuse it.
     let mut floor_ctx: Option<crate::rust::finality::floor_context::FloorContext> = None;
-    // This node's identity for the owner-scoped buffer populate inside the
-    // checkpoint recompute; observers pass None and buffer nothing.
-    let local_validator: Option<models::rust::validator::Validator> = this
-        .validator_id
-        .as_ref()
-        .map(|id| prost::bytes::Bytes::copy_from_slice(&id.public_key.bytes));
     let (block_summary_result, t1) = timed_step(
         "block-summary",
         BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
@@ -157,25 +239,7 @@ async fn run_validation_steps(
         // block never filled it, so derive here — same frozen inputs, same
         // result, same BlockException class on failure.
         if floor_ctx.is_none() && !block.header.parents_hash_list.is_empty() {
-            let latest_messages: std::collections::BTreeMap<
-                models::rust::validator::Validator,
-                models::rust::block_hash::BlockHash,
-            > = block
-                .justifications
-                .iter()
-                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
-                .collect();
-            match crate::rust::finality::floor_context::FloorContext::derive(
-                &snapshot.dag,
-                &this.block_store,
-                &block.header.parents_hash_list,
-                &latest_messages,
-                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    this.casper_shard_conf.fault_tolerance_threshold_ppm,
-                ),
-            )
-            .await
-            {
+            match derive_floor_context(this, block, snapshot).await {
                 Ok(ctx) => floor_ctx = Some(ctx),
                 Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
             }

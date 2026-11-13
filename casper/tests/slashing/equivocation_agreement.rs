@@ -12,7 +12,7 @@ use models::rust::casper::protocol::casper_message::{
 use rspace_plus_plus::rspace::history::Either;
 
 use super::integration_helpers::equivocate_block;
-use crate::helper::test_node::TestNode;
+use crate::helper::test_node::{ShardOverrides, TestNode};
 use crate::util::genesis_builder::GenesisBuilder;
 
 fn deploy(nonce: i32, shard_id: &str) -> Signed<DeployData> {
@@ -30,9 +30,12 @@ async fn network(validators: usize, epoch_length: Option<i32>) -> (Vec<TestNode>
         .await
         .expect("genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let nodes = TestNode::create_network(genesis, validators, None, None, None, None)
-        .await
-        .expect("network");
+    let nodes = TestNode::create_network_with_overrides(genesis, validators, ShardOverrides {
+        own_rspace: true,
+        ..Default::default()
+    })
+    .await
+    .expect("network");
     (nodes, shard_id)
 }
 
