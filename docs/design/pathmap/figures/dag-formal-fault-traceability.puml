@@ -42,8 +42,8 @@ package "T4  Compaction lease closure" as P4 #F5F9FF {
 }
 package "T5  Reclaim under dynamic GC roots" as P5 #F5F9FF {
   rectangle "RSpaceGcProtection.tla\nRSpaceGcPackLeaseRace.tla" as M5 #E1BEE7
-  rectangle "retention.rs <font:monospaced>snapshot_with_manifest</font>\nWAL starts for replay and rollback" as H5 #C8E6C9
-  rectangle "dynamic-root snapshot only in registry tests;\nprocess-local leases; replay/rollback WAL starts\nowners: rspace-gc-retention-runtime,\nrspace-gc-lifecycle-acceptance" as W5 #FFCDD2
+  rectangle "retention.rs <font:monospaced>snapshot_with_manifest</font>\nexact generation leases" as H5 #C8E6C9
+  rectangle "dynamic-root snapshot only in registry tests;\nprocess-local leases\nowners: rspace-gc-retention-runtime,\nrspace-gc-lifecycle-acceptance" as W5 #FFCDD2
 }
 package "T6  Import, migration, state sync, matching" as P6 #F5F9FF {
   rectangle "affine import, caller and\nmatcher catalogs (scoped)" as M6 #E1BEE7
