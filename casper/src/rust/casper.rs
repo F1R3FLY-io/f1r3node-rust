@@ -381,11 +381,13 @@ pub async fn hash_set_casper(
     // Effective anchor: whichever is higher — the approved block's height
     // (startup baseline) or the persisted GC pruning cutoff (survives
     // restart). Block-store GC only advances this, so the max is monotone.
+    // Test fixtures build the storage without persistence; skip the
+    // persisted read there — GC is unreachable on such storages anyway.
     let anchor_from_approved = crate::rust::util::proto_util::block_number(&approved_block);
-    let anchor_persisted = block_dag_storage
-        .gc_store()
-        .effective_anchor()?
-        .unwrap_or(anchor_from_approved);
+    let anchor_persisted = match block_dag_storage.try_gc_store() {
+        Some(gc) => gc.effective_anchor()?.unwrap_or(anchor_from_approved),
+        None => anchor_from_approved,
+    };
     let effective_anchor = Arc::new(std::sync::atomic::AtomicI64::new(
         anchor_from_approved.max(anchor_persisted),
     ));

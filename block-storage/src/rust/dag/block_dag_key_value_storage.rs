@@ -1596,6 +1596,14 @@ impl BlockDagKeyValueStorage {
             .clone()
     }
 
+    /// Non-panicking accessor: returns `None` for storages built without
+    /// persistence (test fixtures via `from_parts`). Used by launch code
+    /// that reads GC state from a fallback seed when the storage is
+    /// transactional and skips it otherwise.
+    pub fn try_gc_store(&self) -> Option<Arc<DagGcStore>> {
+        self.persistence.as_ref().map(|p| p.gc.clone())
+    }
+
     /// Evict DAG metadata below `cutoff`. Called by block-store GC so
     /// walks cannot descend into pruned bodies. Also persists the new
     /// anchor via the GC store, so the cutoff survives restart and is
