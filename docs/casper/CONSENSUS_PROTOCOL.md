@@ -17,7 +17,7 @@ F1r3fly uses **CBC Casper** (Correct-by-Construction Casper), a proof-of-stake c
 3. Snapshot: select parents via LMD GHOST fork choice, compute justifications and deploy scope
 4. Create block: select deploys, execute in RSpace, compute state hash, sign
 5. Self-validate, broadcast to peers
-6. Receivers: replay deploys, verify state hash, check equivocations
+6. Receivers: check equivocations, replay deploys, verify state hash
 7. Valid → insert into DAG → trigger finalization
 8. Finalizer: clique oracle computes fault tolerance → if FT > threshold, block finalized
 
@@ -32,7 +32,7 @@ F1r3fly uses **CBC Casper** (Correct-by-Construction Casper), a proof-of-stake c
 | Equivocation detection (`equivocation_detector.rs`) | P2P transport (`TransportLayer`) |
 | Pre-proposal constraint checks | Engine trait (`Arc<dyn MultiParentCasper>`) |
 | | Block creation/assembly, signing |
-| | Validation steps 1-3, 6 (format, signature, deps, replay) |
+| | Validation steps 1-3, 8 (format, signature, deps, replay) |
 
 ---
 
@@ -221,22 +221,29 @@ The node limits these checks. It runs at most 2 checks at a time, and one at a t
 - Recompute `CasperSnapshot` with the block's actual parents as tips
 - This ensures validation uses the same state the proposer had
 
-### Step 5: Block Summary
-- Recompute the block hash again
-- Structural consistency: block number progression, sender weight, justification format
+### Step 5: Identity and Equivocation
+- Shard ID and chain ID match? Otherwise `InvalidShardId` or `InvalidChainId`
+- Sender has stake in the main parent? Otherwise `InvalidSender`
+- **Equivocation**: a different held block has the same sender and sequence number. The node stores the block invalid with its sibling and judges nothing else of it. See [Equivocation](#equivocation)
 
-### Step 6: Checkpoint Validation (Deploy Replay)
+### Step 6: Parents Held as Equivocations
+- An equivocation is stored without a judgement of its contents. Before a block built on one is judged, the node judges that parent's contents with steps 7 to 10
+- Invalid parent contents make the block `InvalidParents`. A parent that the node cannot judge yet defers the block
+- The node keeps a final verdict, so it judges a parent once for all blocks built on it
+
+### Step 7: Block Summary
+- Recompute the block hash again
+- Structural consistency: block number progression, justification format
+
+### Step 8: Checkpoint Validation (Deploy Replay)
 - **Replay every deploy** via `ReplayRSpace` (replay runtime, not play runtime)
 - Verify computed post-state hash matches the block's claimed hash
 - This is the most expensive step — it proves the proposer executed correctly
 
-### Step 7: Equivocation Checks
-- **Simple equivocation**: Block creator's latest message should match their creator justification. If not:
-  - `AdmissibleEquivocation`: Block was requested as a dependency — store as invalid but keep in DAG for tracking
-  - `IgnorableEquivocation`: Block arrived unsolicited — drop entirely
-- **Neglected equivocation**: Block justifies a known equivocator without slashing them — block is invalid
+### Step 9: Neglected Equivocation
+- The block's justifications include both blocks of a held pair, and the sender of the pair is bonded in the block's post-state: `NeglectedEquivocation`, block is invalid
 
-### Step 8: Deploy & State Validation
+### Step 10: Deploy & State Validation
 - Deploys are within scope, not duplicated
   - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window, without a validity qualifier: a signature carried only by an invalid ancestor is still a repeat
   - The scan starts at `min(tip_start, max(oldest_valid_after + 1, floor - deploy_lifespan + 2))`, where `tip_start` is `max_parent_height + 1 - deploy_lifespan` and `oldest_valid_after` is the lowest `valid_after_block_number` in the block. The expiry check reads the floor clock, so a live deploy can have a copy below the tip window. The retry exemption and the retry gate read the same start, and so does the proposer's retry gate
@@ -492,6 +499,15 @@ Only the two equivocation verdicts store their block. Every other invalid
 block, a neglecting one included, is dropped without becoming evidence.
 Those verdicts depend on the receiver's own state, so two honest nodes can
 disagree on them.
+
+A node also records a pair when both blocks arrive without validation, by
+restore or as settled history: the second block of a sender and sequence
+number is stored with its sibling. So every node that holds both blocks
+holds the pair, and judges neglect of it alike.
+
+An equivocation is stored without a judgement of its contents, and without
+a replay. A block built on one has that parent's contents judged first
+(step 6 of [Block Validation](#4-block-validation)).
 
 ### Slashing Flow
 

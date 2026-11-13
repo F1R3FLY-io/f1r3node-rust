@@ -9,10 +9,11 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, EquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::integration_helpers::equivocate_block;
-use crate::helper::test_node::TestNode;
+use crate::helper::test_node::{ShardOverrides, TestNode};
 use crate::util::genesis_builder::GenesisBuilder;
 
 fn deploy(nonce: i32, shard_id: &str) -> Signed<DeployData> {
@@ -30,9 +31,12 @@ async fn network(validators: usize, epoch_length: Option<i32>) -> (Vec<TestNode>
         .await
         .expect("genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let nodes = TestNode::create_network(genesis, validators, None, None, None, None)
-        .await
-        .expect("network");
+    let nodes = TestNode::create_network_with_overrides(genesis, validators, ShardOverrides {
+        own_rspace: true,
+        ..Default::default()
+    })
+    .await
+    .expect("network");
     (nodes, shard_id)
 }
 
@@ -530,5 +534,261 @@ async fn siblings_in_different_epochs_are_slashed_alike_whichever_was_flagged() 
         matches!(v2_judges_v1, Either::Right(ValidBlock::Valid))
             && matches!(v1_judges_v2, Either::Right(ValidBlock::Valid)),
         "v2 judges v1's slash: {v2_judges_v1:?}; v1 judges v2's slash: {v1_judges_v2:?}"
+    );
+}
+
+/// One node validates the second block of a pair; another receives it as
+/// settled history below its restore anchor. A block whose justifications
+/// show both blocks while the sender is bonded owes the slash on both.
+#[tokio::test]
+async fn nodes_holding_a_pair_by_different_paths_judge_its_neglect_alike() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    use super::detector_totality_helpers::{
+        assert_neglected, block, justification, DetectorFixture,
+    };
+
+    let mut verdicts = Vec::new();
+    for second_by_validation in [true, false] {
+        let node = DetectorFixture::new().await;
+        let bonded = node.validators.clone();
+        let offender = bonded[1].clone();
+        let first = block(20, offender.clone(), 1, vec![], bonded.clone());
+        let second = block(30, offender.clone(), 1, vec![], bonded.clone());
+        let observed = block(
+            40,
+            bonded[2].clone(),
+            1,
+            vec![justification(offender.clone(), second.block_hash.clone())],
+            bonded.clone(),
+        );
+        node.add_block(&first);
+        node.block_store
+            .put_block_message(&second)
+            .expect("store second");
+        let mode = if second_by_validation {
+            InsertMode::Equivocation {
+                sibling: first.block_hash.clone(),
+            }
+        } else {
+            InsertMode::SettledHistory
+        };
+        node.dag_storage
+            .insert(&second, mode)
+            .expect("insert second");
+        node.add_block(&observed);
+
+        let judged = block(
+            50,
+            bonded[3].clone(),
+            1,
+            vec![
+                justification(offender.clone(), first.block_hash.clone()),
+                justification(bonded[2].clone(), observed.block_hash.clone()),
+            ],
+            bonded,
+        );
+        verdicts.push(node.check(&judged).await);
+    }
+    for verdict in verdicts {
+        assert_neglected(verdict);
+    }
+}
+
+fn holds_post_state(node: &TestNode, block: &BlockMessage) -> bool {
+    node.runtime_manager
+        .has_root(&Blake2b256Hash::from_bytes_prost(
+            &block.body.state.post_state_hash,
+        ))
+        .expect("has_root")
+}
+
+/// A sibling no block cites is recorded without a replay, so an equivocator
+/// cannot make a node replay every block it signs.
+#[serial_test::serial]
+#[tokio::test]
+async fn an_uncited_sibling_is_not_replayed() {
+    let (mut nodes, shard_id) = network(2, None).await;
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
+    let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(1, &shard_id)])
+        .await
+        .expect("sibling");
+    accept(&mut nodes[1], &b1, "v1 accepts b1").await;
+
+    let verdict = nodes[1]
+        .process_block(sibling.clone())
+        .await
+        .expect("sibling");
+    assert!(
+        matches!(
+            verdict,
+            Either::Left(BlockError::Invalid(InvalidBlock::IgnorableEquivocation))
+        ),
+        "{verdict:?}"
+    );
+    assert!(!holds_post_state(&nodes[1], &sibling));
+}
+
+/// v1 holds the sibling as an equivocation without its post-state; v2
+/// received the sibling first and builds on it. v1 replays the sibling when
+/// v2's block needs its state, and v2's block is valid.
+#[serial_test::serial]
+#[tokio::test]
+async fn a_block_built_on_an_equivocation_replays_it_on_demand() {
+    let (mut nodes, shard_id) = network(3, None).await;
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
+    let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(1, &shard_id)])
+        .await
+        .expect("sibling");
+    accept(&mut nodes[1], &b1, "v1 accepts b1").await;
+    let recorded = nodes[1]
+        .process_block(sibling.clone())
+        .await
+        .expect("v1 sibling");
+    assert!(is_equivocation(&recorded), "{recorded:?}");
+    assert!(!holds_post_state(&nodes[1], &sibling));
+
+    accept(&mut nodes[2], &sibling, "v2 accepts the sibling").await;
+    let built_on_sibling = nodes[2]
+        .create_block_unsafe(&[deploy(2, &shard_id)])
+        .await
+        .expect("v2 block");
+    assert!(built_on_sibling
+        .header
+        .parents_hash_list
+        .contains(&sibling.block_hash));
+
+    accept(&mut nodes[1], &built_on_sibling, "v1 judges v2's block").await;
+    assert!(holds_post_state(&nodes[1], &sibling));
+}
+
+fn remembered_verdict(node: &TestNode, twin: &BlockHash) -> Option<Result<(), InvalidBlock>> {
+    node.casper
+        .judged_twins
+        .get(twin)
+        .map(|verdict| verdict.as_ref().clone())
+}
+
+/// v2 and v3 each build on the sibling v1 holds as an equivocation. v1 judges
+/// the sibling for the first block and reuses that verdict for the second.
+#[serial_test::serial]
+#[tokio::test]
+async fn blocks_built_on_one_twin_reuse_its_verdict() {
+    let (mut nodes, shard_id) = network(4, None).await;
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
+    let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(1, &shard_id)])
+        .await
+        .expect("sibling");
+    accept(&mut nodes[1], &b1, "v1 accepts b1").await;
+    let recorded = nodes[1]
+        .process_block(sibling.clone())
+        .await
+        .expect("v1 sibling");
+    assert!(is_equivocation(&recorded), "{recorded:?}");
+
+    accept(&mut nodes[2], &sibling, "v2 accepts the sibling").await;
+    accept(&mut nodes[3], &sibling, "v3 accepts the sibling").await;
+    let mut children = Vec::new();
+    for (validator, nonce) in [(2, 2), (3, 3)] {
+        let child = nodes[validator]
+            .create_block_unsafe(&[deploy(nonce, &shard_id)])
+            .await
+            .expect("child");
+        assert!(child.header.parents_hash_list.contains(&sibling.block_hash));
+        children.push(child);
+    }
+    assert_eq!(remembered_verdict(&nodes[1], &sibling.block_hash), None);
+
+    accept(&mut nodes[1], &children[0], "v1 judges v2's block").await;
+    assert_eq!(
+        remembered_verdict(&nodes[1], &sibling.block_hash),
+        Some(Ok(()))
+    );
+    accept(&mut nodes[1], &children[1], "v1 judges v3's block").await;
+}
+
+/// v0 signs b1 and a twin t that carries other deploys but declares b1's
+/// post-state; v2 builds c on t. v3 receives t first and refuses it on its
+/// contents. v1 holds b1 first and t as the equivocation, so it judges t's
+/// contents when c needs them, and refuses c.
+#[serial_test::serial]
+#[tokio::test]
+async fn a_block_built_on_an_invalid_twin_is_held_by_no_node() {
+    let (mut nodes, shard_id) = network(4, None).await;
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
+    let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(100, &shard_id)])
+        .await
+        .expect("sibling");
+    let mut forged = sibling.clone();
+    forged.body.state.post_state_hash = b1.body.state.post_state_hash.clone();
+    let t = nodes[0]
+        .validator_id_opt
+        .as_ref()
+        .expect("v0 identity")
+        .sign_block(&forged);
+
+    accept(&mut nodes[2], &b1, "v2 accepts b1").await;
+    let built = nodes[2]
+        .create_block_unsafe(&[deploy(10, &shard_id)])
+        .await
+        .expect("v2 block");
+    assert!(built.header.parents_hash_list.contains(&b1.block_hash));
+    let mut on_t = built.clone();
+    for parent in on_t.header.parents_hash_list.iter_mut() {
+        if *parent == b1.block_hash {
+            *parent = t.block_hash.clone();
+        }
+    }
+    for justification in on_t.justifications.iter_mut() {
+        if justification.validator == b1.sender {
+            justification.latest_block_hash = t.block_hash.clone();
+        }
+    }
+    let c = nodes[2]
+        .validator_id_opt
+        .as_ref()
+        .expect("v2 identity")
+        .sign_block(&on_t);
+
+    let v3_t = nodes[3].process_block(t.clone()).await.expect("v3 t");
+    assert!(
+        matches!(v3_t, Either::Left(BlockError::Invalid(_))),
+        "v3 receives t first and refuses it on its contents: {v3_t:?}"
+    );
+
+    accept(&mut nodes[1], &b1, "v1 accepts b1").await;
+    let v1_t = nodes[1].process_block(t.clone()).await.expect("v1 t");
+    assert!(
+        is_equivocation(&v1_t),
+        "v1 holds t as the equivocation: {v1_t:?}"
+    );
+    let v1_c = nodes[1].process_block(c.clone()).await.expect("v1 c");
+    assert!(
+        matches!(
+            v1_c,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents))
+        ),
+        "v1 refuses c, built on a twin whose contents are invalid: {v1_c:?}"
+    );
+    assert!(
+        matches!(remembered_verdict(&nodes[1], &t.block_hash), Some(Err(_))),
+        "v1 remembers t's contents are invalid"
+    );
+    assert_eq!(
+        held_pair(&nodes[1], &c.block_hash),
+        None,
+        "v1 does not hold c"
     );
 }

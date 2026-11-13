@@ -35,7 +35,7 @@ fn availability(value: &Availability<BlockHash>) -> String {
 
 fn metadata(value: &BlockMetadata) -> String {
     format!(
-        "{{| metadata_block_hash := {}; metadata_parents := {}; metadata_sender := {}; metadata_justifications := {}; metadata_weights := {}; metadata_block_number := {}; metadata_sequence_number := {}; metadata_invalid := {}; metadata_directly_finalized := {}; metadata_finalized := {}; metadata_fault_tolerance_bits := {}; metadata_merge_base := {} |}}",
+        "{{| metadata_block_hash := {}; metadata_parents := {}; metadata_sender := {}; metadata_justifications := {}; metadata_weights := {}; metadata_block_number := {}; metadata_sequence_number := {}; metadata_equivocates := {}; metadata_directly_finalized := {}; metadata_finalized := {}; metadata_fault_tolerance_bits := {}; metadata_merge_base := {} |}}",
         bytes(&value.block_hash),
         list(&value.parents, |v| bytes(v)),
         bytes(&value.sender),
@@ -43,7 +43,7 @@ fn metadata(value: &BlockMetadata) -> String {
         list(&value.weight_map, |(key, n)| format!("({}, {})", bytes(key), bytes(&n.as_bigint().to_signed_bytes_be()))),
         value.block_number as u64,
         value.sequence_number as u32,
-        value.is_invalid(),
+        option(value.equivocates.as_ref(), |sibling| bytes(sibling)),
         value.directly_finalized,
         value.finalized,
         value.fault_tolerance_value.to_bits(),

@@ -9,8 +9,10 @@
 //! ## Slashing-protocol position
 //!
 //! An equivocation is stored as an invalid block whose metadata names its
-//! sibling (`InsertMode::Equivocation`); that pair is the evidence a slash
-//! carries.
+//! sibling; that pair is the evidence a slash carries. A block inserted while
+//! its sender's other block at the same sequence number is held is stored as
+//! an equivocation whatever path delivered it, so every node holding a pair
+//! records it.
 //!
 //! ## Lock discipline (P1-3 + P2-12)
 //!
@@ -1837,6 +1839,40 @@ impl BlockDagKeyValueStorage {
         result
     }
 
+    /// The sender's other held block at `block`'s sequence number, the one
+    /// with the lowest hash.
+    fn held_sibling(&self, block: &BlockMessage) -> Result<Option<BlockHash>, KvStoreError> {
+        if block.sender.is_empty() {
+            return Ok(None);
+        }
+        let held = match &self.persistence {
+            Some(persistence) => {
+                persistence
+                    .history
+                    .blocks_at_sequence(&block.sender, block.seq_num, u64::MAX)?
+            }
+            None => {
+                let guard = self.block_metadata_index.read();
+                let dag_set = guard.dag_state().read().dag_set.clone();
+                let mut held = Vec::new();
+                for hash in dag_set {
+                    if let Some(metadata) = guard.get(&hash)? {
+                        if metadata.sender == block.sender
+                            && metadata.sequence_number == block.seq_num
+                        {
+                            held.push(hash);
+                        }
+                    }
+                }
+                held
+            }
+        };
+        Ok(held
+            .into_iter()
+            .filter(|hash| *hash != block.block_hash)
+            .min())
+    }
+
     /// Internal method to insert without acquiring lock.
     /// Used when lock is already held by the caller.
     /// Public to allow IndexedBlockDagStorage to use it.
@@ -1850,7 +1886,8 @@ impl BlockDagKeyValueStorage {
         // shim survived a Phase-4 transition; it is no longer needed.
         let equivocates = match &mode {
             InsertMode::Equivocation { sibling } => Some(sibling.clone()),
-            _ => None,
+            InsertMode::Approved => None,
+            InsertMode::Normal | InsertMode::SettledHistory => self.held_sibling(block)?,
         };
         let invalid = equivocates.is_some();
         let approved = matches!(mode, InsertMode::Approved);
