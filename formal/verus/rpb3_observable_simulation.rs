@@ -3157,6 +3157,233 @@ pub proof fn lemma_map_value_push_extract(
     }
 }
 
+pub proof fn lemma_map_value_accept_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMapValueAccept,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let value_child = before_frames.last();
+            let map_parent = before_frames[before_frames.len() - 2];
+            let resumed_map = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() >= 2
+            &&& after_frames.len() == before_frames.len() - 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 2)
+            &&& value_child.frame_kind == 1
+            &&& map_parent.frame_kind == 2
+            &&& value_child.cursor == value_child.region_end
+            &&& resumed_map.frame_kind == map_parent.frame_kind
+            &&& resumed_map.region_end == map_parent.region_end
+            &&& resumed_map.cursor == map_parent.cursor
+            &&& resumed_map.slot_count == map_parent.slot_count
+            &&& resumed_map.last_slot == map_parent.last_slot
+            &&& resumed_map.returns.len() == map_parent.returns.len() + 1
+            &&& resumed_map.returns.drop_last() == map_parent.returns
+            &&& map_parent.waiting_slot == Some(resumed_map.returns.last().slot)
+            &&& resumed_map.returns.last().body_bytes.len() == value_child.region_end as nat
+            &&& map_parent.waiting_slot == Some(1usize)
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MapValueAccept, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && crate::live_runtime_product_map_value_accept_step(product, next)) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            let accept = map::IntegratedAdmissionAction::MapAccept;
+            assert(crate::product_map_step(old, new, accept));
+            assert(map::integrated_admission_driver_step(old.map, accept)
+                == Some(map::IntegratedAdmissionOutcome::MapValueAccepted { state: new.map }));
+            let state = old.map.admission;
+            let count = state.frames.len();
+            let frame = old.map.map_frames[count - 2].unwrap();
+            let accepted = map::map_admission_value_complete(frame, state).unwrap();
+            assert(new.bridge.admission == accepted.1);
+            let wait = frame.pending.unwrap();
+            let next_frame = map::map_value_accept_step(
+                frame, wait.id, state.frames[count - 1], state.arena,
+            ).unwrap();
+            assert(accepted.1 == admission::admission_complete_child_step(
+                state, wait.id, 1,
+                admission::AdmissionReturnedKind::Par {
+                    semantic_default: false,
+                    canonical_path_stable: next_frame.value.unwrap().canonical_path_stable,
+                },
+            ).unwrap());
+            assert(new.bridge.transcript == old.bridge.transcript);
+            let waiting = state.frames[count - 2];
+            let resumed = new.bridge.admission.frames.last();
+            assert(resumed.returns.drop_last() =~= waiting.returns);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_map_value_accept_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMapValueAccept,
+    ensures
+        accept_step(before, after),
+        state_frames(before).last().frame_kind == 1,
+        state_frames(before)[state_frames(before).len() - 2].frame_kind == 2,
+{
+    hide(dispatcher::integrated_step);
+    lemma_map_value_accept_frames(before, after, action);
+}
+
+pub proof fn lemma_map_entry_finish_product_frames(
+    old: crate::ProductScoreState, new: crate::ProductScoreState,
+)
+    requires
+        old.map.admission == old.bridge.admission,
+        old.map.transcript == old.bridge.transcript,
+        crate::product_map_step(old, new, map::IntegratedAdmissionAction::MapFinish),
+    ensures
+        ({
+            let old_frames = old.bridge.admission.frames;
+            let new_frames = new.bridge.admission.frames;
+            let map_child = old_frames.last();
+            let entry_parent = old_frames[old_frames.len() - 2];
+            let resumed_entry = new_frames.last();
+            &&& new.bridge.transcript == old.bridge.transcript
+            &&& old_frames.len() >= 2
+            &&& new_frames.len() == old_frames.len() - 1
+            &&& lower_frames_kept(old_frames, new_frames, old_frames.len() - 2)
+            &&& map_child.frame_kind == 2
+            &&& entry_parent.frame_kind == 1
+            &&& map_child.cursor == map_child.region_end
+            &&& resumed_entry.frame_kind == entry_parent.frame_kind
+            &&& resumed_entry.region_end == entry_parent.region_end
+            &&& resumed_entry.cursor == entry_parent.cursor
+            &&& resumed_entry.slot_count == entry_parent.slot_count
+            &&& resumed_entry.last_slot == entry_parent.last_slot
+            &&& resumed_entry.returns.len() == entry_parent.returns.len() + 1
+            &&& resumed_entry.returns.drop_last() == entry_parent.returns
+            &&& entry_parent.waiting_slot == Some(resumed_entry.returns.last().slot)
+            &&& resumed_entry.returns.last().body_bytes.len() == map_child.region_end as nat
+        }),
+{
+    hide(admission::admission_state_wf);
+    hide(admission::admission_map_summary_complete);
+    hide(admission::admission_map_source_matches);
+    hide(admission::admission_child_summary_agrees);
+    hide(admission::admission_arm_child_summary_agrees);
+    hide(map::integrated_admission_wf);
+    let finish = map::IntegratedAdmissionAction::MapFinish;
+    let state = old.map.admission;
+    let count = state.frames.len();
+    let frame = old.map.map_frames[count - 1].unwrap();
+    let finished = map::map_admission_entry_complete(frame, state).unwrap();
+    assert(map::integrated_admission_driver_step(old.map, finish)
+        == Some(map::IntegratedAdmissionOutcome::MapEntryCompleted {
+            summary: finished.0,
+            state: new.map,
+        }));
+    assert(new.bridge.admission == finished.1);
+    let map_top = state.frames[count - 1];
+    assert(finished.1 == admission::admission_complete_child_step(
+        state, map_top.return_id.unwrap(), 2,
+        admission::AdmissionReturnedKind::Map {
+            key_bytes: finished.0.key_bytes,
+            value_score_handle: admission::admission_map_value_score_handle(map_top),
+        },
+    ).unwrap());
+    assert(new.bridge.transcript == old.bridge.transcript);
+    let waiting = state.frames[count - 2];
+    let resumed = new.bridge.admission.frames.last();
+    assert(resumed.returns.drop_last() =~= waiting.returns);
+}
+
+pub proof fn lemma_map_entry_finish_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMapEntryFinish,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let map_child = before_frames.last();
+            let entry_parent = before_frames[before_frames.len() - 2];
+            let resumed_entry = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() >= 2
+            &&& after_frames.len() == before_frames.len() - 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 2)
+            &&& map_child.frame_kind == 2
+            &&& entry_parent.frame_kind == 1
+            &&& map_child.cursor == map_child.region_end
+            &&& resumed_entry.frame_kind == entry_parent.frame_kind
+            &&& resumed_entry.region_end == entry_parent.region_end
+            &&& resumed_entry.cursor == entry_parent.cursor
+            &&& resumed_entry.slot_count == entry_parent.slot_count
+            &&& resumed_entry.last_slot == entry_parent.last_slot
+            &&& resumed_entry.returns.len() == entry_parent.returns.len() + 1
+            &&& resumed_entry.returns.drop_last() == entry_parent.returns
+            &&& entry_parent.waiting_slot == Some(resumed_entry.returns.last().slot)
+            &&& resumed_entry.returns.last().body_bytes.len() == map_child.region_end as nat
+        }),
+{
+    hide(dispatcher::integrated_step);
+    hide(crate::product_map_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MapEntryFinish, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && crate::live_runtime_product_map_entry_finish_step(product, next)) by {
+                reveal(dispatcher::integrated_step);
+            }
+            crate::live_runtime_product_map_entry_finish_source_shape(product, next);
+            lemma_map_entry_finish_product_frames(product.source.product, next.source.product);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_map_entry_finish_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMapEntryFinish,
+    ensures
+        accept_step(before, after),
+        state_frames(before).last().frame_kind == 2,
+        state_frames(before)[state_frames(before).len() - 2].frame_kind == 1,
+{
+    hide(dispatcher::integrated_step);
+    lemma_map_entry_finish_frames(before, after, action);
+}
+
 pub proof fn lemma_accept_shape_refines(
     before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
     score_len: nat, score_after: nat,
