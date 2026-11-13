@@ -92,6 +92,7 @@ source_files=(
   "$model_dir/rpb3_epm_path_invariant_witness.rs"
   "$model_dir/rpb3_ezipper_snapshot_provenance.rs"
   "$model_dir/rpb3_ezipper_bool_slot_readable.rs"
+  "$model_dir/rpb3_ezipper_score_trace_witness.rs"
   "$model_dir/rpb3_message_frame_finish_mapping.rs"
   "$model_dir/rpb3_finish_handle_transcript.rs"
   "$model_dir/rpb3_score_finish_unique.rs"
@@ -1370,6 +1371,104 @@ proofs_rpb3_ezipper_bool_slot_readable=(
   integrated_trace_keeps_flags_readable
   unrecorded_start_is_readable
   reachable_ezipper_flag_slot_is_readable
+)
+proofs_rpb3_ezipper_score_trace_witness=(
+  trace_bytes_nest
+  trace_snapshot_is_modeled_empty
+  trace_region_subview
+  trace_regions_nest
+  trace_cursor_projects
+  trace_root_cursor_projects
+  trace_root_frame_is_initial
+  trace_root_product_is_initial
+  trace_initial_state_is_wf
+  trace_start_invariants
+  trace_field_read_seals
+  trace_live_wf_parts
+  trace_step_extends
+  trace_live_step_lifts
+  trace_runtime_push
+  trace_indexed_push_assembles
+  trace_push_enters_map
+  trace_indexed_push_seals
+  trace_indexed_push_lifts
+  trace_epm_push_assembles
+  trace_epm_push_seals
+  trace_epm_push_lifts
+  trace_epm_continue_lifts
+  trace_finish_accept_lifts
+  trace_child_score_lifts
+  trace_child_complete_lifts
+  trace_snapshot_prefix_is_empty
+  trace_epm_frame_layout
+  trace_handoff_seals
+  trace_continue_seals
+  trace_finish_accept_seals
+  trace_end_read_seals
+  trace_owner_has_no_unscored_kind
+  trace_owner_score_shapes
+  trace_child_score_seals
+  trace_complete_enters_map
+  trace_child_complete_seals
+  trace_root_field_model
+  trace_root_field_is_read
+  trace_root_child_cursor
+  trace_zipper_push_admission
+  trace_zipper_push_map
+  trace_zipper_push_live
+  trace_zipper_push_step
+  trace_state_1_is_wf
+  trace_zipper_field_model
+  trace_zipper_field_is_read
+  trace_zipper_child_cursor
+  trace_owner_push_admission
+  trace_owner_push_map
+  trace_owner_push_live
+  trace_owner_push_step
+  trace_state_2_is_wf
+  trace_owner_field_model
+  trace_owner_field_is_read
+  trace_snapshot_push_admission
+  trace_snapshot_push_map
+  trace_snapshot_push_live
+  trace_snapshot_push_step
+  trace_state_3_is_wf
+  trace_handoff_parts_hold
+  trace_handoff_step
+  trace_state_4_is_wf
+  trace_value_event_steps
+  trace_value_continue_live
+  trace_value_continue_step
+  trace_state_5_is_wf
+  trace_leave_event_steps
+  trace_leave_continue_live
+  trace_leave_continue_step
+  trace_state_6_is_wf
+  trace_end_event_steps
+  trace_snapshot_child_completes
+  trace_finish_accept_live
+  trace_finish_accept_step
+  trace_state_7_is_wf
+  trace_owner_flag_is_unset
+  trace_owner_end_is_read
+  trace_scored_owner_shape
+  trace_owner_score_live
+  trace_owner_score_step
+  trace_state_8_is_wf
+  trace_owner_child_completes
+  trace_owner_complete_map
+  trace_owner_complete_live
+  trace_owner_complete_step
+  trace_state_9_is_wf
+  trace_prefix_starts
+  trace_prefix_extends
+  trace_opens
+  trace_zipper_score_fires
+  trace_is_sealed
+  trace_action_kinds
+  trace_owner_finish_is_owner_score
+  trace_state_is_wf
+  trace_reaches_zipper_score
 )
 proofs_rpb3_ezipper_snapshot_provenance=(
   epathmap_score_node_reads_back
@@ -2717,6 +2816,7 @@ gated_modules=(
   rpb3_epm_unwind_event_lift
   rpb3_epm_unwind_product_lift
   rpb3_ezipper_bool_slot_readable
+  rpb3_ezipper_score_trace_witness
   rpb3_ezipper_snapshot_provenance
   rpb3_ezipper_source_refinement
   rpb3_finish_handle_transcript
@@ -5299,6 +5399,39 @@ fi
 if ! rg -q '^verification results:: 78 verified, 0 errors' "$ezipper_snapshot_provenance_log"; then
   cat "$ezipper_snapshot_provenance_log"
   echo "rpb3-admission-cursor: EZipper snapshot provenance module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_ezipper_score_trace_witness[@]}"; do
+  proof_log="$evidence_dir/ezipper-score-trace-witness-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_ezipper_score_trace_witness --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EZipper score trace witness $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EZipper score trace witness $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+ezipper_score_trace_witness_log="$evidence_dir/ezipper-score-trace-witness-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_ezipper_score_trace_witness \
+  "$integrated_source" \
+  >"$ezipper_score_trace_witness_log" 2>&1; then
+  cat "$ezipper_score_trace_witness_log"
+  echo "rpb3-admission-cursor: EZipper score trace witness module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 96 verified, 0 errors' "$ezipper_score_trace_witness_log"; then
+  cat "$ezipper_score_trace_witness_log"
+  echo "rpb3-admission-cursor: EZipper score trace witness module did not verify" >&2
   exit 1
 fi
 for proof in "${integrated_witness_proofs[@]}"; do

@@ -118,6 +118,8 @@ mod rpb3_epm_path_invariant_witness;
 mod rpb3_ezipper_bool_slot_readable;
 #[cfg(rpb3_live_push)]
 mod rpb3_ezipper_snapshot_provenance;
+#[cfg(rpb3_live_push)]
+mod rpb3_ezipper_score_trace_witness;
 
 use {
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
