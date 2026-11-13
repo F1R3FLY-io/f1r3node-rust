@@ -86,6 +86,7 @@ source_files=(
   "$model_dir/rpb3_epm_loop_observation_bridge.rs"
   "$model_dir/rpb3_integrated_source_trace_composition.rs"
   "$model_dir/rpb3_integrated_dispatcher.rs"
+  "$model_dir/rpb3_observable_simulation.rs"
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
   "$model_dir/rpb3_epm_live_handoff.rs"
@@ -1913,6 +1914,13 @@ proofs_rpb3_no_score_child_eof_coverage=(
   nsc_eof_coverage_universal
   nsc_source_noscore_route_on_emap_ezipper
 )
+proofs_rpb3_observable_simulation=(
+  lemma_project_frame_congruence
+  lemma_project_frame_reads
+  lemma_project_children_push
+  lemma_slot_admissible_projects
+  lemma_project_snapshot
+)
 proofs_rpb3_path_parser_refinement=(
   initial_parser_source_snapshot_has_witness
   initial_single_byte_varint
@@ -2852,6 +2860,7 @@ gated_modules=(
   rpb3_message_driver_source_integration
   rpb3_message_frame_finish_mapping
   rpb3_no_score_child_eof_coverage
+  rpb3_observable_simulation
   rpb3_path_parser_refinement
   rpb3_plain_parser_source_refinement
   rpb3_runtime_frame_source_refinement
@@ -5170,6 +5179,39 @@ if ! rg -q '^verification results:: 46 verified, 0 errors' "$no_score_child_eof_
   echo "rpb3-admission-cursor: no-score child EOF coverage module did not verify" >&2
   exit 1
 fi
+for proof in "${proofs_rpb3_observable_simulation[@]}"; do
+  proof_log="$evidence_dir/observable-simulation-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_observable_simulation --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: observable simulation $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: observable simulation $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+observable_simulation_log="$evidence_dir/observable-simulation-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_observable_simulation \
+  "$integrated_source" \
+  >"$observable_simulation_log" 2>&1; then
+  cat "$observable_simulation_log"
+  echo "rpb3-admission-cursor: observable simulation module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 5 verified, 0 errors' "$observable_simulation_log"; then
+  cat "$observable_simulation_log"
+  echo "rpb3-admission-cursor: observable simulation module did not verify" >&2
+  exit 1
+fi
 for proof in "${proofs_rpb3_score_finish_groups[@]}"; do
   proof_log="$evidence_dir/score-finish-groups-$proof.log"
   if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
@@ -5711,6 +5753,12 @@ if ! rg -q 'verification results:: 1 verified, 0 errors' "$terminal_trace_log"; 
   echo "rpb3-admission-cursor: terminal live trace proof did not verify" >&2
   exit 1
 fi
+
+# The integrated root reads the shared observable spec through a path relative
+# to its own directory. Give the shadow copies of the root the same file.
+mkdir -p "$evidence_dir/verified_score_store/src"
+cp "$repo_root/formal/verified_score_store/src/admission_observable_spec.rs" \
+  "$evidence_dir/verified_score_store/src/admission_observable_spec.rs"
 
 # The four causal mutants each alter one shared transition of the cursor model.
 # Each runs in its own shadow copy of the integrated crate and must fail at its

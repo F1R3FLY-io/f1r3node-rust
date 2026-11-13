@@ -4922,6 +4922,94 @@ fn rpb3_admission_observable_spec_is_gated_and_defined_once() {
     }
 }
 
+const RPB3_OBSERVABLE_SIMULATION_PIN_LINE: &str =
+    "if ! rg -q '^verification results:: 5 verified, 0 errors' \"$observable_simulation_log\"; then";
+
+const RPB3_OBSERVABLE_SIMULATION_DECLARATIONS: &[&str] = &[
+    "pub proof fn lemma_project_frame_congruence(",
+    "pub proof fn lemma_project_frame_reads(",
+    "pub proof fn lemma_project_children_push(",
+    "pub proof fn lemma_slot_admissible_projects(",
+    "pub proof fn lemma_project_snapshot(",
+];
+
+#[test]
+fn rpb3_observable_simulation_is_gated_and_shares_the_spec() {
+    let integrated_root = read_repository_file("formal/verus/rpb3_integrated_admission.rs");
+    let shared_spec_declaration = [
+        "#[cfg(rpb3_live_push)]",
+        "#[path = \"../verified_score_store/src/admission_observable_spec.rs\"]",
+        "pub mod admission_observable_spec;",
+    ]
+    .join("\n");
+    assert_eq!(
+        integrated_root.matches(&shared_spec_declaration).count(),
+        1,
+        "the integrated root must declare the shared observable spec exactly once"
+    );
+    assert_eq!(
+        integrated_root.matches("admission_observable_spec").count(),
+        2,
+        "the integrated root must name the shared observable spec in one path and one declaration"
+    );
+    assert_eq!(
+        integrated_root
+            .matches("#[cfg(rpb3_live_push)]\nmod rpb3_observable_simulation;")
+            .count(),
+        1,
+        "the integrated root must declare rpb3_observable_simulation exactly once"
+    );
+    let mut pending = vec![repository_root().join("formal/verus")];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).expect("formal/verus must be listable") {
+            let path = entry.expect("formal/verus entry must be readable").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                assert_ne!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("admission_observable_spec.rs"),
+                    "{} copies the shared observable spec into formal/verus",
+                    path.display()
+                );
+            }
+        }
+    }
+    let observable_simulation = read_repository_file("formal/verus/rpb3_observable_simulation.rs");
+    for forbidden in ["external_body", "assume(", "admit("] {
+        assert!(
+            !observable_simulation.contains(forbidden),
+            "rpb3_observable_simulation contains `{forbidden}`"
+        );
+    }
+    let crate_import = observable_simulation
+        .find("use crate::{")
+        .expect("rpb3_observable_simulation must import from the integrated crate");
+    assert!(
+        observable_simulation[crate_import..].contains("admission_observable_spec as observable"),
+        "rpb3_observable_simulation must read the shared observable spec, not a copy"
+    );
+    for marker in RPB3_OBSERVABLE_SIMULATION_DECLARATIONS {
+        assert!(
+            observable_simulation.contains(marker),
+            "rpb3_observable_simulation is missing `{marker}`"
+        );
+    }
+    let cursor_runner = read_repository_file("scripts/check-rpb3-admission-cursor-verus.sh");
+    for marker in [
+        "\"$model_dir/rpb3_observable_simulation.rs\"",
+        "proofs_rpb3_observable_simulation=(",
+        "--verify-only-module rpb3_observable_simulation",
+        RPB3_OBSERVABLE_SIMULATION_PIN_LINE,
+        "\"$evidence_dir/verified_score_store/src/admission_observable_spec.rs\"",
+    ] {
+        assert!(
+            cursor_runner.contains(marker),
+            "RPB3 admission cursor gate is missing `{marker}`"
+        );
+    }
+}
+
 #[test]
 fn rpb3_admission_event_checker_is_gated_and_refines_the_shared_spec() {
     let cursor_runner = read_repository_file("scripts/check-rpb3-admission-cursor-verus.sh");

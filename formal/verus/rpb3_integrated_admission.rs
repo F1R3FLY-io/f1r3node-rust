@@ -87,6 +87,11 @@ mod rpb3_epathmap_terminal_nested_return_composition;
 #[cfg(rpb3_live_push)]
 mod rpb3_integrated_dispatcher;
 #[cfg(rpb3_live_push)]
+#[path = "../verified_score_store/src/admission_observable_spec.rs"]
+pub mod admission_observable_spec;
+#[cfg(rpb3_live_push)]
+mod rpb3_observable_simulation;
+#[cfg(rpb3_live_push)]
 mod rpb3_epm_obligation_return_live;
 #[cfg(rpb3_live_push)]
 mod rpb3_epm_parser_escape_invariant;
