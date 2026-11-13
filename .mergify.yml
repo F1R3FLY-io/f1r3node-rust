@@ -64,6 +64,8 @@
 merge_queue:
   mode: serial
   max_parallel_checks: 1
+  queue_controls_comment: true
+  status_comments: all
 
 # Priority. The priority rules apply across all queues, and the first rule
 # that matches sets the priority. A pull request that no rule matches gets
@@ -467,40 +469,12 @@ pull_request_rules:
         add:
           - security
 
-  - name: Queue a pull request into dev
-    conditions:
-      - base=dev
-    actions:
-      queue:
-        name: dev
-
-  - name: Queue a pull request into master
-    conditions:
-      - base=master
-    actions:
-      queue:
-        name: master
-
-  - name: Queue a release train item
-    conditions:
-      - base=ca-canary
-      - head~=^ca/
-    actions:
-      queue:
-        name: ca-item
-
   - name: Queue the daily back-merge
     conditions:
       - base=ca-canary
       - head~=^backmerge/ca-release-[0-9a-f]{12}$
       - author=f1r3node-promotion[bot]
+      - body~=created by the scheduled Release Train Daily Back-merge workflow
     actions:
       queue:
         name: ca-daily
-
-  - name: Queue a release train promotion
-    conditions:
-      - base=ca-release
-    actions:
-      queue:
-        name: ca-release

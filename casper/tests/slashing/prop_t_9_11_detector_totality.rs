@@ -9,14 +9,13 @@
 // Rocq: formal/rocq/slashing/theories/EquivocationDetector.v
 // theorem `detector_total`.
 //
-// Property: for any well-formed input DAG, `check(...)` returns Ok with
-// some classification (Valid / Admissible / Ignorable / Neglected). It
-// never returns Err, never panics. Proptest randomizes the
-// justification list, the offender seq numbers, and the missing-pointer
-// pattern. This is the *property-test* companion to the UC-101..UC-108
-// fixed regression suite.
+// Property: for any well-formed input DAG, `check(...)` returns Ok. It
+// never returns Err, never panics, and with at most one child of the held
+// equivocation visible it judges the block Valid. Proptest randomizes the
+// justification list and the missing-pointer pattern. This is the
+// *property-test* companion to the UC-101..UC-108 fixed regression suite.
 
-use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::block_status::ValidBlock;
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -40,13 +39,10 @@ proptest! {
     fn t_9_11_detector_is_total_for_missing_views(
         missing_count in 0usize..4,
         include_one_child in any::<bool>(),
-        include_detected in any::<bool>(),
     ) {
         run_async(async move {
             let fixture = DetectorFixture::new().await;
-            let detected_hash = hash(40);
-            let detected = if include_detected { vec![detected_hash.clone()] } else { vec![] };
-            fixture.add_record(0, 0, &detected);
+            fixture.add_equivocation(0, 0);
 
             let child = block(
                 10,
@@ -72,10 +68,6 @@ proptest! {
                     child.block_hash.clone(),
                 ));
             }
-            if include_detected {
-                justifications.push(justification(fixture.validators[6].clone(), detected_hash));
-            }
-
             let current = block(
                 20,
                 fixture.validators[7].clone(),
@@ -84,15 +76,7 @@ proptest! {
                 fixture.validators.clone(),
             );
 
-            let result = fixture.check(&current).await;
-            if include_detected {
-                prop_assert_eq!(
-                    result,
-                    Either::Left(BlockError::Invalid(InvalidBlock::NeglectedEquivocation))
-                );
-            } else {
-                prop_assert_eq!(result, Either::Right(ValidBlock::Valid));
-            }
+            prop_assert_eq!(fixture.check(&current).await, Either::Right(ValidBlock::Valid));
             Ok(())
         })?;
     }

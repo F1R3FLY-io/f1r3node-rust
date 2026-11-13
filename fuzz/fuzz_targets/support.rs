@@ -1,17 +1,14 @@
 //! Shared fixture builders for the slashing fuzz harnesses.
 //!
 //! Provides:
-//!   * Deterministic synthetic identities (`validator`, `block_hash`) at the
-//!     correct widths for production code to accept.
-//!   * `ProcessedSystemDeploy` builders for the three relevant variants.
-//!   * `BlockMessage` builders pre-wired with a synthetic header / body.
-//!   * `empty_dag` + `snapshot` for building an in-memory `CasperSnapshot`
-//!     against `InMemoryKeyValueStore` — no LMDB I/O, deterministic per
-//!     iteration.
+//!   * Signing keys and blocks signed with them, so evidence carries real
+//!     signatures.
+//!   * `ProcessedSystemDeploy` builders for the relevant variants.
+//!   * `snapshot`, an in-memory `CasperSnapshot` holding equivocations the
+//!     way validation stores them, and `block_store` holding their bodies.
 //!
 //! `#[allow(dead_code)]` is at the module level because each `fuzz_target`
-//! is a separate binary and uses a different subset of these helpers; the
-//! unused ones in any given binary must not produce warnings.
+//! is a separate binary and uses a different subset of these helpers.
 
 #![allow(dead_code)]
 
@@ -21,13 +18,19 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::util::proto_util;
+use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, F1r3flyState, Header, ProcessedSystemDeploy, SystemDeployData,
+    BlockMessage, Body, EquivocationEvidence, F1r3flyState, Header, ProcessedSystemDeploy,
+    SystemDeployData,
 };
 use models::rust::validator::Validator;
 use parking_lot::RwLock;
@@ -35,53 +38,58 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
-#[derive(Clone, Debug)]
-pub struct Evidence {
-    pub hash: BlockHash,
-    pub sender: Validator,
-    pub block_number: i64,
-    pub sequence_number: i32,
-    pub invalid: bool,
-}
+pub const SHARD: &str = "root";
+pub const CHAIN: [u8; 32] = [0xC1; 32];
 
-/// Build a `Bytes` value of `len` copies of `seed`. Distinct seeds produce
-/// distinct values (the byte repetition is the identity function on seed
-/// space), so this is a deterministic, collision-resistant key generator
-/// for synthetic DAGs without dragging in a hashing pass.
 pub fn repeated(seed: u8, len: usize) -> Bytes { Bytes::from(vec![seed; len]) }
 
-/// Synthetic validator identity. Width = 65 because that is the
-/// uncompressed Secp256k1 public-key length (1-byte prefix + 32-byte X +
-/// 32-byte Y). Production validation rejects other widths, so generating
-/// validators at 65 bytes is mandatory for the snapshot to be accepted.
-pub fn validator(seed: u8) -> Validator { repeated(seed, 65) }
-
-/// Synthetic block hash. Width = 32 because production block hashes are
-/// Blake2b-256 digests. Other widths fail equality comparison against the
-/// hashes the DAG layer computes for real blocks.
 pub fn block_hash(seed: u8) -> BlockHash { repeated(seed, 32) }
 
-/// Builder for a successful Slash system deploy. Together with
-/// [`close_deploy`] and [`failed_deploy`], this is a tagged-union
-/// constructor kit for `ProcessedSystemDeploy` — the three are
-/// mutually exclusive and a block body's `system_deploys` vector
-/// typically holds a small mixed set of these.
-pub fn slash_deploy(
-    invalid_block_hash: BlockHash,
-    issuer: Validator,
-    target_activation_epoch: i64,
-) -> ProcessedSystemDeploy {
-    ProcessedSystemDeploy::Succeeded {
-        event_list: vec![],
-        system_deploy: SystemDeployData::Slash {
-            invalid_block_hash,
-            issuer_public_key: PublicKey::from_bytes(&issuer),
-            target_activation_epoch,
-        },
+/// A secp256k1 key; `index` 0..=254 gives distinct valid keys.
+pub fn key(index: u8) -> PrivateKey { PrivateKey::from_bytes(&[index.wrapping_add(1); 32]) }
+
+pub fn public(key: &PrivateKey) -> Validator { Secp256k1.to_public(key).bytes.into() }
+
+/// A block `key` signs at `seq_num` for `shard` and `chain`, told apart from
+/// its siblings by `nonce`.
+pub fn signed_block(
+    key: &PrivateKey,
+    seq_num: i32,
+    nonce: u8,
+    shard: &str,
+    chain: &[u8],
+) -> BlockMessage {
+    let mut block = block_with_system_deploys(nonce, public(key), i64::from(seq_num), vec![]);
+    block.seq_num = seq_num;
+    block.shard_id = shard.to_string();
+    block.header.chain_id = Bytes::copy_from_slice(chain);
+    block.extra_bytes = Bytes::from(vec![nonce]);
+    block.sig_algorithm = Secp256k1::name();
+    block.block_hash = proto_util::hash_block(&block);
+    block.sig = Secp256k1.sign(&block.block_hash, &key.bytes).into();
+    block
+}
+
+/// The evidence two blocks form, ordered by block hash.
+pub fn evidence(a: &BlockMessage, b: &BlockMessage) -> EquivocationEvidence {
+    let (first, second) = if a.block_hash <= b.block_hash {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    EquivocationEvidence {
+        first: proto_util::block_commitment(first),
+        second: proto_util::block_commitment(second),
     }
 }
 
-/// Builder for a CloseBlock system deploy (the per-block terminator).
+pub fn slash_deploy(evidence: EquivocationEvidence, issuer: &Validator) -> ProcessedSystemDeploy {
+    ProcessedSystemDeploy::Succeeded {
+        event_list: vec![],
+        system_deploy: SystemDeployData::create_slash(evidence, PublicKey::from_bytes(issuer)),
+    }
+}
+
 pub fn close_deploy() -> ProcessedSystemDeploy {
     ProcessedSystemDeploy::Succeeded {
         event_list: vec![],
@@ -89,9 +97,6 @@ pub fn close_deploy() -> ProcessedSystemDeploy {
     }
 }
 
-/// Builder for the Failed variant. Sibling to `slash_deploy` and
-/// `close_deploy` — these three together exhaust the variant space the
-/// production validator inspects.
 pub fn failed_deploy() -> ProcessedSystemDeploy {
     ProcessedSystemDeploy::Failed {
         event_list: vec![],
@@ -99,14 +104,8 @@ pub fn failed_deploy() -> ProcessedSystemDeploy {
     }
 }
 
-/// Build a `BlockMessage` whose header timestamp, state.block_number,
-/// and seq_num all equal `block_number`. The triple-coupling is
-/// deliberate: it lets the harnesses parametrize a synthetic block by a
-/// single integer and have all three slots stay consistent (the
-/// production block-number / timestamp / seq drift relations are
-/// covered by integration tests, not by these fuzzers). Pre-state and
-/// post-state hashes are derived from `hash_seed` so they are distinct
-/// from the block hash itself.
+/// An unsigned block whose header timestamp, block number and seq number all
+/// equal `block_number`.
 pub fn block_with_system_deploys(
     hash_seed: u8,
     sender: Validator,
@@ -120,6 +119,7 @@ pub fn block_with_system_deploys(
             timestamp: block_number,
             version: 1,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::copy_from_slice(&CHAIN),
         },
         body: Body {
             state: F1r3flyState {
@@ -137,23 +137,24 @@ pub fn block_with_system_deploys(
         },
         justifications: vec![],
         sender,
-        seq_num: i32::try_from(block_number).unwrap_or_default(),
+        seq_num: i32::try_from(block_number).expect("fuzz block numbers fit a sequence number"),
         sig: Bytes::new(),
         sig_algorithm: String::new(),
-        shard_id: "root".to_string(),
+        shard_id: SHARD.to_string(),
         extra_bytes: Bytes::new(),
     }
 }
 
-/// Build a fully-zeroed `KeyValueDagRepresentation` against
-/// `InMemoryKeyValueStore`. The `InMemory` choice is load-bearing here —
-/// fuzz iterations must not hit disk, must not share state across
-/// iterations, and must complete in microseconds. No LMDB, no global
-/// lock, no per-iteration cleanup.
+/// A block the snapshot holds: valid when `equivocates` is `None`, otherwise
+/// held as an equivocation with that sibling.
+#[derive(Clone, Debug)]
+pub struct Held {
+    pub block: BlockMessage,
+    pub equivocates: Option<BlockHash>,
+}
+
 fn empty_dag() -> KeyValueDagRepresentation {
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    let floor_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    let frontier_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
         history: None,
         view_sequence: u64::MAX,
@@ -166,12 +167,11 @@ fn empty_dag() -> KeyValueDagRepresentation {
         block_number_map: imbl::HashMap::new(),
         main_parent_map: imbl::HashMap::new(),
         self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: Bytes::new(),
         finalized_blocks_set: imbl::HashSet::new(),
         block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store))),
-        floor_index: floor_store,
-        frontier_index: frontier_store,
+        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         lifecycle: Arc::new(RwLock::new(DeployLifecycleTables::in_memory())),
         carrier_index: Arc::new(RwLock::new(
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
@@ -180,16 +180,16 @@ fn empty_dag() -> KeyValueDagRepresentation {
     .build()
 }
 
-fn metadata(evidence: &Evidence) -> BlockMetadata {
+fn metadata(held: &Held) -> BlockMetadata {
     BlockMetadata {
-        block_hash: evidence.hash.clone(),
+        block_hash: held.block.block_hash.clone(),
         parents: vec![],
-        sender: evidence.sender.clone(),
+        sender: held.block.sender.clone(),
         justifications: vec![],
         weight_map: BTreeMap::new(),
-        block_number: evidence.block_number,
-        sequence_number: evidence.sequence_number,
-        invalid: evidence.invalid,
+        block_number: held.block.body.state.block_number,
+        sequence_number: held.block.seq_num,
+        equivocates: held.equivocates.clone(),
         directly_finalized: false,
         finalized: false,
         fault_tolerance_value: 0.0,
@@ -197,49 +197,27 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
     }
 }
 
-/// Build a `CasperSnapshot` whose DAG and on-chain state are populated
-/// from `evidences` + `bonds`. The four DAG collections —
-/// `dag_set`, `height_map`, `block_metadata_index`, and (conditionally)
-/// `invalid_blocks_set` — are populated in lockstep for each evidence;
-/// production code assumes them consistent and panics or returns
-/// `KeyNotFound` if they aren't. Any future change to those collections
-/// must update this builder in the same atomic step.
-///
-/// Duplicate evidence hashes are skipped (first occurrence wins): a real
-/// DAG has exactly one metadata per block hash, and arbitrary fuzz inputs
-/// that reuse a hash seed would otherwise split the collections — the
-/// first metadata lands in `invalid_blocks_set` while a later one
-/// overwrites `block_metadata_index`, an unreachable state that makes
-/// candidate derivation and validation diverge by construction (found by
-/// the slash_lifecycle_trace fuzzer, crash b60fee62).
-pub fn snapshot(
-    evidences: &[Evidence],
-    max_block_num: i64,
-    epoch_length: i32,
-    bonds: Vec<(Validator, i64)>,
-) -> CasperSnapshot {
+/// A snapshot holding `held` and bonding `bonds`. A repeated block hash is
+/// held once, first occurrence first, as a DAG holds one metadata per hash.
+pub fn snapshot(held: &[Held], max_block_num: i64, bonds: Vec<(Validator, i64)>) -> CasperSnapshot {
     let mut dag = empty_dag();
-    let mut seen_hashes: HashSet<BlockHash> = HashSet::new();
-    for evidence in evidences {
-        if !seen_hashes.insert(evidence.hash.clone()) {
+    let mut seen: HashSet<BlockHash> = HashSet::new();
+    for item in held {
+        if !seen.insert(item.block.block_hash.clone()) {
             continue;
         }
-        let metadata = metadata(evidence);
-        dag.fixture_mut()
-            .dag_set
-            .insert(metadata.block_hash.clone());
-        dag.fixture_mut()
+        let metadata = metadata(item);
+        let fixture = dag.fixture_mut();
+        fixture.dag_set.insert(metadata.block_hash.clone());
+        fixture
             .block_number_map
             .insert(metadata.block_hash.clone(), metadata.block_number);
-        dag.fixture_mut()
-            .height_map
-            .entry(metadata.block_number)
-            .or_insert_with(imbl::HashSet::new)
-            .insert(metadata.block_hash.clone());
-        if metadata.invalid {
-            dag.fixture_mut()
-                .invalid_blocks_set
-                .insert(metadata.clone());
+        if !metadata.is_invalid() {
+            fixture
+                .height_map
+                .entry(metadata.block_number)
+                .or_default()
+                .insert(metadata.block_hash.clone());
         }
         dag.block_metadata_index
             .write()
@@ -263,11 +241,24 @@ pub fn snapshot(
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf {
-                epoch_length,
+                shard_name: SHARD.to_string(),
                 ..CasperShardConf::new()
             },
             bonds_map,
             active_validators,
         },
+        chain_id: Bytes::copy_from_slice(&CHAIN),
     }
+}
+
+/// A block store holding every block of `held`.
+pub fn block_store(held: &[Held]) -> KeyValueBlockStore {
+    let store = KeyValueBlockStore::new(
+        Arc::new(InMemoryKeyValueStore::new()),
+        Arc::new(InMemoryKeyValueStore::new()),
+    );
+    for item in held {
+        store.put_block_message(&item.block).expect("block insert");
+    }
+    store
 }

@@ -59,10 +59,10 @@ fn restored_dag_with_stale_lm() -> (KeyValueDagRepresentation, BlockMessage, Blo
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let mut metadata_index = BlockMetadataStore::new(metadata_store);
     metadata_index
-        .add(BlockMetadata::from_block(&genesis, false, None, None))
+        .add(BlockMetadata::from_block(&genesis, None, None, None))
         .expect("seed genesis metadata");
     metadata_index
-        .add(BlockMetadata::from_block(&target, false, None, None))
+        .add(BlockMetadata::from_block(&target, None, None, None))
         .expect("seed target metadata");
 
     let mut dag_set = imbl::HashSet::new();
@@ -103,7 +103,6 @@ fn restored_dag_with_stale_lm() -> (KeyValueDagRepresentation, BlockMessage, Blo
         block_number_map,
         main_parent_map,
         self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: genesis.block_hash.clone(),
         finalized_blocks_set,
         block_metadata_index: Arc::new(PlRwLock::new(metadata_index)),
@@ -201,7 +200,7 @@ async fn the_finality_decision_is_identical_with_and_without_the_stale_block() {
     held_dag
         .block_metadata_index
         .write()
-        .add(BlockMetadata::from_block(&old, false, None, None))
+        .add(BlockMetadata::from_block(&old, None, None, None))
         .expect("seed old-block metadata");
 
     let ftt = FtThreshold::from_f32_lossy(0.1);
@@ -263,7 +262,7 @@ async fn a_sub_horizon_main_parent_crossing_resolves_deterministically() {
         .insert(side.block_hash.clone(), below_horizon_parent);
     dag.block_metadata_index
         .write()
-        .add(BlockMetadata::from_block(&side, false, None, None))
+        .add(BlockMetadata::from_block(&side, None, None, None))
         .expect("seed side metadata");
     dag.fixture_mut()
         .latest_messages_map
@@ -312,7 +311,7 @@ async fn a_stale_latest_message_does_not_fail_fork_choice() {
     let result = estimator
         .tips_with_latest_messages(
             &mut dag,
-            &BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, None, None, None),
             latest_messages,
             1,
             None,

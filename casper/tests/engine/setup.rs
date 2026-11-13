@@ -1,6 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/Setup.scala
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
@@ -35,7 +34,6 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, HasBlock,
 };
-use models::rust::equivocation_record::SequenceNumber;
 use models::rust::validator::ValidatorSerde;
 use prost::bytes::Bytes;
 use prost::Message;
@@ -184,8 +182,6 @@ impl TestFixture {
         let kvm_approved_block = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_metadata = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_latest_messages = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_dagstorage_invalid_blocks = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_dagstorage_equivocation_tracker = Arc::new(Mutex::new(HashMap::new()));
         let kvm_deploystorage = Arc::new(Mutex::new(HashMap::new()));
 
         // Scala: implicit val blockStore = KeyValueBlockStore[Task](kvm).unsafeRunSync(...)
@@ -218,33 +214,16 @@ impl TestFixture {
         let latest_messages_typed_store =
             KeyValueTypedStoreImpl::<ValidatorSerde, BlockHashSerde>::new(latest_messages_store);
 
-        let invalid_blocks_store = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_dagstorage_invalid_blocks.clone(),
-        ));
-        let invalid_blocks_typed_store =
-            KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(invalid_blocks_store);
-
-        let equivocation_tracker_store = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_dagstorage_equivocation_tracker.clone(),
-        ));
-        let equivocation_tracker_typed_store = KeyValueTypedStoreImpl::<
-            (ValidatorSerde, SequenceNumber),
-            BTreeSet<BlockHashSerde>,
-        >::new(equivocation_tracker_store);
-        let equivocation_tracker = EquivocationTrackerStore::new(equivocation_tracker_typed_store);
-
         let block_dag_storage_unwrapped = BlockDagKeyValueStorage::from_parts(
             Arc::new(parking_lot::RwLock::new(())),
             latest_messages_typed_store,
             Arc::new(parking_lot::RwLock::new(block_metadata_store)),
-            invalid_blocks_typed_store,
             KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),
             KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),
-            equivocation_tracker,
             Arc::new(AtomicU64::new(0)),
         );
 

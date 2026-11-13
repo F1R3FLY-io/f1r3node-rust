@@ -458,7 +458,10 @@ mod tests {
     #[async_trait]
     impl Casper for StorageFailingCasper {
         async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
-            Ok(CasperSnapshot::new(self.dag.get_representation()?))
+            Ok(CasperSnapshot::new(
+                self.dag.get_representation()?,
+                prost::bytes::Bytes::new(),
+            ))
         }
 
         fn dag_contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> { Ok(false) }

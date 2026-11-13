@@ -237,7 +237,7 @@ impl BlockMetadataStore {
                         KvStoreError::KeyNotFound("height entry has no DAG membership".into())
                     })?;
                 if member.height != metadata.block_number
-                    || member.invalid != metadata.invalid
+                    || member.invalid != metadata.is_invalid()
                     || metadata.block_hash != hash
                 {
                     return Err(KvStoreError::InvalidArgument(
@@ -341,7 +341,7 @@ impl BlockMetadataStore {
                 let metadata = self.get_unsafe(&hash)?;
                 if metadata.block_number != height
                     || metadata.block_hash != hash
-                    || metadata.invalid
+                    || metadata.is_invalid()
                         == replacement
                             .height_map
                             .get(&height)
@@ -411,7 +411,7 @@ impl BlockMetadataStore {
             main_parent,
             self_justification,
             block_num: block_metadata.block_number,
-            is_invalid: block_metadata.invalid,
+            is_invalid: block_metadata.is_invalid(),
             is_directly_finalized: block_metadata.directly_finalized,
             is_finalized: block_metadata.finalized,
         }
@@ -783,7 +783,7 @@ mod tests {
     }
 
     fn meta(block: &BlockMessage) -> BlockMetadata {
-        BlockMetadata::from_block(block, false, None, None)
+        BlockMetadata::from_block(block, None, None, None)
     }
 
     fn store_over(kv: Arc<InMemoryKeyValueStore>) -> BlockMetadataStore {
@@ -904,7 +904,12 @@ mod tests {
         let mut store = store_over(Arc::new(InMemoryKeyValueStore::new()));
         let invalid = block(5, vec![]);
         store
-            .add(BlockMetadata::from_block(&invalid, true, None, None))
+            .add(BlockMetadata::from_block(
+                &invalid,
+                Some(BlockHash::from(vec![6; 32])),
+                None,
+                None,
+            ))
             .unwrap();
 
         assert!(store.contains(&invalid.block_hash));
