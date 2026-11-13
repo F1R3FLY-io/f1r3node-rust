@@ -2919,6 +2919,8 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
 
     let verus = read_repository_file("formal/verus/pathmap_reverse_prune_teardown.rs");
     for marker in [
+        "pub enum PhaseBStepKind {",
+        "pub open spec fn barrier_free_step_kind(",
         "pub fn executable_one_logical_edge_step(",
         "pub fn executable_root_payload_step(",
         "proof fn reverse_terminal_drive_conserves_edges_and_payloads(",
