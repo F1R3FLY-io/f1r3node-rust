@@ -597,6 +597,8 @@ tasks:
     pr_base_branch: master
     pull_request: 1009
     decision: "The user approved the pin update, link-check fix, evidence refresh, and PR description update on this branch."
+    notes:
+      - "CI run 43350215944 exposed a pre-existing receipt-verifier cancellation test race. The test now waits for detached worker cleanup before asserting that no peer entries remain."
     acceptance:
       - "All three harness pins name the merged system-integration PR #182 revision."
       - "The immutable prior ledger retains its bytes and is excluded from current-path link checks. Current evidence links remain checked."
