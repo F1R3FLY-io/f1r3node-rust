@@ -48,7 +48,7 @@ package "T5  Reclaim under dynamic GC roots" as P5 #F5F9FF {
 package "T6  Import, migration, state sync, matching" as P6 #F5F9FF {
   rectangle "affine import, caller and\nmatcher catalogs (scoped)" as M6 #E1BEE7
   rectangle "rspace.rs, history_repository_impl.rs\nmigration and state-sync modules" as H6 #C8E6C9
-  rectangle "no end-to-end fault matrix yet\nowners: migration, state-sync, lifecycle leaves" as W6 #FFCDD2
+  rectangle "no end-to-end fault matrix yet\nowners: migration, state-sync, lifecycle leaves,\nrspace-durable-hash-keyed-reader,\nrspace-durable-merge-checkpoint" as W6 #FFCDD2
 }
 
 M1 -right[#6A1B9A]-> H1 : models
