@@ -62,6 +62,7 @@ use super::metrics_constants::{
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
+use super::system_processes::non_deterministic_ops;
 use super::util::GeneratedMessage;
 use super::{unwrap_option_ref, unwrap_option_safe};
 use crate::rust::interpreter::accounting::costs::{
@@ -216,6 +217,13 @@ fn join_error(err: JoinError) -> InterpreterError {
     } else {
         InterpreterError::ReduceError(format!("task panicked: {}", err))
     }
+}
+
+fn is_non_deterministic_process(continuation: &TaggedContinuation) -> bool {
+    matches!(
+        continuation.tagged_cont,
+        Some(TaggedCont::ScalaBodyRef(body_ref)) if non_deterministic_ops().contains(&body_ref)
+    )
 }
 
 type DispatchFuture = Pin<
@@ -790,6 +798,9 @@ impl DebruijnInterpreter {
 
         match res {
             Some((continuation, data_list, peek)) => {
+                if retry.is_some() && is_non_deterministic_process(&continuation) {
+                    return Err(InterpreterError::PersistentSendToNonDeterministicProcess);
+                }
                 self.register_bitmask_channels(&data_list).await;
                 if let Some((chan, data)) = retry {
                     // When a persistent produce triggers a peek COMM, the non-persistent
