@@ -99,6 +99,13 @@ impl TransferPageLimitsV1 {
 
     pub(crate) const fn max_page_bytes(self) -> u64 { self.max_page_bytes }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests read the object limit of a transfer page back"
+        )
+    )]
     pub(crate) const fn max_page_objects(self) -> u64 { self.max_page_objects }
 
     fn max_page_len(self) -> usize {
@@ -626,6 +633,14 @@ pub(crate) struct DurableExportSessionV1<P: SemanticProfile> {
 }
 
 impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests open an export session from a recovered view; the durable \
+                      exporter opens its sessions from the read handle of the published core"
+        )
+    )]
     pub(crate) fn open_export(
         &self,
         root: DurableStateRootV1,
@@ -650,6 +665,22 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
 }
 
 impl<P: SemanticProfile> DurableExportSessionV1<P> {
+    pub(crate) fn from_read_handle(
+        pin: DurableViewReadHandleV1<P>,
+        limits: TransferPageLimitsV1,
+    ) -> Self {
+        let manifest = pin.manifest;
+        Self {
+            pin: Some(pin),
+            binding: TransferBindingV1::new(DurableStateRootV1::of_manifest(manifest), P::ID),
+            limits,
+            traversal: ExportTraversalV1::new(manifest),
+            page: Vec::new(),
+            page_position: 0,
+            served_end: 0,
+        }
+    }
+
     pub(crate) const fn binding(&self) -> TransferBindingV1 { self.binding }
 
     pub(crate) const fn first_token(&self) -> TransferTokenV1 {
@@ -700,6 +731,14 @@ impl<P: SemanticProfile> DurableExportSessionV1<P> {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests release the pin of a session they keep; the durable \
+                      exporter releases a session by dropping it"
+        )
+    )]
     pub(crate) fn release_pin(&mut self) {
         self.pin = None;
         self.page = Vec::new();

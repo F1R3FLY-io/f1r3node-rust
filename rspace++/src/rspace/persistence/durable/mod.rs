@@ -28,14 +28,6 @@ mod recovery;
 mod rspace_authority;
 mod startup;
 mod state_root;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only unit tests export a durable state until task \
-                  rspace-dag-transfer-trait-binding serves transfer pages through it"
-    )
-)]
 mod transfer_export;
 #[cfg_attr(
     not(test),
@@ -151,11 +143,12 @@ pub(crate) use startup::{
 pub(crate) use state_root::{DurableStateReadHandleErrorV1, DurableStateRootV1};
 #[cfg(test)]
 pub(crate) use state_root::{ResolvedDurableStateV1, resolve_retained_state};
-#[cfg(test)]
 pub(crate) use transfer_export::{
-    DurableExportSessionV1, TransferBindingV1, TransferExportErrorV1, TransferPageFormatErrorV1,
-    TransferPageLimitsV1, TransferPageViewV1, TransferTokenV1,
+    DurableExportSessionV1, TransferExportErrorV1, TransferPageLimitsV1, TransferPageViewV1,
+    TransferTokenV1,
 };
+#[cfg(test)]
+pub(crate) use transfer_export::{TransferBindingV1, TransferPageFormatErrorV1};
 #[cfg(test)]
 pub(crate) use transfer_import::{
     DurableImportSessionV1, TransferFrontierFormatErrorV1, TransferImportBoundV1,

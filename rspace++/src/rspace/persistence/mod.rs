@@ -52,10 +52,11 @@ pub(crate) use durable::{
     ObjectIndexHeaderV1, ObjectLocationV1, PACK_HEADER_LEN_V1, PackFormatError, PackHeaderV1,
 };
 pub(crate) use durable::{
-    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError,
-    DurablePublishedCoreV1, DurableRSpaceAuthorityV1, DurableRSpaceTransactionError,
-    DurableStateReadHandleErrorV1, DurableStateRootV1, DurableStoreGenesisErrorV1,
-    DurableViewReaderV1, create_empty_store_v1, recover_read_authority,
+    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1, DurableExportSessionV1,
+    DurableIoError, DurablePublishedCoreV1, DurableRSpaceAuthorityV1,
+    DurableRSpaceTransactionError, DurableStateReadHandleErrorV1, DurableStateRootV1,
+    DurableStoreGenesisErrorV1, DurableViewReaderV1, TransferExportErrorV1, TransferPageLimitsV1,
+    TransferPageViewV1, TransferTokenV1, create_empty_store_v1, recover_read_authority,
 };
 #[cfg(test)]
 pub(crate) use durable::{

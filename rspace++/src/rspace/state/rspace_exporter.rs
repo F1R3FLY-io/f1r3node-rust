@@ -4,18 +4,40 @@ use std::sync::Arc;
 
 use shared::rust::{Byte, ByteVector};
 
-use crate::rspace::errors::RootError;
+use crate::rspace::errors::{AuthorityBackendMismatch, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::{ColdLeafAddress, ColdLeafStoreError};
 use crate::rspace::history::instances::radix_history::RadixHistory;
 use crate::rspace::history::radix_tree::{ExportData, ExportDataSettings, sequential_export};
 use crate::rspace::shared::trie_exporter::{
-    AuthenticatedTraversalPage, KeyHash, StateExportError, TrieExporter, TrieNode,
+    AuthenticatedTraversalPage, KeyHash, NodePath, StateExportError, TrieExporter, TrieNode,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StateTransferFormat {
+    LegacyRadix,
+    DagStreamV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateTransferPage {
+    pub bytes: Vec<u8>,
+    pub next_cursor: NodePath,
+    pub terminal: bool,
+}
 
 pub trait RSpaceExporter: TrieExporter + Send + Sync {
     // Get current root
     fn get_root(&self) -> Result<KeyHash, RootError>;
+
+    fn transfer_format(&self) -> StateTransferFormat { StateTransferFormat::LegacyRadix }
+
+    fn get_transfer_page(
+        &self,
+        _cursor: &[(KeyHash, Option<Byte>)],
+    ) -> Result<StateTransferPage, StateExportError> {
+        Err(StateExportError::BackendMismatch(AuthorityBackendMismatch::History))
+    }
 }
 
 pub struct RSpaceExporterInstance;

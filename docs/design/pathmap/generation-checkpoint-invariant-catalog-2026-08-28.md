@@ -8498,8 +8498,12 @@ canonical objects. This slice, task 14302, builds the exporting side only: a
 session that pins one retained durable state and serves its closure as
 pages. Its code is
 [`transfer_export.rs`](../../../rspace++/src/rspace/persistence/durable/transfer_export.rs).
-Only unit tests call it until task `rspace-dag-transfer-trait-binding` serves
-its pages through the node. The importer, its persisted frontier and cold
+Only unit tests called it until task `rspace-dag-transfer-export-binding`,
+since which the durable exporter serves its pages
+[through the `RSpaceExporter` trait
+](#dag-transfer-pages-through-the-rspace-exporter-trait-2026-11-13); no
+caller in the node requests them yet. The importer, its persisted frontier
+and cold
 admission are later tasks. A page is an in-memory transfer encoding: it is
 never written to disk and has no magic number, and no persisted record, byte
 layout, root or wire message changes.
@@ -8718,8 +8722,10 @@ expectations that named task 14294 on the view's `resolve` and
 `read_handle_at` are removed as well: rustc treats the items of a module
 expected to be dead as live roots for the items they call, so once the export
 module calls these two methods their expectations can no longer be met. The
-export module's own expectation names task
-`rspace-dag-transfer-trait-binding`.
+export module's own expectation named task
+`rspace-dag-transfer-trait-binding`; task
+`rspace-dag-transfer-export-binding` removed it, and three items of the
+module that only unit tests use carry an expectation each.
 
 **The tests.** The module `persistence::tests::transfer_export` holds a
 reference importer. It decodes every page with `TransferPageViewV1::parse`,
@@ -12241,6 +12247,266 @@ wrong successor: TM-02 fails in a seeded sequence. A `close` that keeps the
 memo leaves its keys in the closed owner: TM-03 fails. The verification
 record gives their results.
 
+### DAG transfer pages through the RSpace exporter trait (2026-11-13)
+
+Task 14436, leaf `rspace-dag-transfer-export-binding`, serves the pages of
+the [durable state transfer export](#durable-state-transfer-export-2026-11-11)
+through the trait that the node hands to Casper as its exporter of the
+RSpace state, `RSpaceExporter` in
+[`rspace_exporter.rs`](../../../rspace++/src/rspace/state/rspace_exporter.rs).
+The trait gains two methods with default bodies. The exporter of the durable
+backend, `DurableRSpaceExporterV1` in
+[`durable_history_repository.rs`](../../../rspace++/src/rspace/history/durable_history_repository.rs),
+implements them: one call returns one transfer page of a retained durable
+state. Until this task that exporter refused every page request.
+
+Nothing calls the two methods yet. No file of Casper or of the node changes,
+no wire message, persisted byte, record kind, root or identity changes, and
+the crate gains no dependency. The LMDB exporter and every other implementor
+of the trait compile unchanged and keep their behaviour through the default
+bodies. This section uses the terms of the export section: closure, stream,
+position, token, page, served end, and the stream length $`n`$.
+
+**Terms.**
+
+| Term | Meaning |
+|---|---|
+| Cursor | A value of the trait's path type, `NodePath`, that names a durable state root and a position of its stream. Its grammar is below. |
+| Transfer page | `StateTransferPage`: the page bytes exactly as the export session encodes them (`bytes`), the cursor of the position after the page (`next_cursor`), and whether the page is the empty page that ends the stream (`terminal`). |
+| Session entry | An export session together with what the exporter remembers of it: its root, its served end, whether it has produced the terminal page, the position of its buffered page, the position after that page, and a use stamp. |
+| Serves | A session entry serves the position $`q`$ of a root when it is a session of that root and either its served end is at least $`q`$ or it has produced the terminal page. In the second case its served end is $`n`$, so it can answer every position: it returns the page for $`q \le n`$ and refuses $`q > n`$. |
+| Positioned | A session entry is positioned at $`q`$ when its buffered page starts at $`q`$ or its next page does, so that it answers $`q`$ without a rewind. |
+| Slot | One of the four places of the exporter's session set. A slot is vacant, idle (it holds a session entry) or checked out (a request works on its entry). |
+
+**The trait.**
+
+| Method | Default body | `DurableRSpaceExporterV1` |
+|---|---|---|
+| `transfer_format()` | `StateTransferFormat::LegacyRadix` | `StateTransferFormat::DagStreamV1` |
+| `get_transfer_page(cursor)` | refused with `StateExportError::BackendMismatch` of the history facet | one transfer page, or a refusal of the table below |
+| `get_root()` | none, the method is required | the owner's current root, unchanged |
+| `get_page`, `get_history_items`, `get_data_items` | none, they are required methods of `TrieExporter` | refused with `BackendMismatch`, unchanged |
+
+The format lets a caller that holds an `Arc<dyn RSpaceExporter>` decide which
+page method to call. The cursor is passed as a borrowed slice of path
+components, and the page is returned by value, because a page lives in a
+buffer of a session that the next request may overwrite.
+
+**The cursor.**
+
+```text
+cursor    ≡  [ (root, none) ]                      -- position 0
+           |  [ (root, none), (position, none) ]   -- a position q > 0
+root      ≡  32 bytes: the durable state root, the digest of the state's semantic manifest
+position  ≡  24 zero bytes, then q in 8 bytes, unsigned and big-endian, q ≠ 0
+```
+
+Legend: `≡` defines the name on its left, `|` separates the two shapes,
+`[ … ]` is a path, `( … , none)` is one path component whose child index is
+absent, and `--` starts a remark.
+
+The position has the width of a key hash, so both components have the
+component type that the trait's path type already has:
+
+| Offset | Width (bytes) | Field | Meaning |
+|---:|---:|---|---|
+| 0 | 24 | prefix | zero |
+| 24 | 8 | count | $`q`$, the number of objects of the stream that precede the page, unsigned and big-endian, never 0 |
+
+One pair of functions in
+[`trie_exporter.rs`](../../../rspace++/src/rspace/shared/trie_exporter.rs)
+builds and parses a cursor, `dag_transfer_cursor(root, position)` and
+`parse_dag_transfer_cursor(cursor)`, and no other code reads or writes a
+component. A root and a position have exactly one cursor, because position 0
+has no form of two components; equal positions therefore have equal cursors.
+The parser refuses every other shape with `InvalidPath`: no component or
+more than two, a child index on either component, a root that is not 32
+bytes long, and a position that is not 32 bytes long, has a prefix byte
+other than zero, or counts zero objects.
+
+**The session set.** The exporter holds the owner's published core, the page
+limits, and four slots behind one mutex with a condition variable. The
+limits of the exporter that a repository builds are two constants of
+`durable_history_repository.rs`: `DAG_TRANSFER_PAGE_MAX_BYTES`, 64 MiB
+(67,108,864 bytes), and `DAG_TRANSFER_PAGE_MAX_OBJECTS`, 1,024. The number
+of slots is the constant `DAG_TRANSFER_SESSION_LIMIT`, 4, and the slots are
+an array of that length, so the set is allocated once and never grows.
+
+A session is opened by the second constructor of the export session,
+`DurableExportSessionV1::from_read_handle(handle, limits)`. The handle comes
+from `DurablePublishedCoreV1::read_handle` for the cursor's root. It is the
+pin of the export section, taken from the published core instead of a
+recovered view: it holds the admitted core of the current generation and one
+lease on it. The session's binding is the root of the handle's manifest and
+the profile, as for `open_export`, whose behaviour is unchanged.
+
+**Serving a request.**
+
+```text
+get_transfer_page(cursor):
+    (root, q) = parse(cursor)                    -- InvalidPath for another shape
+    claim = check_out(root, q)                   -- under the mutex
+    if the claimed slot holds an entry that serves (root, q):
+        entry = that entry
+    else:
+        handle = published.read_handle(root)     -- refused: the slot keeps what it held
+        release the entry that the slot held, if any
+        entry = a new session of root, opened from handle
+        while entry has not produced the terminal page and entry.served_end < q:
+            produce the next page of entry       -- the page is not returned
+    if q > entry.served_end:
+        refuse with InvalidPath                  -- q lies beyond the end of the stream
+    page = entry.session.page(token(root, q))
+    k = the object count of page
+    return (a copy of page, cursor(root, q + k), k = 0)
+    -- dropping the claim returns the entry to its slot, under the mutex,
+    -- and wakes one waiting request
+```
+
+Legend: an indented line belongs to the statement above it, `=` binds a
+name, `--` starts a remark, `refuse` ends the request with the named error,
+and `claim` is the request's exclusive hold on one slot.
+
+`check_out` takes the best slot that is not checked out, in this order, and
+waits on the condition variable while all four are checked out:
+
+| Rank | Slot | What the request then does |
+|---:|---|---|
+| 1 | idle, its entry serves $`q`$ and is positioned at $`q`$ | returns the buffered page or the next page |
+| 2 | idle, its entry serves $`q`$ | rewinds: the traversal restarts at the manifest and skips $`q`$ objects without copying them |
+| 3 | vacant | opens a session and advances it from position 0 |
+| 4 | idle, its entry does not serve $`q`$ | releases that session, opens a session in its place and advances it from position 0 |
+
+Within a rank the slot that was used least recently is taken, and among
+equals the lowest. A request of rank 4 therefore releases the least recently
+used session first, and it does so only after the new read handle exists, so
+a request for a root that the store does not retain releases nothing. A
+position that no idle session serves is reached by ranks 3 and 4: a new
+session produces every page from position 0 until its served end reaches
+$`q`$.
+
+**Pages equal those of one session.**
+
+*Claim.* Let $`M`$ be the manifest of a retained state, $`L`$ the page
+limits and $`q \le n`$ a position. Every export session of $`M`$ under
+$`L`$ whose served end is at least $`q`$ returns the same bytes for $`q`$.
+
+*Proof.* By the export section a session answers $`q`$ in one of three ways.
+(i) It encodes the next page from its traversal, whose cursor is $`q`$.
+(ii) It restarts the traversal at the manifest, skips $`q`$ objects and then
+encodes a page. (iii) It returns its buffered page, whose position is $`q`$
+and which was encoded by (i) or (ii). A skip performs the pushes, the pops
+and the records of emitted shared objects of an emission and omits only the
+copy, so the traversal of (ii) is in the state that the traversal of (i) is
+in: the stack and the record after the first $`q`$ objects of the export
+order, which is a function of the DAG of $`M`$ alone. From that state the
+page takes the next object while the count stays below the object limit and
+the length stays within the byte limit, which is a function of the
+traversal's state and $`L`$ alone, and the header holds the binding and
+$`q`$. $`\blacksquare`$
+
+The exporter asks a session for $`q`$ only if the session's served end is at
+least $`q`$, so by the claim the bytes do not depend on which session
+answers, on the pages that a session produced on its way to $`q`$, or on
+the order of earlier requests. They are the bytes that one uninterrupted
+session returns for $`q`$.
+
+**The guard.** An export session is a state machine behind `&mut self`, and
+the trait's methods take `&self` on a `Send + Sync` object, so a request
+needs exclusive use of one session. The mutex guards only the choice: it is
+held while a request compares the four slots and marks one as checked out,
+and again while the entry is put back. It is not held while a read handle is
+taken, a session is advanced, a page is produced, parsed or copied. Holding
+it there is not needed for correctness, because by the claim every session
+returns the same page for a position. Two concurrent requests at different
+positions therefore run at the same time on two slots. A request does not
+see a session that another request has checked out; it may open a session of
+the same root in another slot, and it returns the same bytes. A request that
+finds all four slots checked out waits until one is returned. An atomic
+claim of a slot would not remove that wait and could not compare the four
+use stamps consistently, so the mutex with its condition variable is the
+lightest mechanism that is sound here.
+
+A request that panics drops its claim while it unwinds. The slot then
+becomes vacant and the session is dropped, since a session interrupted
+inside a page is not used again. The lock is taken through a poisoned mutex
+as well, so later requests are unaffected.
+
+**Refusals.** `StateExportError` gains no variant.
+
+| Request | Refusal |
+|---|---|
+| a cursor of another shape | `InvalidPath`, before a slot is taken |
+| a root that the store does not retain, or whose manifest has a legacy history root or another profile | `MissingHistoryObject` of the root, as the LMDB exporter reports an absent node |
+| any other refusal of the read handle | `Store(IoError)` with the refusal's text |
+| a position beyond $`n`$ | `InvalidPath`; the session that was advanced to the end stays in its slot |
+| an object whose record does not fit an empty page, $`88 + L_i`$ bytes against the byte limit | `Store(SerializationError)` with the text of the session's `ObjectExceedsPage`; the pages before the object are served, and no object is split |
+| any other refusal of the session | `Store(IoError)` with the refusal's text |
+
+**Cost.** Write $`S(q)`$ for the canonical bytes of the first $`q`$ objects
+of the stream and $`B`$ for the bytes of the returned page.
+
+- A request of rank 1 costs $`\Theta(B)`$: the session produces the page, or
+  returns its buffered page; the exporter parses the page once more to learn
+  the next position, which is a second CRC32C pass, because the session has
+  no accessor for it; and the page is copied into the value that the trait
+  returns.
+- A request of rank 2 adds the rewind, which reads and parses the first
+  $`q`$ objects: $`\Theta(S(q) + B)`$.
+- A request of rank 3 or 4 takes one read handle and produces every page
+  from position 0 until the served end reaches $`q`$. Each of those objects
+  is read, parsed, copied and checksummed, and each page is parsed once more.
+  If the advance ends inside a page, at $`q' > q`$, the request's own page
+  needs a rewind as in rank 2. The cost is $`\Theta(S(q') + S(q) + B)`$,
+  which is linear in the position.
+- A reader that follows the returned cursors is answered at rank 1 for every
+  page after the first, so a whole stream costs $`\Theta(S(n))`$. Up to four
+  such readers keep their sessions. With more, a reader whose session was
+  released pays the linear cost again, so a stream of $`p`$ pages can cost
+  $`\Theta(p \cdot S(n))`$.
+- The first request beyond the end advances a session through the whole
+  stream, $`\Theta(S(n))`$. While that session stays in its slot, later
+  requests beyond the end are refused by it without a read.
+
+The space is at most four sessions, each with one generation lease, one page
+buffer that grows on demand to at most the byte limit, its traversal stack
+and its record of emitted shared objects, and one copy of a page for each
+request in flight.
+
+**Changes outside the exporter.** `transfer_export.rs` gains the second
+constructor. `durable/mod.rs` no longer expects the export module to be dead
+outside tests, and three items that only unit tests use carry an expectation
+each: `DurableAuthorityViewV1::open_export`,
+`TransferPageLimitsV1::max_page_objects` and
+`DurableExportSessionV1::release_pin`. `durable/mod.rs` and
+`persistence/mod.rs` re-export the session, its error, the limits, the page
+view and the token to the crate instead of to the tests only.
+
+**The TX rows.** The tests are in `transfer_export_binding.rs`. Each test
+serves pages through the trait while the owner is live, then drops the
+exporter and the owner, recovers a read view of the store and compares what
+was served with one session that `open_export` opens on that view. The
+expected cursors come from an encoder in the test that is written from the
+grammar above. The live sessions are read through the accessor
+`live_sessions_for_test`, which is compiled only for tests, and are compared
+with the number of generation leases in the owner's registry, of which every
+session holds one.
+
+| ID | Required property | Test |
+|---|---|---|
+| TX-07 | Pages equal those of one session. Three seeded scripts and then 12 generated ones publish up to three batches of data, continuations and joins; one kind of step puts a datum on each of 94 channels whose paths branch at one byte, so that their common parent is a node of 94 children, which is larger than a page of 2,048 bytes. For the state that the store starts with and every published state, and for each of four page limits (1 MiB with 1, 3 or 1,024 objects, and 2,048 bytes with 16 objects), the outcomes of following the returned cursors from position 0 equal, one by one, those of one session: the same bytes, the cursor of the next position, the terminal flag on the empty page only, and, where the session refuses an object larger than the page, the same pages before it and then the refusal with the session's text. The seeded scripts alone must show a stream of several pages, a page of several objects, a stream that completes within the 2,048-byte limit and a stream that is refused after at least one page. A state of 1,100 channels with one datum each, which holds more than 1,024 objects, is then served by the exporter of a repository, which has the production limits: the format is `DagStreamV1`, the limits are 64 MiB and 1,024 objects with four sessions, the pages equal those of one session under those limits, the first page holds exactly 1,024 objects, and the stream ends with the empty page. | `pages_served_through_the_trait_equal_the_pages_of_one_session` |
+| TX-08 | A position that no session has served is reached, and the sessions stay bounded. Over two retained states with one object per page, ten requests are made in a fixed order, and after each the live sessions are exactly those that the ranks above predict: vacant slots are filled first, the least recently used session is then released, a position that no session serves is reached by a new session that was advanced from position 0, and a served position is answered by the session that served it. Every page equals the page that one uninterrupted session returns for that position, never more than four sessions are live, and every live session holds one lease. The page at $`n`$ is the terminal page. A first request beyond the end advances one session to the end and is refused with `InvalidPath`, and a second is refused by that session while the set stays as it was. Dropping the exporter returns every lease. An exporter that is built again with the same limits answers two requests of the sequence, each at a position greater than 0, with the outcomes that the first exporter returned for them, from new sessions that it advanced from position 0. A new exporter with three objects per page reaches a position inside a page and then answers an earlier and a later position. Eight concurrent requesters, four for each state, each receive the pages of the uninterrupted session, and afterwards no slot is checked out and at most four sessions are live. A request that panics while it opens a session, through the test hook after the load of the published core, leaves no slot checked out, and the same request then succeeds. | `a_position_no_session_has_served_is_reached_and_sessions_stay_bounded` |
+| TX-09 | A cursor of another shape is refused. For the positions 0, 1, 255, 256 and $`2^{64} - 1`$ the builder returns the cursor that the test's encoder returns, and the parser reads the root and the position back. Fourteen other shapes are refused with `InvalidPath` by the parser and by the exporter of a repository: an empty cursor, three components, a legacy path of six components with child indexes, a child index on either component, a prefix whose first or last byte is not zero, a position of zero, a position of 31 or 33 bytes, a root of 31 or 33 bytes, and an empty root. A well-formed cursor of a root that the store does not retain is refused with `MissingHistoryObject` at position 0 and at a later position. None of these refusals leaves a lease behind, and the same exporter then serves the first page of the retained root, which holds one. The exporter reports `DagStreamV1`, and the exporter of the legacy backend, built over an in-memory authority, reports `LegacyRadix` and refuses a transfer page with `BackendMismatch`. | `a_cursor_of_another_shape_is_refused` |
+
+The red controls change one production file each. If a new session is not
+advanced, a position beyond its served end is refused instead of answered,
+and TX-08 fails at its first request for a position that no session has
+served, with the message
+`the page at a resumed position differs from the uninterrupted session`. If
+the returned cursor repeats the requested position, TX-07 fails in its first
+seeded script. If the parser accepts a position of fewer than 32 bytes,
+TX-09 fails. The verification record gives their results.
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -12505,6 +12771,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | TX-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14302): the closure, every object once and parent-first, carried by the pages of a pinned export of a retained durable state. `RSpaceDagStateTransfer.tla` states the transfer contract over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents canonical objects, the export order or the page layout. |
 | TX-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14303): a refused transfer page changes neither the import session's frontier and in-memory closure nor its staging log, frontier record or staging directory. `RSpaceDagStateTransfer.tla` rejects an out-of-order page over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents pages, their decoding, canonical objects or the staging's files. |
 | TX-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14434): the seal of a completely staged state is its full cold admission over the staging log alone, a staged state with a dangling join is refused by it, and neither a seal nor its refusal changes the staging or the store directory outside it. `RSpaceDagStateTransfer.tla` admits an abstract closure of two objects at its complete frontier, `RSpaceAffineImportLifecycle.tla` seals a session whose closure is verified, and neither is among this matrix's TLA+ sources; no cited model represents canonical objects, the staging log or the semantic rules of a state. |
+| TX-07 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14436): the pages that the durable exporter returns through the `RSpaceExporter` trait equal, in bytes, next cursor and terminal flag, the pages of one export session of the same state under the same limits, and an object larger than a page is refused where that session refuses it. `RSpaceDagStateTransfer.tla` serves the next object of an abstract closure of two objects from a pinned session and is not among this matrix's TLA+ sources, and no cited model represents page bytes, page limits, the trait or its cursor. |
+| TX-08 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14436): a request at a position that no live export session has served returns the page of one uninterrupted session, the exporter never holds more than four sessions or their generation leases, and it releases the least recently used session first. `RSpaceDagStateTransfer.tla` resumes one pinned session at its acknowledged frontier and is not among this matrix's TLA+ sources, and no cited model represents a set of export sessions, its bound or the order in which it releases them. |
+| TX-09 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14436): the two shapes of a DAG transfer cursor, the refusal of every other shape with `InvalidPath` by the parser and by the exporter, and the refusal of a root that the store does not retain, which leaves no generation lease behind. The cursor is an encoding inside the Rust path type `NodePath`, which no model represents. |
 | HR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the contents that a view reset to a retained root reads. No model represents a durable view, its reset or its lazy reader's results. |
 | HR-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): the refusal, from every view, of roots that the owner's current ledger does not count, with no change to the store directory. No model states a lookup of a retained state by its manifest digest. |
 | HR-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14294): a reset reaches no directory failpoint and changes no file. The failpoints are a test seam of the Rust I/O layer, which no model represents. |
@@ -13739,6 +14008,54 @@ this slice. No persisted format of the store, record kind, staging file,
 root, identity or wire message changed, and the crate has no new
 dependency: a seal reads the staging log and writes nothing. See the durable
 state transfer import seal section.
+
+The 2026-11-13 DAG transfer export binding slice of task 7939 (task 14436)
+adds TX-07 to TX-09, so the catalog/derivation/binding registry now contains
+**295** IDs. The manifest test's executable sources gain
+`transfer_export_binding.rs`. No test of another module changes: the eight
+tests of the export module and the nine tests of the durable history
+repository module, which assert the refusals of the exporter's legacy page
+methods, are as they were. On an export of the candidate tree, which already
+holds the transition memo slice, the channel image adapter of the key
+grammar (task 14396) and the import seal slice (task 14434), the three tests
+of the new module, those 17 tests and the manifest test passed in debug and
+in release (21 passed, none ignored), and the whole library test target
+passed in both profiles with 1043 tests (1033 passed, 10 ignored).
+`cargo check` of the packages `casper` and `node` with every target passed
+on the same tree and names the trait in no warning: the two trait methods
+have default bodies, and no file outside `rspace++` and this catalog
+changes. Three controls were each applied to one production file of the
+export, run against the same 21 tests in debug with
+`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` and removed:
+
+- With the condition of the loop that advances a new session reversed, so
+  that a new session is not advanced, TX-08 was the only test to fail. It
+  failed at its third request, for position 2 of the first state, which no
+  session had served, with the message
+  `the page at a resumed position differs from the uninterrupted session`:
+  the exporter refused the position instead of returning its page.
+- With the returned cursor built from the requested position instead of the
+  position after the page, TX-07 was the only test to fail. It failed in its
+  first seeded script: a stream that the trait served stopped after a page
+  whose cursor did not advance, so it differed from the pages of one
+  session.
+- With the parser accepting a position whose prefix is shorter than 24
+  bytes, TX-09 was the only test to fail, with the message
+  `the parser and the exporter refuse every other shape with InvalidPath`:
+  the position of 31 bytes was accepted.
+
+The other 20 tests passed under each control. Each faulted file was restored
+from the candidate tree, and the export was compared with that tree after
+the runs. Clippy of `rspace_plus_plus` with every target lists no finding in
+the files of this slice, and `rustfmt --check` passes on its Rust files. The
+workspace-regression registry hashes `persistence/mod.rs`, the module list
+of the persistence tests and the manifest test's file. All three change, so
+that registry and the PathMap aggregate, which holds its digest and the same
+three digests, are regenerated with this slice. No Rocq or TLA+ file
+changed, and the proofs were not run again for this slice. Nothing outside
+the tests calls the two trait methods yet. No persisted byte, record kind,
+root, identity or wire message changed, and the crate has no new dependency.
+See the section on DAG transfer pages through the RSpace exporter trait.
 
 ## Caller-authority contract (2026-09-06)
 

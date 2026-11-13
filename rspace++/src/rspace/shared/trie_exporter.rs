@@ -194,6 +194,72 @@ fn validate_cursor(path: &NodePath, allow_initial: bool) -> Result<(), StateExpo
     Ok(())
 }
 
+const DAG_TRANSFER_COMPONENT_LEN: usize = 32;
+const DAG_TRANSFER_POSITION_LEN: usize = size_of::<u64>();
+const DAG_TRANSFER_PREFIX_LEN: usize = DAG_TRANSFER_COMPONENT_LEN - DAG_TRANSFER_POSITION_LEN;
+
+pub fn dag_transfer_cursor(root: &KeyHash, position: u64) -> NodePath {
+    match position {
+        0 => vec![(root.clone(), None)],
+        later => {
+            let mut component = vec![0_u8; DAG_TRANSFER_COMPONENT_LEN];
+            component[DAG_TRANSFER_PREFIX_LEN..].copy_from_slice(&later.to_be_bytes());
+            vec![(root.clone(), None), (Blake2b256Hash::from_bytes(component), None)]
+        }
+    }
+}
+
+pub fn parse_dag_transfer_cursor(
+    cursor: &[(KeyHash, Option<Byte>)],
+) -> Result<(&KeyHash, u64), StateExportError> {
+    let (root, later) = match cursor {
+        [(root, None)] => (root, None),
+        [(root, None), (later, None)] => (root, Some(later)),
+        [_] | [_, _] => {
+            return Err(StateExportError::InvalidPath(
+                "DAG transfer cursor components cannot carry child indexes".to_string(),
+            ));
+        }
+        other => {
+            return Err(StateExportError::InvalidPath(format!(
+                "a DAG transfer cursor must contain one or two components, found {}",
+                other.len()
+            )));
+        }
+    };
+    if root.0.len() != DAG_TRANSFER_COMPONENT_LEN {
+        return Err(StateExportError::InvalidPath(format!(
+            "the root of a DAG transfer cursor must contain {DAG_TRANSFER_COMPONENT_LEN} bytes, \
+             found {}",
+            root.0.len()
+        )));
+    }
+    let Some(later) = later else {
+        return Ok((root, 0));
+    };
+    match later.0.split_last_chunk::<DAG_TRANSFER_POSITION_LEN>() {
+        Some((prefix, count)) if prefix.len() == DAG_TRANSFER_PREFIX_LEN => {
+            match (prefix.iter().all(|byte| *byte == 0), u64::from_be_bytes(*count)) {
+                (false, _) => Err(StateExportError::InvalidPath(format!(
+                    "the position of a DAG transfer cursor must start with \
+                     {DAG_TRANSFER_PREFIX_LEN} zero bytes"
+                ))),
+                (true, 0) => Err(StateExportError::InvalidPath(
+                    "the position of a DAG transfer cursor cannot be zero: the root alone is \
+                     position 0"
+                        .to_string(),
+                )),
+                (true, position) => Ok((root, position)),
+            }
+        }
+        _ => Err(StateExportError::InvalidPath(format!(
+            "the position of a DAG transfer cursor must contain {DAG_TRANSFER_COMPONENT_LEN} \
+             bytes, found {}",
+            later.0.len()
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod authenticated_page_tests {
     use super::*;

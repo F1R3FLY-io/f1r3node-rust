@@ -76,3 +76,4 @@ mod kg_trait_v1;
 mod owner_transition_memo;
 #[cfg(unix)]
 mod transfer_import_seal;
+mod transfer_export_binding;
