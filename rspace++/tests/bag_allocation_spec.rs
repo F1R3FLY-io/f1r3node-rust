@@ -8,6 +8,8 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::cmp::Ordering;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Instant;
@@ -167,6 +169,45 @@ fn exact_algebra_does_not_allocate_one_path_per_endpoint() {
         );
         assert!(subbag_calls <= 32, "{cardinality}: {subbag_calls} > 32");
     }
+}
+
+fn ordinal_key_bag(cardinality: usize) -> Bag {
+    Bag::try_from_sorted_unique(|writer| {
+        let mut key = vec![0xA5; 72];
+        for ordinal in 0..cardinality {
+            key[64..].copy_from_slice(&(ordinal as u64).to_be_bytes());
+            writer.push(&key, Multiplicity::ONE)?;
+        }
+        Ok::<(), SortedUniqueBagError>(())
+    })
+    .expect("ascending ordinal keys form a sorted-unique stream")
+}
+
+#[test]
+fn comparing_and_hashing_bags_allocates_nothing_per_endpoint() {
+    let observe = |cardinality: usize| {
+        let left = ordinal_key_bag(cardinality);
+        let right = ordinal_key_bag(cardinality);
+        let ((equal, ordering, left_digest, right_digest), calls, bytes) = measure(|| {
+            let equal = black_box(&left) == black_box(&right);
+            let ordering = black_box(&left).cmp(black_box(&right));
+            let mut left_state = DefaultHasher::new();
+            black_box(&left).hash(&mut left_state);
+            let mut right_state = DefaultHasher::new();
+            black_box(&right).hash(&mut right_state);
+            (equal, ordering, left_state.finish(), right_state.finish())
+        });
+        assert!(equal);
+        assert_eq!(ordering, Ordering::Equal);
+        assert_eq!(left_digest, right_digest);
+        (calls, bytes)
+    };
+    let small = observe(64);
+    let large = observe(1024);
+    assert_eq!(
+        large, small,
+        "allocations grew with the endpoint count: (calls, bytes) at 1,024 endpoints, then at 64"
+    );
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

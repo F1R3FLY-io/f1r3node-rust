@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use multiset::HashMultiSet;
@@ -776,6 +777,167 @@ fn equality_order_hash_and_debug_share_one_canonical_entry_observation() {
     let rendered = format!("{left:?}");
     assert!(rendered.contains("distinct_len: 3"));
     assert!(rendered.contains("cardinality: 6"));
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ComparedEndpoint {
+    First,
+    Last,
+    Any(prop::sample::Index),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PairDifference {
+    None,
+    PathExtended(ComparedEndpoint, u8),
+    Removed(ComparedEndpoint),
+    Recounted(ComparedEndpoint, u64),
+}
+
+fn compared_endpoint_strategy() -> impl Strategy<Value = ComparedEndpoint> {
+    prop_oneof![
+        Just(ComparedEndpoint::First),
+        Just(ComparedEndpoint::Last),
+        any::<prop::sample::Index>().prop_map(ComparedEndpoint::Any),
+    ]
+}
+
+fn pair_difference_strategy() -> impl Strategy<Value = PairDifference> {
+    let recount = prop_oneof![Just(1u64), Just(u64::MAX), 1u64..=u64::MAX];
+    prop_oneof![
+        Just(PairDifference::None),
+        (compared_endpoint_strategy(), any::<u8>())
+            .prop_map(|(endpoint, byte)| PairDifference::PathExtended(endpoint, byte)),
+        compared_endpoint_strategy().prop_map(PairDifference::Removed),
+        (compared_endpoint_strategy(), recount)
+            .prop_map(|(endpoint, count)| PairDifference::Recounted(endpoint, count)),
+    ]
+}
+
+fn differ(entries: &BTreeMap<Vec<u8>, u64>, difference: PairDifference) -> BTreeMap<Vec<u8>, u64> {
+    let mut related = entries.clone();
+    let endpoint = match difference {
+        PairDifference::None => return related,
+        PairDifference::PathExtended(endpoint, _) |
+        PairDifference::Removed(endpoint) |
+        PairDifference::Recounted(endpoint, _) => endpoint,
+    };
+    let position = match (endpoint, entries.len()) {
+        (_, 0) => return related,
+        (ComparedEndpoint::First, _) => 0,
+        (ComparedEndpoint::Last, length) => length - 1,
+        (ComparedEndpoint::Any(index), length) => index.index(length),
+    };
+    let (path, count) = entries
+        .iter()
+        .nth(position)
+        .expect("the chosen position is below the entry count");
+    match difference {
+        PairDifference::None => {}
+        PairDifference::PathExtended(_, byte) => {
+            related.remove(path);
+            let mut extended = path.clone();
+            extended.push(byte);
+            *related.entry(extended).or_default() += count;
+        }
+        PairDifference::Removed(_) => {
+            related.remove(path);
+        }
+        PairDifference::Recounted(_, recount) => {
+            related.insert(path.clone(), recount);
+        }
+    }
+    related
+}
+
+fn fixed_key_digest(value: &Bag) -> u64 {
+    let mut state = DefaultHasher::new();
+    value.hash(&mut state);
+    state.finish()
+}
+
+fn owned_iterator_digest(value: &Bag) -> u64 {
+    let mut state = DefaultHasher::new();
+    value.distinct_len().hash(&mut state);
+    value
+        .iter()
+        .map(|(_, multiplicity)| u128::from(multiplicity.get()))
+        .sum::<u128>()
+        .hash(&mut state);
+    for entry in value.iter() {
+        entry.hash(&mut state);
+    }
+    state.finish()
+}
+
+struct OwnedIteratorEntries<'a>(&'a Bag);
+
+impl fmt::Debug for OwnedIteratorEntries<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_map().entries(self.0.iter()).finish()
+    }
+}
+
+struct OwnedIteratorBag<'a>(&'a Bag);
+
+impl fmt::Debug for OwnedIteratorBag<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Bag")
+            .field("distinct_len", &self.0.distinct_len())
+            .field("cardinality", &self.0.cardinality())
+            .field("cardinality_is_saturated", &self.0.cardinality_is_saturated())
+            .field("entries", &OwnedIteratorEntries(self.0))
+            .finish()
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, failure_persistence: None, ..ProptestConfig::default() })]
+    #[test]
+    fn borrowed_cursor_observers_agree_with_the_owned_iterator_reference(
+        entries in vec((vec(0u8..4, 0..6), 1u64..=u64::from(u32::MAX)), 0..24),
+        difference in pair_difference_strategy(),
+    ) {
+        let left_entries = entries.into_iter().collect::<BTreeMap<_, _>>();
+        let right_entries = differ(&left_entries, difference);
+        let left = from_oracle(&left_entries);
+        let mut right = Bag::new();
+        for (path, count) in right_entries.iter().rev() {
+            right
+                .insert_many(path, Multiplicity::new(*count).expect("a generated count is positive"))
+                .expect("a generated count fits the Bag");
+        }
+        for (first, second) in [(&left, &right), (&right, &left)] {
+            prop_assert_eq!(
+                first == second,
+                first.iter().eq(second.iter()),
+                "eq differs from the owned-iterator reference"
+            );
+            prop_assert_eq!(
+                first.cmp(second),
+                first.iter().cmp(second.iter()),
+                "cmp differs from the owned-iterator reference"
+            );
+        }
+        for value in [&left, &right] {
+            prop_assert_eq!(
+                fixed_key_digest(value),
+                owned_iterator_digest(value),
+                "the fixed-key digest differs from the owned-iterator reference"
+            );
+            prop_assert_eq!(
+                format!("{value:?}"),
+                format!("{:?}", OwnedIteratorBag(value)),
+                "Debug differs from the owned-iterator reference"
+            );
+            prop_assert_eq!(
+                format!("{value:#?}"),
+                format!("{:#?}", OwnedIteratorBag(value)),
+                "alternate Debug differs from the owned-iterator reference"
+            );
+        }
+    }
 }
 
 #[test]

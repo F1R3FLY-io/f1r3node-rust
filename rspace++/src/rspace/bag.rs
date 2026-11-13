@@ -1375,7 +1375,7 @@ impl PartialEq for Bag {
     fn eq(&self, other: &Self) -> bool {
         self.distinct_len == other.distinct_len &&
             self.exact_cardinality == other.exact_cardinality &&
-            self.iter().eq(other.iter())
+            self.cmp(other).is_eq()
     }
 }
 
@@ -1386,16 +1386,49 @@ impl PartialOrd for Bag {
 }
 
 impl Ord for Bag {
-    fn cmp(&self, other: &Self) -> Ordering { self.iter().cmp(other.iter()) }
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.with_read_cursor(|mut left| {
+            other.with_read_cursor(|mut right| {
+                let mut left_present = left.val().is_some() || left.to_next_val();
+                let mut right_present = right.val().is_some() || right.to_next_val();
+                loop {
+                    match (left_present, right_present) {
+                        (false, false) => return Ordering::Equal,
+                        (false, true) => return Ordering::Less,
+                        (true, false) => return Ordering::Greater,
+                        (true, true) => {}
+                    }
+                    let left_count = left.val().expect("visited Bag endpoint");
+                    let right_count = right.val().expect("visited Bag endpoint");
+                    let ordering = left
+                        .path()
+                        .cmp(right.path())
+                        .then_with(|| left_count.cmp(right_count));
+                    match ordering {
+                        Ordering::Equal => {
+                            left_present = left.to_next_val();
+                            right_present = right.to_next_val();
+                        }
+                        unequal => return unequal,
+                    }
+                }
+            })
+        })
+    }
 }
 
 impl Hash for Bag {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.distinct_len.hash(state);
         self.exact_cardinality.hash(state);
-        for entry in self.iter() {
-            entry.hash(state);
-        }
+        self.with_read_cursor(|mut cursor| {
+            let mut present = cursor.val().is_some() || cursor.to_next_val();
+            while present {
+                cursor.path().hash(state);
+                cursor.val().expect("visited Bag endpoint").hash(state);
+                present = cursor.to_next_val();
+            }
+        });
     }
 }
 
@@ -1403,7 +1436,15 @@ struct DebugEntries<'a>(&'a Bag);
 
 impl fmt::Debug for DebugEntries<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_map().entries(self.0.iter()).finish()
+        self.0.with_read_cursor(|mut cursor| {
+            let mut entries = f.debug_map();
+            let mut present = cursor.val().is_some() || cursor.to_next_val();
+            while present {
+                entries.entry(&cursor.path(), cursor.val().expect("visited Bag endpoint"));
+                present = cursor.to_next_val();
+            }
+            entries.finish()
+        })
     }
 }
 

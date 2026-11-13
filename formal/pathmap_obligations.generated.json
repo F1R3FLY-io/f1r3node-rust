@@ -447,7 +447,7 @@
       "checker": "scripts/check-bag-obligations.py",
       "family": "bag",
       "manifest": "formal/bag_obligations.generated.json",
-      "manifest_sha256": "8b5c60838832771fb1f3e6dda76b5322e759909f0df8272ca2f7741bb120bf96",
+      "manifest_sha256": "09672290ee706a047c249c76e91cb5de58fcf0f2e9fc9f282ef5b5a4b141f95c",
       "obligations": {
         "boundary": "Concrete witnesses exercise Bag behavior; they do not prove Rocq/Verus refinement or arbitrary inputs.",
         "delegated_tla": {
@@ -844,7 +844,7 @@
           "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
           "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",
           "rspace++/Cargo.toml": "d9a89c282bc6be737745d2bc0debec6058b64a0f4038e7ad3e65375c31fc9c54",
-          "rspace++/tests/bag_spec.rs": "64314c47797e9a9777af0888c52510ca1c17bc2286a0515f5824227af5a3728d"
+          "rspace++/tests/bag_spec.rs": "7f7ea238595b50838c844ddbe05857b5ea64b30431eef5e3cef74b4e6098de2d"
         },
         "verus_obligations": [
           {
