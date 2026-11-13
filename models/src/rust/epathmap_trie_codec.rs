@@ -2825,19 +2825,60 @@ pub fn canonical_map_value_body_at_ordered_keys<'a>(
     bytes: &'a [u8],
     ordered_keys: &[&[u8]],
 ) -> Result<Option<&'a [u8]>, TrieCodecError> {
-    let inspection = inspect_canonical_map_snapshot(bytes)?;
-    for requested in ordered_keys {
-        for (key, value_body) in inspection.keys.iter().zip(&inspection.value_bodies) {
-            let candidate = match key {
-                CanonicalSnapshotKey::Relative(range) => &bytes[range.clone()],
-                CanonicalSnapshotKey::Owned(key) => key.as_slice(),
-            };
-            if candidate == *requested {
-                return Ok(Some(&bytes[value_body.clone()]));
-            }
+    let prefix = parse_canonical_snapshot_prefix(bytes)?;
+    let mut value_cursor = prefix.value_table_start;
+    for _ in 0..prefix.value_count {
+        let len = read_len(bytes, &mut value_cursor, "map value length")?;
+        take(bytes, &mut value_cursor, len, "map value payload")?;
+    }
+    if value_cursor != bytes.len() {
+        return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
+    }
+    let mut trie = match prefix.mode {
+        EPathMapMode::Empty if !prefix.arena.is_empty() || prefix.value_count != 0 => {
+            return Err(TrieCodecError::new(
+                "neutral empty EPathMap carries trie or values",
+            ));
+        }
+        EPathMapMode::Empty => {
+            return Err(TrieCodecError::new(
+                "canonical-path map segment does not carry map-mode EPM1",
+            ));
+        }
+        EPathMapMode::Set | EPathMapMode::Map => CanonicalCompactTrieCursor::new(prefix.arena)?,
+    };
+    validate_canonical_act_summary(
+        prefix.mode,
+        prefix.value_count,
+        trie.is_empty(),
+        trie.value_summary(),
+    )?;
+    match prefix.mode {
+        EPathMapMode::Map => {}
+        EPathMapMode::Empty | EPathMapMode::Set => {
+            return Err(TrieCodecError::new(
+                "canonical-path map segment does not carry map-mode EPM1",
+            ));
         }
     }
-    Ok(None)
+    value_cursor = prefix.value_table_start;
+    let mut unmatched = ordered_keys.len();
+    let mut found = None;
+    while unmatched > 0 {
+        let Some(endpoint) = trie.next_value_endpoint() else {
+            break;
+        };
+        let len = read_len(bytes, &mut value_cursor, "map value length")
+            .expect("the value table was validated before the walk");
+        let body = take(bytes, &mut value_cursor, len, "map value payload")
+            .expect("the value table was validated before the walk");
+        let requested = &ordered_keys[..unmatched];
+        if let Some(precedence) = requested.iter().position(|key| *key == endpoint.path) {
+            unmatched = precedence;
+            found = Some(body);
+        }
+    }
+    Ok(found)
 }
 
 fn push_varint(out: &mut Vec<u8>, value: u64) { prost::encoding::encode_varint(value, out); }
@@ -3673,6 +3714,215 @@ mod tests {
                 .expect("canonical EPM1 snapshot"),
             None
         );
+    }
+
+    fn collected_map_value_body_at_ordered_keys<'a>(
+        bytes: &'a [u8],
+        ordered_keys: &[&[u8]],
+    ) -> Result<Option<&'a [u8]>, TrieCodecError> {
+        let inspection = inspect_canonical_map_snapshot(bytes)?;
+        for requested in ordered_keys {
+            for (key, value_body) in inspection.keys.iter().zip(&inspection.value_bodies) {
+                let candidate = match key {
+                    CanonicalSnapshotKey::Relative(range) => &bytes[range.clone()],
+                    CanonicalSnapshotKey::Owned(key) => key.as_slice(),
+                };
+                if candidate == *requested {
+                    return Ok(Some(&bytes[value_body.clone()]));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn lookup_image(entries: &std::collections::BTreeSet<Vec<u8>>, split_mask: &[bool]) -> Vec<u8> {
+        let mut map = PathMap::new();
+        let mut value = 0i64;
+        for (key, &split) in entries.iter().zip(split_mask) {
+            map.insert(key.as_slice(), int(value));
+            value += 1;
+            if split {
+                let mut split_key = Vec::with_capacity(key.len() + 1);
+                split_key.extend_from_slice(key);
+                split_key.push(0);
+                map.insert(split_key, int(value));
+                value += 1;
+            }
+        }
+        encode(&EPathMapRepr::Map(map))
+    }
+
+    fn oracle_preorder_keys(bytes: &[u8]) -> Vec<Vec<u8>> {
+        inspect_canonical_map_snapshot(bytes)
+            .expect("a generated map encodes a canonical map-mode EPM1 image")
+            .keys
+            .into_iter()
+            .map(|key| match key {
+                CanonicalSnapshotKey::Relative(range) => bytes[range].to_vec(),
+                CanonicalSnapshotKey::Owned(key) => key,
+            })
+            .collect()
+    }
+
+    fn body_location(
+        bytes: &[u8],
+        lookup: Result<Option<&[u8]>, TrieCodecError>,
+    ) -> Result<Option<Range<usize>>, TrieCodecError> {
+        lookup.map(|body| {
+            body.map(|body| {
+                let start = body
+                    .as_ptr()
+                    .addr()
+                    .checked_sub(bytes.as_ptr().addr())
+                    .expect("a looked-up value body is borrowed from the image");
+                start..start + body.len()
+            })
+        })
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn cursor_map_value_lookup_equals_the_collected_oracle(
+            entries in proptest::collection::btree_set(
+                proptest::collection::vec(0u8..3, 0..5),
+                1..12,
+            ),
+            split_mask in proptest::collection::vec(proptest::bool::ANY, 12),
+            requests in proptest::collection::vec(proptest::collection::vec(0u8..4, 0..6), 1..4),
+        ) {
+            let bytes = lookup_image(&entries, &split_mask);
+            let preorder = oracle_preorder_keys(&bytes);
+            let first = preorder.first().expect("a generated map has an entry").clone();
+            let last = preorder.last().expect("a generated map has an entry").clone();
+            let absent = vec![3u8];
+            let mut cases =
+                Vec::with_capacity(6 + preorder.iter().map(|key| 3 + key.len()).sum::<usize>());
+            cases.push(vec![first.clone()]);
+            cases.push(vec![last.clone()]);
+            cases.push(vec![absent.clone()]);
+            cases.push(vec![absent, last.clone(), first.clone()]);
+            cases.push(vec![last, first]);
+            cases.push(requests);
+            for key in &preorder {
+                let mut split = Vec::with_capacity(key.len() + 1);
+                split.extend_from_slice(key);
+                split.push(0);
+                cases.push(vec![key.clone()]);
+                cases.push(vec![split.clone()]);
+                cases.push(vec![key.clone(), split]);
+                cases.extend((0..key.len()).map(|end| vec![key[..end].to_vec()]));
+            }
+            for case in &cases {
+                let ordered_keys: Vec<&[u8]> = case.iter().map(Vec::as_slice).collect();
+                let looked_up = canonical_map_value_body_at_ordered_keys(&bytes, &ordered_keys);
+                let collected = collected_map_value_body_at_ordered_keys(&bytes, &ordered_keys);
+                proptest::prop_assert_eq!(
+                    body_location(&bytes, looked_up),
+                    body_location(&bytes, collected),
+                    "ordered keys {:?}",
+                    ordered_keys
+                );
+            }
+        }
+
+        #[test]
+        fn cursor_map_value_lookup_returns_the_oracle_result_on_mutated_images(
+            entries in proptest::collection::btree_set(
+                proptest::collection::vec(0u8..3, 0..5),
+                1..12,
+            ),
+            split_mask in proptest::collection::vec(proptest::bool::ANY, 12),
+            mutation in 0u8..4,
+            position in proptest::num::usize::ANY,
+            byte in proptest::num::u8::ANY,
+        ) {
+            let bytes = lookup_image(&entries, &split_mask);
+            let preorder = oracle_preorder_keys(&bytes);
+            let mut image = bytes.clone();
+            match mutation {
+                0 => image.truncate(position % bytes.len()),
+                1 => image[position % bytes.len()] ^= byte.max(1),
+                2 => image.push(byte),
+                _ => image[EPM_MAGIC.len() + 1] = byte % 4,
+            }
+            let first = preorder.first().expect("a generated map has an entry").as_slice();
+            let last = preorder.last().expect("a generated map has an entry").as_slice();
+            let absent: &[u8] = &[3];
+            let mut cases: Vec<Vec<&[u8]>> = Vec::with_capacity(4 + preorder.len());
+            cases.push(vec![first]);
+            cases.push(vec![last]);
+            cases.push(vec![absent]);
+            cases.push(vec![absent, last, first]);
+            cases.extend(preorder.iter().map(|key| vec![key.as_slice()]));
+            for ordered_keys in &cases {
+                let looked_up = canonical_map_value_body_at_ordered_keys(&image, ordered_keys);
+                let collected = collected_map_value_body_at_ordered_keys(&image, ordered_keys);
+                proptest::prop_assert_eq!(
+                    body_location(&image, looked_up),
+                    body_location(&image, collected),
+                    "mutation {} at {} with {} on ordered keys {:?}",
+                    mutation,
+                    position,
+                    byte,
+                    ordered_keys
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn map_value_lookup_allocates_only_the_validating_cursor_walk() {
+        let mut map = PathMap::new();
+        for index in 0..4096i64 {
+            map.insert(format!("same/prefix/{index:04}"), int(index));
+        }
+        let bytes = encode(&EPathMapRepr::Map(map));
+        let preorder = oracle_preorder_keys(&bytes);
+        assert_eq!(preorder.len(), 4096);
+        let arena = parse_canonical_snapshot_prefix(&bytes)
+            .expect("canonical EPM1 snapshot")
+            .arena;
+        let walk = |calls: usize| {
+            super::payload_mapping_tests::capture_allocations(|| {
+                let mut trie = CanonicalCompactTrieCursor::new(arena).expect("canonical ACT image");
+                for _ in 0..calls {
+                    trie.next_value_endpoint();
+                }
+            })
+            .1
+        };
+        let first: &[u8] = b"same/prefix/0000";
+        let last: &[u8] = b"same/prefix/4095";
+        let absent: &[u8] = b"same/prefix/4096";
+        let cases: [(&[&[u8]], Option<i64>); 4] = [
+            (&[absent], None),
+            (&[first], Some(0)),
+            (&[last], Some(4095)),
+            (&[absent, last, first], Some(4095)),
+        ];
+        for (ordered_keys, expected) in cases {
+            let first_key = ordered_keys[0];
+            let visited = match preorder.iter().position(|key| key.as_slice() == first_key) {
+                Some(ordinal) => ordinal + 1,
+                None => preorder.len() + 1,
+            };
+            let (found, counts) = super::payload_mapping_tests::capture_allocations(|| {
+                canonical_map_value_body_at_ordered_keys(&bytes, ordered_keys)
+            });
+            assert_eq!(
+                found.expect("canonical EPM1 snapshot"),
+                expected
+                    .map(|value| protobuf_encoder::encode_to_vec(&int(value)))
+                    .as_deref()
+            );
+            assert_eq!(
+                counts,
+                walk(visited),
+                "the lookup allocated beyond its validating cursor walk"
+            );
+        }
     }
 
     #[test]

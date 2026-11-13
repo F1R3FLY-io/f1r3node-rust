@@ -907,7 +907,7 @@
       "checker": "scripts/check-epathmap-core-obligations.py",
       "family": "epathmap_core",
       "manifest": "formal/epathmap_core_obligations.generated.json",
-      "manifest_sha256": "a930d037c7430d78c377723ab718b468dc30d28ef89b41ec2d0c2a0dfbb5d0ac",
+      "manifest_sha256": "8a0193cc555b630e5367841da50e3b5b091f1b45ac2aa3199085fbf19807862d",
       "obligations": {
         "boundary": "Concrete witnesses exercise selected EPathMap operations and EPM1 map snapshot round trips. The generic PDA and Verus worklist equivalence obligations are proof-only; no direct executable refinement of arbitrary finite trees is claimed.",
         "delegated_epm1_positional_tla": {
@@ -1791,7 +1791,7 @@
         ],
         "scope": "EPathMap algebra, EPM1 core framing, and generic stack-safe PDA",
         "source_sha256": {
-          "formal/epm1_positional_obligations.generated.json": "04ea95881bde6369ac1e985984b1e16620a3110f21ad1bea0f550215da2b0681",
+          "formal/epm1_positional_obligations.generated.json": "04091d6103ed686132cf48e590417e54d6dcc06b261e59582341d25cbbd87cbf",
           "formal/rocq/stack_safe_pda/theories/EPM1.v": "7452544b1e0000a7f41b1808888adfa8f003f29bf2fbb680028f253d0b6bef41",
           "formal/rocq/stack_safe_pda/theories/EPathMap.v": "d9bdce288155a9b5c6d57fec35bd9145c6896c6812654d38a447d5f976cc3794",
           "formal/rocq/stack_safe_pda/theories/StackSafePDA.v": "f4f1f04ce2fa4b100e3d7f2657a89658a9bce11fd6023888e694268db7509b58",
@@ -1882,7 +1882,7 @@
       "checker": "scripts/check-epm1-positional-obligations.py",
       "family": "epm1_positional",
       "manifest": "formal/epm1_positional_obligations.generated.json",
-      "manifest_sha256": "04ea95881bde6369ac1e985984b1e16620a3110f21ad1bea0f550215da2b0681",
+      "manifest_sha256": "04091d6103ed686132cf48e590417e54d6dcc06b261e59582341d25cbbd87cbf",
       "obligations": {
         "causal_mutants": [
           {
@@ -2036,7 +2036,7 @@
           "formal/tlaplus/stack_safe_pda/Epm1PositionalSkipEndpointMutant.cfg": "0a8c7b89f239be5ee137f9cd6d259c880d60e9d3a99d770289853fc220af2f7a",
           "formal/tlaplus/stack_safe_pda/Epm1PositionalWrongEndpointMutant.cfg": "02b1ecc394cdf5504a4b039774590ec4b780bfae8dd12ef7f1b4c67378c4af33",
           "formal/verus/epm1_positional_association.rs": "72130ff0aae6160e68594fe804a15d219d4bf18b9aa7e38d6c24cadb7ecb374c",
-          "models/src/rust/epathmap_trie_codec.rs": "5e8b61d68ef7ac07c5a8a28fbcbed4faf51330052dca9b39a6bf458e219033d5",
+          "models/src/rust/epathmap_trie_codec.rs": "e2cfbd574381c723577e98d076a18933faf27b78a5b4c13eb49476c6f5d86e81",
           "models/src/rust/mod.rs": "9da24730ef273c25720e873e2b0287379d3d94c802aba26bf437cbecc1eb07d2",
           "models/tests/formal_equivalence_manifest.rs": "2047e80ef73ac7ead26df89f8a7f09c2213ea0bbb92fc2e34167c53ad714ca58"
         },
