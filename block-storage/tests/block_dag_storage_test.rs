@@ -160,22 +160,33 @@ fn test_lookup_elements_result(
         latest_block_number,
     } = lookup_result;
 
-    let real_latest_messages =
-        block_elements
+    let expected_metadata = |index: usize| {
+        let element = &block_elements[index];
+        let sibling = block_elements[..index]
             .iter()
-            .fold(HashMap::new(), |mut acc, block_element| {
-                if !block_element.sender.is_empty() {
-                    acc.insert(
-                        block_element.sender.clone(),
-                        BlockMetadata::from_block(block_element, None, None, None),
-                    );
-                }
-                acc
-            });
+            .filter(|earlier| {
+                !element.sender.is_empty()
+                    && earlier.sender == element.sender
+                    && earlier.seq_num == element.seq_num
+                    && earlier.block_hash != element.block_hash
+            })
+            .map(|earlier| earlier.block_hash.clone())
+            .min();
+        BlockMetadata::from_block(element, sibling, None, None)
+    };
 
-    list.iter()
-        .zip(block_elements.iter())
-        .for_each(|(block_lookup, block_element)| {
+    let real_latest_messages = block_elements.iter().enumerate().fold(
+        HashMap::new(),
+        |mut acc, (index, block_element)| {
+            if !block_element.sender.is_empty() {
+                acc.insert(block_element.sender.clone(), expected_metadata(index));
+            }
+            acc
+        },
+    );
+
+    list.iter().zip(block_elements.iter()).enumerate().for_each(
+        |(index, (block_lookup, block_element))| {
             let BlockLookup {
                 block_metadata,
                 latest_message_hash,
@@ -183,10 +194,7 @@ fn test_lookup_elements_result(
                 children,
                 contains,
             } = block_lookup;
-            assert_eq!(
-                *block_metadata,
-                Some(BlockMetadata::from_block(block_element, None, None, None))
-            );
+            assert_eq!(*block_metadata, Some(expected_metadata(index)));
 
             assert_eq!(
                 *latest_message_hash,
@@ -220,7 +228,8 @@ fn test_lookup_elements_result(
 
             assert_eq!(children_set, Some(expected_children));
             assert!(*contains);
-        });
+        },
+    );
 
     let filtered_latest_message_hashes: HashMap<_, _> = latest_message_hashes
         .iter()
@@ -257,7 +266,9 @@ fn test_lookup_elements_result(
 
     let real_topo_sort = normalize(&[block_elements
         .iter()
-        .map(|b| b.block_hash.clone())
+        .enumerate()
+        .filter(|(index, _)| !expected_metadata(*index).is_invalid())
+        .map(|(_, b)| b.block_hash.clone())
         .collect::<Vec<_>>()]);
 
     assert_eq!(topo_sort.len(), real_topo_sort.len());
@@ -2060,6 +2071,34 @@ async fn an_equivocation_insert_is_found_by_its_sender() {
         .map(|metadata| metadata.block_hash)
         .collect();
     assert_eq!(held, vec![invalid_block.block_hash.clone()]);
+}
+
+#[tokio::test]
+async fn a_held_pair_is_recorded_whatever_path_delivered_its_second_block() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    for mode in [InsertMode::Normal, InsertMode::SettledHistory] {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+        let first = chain_block(1, vec![genesis.block_hash.clone()]);
+        let mut second = first.clone();
+        second.block_hash = BlockHash::from(vec![0xAB; 32]);
+        second.extra_bytes = vec![1].into();
+        dag_storage.insert(&first, InsertMode::Normal).unwrap();
+        dag_storage.insert(&second, mode.clone()).unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        let recorded: Vec<_> = dag
+            .equivocations_of(&first.sender)
+            .unwrap()
+            .into_iter()
+            .map(|metadata| (metadata.block_hash, metadata.equivocates))
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![(second.block_hash.clone(), Some(first.block_hash.clone()))],
+            "{mode:?}"
+        );
+    }
 }
 
 #[tokio::test]

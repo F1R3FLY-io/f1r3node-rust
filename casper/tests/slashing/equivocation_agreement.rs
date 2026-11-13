@@ -532,3 +532,61 @@ async fn siblings_in_different_epochs_are_slashed_alike_whichever_was_flagged() 
         "v2 judges v1's slash: {v2_judges_v1:?}; v1 judges v2's slash: {v1_judges_v2:?}"
     );
 }
+
+/// One node validates the second block of a pair; another receives it as
+/// settled history below its restore anchor. A block whose justifications
+/// show both blocks while the sender is bonded owes the slash on both.
+#[tokio::test]
+async fn nodes_holding_a_pair_by_different_paths_judge_its_neglect_alike() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    use super::detector_totality_helpers::{
+        assert_neglected, block, justification, DetectorFixture,
+    };
+
+    let mut verdicts = Vec::new();
+    for second_by_validation in [true, false] {
+        let node = DetectorFixture::new().await;
+        let bonded = node.validators.clone();
+        let offender = bonded[1].clone();
+        let first = block(20, offender.clone(), 1, vec![], bonded.clone());
+        let second = block(30, offender.clone(), 1, vec![], bonded.clone());
+        let observed = block(
+            40,
+            bonded[2].clone(),
+            1,
+            vec![justification(offender.clone(), second.block_hash.clone())],
+            bonded.clone(),
+        );
+        node.add_block(&first);
+        node.block_store
+            .put_block_message(&second)
+            .expect("store second");
+        let mode = if second_by_validation {
+            InsertMode::Equivocation {
+                sibling: first.block_hash.clone(),
+            }
+        } else {
+            InsertMode::SettledHistory
+        };
+        node.dag_storage
+            .insert(&second, mode)
+            .expect("insert second");
+        node.add_block(&observed);
+
+        let judged = block(
+            50,
+            bonded[3].clone(),
+            1,
+            vec![
+                justification(offender.clone(), first.block_hash.clone()),
+                justification(bonded[2].clone(), observed.block_hash.clone()),
+            ],
+            bonded,
+        );
+        verdicts.push(node.check(&judged).await);
+    }
+    for verdict in verdicts {
+        assert_neglected(verdict);
+    }
+}
