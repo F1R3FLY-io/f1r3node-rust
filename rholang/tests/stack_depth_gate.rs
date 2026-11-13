@@ -70,6 +70,12 @@ use std::collections::BTreeMap;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, Expr, New, Par, Send};
 use models::rust::par_construction::ParConstruction;
+use models::rust::rholang::match_region_path::{
+    AdmittedParRegionClass, CanonicalRhoPathRegionCursor, CanonicalRhoPathRegionEvent,
+    CanonicalRhoRegionScalar,
+};
+use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent, RhoScalarRef};
+use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::rholang::par_children::{dismantle, dismantle_all};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::score_tree::{ScoreAtom, ScoredTerm, Tree};
@@ -797,6 +803,8 @@ fn subject(name: &str) -> fn(usize) {
         "pretty" => pretty_body,
         "pretty_nested_set" => pretty_nested_set_body,
         "pretty_nested_map" => pretty_nested_map_body,
+        "rho_path_cursor" => rho_path_cursor_body,
+        "rho_path_region_cursor" => rho_path_region_cursor_body,
         "clone" => clone_body,
         // ★★ The two stage-F-4 ladders that `clone` alone cannot stand in for.
         // `clone_send_chain` nests through a DIFFERENT `Vec` field so that a
@@ -858,6 +866,8 @@ fn subject(name: &str) -> fn(usize) {
         "sort_wide" => sort_wide_body,
         "score_cmp_wide" => score_cmp_wide_body,
         "pretty_wide" => pretty_wide_body,
+        "rho_path_cursor_wide" => rho_path_cursor_wide_body,
+        "rho_path_region_cursor_wide" => rho_path_region_cursor_wide_body,
         "free_check" => free_check_body,
         "normalize_wide" => normalize_wide_body,
         "spatial_epathmap_set_wide" => spatial_epathmap_set_wide_body,
@@ -1189,6 +1199,8 @@ const CONVERTED_DEPTH: &[&str] = &[
     "spatial_binding",
     "spatial_concrete_binders",
     "spatial_epathmap_map_depth",
+    "rho_path_cursor",
+    "rho_path_region_cursor",
 ];
 
 /// Width-axis traversals converted to a heap-bounded form. Same rule.
@@ -1201,6 +1213,8 @@ const CONVERTED_WIDTH: &[&str] = &[
     "normalize_wide",  // Stage G — the same driver, collection-element axis
     "spatial_epathmap_set_wide",
     "spatial_epathmap_map_wide",
+    "rho_path_cursor_wide",
+    "rho_path_region_cursor_wide",
 ];
 
 /// No production depth traversal remains under a slope ceiling. The tripwire
@@ -2237,6 +2251,164 @@ fn pretty_wide_body(width: usize) {
     assert_carries(
         "the PRINTED sibling count",
         s.matches(", ").count() + 1,
+        width,
+    );
+    dismantle(term);
+}
+
+#[derive(Default)]
+struct CursorWalk {
+    elist_nodes: usize,
+    par_nodes: usize,
+    par_bag_tokens: usize,
+    gint_leaves: usize,
+}
+
+fn rho_path_cursor_walk(root: ParCursor<'_>) -> CursorWalk {
+    let mut walk = CursorWalk::default();
+    for event in RhoPathCursor::new(root) {
+        match event {
+            RhoPathEvent::EnterNode { program, .. } => match program.type_name {
+                "EList" => walk.elist_nodes += 1,
+                "Par" => walk.par_nodes += 1,
+                _ => {}
+            },
+            RhoPathEvent::ParBag(_) => walk.par_bag_tokens += 1,
+            RhoPathEvent::Scalar(RhoScalarRef::I64(_)) => walk.gint_leaves += 1,
+            _ => {}
+        }
+    }
+    walk
+}
+
+fn rho_path_region_cursor_walk(root: &Par) -> CursorWalk {
+    let mut walk = CursorWalk::default();
+    root.visit_encoded::<Expr>(|component| {
+        let mut pending = vec![CanonicalRhoPathRegionCursor::admitted_expr(component)];
+        while let Some(cursor) = pending.pop() {
+            walk_region_cursor(cursor, &mut walk, &mut pending);
+        }
+    });
+    walk
+}
+
+fn walk_region_cursor<'a>(
+    cursor: CanonicalRhoPathRegionCursor<'a>,
+    walk: &mut CursorWalk,
+    pending: &mut Vec<CanonicalRhoPathRegionCursor<'a>>,
+) {
+    for event in cursor {
+        match event.expect("an admitted canonical region walks to its end") {
+            CanonicalRhoPathRegionEvent::EnterNode(program) => match program.type_name {
+                "EList" => walk.elist_nodes += 1,
+                "Par" => walk.par_nodes += 1,
+                _ => {}
+            },
+            CanonicalRhoPathRegionEvent::ParBag(region) => {
+                walk.par_bag_tokens += 1;
+                match region.classify() {
+                    AdmittedParRegionClass::SoleExpr(expr) => {
+                        pending.push(CanonicalRhoPathRegionCursor::admitted_nested_expr(expr))
+                    }
+                    other => panic!(
+                        "VACUOUS PROBE: a nested Par of the fixture is not a sole Expr that the \
+                         region walk can descend into: {other:?}"
+                    ),
+                }
+            }
+            CanonicalRhoPathRegionEvent::Scalar(CanonicalRhoRegionScalar::I64(_)) => {
+                walk.gint_leaves += 1
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rho_path_cursor_body(depth: usize) {
+    let term = nested_list(depth);
+    assert_carries(
+        "the rho_path_cursor input's nesting",
+        par_depth(&term),
+        depth,
+    );
+    let walk = rho_path_cursor_walk(ParCursor::from(&term));
+    assert!(
+        walk.par_nodes == 1 && walk.par_bag_tokens == 1 && walk.elist_nodes == 0,
+        "VACUOUS PROBE: the RhoPathCursor walk of the term did not end at its one opaque ParBag \
+         token: {} Par nodes, {} ParBag tokens, {} EList nodes",
+        walk.par_nodes,
+        walk.par_bag_tokens,
+        walk.elist_nodes
+    );
+    dismantle(term);
+}
+
+fn rho_path_region_cursor_body(depth: usize) {
+    let term = nested_list(depth);
+    assert_carries(
+        "the rho_path_region_cursor input's nesting",
+        par_depth(&term),
+        depth,
+    );
+    let walk = rho_path_region_cursor_walk(&term);
+    assert_carries(
+        "the EList nodes the region walk enters",
+        walk.elist_nodes,
+        depth,
+    );
+    assert_carries(
+        "the nested Par tokens the region walk descends through",
+        walk.par_bag_tokens,
+        depth,
+    );
+    assert_carries(
+        "the GInt leaves the region walk reaches",
+        walk.gint_leaves,
+        1,
+    );
+    dismantle(term);
+}
+
+fn rho_path_cursor_wide_body(width: usize) {
+    let expr = wide_list_expr(width);
+    let elements = match &expr.expr_instance {
+        Some(ExprInstance::EListBody(list)) => list.ps.len(),
+        _ => 0,
+    };
+    assert_carries(
+        "the rho_path_cursor_wide input's sibling count",
+        elements,
+        width,
+    );
+    let walk = rho_path_cursor_walk(ParCursor::from(&expr));
+    assert_carries(
+        "the element Pars the RhoPathCursor walk enters",
+        walk.par_nodes,
+        width,
+    );
+    assert_carries(
+        "the ParBag tokens of the RhoPathCursor walk",
+        walk.par_bag_tokens,
+        width,
+    );
+}
+
+fn rho_path_region_cursor_wide_body(width: usize) {
+    let term = wide_list(width);
+    assert_carries(
+        "the rho_path_region_cursor_wide input's sibling count",
+        par_width(&term),
+        width,
+    );
+    let walk = rho_path_region_cursor_walk(&term);
+    assert_carries(
+        "the nested Par tokens the region walk descends through",
+        walk.par_bag_tokens,
+        width,
+    );
+    assert_carries(
+        "the GInt leaves the region walk reaches",
+        walk.gint_leaves,
         width,
     );
     dismantle(term);
