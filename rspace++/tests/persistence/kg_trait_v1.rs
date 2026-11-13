@@ -277,6 +277,14 @@ where G: rho_path::RhoPathGrammarDecode<C> {
     G::prefix_legacy_identity(datum_prefix)
 }
 
+fn channel_image_bytes<C: rho_path::RhoPathChannelImage>(channel: &C) -> Vec<u8> {
+    C::rho_path_channel_image(channel)
+}
+
+fn channel_from_image<C: rho_path::RhoPathChannelImage>(image: &[u8]) -> Result<C, String> {
+    C::from_rho_path_channel_image(image)
+}
+
 fn field_bytes() -> impl Strategy<Value = Vec<u8>> {
     proptest::collection::vec(
         prop_oneof![Just(0_u8), Just(1_u8), Just(0xFF_u8), any::<u8>()],
@@ -938,4 +946,48 @@ fn v1_join_record_path_is_the_raw_concatenation() {
         "the V1 join record path is the path at which the record index stores a join",
     );
     assert_eq!(join_store.count_path(&path), 1);
+}
+
+#[test]
+fn string_channel_image_round_trips_and_rejects_invalid_utf8() {
+    let texts = [
+        "",
+        "a",
+        "channel",
+        "nul\0inside",
+        "\u{e9}",
+        "\u{20ac}",
+        "\u{1f600}",
+        "mixed \u{e9}\u{20ac}\u{1f600}\u{10ffff} text",
+    ];
+    for text in texts {
+        let channel = text.to_owned();
+        let image = channel_image_bytes(&channel);
+        assert_eq!(image, text.as_bytes(), "the image of a String is its UTF-8 bytes");
+        assert_eq!(
+            channel_from_image::<String>(&image),
+            Ok(channel),
+            "a String is rebuilt from its image",
+        );
+    }
+
+    let malformed_images: [&[u8]; 9] = [
+        &[0xFF],
+        &[0x80],
+        &[0xC3],
+        &[0xC3, 0x28],
+        &[0xC0, 0x80],
+        &[0xE2, 0x82],
+        &[0xED, 0xA0, 0x80],
+        &[0xF4, 0x90, 0x80, 0x80],
+        &[b'o', b'k', 0xFF, b'o', b'k'],
+    ];
+    for image in malformed_images {
+        let utf8_error = std::str::from_utf8(image).expect_err("the fixture is not valid UTF-8");
+        assert_eq!(
+            channel_from_image::<String>(image),
+            Err(format!("a String channel image is not valid UTF-8: {utf8_error}")),
+            "the image {image:?} is refused with the UTF-8 error",
+        );
+    }
 }

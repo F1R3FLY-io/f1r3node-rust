@@ -1339,6 +1339,11 @@ pub trait RhoPathGrammarDecode<C>: RhoPathGrammar<C> {
     fn prefix_legacy_identity(datum_prefix: &[u8]) -> Result<Vec<u8>, RhoPathChannelError>;
 }
 
+pub trait RhoPathChannelImage: Sized {
+    fn rho_path_channel_image(&self) -> Vec<u8>;
+    fn from_rho_path_channel_image(image: &[u8]) -> Result<Self, String>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RhoPathChannelError {
     Path(RhoPathError),
@@ -1359,6 +1364,17 @@ impl fmt::Display for RhoPathChannelError {
 }
 
 impl std::error::Error for RhoPathChannelError {}
+
+impl RhoPathChannelImage for String {
+    fn rho_path_channel_image(&self) -> Vec<u8> { self.as_bytes().to_vec() }
+
+    fn from_rho_path_channel_image(image: &[u8]) -> Result<Self, String> {
+        match std::str::from_utf8(image) {
+            Ok(text) => Ok(text.to_owned()),
+            Err(error) => Err(format!("a String channel image is not valid UTF-8: {error}")),
+        }
+    }
+}
 
 impl RhoPathStreamValidate for RhoPathStreamValidatorV1 {
     fn push(&mut self, chunk: &[u8]) -> Result<(), RhoPathError> {

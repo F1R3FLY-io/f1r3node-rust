@@ -77,6 +77,21 @@ impl RhoPathEncode for Par {
     fn rho_path_identity(&self) -> Vec<u8> { self.stable_hash_bytes() }
 }
 
+impl rspace_plus_plus::rspace::rho_path::RhoPathChannelImage for Par {
+    fn rho_path_channel_image(&self) -> Vec<u8> {
+        ChannelImageV2::from_par(self)
+            .expect("a resident Par has a canonical RCI2 channel image")
+            .as_bytes()
+            .to_vec()
+    }
+
+    fn from_rho_path_channel_image(image: &[u8]) -> Result<Self, String> {
+        ChannelImageV2::try_from_bytes(image)
+            .and_then(|admitted| admitted.decode_par())
+            .map_err(|error| error.to_string())
+    }
+}
+
 impl RhoPathEncode for ListParWithRandom {
     fn rho_path_structure(&self) -> Vec<u8> {
         let mut output = StructuralSequenceEncoder::with_capacity(self.pars.len());
