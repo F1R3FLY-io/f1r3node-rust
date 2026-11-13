@@ -8,6 +8,8 @@ use vstd::prelude::*;
 use crate::{
     admission_observable_spec as observable, rpb3_admission_cursor as admission,
     rpb3_canonical_path_driver_product_integration as path_driver,
+    rpb3_epathmap_event_refinement as epm, rpb3_epm_live_handoff as handoff,
+    rpb3_epm_unwind_event_lift as unwind, rpb3_epm_unwind_product_lift as unwind_product,
     rpb3_integrated_dispatcher as dispatcher, LiveRuntimeProductAction, LiveRuntimeProductState,
 };
 
@@ -2061,6 +2063,221 @@ pub proof fn lemma_score_then_accept_composes(
         (#[trigger] after[index]) == before[index] by {
         assert(after[index] == middle[index]);
         assert(middle[index] == before[index]);
+    }
+}
+
+pub proof fn lemma_epm_continue_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveEpmContinue,
+    ensures stutter_step(before, after),
+{
+    hide(crate::live_runtime_product_wf);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::EpmContinue { event }, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && unwind_product::live_runtime_internal_epm_unwind_step(product, next, event));
+            let old = product.source.product;
+            let new = next.source.product;
+            assert(crate::product_epm_continue_step(old, new, event));
+            let prior = crate::product_linked_top(old).unwrap();
+            let linked = crate::product_linked_top(new).unwrap();
+            assert(epm::linked_epm_continue(prior, linked, event));
+            let frames = old.bridge.admission.frames;
+            assert(new.bridge.admission.frames == frames.update(
+                frames.len() - 1,
+                epm::epm_advanced_admission_cursor(
+                    frames.last(), linked.epm.cursor.value_table_offset,
+                ),
+            ));
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_epm_end_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveEpmEnd,
+    ensures stutter_step(before, after),
+{
+    hide(crate::live_runtime_product_wf);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::EpmEnd { observed }, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && crate::live_runtime_product_epm_end_source_step(product, next, observed));
+            crate::live_runtime_product_epm_end_source_preserves_wf(product, next, observed);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_act_forward_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is ActForward,
+    ensures stutter_step(before, after),
+{
+    hide(dispatcher::integrated_act_forward_guard);
+    match action {
+        dispatcher::IntegratedAction::ActForward { width, commit, pending, state_id, .. } => {
+            let product = before->product;
+            let next = dispatcher::integrated_act_forward_after(
+                product, width, commit, pending, state_id,
+            );
+            assert(before is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && after == dispatcher::IntegratedState::Active { product: next });
+            let prior = product.source.product;
+            let frame = dispatcher::integrated_act_forward_frame(
+                prior, width, commit, pending, state_id,
+            );
+            assert(next.source.product
+                == dispatcher::integrated_act_forward_product(prior, frame));
+            let frames = prior.bridge.admission.frames;
+            assert(next.source.product.bridge.admission.frames == frames.update(
+                frames.len() - 1,
+                epm::epm_advanced_admission_cursor(
+                    frames.last(), frame.cursor.value_table_offset,
+                ),
+            ));
+            assert(next.source.product.bridge.transcript == prior.bridge.transcript);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_act_unwind_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is ActUnwind,
+    ensures stutter_step(before, after),
+{
+    hide(crate::live_runtime_product_wf);
+    match action {
+        dispatcher::IntegratedAction::ActUnwind { run, prefix, start, width, unwind_facts } => {
+            let product = before->product;
+            let next = dispatcher::integrated_act_unwind_after(product, run, prefix, width);
+            assert(before is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && dispatcher::integrated_act_unwind_guard(
+                    product, run, prefix, start, width, unwind_facts,
+                )
+                && after == dispatcher::IntegratedState::Active { product: next });
+            let prior = product.source.product;
+            let source = dispatcher::integrated_act_unwind_source(product);
+            let frames = prior.bridge.admission.frames;
+            assert(source.admission == prior.bridge.admission);
+            unwind_product::unwind_product_virtual_matches_linked_source(
+                prior, source, run, prefix, start, width, unwind_facts, width,
+            );
+            if width == 0 {
+                assert(next.source == product.source);
+            } else {
+                let view = unwind_product::unwind_product_virtual_state(
+                    prior, source, run, prefix, width,
+                );
+                assert(next.source.product == view);
+                assert(view.bridge.admission
+                    == unwind::linked_unwind_virtual_admission(source, width));
+                assert(view.bridge.admission.frames == frames.update(
+                    frames.len() - 1,
+                    epm::epm_advanced_admission_cursor(
+                        frames.last(), source.epm.cursor.value_table_offset,
+                    ),
+                ));
+            }
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_epm_handoff_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is EpmHandoff,
+    ensures stutter_step(before, after),
+{
+    hide(crate::live_runtime_product_wf);
+    match action {
+        dispatcher::IntegratedAction::EpmHandoff { backing, plan, validated } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && handoff::live_runtime_epm_handoff_step(
+                    product, next, backing, plan, validated,
+                ));
+            reveal(handoff::live_runtime_epm_handoff_step);
+            let old = product.source.product;
+            let new = next.source.product;
+            assert(crate::product_epm_handoff_step(old, new, backing, plan, validated));
+            assert(new.bridge.admission == old.bridge.admission);
+            assert(new.bridge.transcript == old.bridge.transcript);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_internal_step_preserves_projection(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        segment_internal_arm(action_arm(action)),
+    ensures
+        stutter_step(before, after),
+        project(after) == project(before),
+{
+    hide(dispatcher::integrated_step);
+    let arm = action_arm(action);
+    if arm is LiveEpmContinue {
+        lemma_epm_continue_extract(before, after, action);
+    } else if arm is LiveEpmEnd {
+        lemma_epm_end_extract(before, after, action);
+    } else if arm is ActForward {
+        lemma_act_forward_extract(before, after, action);
+    } else if arm is ActUnwind {
+        lemma_act_unwind_extract(before, after, action);
+    } else if arm is EpmHandoff {
+        lemma_epm_handoff_extract(before, after, action);
+    }
+    assert(stutter_step(before, after));
+    lemma_stutter_projects_equal(state_frames(before), state_frames(after));
+    assert(before is Active) by {
+        reveal(dispatcher::integrated_step);
     }
 }
 
