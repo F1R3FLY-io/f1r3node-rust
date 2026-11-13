@@ -1776,16 +1776,14 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
     let deploy_data = request.data.clone();
 
     // Create signed deploy
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| DeployValidationError {
-            message: format!("Invalid signature: {e}"),
-        })?
-        .ok_or_else(|| {
-            DeployValidationError {
-                message: "Invalid signature or public key".to_string(),
-            }
-            .into()
-        })
+    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg).ok_or_else(|| {
+        DeployValidationError {
+            message:
+                "Invalid signature: the signature does not verify for this deployer and deploy data"
+                    .to_string(),
+        }
+        .into()
+    })
 }
 
 // Conversion functions for protobuf generated types

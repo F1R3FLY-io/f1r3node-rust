@@ -57,10 +57,6 @@ Deploy conversion returns `400 illegal_argument` for invalid amounts, hexadecima
 
 Invalid deploy parameters return `422 invalid_request_body` during JSON deserialization. This includes invalid parameter names, such as `invalid:name`, and invalid parameter values.
 
-Programmatic requests that bypass JSON deserialization retain `DeployValidationError` for invalid parameters.
-
-Maximum charge overflow also returns `400 illegal_argument`. Validation completes before deploy admission, so rejected deploys cannot enter the pending queue.
-
 ### Read-only-only endpoints on validators
 
 The following endpoints run exploratory deploys internally and are only available on read-only nodes. On validator nodes they return `400 readonly_node_required`:
@@ -326,7 +322,7 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed JSON, invalid amount after decoding, key, algorithm, signature, term, or deploy admission failure (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `400` | Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, phlo price below minimum, or expired deploy. |
 | `415` | Unsupported content type (`invalid_request_body`) |
 | `422` | Invalid JSON field type or value, including deploy parameter names and values, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |

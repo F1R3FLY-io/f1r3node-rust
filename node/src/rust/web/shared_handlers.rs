@@ -504,7 +504,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed JSON (`invalid_request_body`) or invalid deploy amount after decoding, public key, algorithm, signature, or term (`illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, phlo price below minimum, or expired deploy.", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
         (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 422, description = "Invalid JSON field type or value, including deploy parameter names and values (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),

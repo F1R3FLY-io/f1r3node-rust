@@ -209,23 +209,25 @@ mod http_deploy_validation {
         let mut algorithm = valid.clone();
         algorithm.sig_algorithm = "unsupported".into();
         cases.push((algorithm, "Signature algorithm not supported"));
+        let invalid_signature_message =
+            "Invalid signature: the signature does not verify for this deployer and deploy data";
         let mut public_key = valid.clone();
         public_key.deployer = "00".repeat(65);
-        cases.push((public_key, "Invalid signature or public key"));
+        cases.push((public_key, invalid_signature_message));
         let mut signature = valid.clone();
         signature.signature = "0011".into();
-        cases.push((signature, "Invalid signature or public key"));
+        cases.push((signature, invalid_signature_message));
         let mut signature = valid.clone();
         let mut signature_bytes = hex::decode(&signature.signature).unwrap();
         signature_bytes[10] ^= 0xFF;
         signature.signature = hex::encode(signature_bytes);
-        cases.push((signature, "Invalid signature or public key"));
+        cases.push((signature, invalid_signature_message));
         let mut timestamp = valid.clone();
         timestamp.data.time_stamp = 2;
-        cases.push((timestamp, "Invalid signature or public key"));
+        cases.push((timestamp, invalid_signature_message));
         let mut tampered = valid;
         tampered.data.term = "new x in { x!(1) }".into();
-        cases.push((tampered, "Invalid signature or public key"));
+        cases.push((tampered, invalid_signature_message));
         let (router, calls) = router().await;
         for (request, message) in cases {
             let (status, body) = response(

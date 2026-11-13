@@ -706,10 +706,10 @@
             }
           },
           "400": {
-            "description": "Malformed JSON (invalid_request_body), invalid deploy amount after decoding, public key, algorithm, or signature (illegal_argument), or invalid term (rholang_bad_term)",
+            "description": "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, phlo price below minimum, or expired deploy.",
             "schema": {"$ref": "#/definitions/ApiErrorResponse"},
             "examples": {
-              "application/json": {"error": "illegal_argument", "message": "Invalid signature or public key"}
+              "application/json": {"error": "illegal_argument", "message": "Invalid signature: the signature does not verify for this deployer and deploy data"}
             }
           },
           "500": {"description": "Internal node failure, including unknown_error", "schema": {"$ref": "#/definitions/ApiErrorResponse"}}
