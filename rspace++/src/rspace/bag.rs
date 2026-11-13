@@ -988,17 +988,24 @@ impl Bag {
             return probe.clone();
         }
         if probe.distinct_len == 1 {
-            let mut result = Self::new();
-            for (path, multiplicity) in probe.iter() {
-                let counter = index.count(&path);
+            return probe.with_read_cursor(|mut cursor| {
+                let multiplicity = match cursor.val().copied() {
+                    Some(multiplicity) => multiplicity,
+                    None => cursor
+                        .to_next_get_val()
+                        .copied()
+                        .expect("singleton Bag has one endpoint"),
+                };
+                let mut result = Self::new();
+                let counter = index.count(cursor.path());
                 if counter != 0 {
                     result.set_count(
-                        &path,
+                        cursor.path(),
                         Some(multiplicity.min(Multiplicity::new(counter).expect("stored count"))),
                     );
                 }
-            }
-            return result;
+                result
+            });
         }
         Self::try_from_sorted_unique(|writer| {
             probe.with_read_cursor(|mut cursor| {
@@ -1021,17 +1028,25 @@ impl Bag {
             return self.clone();
         }
         if self.distinct_len == 1 {
-            let (path, current) = self.iter().next().expect("singleton Bag has one endpoint");
-            let removed = other.count(&path);
-            if removed == 0 {
-                return self.clone();
-            }
-            if removed >= current.get() {
-                return Self::new();
-            }
-            let mut result = Self::new();
-            result.set_count(&path, Some(Multiplicity(current.get() - removed)));
-            return result;
+            return self.with_read_cursor(|mut cursor| {
+                let current = match cursor.val().copied() {
+                    Some(current) => current,
+                    None => cursor
+                        .to_next_get_val()
+                        .copied()
+                        .expect("singleton Bag has one endpoint"),
+                };
+                let removed = other.count(cursor.path());
+                if removed == 0 {
+                    return self.clone();
+                }
+                if removed >= current.get() {
+                    return Self::new();
+                }
+                let mut result = Self::new();
+                result.set_count(cursor.path(), Some(Multiplicity(current.get() - removed)));
+                result
+            });
         }
         Self::try_from_sorted_unique(|writer| {
             self.with_read_cursor(|mut current| {
@@ -1252,11 +1267,11 @@ impl BagDelta {
         let mut distinct_len = target.distinct_len;
         let mut exact_cardinality = target.exact_cardinality;
         let mut has_structural_removal = false;
-        for (path, amount) in removals.iter() {
+        removals.try_visit_relative_prefix(&[], |path, amount| {
             let current =
                 target
                     .entries
-                    .get(&path)
+                    .get(path)
                     .copied()
                     .ok_or(BagError::InsufficientMultiplicity {
                         available: 0,
@@ -1271,10 +1286,11 @@ impl BagDelta {
             exact_cardinality = exact_cardinality
                 .checked_sub(u128::from(amount.get()))
                 .expect("a resident Bag endpoint contributes its exact multiplicity");
-        }
+            Ok::<(), BagError>(())
+        })?;
         let mut has_structural_addition = false;
-        for (path, amount) in additions.iter() {
-            match target.entries.get(&path).copied() {
+        additions.try_visit_relative_prefix(&[], |path, amount| {
+            match target.entries.get(path).copied() {
                 Some(current) => {
                     current.checked_add(amount)?;
                 }
@@ -1291,7 +1307,8 @@ impl BagDelta {
                     current: exact_cardinality,
                     added: amount.get(),
                 })?;
-        }
+            Ok::<(), BagError>(())
+        })?;
 
         // A topology-preserving value update needs no speculative structural
         // candidate after every transition has been preflighted.  Mutate the
@@ -1301,8 +1318,8 @@ impl BagDelta {
         // PathMapPhysicalOwnership.v.
         if !has_structural_removal && !has_structural_addition {
             target.entries.with_write_cursor(|mut cursor| {
-                for (path, amount) in removals.iter() {
-                    cursor.move_to_path(&path);
+                removals.visit_relative_prefix(&[], |path, amount| {
+                    cursor.move_to_existing_value(path);
                     let current = cursor
                         .val()
                         .copied()
@@ -1312,9 +1329,9 @@ impl BagDelta {
                         .expect("BagDelta removal was preflighted")
                         .expect("a value-only removal preserves its endpoint");
                     cursor.set_val(next);
-                }
-                for (path, amount) in additions.iter() {
-                    cursor.move_to_path(&path);
+                });
+                additions.visit_relative_prefix(&[], |path, amount| {
+                    cursor.move_to_existing_value(path);
                     let current = cursor
                         .val()
                         .copied()
@@ -1324,7 +1341,7 @@ impl BagDelta {
                             .checked_add(amount)
                             .expect("BagDelta addition was preflighted"),
                     );
-                }
+                });
             });
             target.distinct_len = distinct_len;
             target.exact_cardinality = exact_cardinality;
@@ -1338,8 +1355,8 @@ impl BagDelta {
         };
         if !has_structural_removal && !removals.is_empty() {
             entries.with_write_cursor(|mut cursor| {
-                for (path, amount) in removals.iter() {
-                    cursor.move_to_path(&path);
+                removals.visit_relative_prefix(&[], |path, amount| {
+                    cursor.move_to_existing_value(path);
                     let current = cursor
                         .val()
                         .copied()
@@ -1349,13 +1366,13 @@ impl BagDelta {
                         .expect("BagDelta removal was preflighted")
                         .expect("a value-only removal preserves its endpoint");
                     cursor.set_val(next);
-                }
+                });
             });
         }
         if !additions.is_empty() {
             entries.with_write_cursor(|mut cursor| {
-                for (path, amount) in additions.iter() {
-                    cursor.move_to_path(&path);
+                additions.visit_relative_prefix(&[], |path, amount| {
+                    cursor.move_to_path(path);
                     let next = match cursor.val().copied() {
                         Some(current) => current
                             .checked_add(amount)
@@ -1363,7 +1380,7 @@ impl BagDelta {
                         None => amount,
                     };
                     cursor.set_val(next);
-                }
+                });
             });
         }
         *target = Bag::from_guarded_with_metrics(entries, distinct_len, exact_cardinality);

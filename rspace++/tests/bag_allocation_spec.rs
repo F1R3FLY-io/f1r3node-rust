@@ -14,7 +14,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rspace_plus_plus::rspace::bag::{Bag, Multiplicity, SortedUniqueBagError};
+use rspace_plus_plus::rspace::bag::{Bag, BagDelta, Multiplicity, SortedUniqueBagError};
 use rspace_plus_plus::rspace::data_index::{CandidatePool, RSpaceDataIndex, RSpaceDataStore};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
@@ -31,6 +31,7 @@ struct CountingAllocator;
 thread_local! {
     static COUNTS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
     static DECODES: Cell<usize> = const { Cell::new(0) };
+    static SIZED_ALLOCATIONS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
 }
 
 fn record(pointer: *mut u8, bytes: usize) {
@@ -38,6 +39,11 @@ fn record(pointer: *mut u8, bytes: usize) {
         let _ = COUNTS.try_with(|counts| {
             if let Some((calls, allocated)) = counts.get() {
                 counts.set(Some((calls + 1, allocated + bytes)));
+            }
+        });
+        let _ = SIZED_ALLOCATIONS.try_with(|sized| {
+            if let Some((size, matched)) = sized.get().filter(|&(size, _)| size == bytes) {
+                sized.set(Some((size, matched + 1)));
             }
         });
     }
@@ -90,6 +96,22 @@ fn measure<T>(operation: impl FnOnce() -> T) -> (T, usize, usize) {
     let (calls, bytes) = COUNTS.get().unwrap();
     drop(reset);
     (result, calls, bytes)
+}
+
+fn count_sized_allocations<T>(size: usize, operation: impl FnOnce() -> T) -> (T, usize) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) { SIZED_ALLOCATIONS.set(None); }
+    }
+    assert!(SIZED_ALLOCATIONS.get().is_none());
+    SIZED_ALLOCATIONS.set(Some((size, 0)));
+    let reset = Reset;
+    let result = operation();
+    let (_, matched) = SIZED_ALLOCATIONS
+        .get()
+        .expect("the sized-allocation counter stays armed during the operation");
+    drop(reset);
+    (result, matched)
 }
 
 fn singleton(path: &[u8], multiplicity: Multiplicity) -> Bag {
@@ -207,6 +229,120 @@ fn comparing_and_hashing_bags_allocates_nothing_per_endpoint() {
     assert_eq!(
         large, small,
         "allocations grew with the endpoint count: (calls, bytes) at 1,024 endpoints, then at 64"
+    );
+}
+
+const DELTA_PATH_BYTES: usize = 41;
+
+const _: () = assert!(DELTA_PATH_BYTES % 2 == 1);
+
+const DELTA_TARGET_ENDPOINTS: usize = 4096;
+
+fn delta_path(ordinal: usize) -> [u8; DELTA_PATH_BYTES] {
+    let mut path = [0xA5; DELTA_PATH_BYTES];
+    path[DELTA_PATH_BYTES - 8..].copy_from_slice(&(ordinal as u64).to_be_bytes());
+    path
+}
+
+fn delta_bag(entries: impl IntoIterator<Item = (usize, u64)>) -> Bag {
+    let mut bag = Bag::new();
+    for (ordinal, count) in entries {
+        bag.insert_many(
+            &delta_path(ordinal),
+            Multiplicity::new(count).expect("delta fixture counts are positive"),
+        )
+        .expect("delta fixture counts fit the multiplicity domain");
+    }
+    bag
+}
+
+fn delta_target() -> Bag { delta_bag((0..DELTA_TARGET_ENDPOINTS).map(|ordinal| (ordinal, 2))) }
+
+fn value_only_delta(endpoints: usize) -> BagDelta {
+    let mut delta = BagDelta::new();
+    for ordinal in 0..endpoints {
+        delta
+            .record_removal(&delta_path(ordinal), Multiplicity::ONE)
+            .expect("distinct delta paths record independently");
+    }
+    delta
+}
+
+fn structural_delta(endpoints: usize) -> BagDelta {
+    let mut delta = BagDelta::new();
+    for index in 0..endpoints {
+        let recorded = match index % 2 {
+            0 => delta
+                .record_addition(&delta_path(DELTA_TARGET_ENDPOINTS + index), Multiplicity::ONE),
+            _ => delta.record_removal(&delta_path(index), Multiplicity::ONE),
+        };
+        recorded.expect("distinct delta paths record independently");
+    }
+    delta
+}
+
+#[test]
+fn applying_value_only_bag_deltas_allocates_nothing_per_endpoint() {
+    let observe = |endpoints: usize| {
+        let delta = value_only_delta(endpoints);
+        let mut target = delta_target();
+        let applied =
+            delta_bag((0..DELTA_TARGET_ENDPOINTS).map(|ordinal| match ordinal < endpoints {
+                true => (ordinal, 1),
+                false => (ordinal, 2),
+            }));
+        let original = delta_target();
+        let (applying, apply_calls, apply_bytes) = measure(|| delta.apply_to(&mut target));
+        applying.expect("a value-only delta applies");
+        assert_eq!(target, applied);
+        let (reverting, revert_calls, revert_bytes) = measure(|| delta.revert_from(&mut target));
+        reverting.expect("a value-only delta reverts");
+        assert_eq!(target, original);
+        (apply_calls, apply_bytes, revert_calls, revert_bytes)
+    };
+    let single = observe(1);
+    let wide = observe(1024);
+    assert_eq!(
+        wide, single,
+        "value-only delta allocations grew with the endpoint count: (apply calls, apply bytes, \
+         revert calls, revert bytes) at 1,024 endpoints, then at 1"
+    );
+}
+
+#[test]
+fn applying_structural_bag_deltas_allocates_no_path_buffer_per_endpoint() {
+    let observe = |endpoints: usize| {
+        let delta = structural_delta(endpoints);
+        let mut target = delta_target();
+        let applied = delta_bag(
+            (0..DELTA_TARGET_ENDPOINTS)
+                .map(|ordinal| match (ordinal < endpoints, ordinal % 2) {
+                    (true, 1) => (ordinal, 1),
+                    _ => (ordinal, 2),
+                })
+                .chain(
+                    (0..endpoints)
+                        .step_by(2)
+                        .map(|index| (DELTA_TARGET_ENDPOINTS + index, 1)),
+                ),
+        );
+        let original = delta_target();
+        let (applying, apply_buffers) =
+            count_sized_allocations(DELTA_PATH_BYTES, || delta.apply_to(&mut target));
+        applying.expect("a structural delta applies");
+        assert_eq!(target, applied);
+        let (reverting, revert_buffers) =
+            count_sized_allocations(DELTA_PATH_BYTES, || delta.revert_from(&mut target));
+        reverting.expect("a structural delta reverts");
+        assert_eq!(target, original);
+        (apply_buffers, revert_buffers)
+    };
+    let single = observe(1);
+    let wide = observe(1024);
+    assert_eq!(
+        wide, single,
+        "path-sized buffers grew with the delta endpoint count: (apply, revert) at 1,024 \
+         endpoints, then at 1"
     );
 }
 
