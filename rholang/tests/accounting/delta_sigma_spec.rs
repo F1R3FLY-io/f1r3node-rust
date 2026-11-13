@@ -33,10 +33,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 use accounting_demand_oracle::{trace as oracle_trace, DemandOracleEvent};
+use models::rhoapi::cost_signature_atom::Form;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
+    Bundle, CostBoundSignature, CostSignature, CostSignatureAtom, CostTokenStack, EVar, Expr, If,
+    Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
 };
 use models::rust::rholang::protobuf_schema::{ProtobufField, ProtobufKind, ProtobufWireType};
 use models::rust::rholang::protobuf_schema_tables::{
@@ -850,8 +852,45 @@ fn generated_channel(id: u8) -> Par {
     }])
 }
 
-fn generated_to_par(process: &GeneratedProcess) -> Par {
-    match process {
+fn generated_cost_token_stack() -> impl Strategy<Value = CostTokenStack> {
+    let bytes = || prop::collection::vec(any::<u8>(), 0..=2);
+    let atom = prop_oneof![
+        Just(CostSignatureAtom { form: None }),
+        bytes().prop_map(|bytes| CostSignatureAtom {
+            form: Some(Form::Ground(bytes)),
+        }),
+        bytes().prop_map(|bytes| CostSignatureAtom {
+            form: Some(Form::Quote(bytes)),
+        }),
+        any::<i32>().prop_map(|index| CostSignatureAtom {
+            form: Some(Form::Bound(CostBoundSignature { index })),
+        }),
+        bytes().prop_map(|bytes| CostSignatureAtom {
+            form: Some(Form::RuntimeName(bytes)),
+        }),
+    ];
+    let signature = prop::collection::vec(atom, 0..=2).prop_map(|atoms| CostSignature { atoms });
+    prop::collection::vec(signature, 0..=2).prop_map(|layers| CostTokenStack { layers })
+}
+
+fn add_cost_token_stacks(mut par: Par, stacks: &[(CostTokenStack, u64)]) -> Par {
+    for (stack, copies) in stacks {
+        par.insert_component_many(
+            stack,
+            Multiplicity::new(*copies).expect("a generated multiplicity is positive"),
+            Vec::new(),
+            false,
+        )
+        .expect("a generated CostTokenStack component fits the Par");
+    }
+    par
+}
+
+fn generated_to_par(process: &GeneratedProcess) -> Par { generated_to_par_with(process, &[]) }
+
+fn generated_to_par_with(process: &GeneratedProcess, stacks: &[(CostTokenStack, u64)]) -> Par {
+    let nested = |child: &GeneratedProcess| generated_to_par_with(child, stacks);
+    let par = match process {
         GeneratedProcess::Nil => Par::default(),
         GeneratedProcess::Send(channel) => Par::default().with_sends(vec![Send {
             chan: channel.map(generated_channel),
@@ -870,7 +909,7 @@ fn generated_to_par(process: &GeneratedProcess) -> Par {
                     free_count: 0,
                     cost_region: None,
                 }],
-                body: body.as_deref().map(generated_to_par),
+                body: body.as_deref().map(nested),
                 persistent: false,
                 peek: false,
                 bind_count: 0,
@@ -882,7 +921,7 @@ fn generated_to_par(process: &GeneratedProcess) -> Par {
         }
         GeneratedProcess::New(body) => Par::default().with_news(vec![New {
             bind_count: 0,
-            p: body.as_deref().map(generated_to_par),
+            p: body.as_deref().map(nested),
             uri: Vec::new(),
             injections: BTreeMap::new(),
             locally_free: Vec::new(),
@@ -893,7 +932,7 @@ fn generated_to_par(process: &GeneratedProcess) -> Par {
                 .iter()
                 .map(|source| MatchCase {
                     pattern: None,
-                    source: source.as_ref().map(generated_to_par),
+                    source: source.as_ref().map(nested),
                     free_count: 0,
                     guard: None,
                 })
@@ -903,13 +942,13 @@ fn generated_to_par(process: &GeneratedProcess) -> Par {
         }]),
         GeneratedProcess::If { if_true, if_false } => Par::default().with_conditionals(vec![If {
             condition: None,
-            if_true: if_true.as_deref().map(generated_to_par),
-            if_false: if_false.as_deref().map(generated_to_par),
+            if_true: if_true.as_deref().map(nested),
+            if_false: if_false.as_deref().map(nested),
             locally_free: Vec::new(),
             connective_used: false,
         }]),
         GeneratedProcess::Bundle(body) => Par::default().with_bundles(vec![Bundle {
-            body: body.as_deref().map(generated_to_par),
+            body: body.as_deref().map(nested),
             write_flag: false,
             read_flag: false,
         }]),
@@ -930,12 +969,28 @@ fn generated_to_par(process: &GeneratedProcess) -> Par {
         GeneratedProcess::Literal(value) => Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::GBool(*value)),
         }]),
-        GeneratedProcess::Parallel(children) => {
-            children.iter().fold(Par::default(), |par, child| {
-                par.append(generated_to_par(child))
-            })
-        }
-    }
+        GeneratedProcess::Parallel(children) => children
+            .iter()
+            .fold(Par::default(), |par, child| par.append(nested(child))),
+    };
+    add_cost_token_stacks(par, stacks)
+}
+
+fn lanes_and_region_sig_calls(
+    par: &Par,
+    envelope_key: [u8; 32],
+) -> (BTreeMap<[u8; 32], DemandEntry>, Vec<Vec<u8>>) {
+    let calls = RefCell::new(Vec::new());
+    let callback_index = Cell::new(0usize);
+    let lanes = demand_by_sig(par, envelope_key, &|channel| {
+        let bytes = channel.encode_to_vec();
+        let index = callback_index.get();
+        callback_index.set(index + 1);
+        let lane = test_lane(index, &bytes);
+        calls.borrow_mut().push(bytes);
+        Some(lane)
+    });
+    (lanes, calls.into_inner())
 }
 
 fn test_lane(call_index: usize, channel_bytes: &[u8]) -> [u8; 32] {
@@ -1369,5 +1424,29 @@ proptest! {
     fn byte_pda_is_trace_equivalent_to_frozen_recursive_semantics(process in generated_process()) {
         let par = generated_to_par(&process);
         assert_matches_frozen_oracle(&par);
+    }
+
+    #[test]
+    fn cost_token_stack_components_leave_demand_lanes_and_region_sig_calls_unchanged(
+        process in generated_process(),
+        stacks in prop::collection::vec((generated_cost_token_stack(), 1u64..=3), 1..=3),
+    ) {
+        let plain = generated_to_par(&process);
+        let annotated = generated_to_par_with(&process, &stacks);
+        prop_assert_eq!(
+            demand(&annotated, &envelope_sig()),
+            demand(&plain, &envelope_sig()),
+            "CostTokenStack components changed the scalar demand"
+        );
+        let envelope_key = [0xfe; 32];
+        prop_assert_eq!(
+            lanes_and_region_sig_calls(&annotated, envelope_key),
+            lanes_and_region_sig_calls(&plain, envelope_key),
+            "CostTokenStack components changed the lanes or the region_sig calls"
+        );
+        prop_assert!(
+            annotated.family_cardinality::<CostTokenStack>() != 0,
+            "the annotated root Par holds no CostTokenStack component"
+        );
     }
 }
