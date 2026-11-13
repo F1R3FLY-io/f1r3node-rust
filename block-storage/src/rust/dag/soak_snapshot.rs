@@ -24,7 +24,7 @@ use super::dag_history_index::MembershipRecord;
 use super::deploy_lifecycle_types::DeployLifecycleTables;
 use crate::rust::key_value_block_store::{BlockDecodeLimits, KeyValueBlockStore};
 
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 pub const SNAPSHOT_SCOPE: &str = "batch-b1-bounded-detached-capture";
 pub const EXCLUDED_STORES: [&str; 5] = [
     "blocks-approved",
