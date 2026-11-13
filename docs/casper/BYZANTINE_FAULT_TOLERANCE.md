@@ -143,6 +143,20 @@ signed blocks. Every node that holds both reaches it, in any arrival order.
   and leaves their sender bonded
 - The block is rejected. The neglecting validator keeps its stake.
 
+### Blocks Built on an Equivocation
+
+An equivocation is stored without a judgement of its contents, and without a
+replay, so a sibling that no block cites costs a node nothing. Before a node
+judges a block built on a stored equivocation, it judges that parent's
+contents and replays it:
+
+- Invalid parent contents make the block `InvalidParents`.
+- A parent that the node cannot judge yet defers the block.
+- The node keeps a final verdict, so it judges a parent once for all blocks
+  built on it.
+
+**Code Location:** `casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs` (`equivocating_parents_verdict`)
+
 ### Neglected Equivocation Detection
 
 #### The Problem
@@ -416,7 +430,9 @@ economically irrational.
 ### Slashing Mechanism
 
 1. When validation judges a block an equivocation, the node stores it in
-   the DAG as invalid together with its sibling, and persists its body.
+   the DAG as invalid together with its sibling, and persists its body. A
+   pair whose blocks both arrive by restore or as settled history is stored
+   the same way, so every node that holds both blocks holds the pair.
 2. A bonded proposer slashes every bonded offender whose pair it holds. Each
    `SlashDeploy` carries both blocks' commitments, ordered by hash. A
    commitment holds the fields that a block's hash and signature cover, so
@@ -426,7 +442,8 @@ economically irrational.
    - The block's sender issued it.
    - Its evidence is two distinct blocks that one sender signed at one
      sequence number, on this shard and chain.
-   - Its offender has positive stake in the bonds of the block's parents.
+   - Its offender holds stake at the block's floor, bonded or in withdrawal
+     quarantine.
    - No other slash in the block targets the same offender.
 
    Otherwise the block is `UnauthorizedSlashDeploy`.
