@@ -1477,7 +1477,7 @@ impl DeployData {
             unverified.pk,
             unverified.sig,
             unverified.sig_algorithm,
-        )?
+        )
         .ok_or_else(|| "Invalid signature".to_string())
     }
 
