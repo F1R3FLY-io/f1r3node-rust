@@ -14,9 +14,9 @@ use crate::{
     rpb3_epm_push_source_action_refinement as epm_push_source,
     rpb3_epm_source_accept_refinement as epm_accept, rpb3_epm_unwind_event_lift as unwind,
     rpb3_epm_unwind_product_lift as unwind_product, rpb3_integrated_dispatcher as dispatcher,
-    rpb3_map_frame_refinement as map, rpb3_score_admission_bridge as score_bridge,
-    rpb3_wire_cursor_source_refinement as wire_source, LiveRuntimeProductAction,
-    LiveRuntimeProductState,
+    rpb3_live_canonical_path_source_refinement as path_live, rpb3_map_frame_refinement as map,
+    rpb3_score_admission_bridge as score_bridge, rpb3_wire_cursor_source_refinement as wire_source,
+    LiveRuntimeProductAction, LiveRuntimeProductState,
 };
 
 verus! {
@@ -3890,6 +3890,269 @@ pub proof fn lemma_epm_nested_return_extract(
 {
     hide(dispatcher::integrated_step);
     lemma_epm_nested_return_frames(before, after, action);
+}
+
+pub proof fn lemma_canonical_path_push_live_frames(
+    live: path_live::LiveCanonicalPathState,
+    source: admission::AdmissionCanonicalPathPushSource,
+    child: admission::AdmissionFrameState,
+    storage: admission::AdmissionCanonicalPathPushStorage,
+    child_image: epm::IndexedRegionImage,
+    child_reader: Option<wire_source::WireRuntimeCursorImage>,
+)
+    requires
+        path_live::live_canonical_path_push_from_source(
+            live, source, child, storage, child_image, child_reader,
+        ) is Some,
+    ensures
+        ({
+            let pushed = path_live::live_canonical_path_push_from_source(
+                live, source, child, storage, child_image, child_reader,
+            ).unwrap();
+            let before_frames = live_frames(live.base);
+            let after_frames = live_frames(pushed.base);
+            let path_top = before_frames.last();
+            let path_parent = after_frames[before_frames.len() - 1];
+            let pushed_child = after_frames.last();
+            &&& live_score_len(pushed.base) == live_score_len(live.base)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len() + 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& path_top.frame_kind == 4
+            &&& path_parent.frame_kind == path_top.frame_kind
+            &&& path_parent.region_end == path_top.region_end
+            &&& (pushed_child.frame_kind == 1 || pushed_child.frame_kind == 3)
+            &&& pushed_child.cursor == 0
+            &&& pushed_child.last_slot is None
+            &&& pushed_child.returns.len() == 0
+            &&& pushed_child.region_end <= path_top.region_end
+        }),
+{
+    let pushed = path_live::live_canonical_path_push_from_source(
+        live, source, child, storage, child_image, child_reader,
+    ).unwrap();
+    let old = live.base.source.product.bridge.admission;
+    let next = admission::admission_canonical_path_push_indexed_step(
+        old, source, child, storage,
+    ).unwrap();
+    assert(pushed.base.source.product.bridge.admission == next);
+    assert(admission::admission_state_wf(old));
+    assert(admission::admission_frame_wf(old.frames[old.frames.len() - 1]));
+    assert(source.child.bytes.len() == source.payload_end - source.payload_start);
+}
+
+pub proof fn lemma_canonical_path_push_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is PathPush,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let path_top = before_frames.last();
+            let path_parent = after_frames[before_frames.len() - 1];
+            let pushed_child = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len() + 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& path_top.frame_kind == 4
+            &&& path_parent.frame_kind == path_top.frame_kind
+            &&& path_parent.region_end == path_top.region_end
+            &&& (pushed_child.frame_kind == 1 || pushed_child.frame_kind == 3)
+            &&& pushed_child.cursor == 0
+            &&& pushed_child.last_slot is None
+            &&& pushed_child.returns.len() == 0
+            &&& pushed_child.region_end <= path_top.region_end
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::CanonicalPath {
+            driver_before,
+            driver_action: path_driver::CanonicalPathDriverSourceAction::Push {
+                source, child, storage, child_image, child_reader, ..
+            },
+        } => {
+            let live = driver_before.common.live;
+            let pushed = path_live::live_canonical_path_push_from_source(
+                live, source, child, storage, child_image, child_reader,
+            );
+            assert(before is Active && after is Active && pushed is Some
+                && live.base == before->product && pushed.unwrap().base == after->product) by {
+                reveal(dispatcher::integrated_step);
+            }
+            lemma_canonical_path_push_live_frames(
+                live, source, child, storage, child_image, child_reader,
+            );
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_canonical_path_push_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is PathPush,
+    ensures
+        push_step(before, after),
+        state_frames(before).last().frame_kind == 4,
+{
+    hide(dispatcher::integrated_step);
+    lemma_canonical_path_push_frames(before, after, action);
+}
+
+pub proof fn lemma_canonical_path_child_return_live_frames(
+    live: path_live::LiveCanonicalPathState,
+    observed: path_live::LiveCanonicalPathReturnObservation,
+)
+    requires
+        path_live::live_canonical_path_return_from_source(live, observed) is Some,
+    ensures
+        ({
+            let returned = path_live::live_canonical_path_return_from_source(live, observed)
+                .unwrap();
+            let before_frames = live_frames(live.base);
+            let after_frames = live_frames(returned.state.base);
+            let path_child = before_frames.last();
+            let path_parent = before_frames[before_frames.len() - 2];
+            let resumed_path = after_frames.last();
+            &&& live_score_len(returned.state.base) == live_score_len(live.base)
+            &&& before_frames.len() >= 2
+            &&& after_frames.len() == before_frames.len() - 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 2)
+            &&& (path_child.frame_kind == 1 || path_child.frame_kind == 3)
+            &&& path_child.cursor == path_child.region_end
+            &&& path_parent.frame_kind == 4
+            &&& resumed_path.frame_kind == path_parent.frame_kind
+            &&& resumed_path.region_end == path_parent.region_end
+        }),
+{
+    let returned = path_live::live_canonical_path_return_from_source(live, observed).unwrap();
+    let old = live.base.source.product.bridge.admission;
+    let next = admission::admission_canonical_path_return_indexed_step(
+        old, path_live::live_canonical_path_retained_return_source(live, observed),
+        observed.summary,
+    ).unwrap();
+    assert(returned.state.base.source.product.bridge.admission == next);
+}
+
+pub proof fn lemma_canonical_path_child_return_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is PathChildReturn,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let path_child = before_frames.last();
+            let path_parent = before_frames[before_frames.len() - 2];
+            let resumed_path = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() >= 2
+            &&& after_frames.len() == before_frames.len() - 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 2)
+            &&& (path_child.frame_kind == 1 || path_child.frame_kind == 3)
+            &&& path_child.cursor == path_child.region_end
+            &&& path_parent.frame_kind == 4
+            &&& resumed_path.frame_kind == path_parent.frame_kind
+            &&& resumed_path.region_end == path_parent.region_end
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::CanonicalPath {
+            driver_before,
+            driver_action: path_driver::CanonicalPathDriverSourceAction::ChildReturn {
+                observed, ..
+            },
+        } => {
+            let live = driver_before.common.live;
+            let returned = path_live::live_canonical_path_return_from_source(live, observed);
+            assert(before is Active && after is Active && returned is Some
+                && live.base == before->product
+                && returned.unwrap().state.base == after->product) by {
+                reveal(dispatcher::integrated_step);
+            }
+            lemma_canonical_path_child_return_live_frames(live, observed);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_canonical_path_child_return_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is PathChildReturn,
+    ensures
+        accept_step(before, after),
+        state_frames(before)[state_frames(before).len() - 2].frame_kind == 4,
+{
+    hide(dispatcher::integrated_step);
+    lemma_canonical_path_child_return_frames(before, after, action);
+}
+
+pub proof fn lemma_canonical_path_root_complete_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is PathRootComplete,
+    ensures
+        after is Accepted,
+        state_frames(after) == state_frames(before),
+        state_score_len(after) == state_score_len(before),
+        state_frames(before).len() == 1,
+        state_frames(before)[0].frame_kind == 4,
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::CanonicalPath {
+            driver_action: path_driver::CanonicalPathDriverSourceAction::RootComplete { .. },
+            ..
+        } => {
+            assert(before is Active && after is Accepted
+                && state_product(after) == before->product
+                && live_frames(before->product).len() == 1
+                && live_frames(before->product).last().frame_kind == 4) by {
+                reveal(dispatcher::integrated_step);
+            }
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_canonical_path_root_complete_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is PathRootComplete,
+    ensures
+        root_step(before, after),
+        state_frames(before)[0].frame_kind == 4,
+{
+    hide(dispatcher::integrated_step);
+    lemma_canonical_path_root_complete_frames(before, after, action);
 }
 
 pub proof fn lemma_accept_shape_refines(
