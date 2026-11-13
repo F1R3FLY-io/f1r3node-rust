@@ -60,6 +60,7 @@ use crate::rust::validator_identity::ValidatorIdentity;
 /// Shared by `Initializing::new` and `reinstall_sync_channels`, so a retry gets
 /// the same channel as the first attempt.
 const FLOOR_CACHE_CHANNEL_CAPACITY: usize = 4;
+pub(crate) const LFS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn install_slot<V>(slot: &Arc<Mutex<Option<V>>>, value: V, name: &str) -> Result<(), CasperError> {
     let mut guard = slot
@@ -885,7 +886,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let tuple_space_requester =
             TupleSpaceRequester::new(&self.transport_layer, &self.rp_conf_ask);
 
-        const LFS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
         const LFS_SYNC_DEADLINE: Duration = Duration::from_secs(600);
         let lfs_request_timeout = LFS_REQUEST_TIMEOUT;
 
@@ -1015,8 +1015,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     *sender_slot = Some(horizon_tx);
                 }
 
-                const HORIZON_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-                let request_timeout = HORIZON_REQUEST_TIMEOUT;
                 tracing::info!(
                     "LFS forward-horizon: requesting {} ancestor rspace roots below LFB",
                     horizon_roots.len()
@@ -1038,7 +1036,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     self.rspace_state_manager.importer.clone(),
                     horizon_requester,
                     horizon_rx,
-                    request_timeout,
+                    lfs_request_timeout,
                     LFS_SYNC_DEADLINE,
                 )
                 .await;

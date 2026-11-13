@@ -382,7 +382,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
 
         if !expired.is_empty() {
             tracing::info!(
-                "LFS forward-horizon: resending {} chunk request(s) with no response within their timeout",
+                "No responses for {} LFS forward-horizon chunk request(s) within their timeout. Resending requests.",
                 expired.len()
             );
         }
@@ -1436,6 +1436,80 @@ mod tests {
         );
         assert!(last.expect("stream yields a final state").is_finished());
         assert_eq!(recorded.lock().unwrap().len(), roots.len());
+    }
+
+    #[tokio::test]
+    async fn silent_peer_retry_is_observable_before_recovery_completes() {
+        #[derive(Clone)]
+        struct LogWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let writer = LogWriter(logs.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let root = hash_for(1);
+        let path: StatePartPath = vec![(root.clone(), None)];
+        let (recording, recorded) = RecordingImporter::new();
+        let has_root: HasRootFn = {
+            let recorded = recorded.clone();
+            Arc::new(move |query| Ok(recorded.lock().unwrap().contains(query)))
+        };
+        let ops = MockOps::new();
+        let (sends, _) = ops.handles();
+        let (tx, rx) = test_mpsc::channel(4);
+        let (stream, error) = stream(
+            vec![root.clone()],
+            has_root,
+            Arc::new(recording),
+            ops,
+            rx,
+            crate::rust::engine::initializing::LFS_REQUEST_TIMEOUT,
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+        let mut stream = Box::pin(stream);
+        assert!(!stream.next().await.unwrap().is_finished());
+        assert_eq!(*sends.lock().unwrap(), vec![path.clone()]);
+        assert!(!String::from_utf8_lossy(&logs.lock().unwrap()).contains("No responses for"));
+
+        let retry = tokio::time::timeout(Duration::from_secs(12), stream.next())
+            .await
+            .expect("a silent peer must be retried within the restore progress budget")
+            .expect("sync must remain active while the peer is silent");
+        assert!(!retry.is_finished());
+        assert_eq!(*sends.lock().unwrap(), vec![path.clone(), path.clone()]);
+        assert!(recorded.lock().unwrap().is_empty());
+        let output = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("No responses for"),
+            "retry evidence missing: {output}"
+        );
+        assert!(output.contains("LFS forward-horizon"));
+
+        tx.send(make_response(path.clone(), path, Some(hash_for(0))))
+            .await
+            .unwrap();
+        let final_state = tokio::time::timeout(Duration::from_secs(5), drain(stream))
+            .await
+            .expect("sync must finish when the peer responds")
+            .unwrap();
+        assert!(final_state.is_finished());
+        assert!(error.lock().unwrap().is_none());
+        assert!(recorded.lock().unwrap().contains(&root));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
