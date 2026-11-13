@@ -47,7 +47,6 @@ struct HashTicket {
 
 impl Drop for HashTicket {
     fn drop(&mut self) {
-        self.guard.take();
         if let Entry::Occupied(mut entry) = self.slots.entry(self.hash.clone()) {
             if Arc::ptr_eq(&entry.get().lock, &self.lock) {
                 entry.get_mut().users -= 1;
@@ -77,7 +76,6 @@ struct PeerTicket {
 
 impl Drop for PeerTicket {
     fn drop(&mut self) {
-        self.permits.clear();
         if let Entry::Occupied(mut entry) = self.per_peer.entry(self.peer.clone()) {
             if entry.get().generation == self.generation {
                 let slots = entry.get_mut();
