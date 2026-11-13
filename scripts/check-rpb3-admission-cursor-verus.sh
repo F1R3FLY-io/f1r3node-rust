@@ -89,6 +89,7 @@ source_files=(
   "$model_dir/rpb3_epm_path_invariant_integrated.rs"
   "$model_dir/rpb3_epm_obligation_return_witness.rs"
   "$model_dir/rpb3_epm_live_handoff.rs"
+  "$model_dir/rpb3_epm_path_invariant_witness.rs"
   "$model_dir/rpb3_ezipper_snapshot_provenance.rs"
   "$model_dir/rpb3_ezipper_bool_slot_readable.rs"
   "$model_dir/rpb3_message_frame_finish_mapping.rs"
@@ -1246,6 +1247,17 @@ proofs_rpb3_epm_path_invariant_integrated=(
   integrated_epm_nested_return_keeps_epm_paths_wf
   integrated_epm_handoff_keeps_epm_paths_wf
   integrated_step_preserves_epm_paths_wf
+)
+proofs_rpb3_epm_path_invariant_witness=(
+  raw_par_witness_parent_frame_path_wf
+  raw_par_witness_scored_paths_wf
+  raw_par_return_case_inhabited
+  nested_dead_witness_parent_frame_path_wf
+  nested_dead_witness_child_frame_path_wf
+  nested_dead_witness_before_paths_wf
+  nested_return_case_inhabited
+  handoff_witness_before_paths_wf
+  handoff_case_inhabited
 )
 proofs_rpb3_epm_push_live_action_refinement=(
   epm_push_live_action_is_checked
@@ -2695,6 +2707,7 @@ gated_modules=(
   rpb3_epm_obligation_return_witness
   rpb3_epm_parser_escape_invariant
   rpb3_epm_path_invariant_integrated
+  rpb3_epm_path_invariant_witness
   rpb3_epm_push_live_action_refinement
   rpb3_epm_push_source_action_refinement
   rpb3_epm_push_transport_source_refinement
@@ -4989,6 +5002,39 @@ fi
 if ! rg -q '^verification results:: 117 verified, 0 errors' "$epm_obligation_return_witness_log"; then
   cat "$epm_obligation_return_witness_log"
   echo "rpb3-admission-cursor: EPathMap obligation return witness module did not verify" >&2
+  exit 1
+fi
+for proof in "${proofs_rpb3_epm_path_invariant_witness[@]}"; do
+  proof_log="$evidence_dir/epm-path-invariant-witness-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_epm_path_invariant_witness --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap path invariant witness $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: EPathMap path invariant witness $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+epm_path_invariant_witness_log="$evidence_dir/epm-path-invariant-witness-module.log"
+if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+  --no-cheating --num-threads 1 --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+  --verify-only-module rpb3_epm_path_invariant_witness \
+  "$integrated_source" \
+  >"$epm_path_invariant_witness_log" 2>&1; then
+  cat "$epm_path_invariant_witness_log"
+  echo "rpb3-admission-cursor: EPathMap path invariant witness module failed" >&2
+  exit 1
+fi
+if ! rg -q '^verification results:: 9 verified, 0 errors' "$epm_path_invariant_witness_log"; then
+  cat "$epm_path_invariant_witness_log"
+  echo "rpb3-admission-cursor: EPathMap path invariant witness module did not verify" >&2
   exit 1
 fi
 for proof in "${proofs_rpb3_no_score_child_eof_coverage[@]}"; do

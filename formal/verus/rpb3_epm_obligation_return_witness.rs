@@ -9,10 +9,12 @@
 //! empty EPathMap frame, now waiting (waiting_id 2, waiting_kind 1) on the
 //! child that resolves a RawParEscape obligation. Its path holds the tag 0x0f
 //! and the payload length 0x00; the pending obligation 0 has an empty payload
-//! and awaits resolution, and the parser's only frame is that obligation. C is
-//! a kind-1, program-1 frame without fields whose empty region ends at the
-//! obligation's payload end, as `request_for_obligation` builds the child
-//! body, and whose wire cursor is at End.
+//! and awaits resolution, and the parser's only frame is that obligation. Its
+//! restore holds one checkpoint per path byte, each with the initial parser
+//! (`epm_witness_two_byte_restore`). C is a kind-1, program-1 frame without
+//! fields whose empty region ends at the obligation's payload end, as
+//! `request_for_obligation` builds the child body, and whose wire cursor is at
+//! End.
 //!
 //! `epm_raw_par_witness_unscored` is the live state before C is scored.
 //! `epm_raw_par_witness_scored` scores C with `bridge_raw_par_step` and has
@@ -65,13 +67,15 @@
 //! modeled empty EPathMap frame; its child C is that EPathMap frame too (kind
 //! 3), with return id 2. EP waits (waiting_id 2, waiting_kind 3) on the child
 //! that resolves a NestedEpm1 obligation, with one nested child started and
-//! none resolved. Its path holds the tag 0x10, the payload length 0x08 and the
-//! eight bytes of the modeled empty snapshot, the EPM1 header with magic "EPM1"
-//! and version 1; the pending obligation 0 has that payload and awaits
-//! resolution, and the parser's only frame is that obligation. C's snapshot is
-//! those eight bytes: its mode is Empty, and its cursor has taken both events
-//! of an Empty frame, so its End is next. Neither EP nor C has a wire reader
-//! or a cursor.
+//! none resolved. Its path holds the tag 0x10 and the payload length 0x00, with
+//! one restore checkpoint per path byte; the pending obligation 0 has an empty
+//! payload and awaits resolution, and the parser's only frame is that
+//! obligation. Under `frame_layout_wf` and `epm_frame_path_wf` an Empty frame
+//! holds at most two path bytes, and the return relations do not compare the
+//! obligation's payload with the child. C's snapshot is the eight bytes of the
+//! modeled empty snapshot, the EPM1 header with magic "EPM1" and version 1: its
+//! mode is Empty, and its cursor has taken both events of an Empty frame, so
+//! its End is next. Neither EP nor C has a wire reader or a cursor.
 //!
 //! `epm_nested_dead_witness_before` is the live state before the return, and
 //! `epm_nested_dead_witness_returned` pops C. The return performs C's End, as
@@ -222,8 +226,25 @@ pub open spec fn epm_raw_par_witness_resolved_parser() -> parser::ParserImage {
     }
 }
 
+/// A restore checkpoint of the initial EPathMap path at path length
+/// `path_len`: no pending obligation, the initial gate and the initial parser.
+pub open spec fn epm_witness_initial_checkpoint(path_len: usize) -> epm::PathCheckpoint {
+    epm::PathCheckpoint {
+        pending: None,
+        gate: epm::initial_epm_path().gate,
+        path_len,
+        parser: parser::initial_parser(),
+    }
+}
+
+/// The restore checkpoints of a two-byte witness path, one per path byte.
+pub open spec fn epm_witness_two_byte_restore() -> Seq<epm::PathCheckpoint> {
+    seq![epm_witness_initial_checkpoint(0), epm_witness_initial_checkpoint(1)]
+}
+
 /// EP's path: the bytes [0x0f, 0x00] with the pending obligation 0 ready for
-/// resolution, and the gate that is the image of the parser.
+/// resolution, one restore checkpoint per byte, and the gate that is the image
+/// of the parser.
 pub open spec fn epm_raw_par_witness_path() -> epm::PathTopology {
     epm::PathTopology {
         next_obligation: 1,
@@ -237,7 +258,7 @@ pub open spec fn epm_raw_par_witness_path() -> epm::PathTopology {
             awaiting_resolution: true,
         }),
         root_left: false,
-        restore: Seq::empty(),
+        restore: epm_witness_two_byte_restore(),
         path_bytes: seq![0x0fu8, 0x00u8],
         path_positions: seq![epm_raw_par_witness_tag_anchor(), epm_raw_par_witness_end_anchor()],
         gate: epm::PathGate {
@@ -2161,27 +2182,26 @@ pub open spec fn epm_nested_dead_witness_tag_anchor() -> epm::SourceAnchor {
     epm::SourceAnchor { source: 0, offset: 7 }
 }
 
-/// The anchor of EP's last path byte, the last byte of the nested payload.
-/// `consume_obligation_byte` records it as the obligation's payload end.
+/// The anchor of EP's path byte 0x00, the payload length. `start_obligation`
+/// records it as the obligation's payload end.
 pub open spec fn epm_nested_dead_witness_payload_end() -> epm::SourceAnchor {
-    epm::SourceAnchor { source: 0, offset: 16 }
+    epm::SourceAnchor { source: 0, offset: 8 }
 }
 
-/// EP's path bytes: the NestedEpm1 tag 0x10, the payload length 0x08, and the
-/// eight bytes of the modeled empty snapshot.
+/// EP's path bytes: the NestedEpm1 tag 0x10 and the payload length 0x00.
 pub open spec fn epm_nested_dead_witness_path_bytes() -> Seq<u8> {
-    seq![0x10u8, 0x08u8] + integrated::product_epm_modeled_empty_snapshot_bytes()
+    seq![0x10u8, 0x00u8]
 }
 
-/// The anchors of EP's ten path bytes in source 0: the tag at offset 7, the
-/// payload length at offset 8, and the payload at offsets 9 to 16.
+/// The anchors of EP's two path bytes in source 0: the tag at offset 7 and the
+/// payload length at offset 8.
 pub open spec fn epm_nested_dead_witness_positions() -> Seq<epm::SourceAnchor> {
-    Seq::new(10, |i: int| epm::SourceAnchor { source: 0, offset: (7 + i) as usize })
+    Seq::new(2, |i: int| epm::SourceAnchor { source: 0, offset: (7 + i) as usize })
 }
 
 /// EP's parser before the return: an open root path whose first tag is 0x10
 /// and whose only frame is the NestedEpm1 obligation 0, which awaits
-/// resolution after its eight payload bytes.
+/// resolution with an empty payload.
 pub open spec fn epm_nested_dead_witness_parser() -> parser::ParserImage {
     parser::ParserImage {
         focus: parser::ParserPath {
@@ -2193,17 +2213,17 @@ pub open spec fn epm_nested_dead_witness_parser() -> parser::ParserImage {
             stack: seq![parser::ParserFrame::Obligation {
                 id: 0,
                 kind: parser::ParserObligationKind::NestedEpm1,
-                payload_len: 8,
+                payload_len: 0,
                 tag_source: parser::ParserSource { source: 0, offset: 7 },
                 payload_start: 2,
                 status: parser::ParserObligationStatus::AwaitingResolution {
-                    payload_end: parser::ParserSource { source: 0, offset: 16 },
+                    payload_end: parser::ParserSource { source: 0, offset: 8 },
                 },
             }],
         },
         owners: Seq::empty(),
         next_obligation: 1,
-        stamp: 10,
+        stamp: 2,
         fault: false,
     }
 }
@@ -2218,22 +2238,23 @@ pub open spec fn epm_nested_dead_witness_resolved_parser() -> parser::ParserImag
     }
 }
 
-/// EP's path: the ten bytes with the pending obligation 0 ready for
-/// resolution, and the gate that is the image of the parser.
+/// EP's path: the bytes [0x10, 0x00] with the pending obligation 0 ready for
+/// resolution, one restore checkpoint per byte, and the gate that is the image
+/// of the parser.
 pub open spec fn epm_nested_dead_witness_path() -> epm::PathTopology {
     epm::PathTopology {
         next_obligation: 1,
         pending: Some(epm::PathObligation {
             id: 0,
             kind: epm::PathObligationKind::NestedEpm1,
-            payload_len: 8,
+            payload_len: 0,
             tag_source: epm_nested_dead_witness_tag_anchor(),
             payload_start: 2,
             payload_end: epm_nested_dead_witness_payload_end(),
             awaiting_resolution: true,
         }),
         root_left: false,
-        restore: Seq::empty(),
+        restore: epm_witness_two_byte_restore(),
         path_bytes: epm_nested_dead_witness_path_bytes(),
         path_positions: epm_nested_dead_witness_positions(),
         gate: epm::PathGate {
@@ -2631,7 +2652,7 @@ pub proof fn epm_nested_dead_witness_layouts()
     integrated::product_epm_modeled_empty_source_accepts();
     epm_raw_par_witness_nested_frames();
     let base = epm_nested_dead_witness_child_epm();
-    assert(epm_nested_dead_witness_path_bytes().len() == 10);
+    assert(epm_nested_dead_witness_path_bytes().len() == 2);
     epm_nested_dead_witness_layout_carried(base, epm_nested_dead_witness_parent_epm());
     epm_nested_dead_witness_layout_carried(base, epm_nested_dead_witness_resolved_epm());
 }
@@ -3058,7 +3079,7 @@ pub proof fn epm_nested_dead_witness_parent_accepts()
         ).is_some(),
 {
     epm_nested_dead_witness_resolves_dead();
-    assert(epm_nested_dead_witness_path_bytes().len() == 10);
+    assert(epm_nested_dead_witness_path_bytes().len() == 2);
 }
 
 /// EPathMap frames [none, none, the parent's frame, a child's frame] over

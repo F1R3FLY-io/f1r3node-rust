@@ -113,6 +113,8 @@ mod rpb3_finish_handle_transcript;
 #[cfg(rpb3_live_push)]
 mod rpb3_message_frame_finish_mapping;
 #[cfg(rpb3_live_push)]
+mod rpb3_epm_path_invariant_witness;
+#[cfg(rpb3_live_push)]
 mod rpb3_ezipper_bool_slot_readable;
 #[cfg(rpb3_live_push)]
 mod rpb3_ezipper_snapshot_provenance;
