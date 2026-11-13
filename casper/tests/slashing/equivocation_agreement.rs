@@ -668,6 +668,54 @@ async fn a_block_built_on_an_equivocation_replays_it_on_demand() {
     assert!(holds_post_state(&nodes[1], &sibling));
 }
 
+fn remembered_verdict(node: &TestNode, twin: &BlockHash) -> Option<Result<(), InvalidBlock>> {
+    node.casper
+        .judged_twins
+        .get(twin)
+        .map(|verdict| verdict.as_ref().clone())
+}
+
+/// v2 and v3 each build on the sibling v1 holds as an equivocation. v1 judges
+/// the sibling for the first block and reuses that verdict for the second.
+#[serial_test::serial]
+#[tokio::test]
+async fn blocks_built_on_one_twin_reuse_its_verdict() {
+    let (mut nodes, shard_id) = network(4, None).await;
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
+    let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(1, &shard_id)])
+        .await
+        .expect("sibling");
+    accept(&mut nodes[1], &b1, "v1 accepts b1").await;
+    let recorded = nodes[1]
+        .process_block(sibling.clone())
+        .await
+        .expect("v1 sibling");
+    assert!(is_equivocation(&recorded), "{recorded:?}");
+
+    accept(&mut nodes[2], &sibling, "v2 accepts the sibling").await;
+    accept(&mut nodes[3], &sibling, "v3 accepts the sibling").await;
+    let mut children = Vec::new();
+    for (validator, nonce) in [(2, 2), (3, 3)] {
+        let child = nodes[validator]
+            .create_block_unsafe(&[deploy(nonce, &shard_id)])
+            .await
+            .expect("child");
+        assert!(child.header.parents_hash_list.contains(&sibling.block_hash));
+        children.push(child);
+    }
+    assert_eq!(remembered_verdict(&nodes[1], &sibling.block_hash), None);
+
+    accept(&mut nodes[1], &children[0], "v1 judges v2's block").await;
+    assert_eq!(
+        remembered_verdict(&nodes[1], &sibling.block_hash),
+        Some(Ok(()))
+    );
+    accept(&mut nodes[1], &children[1], "v1 judges v3's block").await;
+}
+
 /// v0 signs b1 and a twin t that carries other deploys but declares b1's
 /// post-state; v2 builds c on t. v3 receives t first and refuses it on its
 /// contents. v1 holds b1 first and t as the equivocation, so it judges t's
@@ -733,6 +781,10 @@ async fn a_block_built_on_an_invalid_twin_is_held_by_no_node() {
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents))
         ),
         "v1 refuses c, built on a twin whose contents are invalid: {v1_c:?}"
+    );
+    assert!(
+        matches!(remembered_verdict(&nodes[1], &t.block_hash), Some(Err(_))),
+        "v1 remembers t's contents are invalid"
     );
     assert_eq!(
         held_pair(&nodes[1], &c.block_hash),

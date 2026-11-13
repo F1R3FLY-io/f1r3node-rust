@@ -1146,6 +1146,11 @@ impl TestNode {
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            judged_twins: std::sync::Arc::new(
+                casper::rust::util::bounded_cache::BoundedCache::new(
+                    MultiParentCasperImpl::MAX_JUDGED_TWINS,
+                ),
+            ),
         };
 
         let casper = Arc::new(casper_impl);

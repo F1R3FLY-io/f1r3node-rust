@@ -7,6 +7,8 @@
 //! this module while the trait method is a one-line delegate in
 //! `traits.rs`.
 
+use std::sync::Arc;
+
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
@@ -86,6 +88,8 @@ async fn derive_floor_context(
 /// only once the twin is: an invalid twin makes the block invalid, and a twin
 /// that cannot be judged yet defers it for the same reason. A valid twin's
 /// judgement replays it, so its post-state is held for the block's replay.
+/// A final verdict is remembered, so a twin is judged once however many
+/// blocks build on it.
 async fn equivocating_parents_verdict(
     this: &MultiParentCasperImpl,
     block: &BlockMessage,
@@ -100,35 +104,50 @@ async fn equivocating_parents_verdict(
         if !held_as_equivocation {
             continue;
         }
-        let parent = this.block_store.get(parent_hash)?.ok_or_else(|| {
-            CasperError::RuntimeError(format!(
-                "equivocation {} is held without its body",
-                PrettyPrinter::build_string_bytes(parent_hash)
-            ))
-        })?;
-        let verdict = Box::pin(validate_contents(
-            this,
-            &parent,
-            snapshot,
-            false,
-            local_validator,
-            "stored equivocation",
-        ))
-        .await?;
-        match verdict {
-            Either::Right(_) => {
-                update_mergeable_cache_after_validation(this, &parent, "stored equivocation").await;
+        let verdict = match this.judged_twins.get(parent_hash) {
+            Some(verdict) => verdict.as_ref().clone(),
+            None => {
+                let parent = this.block_store.get(parent_hash)?.ok_or_else(|| {
+                    CasperError::RuntimeError(format!(
+                        "equivocation {} is held without its body",
+                        PrettyPrinter::build_string_bytes(parent_hash)
+                    ))
+                })?;
+                let verdict = match Box::pin(validate_contents(
+                    this,
+                    &parent,
+                    snapshot,
+                    false,
+                    local_validator,
+                    "stored equivocation",
+                ))
+                .await?
+                {
+                    Either::Right(_) => {
+                        update_mergeable_cache_after_validation(
+                            this,
+                            &parent,
+                            "stored equivocation",
+                        )
+                        .await;
+                        Ok(())
+                    }
+                    Either::Left(BlockError::Invalid(reason)) => Err(reason),
+                    Either::Left(deferred) => return Ok(Some(deferred)),
+                };
+                this.judged_twins
+                    .insert(parent_hash.clone(), Arc::new(verdict.clone()));
+                verdict
             }
-            Either::Left(BlockError::Invalid(reason)) => {
-                tracing::warn!(
-                    block = %PrettyPrinter::build_string_bytes(&block.block_hash),
-                    parent = %PrettyPrinter::build_string_bytes(parent_hash),
-                    ?reason,
-                    "block built on an equivocation whose contents are invalid"
-                );
-                return Ok(Some(BlockError::Invalid(InvalidBlock::InvalidParents)));
-            }
-            Either::Left(deferred) => return Ok(Some(deferred)),
+        };
+        if let Err(reason) = verdict {
+            tracing::warn!(
+                block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                parent = %PrettyPrinter::build_string_bytes(parent_hash),
+                ?reason,
+                "block built on an equivocation whose contents are invalid"
+            );
+            return Ok(Some(BlockError::Invalid(InvalidBlock::InvalidParents)));
         }
     }
     Ok(None)

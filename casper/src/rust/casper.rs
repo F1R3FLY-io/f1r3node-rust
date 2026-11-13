@@ -387,6 +387,9 @@ pub async fn hash_set_casper(
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        judged_twins: Arc::new(crate::rust::util::bounded_cache::BoundedCache::new(
+            MultiParentCasperImpl::MAX_JUDGED_TWINS,
+        )),
     })
 }
 
