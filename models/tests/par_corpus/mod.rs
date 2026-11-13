@@ -45,7 +45,7 @@
 // this every binary warns about the builders the *other* two use.
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use models::rhoapi::connective::ConnectiveInstance;
@@ -63,7 +63,10 @@ use models::rhoapi::{
     ListBindPatterns, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
     ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
+use models::rust::par_bag::ParBagComponent;
 use models::rust::rhoapi_ext::EPathMap;
+use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
+use models::rust::rholang::match_schema_tables::ParCursor;
 
 // ---------------------------------------------------------------------------
 // Small builders
@@ -874,5 +877,36 @@ pub fn cost_annotated_tagged_continuation() -> TaggedContinuation {
             bind_index: u32::MAX,
             region: Some(cost_region()),
         }],
+    }
+}
+
+pub fn record(
+    cursor: ParCursor<'_>,
+    types: &mut BTreeSet<&'static str>,
+    variants: &mut BTreeSet<String>,
+) {
+    for event in RhoPathCursor::new(cursor) {
+        match event {
+            RhoPathEvent::EnterNode { program, .. } => {
+                types.insert(program.type_name);
+            }
+            RhoPathEvent::EnterOneof(oneof) => {
+                variants.insert(format!("{}::{}", oneof.oneof_name, oneof.variant_name));
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn record_components<T>(
+    source: &Par,
+    types: &mut BTreeSet<&'static str>,
+    variants: &mut BTreeSet<String>,
+) where
+    T: ParBagComponent + Clone,
+    for<'a> ParCursor<'a>: From<&'a T>,
+{
+    for value in source.decode_occurrences::<T>() {
+        record(ParCursor::from(&value), types, variants);
     }
 }

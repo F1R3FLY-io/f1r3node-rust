@@ -36,20 +36,32 @@
 //! integration test. They are **compiler-generated from the same field list in
 //! the same order**, which is the only property the oracle needs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, EList, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation, Var,
+    BindPattern, Bundle, Connective, CostTokenStack, EList, Expr, GUnforgeable, If,
+    ListParWithRandom, Match, New, Par, ParWithRandom, Receive, Send, TaggedContinuation, Var,
 };
 use models::rust::channel_image::ChannelImageV2;
+use models::rust::rholang::bincode_schema_tables::{
+    CONNECTIVE_INSTANCE_VARIANTS, EXPR_INSTANCE_VARIANTS, FORM_VARIANTS, TAGGED_CONT_VARIANTS,
+    UNF_INSTANCE_VARIANTS, VAR_INSTANCE_VARIANTS,
+};
+use models::rust::rholang::match_schema_tables::{ParCursor, RHO_MATCH_REGISTRY};
 use models::rust::rspace_path::rho_path_v2_continuation_key;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{
+    hash, hash_from_slice, StableHashSerialize,
+};
+use rspace_plus_plus::rspace::history::cold_store::{
+    ContinuationsLeaf, DataLeaf, JoinsLeaf, PersistedData, PersistedDataKind,
+};
 use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
+use rspace_plus_plus::rspace::hot_store_action::{HotStoreAction, InsertAction};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::ordered_receive::{
     OrderedReceiveError, OrderedReceiveView, PreparedContinuationRecord, RestingReceiveVisit,
@@ -57,7 +69,7 @@ use rspace_plus_plus::rspace::ordered_receive::{
 use rspace_plus_plus::rspace::rho_path::{ReceiveChannelProfile, ReceiveChannelQuery};
 use rspace_plus_plus::rspace::serializers::serializers::{
     decode_continuations, decode_datum, decode_datums, encode_continuations, encode_datum,
-    encode_datums,
+    encode_datums, encode_joins,
 };
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use serde::{Deserialize, Serialize};
@@ -1108,4 +1120,284 @@ fn step_a_golden_shapes_read_back_through_the_new_path() {
             && par.family_cardinality::<models::rhoapi::If>() != 0
     );
     assert!(par.family_cardinality::<models::rhoapi::GUnforgeable>() != 0);
+}
+
+const PAYLOAD_UNREACHABLE_MESSAGES: [(&str, &str); 4] = [
+    (
+        "DeployId",
+        "no field of Par, ListParWithRandom, BindPattern or TaggedContinuation, nor of a message \
+         they reach, has this type; the unforgeable deploy-id name of a Par is the separate \
+         message GDeployId",
+    ),
+    (
+        "DeployerId",
+        "no field of Par, ListParWithRandom, BindPattern or TaggedContinuation, nor of a message \
+         they reach, has this type; the unforgeable deployer-id name of a Par is the separate \
+         message GDeployerId",
+    ),
+    (
+        "ListBindPatterns",
+        "no field of Par, ListParWithRandom, BindPattern or TaggedContinuation, nor of a message \
+         they reach, has this type; the hot store keeps the patterns of a continuation as a \
+         Vec<BindPattern>, never as this list message",
+    ),
+    (
+        "PCost",
+        "no field of Par, ListParWithRandom, BindPattern or TaggedContinuation, nor of a message \
+         they reach, has this type; it is the cost of performed operations, which no RSpace \
+         payload holds",
+    ),
+];
+
+#[derive(Debug)]
+struct ExpectedCanonicalRecord {
+    label: String,
+    count: u64,
+    encoded_persisted_data: Vec<u8>,
+}
+
+fn persisted_kind_label(kind: PersistedDataKind) -> &'static str {
+    match kind {
+        PersistedDataKind::Data => "data",
+        PersistedDataKind::Continuations => "continuations",
+        PersistedDataKind::Joins => "joins",
+    }
+}
+
+fn stored_data_values() -> Vec<ListParWithRandom> {
+    let wrapped_pars = corpus::par_corpus()
+        .into_iter()
+        .map(|(_, par)| par)
+        .chain([corpus::all_par_fields(), corpus::cost_annotated_par()])
+        .map(|par| ListParWithRandom {
+            pars: vec![par],
+            random_state: Vec::new(),
+            cost_region: None,
+        });
+    corpus::list_par_with_random_corpus()
+        .into_iter()
+        .map(|(_, value)| value)
+        .chain([corpus::cost_annotated_list_par_with_random()])
+        .chain(wrapped_pars)
+        .collect()
+}
+
+fn stored_continuation_values() -> Vec<TaggedContinuation> {
+    corpus::tagged_continuation_corpus()
+        .into_iter()
+        .map(|(_, value)| value)
+        .chain([corpus::cost_annotated_tagged_continuation()])
+        .collect()
+}
+
+fn continuation_body(continuation: &TaggedContinuation) -> Option<&Par> {
+    match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body), ..
+        })) => Some(body),
+        _ => None,
+    }
+}
+
+fn record_components_of(
+    par: &Par,
+    types: &mut BTreeSet<&'static str>,
+    variants: &mut BTreeSet<String>,
+) {
+    corpus::record_components::<Send>(par, types, variants);
+    corpus::record_components::<Receive>(par, types, variants);
+    corpus::record_components::<New>(par, types, variants);
+    corpus::record_components::<Expr>(par, types, variants);
+    corpus::record_components::<Match>(par, types, variants);
+    corpus::record_components::<GUnforgeable>(par, types, variants);
+    corpus::record_components::<Bundle>(par, types, variants);
+    corpus::record_components::<Connective>(par, types, variants);
+    corpus::record_components::<If>(par, types, variants);
+    corpus::record_components::<CostTokenStack>(par, types, variants);
+}
+
+#[test]
+fn checkpoint_egress_of_every_generated_payload_arm_equals_the_typed_encoders() {
+    let data_values = stored_data_values();
+    let continuation_values = stored_continuation_values();
+    let patterns = corpus::bind_pattern_corpus()
+        .into_iter()
+        .map(|(_, pattern)| pattern)
+        .collect::<Vec<_>>();
+    let data_channel = corpus::gint(1);
+    let group = (2_i64..)
+        .map(corpus::gint)
+        .take(patterns.len())
+        .collect::<Vec<_>>();
+    let datums = data_values
+        .iter()
+        .map(|value| Datum::create(&data_channel, value.clone(), false))
+        .collect::<Vec<_>>();
+    let continuations = continuation_values
+        .iter()
+        .map(|value| WaitingContinuation::create(&group, &patterns, value, false, BTreeSet::new()))
+        .collect::<Vec<_>>();
+    let group_joins = vec![group.clone()];
+
+    let mut expected = BTreeMap::new();
+    expected.insert(
+        ("data", hash(&data_channel).bytes()),
+        ExpectedCanonicalRecord {
+            label: "the data channel".to_string(),
+            count: u64::try_from(datums.len()).expect("a datum count fits u64"),
+            encoded_persisted_data: bincode::serialize(&PersistedData::Data(DataLeaf {
+                bytes: encode_datums(&datums),
+            }))
+            .expect("a typed data image"),
+        },
+    );
+    expected.insert(
+        ("continuations", hash_from_slice(&group).bytes()),
+        ExpectedCanonicalRecord {
+            label: "the continuation group".to_string(),
+            count: u64::try_from(continuations.len()).expect("a continuation count fits u64"),
+            encoded_persisted_data: bincode::serialize(&PersistedData::Continuations(
+                ContinuationsLeaf {
+                    bytes: encode_continuations(&continuations),
+                },
+            ))
+            .expect("a typed continuation image"),
+        },
+    );
+    let join_image = bincode::serialize(&PersistedData::Joins(JoinsLeaf {
+        bytes: encode_joins(&group_joins),
+    }))
+    .expect("a typed join image");
+    for (position, channel) in group.iter().enumerate() {
+        expected.insert(("joins", hash(channel).bytes()), ExpectedCanonicalRecord {
+            label: format!("the joins of group channel {position}"),
+            count: 1,
+            encoded_persisted_data: join_image.clone(),
+        });
+    }
+
+    let hot_store = empty_par_hot_store();
+    hot_store.set_state(HotStoreState {
+        continuations: HashMap::from([(group.clone(), continuations)]),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([(data_channel, datums)]),
+        joins: group
+            .iter()
+            .map(|channel| (channel.clone(), group_joins.clone()))
+            .collect(),
+        installed_joins: HashMap::new(),
+    });
+    let actions = hot_store
+        .checkpoint_changes()
+        .expect("the checkpoint preflight accepts the stored payloads");
+    assert_eq!(
+        actions.len(),
+        expected.len(),
+        "one canonical insert per stored channel and channel group"
+    );
+    for action in &actions {
+        let (key, count, encoded_persisted_data) = match action {
+            HotStoreAction::Insert(InsertAction::InsertCanonicalData(insert)) => (
+                ("data", insert.hash().bytes()),
+                insert.datum_count(),
+                insert.encoded_persisted_data(),
+            ),
+            HotStoreAction::Insert(InsertAction::InsertCanonicalCollection(insert)) => (
+                (
+                    persisted_kind_label(insert.persisted_kind()),
+                    insert.hash().bytes(),
+                ),
+                insert.record_count(),
+                insert.encoded_persisted_data(),
+            ),
+            other => {
+                panic!("the checkpoint of stored payloads emits only inserts, found {other:?}")
+            }
+        };
+        let record = expected
+            .remove(&key)
+            .unwrap_or_else(|| panic!("no stored {} record has the key {:?}", key.0, key.1));
+        assert_eq!(count, record.count, "{}: record count", record.label);
+        assert_eq!(
+            encoded_persisted_data,
+            record.encoded_persisted_data.as_slice(),
+            "{}: the canonical bytes equal the typed encoder's",
+            record.label
+        );
+    }
+    assert!(
+        expected.is_empty(),
+        "stored records without a canonical insert: {:?}",
+        expected
+            .values()
+            .map(|record| &record.label)
+            .collect::<Vec<_>>()
+    );
+
+    let mut types = BTreeSet::new();
+    let mut variants = BTreeSet::new();
+    for value in &data_values {
+        corpus::record(ParCursor::from(value), &mut types, &mut variants);
+        for par in &value.pars {
+            record_components_of(par, &mut types, &mut variants);
+        }
+    }
+    for value in &continuation_values {
+        corpus::record(ParCursor::from(value), &mut types, &mut variants);
+        for par in value.guard.iter().chain(continuation_body(value)) {
+            record_components_of(par, &mut types, &mut variants);
+        }
+    }
+    for pattern in &patterns {
+        corpus::record(ParCursor::from(pattern), &mut types, &mut variants);
+        for par in &pattern.patterns {
+            record_components_of(par, &mut types, &mut variants);
+        }
+    }
+
+    let registry = RHO_MATCH_REGISTRY
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<BTreeSet<_>>();
+    let unreachable = PAYLOAD_UNREACHABLE_MESSAGES
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        unreachable.is_subset(&registry),
+        "every message listed as unreachable is a registry message: {:?}",
+        unreachable.difference(&registry).collect::<Vec<_>>()
+    );
+    let missing = registry
+        .difference(&unreachable)
+        .filter(|name| !types.contains(*name))
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "the census of the stored payloads does not reach the messages {missing:?}"
+    );
+    let listed_but_reached = unreachable.intersection(&types).collect::<Vec<_>>();
+    assert!(
+        listed_but_reached.is_empty(),
+        "messages listed as unreachable from an RSpace payload type are reached: \
+         {listed_but_reached:?}"
+    );
+
+    let mut expected_variants = BTreeSet::new();
+    for (oneof, programs) in [
+        ("ExprInstance", EXPR_INSTANCE_VARIANTS),
+        ("ConnectiveInstance", CONNECTIVE_INSTANCE_VARIANTS),
+        ("VarInstance", VAR_INSTANCE_VARIANTS),
+        ("UnfInstance", UNF_INSTANCE_VARIANTS),
+        ("TaggedCont", TAGGED_CONT_VARIANTS),
+        ("Form", FORM_VARIANTS),
+    ] {
+        for program in programs {
+            expected_variants.insert(format!("{oneof}::{}", program.name));
+        }
+    }
+    assert_eq!(
+        variants, expected_variants,
+        "the census of the stored payloads reaches every variant of the six oneofs"
+    );
 }

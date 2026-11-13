@@ -2425,7 +2425,7 @@
       "checker": "scripts/check-ordered-receive-view-obligations.py",
       "family": "ordered_receive_view",
       "manifest": "formal/ordered_receive_view_obligations.generated.json",
-      "manifest_sha256": "8b1719d1a513e12572a19afdd71a983b8c71ab36c4ed002e8a0faa0da767fbf2",
+      "manifest_sha256": "514a053cefd50948f3e956880bf4074c887826b579ad38972f4dcca68d08fed5",
       "obligations": {
         "boundary": "Concrete witnesses assert each capstone on fixtures and generated records; the source mutants show the production checks observe each property. Neither is a formal Rust refinement proof, and the RCI2 profile is admitted only from explicit keys.",
         "mutants": {
@@ -2844,7 +2844,7 @@
         "sources_sha256": {
           "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthority.v": "c4183bbef63011d604a64bcf034dd87362f7921eeaf469e56063252a3481f1e5",
           "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthorityMutants.v": "4e05f494d7ef3647ae1151c4c7ae2c3f47178a7755ea49246268bdfe87489351",
-          "models/tests/cold_store_records.rs": "f3139ced4e49dc91259d0666c86cd114f6c260bfa4721444bef2d060b971a1ee",
+          "models/tests/cold_store_records.rs": "e9e38b6f861d66c0fec90bf174b793f217e8e41eb16dfd1d02568298173b9f6a",
           "rholang/tests/ordered_receive_view_rholang.rs": "10191077f1417dd08700179902c088fbfff77f143dab0570ed02f003f827a413",
           "rspace++/src/rspace/ordered_receive.rs": "3b4a8a4bd5dfeaee77f55d3453a827cb99b24904f4b1f4a5432ae71f7a5c2373",
           "rspace++/src/rspace/rho_path.rs": "377f1f4064505dacc4e668239794818d8f937f1816d68b4c4c0f0a93d2bb4079",

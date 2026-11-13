@@ -166,24 +166,6 @@ fn payload_kind_agrees_with_protobuf(
     )
 }
 
-fn record(
-    cursor: ParCursor<'_>,
-    types: &mut BTreeSet<&'static str>,
-    variants: &mut BTreeSet<String>,
-) {
-    for event in RhoPathCursor::new(cursor) {
-        match event {
-            RhoPathEvent::EnterNode { program, .. } => {
-                types.insert(program.type_name);
-            }
-            RhoPathEvent::EnterOneof(oneof) => {
-                variants.insert(format!("{}::{}", oneof.oneof_name, oneof.variant_name));
-            }
-            _ => {}
-        }
-    }
-}
-
 #[test]
 fn generated_program_registry_covers_the_descriptor_closure() {
     let mut type_ids = BTreeSet::new();
@@ -346,22 +328,22 @@ fn exhaustive_corpus_visits_every_message_and_oneof_variant() {
     let mut types = BTreeSet::new();
     let mut variants = BTreeSet::new();
     for (_, value) in par_corpus::par_corpus() {
-        record(ParCursor::from(&value), &mut types, &mut variants);
+        par_corpus::record(ParCursor::from(&value), &mut types, &mut variants);
     }
     for (_, value) in par_corpus::list_par_with_random_corpus() {
-        record(ParCursor::from(&value), &mut types, &mut variants);
+        par_corpus::record(ParCursor::from(&value), &mut types, &mut variants);
     }
     for (_, value) in par_corpus::bind_pattern_corpus() {
-        record(ParCursor::from(&value), &mut types, &mut variants);
+        par_corpus::record(ParCursor::from(&value), &mut types, &mut variants);
     }
     for (_, value) in par_corpus::tagged_continuation_corpus() {
-        record(ParCursor::from(&value), &mut types, &mut variants);
+        par_corpus::record(ParCursor::from(&value), &mut types, &mut variants);
     }
     for (_, value) in par_corpus::par_with_random_corpus() {
-        record(ParCursor::from(&value), &mut types, &mut variants);
+        par_corpus::record(ParCursor::from(&value), &mut types, &mut variants);
     }
     for (_, value) in par_corpus::list_bind_patterns_corpus() {
-        record(ParCursor::from(&value), &mut types, &mut variants);
+        par_corpus::record(ParCursor::from(&value), &mut types, &mut variants);
     }
 
     // `Par` is deliberately one native `ParBag` token in production. Walking
@@ -372,46 +354,39 @@ fn exhaustive_corpus_visits_every_message_and_oneof_variant() {
     // boundary.
     let all = par_corpus::all_par_fields();
     let cost = par_corpus::cost_annotated_par();
-    macro_rules! record_components {
-        ($source:expr, $component:ty) => {
-            for value in $source.decode_occurrences::<$component>() {
-                record(ParCursor::from(&value), &mut types, &mut variants);
-            }
-        };
-    }
-    record_components!(all, Send);
-    record_components!(all, Receive);
-    record_components!(all, New);
-    record_components!(all, Expr);
-    record_components!(all, Match);
-    record_components!(all, GUnforgeable);
-    record_components!(all, Bundle);
-    record_components!(all, Connective);
-    record_components!(all, If);
-    record_components!(cost, Send);
-    record_components!(cost, Receive);
-    record_components!(cost, CostTokenStack);
-    record(
+    par_corpus::record_components::<Send>(&all, &mut types, &mut variants);
+    par_corpus::record_components::<Receive>(&all, &mut types, &mut variants);
+    par_corpus::record_components::<New>(&all, &mut types, &mut variants);
+    par_corpus::record_components::<Expr>(&all, &mut types, &mut variants);
+    par_corpus::record_components::<Match>(&all, &mut types, &mut variants);
+    par_corpus::record_components::<GUnforgeable>(&all, &mut types, &mut variants);
+    par_corpus::record_components::<Bundle>(&all, &mut types, &mut variants);
+    par_corpus::record_components::<Connective>(&all, &mut types, &mut variants);
+    par_corpus::record_components::<If>(&all, &mut types, &mut variants);
+    par_corpus::record_components::<Send>(&cost, &mut types, &mut variants);
+    par_corpus::record_components::<Receive>(&cost, &mut types, &mut variants);
+    par_corpus::record_components::<CostTokenStack>(&cost, &mut types, &mut variants);
+    par_corpus::record(
         ParCursor::from(&par_corpus::cost_annotated_list_par_with_random()),
         &mut types,
         &mut variants,
     );
-    record(
+    par_corpus::record(
         ParCursor::from(&par_corpus::cost_annotated_tagged_continuation()),
         &mut types,
         &mut variants,
     );
-    record(
+    par_corpus::record(
         ParCursor::from(&PCost::default()),
         &mut types,
         &mut variants,
     );
-    record(
+    par_corpus::record(
         ParCursor::from(&DeployId::default()),
         &mut types,
         &mut variants,
     );
-    record(
+    par_corpus::record(
         ParCursor::from(&DeployerId::default()),
         &mut types,
         &mut variants,
