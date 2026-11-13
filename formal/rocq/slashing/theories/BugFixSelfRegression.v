@@ -127,3 +127,75 @@ Proof.
   intros hn hs Hn Hs. unfold rejects_neglected_pre_fix, rejects_neglected_post_fix.
   rewrite Hn, Hs. simpl. split; reflexivity.
 Qed.
+Record HistoryMessage := {
+  history_sender : nat;
+  history_justifications : nat -> option nat
+}.
+
+Definition history_predecessor
+    (store : nat -> option HistoryMessage)
+    (message : HistoryMessage) : option HistoryMessage :=
+  match history_justifications message (history_sender message) with
+  | Some hash => store hash
+  | None => None
+  end.
+
+Record HistorySnapshot := {
+  history_store : nat -> option HistoryMessage;
+  history_latest : nat -> option nat
+}.
+
+Definition snapshot_predecessor (snapshot : HistorySnapshot) message :=
+  history_predecessor (history_store snapshot) message.
+
+Theorem history_latest_independence :
+  forall store latest1 latest2 message,
+    snapshot_predecessor (Build_HistorySnapshot store latest1) message =
+    snapshot_predecessor (Build_HistorySnapshot store latest2) message.
+Proof. reflexivity. Qed.
+
+Theorem history_signed_predecessor :
+  forall store message hash predecessor,
+    history_justifications message (history_sender message) = Some hash ->
+    store hash = Some predecessor ->
+    history_predecessor store message = Some predecessor.
+Proof.
+  intros store message hash predecessor Hhash Hstore.
+  unfold history_predecessor. rewrite Hhash. exact Hstore.
+Qed.
+
+Definition history_pair_regresses (pair : nat * (bool * nat)) : bool :=
+  let '(new_seq, (invalid, previous_seq)) := pair in
+  negb invalid && Nat.ltb new_seq previous_seq.
+
+Definition history_regresses (pairs : list (nat * (bool * nat))) : bool :=
+  existsb history_pair_regresses pairs.
+
+Theorem history_regression_exact :
+  forall pairs,
+    history_regresses pairs = true <->
+    exists new_seq previous_seq,
+      In (new_seq, (false, previous_seq)) pairs /\ new_seq < previous_seq.
+Proof.
+  intros pairs. unfold history_regresses. rewrite existsb_exists.
+  split.
+  - intros [[new_seq [invalid previous_seq]] [Hin Hcheck]].
+    unfold history_pair_regresses in Hcheck.
+    apply andb_true_iff in Hcheck as [Hvalid Hlt].
+    apply negb_true_iff in Hvalid. subst invalid.
+    exists new_seq, previous_seq. split; [exact Hin |].
+    apply Nat.ltb_lt. exact Hlt.
+  - intros [new_seq [previous_seq [Hin Hlt]]].
+    exists (new_seq, (false, previous_seq)). split; [exact Hin |].
+    unfold history_pair_regresses. simpl. apply Nat.ltb_lt. exact Hlt.
+Qed.
+
+Theorem history_invalid_witness_exemption :
+  forall new_seq previous_seq,
+    history_regresses [(new_seq, (true, previous_seq))] = false.
+Proof. reflexivity. Qed.
+
+Print Assumptions history_latest_independence.
+Print Assumptions history_signed_predecessor.
+Print Assumptions history_regression_exact.
+Print Assumptions history_invalid_witness_exemption.

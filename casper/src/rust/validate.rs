@@ -1637,42 +1637,17 @@ impl Validate {
     }
 
     /// Justification regression check.
-    ///
-    /// Compares justifications previously cited by `b.sender` (taken from
-    /// `cur_senders_block`, the sender's current latest message in the DAG)
-    /// against justifications cited by the new block `b`, and rejects any
-    /// regression — including a regression against the sender's own prior
-    /// creator-justification.
-    ///
-    /// Bug #6 / T-9.6 (post-fix behavior).
-    ///
-    /// The pre-fix code path skipped the sender's own creator-justification,
-    /// delegating self-regression detection to `checkEquivocations`. That left
-    /// a window where a block could point back to an earlier sequence number
-    /// of its own sender without being slashed at the validation boundary.
-    /// The fix is to walk the full `new_lms` map (built from `b.justifications`
-    /// via `to_latest_message_hashes`) without filtering out `b.sender` and
-    /// compare every entry against `cur_lms`; a self-regression therefore now
-    /// produces `InvalidBlock::JustificationRegression` at the loop body below.
-    ///
-    /// Proven sound by `t_9_6_self_regression_detected`,
-    /// `t_9_6_self_regression_complete`, and `t_9_6_self_regression_in_dag` in
-    /// `formal/rocq/slashing/theories/BugFixSelfRegression.v`. See also
-    /// `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md` §9.6.
     pub fn justification_regressions(
         b: &BlockMessage,
         s: &mut CasperSnapshot,
     ) -> ValidBlockProcessing {
-        match s.dag.latest_message(&b.sender) {
-            Ok(None) => {
-                // `b` is first message from sender of `b`, so regression is not possible
-                Either::Right(ValidBlock::Valid)
-            }
+        let predecessor_hash = match proto_util::creator_justification_block_message(b) {
+            Some(justification) => justification.latest_block_hash,
+            None => return Either::Right(ValidBlock::Valid),
+        };
+        match s.dag.lookup(&predecessor_hash) {
+            Ok(None) => Either::Left(BlockError::Undecidable(predecessor_hash)),
             Ok(Some(cur_senders_block)) => {
-                // Latest Message from sender of `b` is present in the DAG
-                // Here we comparing view on the network by sender from the standpoint of
-                // his previous block created (current Latest Message of sender)
-                // and new block `b` (potential new Latest Message of sender)
                 let new_sender_block = b;
                 let new_lms =
                     proto_util::to_latest_message_hashes(&new_sender_block.justifications);
@@ -1704,16 +1679,26 @@ impl Validate {
                         continue;
                     };
 
-                    let new_justification = match s.dag.lookup_unsafe(new_justification_hash) {
-                        Ok(metadata) => metadata,
+                    let new_justification = match s.dag.lookup(new_justification_hash) {
+                        Ok(Some(metadata)) => metadata,
+                        Ok(None) => {
+                            return Either::Left(BlockError::Undecidable(
+                                new_justification_hash.clone(),
+                            ))
+                        }
                         Err(e) => {
                             return Either::Left(BlockError::from_validation_error(
                                 CasperError::from(e),
                             ))
                         }
                     };
-                    let cur_justification = match s.dag.lookup_unsafe(cur_justification_hash) {
-                        Ok(metadata) => metadata,
+                    let cur_justification = match s.dag.lookup(cur_justification_hash) {
+                        Ok(Some(metadata)) => metadata,
+                        Ok(None) => {
+                            return Either::Left(BlockError::Undecidable(
+                                cur_justification_hash.clone(),
+                            ))
+                        }
                         Err(e) => {
                             return Either::Left(BlockError::from_validation_error(
                                 CasperError::from(e),
