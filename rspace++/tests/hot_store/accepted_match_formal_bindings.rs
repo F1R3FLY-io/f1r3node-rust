@@ -12,7 +12,9 @@ use crate::rspace::logging::{RSpaceLogger, StepCommObserver};
 use crate::rspace::r#match::Match;
 use crate::rspace::replay_rspace::ReplayRSpace;
 use crate::rspace::rspace::RSpace;
-use crate::rspace::rspace_interface::{ISpace, MaybeProduceResult};
+use crate::rspace::rspace_interface::{
+    ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
+};
 use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use crate::rspace::trace::event::{COMM, Event};
@@ -940,6 +942,9 @@ fn maximal_arrival_boundary_commits_exactly_once_without_projection() {
 type TestHotStore = dyn HotStore<String, String, String, String>;
 type SpaceStoreCell = Arc<RwLock<Arc<Box<TestHotStore>>>>;
 type ProduceOutcome = MaybeProduceResult<String, String, String, String>;
+type ConsumeOutcome = MaybeConsumeResult<String, String, String, String>;
+type FiredContinuation = ContResult<String, String, String>;
+type ConsumedDatum = RSpaceResult<String, String>;
 
 const RESTING_DATUM: &str = "selected-left";
 const ARRIVING_DATUM: &str = "selected-right";
@@ -971,15 +976,6 @@ struct MatchProgress {
     stored_arrival: bool,
     selected_continuation: bool,
     join: bool,
-}
-
-impl MatchProgress {
-    const PENDING: Self = Self {
-        resting_datum: true,
-        stored_arrival: false,
-        selected_continuation: true,
-        join: true,
-    };
 }
 
 struct StoreImage {
@@ -1219,35 +1215,49 @@ enum Rival {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct MatchScenario {
-    persist: bool,
-    rival: Rival,
+enum Completion {
+    Produce(Rival),
+    Consume,
 }
 
-const MATCH_SCENARIOS: [MatchScenario; 6] = [
+#[derive(Clone, Copy, Debug)]
+struct MatchScenario {
+    persist: bool,
+    completion: Completion,
+}
+
+const MATCH_SCENARIOS: [MatchScenario; 8] = [
     MatchScenario {
         persist: false,
-        rival: Rival::Absent,
+        completion: Completion::Produce(Rival::Absent),
     },
     MatchScenario {
         persist: false,
-        rival: Rival::Resting,
+        completion: Completion::Produce(Rival::Resting),
     },
     MatchScenario {
         persist: false,
-        rival: Rival::Arriving,
+        completion: Completion::Produce(Rival::Arriving),
     },
     MatchScenario {
         persist: true,
-        rival: Rival::Absent,
+        completion: Completion::Produce(Rival::Absent),
     },
     MatchScenario {
         persist: true,
-        rival: Rival::Resting,
+        completion: Completion::Produce(Rival::Resting),
     },
     MatchScenario {
         persist: true,
-        rival: Rival::Arriving,
+        completion: Completion::Produce(Rival::Arriving),
+    },
+    MatchScenario {
+        persist: false,
+        completion: Completion::Consume,
+    },
+    MatchScenario {
+        persist: true,
+        completion: Completion::Consume,
     },
 ];
 
@@ -1262,29 +1272,65 @@ struct CommittedState {
 }
 
 impl MatchScenario {
+    fn rival(self) -> Rival {
+        match self.completion {
+            Completion::Produce(rival) => rival,
+            Completion::Consume => Rival::Absent,
+        }
+    }
+
     fn attempts(self) -> &'static [bool] {
-        match self.rival {
+        match self.rival() {
             Rival::Arriving => &[false, true],
             Rival::Absent | Rival::Resting => &[true],
         }
     }
 
-    fn joins_remain(self) -> bool { self.persist || self.rival != Rival::Absent }
+    fn stores_selected_continuation(self) -> bool {
+        match self.completion {
+            Completion::Produce(_) => self.persist,
+            Completion::Consume => false,
+        }
+    }
+
+    fn joins_remain(self) -> bool {
+        match self.completion {
+            Completion::Produce(rival) => self.persist || rival != Rival::Absent,
+            Completion::Consume => false,
+        }
+    }
+
+    fn pending_progress(self) -> MatchProgress {
+        match self.completion {
+            Completion::Produce(_) => MatchProgress {
+                resting_datum: true,
+                stored_arrival: false,
+                selected_continuation: true,
+                join: true,
+            },
+            Completion::Consume => MatchProgress {
+                resting_datum: true,
+                stored_arrival: true,
+                selected_continuation: false,
+                join: false,
+            },
+        }
+    }
 
     fn committed_progress(self) -> MatchProgress {
         MatchProgress {
             resting_datum: false,
             stored_arrival: false,
-            selected_continuation: self.persist,
+            selected_continuation: self.stores_selected_continuation(),
             join: self.joins_remain(),
         }
     }
 
     fn committed_state(self) -> CommittedState {
         let continuations = [
-            (self.rival != Rival::Absent)
+            (self.rival() != Rival::Absent)
                 .then(|| waiting_on_group(BLOCKED_PATTERN, RIVAL_CONTINUATION, false)),
-            self.persist
+            self.stores_selected_continuation()
                 .then(|| waiting_on_group(WILDCARD_PATTERN, SELECTED_CONTINUATION, true)),
         ]
         .into_iter()
@@ -1306,10 +1352,29 @@ impl MatchScenario {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum CompletionOutcome {
+    Produce(ProduceOutcome),
+    Consume(ConsumeOutcome),
+}
+
+impl CompletionOutcome {
+    fn fired(&self) -> Option<(&FiredContinuation, &[ConsumedDatum])> {
+        match self {
+            Self::Produce(outcome) => outcome
+                .as_ref()
+                .map(|(fired, consumed, _)| (fired, consumed.as_slice())),
+            Self::Consume(outcome) => outcome
+                .as_ref()
+                .map(|(fired, consumed)| (fired, consumed.as_slice())),
+        }
+    }
+}
+
 struct SideObservation {
     selections: Vec<ObservedSelection>,
     publications: Vec<ObservedPublication>,
-    outcome: ProduceOutcome,
+    outcome: CompletionOutcome,
     settled: StoreImage,
     committed: CommittedState,
     rows: HashMap<Vec<String>, Row<String, String, String>>,
@@ -1362,14 +1427,30 @@ where
             observations.selections.is_empty() && observations.publications.is_empty(),
             "staging reaches no complete selection and publishes no COMM"
         );
-        observations.arriving_rival = (scenario.rival == Rival::Arriving)
+        observations.arriving_rival = (scenario.rival() == Rival::Arriving)
             .then(|| waiting_on_group(BLOCKED_PATTERN, RIVAL_CONTINUATION, false));
     }
     let group = rendezvous_group();
-    let outcome = space
-        .produce(group[1].clone(), ARRIVING_DATUM.to_owned(), false)
-        .await
-        .expect("the produce that completes the match");
+    let outcome = match scenario.completion {
+        Completion::Produce(_) => CompletionOutcome::Produce(
+            space
+                .produce(group[1].clone(), ARRIVING_DATUM.to_owned(), false)
+                .await
+                .expect("the produce that completes the match"),
+        ),
+        Completion::Consume => CompletionOutcome::Consume(
+            space
+                .consume(
+                    group.clone(),
+                    vec![WILDCARD_PATTERN.to_owned(); 2],
+                    SELECTED_CONTINUATION.to_owned(),
+                    scenario.persist,
+                    BTreeSet::new(),
+                )
+                .await
+                .expect("the consume that completes the match"),
+        ),
+    };
     let settled = probe.image();
     let mut continuations = space.get_waiting_continuations(group.clone()).await;
     continuations.sort_by(|left, right| left.continuation.cmp(&right.continuation));
@@ -1430,7 +1511,18 @@ async fn observe_scenario(scenario: MatchScenario) -> ScenarioObservation {
     replay_probe.attach(Arc::clone(&replay.store));
 
     let group = rendezvous_group();
-    for (channel, datum) in [(group[0].clone(), RESTING_DATUM), (UNRELATED.to_owned(), UNRELATED)] {
+    let (staged_arrival, staged_selection) = match scenario.completion {
+        Completion::Produce(_) => {
+            (None, Some((WILDCARD_PATTERN, SELECTED_CONTINUATION, scenario.persist)))
+        }
+        Completion::Consume => (Some((group[1].clone(), ARRIVING_DATUM)), None),
+    };
+    let staged_data = [
+        Some((group[0].clone(), RESTING_DATUM)),
+        staged_arrival,
+        Some((UNRELATED.to_owned(), UNRELATED)),
+    ];
+    for (channel, datum) in staged_data.into_iter().flatten() {
         let stored = play
             .produce(channel, datum.to_owned(), false)
             .await
@@ -1438,8 +1530,12 @@ async fn observe_scenario(scenario: MatchScenario) -> ScenarioObservation {
         assert!(stored.is_none(), "a staged datum meets no continuation");
     }
     let staged_continuations = [
-        Some((WILDCARD_PATTERN, SELECTED_CONTINUATION, scenario.persist)),
-        (scenario.rival == Rival::Resting).then_some((BLOCKED_PATTERN, RIVAL_CONTINUATION, false)),
+        staged_selection,
+        (scenario.rival() == Rival::Resting).then_some((
+            BLOCKED_PATTERN,
+            RIVAL_CONTINUATION,
+            false,
+        )),
     ];
     for (pattern, continuation, persist) in staged_continuations.into_iter().flatten() {
         let waiting = play
@@ -1579,7 +1675,7 @@ fn comm_event_is_logged_only_after_the_complete_commit() {
             for (attempt, must_commit) in scenario.attempts().iter().enumerate() {
                 assert_eq!(
                     observed.selections[attempt].image.match_progress(),
-                    MatchProgress::PENDING,
+                    scenario.pending_progress(),
                     "{side} {scenario:?} attempt {attempt}: the store holds the initial state \
                      until the commit is decided"
                 );
@@ -1607,7 +1703,7 @@ fn comm_event_is_logged_only_after_the_complete_commit() {
                 scenario.committed_state(),
                 "{side} {scenario:?}: the committed state is the complete proposal"
             );
-            let Some((fired, consumed, _)) = &observed.outcome else {
+            let Some((fired, consumed)) = observed.outcome.fired() else {
                 panic!("{side} {scenario:?}: the accepted match returns its continuation")
             };
             assert_eq!(
@@ -1680,7 +1776,7 @@ fn play_and_replay_apply_the_same_ticket_to_the_same_state() {
                 "{scenario:?} attempt {attempt}: play and replay select from the same state"
             );
         }
-        assert!(play.outcome.is_some(), "{scenario:?}: the match fires");
+        assert!(play.outcome.fired().is_some(), "{scenario:?}: the match fires");
         assert_eq!(
             play.outcome, replay.outcome,
             "{scenario:?}: play and replay return the same result"
