@@ -1,0 +1,154 @@
+use super::*;
+use crate::rust::rholang::canonical_source_tree::tests::SourcePhysicalInventory;
+
+impl FrozenCanonicalBytes {
+    pub(crate) fn observe_physical_storage(&self, inventory: &mut SourcePhysicalInventory) {
+        let data = &self.inner.data;
+        let identity = Arc::as_ptr(data) as usize;
+        if inventory.frozen_indexes.contains_key(&identity) {
+            return;
+        }
+        let storage = std::mem::size_of_val(data.as_ref())
+            + std::mem::size_of_val(data.pages.as_ref())
+            + std::mem::size_of_val(data.leaves.as_ref())
+            + std::mem::size_of_val(data.logical_pages.as_ref());
+        inventory.frozen_indexes.insert(identity, storage);
+        for page in &data.pages {
+            inventory.byte_pages.insert(
+                Arc::as_ptr(&page.bytes) as usize,
+                (page.bytes.bytes.len(), page.bytes.bytes.capacity()),
+            );
+            inventory.provenance_pages.insert(
+                Arc::as_ptr(&page.provenance) as usize,
+                (
+                    page.provenance.values.len(),
+                    page.provenance.values.capacity(),
+                ),
+            );
+        }
+    }
+}
+
+fn located(index: usize, source: u32) -> CanonicalLocatedByte {
+    CanonicalLocatedByte::new(
+        (index % 251) as u8,
+        CanonicalByteProvenance::new(source, index),
+    )
+}
+
+#[test]
+fn common_historical_fork_export_preserves_bytes_and_provenance() {
+    let mut arena = CanonicalBytesArena::new();
+    let mut shared = arena.empty();
+    let mut shared_oracle = Vec::new();
+    for index in 0..63 {
+        let byte = located(index, 9334);
+        shared = arena
+            .append(shared, byte)
+            .expect("appending to the shared prefix failed");
+        shared_oracle.push(byte);
+    }
+
+    let mut left = shared;
+    let mut left_oracle = shared_oracle.clone();
+    for index in 63..320 {
+        let byte = located(index, 9334);
+        left = arena
+            .append(left, byte)
+            .expect("appending to the left fork failed");
+        left_oracle.push(byte);
+        if index % 32 == 31 {
+            drop(
+                arena
+                    .retained_source_window(left)
+                    .expect("the left fork has no retained source window"),
+            );
+        }
+    }
+
+    let mut right = shared;
+    let mut right_oracle = shared_oracle.clone();
+    for index in 10_000..10_260 {
+        let byte = located(index, 9335);
+        right = arena
+            .append(right, byte)
+            .expect("appending to the right fork failed");
+        right_oracle.push(byte);
+        if index % 32 == 31 {
+            drop(
+                arena
+                    .retained_source_window(right)
+                    .expect("the right fork has no retained source window"),
+            );
+        }
+    }
+
+    assert_eq!(
+        arena.located_bytes(shared).collect::<Vec<_>>(),
+        shared_oracle
+    );
+    assert_eq!(arena.located_bytes(left).collect::<Vec<_>>(), left_oracle);
+    assert_eq!(arena.located_bytes(right).collect::<Vec<_>>(), right_oracle);
+    assert_eq!(
+        arena.freeze(left).located_bytes().collect::<Vec<_>>(),
+        left_oracle
+    );
+    assert_eq!(
+        arena.freeze(right).located_bytes().collect::<Vec<_>>(),
+        right_oracle
+    );
+    let shared_view = arena
+        .retained_source_window(shared)
+        .expect("the shared prefix has no retained source window");
+    let left_view = arena
+        .retained_source_window(left)
+        .expect("the left fork has no retained source window");
+    let right_view = arena
+        .retained_source_window(right)
+        .expect("the right fork has no retained source window");
+    drop(arena);
+    assert_eq!(
+        shared_view.located_bytes().collect::<Vec<_>>(),
+        shared_oracle
+    );
+    assert_eq!(left_view.located_bytes().collect::<Vec<_>>(), left_oracle);
+    assert_eq!(right_view.located_bytes().collect::<Vec<_>>(), right_oracle);
+}
+
+#[test]
+fn common_registered_source_slice_and_generated_tail_preserve_origin() {
+    let input = (0..97).map(|index| (index % 251) as u8).collect::<Vec<_>>();
+    let source = SourceTreeWindow::from_borrowed(&input, 77, 500)
+        .expect("the borrowed input forms no source window");
+    let mut arena = CanonicalBytesArena::new();
+    let slot = arena
+        .register_source(source)
+        .expect("registering the source window failed");
+    let borrowed = arena
+        .append_source(arena.empty(), slot, 13..77)
+        .expect("appending the registered source range failed");
+    let mut expected = (13..77)
+        .map(|index| {
+            CanonicalLocatedByte::new(input[index], CanonicalByteProvenance::new(77, 500 + index))
+        })
+        .collect::<Vec<_>>();
+    let generated = located(9_000, 9334);
+    let full = arena
+        .append(borrowed, generated)
+        .expect("appending the generated byte failed");
+    expected.push(generated);
+    let selected = arena
+        .slice(full, 7..full.len())
+        .expect("slicing the full value failed");
+    let selected_oracle = expected[7..].to_vec();
+    assert_eq!(arena.located_bytes(full).collect::<Vec<_>>(), expected);
+    assert_eq!(
+        arena.located_bytes(selected).collect::<Vec<_>>(),
+        selected_oracle
+    );
+    let view = arena
+        .retained_source_window(selected)
+        .expect("the selected slice has no retained source window");
+    drop(arena);
+    assert_eq!(view.located_bytes().collect::<Vec<_>>(), selected_oracle);
+}
