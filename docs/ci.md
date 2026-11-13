@@ -30,7 +30,7 @@ Trusted execution keeps separate revision rules:
 | Path | Workflow and script revision | Reason |
 | --- | --- | --- |
 | Protected Head Guard and CI Heavy Label | Trusted base branch under `pull_request_target` | Pull request changes cannot supply scripts to their write tokens. |
-| Fork integration validation | Trusted base workflow, approved fork source, and pinned harness | Existing launch approval and credential isolation remain required. |
+| Fork integration validation | Trusted workflow, approved fork source, and candidate harness pin | Existing launch approval and credential isolation remain required. |
 | Promote and Back-merge and Release Train Daily Back-merge | `master` only | The protected `release-credentials` environment holds the promotion app credentials. |
 | Deployment Train exact-merge CI | Trusted default-branch workflow, separate candidate `target_sha` | Release evidence binds the control revision separately from the candidate revision. |
 
@@ -42,6 +42,40 @@ Their operation input selects the direction, while their workflow branch remains
 `test-ci-workflow-refs.sh` checks these boundaries.
 `test-ci-stack-gate.sh` checks event revision selection and exact-target dispatches with mocked GitHub responses.
 See the GitHub documentation for [workflow events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows) and [local reusable workflows](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows).
+
+### Candidate integration pins
+
+The test harness follows `SYSTEM_INTEGRATION_REF` in `.github/oci-validation.env` at the exact node commit under test.
+The workflow branch does not override this value.
+
+| Test path | Pin source |
+| --- | --- |
+| Ordinary PR CI | Proposed merge commit |
+| Plain manual CI dispatch | Selected branch commit |
+| Deployment Train exact-merge CI | Candidate `target_sha`, even when the workflow runs from `master` |
+| Approved fork CI and Full OCI PR validation | Reviewed head commit in its source repository |
+| Full OCI candidate validation | Candidate source commit, checked against the release evidence |
+| Soak integration preflight and segments | Resolved soak target commit |
+| Heartbeat benchmark | Resolved benchmark target commit |
+
+The [pin reader](../.github/scripts/read-system-integration-pin.sh) treats candidate configuration as data.
+It requests the file at the full commit SHA and requires exactly one valid pin declaration.
+A missing or malformed pin fails validation without a fallback to the workflow pin.
+The reader does not execute the configuration file or candidate scripts.
+
+Credential-bearing runner launch and cleanup jobs retain the pin from their trusted workflow or control revision.
+Candidate pins select the test harness in jobs that do not hold OCI or promotion app credentials.
+Promotion and back-merge credentials remain restricted to `master`.
+The soak workflow already separates its candidate harness from its trusted launcher.
+
+[Candidate-pin tests](../.github/scripts/test-system-integration-pin.sh) execute the CI and Full OCI resolution steps with different candidate and control pins.
+The heartbeat tests exercise the same separation.
+Workflow revision tests preserve the soak target-pin wiring and credential boundaries.
+
+Existing queued or completed runs retain their original workflow revision.
+Push these changes to test ordinary PR CI.
+Promote the trusted control changes through `dev` to `master` before validating the default-branch dispatch paths.
+Then confirm that the reported integration pin matches each selected candidate.
 
 ## Categories
 
@@ -140,6 +174,7 @@ The job runs these script tests:
 - Commit Policy source history
 - Commit Policy bootstrap
 - Workflow revision selection
+- Candidate integration pin selection
 - Pre-push hook
 - Stack CI gate
 - Image publish tags

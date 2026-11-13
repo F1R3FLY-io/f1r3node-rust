@@ -663,6 +663,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ci-workflow-refs.sh
 
+      - name: Verify candidate integration pins
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-system-integration-pin.sh
+
       - name: Verify image publish tags
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-image-publish-tags.sh

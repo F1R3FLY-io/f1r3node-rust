@@ -36,14 +36,54 @@ abort "workflow revision tests must run in Script Tests" unless ci.dig("jobs", "
 
 integration = load_workflow.("_integration-pipeline.yml")
 abort "the integration pipeline must not receive promotion app credentials" if integration.to_s.match?(/PROMOTION_APP_(ID|PRIVATE_KEY)/)
+resolver = integration.dig("jobs", "resolve_harness")
+abort "CI must resolve its harness from the candidate even when dispatched from master" unless resolver
+resolution = resolver.fetch("steps").find { |step| step["id"] == "pin" }
+abort "CI pin resolution must use the selected repository and exact code revision" unless resolution&.dig("env", "SOURCE_REPOSITORY") == "${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}" && resolution&.dig("env", "SOURCE_SHA") == "${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}"
+abort "CI must parse the candidate pin without sourcing candidate configuration" unless resolution["run"].include?('read-system-integration-pin.sh --repository "$SOURCE_REPOSITORY" "$SOURCE_SHA"')
+abort "CI pin resolution must retain the approval gate" unless Array(resolver["needs"]).include?("await_approval")
 integration.fetch("jobs").each do |name, job|
   Array(job["steps"]).select(&checkout).each do |step|
-    expected = step.dig("with", "repository") == "F1R3FLY-io/system-integration" ?
-      "${{ env.SYSTEM_INTEGRATION_REF }}" : "${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}"
+    expected = if name == "resolve_harness"
+      "${{ github.workflow_sha }}"
+    elsif step.dig("with", "repository") == "F1R3FLY-io/system-integration"
+      %w[integration_tests ucc_tests].include?(name) ? "${{ needs.resolve_harness.outputs.system_integration_ref }}" : "${{ env.SYSTEM_INTEGRATION_REF }}"
+    else
+      "${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}"
+    end
     abort "#{name} must retain the selected code revision or pinned trusted harness" unless step.dig("with", "ref") == expected
     abort "#{name} must not persist checkout credentials" unless step.dig("with", "persist-credentials") == false
   end
 end
+%w[integration_tests ucc_tests].each do |name|
+  job = integration.dig("jobs", name)
+  abort "#{name} must depend on candidate pin resolution" unless job["needs"].include?("resolve_harness")
+  abort "#{name} must not receive privileged credentials" if job.to_s.match?(/secrets\.|environment/)
+end
+abort "CI must reject a missing candidate pin before spending runner resources" unless integration.dig("jobs", "build_docker_image", "needs").include?("resolve_harness")
+
+oci = load_workflow.("oci-validation.yml")
+validation = oci.dig("jobs", "validate_pr", "steps")
+pr = validation.find { |step| step["id"] == "pr" }.fetch("run")
+candidate = validation.find { |step| step["id"] == "candidate" }.fetch("run")
+abort "Full OCI PR tests must use the reviewed head's pin" unless pr.include?('read-system-integration-pin.sh --repository "$head_repo" "$head_sha"') && !pr.include?("source .github/oci-validation.env")
+abort "Full OCI candidate tests must bind the source pin to release evidence" unless candidate.include?('read-system-integration-pin.sh --repository "$GH_REPO" "$source_sha"') && candidate.include?('"$candidate_pin" = "$(jq -r')
+launcher = oci.dig("jobs", "launch_ephemeral_runners", "steps").find { |step| checkout.(step) }
+abort "Full OCI credentials must retain the trusted launcher pin" unless launcher.dig("with", "ref") == "${{ needs.validate_pr.outputs.launcher_ref }}"
+abort "Full OCI must pass the candidate pin to its test workflow" unless oci.dig("jobs", "oci_validation", "with", "system_integration_ref") == "${{ needs.validate_pr.outputs.system_integration_ref }}"
+
+heartbeat = load_workflow.("heartbeat-timing.yml")
+benchmark_resolution = heartbeat.dig("jobs", "await_approval", "steps").find { |step| step["id"] == "resolve" }.fetch("run")
+abort "heartbeat tests must use their target's pin" unless benchmark_resolution.include?('read-system-integration-pin.sh --repository "$GITHUB_REPOSITORY" "$target_sha"')
+heartbeat_launcher = heartbeat.dig("jobs", "launch_ephemeral_runners", "env", "SYSTEM_INTEGRATION_REF")
+abort "heartbeat credentials must retain the control pin" unless heartbeat_launcher == "${{ needs.await_approval.outputs.launcher_sha }}"
+
+soak = load_workflow.("merge-recovery-soak.yml")
+soak_steps = soak.dig("jobs", "soak", "steps")
+soak_pin = soak_steps.find { |step| step["id"] == "pin" }
+abort "soak tests must continue reading the target's pin" unless soak_pin["working-directory"] == "node-under-test" && soak_pin["run"].include?("env_file=.github/oci-validation.env")
+soak_harness = soak_steps.find { |step| step.dig("with", "repository") == "F1R3FLY-io/system-integration" }
+abort "soak tests must check out the resolved target pin" unless soak_harness.dig("with", "ref") == "${{ steps.pin.outputs.system_integration_ref }}"
 
 %w[protected-head-guard.yml ci-heavy-label.yml].each do |name|
   workflow = load_workflow.(name)

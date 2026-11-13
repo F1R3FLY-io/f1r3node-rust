@@ -32,6 +32,7 @@ jobs:
     outputs:
       target_sha: ${{ steps.resolve.outputs.target_sha }}
       harness_sha: ${{ steps.resolve.outputs.harness_sha }}
+      launcher_sha: ${{ steps.resolve.outputs.launcher_sha }}
       repetitions: ${{ steps.resolve.outputs.repetitions }}
     steps:
       - name: Checkout benchmark controls
@@ -52,11 +53,12 @@ jobs:
           target_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$encoded_ref" --jq .sha)"
           [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
           bash .github/scripts/require-repository-commit.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$target_sha"
-          source .github/oci-validation.env
-          [[ "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          launcher_sha="$(bash .github/scripts/read-system-integration-pin.sh .github/oci-validation.env)"
+          harness_sha="$(bash .github/scripts/read-system-integration-pin.sh --repository "$GITHUB_REPOSITORY" "$target_sha")"
           {
             echo "target_sha=$target_sha"
-            echo "harness_sha=$SYSTEM_INTEGRATION_REF"
+            echo "harness_sha=$harness_sha"
+            echo "launcher_sha=$launcher_sha"
             echo "repetitions=$REPETITIONS"
           } >> "$GITHUB_OUTPUT"
   launch_ephemeral_runners:
@@ -69,7 +71,7 @@ jobs:
       group: oci-ephemeral-launch
       cancel-in-progress: false
     env:
-      SYSTEM_INTEGRATION_REF: ${{ needs.await_approval.outputs.harness_sha }}
+      SYSTEM_INTEGRATION_REF: ${{ needs.await_approval.outputs.launcher_sha }}
     steps:
       - name: Clone system-integration
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09

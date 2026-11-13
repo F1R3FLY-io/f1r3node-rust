@@ -600,6 +600,7 @@ tasks:
       - "Human-managed pull requests require the queue checkbox or queue comment. The scheduled release back-merge retains automatic queueing."
       - "Focused tests preserve queue eligibility, required checks, reviews, merge methods, and temporary promotion and back-merge heads."
       - "Focused tests verify event revision checkouts, local reusable workflows, selected-branch dispatches, and trusted master-only promotion credentials."
+      - "CI, Full OCI validation, soaks, and heartbeat tests use the exact candidate's integration pin. Credential-bearing launchers retain trusted control pins."
       - "Existing documentation explains the behavior and the remaining rollout steps."
   - id: TASK-023-5
     title: "Measure the disk admission failure rate after the fix"
