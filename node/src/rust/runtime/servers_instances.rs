@@ -21,13 +21,7 @@ use shared::rust::shared::f1r3fly_events::EventStream;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use crate::rust::api::admin_web_api::AdminWebApi;
-use crate::rust::api::grpc_package::{acquire_external_server, acquire_internal_server};
-use crate::rust::api::web_api::WebApi;
 use crate::rust::configuration::NodeConf;
-use crate::rust::runtime::api_servers::APIServers;
-use crate::rust::web::routes::Routes;
-use crate::rust::web::shared_handlers::AppState;
 
 const HTTP_BIND_RETRY_ATTEMPTS: usize = 60;
 const HTTP_BIND_RETRY_DELAY: Duration = Duration::from_millis(500);
@@ -74,6 +68,7 @@ async fn bind_tcp_listener_with_retry(
 
 /// Container for all servers Node provides
 pub struct ServersInstances {
+    pub shutdown: ServerShutdown,
     // Server instances for control/inspection (backward compatible)
     pub transport_server: Arc<TransportServer>,
     pub kademlia_server: GrpcServer,
@@ -87,6 +82,16 @@ pub struct ServersInstances {
     pub internal_api_server_handle: JoinHandle<Result<(), tonic::transport::Error>>,
     pub http_server_handle: JoinHandle<Result<(), eyre::Error>>,
     pub admin_http_server_handle: JoinHandle<Result<(), eyre::Error>>,
+}
+
+pub struct ServerShutdown(tokio::sync::watch::Sender<bool>);
+
+impl ServerShutdown {
+    pub fn signal(&self) { self.0.send_replace(true); }
+}
+
+impl Drop for ServerShutdown {
+    fn drop(&mut self) { self.signal(); }
 }
 
 impl ServersInstances {
@@ -109,9 +114,7 @@ impl ServersInstances {
     /// * `startup_events` - Startup event buffer for WebSocket replay
     /// * `kademlia_store` - Kademlia store (needed for Kademlia server)
     pub async fn build<T: KademliaRPC + Send + Sync + 'static>(
-        api_servers: APIServers,
-        web_api: Arc<dyn WebApi + Send + Sync + 'static>,
-        admin_web_api: Arc<dyn AdminWebApi + Send + Sync + 'static>,
+        application: crate::rust::runtime::setup::PreparedApplication,
         grpc_packet_handler: DispatchFn,
         grpc_stream_handler: HandleStreamedFn,
         host: &str,
@@ -120,11 +123,28 @@ impl ServersInstances {
         rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
         rp_connections: ConnectionsCell,
         node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
-        block_report_api: Arc<casper::rust::api::block_report_api::BlockReportAPI>,
         event_stream: EventStream,
         startup_events: shared::rust::shared::f1r3fly_events::StartupBuffer,
         kademlia_store: Arc<KademliaStore<T>>,
     ) -> eyre::Result<Self> {
+        let (shutdown_tx, mut http_shutdown) = tokio::sync::watch::channel(false);
+        let mut admin_shutdown = http_shutdown.clone();
+        let shutdown = ServerShutdown(shutdown_tx);
+        let crate::rust::runtime::application::ApplicationRoutes {
+            external: external_api_router,
+            internal: internal_api_router,
+            public_http: http_router,
+            admin_http: admin_http_router,
+        } = application
+            .routes(crate::rust::runtime::application::ApplicationContext {
+                settings: node_conf.api_server.clone(),
+                peer_conf: rp_conf_cell.clone(),
+                connections: rp_connections,
+                discovery: node_discovery,
+                events: event_stream,
+                startup_events,
+            })
+            .await?;
         // Read current RPConf
         let rp_conf = rp_conf_cell
             .read()
@@ -191,19 +211,6 @@ impl ServersInstances {
             kademlia_server.port()
         );
 
-        // Acquire external API server router
-        let external_api_router = acquire_external_server(
-            api_servers.deploy.clone(),
-            node_conf.api_server.grpc_max_recv_message_size as usize,
-            node_conf.api_server.keep_alive_time,
-            node_conf.api_server.keep_alive_timeout,
-            node_conf.api_server.tcp_keepalive_time,
-            node_conf.api_server.request_timeout,
-            node_conf.api_server.max_connection_age,
-            node_conf.api_server.max_connection_age_grace,
-        )
-        .map_err(|e| eyre::eyre!("Failed to acquire external API server: {}", e))?;
-
         // Create and start external API server
         let mut external_api_server = GrpcServer::new(node_conf.api_server.port_grpc_external);
         external_api_server
@@ -217,23 +224,6 @@ impl ServersInstances {
             external_api_server.port()
         );
 
-        // Acquire internal API server router
-        let internal_api_router = acquire_internal_server(
-            api_servers.repl.clone(),
-            api_servers.deploy.clone(),
-            api_servers.propose.clone(),
-            api_servers.lsp.clone(),
-            node_conf.api_server.grpc_max_recv_message_size as usize,
-            node_conf.api_server.keep_alive_time,
-            node_conf.api_server.keep_alive_timeout,
-            node_conf.api_server.tcp_keepalive_time,
-            node_conf.api_server.request_timeout,
-            node_conf.api_server.max_connection_age,
-            node_conf.api_server.max_connection_age_grace,
-        )
-        .await
-        .map_err(|e| eyre::eyre!("Failed to acquire internal API server: {}", e))?;
-
         // Create and start internal API server
         let mut internal_api_server = GrpcServer::new(node_conf.api_server.port_grpc_internal);
         internal_api_server
@@ -246,24 +236,6 @@ impl ServersInstances {
             host,
             internal_api_server.port()
         );
-
-        // Create AppState for HTTP servers
-        let app_state = AppState::new(
-            admin_web_api.clone(),
-            web_api.clone(),
-            block_report_api.clone(),
-            rp_conf_cell.clone(),
-            Arc::new(rp_connections),
-            node_discovery.clone(),
-            Arc::new(event_stream.new_subscribe()),
-            startup_events,
-        );
-
-        let http_router = Routes::create_main_routes(
-            node_conf.api_server.enable_reporting,
-            node_conf.api_server.http_max_body_bytes as usize,
-        )
-        .with_state(app_state.clone());
 
         // Start HTTP server
 
@@ -282,9 +254,10 @@ impl ServersInstances {
             rt.block_on(async move {
                 let listener = bind_tcp_listener_with_retry(http_addr, "HTTP").await?;
 
-                axum::serve(listener, http_router)
-                    .await
-                    .map_err(|e| eyre::eyre!("HTTP server error: {}", e))?;
+                tokio::select! {
+                    _ = http_shutdown.wait_for(|stop| *stop) => {},
+                    result = axum::serve(listener, http_router) => { result.map_err(|e| eyre::eyre!("HTTP server error: {}", e))?; }
+                }
 
                 Ok(())
             })
@@ -294,11 +267,6 @@ impl ServersInstances {
             "HTTP API server started at {}:{}",
             node_conf.api_server.host, node_conf.api_server.port_http
         );
-
-        // Create admin HTTP server router
-        let admin_http_router =
-            Routes::create_admin_routes(node_conf.api_server.http_max_body_bytes as usize)
-                .with_state(app_state);
 
         let ip_admin_http = IpAddr::from_str(&node_conf.api_server.host)
             .map_err(|e| eyre::eyre!("Invalid HTTP server address: {}", e))?;
@@ -315,9 +283,10 @@ impl ServersInstances {
             rt.block_on(async move {
                 let listener = bind_tcp_listener_with_retry(admin_http_addr, "Admin HTTP").await?;
 
-                axum::serve(listener, admin_http_router)
-                    .await
-                    .map_err(|e| eyre::eyre!("Admin HTTP server error: {}", e))?;
+                tokio::select! {
+                    _ = admin_shutdown.wait_for(|stop| *stop) => {},
+                    result = axum::serve(listener, admin_http_router) => { result.map_err(|e| eyre::eyre!("Admin HTTP server error: {}", e))?; }
+                }
 
                 Ok(())
             })
@@ -364,6 +333,7 @@ impl ServersInstances {
             .ok_or_else(|| eyre::eyre!("Internal API server not running"))?;
 
         Ok(Self {
+            shutdown,
             // Server instances for control/inspection
             transport_server: transport_server_arc,
             kademlia_server,

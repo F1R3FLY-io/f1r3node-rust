@@ -5,15 +5,18 @@
 mod process;
 
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use casper_soak::{encoded, file_hash, record};
 use serde_json::{json, Value};
 
-fn config(root: &std::path::Path) -> Value {
-    let sleep = fs::canonicalize("/usr/bin/sleep").unwrap();
-    json!({"path":sleep,"sha256":file_hash(&sleep).unwrap(),"arguments":["60"],"working_directory":root})
+fn config(root: &Path, executable: &Path) -> Value {
+    let executable = fs::canonicalize(executable).unwrap();
+    let pinned = root.join("sleep");
+    fs::copy(executable, &pinned).unwrap();
+    json!({"path":pinned,"sha256":file_hash(&pinned).unwrap(),"arguments":["60"],"working_directory":root})
 }
 
 fn request(child: Value, action: &str) -> Value {
@@ -34,10 +37,12 @@ impl Drop for Server {
     }
 }
 impl Server {
-    fn new() -> Self {
+    fn new() -> Self { Self::with_executable(Path::new("/usr/bin/sleep")) }
+
+    fn with_executable(executable: &Path) -> Self {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("config.json");
-        fs::write(&path, encoded(&config(root.path())).unwrap()).unwrap();
+        fs::write(&path, encoded(&config(root.path(), executable)).unwrap()).unwrap();
         let child = Command::new(env!("CARGO_BIN_EXE_casper-authority-process"))
             .args([
                 "--config",
@@ -59,6 +64,22 @@ impl Server {
         };
         Self { child, owner, root }
     }
+}
+
+#[test]
+fn symlinked_system_executable_can_be_pinned_and_started() {
+    let source = tempfile::tempdir().unwrap();
+    let link = source.path().join("sleep");
+    std::os::unix::fs::symlink("/usr/bin/sleep", &link).unwrap();
+    assert!(file_hash(&link).is_err());
+    let server = Server::with_executable(&link);
+    let configured = record(&server.root.path().join("config.json")).unwrap();
+    let executable = Path::new(configured["path"].as_str().unwrap());
+    assert!(fs::symlink_metadata(executable).unwrap().is_file());
+    assert_eq!(
+        server.owner["child"]["executable_sha256"],
+        configured["sha256"]
+    );
 }
 
 #[test]

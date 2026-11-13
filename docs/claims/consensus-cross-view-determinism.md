@@ -27,7 +27,7 @@ V(a) = V(b) => leader(V(a), a) = leader(V(b), b)
 - `formal/tlaplus/recovery_leader/RecoveryLeader.tla`
 - `formal/tlaplus/recovery_leader/MC_RecoveryLeader.cfg`
 - `formal/tlaplus/recovery_leader/MC_RecoveryLeader_view_dependent_pre_fix.cfg`
-- `node/src/rust/instances/heartbeat_proposer.rs::lag_recovery_leader_is_stable_across_local_dag_and_lfb_views`
+- `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs::lag_recovery_leader_is_stable_across_local_dag_and_lfb_views`
 
 ## Required code bridge
 

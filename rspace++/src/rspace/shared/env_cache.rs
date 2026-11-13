@@ -25,6 +25,15 @@ use heed::{Env, EnvOpenOptions};
 
 static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Arc<Env>>>> = OnceLock::new();
 
+pub fn get_cached_env(dir_path: &Path) -> Option<Arc<Env>> {
+    ENV_CACHE
+        .get()?
+        .lock()
+        .expect("LMDB env cache mutex poisoned")
+        .get(dir_path)
+        .cloned()
+}
+
 /// Open the LMDB environment for `dir_path`, or return the cached handle. Map
 /// size and max_dbs are honored only on the first open of a path.
 pub fn get_or_open_env(

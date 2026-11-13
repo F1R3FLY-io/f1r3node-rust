@@ -1055,7 +1055,7 @@ jobs:
     name: Test (${{ matrix.crate }})
     needs: [build_base, static_checks]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.crate == 'node' && 60 || 45 }}
     strategy:
       fail-fast: false
       matrix:
@@ -1069,6 +1069,8 @@ jobs:
           - block-storage
           - comm
           - graphz
+          - consensus-api
+          - consensus-runtime
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -1104,6 +1106,17 @@ jobs:
           CRATE: ${{ matrix.crate }}
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/run-crate-tests.sh
+
+      - name: Test host without a consensus factory
+        if: matrix.crate == 'node'
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
+          RUST_BACKTRACE: "1"
+          RUST_MIN_STACK: "8388608"
+        run: >-
+          cargo test --locked --release -p node --no-default-features
+          --test consensus_factory --test consensus_application
+          --test consensus_ingress --test consensus_boundaries
 
       - name: Upload test logs
         if: failure()

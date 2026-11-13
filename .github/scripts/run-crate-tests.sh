@@ -14,7 +14,7 @@ doctests="${DOCTESTS:-true}"
 name="$crate${partition:+-${partition%%/*}}"
 
 # Must stay identical to the regex in scripts/coverage.sh, which explains it.
-ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|node/src/rust/runtime/|node/src/rust/instances/proposer_instance\.rs)'
+ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|node/src/rust/runtime/|node/src/rust/consensus/casper/instances/proposer_instance\.rs)'
 
 ulimit -n 65536
 mkdir -p /tmp/test-logs target/coverage
