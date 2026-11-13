@@ -30,7 +30,11 @@ impl Origin {
     pub fn digest(&self) -> Vec<u8> {
         origin_digest(&SealOrigin {
             envelope: self.envelope.clone(),
-            signers: self.signers.iter().map(WalletOwner::canonical_bytes).collect(),
+            signers: self
+                .signers
+                .iter()
+                .map(WalletOwner::canonical_bytes)
+                .collect(),
             phlo_price: self.phlo_price,
             phlo_limit: self.phlo_limit,
         })

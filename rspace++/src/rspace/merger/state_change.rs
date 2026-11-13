@@ -39,7 +39,9 @@ where
         self.get_continuations_proj_binary(key)
     }
 
-    fn joins(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, HistoryError> { self.get_joins(key) }
+    fn joins(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, HistoryError> {
+        self.get_joins(key)
+    }
 }
 
 /**

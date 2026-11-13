@@ -142,7 +142,11 @@ pub fn normalize_ann_proc<'ast>(
             free_map: input.free_map.clone(),
         }),
 
-        Proc::SignedTerm { proc: inner, sig, limit } => {
+        Proc::SignedTerm {
+            proc: inner,
+            sig,
+            limit,
+        } => {
             use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_signed_term;
             recognize_signed_term(inner, sig, *limit, input, _env, parser)
         }

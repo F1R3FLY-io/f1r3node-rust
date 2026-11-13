@@ -100,9 +100,7 @@ pub fn sort_signature(signature: &CostSignature) -> ScoredTerm<CostSignature> {
                     let (terms, scores) = split(elements);
                     ScoredTerm {
                         term: CostSignature {
-                            value: Some(Value::Compound(CostSignatureCompound {
-                                elements: terms,
-                            })),
+                            value: Some(Value::Compound(CostSignatureCompound { elements: terms })),
                         },
                         score: Tree::<ScoreAtom>::create_node_from_i32(
                             Score::COST_SIG_COMPOUND,

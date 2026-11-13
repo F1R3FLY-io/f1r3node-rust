@@ -130,7 +130,9 @@ impl Interpreter for InterpreterImpl {
                     "inj_attempt"
                 );
                 let compiled = match elaboration.clone() {
-                    Some(origin) => Compiler::source_to_adt_elaborated(term, normalizer_env, origin),
+                    Some(origin) => {
+                        Compiler::source_to_adt_elaborated(term, normalizer_env, origin)
+                    }
                     None => Compiler::source_to_adt_with_normalizer_env(term, normalizer_env),
                 };
                 let result = match compiled {
@@ -174,9 +176,14 @@ impl Interpreter for InterpreterImpl {
             let phase_start = Instant::now();
             event!(Level::DEBUG, mark = "started-reduce-term", "inj_attempt");
             let reduce_result = match &elaboration {
-                Some(origin) if !crate::rust::interpreter::reduce::is_elaborated_deployment(&parsed, origin) => {
+                Some(origin)
+                    if !crate::rust::interpreter::reduce::is_elaborated_deployment(
+                        &parsed, origin,
+                    ) =>
+                {
                     Err(InterpreterError::ReduceError(
-                        "a user deployment reaches the reducer only in its elaborated form".to_string(),
+                        "a user deployment reaches the reducer only in its elaborated form"
+                            .to_string(),
                     ))
                 }
                 _ => reducer.inj(parsed, rand).await,

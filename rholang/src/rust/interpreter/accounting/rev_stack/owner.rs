@@ -87,11 +87,8 @@ impl WalletOwner {
                 let mut at = 4;
                 let mut components = Vec::new();
                 for _ in 0..count {
-                    let len =
-                        u32::from_be_bytes(rest.get(at..at + 4)?.try_into().ok()?) as usize;
-                    components.push(Self::from_canonical_bytes(
-                        rest.get(at + 4..at + 4 + len)?,
-                    )?);
+                    let len = u32::from_be_bytes(rest.get(at..at + 4)?.try_into().ok()?) as usize;
+                    components.push(Self::from_canonical_bytes(rest.get(at + 4..at + 4 + len)?)?);
                     at += 4 + len;
                 }
                 if at != rest.len() {
@@ -159,7 +156,10 @@ mod tests {
         let joint = WalletOwner::compound(vec![b.clone(), a.clone()]).unwrap();
         let bytes = joint.canonical_bytes();
         assert_eq!(WalletOwner::from_canonical_bytes(&bytes), Some(joint));
-        assert_eq!(WalletOwner::from_canonical_bytes(&bytes[..bytes.len() - 1]), None);
+        assert_eq!(
+            WalletOwner::from_canonical_bytes(&bytes[..bytes.len() - 1]),
+            None
+        );
         assert_eq!(
             WalletOwner::from_canonical_bytes(&a.canonical_bytes()),
             Some(a)

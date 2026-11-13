@@ -9,9 +9,7 @@ use rholang::rust::interpreter::accounting::rev_stack::bond::{bond_balance, bond
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
 use rholang::rust::interpreter::accounting::rev_stack::{HotStoreCells, RevStacks, WalletOwner};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::rho_type::{
-    RhoBoolean, RhoString, RhoTuple2,
-};
+use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoString, RhoTuple2};
 use rholang::rust::interpreter::system_processes::DeployData;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -96,7 +94,8 @@ async fn a_deployer_bonds_its_own_rev_natively() {
         "the reply is a receipt that names the bonder"
     );
     assert!(
-        rholang::rust::interpreter::accounting::rev_stack::bond::receipt_key(&Par::default()).is_err()
+        rholang::rust::interpreter::accounting::rev_stack::bond::receipt_key(&Par::default())
+            .is_err()
     );
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 700);
     assert_eq!(bond_balance(cells(&runtime), &alice.pk.bytes).unwrap(), 300);
@@ -111,15 +110,16 @@ async fn only_a_holder_of_the_bond_admin_name_can_release_or_slash_a_bond() {
         .unwrap();
     let pk = hex::encode(&alice.pk.bytes);
 
-    let public = format!(
-        r#"new b(`rho:rev:bond`) in {{ b!("slash", "{pk}".hexToBytes(), "out") }}"#
-    );
+    let public =
+        format!(r#"new b(`rho:rev:bond`) in {{ b!("slash", "{pk}".hexToBytes(), "out") }}"#);
     assert!(!eval_as(&runtime, &mallory, &public).await.is_empty());
-    let direct = format!(
-        r#"new a(`rho:rev:bondAdmin`) in {{ a!("slash", "{pk}".hexToBytes(), "out") }}"#
-    );
+    let direct =
+        format!(r#"new a(`rho:rev:bondAdmin`) in {{ a!("slash", "{pk}".hexToBytes(), "out") }}"#);
     let errors = eval_as(&runtime, &mallory, &direct).await;
-    assert!(errors.iter().any(|e| e.contains("reserved for genesis")), "{errors:?}");
+    assert!(
+        errors.iter().any(|e| e.contains("reserved for genesis")),
+        "{errors:?}"
+    );
     let looked_up = format!(
         r#"new lookup(`rho:internal:registry_lookup`), ret in {{
              lookup!("rho:rev:bondAdmin", *ret) |
@@ -127,7 +127,10 @@ async fn only_a_holder_of_the_bond_admin_name_can_release_or_slash_a_bond() {
            }}"#
     );
     let errors = eval_as(&runtime, &mallory, &looked_up).await;
-    assert!(errors.iter().any(|e| e.contains("reserved for genesis")), "{errors:?}");
+    assert!(
+        errors.iter().any(|e| e.contains("reserved for genesis")),
+        "{errors:?}"
+    );
     assert!(take(&runtime, "out").await.is_empty());
     assert_eq!(bond_balance(cells(&runtime), &alice.pk.bytes).unwrap(), 500);
 

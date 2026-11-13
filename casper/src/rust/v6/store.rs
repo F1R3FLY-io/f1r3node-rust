@@ -178,12 +178,17 @@ impl<R: ExecutionRecord> RecordStore<R> for MemoryRecordStore<R> {
     }
 
     fn void_count(&self, proposer: &Bytes, reason: VoidReason) -> u64 {
-        self.voids.get(&(proposer.clone(), reason)).copied().unwrap_or(0)
+        self.voids
+            .get(&(proposer.clone(), reason))
+            .copied()
+            .unwrap_or(0)
     }
 
     fn prior(&self, envelope: &[u8]) -> Option<PriorEntry> { self.priors.get(envelope).copied() }
 
-    fn position_of(&self, block: &BlockHash) -> Option<usize> { self.prefix.index.get(block).copied() }
+    fn position_of(&self, block: &BlockHash) -> Option<usize> {
+        self.prefix.index.get(block).copied()
+    }
 
     fn reset(&mut self) -> Result<(), KvStoreError> {
         self.prefix = Prefix::new(self.prefix.anchor.clone(), self.prefix.anchor_root.clone());
@@ -494,7 +499,10 @@ impl<R: ExecutionRecord> LmdbRecordStore<R> {
             (position_key(self.head.len), target.to_vec()),
             (keyed(ROOT, &target), root.to_vec()),
             (keyed(CITER, &target), citer.to_vec()),
-            (keyed(INDEX, &target), (self.head.len as u64).to_be_bytes().to_vec()),
+            (
+                keyed(INDEX, &target),
+                (self.head.len as u64).to_be_bytes().to_vec(),
+            ),
             (META_KEY.to_vec(), next.meta()),
         ];
         rows.extend(extra);
@@ -702,7 +710,9 @@ mod tests {
         let db: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
         let citers = Arc::new(Citers::default());
         let (mut store, _) = open(&db, &citers, "g", "r0");
-        let void = |target: &str| BlockRecord::voided(h(target), h("r0"), &[], VoidReason::UnreadableTerms);
+        let void = |target: &str| {
+            BlockRecord::voided(h(target), h("r0"), &[], VoidReason::UnreadableTerms)
+        };
         for target in ["b1", "b2"] {
             citers.cite("c", void(target));
             let marks = FixMarks {
@@ -713,14 +723,33 @@ mod tests {
                     status: PriorStatus::Discarded,
                 })],
             };
-            store.fix_marked(h(target), h("c"), void(target), &marks).unwrap();
+            store
+                .fix_marked(h(target), h("c"), void(target), &marks)
+                .unwrap();
         }
         let (reopened, opened) = open(&db, &citers, "g", "r0");
         assert_eq!(opened, Opened::Resumed);
         assert_eq!(RecordStore::<BlockRecord>::canonical_len(&reopened), 3);
-        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V1"), VoidReason::UnreadableTerms), 2);
-        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V1"), VoidReason::CloseFailed), 0);
-        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V2"), VoidReason::UnreadableTerms), 0);
+        assert_eq!(
+            RecordStore::<BlockRecord>::void_count(
+                &reopened,
+                &h("V1"),
+                VoidReason::UnreadableTerms
+            ),
+            2
+        );
+        assert_eq!(
+            RecordStore::<BlockRecord>::void_count(&reopened, &h("V1"), VoidReason::CloseFailed),
+            0
+        );
+        assert_eq!(
+            RecordStore::<BlockRecord>::void_count(
+                &reopened,
+                &h("V2"),
+                VoidReason::UnreadableTerms
+            ),
+            0
+        );
         assert_eq!(
             RecordStore::<BlockRecord>::prior(&reopened, b"d-b2"),
             Some(PriorEntry {

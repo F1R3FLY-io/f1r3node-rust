@@ -161,19 +161,22 @@ mod own_limit_tests {
     use crate::rust::interpreter::errors::InterpreterError;
 
     fn record(envelope: u8) -> SealRecord {
-        SealRecord::deployment(
-            WalletOwner::Unforgeable(vec![envelope; 32]),
-            Origin {
-                envelope: vec![envelope],
-                signers: Vec::new(),
-                phlo_price: 1,
-                phlo_limit: 0,
-            },
-        )
+        SealRecord::deployment(WalletOwner::Unforgeable(vec![envelope; 32]), Origin {
+            envelope: vec![envelope],
+            signers: Vec::new(),
+            phlo_price: 1,
+            phlo_limit: 0,
+        })
     }
 
-    fn charge(cost: &CostManager, under: Option<SealRecord>, phlo: i64) -> Result<(), InterpreterError> {
-        within_now(under, || cost.charge(Cost::create(phlo, "test".to_string())))
+    fn charge(
+        cost: &CostManager,
+        under: Option<SealRecord>,
+        phlo: i64,
+    ) -> Result<(), InterpreterError> {
+        within_now(under, || {
+            cost.charge(Cost::create(phlo, "test".to_string()))
+        })
     }
 
     #[test]

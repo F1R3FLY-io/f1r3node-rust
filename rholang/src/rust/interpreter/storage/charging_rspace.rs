@@ -18,13 +18,12 @@ use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::util::unpack_option;
 
-use crate::rust::interpreter::accounting::_cost;
 use crate::rust::interpreter::accounting::comm_ledger::comm_cells;
-use crate::rust::interpreter::accounting::membrane;
-use crate::rust::interpreter::accounting::rev_stack::seal;
 use crate::rust::interpreter::accounting::costs::{
     comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
 };
+use crate::rust::interpreter::accounting::rev_stack::seal;
+use crate::rust::interpreter::accounting::{_cost, membrane};
 use crate::rust::interpreter::errors::InterpreterError;
 
 pub struct ChargingRSpace;
@@ -99,9 +98,15 @@ impl ChargingRSpace {
                         Some((cont, data_list)) => {
                             left_in_space_match(cont, data_list, &Trigger::Consume, &self.cost)?
                         }
-                        None => match with_rule(&self.cost, |rule| rule.left_continuation(&id, seal::current())) {
-                            true => membrane::settling(|| self.cost.charge(event_storage_cost(channels_count)))?,
-                            false => refund(&self.cost, consume_storage.value, "consume storage refund")?,
+                        None => match with_rule(&self.cost, |rule| {
+                            rule.left_continuation(&id, seal::current())
+                        }) {
+                            true => membrane::settling(|| {
+                                self.cost.charge(event_storage_cost(channels_count))
+                            })?,
+                            false => {
+                                refund(&self.cost, consume_storage.value, "consume storage refund")?
+                            }
                         },
                     }
                     return Ok(consume_res);
@@ -143,20 +148,27 @@ impl ChargingRSpace {
                         self.cost
                             .charge_reserving(produce_storage.clone(), reserve)?;
                     }
-                        with_rule(&self.cost, |rule| rule.announce_datum(&id, seal::current()));
-                    let produce_res =
-                        (self.space.produce(channel, data, persist))
-                            .await?;
+                    with_rule(&self.cost, |rule| rule.announce_datum(&id, seal::current()));
+                    let produce_res = (self.space.produce(channel, data, persist)).await?;
                     match produce_res.as_ref() {
                         Some((cont, data_list, _)) => left_in_space_match(
                             cont,
                             data_list,
-                            &Trigger::Produce { id: id.clone(), restored },
+                            &Trigger::Produce {
+                                id: id.clone(),
+                                restored,
+                            },
                             &self.cost,
                         )?,
-                        None if !restored => match with_rule(&self.cost, |rule| rule.left_datum(&id, seal::current())) {
+                        None if !restored => match with_rule(&self.cost, |rule| {
+                            rule.left_datum(&id, seal::current())
+                        }) {
                             true => membrane::settling(|| self.cost.charge(event_storage_cost(1)))?,
-                            false => refund(&self.cost, produce_storage.value, "produces storage refund")?,
+                            false => refund(
+                                &self.cost,
+                                produce_storage.value,
+                                "produces storage refund",
+                            )?,
                         },
                         None => {}
                     }
@@ -171,8 +183,7 @@ impl ChargingRSpace {
                 }
 
                 let id = data.random_state.clone();
-                let produce_res =
-                    (self.space.produce(channel, data, persist)).await?;
+                let produce_res = (self.space.produce(channel, data, persist)).await?;
                 handle_result(
                     produce_res
                         .as_ref()
@@ -356,8 +367,10 @@ fn handle_result(
                 }
             })
             .collect();
-        cost.comm_ledger()
-            .on_comm_between(comm_cells(receive.as_ref(), sends.iter().map(Option::as_ref)));
+        cost.comm_ledger().on_comm_between(comm_cells(
+            receive.as_ref(),
+            sends.iter().map(Option::as_ref),
+        ));
     }
     match result {
         Some((cont, data_list)) => membrane::settling(|| {

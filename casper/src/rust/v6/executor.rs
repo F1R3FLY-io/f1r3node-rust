@@ -8,26 +8,28 @@ use models::rhoapi::{BindPattern, ListParWithRandom, PCost, Par, TaggedContinuat
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, Event, ProcessedDeploy,
 };
+use models::rust::normalizer_env::normalizer_env_from_deploy;
+use rholang::rust::interpreter::accounting::delta_sigma::DeltaEstimate;
+use rholang::rust::interpreter::accounting::membrane::{Funding, MembraneMeter, Metered};
 use rholang::rust::interpreter::accounting::rev_stack::journal::{
     close_journal, journal_overdrawn, open_journal, JournalEntry,
 };
-use models::rust::normalizer_env::normalizer_env_from_deploy;
-use rholang::rust::interpreter::accounting::rev_stack::process::{has_bare_stack, self_sealed_envelope};
+use rholang::rust::interpreter::accounting::rev_stack::process::{
+    has_bare_stack, self_sealed_envelope,
+};
 use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
 use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
 };
-use rholang::rust::interpreter::accounting::delta_sigma::DeltaEstimate;
-use rholang::rust::interpreter::accounting::membrane::{Funding, MembraneMeter, Metered};
 use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id, wallet_channel_id_of, HotStoreCells, WalletOwner,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::BlockData;
+use rspace_plus_plus::rspace::checkpoint::SoftCheckpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash as stable_hash;
-use rspace_plus_plus::rspace::checkpoint::SoftCheckpoint;
 use rspace_plus_plus::rspace::hot_store_action::HotStoreAction;
 use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 
@@ -37,8 +39,8 @@ use super::body::StateHash;
 use super::conservation::Conservation;
 use super::footprint::{footprint, Footprint};
 use super::gate::{
-    check_recorded, gate_block, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
-    BoundDemand, StoreReader,
+    check_recorded, gate_block, resolve_joint_wallets, BoundDemand, GateEntry, GateInput,
+    GateOutcome, StoreReader,
 };
 use super::merge::{merge_runs, RunEffect};
 use super::record::{ExecutionRecord, Prior, VoidReason};
@@ -143,7 +145,6 @@ fn envelope_run(processed: &ProcessedDeploy) -> EnvelopeRun {
     }
 }
 
-
 pub struct EnvelopeExecutor {
     runtime_manager: Arc<RuntimeManager>,
     workers: usize,
@@ -160,7 +161,10 @@ struct Runs {
 
 struct Pooled {
     runtime: RhoRuntimeImpl,
-    base: Option<(StateHash, SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>)>,
+    base: Option<(
+        StateHash,
+        SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    )>,
 }
 
 impl EnvelopeExecutor {
@@ -186,9 +190,12 @@ impl EnvelopeExecutor {
 }
 
 impl Runs {
-
     async fn runtime_at(&self, replay: bool, pre_root: &StateHash) -> Result<Pooled, CasperError> {
-        let pool = if replay { &self.replay_pool } else { &self.play_pool };
+        let pool = if replay {
+            &self.replay_pool
+        } else {
+            &self.play_pool
+        };
         let taken = pool.lock().pop();
         let mut pooled = match taken {
             Some(pooled) => pooled,
@@ -221,7 +228,11 @@ impl Runs {
     }
 
     fn give_back(&self, replay: bool, pooled: Pooled) {
-        let mut pool = if replay { self.replay_pool.lock() } else { self.play_pool.lock() };
+        let mut pool = if replay {
+            self.replay_pool.lock()
+        } else {
+            self.play_pool.lock()
+        };
         if pool.len() < self.workers {
             pool.push(pooled);
         }
@@ -258,12 +269,27 @@ impl Runs {
             .map_err(|e| invalid(format!("journal: {e}")))?;
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
-        let surfaces: Surfaces = ops.runtime.cost.comm_ledger().take_surfaces().into_iter().collect();
-        let work: Surfaces = ops.runtime.cost.comm_ledger().take_work().into_iter().collect();
+        let surfaces: Surfaces = ops
+            .runtime
+            .cost
+            .comm_ledger()
+            .take_surfaces()
+            .into_iter()
+            .collect();
+        let work: Surfaces = ops
+            .runtime
+            .cost
+            .comm_ledger()
+            .take_work()
+            .into_iter()
+            .collect();
         let changes = runtime_cells(&ops.runtime)?.0.changes();
         let checkpointed = started.elapsed();
         ops.runtime.set_funding(None);
-        self.give_back(false, Pooled { runtime: ops.runtime, base });
+        self.give_back(false, Pooled {
+            runtime: ops.runtime,
+            base,
+        });
         let metered = meter.take();
         Ok(EnvelopeEffect {
             run: envelope_run(&processed),
@@ -331,7 +357,10 @@ impl Runs {
             .collect();
         let changes = runtime_cells(&replay.runtime_ops.runtime)?.0.changes();
         replay.runtime_ops.runtime.set_funding(None);
-        self.give_back(true, Pooled { runtime: replay.runtime_ops.runtime, base });
+        self.give_back(true, Pooled {
+            runtime: replay.runtime_ops.runtime,
+            base,
+        });
         Ok(EnvelopeEffect {
             run: envelope_run(&recorded),
             surfaces,
@@ -416,7 +445,11 @@ impl EnvelopeExecutor {
             let payers: std::collections::BTreeSet<Vec<u8>> = effects[i]
                 .journal
                 .iter()
-                .filter_map(|j| j.from.payer().map(|from| wallet_channel_id_of(from, &j.kind)))
+                .filter_map(|j| {
+                    j.from
+                        .payer()
+                        .map(|from| wallet_channel_id_of(from, &j.kind))
+                })
                 .collect();
             if payers.iter().any(|p| debited.contains(p)) {
                 continue;
@@ -565,7 +598,8 @@ impl EnvelopeExecutor {
         envelopes: Vec<Signed<DeployData>>,
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        self.execute_held(pre_root, envelopes, block_data, &Prior::new()).await
+        self.execute_held(pre_root, envelopes, block_data, &Prior::new())
+            .await
     }
 
     pub async fn execute_held(
@@ -600,9 +634,12 @@ impl EnvelopeExecutor {
                     if !admitted {
                         return Ok(Self::refused(envelope));
                     }
-                    tokio::spawn(async move { runs.run(&pre_root, envelope, block_data, held, meter, committed).await })
-                        .await
-                        .map_err(|e| invalid(format!("an envelope run stopped: {e}")))?
+                    tokio::spawn(async move {
+                        runs.run(&pre_root, envelope, block_data, held, meter, committed)
+                            .await
+                    })
+                    .await
+                    .map_err(|e| invalid(format!("an envelope run stopped: {e}")))?
                 }
             })
             .buffered(self.workers)
@@ -682,8 +719,15 @@ impl EnvelopeExecutor {
             .buffered(self.workers)
             .try_collect()
             .await?;
-        self.finish(pre_root, inputs, gate, effects, &block_data, PhaseTimings::default())
-            .await
+        self.finish(
+            pre_root,
+            inputs,
+            gate,
+            effects,
+            &block_data,
+            PhaseTimings::default(),
+        )
+        .await
     }
 }
 
@@ -737,8 +781,12 @@ fn envelope_signatures(
 ) -> (Vec<WalletOwner>, Vec<WalletOwner>, bool, Option<u64>) {
     match classify_envelope(deploy) {
         EnvelopeSignatures::Unnormalized => (Vec::new(), Vec::new(), false, None),
-        EnvelopeSignatures::Sealed(process, bare_stack, bound) => (Vec::new(), vec![process], bare_stack, bound),
-        EnvelopeSignatures::Named(named, bare_stack, bound) => (named, Vec::new(), bare_stack, bound),
+        EnvelopeSignatures::Sealed(process, bare_stack, bound) => {
+            (Vec::new(), vec![process], bare_stack, bound)
+        }
+        EnvelopeSignatures::Named(named, bare_stack, bound) => {
+            (named, Vec::new(), bare_stack, bound)
+        }
     }
 }
 
@@ -825,7 +873,10 @@ impl BlockExecutor {
         replay: bool,
     ) -> Result<SystemGate, CasperError> {
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
-        let purses = Arc::new(BlockPurses::new(Box::new(reader), executed.gate.table.clone()));
+        let purses = Arc::new(BlockPurses::new(
+            Box::new(reader),
+            executed.gate.table.clone(),
+        ));
         let funding: Arc<dyn Funding> =
             CloseFunding::new(purses, executed.metered.iter().map(|m| &m.held));
         let meter = match replay {
@@ -893,12 +944,7 @@ impl BlockExecutor {
             .collect();
         let executed = self
             .envelopes
-            .execute_held(
-                pre_root,
-                envelopes,
-                block_data(block),
-                prior,
-            )
+            .execute_held(pre_root, envelopes, block_data(block), prior)
             .await?;
         let started = std::time::Instant::now();
         let gate = self.close_gate(pre_root, &executed, false).await?;
@@ -915,7 +961,10 @@ impl BlockExecutor {
             )
             .await;
         let (post_root, _, system_deploys) = closed?;
-        if let Some(failed) = system_deploys.iter().find(|deploy| traced_close_failure(deploy)) {
+        if let Some(failed) = system_deploys
+            .iter()
+            .find(|deploy| traced_close_failure(deploy))
+        {
             tracing::warn!(
                 target: "f1r3fly.v6",
                 block = %hex::encode(&block.block_hash),
@@ -931,7 +980,11 @@ impl BlockExecutor {
                 vec![failed.clone()],
             )
             .and_then(|record| record.with_gate(executed.gate.entries.clone()))
-            .map(|record| record.with_settlement(executed.settlement.clone()).with_failed_close())
+            .map(|record| {
+                record
+                    .with_settlement(executed.settlement.clone())
+                    .with_failed_close()
+            })
             .map_err(CasperError::RuntimeError)?;
             return Ok((record, BlockTimings::default()));
         }
@@ -1030,34 +1083,44 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
         .zip(&executed.footprints)
         .zip(&executed.surfaces)
         .zip(&executed.work)
-        .map(|((((((run, merged), overdrawn), gate), footprint), surfaces), work)| RecordEntry {
-            executed: ExecutedEnvelope {
-                envelope_id: run.envelope_sig.clone(),
-                outcome: outcome(
-                    gate.admitted(),
-                    gate.delta > 0
-                        && own_cells(surfaces, &run.envelope_sig).saturating_add(run.compute_phlo)
-                            >= gate.delta,
-                    run.failed,
-                    *overdrawn,
-                    *merged,
-                ),
-                comm_phlo: run.comm_phlo,
-                compute_phlo: run.compute_phlo,
-                user_log: run.user_log.clone(),
-                footprint: footprint.clone(),
-                surfaces: surfaces.clone(),
-                work: work.clone(),
+        .map(
+            |((((((run, merged), overdrawn), gate), footprint), surfaces), work)| RecordEntry {
+                executed: ExecutedEnvelope {
+                    envelope_id: run.envelope_sig.clone(),
+                    outcome: outcome(
+                        gate.admitted(),
+                        gate.delta > 0
+                            && own_cells(surfaces, &run.envelope_sig)
+                                .saturating_add(run.compute_phlo)
+                                >= gate.delta,
+                        run.failed,
+                        *overdrawn,
+                        *merged,
+                    ),
+                    comm_phlo: run.comm_phlo,
+                    compute_phlo: run.compute_phlo,
+                    user_log: run.user_log.clone(),
+                    footprint: footprint.clone(),
+                    surfaces: surfaces.clone(),
+                    work: work.clone(),
+                },
             },
-        })
+        )
         .collect()
 }
 
 fn envelope_ids(block: &BlockMessage) -> Vec<prost::bytes::Bytes> {
-    block.body.deploys.iter().map(|d| d.deploy.sig.clone()).collect()
+    block
+        .body
+        .deploys
+        .iter()
+        .map(|d| d.deploy.sig.clone())
+        .collect()
 }
 
-fn traced_close_failure(deploy: &models::rust::casper::protocol::casper_message::ProcessedSystemDeploy) -> bool {
+fn traced_close_failure(
+    deploy: &models::rust::casper::protocol::casper_message::ProcessedSystemDeploy,
+) -> bool {
     matches!(
         deploy,
         models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Failed { error_msg, .. }
@@ -1194,9 +1257,7 @@ impl ExecutionBackend for BlockExecutor {
         if record.settlement() != Some(&replayed.settlement) {
             return Err(mismatch("the settled charges"));
         }
-        let gate = self
-            .close_gate(record.pre_root(), &replayed, true)
-            .await?;
+        let gate = self.close_gate(record.pre_root(), &replayed, true).await?;
         let close_phlo = gate.close_phlo.clone();
         let replayed_close = self
             .runtime_manager
@@ -1216,7 +1277,9 @@ impl ExecutionBackend for BlockExecutor {
             }
             (Some(VoidReason::CloseFailed), Err(error)) => return Err(error),
             (Some(VoidReason::CloseFailed), Ok(_)) => {
-                return Err(mismatch("the record is void for reason (d), and the close runs"))
+                return Err(mismatch(
+                    "the record is void for reason (d), and the close runs",
+                ))
             }
             (_, replayed_close) => replayed_close?,
         };

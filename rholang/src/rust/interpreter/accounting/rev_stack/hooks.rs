@@ -58,7 +58,10 @@ impl HookAuthority {
     pub fn authorizes(&self, signers: &[WalletOwner]) -> bool {
         let members: BTreeSet<Vec<u8>> = self.members.iter().map(|m| m.canonical_bytes()).collect();
         let mut distinct = BTreeSet::new();
-        for s in signers.iter().filter(|s| !matches!(s, WalletOwner::Compound(_))) {
+        for s in signers
+            .iter()
+            .filter(|s| !matches!(s, WalletOwner::Compound(_)))
+        {
             let key = s.canonical_bytes();
             if !members.contains(&key) {
                 return false;
@@ -221,14 +224,11 @@ fn write_single(
         seal: None,
     };
     let source = Produce::create(channel, &a, false);
-    store.put_datum(
-        channel,
-        Datum {
-            a,
-            persist: false,
-            source,
-        },
-    );
+    store.put_datum(channel, Datum {
+        a,
+        persist: false,
+        source,
+    });
     Ok(())
 }
 
@@ -352,12 +352,16 @@ mod tests {
         let hook = RevHook::Contract(RhoNumber::create_par(7));
         let seal = |owners: &[WalletOwner]| WalletOwner::compound(owners.to_vec()).unwrap();
         assert!(replace_rev_hook(&store, &seal(&ks[..1]), hook.clone()).is_err());
-        assert!(replace_rev_hook(&store, &seal(&[ks[0].clone(), ks[0].clone()]), hook.clone()).is_err());
+        assert!(
+            replace_rev_hook(&store, &seal(&[ks[0].clone(), ks[0].clone()]), hook.clone()).is_err()
+        );
         assert!(replace_rev_hook(&store, &seal(&[ks[0].clone(), outsider]), hook.clone()).is_err());
         assert_eq!(rev_hook(&store).unwrap(), Some(RevHook::Noop));
         replace_rev_hook(&store, &seal(&[ks[2].clone(), ks[0].clone()]), hook.clone()).unwrap();
         assert_eq!(rev_hook(&store).unwrap(), Some(hook.clone()));
-        let RevHook::Contract(installed) = &hook else { unreachable!() };
+        let RevHook::Contract(installed) = &hook else {
+            unreachable!()
+        };
         let as_hook = super::super::process::process_owner(installed);
         assert!(replace_rev_hook(&store, &as_hook, RevHook::Noop).is_err());
         assert_eq!(rev_hook(&store).unwrap(), Some(hook.clone()));
@@ -400,7 +404,10 @@ mod tests {
         replace_rev_hook(store.as_ref(), &two, RevHook::Contract(installed)).unwrap();
         let called = process_owner(&RhoNumber::create_par(8));
         assert!(spend_compute(store.clone(), &called, &payee, 10).is_err());
-        assert_eq!(spend_compute(store.clone(), &as_hook, &payee, 60).unwrap(), 0);
+        assert_eq!(
+            spend_compute(store.clone(), &as_hook, &payee, 60).unwrap(),
+            0
+        );
         assert_eq!(RevStacks::new(store.clone()).balance(&payee).unwrap(), 100);
         assert_eq!(compute_balance(store).unwrap(), 0);
     }

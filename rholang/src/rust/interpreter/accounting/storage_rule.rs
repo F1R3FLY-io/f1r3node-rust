@@ -85,7 +85,9 @@ impl LeftInSpace {
 
     pub fn restores(&mut self, id: &[u8]) -> bool { take(&mut self.taken, id) }
 
-    pub fn announce_datum(&mut self, id: &[u8], payer: Payer) { keep(&mut self.announced, id, payer); }
+    pub fn announce_datum(&mut self, id: &[u8], payer: Payer) {
+        keep(&mut self.announced, id, payer);
+    }
 
     pub fn withdraw_announcement(&mut self, id: &[u8]) { release(&mut self.announced, id); }
 

@@ -6,7 +6,9 @@ use models::rhoapi::Par;
 use models::rust::normalizer_env::with_deployer_id;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::rev_stack::funders::{draw, share, shares};
-use rholang::rust::interpreter::accounting::rev_stack::hooks::{install_genesis_hooks, HookAuthority};
+use rholang::rust::interpreter::accounting::rev_stack::hooks::{
+    install_genesis_hooks, HookAuthority,
+};
 use rholang::rust::interpreter::accounting::rev_stack::process::process_owner;
 use rholang::rust::interpreter::accounting::rev_stack::{HotStoreCells, RevStacks, WalletOwner};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -110,11 +112,25 @@ async fn deposits_are_recorded_per_funder_and_only_the_authority_refuses_a_share
     )
     .unwrap();
 
-    assert!(reply(&runtime, &alice, &[], &fund(3_000, "o1"), "o1").await.0);
-    assert!(reply(&runtime, &carol, &[], &fund(1_000, "o2"), "o2").await.0);
+    assert!(
+        reply(&runtime, &alice, &[], &fund(3_000, "o1"), "o1")
+            .await
+            .0
+    );
+    assert!(
+        reply(&runtime, &carol, &[], &fund(1_000, "o2"), "o2")
+            .await
+            .0
+    );
     assert_eq!(stacks(&runtime).balance(&process()).unwrap(), 4_000);
-    assert_eq!(share(&cells(&runtime), &process(), &alice.owner).unwrap(), 3_000);
-    assert_eq!(share(&cells(&runtime), &process(), &carol.owner).unwrap(), 1_000);
+    assert_eq!(
+        share(&cells(&runtime), &process(), &alice.owner).unwrap(),
+        3_000
+    );
+    assert_eq!(
+        share(&cells(&runtime), &process(), &carol.owner).unwrap(),
+        1_000
+    );
 
     let (ok, why) = reply(&runtime, &alice, &[], &refuse(&carol.address, "r6"), "r6").await;
     assert!(!ok);
@@ -125,13 +141,36 @@ async fn deposits_are_recorded_per_funder_and_only_the_authority_refuses_a_share
     let (ok, _) = reply(&runtime, &bob, &[], &refuse(&carol.address, "r7"), "r7").await;
     assert!(!ok);
 
-    assert!(reply(&runtime, &bob, &[&dave], &refuse(&carol.address, "r8"), "r8").await.0);
+    assert!(
+        reply(
+            &runtime,
+            &bob,
+            &[&dave],
+            &refuse(&carol.address, "r8"),
+            "r8"
+        )
+        .await
+        .0
+    );
     assert_eq!(stacks(&runtime).balance(&process()).unwrap(), 3_000);
     assert_eq!(stacks(&runtime).balance(&carol.owner).unwrap(), 5_000);
-    assert_eq!(share(&cells(&runtime), &process(), &carol.owner).unwrap(), 0);
-    assert_eq!(share(&cells(&runtime), &process(), &alice.owner).unwrap(), 3_000);
+    assert_eq!(
+        share(&cells(&runtime), &process(), &carol.owner).unwrap(),
+        0
+    );
+    assert_eq!(
+        share(&cells(&runtime), &process(), &alice.owner).unwrap(),
+        3_000
+    );
 
-    let (ok, why) = reply(&runtime, &bob, &[&dave], &refuse(&carol.address, "r9"), "r9").await;
+    let (ok, why) = reply(
+        &runtime,
+        &bob,
+        &[&dave],
+        &refuse(&carol.address, "r9"),
+        "r9",
+    )
+    .await;
     assert!(!ok);
     assert_eq!(
         RhoString::unapply(&why).as_deref(),

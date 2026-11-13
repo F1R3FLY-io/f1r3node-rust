@@ -112,10 +112,9 @@ async fn a_compound_with_a_hash_seal_needs_the_other_components_signers() {
             {% @"joint"!(1) %}[d (*) # { @"joint"!(1) }]
         }"#;
         assert!(run_as(&runtime, &ALICE, own).await.is_empty());
-        assert_eq!(
-            sent(&runtime, "joint").await,
-            vec![RhoNumber::create_par(1)]
-        );
+        assert_eq!(sent(&runtime, "joint").await, vec![RhoNumber::create_par(
+            1
+        )]);
         let foreign = r#"{% @"joint"!(2) %}[bob (*) # { @"joint"!(2) }]"#;
         let errors = run_as(&runtime, &ALICE, foreign).await;
         assert!(refused(&errors, "deployment's signers"), "{errors:?}");
@@ -166,7 +165,10 @@ async fn each_instance_of_a_hash_sealed_template_has_its_own_wallet() {
         assert!(errors.is_empty(), "{errors:?}");
         let mut out = sent(&runtime, "out").await;
         out.sort_by_key(RhoNumber::unapply);
-        assert_eq!(out, vec![RhoNumber::create_par(1), RhoNumber::create_par(2)]);
+        assert_eq!(out, vec![
+            RhoNumber::create_par(1),
+            RhoNumber::create_par(2)
+        ]);
         let errors = run_as(&runtime, &ALICE, r#"# { @"out"!(1) } :: ()"#).await;
         assert!(errors.is_empty(), "{errors:?}");
         let one = process_owner(&Compiler::source_to_adt(r#"@"out"!(1)"#).unwrap());

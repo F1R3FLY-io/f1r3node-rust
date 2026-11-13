@@ -47,7 +47,13 @@ fn cells(runtime: &RhoRuntimeImpl) -> HotStoreCells {
     HotStoreCells(runtime.reducer.space.hot_store().unwrap())
 }
 
-async fn run(runtime: &RhoRuntimeImpl, key: &[u8], cosigners: &[&[u8]], envelope: u8, source: &str) {
+async fn run(
+    runtime: &RhoRuntimeImpl,
+    key: &[u8],
+    cosigners: &[&[u8]],
+    envelope: u8,
+    source: &str,
+) {
     runtime
         .set_deploy_data(DeployData {
             timestamp: 1,
@@ -108,7 +114,14 @@ async fn a_transfer_draws_only_on_a_wallet_whose_owner_holds_the_enclosing_seal(
             address(&MALLORY)
         );
         run(&runtime, &MALLORY, &[], 1, &stored).await;
-        run(&runtime, &ALICE, &[], 2, r#"new d(`rho:system:deployerId`) in { @"pay"!(*d) }"#).await;
+        run(
+            &runtime,
+            &ALICE,
+            &[],
+            2,
+            r#"new d(`rho:system:deployerId`) in { @"pay"!(*d) }"#,
+        )
+        .await;
         assert!(!ok(&runtime, "stolen").await);
         assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1_000);
 
@@ -132,16 +145,29 @@ async fn a_bond_draws_only_on_the_holder_of_the_enclosing_seal() {
                           contract @"bond-for"(@who) = { b!("bond", (who, 100), "forced") }
                         }"#;
         run(&runtime, &MALLORY, &[], 1, stored).await;
-        run(&runtime, &ALICE, &[], 2, r#"new d(`rho:system:deployerId`) in { @"bond-for"!(*d) }"#).await;
+        run(
+            &runtime,
+            &ALICE,
+            &[],
+            2,
+            r#"new d(`rho:system:deployerId`) in { @"bond-for"!(*d) }"#,
+        )
+        .await;
         assert!(!ok(&runtime, "forced").await);
-        assert_eq!(bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(), 0);
+        assert_eq!(
+            bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(),
+            0
+        );
 
         let own = r#"new b(`rho:rev:bond`), d(`rho:system:deployerId`) in {
                        b!("bond", (*d, 100), "bonded")
                      }"#;
         run(&runtime, &ALICE, &[], 3, own).await;
         assert!(ok(&runtime, "bonded").await);
-        assert_eq!(bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(), 100);
+        assert_eq!(
+            bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(),
+            100
+        );
     })
     .await;
 }
@@ -331,9 +357,8 @@ async fn code_with_no_record_draws_on_no_wallet_under_seal_records() {
                }}"#
         );
         run(&runtime, &BOB, &[], 1, &installed).await;
-        let fire = |out: &str| {
-            format!(r#"new d(`rho:system:deployerId`) in {{ @"pay"!(*d, "{out}") }}"#)
-        };
+        let fire =
+            |out: &str| format!(r#"new d(`rho:system:deployerId`) in {{ @"pay"!(*d, "{out}") }}"#);
 
         runtime.set_seal_records(true);
         run(&runtime, &ALICE, &[], 2, &fire("recorded")).await;

@@ -1,7 +1,9 @@
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use proptest::prelude::*;
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::delta_sigma::{comm_bound, compute_bound, DeltaEstimate, ScheduleBound};
+use rholang::rust::interpreter::accounting::delta_sigma::{
+    comm_bound, compute_bound, DeltaEstimate, ScheduleBound,
+};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
@@ -162,7 +164,10 @@ async fn spent(runtime: &mut RhoRuntimeImpl, term: &str) -> (u64, usize) {
         .await
         .unwrap();
     let comms = runtime.cost.comm_ledger().take().comms;
-    (u64::try_from(result.cost.value).unwrap() + comms, result.errors.len())
+    (
+        u64::try_from(result.cost.value).unwrap() + comms,
+        result.errors.len(),
+    )
 }
 
 fn estimate(term: &str) -> Option<u64> {
@@ -188,11 +193,10 @@ const NO_COMPUTE_BOUND: &[&str] = &[
 
 #[tokio::test]
 async fn the_static_estimate_covers_every_run_of_the_corpus() {
-    let corpus = BOUNDED.iter().map(|(term, _)| term.to_string()).chain(
-        DATA_FLOW
-            .iter()
-            .map(|term| term.replace("v0", "1")),
-    );
+    let corpus = BOUNDED
+        .iter()
+        .map(|(term, _)| term.to_string())
+        .chain(DATA_FLOW.iter().map(|term| term.replace("v0", "1")));
     for term in corpus {
         let bound = estimate(&term).unwrap_or_else(|| panic!("{term} has an estimate"));
         let (actual, errors) = spent(&mut runtime().await, &term).await;
@@ -206,8 +210,16 @@ async fn the_static_estimate_covers_every_run_of_the_corpus() {
 fn unbounded_compute_has_no_estimate_and_delta_is_the_limit() {
     for term in NO_COMPUTE_BOUND {
         let par = Compiler::source_to_adt(term).unwrap_or_else(|e| panic!("{term}: {e:?}"));
-        assert_eq!(compute_bound(&par, term.len() as u64, &ScheduleBound::default()), None, "{term}");
-        assert_eq!(DeltaEstimate::of_source(&par, term.len() as u64).delta(10_000_000), 10_000_000, "{term}");
+        assert_eq!(
+            compute_bound(&par, term.len() as u64, &ScheduleBound::default()),
+            None,
+            "{term}"
+        );
+        assert_eq!(
+            DeltaEstimate::of_source(&par, term.len() as u64).delta(10_000_000),
+            10_000_000,
+            "{term}"
+        );
     }
     for term in UNBOUNDED {
         assert_eq!(estimate(term), None, "{term}");

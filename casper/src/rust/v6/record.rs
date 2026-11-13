@@ -107,7 +107,5 @@ pub trait ExecutionRecord: Clone + std::fmt::Debug + PartialEq + Send + Sync + '
 
     fn ran(&self) -> Vec<bool> { vec![true; self.envelope_ids().len()] }
 
-    fn digest(&self) -> RecordDigest {
-        domain_digest(RECORD_DIGEST_DOMAIN, &self.encode())
-    }
+    fn digest(&self) -> RecordDigest { domain_digest(RECORD_DIGEST_DOMAIN, &self.encode()) }
 }

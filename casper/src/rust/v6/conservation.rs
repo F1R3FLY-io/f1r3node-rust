@@ -14,7 +14,6 @@ use rholang::rust::interpreter::accounting::rev_stack::journal::Source;
 use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id_of, CellStore, RevAmount, TokenKind, WalletOwner,
 };
-
 use shared::rust::store::key_value_store::KeyValueStore;
 
 use super::gate::WalletId;
@@ -55,7 +54,12 @@ pub enum IndexEntry {
 
 impl WalletIndex {
     pub fn insert(&mut self, kind: TokenKind, wallet: WalletId) {
-        if self.kinds.entry(kind.clone()).or_default().insert(wallet.clone()) {
+        if self
+            .kinds
+            .entry(kind.clone())
+            .or_default()
+            .insert(wallet.clone())
+        {
             self.fresh.push(IndexEntry::Wallet(kind, wallet));
         }
     }
@@ -73,7 +77,12 @@ impl WalletIndex {
     pub fn len(&self, kind: &TokenKind) -> usize { self.kinds.get(kind).map_or(0, BTreeSet::len) }
 
     pub fn record_mint(&mut self, kind: TokenKind, amount: RevAmount) {
-        let total = self.mints.entry(kind).or_default().entry(Vec::new()).or_default();
+        let total = self
+            .mints
+            .entry(kind)
+            .or_default()
+            .entry(Vec::new())
+            .or_default();
         *total = total.saturating_add(u128::from(amount));
     }
 
@@ -84,14 +93,15 @@ impl WalletIndex {
             .or_default()
             .insert(block.to_vec(), amount);
         if previous != Some(amount) {
-            self.fresh.push(IndexEntry::Mint(kind, block.to_vec(), amount));
+            self.fresh
+                .push(IndexEntry::Mint(kind, block.to_vec(), amount));
         }
     }
 
     pub fn mints(&self, kind: &TokenKind) -> u128 {
-        self.mints
-            .get(kind)
-            .map_or(0, |by_block| by_block.values().fold(0u128, |t, m| t.saturating_add(*m)))
+        self.mints.get(kind).map_or(0, |by_block| {
+            by_block.values().fold(0u128, |t, m| t.saturating_add(*m))
+        })
     }
 
     pub fn take_fresh(&mut self) -> Vec<IndexEntry> { std::mem::take(&mut self.fresh) }
@@ -432,10 +442,10 @@ mod tests {
     #[test]
     fn genesis_mint_terms_give_their_addresses() {
         let term = r#"new revGenesis(`rho:rev:genesis`), ret in { revGenesis!("mint", [("1111a", 5), ("1111b", 7)], *ret) }"#;
-        assert_eq!(
-            quoted_addresses(term),
-            vec!["1111a".to_string(), "1111b".to_string()]
-        );
+        assert_eq!(quoted_addresses(term), vec![
+            "1111a".to_string(),
+            "1111b".to_string()
+        ]);
     }
 
     #[test]

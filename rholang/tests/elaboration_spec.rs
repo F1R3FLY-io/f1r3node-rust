@@ -27,9 +27,13 @@ fn id(key: &[u8]) -> Par {
     }])
 }
 
-fn env(key: &[u8]) -> HashMap<String, Par> { HashMap::from([("rho:system:deployerId".to_string(), id(key))]) }
+fn env(key: &[u8]) -> HashMap<String, Par> {
+    HashMap::from([("rho:system:deployerId".to_string(), id(key))])
+}
 
-fn owner(key: &[u8]) -> WalletOwner { WalletOwner::from_public_key(&PublicKey::from_bytes(key)).unwrap() }
+fn owner(key: &[u8]) -> WalletOwner {
+    WalletOwner::from_public_key(&PublicKey::from_bytes(key)).unwrap()
+}
 
 fn deploy_data(key: &[u8], envelope: u8, limit: u64) -> DeployData {
     DeployData {
@@ -42,8 +46,15 @@ fn deploy_data(key: &[u8], envelope: u8, limit: u64) -> DeployData {
     }
 }
 
-async fn run(runtime: &RhoRuntimeImpl, key: &[u8], envelope: u8, source: &str) -> Vec<InterpreterError> {
-    runtime.set_deploy_data(deploy_data(key, envelope, 50_000)).await;
+async fn run(
+    runtime: &RhoRuntimeImpl,
+    key: &[u8],
+    envelope: u8,
+    source: &str,
+) -> Vec<InterpreterError> {
+    runtime
+        .set_deploy_data(deploy_data(key, envelope, 50_000))
+        .await;
     runtime
         .evaluate(
             source,
@@ -96,15 +107,23 @@ fn alice_origin() -> models::rhoapi::SealOrigin {
 }
 
 #[tokio::test]
-async fn a_term_naming_its_own_origin_and_the_deployment_kind_with_an_owner_who_did_not_sign_is_refused() {
+async fn a_term_naming_its_own_origin_and_the_deployment_kind_with_an_owner_who_did_not_sign_is_refused(
+) {
     sealed(|runtime| async move {
-        let mut par = Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin()).unwrap();
+        let mut par =
+            Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin())
+                .unwrap();
         assert!(is_elaborated_deployment(&par, &alice_origin()));
         par.cost_signed_terms[0].signature = Some(CostSignature {
             value: Some(Value::Name(id(&BOB))),
         });
-        assert!(is_elaborated_deployment(&par, &alice_origin()), "the kind and the origin are still the deployment's");
-        runtime.set_deploy_data(deploy_data(&ALICE, 1, 50_000)).await;
+        assert!(
+            is_elaborated_deployment(&par, &alice_origin()),
+            "the kind and the origin are still the deployment's"
+        );
+        runtime
+            .set_deploy_data(deploy_data(&ALICE, 1, 50_000))
+            .await;
         let error = runtime
             .reducer
             .inj(par, Blake2b512Random::create_from_bytes(&[1; 32]))
@@ -120,7 +139,8 @@ async fn a_term_naming_its_own_origin_and_the_deployment_kind_with_an_owner_who_
 async fn an_unelaborated_term_is_not_a_deployment() {
     let plain = Compiler::source_to_adt(r#"@"ran"!(1)"#).unwrap();
     assert!(!is_elaborated_deployment(&plain, &alice_origin()));
-    let elaborated = Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin()).unwrap();
+    let elaborated =
+        Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin()).unwrap();
     let mut other = alice_origin();
     other.envelope = vec![2; 4];
     assert!(!is_elaborated_deployment(&elaborated, &other));
@@ -130,7 +150,10 @@ async fn an_unelaborated_term_is_not_a_deployment() {
         alice_origin(),
     )
     .unwrap();
-    assert!(!is_elaborated_deployment(&explicit, &alice_origin()), "a signed region is not the deployment seal");
+    assert!(
+        !is_elaborated_deployment(&explicit, &alice_origin()),
+        "a signed region is not the deployment seal"
+    );
 }
 
 #[tokio::test]
@@ -145,7 +168,6 @@ async fn a_seal_in_received_data_is_checked_against_the_running_membrane() {
     .await;
 }
 
-
 #[tokio::test]
 async fn a_stored_body_fires_under_its_own_seal_and_carries_its_declared_limit() {
     sealed(|runtime| async move {
@@ -158,7 +180,10 @@ async fn a_stored_body_fires_under_its_own_seal_and_carries_its_declared_limit()
         let record = of_continuation(&waiting[0].continuation).unwrap().unwrap();
         assert_eq!(record.owner, owner(&ALICE));
         assert_eq!(record.origin.envelope, vec![1; 4]);
-        assert_eq!(record.origin.phlo_limit, 700, "the stored copy has the continuation seal's limit");
+        assert_eq!(
+            record.origin.phlo_limit, 700,
+            "the stored copy has the continuation seal's limit"
+        );
         assert!(run(&runtime, &BOB, 2, r#"@"x"!(0)"#).await.is_empty());
         assert_eq!(sent(&runtime, "fired").await.len(), 1);
     })
@@ -172,13 +197,18 @@ async fn a_received_continuation_is_stored_under_the_running_record() {
             @"held"!(for (_ <- @"q") { {% @"ran"!(1) %}[d ; 700] })
         }"#;
         assert!(run(&runtime, &ALICE, 1, publish).await.is_empty());
-        assert!(run(&runtime, &BOB, 2, r#"for (@p <- @"held") { p }"#).await.is_empty());
+        assert!(run(&runtime, &BOB, 2, r#"for (@p <- @"held") { p }"#)
+            .await
+            .is_empty());
         let space = runtime.reducer.space.hot_store().unwrap();
         let waiting = space.get_continuations(&[RhoString::create_par("q".to_string())]);
         let record = of_continuation(&waiting[0].continuation).unwrap().unwrap();
         assert_eq!(record.owner, owner(&BOB));
         assert_eq!(record.origin.envelope, vec![2; 4]);
-        assert_eq!(record.origin.phlo_limit, 50_000, "a foreign seal's limit is not taken");
+        assert_eq!(
+            record.origin.phlo_limit, 50_000,
+            "a foreign seal's limit is not taken"
+        );
         let errors = run(&runtime, &BOB, 3, r#"@"q"!(0)"#).await;
         assert!(sent(&runtime, "ran").await.is_empty(), "{errors:?}");
     })
@@ -188,14 +218,18 @@ async fn a_received_continuation_is_stored_under_the_running_record() {
 #[tokio::test]
 async fn a_signer_index_outside_its_own_origin_is_refused() {
     sealed(|runtime| async move {
-        let par = Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin()).unwrap();
+        let par = Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin())
+            .unwrap();
         runtime.set_deploy_data(deploy_data(&BOB, 2, 50_000)).await;
         let error = runtime
             .reducer
             .inj(par, Blake2b512Random::create_from_bytes(&[2; 32]))
             .await
             .unwrap_err();
-        assert!(format!("{error:?}").contains("signer by index"), "{error:?}");
+        assert!(
+            format!("{error:?}").contains("signer by index"),
+            "{error:?}"
+        );
         assert!(sent(&runtime, "ran").await.is_empty());
     })
     .await;
@@ -211,17 +245,25 @@ async fn measure_the_cost_of_elaboration() {
         r#"new y, z in { y!(1) | for (_ <- y) { z!(2) } | for (_ <- z) { Nil } }"#,
     ] {
         let plain = Compiler::source_to_adt_with_normalizer_env(term, env(&ALICE)).unwrap();
-        let elaborated = Compiler::source_to_adt_elaborated(term, env(&ALICE), alice_origin()).unwrap();
+        let elaborated =
+            Compiler::source_to_adt_elaborated(term, env(&ALICE), alice_origin()).unwrap();
         let mut costs = Vec::new();
         for elaborate in [false, true] {
             let cost = with_runtime("elaboration-cost-", |runtime: RhoRuntimeImpl| async move {
                 runtime.set_seal_records(true);
-                runtime.set_deploy_data(deploy_data(&ALICE, 1, 50_000)).await;
+                runtime
+                    .set_deploy_data(deploy_data(&ALICE, 1, 50_000))
+                    .await;
                 if !elaborate {
                     runtime.reducer.take_elaboration();
                 }
                 let result = runtime
-                    .evaluate(term, Cost::create(i64::MAX, "measure".to_string()), env(&ALICE), Blake2b512Random::create_from_bytes(&[1; 32]))
+                    .evaluate(
+                        term,
+                        Cost::create(i64::MAX, "measure".to_string()),
+                        env(&ALICE),
+                        Blake2b512Random::create_from_bytes(&[1; 32]),
+                    )
                     .await
                     .unwrap();
                 result.cost.value
@@ -242,15 +284,21 @@ async fn measure_the_cost_of_elaboration() {
 #[tokio::test]
 async fn a_seal_in_data_naming_the_running_owner_runs_and_the_owner_pays() {
     sealed(|runtime| async move {
-        let contract = r#"new d(`rho:system:deployerId`) in { @"aid"!(*d) | for (@p <= @"eval") { p } }"#;
+        let contract =
+            r#"new d(`rho:system:deployerId`) in { @"aid"!(*d) | for (@p <= @"eval") { p } }"#;
         assert!(run(&runtime, &ALICE, 1, contract).await.is_empty());
         let stacks = RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap());
         let before = stacks.balance(&owner(&ALICE)).unwrap();
-        let send = r#"for (a <<- @"aid") { new slot in { @"eval"!({% @"ran"!(1) | slot :: () %}[a]) } }"#;
+        let send =
+            r#"for (a <<- @"aid") { new slot in { @"eval"!({% @"ran"!(1) | slot :: () %}[a]) } }"#;
         let errors = run(&runtime, &BOB, 2, send).await;
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(sent(&runtime, "ran").await.len(), 1);
-        assert_eq!(stacks.balance(&owner(&ALICE)).unwrap(), before - 1, "u1 pays the stack cell");
+        assert_eq!(
+            stacks.balance(&owner(&ALICE)).unwrap(),
+            before - 1,
+            "u1 pays the stack cell"
+        );
     })
     .await;
 }
@@ -258,17 +306,24 @@ async fn a_seal_in_data_naming_the_running_owner_runs_and_the_owner_pays() {
 #[tokio::test]
 async fn a_term_from_a_deployment_outside_every_seal_fails_the_run_and_bootstrap_code_does_not() {
     sealed(|runtime| async move {
-        let par = Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin()).unwrap();
+        let par = Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin())
+            .unwrap();
         runtime.set_deploy_data(DeployData::empty()).await;
         let error = runtime
             .reducer
             .inj(par, Blake2b512Random::create_from_bytes(&[1; 32]))
             .await
             .unwrap_err();
-        assert!(format!("{error:?}").contains("outside every seal"), "{error:?}");
+        assert!(
+            format!("{error:?}").contains("outside every seal"),
+            "{error:?}"
+        );
         assert!(sent(&runtime, "ran").await.is_empty());
         let bootstrap = Compiler::source_to_adt(r#"@"boot"!(1)"#).unwrap();
-        runtime.reducer.cost.set(Cost::create(i64::MAX, "bootstrap".to_string()));
+        runtime
+            .reducer
+            .cost
+            .set(Cost::create(i64::MAX, "bootstrap".to_string()));
         runtime
             .reducer
             .inj(bootstrap, Blake2b512Random::create_from_bytes(&[2; 32]))

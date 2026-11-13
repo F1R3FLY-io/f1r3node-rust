@@ -339,3 +339,15 @@ Validation:
 - Formatting checks pass for the resolution files. The full formatter reports 52 unchanged branch files, so this merge uses the documented `SKIP_FMT=1` hook option.
 - References pass for the edited instructions and merge notes. The full Markdown check reports 149 anchor findings in the imported API and slashing documents.
 - The new prose adds no STE Check findings. Human STE Review remains pending.
+
+## CI follow-up (2026-11-13)
+
+The full supply-chain check rejected `fuzz/Cargo.lock` under `--locked`. Its three parser packages still referenced `4e22339eca493c5ce3d14386c2af67af74bfffa2`.
+The fuzz lockfile now uses the workspace pin, `ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd`, for those packages. Dependency versions and policy exceptions remain unchanged.
+
+The repository formatter corrects the 52 remaining branch files. Workspace and soak-chart formatting checks now pass without a skip.
+The full `scripts/ci/check-supply-chain.sh check` command passes for the workspace, fuzz crate, and soak charts.
+
+Commit Policy rejects imported Mergify commits because the `ca-canary` base lacks the source validator. No sync PR was open during this check.
+The existing `just ca-sync` workflow must transfer accepted `dev` history and policy before this ordinary PR can use them.
+The [Commit Policy guide](../../ci.md#commit-policy) describes the trusted transfer route.

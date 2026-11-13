@@ -25,9 +25,7 @@ impl DeltaEstimate {
         }
     }
 
-    pub fn bound(&self) -> Option<u64> {
-        self.comm?.checked_add(self.compute?)
-    }
+    pub fn bound(&self) -> Option<u64> { self.comm?.checked_add(self.compute?) }
 
     pub fn delta(&self, phlo_limit: u64) -> u64 {
         match (self.comm, self.compute) {
@@ -229,11 +227,13 @@ impl Estimate<'_> {
         Some(())
     }
 
-    fn receives_data(&self) -> bool {
-        self.scope.iter().any(|slot| matches!(slot, Slot::Data(_)))
-    }
+    fn receives_data(&self) -> bool { self.scope.iter().any(|slot| matches!(slot, Slot::Data(_))) }
 
-    fn bound<T>(&mut self, slots: Vec<Slot>, inner: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+    fn bound<T>(
+        &mut self,
+        slots: Vec<Slot>,
+        inner: impl FnOnce(&mut Self) -> Option<T>,
+    ) -> Option<T> {
         let depth = self.scope.len();
         self.scope.extend(slots);
         let result = inner(self);
@@ -296,7 +296,10 @@ impl Estimate<'_> {
         for conditional in &par.conditionals {
             self.charge(conditional.encoded_len(), 0)?;
             self.par(conditional.condition.as_ref()?)?;
-            for branch in [&conditional.if_true, &conditional.if_false].into_iter().flatten() {
+            for branch in [&conditional.if_true, &conditional.if_false]
+                .into_iter()
+                .flatten()
+            {
                 self.par(branch)?;
             }
         }

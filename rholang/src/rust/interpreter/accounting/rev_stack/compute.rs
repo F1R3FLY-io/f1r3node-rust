@@ -43,7 +43,10 @@ pub fn spend_compute(
 
 pub fn charge_recorded_work(
     store: Arc<dyn CellStore>,
-    work: &std::collections::BTreeMap<Option<crate::rust::interpreter::accounting::comm_ledger::Surface>, u64>,
+    work: &std::collections::BTreeMap<
+        Option<crate::rust::interpreter::accounting::comm_ledger::Surface>,
+        u64,
+    >,
 ) -> Result<RevAmount, RevStackError> {
     let stacks = RevStacks::new(store.clone());
     let mut charged: RevAmount = 0;

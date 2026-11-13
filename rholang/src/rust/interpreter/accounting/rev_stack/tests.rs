@@ -401,7 +401,9 @@ fn term_builders_accept_only_valid_addresses_and_amounts() {
     let withdraw = super::native::withdraw_term();
     assert!(withdraw.contains("rb!(\"handle\", *deployerId, *handleCh)"));
     assert!(withdraw.contains("@PoS!(\"withdraw\", handle, *deployId)"));
-    assert!(crate::rust::interpreter::compiler::compiler::Compiler::source_to_adt(&withdraw).is_ok());
+    assert!(
+        crate::rust::interpreter::compiler::compiler::Compiler::source_to_adt(&withdraw).is_ok()
+    );
 }
 
 #[test]
@@ -463,13 +465,10 @@ fn the_journal_marks_mints_and_keeps_kinds_apart() {
     .is_err());
     assert_eq!(net(cells, &kind, &alice).unwrap(), (3, 4));
     assert_eq!(net(cells, &TokenKind::rev(), &alice).unwrap(), (0, 0));
-    assert_eq!(
-        entries(cells).unwrap(),
-        vec![
-            mint.clone(),
-            JournalEntry::transfer_of(kind.clone(), alice.clone(), bob.clone(), 3)
-        ]
-    );
+    assert_eq!(entries(cells).unwrap(), vec![
+        mint.clone(),
+        JournalEntry::transfer_of(kind.clone(), alice.clone(), bob.clone(), 3)
+    ]);
     assert_eq!(close_journal(cells).unwrap()[0].from, Source::Mint);
 }
 

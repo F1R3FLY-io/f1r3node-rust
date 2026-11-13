@@ -267,9 +267,7 @@ static UNBOUNDED: AtomicU64 = AtomicU64::new(0);
 
 pub fn unbounded_charges() -> u64 { UNBOUNDED.load(Ordering::Relaxed) }
 
-pub(crate) fn count_unbounded() {
-    UNBOUNDED.fetch_add(1, Ordering::Relaxed);
-}
+pub(crate) fn count_unbounded() { UNBOUNDED.fetch_add(1, Ordering::Relaxed); }
 
 #[cfg(test)]
 mod tests {
@@ -430,14 +428,9 @@ mod tests {
             }
             firing.exhausted()
         };
-        let all = [
-            [0, 1, 2],
-            [0, 2, 1],
-            [1, 0, 2],
-            [1, 2, 0],
-            [2, 0, 1],
-            [2, 1, 0],
-        ];
+        let all = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [
+            2, 1, 0,
+        ]];
         assert!(all.iter().all(|o| exhausted(100, o)));
         assert!(all.iter().all(|o| !exhausted(110, o)));
     }

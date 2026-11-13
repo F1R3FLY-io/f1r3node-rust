@@ -89,7 +89,12 @@ impl CommLedger {
     pub fn take_work(&self) -> BTreeMap<Option<Surface>, u64> {
         std::mem::take(&mut self.lock().work)
             .into_iter()
-            .filter_map(|(surface, phlo)| u64::try_from(phlo).ok().filter(|p| *p > 0).map(|p| (surface, p)))
+            .filter_map(|(surface, phlo)| {
+                u64::try_from(phlo)
+                    .ok()
+                    .filter(|p| *p > 0)
+                    .map(|p| (surface, p))
+            })
             .collect()
     }
 
@@ -128,26 +133,20 @@ mod tests {
         for _ in 0..7 {
             ledger.on_comm();
         }
-        assert_eq!(
-            ledger.take(),
-            CommTally {
-                comms: 7,
-                batches: vec![7]
-            }
-        );
+        assert_eq!(ledger.take(), CommTally {
+            comms: 7,
+            batches: vec![7]
+        });
         assert_eq!(ledger.take(), CommTally::default());
 
         ledger.set_boxcar(NonZeroU64::new(3));
         for _ in 0..7 {
             ledger.on_comm();
         }
-        assert_eq!(
-            ledger.take(),
-            CommTally {
-                comms: 7,
-                batches: vec![3, 3, 1]
-            }
-        );
+        assert_eq!(ledger.take(), CommTally {
+            comms: 7,
+            batches: vec![3, 3, 1]
+        });
 
         ledger.on_comm();
         ledger.reset();

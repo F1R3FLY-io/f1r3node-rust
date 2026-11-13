@@ -215,7 +215,10 @@ async fn a_user_deploy_cannot_mint_bonds_through_the_registry_lookup() {
     let term = through_lookup(
         "rho:rev:genesis",
         "bonds",
-        &format!(r#"[("{}".hexToBytes(), 1000000)]"#, hex::encode(&alice.pk.bytes)),
+        &format!(
+            r#"[("{}".hexToBytes(), 1000000)]"#,
+            hex::encode(&alice.pk.bytes)
+        ),
     );
     let errors = eval_as(&runtime, &alice, &term).await;
     assert!(take(&runtime, "found").await.is_empty(), "{errors:?}");
@@ -242,14 +245,20 @@ async fn lifting_the_fs_filter_alone_does_not_expose_the_genesis_mint() {
     runtime.disable_fs_native_urn_filter();
     let alice = key();
     let errors = eval_as(&runtime, &alice, &mint_term(&[(&alice.address, 1_000)])).await;
-    assert!(errors.iter().any(|e| e.contains("reserved for genesis")), "{errors:?}");
+    assert!(
+        errors.iter().any(|e| e.contains("reserved for genesis")),
+        "{errors:?}"
+    );
     let term = through_lookup(
         "rho:rev:genesis",
         "mint",
         &format!(r#"[("{}", 1000)]"#, alice.address),
     );
     let errors = eval_as(&runtime, &alice, &term).await;
-    assert!(errors.iter().any(|e| e.contains("reserved for genesis")), "{errors:?}");
+    assert!(
+        errors.iter().any(|e| e.contains("reserved for genesis")),
+        "{errors:?}"
+    );
     assert!(take(&runtime, "found").await.is_empty());
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 0);
     assert_eq!(supply(&runtime), 0);
@@ -275,7 +284,10 @@ async fn a_genesis_handle_kept_past_genesis_is_refused_by_the_handler() {
         alice.address
     );
     let errors = eval_as(&runtime, &alice, &term).await;
-    assert!(errors.iter().any(|e| e.contains("only during genesis")), "{errors:?}");
+    assert!(
+        errors.iter().any(|e| e.contains("only during genesis")),
+        "{errors:?}"
+    );
     assert!(take(&runtime, "out").await.is_empty());
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 0);
     assert_eq!(supply(&runtime), 0);

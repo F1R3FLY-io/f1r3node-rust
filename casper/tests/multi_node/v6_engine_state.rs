@@ -24,9 +24,7 @@ use crate::helper::test_node::TestNode;
 use crate::helper::v6_network::{engine, propose_and_broadcast};
 use crate::util::genesis_builder::GenesisContext;
 
-async fn genesis() -> GenesisContext {
-    crate::helper::v6_network::v6_genesis().await
-}
+async fn genesis() -> GenesisContext { crate::helper::v6_network::v6_genesis().await }
 
 fn now() -> i64 {
     std::time::SystemTime::now()
@@ -85,7 +83,9 @@ impl ExecutionBackend for CountingBackend {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_engine_resumes_its_canonical_prefix_without_replaying_it() {
-    let mut nodes = TestNode::create_v6_network(genesis().await, 3).await.unwrap();
+    let mut nodes = TestNode::create_v6_network(genesis().await, 3)
+        .await
+        .unwrap();
     let mut blocks = vec![nodes[0].genesis.block_hash.clone()];
     for round in 0..240 {
         if engine(&nodes[0]).canonical_len() >= 3 {
@@ -163,7 +163,11 @@ async fn a_long_run_keeps_executor_memory_flat_and_old_receipts_available() {
     let shard_id = genesis.genesis_block.shard_id.clone();
     let mut nodes = TestNode::create_v6_network(genesis, 3).await.unwrap();
 
-    let first = offer(&shard_id, "new x in { x!(1) | for (_ <- x) { Nil } }", now());
+    let first = offer(
+        &shard_id,
+        "new x in { x!(1) | for (_ <- x) { Nil } }",
+        now(),
+    );
     let mut blocks = Vec::new();
     let mut breach = None;
     let mut peak = 0usize;
@@ -225,24 +229,24 @@ async fn a_long_run_keeps_executor_memory_flat_and_old_receipts_available() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_validator_audits_conservation_on_its_schedule() {
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-    use rholang::rust::interpreter::accounting::rev_stack::{wallet_channel_id, TokenKind, WalletOwner};
+    use rholang::rust::interpreter::accounting::rev_stack::{
+        wallet_channel_id, TokenKind, WalletOwner,
+    };
 
     let genesis = genesis().await;
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_v6_network_with(
-        genesis,
-        3,
-        crate::helper::test_node::V6TestConfig {
+    let mut nodes =
+        TestNode::create_v6_network_with(genesis, 3, crate::helper::test_node::V6TestConfig {
             audit_interval: Some(2),
             ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
+        })
+        .await
+        .unwrap();
     let (_, bob) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
-    let address = rholang::rust::interpreter::util::vault_address::VaultAddress::from_public_key(&bob)
-        .unwrap()
-        .to_base58();
+    let address =
+        rholang::rust::interpreter::util::vault_address::VaultAddress::from_public_key(&bob)
+            .unwrap()
+            .to_base58();
     let transfer = offer(
         &shard_id,
         &format!(
@@ -257,10 +261,17 @@ async fn every_validator_audits_conservation_on_its_schedule() {
             .map(|(number, _)| number)
     };
     for round in 0..30 {
-        let deploys = if round == 0 { vec![transfer.clone()] } else { Vec::new() };
+        let deploys = if round == 0 {
+            vec![transfer.clone()]
+        } else {
+            Vec::new()
+        };
         propose_and_broadcast(&mut nodes, round % 3, &deploys).await;
         settle(&nodes, Duration::from_millis(300)).await;
-        if nodes.iter().all(|n| audited_from(n).is_some_and(|number| number >= 6)) {
+        if nodes
+            .iter()
+            .all(|n| audited_from(n).is_some_and(|number| number >= 6))
+        {
             break;
         }
     }
@@ -304,7 +315,11 @@ async fn a_restart_after_an_order_commit_keeps_both_floors_and_the_same_state_fl
     let node = &nodes[0];
     let order = node.block_dag_storage.order_floor().unwrap();
     assert_ne!(order, node.genesis.block_hash, "the order floor moved");
-    let lfb = node.block_dag_storage.get_representation().unwrap().last_finalized_block();
+    let lfb = node
+        .block_dag_storage
+        .get_representation()
+        .unwrap()
+        .last_finalized_block();
     let live = engine(node);
     let canonical = live.canonical_len();
     let state_floor = live.state_floor().await.unwrap();
@@ -343,11 +358,17 @@ async fn a_restart_after_an_order_commit_keeps_both_floors_and_the_same_state_fl
     node.block_dag_storage.check_floor_order().unwrap();
     assert_eq!(node.block_dag_storage.order_floor().unwrap(), order);
     assert_eq!(
-        node.block_dag_storage.get_representation().unwrap().last_finalized_block(),
+        node.block_dag_storage
+            .get_representation()
+            .unwrap()
+            .last_finalized_block(),
         lfb
     );
     assert!(restarted.canonical_len() >= canonical);
-    assert!(restarted.rebuild_tally().unwrap() > 0, "the tally is rebuilt from the blocks above the LFB");
+    assert!(
+        restarted.rebuild_tally().unwrap() > 0,
+        "the tally is rebuilt from the blocks above the LFB"
+    );
     assert_eq!(restarted.state_floor().await.unwrap(), state_floor);
     for _ in 0..400 {
         if !restarted.tick().await.unwrap() {
@@ -355,7 +376,11 @@ async fn a_restart_after_an_order_commit_keeps_both_floors_and_the_same_state_fl
         }
     }
     let touched = backend.targets.lock().clone();
-    for hash in blocks.iter().filter(|hash| live.executed(hash).is_some()).take(canonical.saturating_sub(1)) {
+    for hash in blocks
+        .iter()
+        .filter(|hash| live.executed(hash).is_some())
+        .take(canonical.saturating_sub(1))
+    {
         assert!(!touched.contains(hash), "a resumed block was run again");
     }
 }

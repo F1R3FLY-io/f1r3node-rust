@@ -128,7 +128,10 @@ pub fn footprint<E>(
             }
         } else {
             let access = if consume.persistent { READ } else { WRITE };
-            consume.channels_hashes.iter().for_each(|ch| mark(ch, access));
+            consume
+                .channels_hashes
+                .iter()
+                .for_each(|ch| mark(ch, access));
         }
         for (index, produce) in comm.produces.iter().enumerate() {
             let peeked = comm.peeks.iter().any(|p| p.channel_index as usize == index);
@@ -237,7 +240,10 @@ mod tests {
     #[test]
     fn a_call_to_a_contract_in_the_pre_state_reads_it() {
         let p = produce(2, 1, false);
-        let f = fp(&[Event::Produce(p.clone()), comm(consume(&[2], 9, true), vec![p], &[])]);
+        let f = fp(&[
+            Event::Produce(p.clone()),
+            comm(consume(&[2], 9, true), vec![p], &[]),
+        ]);
         assert_eq!(f.cells(), &[(ch(2), READ)]);
     }
 
@@ -256,14 +262,20 @@ mod tests {
     #[test]
     fn taking_a_message_from_the_pre_state_writes() {
         let c = consume(&[4], 2, false);
-        let f = fp(&[Event::Consume(c.clone()), comm(c, vec![produce(4, 7, false)], &[])]);
+        let f = fp(&[
+            Event::Consume(c.clone()),
+            comm(c, vec![produce(4, 7, false)], &[]),
+        ]);
         assert_eq!(access(&f, 4), WRITE);
     }
 
     #[test]
     fn a_peek_at_the_pre_state_reads() {
         let c = consume(&[5], 2, false);
-        let f = fp(&[Event::Consume(c.clone()), comm(c, vec![produce(5, 7, false)], &[0])]);
+        let f = fp(&[
+            Event::Consume(c.clone()),
+            comm(c, vec![produce(5, 7, false)], &[0]),
+        ]);
         assert_eq!(access(&f, 5), READ);
     }
 
@@ -276,10 +288,18 @@ mod tests {
     #[test]
     fn a_send_into_a_join_of_the_pre_state_marks_the_other_channels() {
         let joins = |c: &Bytes| -> Result<Vec<Vec<Bytes>>, ()> {
-            Ok(if *c == ch(8) { vec![vec![ch(8), ch(9)], vec![ch(8)]] } else { vec![] })
+            Ok(if *c == ch(8) {
+                vec![vec![ch(8), ch(9)], vec![ch(8)]]
+            } else {
+                vec![]
+            })
         };
-        let f = footprint(&[Event::Produce(produce(8, 1, false))], &NumberChannelsEndVal::new(), joins)
-            .unwrap();
+        let f = footprint(
+            &[Event::Produce(produce(8, 1, false))],
+            &NumberChannelsEndVal::new(),
+            joins,
+        )
+        .unwrap();
         assert_eq!(f.cells(), &[(ch(8), APPEND), (ch(9), JOIN)]);
         let other = fp(&[Event::Produce(produce(9, 2, false))]);
         assert!(f.conflicts_with(&other));
@@ -302,15 +322,28 @@ mod tests {
     #[test]
     fn the_conflict_relation() {
         let all = [READ, APPEND, JOIN, WRITE, MERGE];
-        let commuting = [(READ, READ), (READ, APPEND), (READ, JOIN), (APPEND, APPEND), (JOIN, JOIN), (MERGE, MERGE)];
+        let commuting = [
+            (READ, READ),
+            (READ, APPEND),
+            (READ, JOIN),
+            (APPEND, APPEND),
+            (JOIN, JOIN),
+            (MERGE, MERGE),
+        ];
         for a in all {
             for b in all {
                 let expected = !commuting.contains(&(a, b)) && !commuting.contains(&(b, a));
                 assert_eq!(clash(a, b), expected, "{a} against {b}");
-                let fa = Footprint { cells: vec![(ch(1), a)] };
-                let fb = Footprint { cells: vec![(ch(1), b)] };
+                let fa = Footprint {
+                    cells: vec![(ch(1), a)],
+                };
+                let fb = Footprint {
+                    cells: vec![(ch(1), b)],
+                };
                 assert_eq!(fa.conflicts_with(&fb), expected);
-                let elsewhere = Footprint { cells: vec![(ch(2), b)] };
+                let elsewhere = Footprint {
+                    cells: vec![(ch(2), b)],
+                };
                 assert!(!fa.conflicts_with(&elsewhere));
             }
         }
@@ -318,18 +351,35 @@ mod tests {
 
     #[test]
     fn the_encoding_is_canonical() {
-        let f = Footprint { cells: vec![(ch(1), READ | APPEND), (ch(2), MERGE)] };
+        let f = Footprint {
+            cells: vec![(ch(1), READ | APPEND), (ch(2), MERGE)],
+        };
         assert_eq!(Footprint::from_proto(f.to_proto()), Ok(f));
         let unsorted = vec![
-            FootprintCellProto { channel: ch(2), access: READ },
-            FootprintCellProto { channel: ch(1), access: READ },
+            FootprintCellProto {
+                channel: ch(2),
+                access: READ,
+            },
+            FootprintCellProto {
+                channel: ch(1),
+                access: READ,
+            },
         ];
         assert!(Footprint::from_proto(unsorted).is_err());
-        let unknown = vec![FootprintCellProto { channel: ch(1), access: 32 }];
+        let unknown = vec![FootprintCellProto {
+            channel: ch(1),
+            access: 32,
+        }];
         assert!(Footprint::from_proto(unknown).is_err());
-        let mixed = vec![FootprintCellProto { channel: ch(1), access: MERGE | READ }];
+        let mixed = vec![FootprintCellProto {
+            channel: ch(1),
+            access: MERGE | READ,
+        }];
         assert!(Footprint::from_proto(mixed).is_err());
-        let short = vec![FootprintCellProto { channel: Bytes::from_static(b"x"), access: READ }];
+        let short = vec![FootprintCellProto {
+            channel: Bytes::from_static(b"x"),
+            access: READ,
+        }];
         assert!(Footprint::from_proto(short).is_err());
     }
 }

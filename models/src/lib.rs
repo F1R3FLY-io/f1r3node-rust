@@ -186,7 +186,9 @@ impl Hash for CostSignedTerm {
 
 impl PartialEq for ElaboratedSeal {
     fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind && self.origin == other.origin && self.phlo_limit == other.phlo_limit
+        self.kind == other.kind
+            && self.origin == other.origin
+            && self.phlo_limit == other.phlo_limit
     }
 }
 
@@ -1221,9 +1223,7 @@ impl Hash for SealOrigin {
 
 impl PartialEq for SealRecordProto {
     fn eq(&self, other: &Self) -> bool {
-        self.owner == other.owner
-            && self.kind == other.kind
-            && self.origin == other.origin
+        self.owner == other.owner && self.kind == other.kind && self.origin == other.origin
     }
 }
 

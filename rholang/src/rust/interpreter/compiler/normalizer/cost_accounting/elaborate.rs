@@ -76,7 +76,9 @@ pub fn kind_of(sig: &Signature) -> i32 {
 pub fn seal_for(sig: &Signature, limit: Option<u64>) -> Option<ElaboratedSeal> {
     current().map(|elaboration| ElaboratedSeal {
         kind: kind_of(sig),
-        origin: crate::rust::interpreter::accounting::rev_stack::seal::origin_digest(&elaboration.origin),
+        origin: crate::rust::interpreter::accounting::rev_stack::seal::origin_digest(
+            &elaboration.origin,
+        ),
         phlo_limit: limit.unwrap_or(elaboration.origin.phlo_limit),
     })
 }
@@ -93,7 +95,11 @@ pub fn elaborate<'ast>(
         .ann(proc.span))
 }
 
-fn sig_ids<'ast>(sig: &Signature<'ast>, out: &mut HashSet<String>, parser: &'ast RholangParser<'ast>) {
+fn sig_ids<'ast>(
+    sig: &Signature<'ast>,
+    out: &mut HashSet<String>,
+    parser: &'ast RholangParser<'ast>,
+) {
     match sig {
         Signature::Ground(Name::NameVar(Var::Id(id))) => {
             out.insert(id.name.to_string());
@@ -132,7 +138,11 @@ fn name_ids<'ast>(name: &Name<'ast>, out: &mut HashSet<String>, parser: &'ast Rh
     }
 }
 
-fn names_ids<'ast>(names: &Names<'ast>, out: &mut HashSet<String>, parser: &'ast RholangParser<'ast>) {
+fn names_ids<'ast>(
+    names: &Names<'ast>,
+    out: &mut HashSet<String>,
+    parser: &'ast RholangParser<'ast>,
+) {
     for name in names.names.iter() {
         name_ids(name, out, parser);
     }
@@ -141,7 +151,10 @@ fn names_ids<'ast>(names: &Names<'ast>, out: &mut HashSet<String>, parser: &'ast
     }
 }
 
-fn receipts_bound<'ast>(receipts: &rholang_parser::ast::Receipts<'ast>, parser: &'ast RholangParser<'ast>) -> HashSet<String> {
+fn receipts_bound<'ast>(
+    receipts: &rholang_parser::ast::Receipts<'ast>,
+    parser: &'ast RholangParser<'ast>,
+) -> HashSet<String> {
     let mut bound = HashSet::new();
     for bind in receipts.iter().flat_map(|r| r.binds.iter()) {
         match bind {
@@ -154,7 +167,11 @@ fn receipts_bound<'ast>(receipts: &rholang_parser::ast::Receipts<'ast>, parser: 
     bound
 }
 
-fn shadowed<'ast>(sig: &Signature<'ast>, bound: HashSet<String>, parser: &'ast RholangParser<'ast>) -> Result<(), InterpreterError> {
+fn shadowed<'ast>(
+    sig: &Signature<'ast>,
+    bound: HashSet<String>,
+    parser: &'ast RholangParser<'ast>,
+) -> Result<(), InterpreterError> {
     let mut used = HashSet::new();
     sig_ids(sig, &mut used, parser);
     match used.intersection(&bound).next() {
@@ -190,9 +207,10 @@ fn seal<'ast>(
 ) -> Result<AnnProc<'ast>, InterpreterError> {
     let builder = parser.ast_builder();
     let rebuilt = match p.proc {
-        Proc::Par { left, right } => {
-            builder.alloc_par(seal(*left, sig, limit, parser)?, seal(*right, sig, limit, parser)?)
-        }
+        Proc::Par { left, right } => builder.alloc_par(
+            seal(*left, sig, limit, parser)?,
+            seal(*right, sig, limit, parser)?,
+        ),
         Proc::IfThenElse {
             condition,
             if_true,
@@ -203,7 +221,11 @@ fn seal<'ast>(
             if_false.map(|p| seal(p, sig, limit, parser)).transpose()?,
         ),
         Proc::New { decls, proc } => {
-            shadowed(sig, decls.iter().map(|d| d.id.name.to_string()).collect(), parser)?;
+            shadowed(
+                sig,
+                decls.iter().map(|d| d.id.name.to_string()).collect(),
+                parser,
+            )?;
             builder.alloc_new(seal(*proc, sig, limit, parser)?, decls.clone())
         }
         Proc::Let {
@@ -225,8 +247,16 @@ fn seal<'ast>(
         Proc::Match { expression, cases } => {
             let mut rebuilt = Vec::with_capacity(cases.len());
             for case in cases {
-                shadowed(sig, proc_ids(case.pattern, parser).into_iter().collect(), parser)?;
-                rebuilt.push((case.pattern, case.guard, seal(case.proc, sig, limit, parser)?));
+                shadowed(
+                    sig,
+                    proc_ids(case.pattern, parser).into_iter().collect(),
+                    parser,
+                )?;
+                rebuilt.push((
+                    case.pattern,
+                    case.guard,
+                    seal(case.proc, sig, limit, parser)?,
+                ));
             }
             builder.alloc_match_with_guards(*expression, rebuilt)
         }
@@ -246,7 +276,11 @@ fn seal<'ast>(
             let mut bound = HashSet::new();
             names_ids(formals, &mut bound, parser);
             shadowed(sig, bound, parser)?;
-            builder.alloc_contract(name.clone(), formals.clone(), continuation(*body, sig, limit, parser)?)
+            builder.alloc_contract(
+                name.clone(),
+                formals.clone(),
+                continuation(*body, sig, limit, parser)?,
+            )
         }
         Proc::SignedTerm {
             proc: inner,

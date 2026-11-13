@@ -87,9 +87,13 @@ pub fn has_bare_stack(term: &Par) -> bool {
         pending.extend(par.bundles.iter().filter_map(|b| b.body.as_ref()));
         for conditional in &par.conditionals {
             pending.extend(
-                [&conditional.condition, &conditional.if_true, &conditional.if_false]
-                    .into_iter()
-                    .flatten(),
+                [
+                    &conditional.condition,
+                    &conditional.if_true,
+                    &conditional.if_false,
+                ]
+                .into_iter()
+                .flatten(),
             );
         }
     }
@@ -126,8 +130,8 @@ mod tests {
 
     #[test]
     fn only_a_lone_closed_self_sealed_term_is_a_self_sealed_envelope() {
-        use crate::rust::interpreter::compiler::compiler::Compiler;
         use super::self_sealed_envelope;
+        use crate::rust::interpreter::compiler::compiler::Compiler;
         let term = |s: &str| Compiler::source_to_adt(s).unwrap();
         let own = term(r#"{% @"x"!(1) %}[# { @"x"!(1) }]"#);
         assert_eq!(

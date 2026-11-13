@@ -72,14 +72,11 @@ pub fn set_reservation(
         seal: None,
     };
     let source = Produce::create(&channel, &a, false);
-    store.put_datum(
-        &channel,
-        Datum {
-            a,
-            persist: false,
-            source,
-        },
-    );
+    store.put_datum(&channel, Datum {
+        a,
+        persist: false,
+        source,
+    });
     Ok(())
 }
 

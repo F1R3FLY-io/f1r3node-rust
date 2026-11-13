@@ -304,14 +304,10 @@ fn payloads() -> Vec<(&'static str, String, Expect)> {
             "{% slot :: () %}[a]".to_string(),
             paid(999, 1_000, 1, 0),
         ),
-        (
-            "foreign seal",
-            "{% slot :: () %}[b]".to_string(),
-            Expect {
-                refused: true,
-                ..paid(1_000, 1_000, 0, 0)
-            },
-        ),
+        ("foreign seal", "{% slot :: () %}[b]".to_string(), Expect {
+            refused: true,
+            ..paid(1_000, 1_000, 0, 0)
+        }),
         (
             "bare stack",
             "slot :: ()".to_string(),
@@ -324,7 +320,9 @@ fn payloads() -> Vec<(&'static str, String, Expect)> {
         ),
         (
             "wallet",
-            format!(r#"new w(`rho:rev:wallet`) in {{ w!("transfer", (*a, "{bob}", 100), "native") }}"#),
+            format!(
+                r#"new w(`rho:rev:wallet`) in {{ w!("transfer", (*a, "{bob}", 100), "native") }}"#
+            ),
             paid(900, 1_100, 0, 0),
         ),
         (
@@ -336,7 +334,9 @@ fn payloads() -> Vec<(&'static str, String, Expect)> {
 }
 
 async fn native_reply(runtime: &RhoRuntimeImpl) -> Option<bool> {
-    let data = runtime.get_data(&RhoString::create_par("native".to_string())).await;
+    let data = runtime
+        .get_data(&RhoString::create_par("native".to_string()))
+        .await;
     let (ok, _) = RhoTuple2::unapply(&data.first()?.a.pars[0])?;
     RhoBoolean::unapply(&ok)
 }
@@ -366,9 +366,9 @@ async fn route(contract: &str, deliveries: &[&str]) {
                 };
                 errors.extend(run(&runtime, &BOB, &[], 2 + i as u8, &source).await);
             }
-            let refused = errors.iter().any(
-                |e| matches!(e, InterpreterError::ReduceError(m) if m.contains("signers")),
-            );
+            let refused = errors
+                .iter()
+                .any(|e| matches!(e, InterpreterError::ReduceError(m) if m.contains("signers")));
             let slot = slot_owner(&runtime, "slot");
             let balances = (
                 stacks(&runtime).balance(&owner(&ALICE)).unwrap(),
@@ -421,19 +421,19 @@ async fn route_a_method_result_run_as_a_process() {
 
 #[tokio::test]
 async fn route_a_received_value_in_a_stored_continuation_that_fires_later() {
-    route(
-        r#"for (@p <= @"r") { for (_ <- @"go") { p } }"#,
-        &[r#"@"r"!(PAYLOAD)"#, r#"@"go"!(0)"#],
-    )
+    route(r#"for (@p <= @"r") { for (_ <- @"go") { p } }"#, &[
+        r#"@"r"!(PAYLOAD)"#,
+        r#"@"go"!(0)"#,
+    ])
     .await;
 }
 
 #[tokio::test]
 async fn route_data_that_comes_back_out_of_the_tuplespace() {
-    route(
-        r#"for (_ <= @"go") { for (@q <<- @"store") { q } }"#,
-        &[r#"@"store"!(PAYLOAD)"#, r#"@"go"!(0)"#],
-    )
+    route(r#"for (_ <= @"go") { for (@q <<- @"store") { q } }"#, &[
+        r#"@"store"!(PAYLOAD)"#,
+        r#"@"go"!(0)"#,
+    ])
     .await;
 }
 
@@ -444,10 +444,9 @@ async fn route_a_persistent_send() {
 
 #[tokio::test]
 async fn route_a_match_binding() {
-    route(
-        r#"for (@m <= @"r") { match m { x => x } }"#,
-        &[r#"@"r"!(PAYLOAD)"#],
-    )
+    route(r#"for (@m <= @"r") { match m { x => x } }"#, &[
+        r#"@"r"!(PAYLOAD)"#,
+    ])
     .await;
 }
 
@@ -467,19 +466,19 @@ async fn route_new_if_and_bundle_bodies() {
 
 #[tokio::test]
 async fn route_a_continuation_stored_by_received_data() {
-    route(
-        r#"for (@p <= @"r") { p }"#,
-        &[r#"@"r"!(for (_ <- @"go") { PAYLOAD })"#, r#"@"go"!(0)"#],
-    )
+    route(r#"for (@p <= @"r") { p }"#, &[
+        r#"@"r"!(for (_ <- @"go") { PAYLOAD })"#,
+        r#"@"go"!(0)"#,
+    ])
     .await;
 }
 
 #[tokio::test]
 async fn route_a_received_value_in_a_stored_contract_body() {
-    route(
-        r#"for (@p <= @"r") { contract @"c"(_) = { p } }"#,
-        &[r#"@"r"!(PAYLOAD)"#, r#"@"c"!(0)"#],
-    )
+    route(r#"for (@p <= @"r") { contract @"c"(_) = { p } }"#, &[
+        r#"@"r"!(PAYLOAD)"#,
+        r#"@"c"!(0)"#,
+    ])
     .await;
 }
 

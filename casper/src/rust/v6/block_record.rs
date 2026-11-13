@@ -5,10 +5,10 @@ use prost::bytes::Bytes;
 use prost::Message;
 
 use super::body::StateHash;
+use super::footprint::{Footprint, FootprintCellProto};
 use super::gate::{GateEntry, GateEntryProto};
 use super::record::{ExecutionRecord, VoidReason};
 use super::settle::{Settlement, SettlementProto};
-use super::footprint::{Footprint, FootprintCellProto};
 use super::surface::{self, SurfaceCellsProto, Surfaces};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -320,10 +320,9 @@ impl BlockRecord {
             None => Ok(record),
         })?;
         if let Some(reason) = void_reason {
-            let failed_close = matches!(
-                record.system_deploys.as_slice(),
-                [ProcessedSystemDeploy::Failed { .. }]
-            );
+            let failed_close = matches!(record.system_deploys.as_slice(), [
+                ProcessedSystemDeploy::Failed { .. }
+            ]);
             let traced = if reason == VoidReason::CloseFailed {
                 failed_close
             } else {
@@ -400,7 +399,12 @@ impl ExecutionRecord for BlockRecord {
     fn ran(&self) -> Vec<bool> {
         self.entries
             .iter()
-            .map(|entry| !matches!(entry.executed.outcome, EnvelopeOutcome::NotRun | EnvelopeOutcome::Voided))
+            .map(|entry| {
+                !matches!(
+                    entry.executed.outcome,
+                    EnvelopeOutcome::NotRun | EnvelopeOutcome::Voided
+                )
+            })
             .collect()
     }
 
@@ -546,10 +550,14 @@ mod tests {
         assert_eq!(decoded.close_phlo(), 41_000);
         assert_eq!(decoded, closed);
         assert_ne!(decoded, record());
-        let mut void = BlockRecord::voided(b("t"), b("pre"), &[b("a")], VoidReason::SlashRecords).to_proto();
+        let mut void =
+            BlockRecord::voided(b("t"), b("pre"), &[b("a")], VoidReason::SlashRecords).to_proto();
         assert!(BlockRecord::from_proto(void.clone()).is_ok());
         void.close_phlo = 1;
         assert!(BlockRecord::from_proto(void).is_err());
-        assert_eq!(record().with_close_phlo(9).with_failed_close().close_phlo(), 0);
+        assert_eq!(
+            record().with_close_phlo(9).with_failed_close().close_phlo(),
+            0
+        );
     }
 }

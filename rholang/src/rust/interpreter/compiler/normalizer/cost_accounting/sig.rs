@@ -33,7 +33,8 @@ pub fn signature_to_wire<'ast>(
                     free_map,
                 )),
                 None => Err(InterpreterError::NormalizerError(
-                    "cost-accounting: the deployment seal is written only by elaboration".to_string(),
+                    "cost-accounting: the deployment seal is written only by elaboration"
+                        .to_string(),
                 )),
             }
         }

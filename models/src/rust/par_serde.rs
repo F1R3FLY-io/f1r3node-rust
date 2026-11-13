@@ -736,4 +736,3 @@ mod tests {
         assert!(bincode::deserialize::<Par>(&bytes).is_err());
     }
 }
-

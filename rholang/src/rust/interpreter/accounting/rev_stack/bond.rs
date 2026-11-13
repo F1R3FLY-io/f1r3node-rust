@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::Par;
+use models::rhoapi::{GPrivate, Par};
 use models::rust::rholang::implicits::single_expr;
 
 use super::compute::compute_wallet_owner;
@@ -10,13 +10,12 @@ use super::journal::{journal_open, journaled_transfer, JournalEntry};
 use super::native::RhoHotStore;
 use super::ops::{CellStore, HotStoreCells, RevStacks};
 use super::owner::WalletOwner;
-use super::reserve::reservation;
 use super::region::admissible;
+use super::reserve::reservation;
 use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployerId, RhoName, RhoNumber, RhoString, RhoTuple2,
 };
-use models::rhoapi::GPrivate;
 
 pub const REV_BOND_URN: &str = "rho:rev:bond";
 pub const REV_BOND_ADMIN_URN: &str = "rho:rev:bondAdmin";

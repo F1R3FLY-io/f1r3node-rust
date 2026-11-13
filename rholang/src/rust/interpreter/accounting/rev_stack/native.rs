@@ -8,20 +8,17 @@ use models::rust::rholang::implicits::single_expr;
 use rspace_plus_plus::rspace::hot_store::HotStore;
 
 use super::channel::wallet_channel;
-use super::funders;
 use super::compute::compute_wallet_owner;
-use super::hooks::{replace_rev_hook, seal_authorizes, RevHook};
-use super::seal;
 use super::grant::Grant;
-use super::hooks::hook_authority;
-use super::process::process_owner;
+use super::hooks::{hook_authority, replace_rev_hook, seal_authorizes, RevHook};
 use super::journal::{journal_open, journaled_transfer, visible_balance, JournalEntry};
 use super::kind::{stack_kind, TokenKind};
 use super::ops::RevStacks;
 use super::owner::WalletOwner;
+use super::process::process_owner;
 use super::region::admissible;
 use super::reserve::reservation;
-use super::{RevAmount, RevStackError};
+use super::{funders, seal, RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{
     RhoBoolean, RhoDeployerId, RhoName, RhoNumber, RhoString, RhoTuple2,
 };
@@ -80,7 +77,12 @@ pub fn handle(
                     grant.opens, grant.closes
                 ));
             }
-            move_rev(stacks, grant.owner(), owner_of(&payee)?, amount_of(&amount)?)
+            move_rev(
+                stacks,
+                grant.owner(),
+                owner_of(&payee)?,
+                amount_of(&amount)?,
+            )
         }),
         "returnGrant" => with_stacks(store, |stacks| {
             let usage = "returnGrant expects ((slot, opens, closes), funder)";
@@ -93,7 +95,8 @@ pub fn handle(
                 ));
             }
             let (owner, funder) = (grant.owner(), owner_of(&funder)?);
-            let share = funders::share(stacks.cells(), &owner, &funder).map_err(|e| e.to_string())?;
+            let share =
+                funders::share(stacks.cells(), &owner, &funder).map_err(|e| e.to_string())?;
             if share == 0 {
                 return Err("the funder holds no share of this grant".to_string());
             }
@@ -117,8 +120,8 @@ pub fn handle(
         "spendCompute" => with_stacks(store, |stacks| {
             let usage = "spendCompute expects (payee, amount)";
             let [payee, amount] = tuple_of(arg, usage)?.try_into().map_err(|_| usage)?;
-            let seal = seal::current_owner()
-                .ok_or("spending from the compute wallet needs a seal")?;
+            let seal =
+                seal::current_owner().ok_or("spending from the compute wallet needs a seal")?;
             if !seal_authorizes(stacks.cells(), &seal).map_err(|e| e.to_string())? {
                 return Err(
                     "spending from the compute wallet needs a seal of the hook authority's quorum or of the installed hook"
@@ -178,7 +181,8 @@ pub fn handle(
         }),
         "share" => with_stacks(store, |stacks| {
             let (process, funder) = share_args(arg)?;
-            let share = funders::share(stacks.cells(), &process, &funder).map_err(|e| e.to_string())?;
+            let share =
+                funders::share(stacks.cells(), &process, &funder).map_err(|e| e.to_string())?;
             Ok(RhoNumber::create_par(share as i64))
         }),
         "refuse" => with_stacks(store, |stacks| {
@@ -189,7 +193,8 @@ pub fn handle(
             if !authority.authorizes(signers) {
                 return Err("only the hook authority may refuse a funder's share".to_string());
             }
-            let share = funders::share(stacks.cells(), &process, &funder).map_err(|e| e.to_string())?;
+            let share =
+                funders::share(stacks.cells(), &process, &funder).map_err(|e| e.to_string())?;
             if share == 0 {
                 return Err("the funder holds no share of this process".to_string());
             }
@@ -398,7 +403,11 @@ fn fund_args(arg: &Par) -> Result<(WalletOwner, WalletOwner, RevAmount), String>
     let amount = RhoNumber::unapply(&amount)
         .filter(|a| *a > 0)
         .ok_or_else(|| "Amount must be positive value".to_string())?;
-    Ok((payer_of(&deployer_id)?, process_owner(&process), amount as RevAmount))
+    Ok((
+        payer_of(&deployer_id)?,
+        process_owner(&process),
+        amount as RevAmount,
+    ))
 }
 
 fn share_args(arg: &Par) -> Result<(WalletOwner, WalletOwner), String> {

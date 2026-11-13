@@ -165,10 +165,7 @@ impl fmt::Display for InterpreterError {
             }
 
             InterpreterError::FiringExhausted => {
-                write!(
-                    f,
-                    "A firing of stored code passed its declared bound."
-                )
+                write!(f, "A firing of stored code passed its declared bound.")
             }
 
             InterpreterError::UserAbortError => {

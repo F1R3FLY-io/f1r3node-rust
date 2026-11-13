@@ -102,14 +102,10 @@ async fn a_run_sees_its_visible_balance_and_cannot_spend_held_rev() {
     let (runtime, _) = runtimes().await;
     let (alice, bob) = (key(), key());
     stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
-    set_reservation(
-        &cells(&runtime),
-        &alice.owner,
-        Reservation {
-            visible: 300,
-            held: 500,
-        },
-    )
+    set_reservation(&cells(&runtime), &alice.owner, Reservation {
+        visible: 300,
+        held: 500,
+    })
     .unwrap();
 
     assert!(
@@ -150,14 +146,10 @@ async fn a_cleared_reservation_leaves_no_trace_in_the_state() {
     let alice = key();
     stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
     let before = runtime.create_checkpoint().await.root;
-    set_reservation(
-        &cells(&runtime),
-        &alice.owner,
-        Reservation {
-            visible: 10,
-            held: 20,
-        },
-    )
+    set_reservation(&cells(&runtime), &alice.owner, Reservation {
+        visible: 10,
+        held: 20,
+    })
     .unwrap();
     assert_eq!(
         reservation(&cells(&runtime), &alice.owner).unwrap().held,
@@ -183,16 +175,41 @@ async fn an_open_journal_holds_transfers_out_of_the_state() {
     open_journal(&cells(&runtime)).unwrap();
     assert!(journal_open(&cells(&runtime)));
 
-    assert!(eval_as(&runtime, &alice, &transfer_term(&bob.address, 600, "j1")).await.is_empty());
-    assert_eq!(either(&take(&runtime, "j1").await[0]), (true, Par::default()));
+    assert!(
+        eval_as(&runtime, &alice, &transfer_term(&bob.address, 600, "j1"))
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        either(&take(&runtime, "j1").await[0]),
+        (true, Par::default())
+    );
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 1_000);
     assert_eq!(stacks(&runtime).balance(&bob.owner).unwrap(), 0);
-    assert!(eval_as(&runtime, &alice, &balance_term(&alice.address, "jb")).await.is_empty());
-    assert_eq!(either(&take(&runtime, "jb").await[0]), (true, RhoNumber::create_par(1_000)));
+    assert!(
+        eval_as(&runtime, &alice, &balance_term(&alice.address, "jb"))
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        either(&take(&runtime, "jb").await[0]),
+        (true, RhoNumber::create_par(1_000))
+    );
     assert!(!journal_overdrawn(std::sync::Arc::new(cells(&runtime))).unwrap());
-    assert!(eval_as(&runtime, &alice, &transfer_term(&bob.address, 401, "j2")).await.is_empty());
-    assert_eq!(either(&take(&runtime, "j2").await[0]), (true, Par::default()));
-    assert!(eval_as(&runtime, &alice, &transfer_term(&bob.address, 1_001, "j4")).await.is_empty());
+    assert!(
+        eval_as(&runtime, &alice, &transfer_term(&bob.address, 401, "j2"))
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        either(&take(&runtime, "j2").await[0]),
+        (true, Par::default())
+    );
+    assert!(
+        eval_as(&runtime, &alice, &transfer_term(&bob.address, 1_001, "j4"))
+            .await
+            .is_empty()
+    );
     assert!(!either(&take(&runtime, "j4").await[0]).0);
     assert!(journal_overdrawn(std::sync::Arc::new(cells(&runtime))).unwrap());
 
@@ -215,13 +232,10 @@ async fn an_open_journal_holds_transfers_out_of_the_state() {
     );
 
     let journal = close_journal(&cells(&runtime)).unwrap();
-    assert_eq!(
-        journal,
-        vec![
-            JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 401),
-            JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 600),
-        ]
-    );
+    assert_eq!(journal, vec![
+        JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 401),
+        JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 600),
+    ]);
     assert!(!journal_open(&cells(&runtime)));
     let _ = before;
 }
@@ -244,8 +258,12 @@ async fn a_journal_closes_to_the_same_entries_in_any_recording_order() {
             bob.owner.clone(),
             100,
         ),
-        JournalEntry::mint(TokenKind::from_name(vec![7; 32]).unwrap(), carol.owner.clone(), 5)
-            .unwrap(),
+        JournalEntry::mint(
+            TokenKind::from_name(vec![7; 32]).unwrap(),
+            carol.owner.clone(),
+            5,
+        )
+        .unwrap(),
     ];
     open_journal(&cells(&play)).unwrap();
     for m in &moves {

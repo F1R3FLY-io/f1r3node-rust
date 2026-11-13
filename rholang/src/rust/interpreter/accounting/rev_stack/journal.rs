@@ -1,16 +1,16 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GPrivate, GUnforgeable, ListParWithRandom, Par};
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
 use super::kind::TokenKind;
 use super::ops::{CellStore, RevStacks};
-use super::reserve::reservation;
 use super::owner::WalletOwner;
+use super::reserve::reservation;
 use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{RhoByteArray, RhoList, RhoNumber, RhoString};
 
@@ -221,9 +221,7 @@ pub fn entries(store: &dyn CellStore) -> Result<Vec<JournalEntry>, RevStackError
             {
                 (kind, Source::Wallet(owner(from)?), to, amount)
             }
-            [tag, kind, to, amount]
-                if RhoString::unapply(tag).as_deref() == Some(MINT_TAG) =>
-            {
+            [tag, kind, to, amount] if RhoString::unapply(tag).as_deref() == Some(MINT_TAG) => {
                 (kind, Source::Mint, to, amount)
             }
             [tag, kind, process, funder, to, amount]
@@ -285,7 +283,11 @@ pub fn close_journal(store: &dyn CellStore) -> Result<Vec<JournalEntry>, RevStac
     Ok(taken)
 }
 
-fn spendable(balance: RevAmount, held: RevAmount, requested: RevAmount) -> Result<(), RevStackError> {
+fn spendable(
+    balance: RevAmount,
+    held: RevAmount,
+    requested: RevAmount,
+) -> Result<(), RevStackError> {
     let available = balance.saturating_sub(held);
     if requested > available {
         return Err(RevStackError::InsufficientFunds {

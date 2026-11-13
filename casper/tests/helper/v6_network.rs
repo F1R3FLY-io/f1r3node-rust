@@ -6,6 +6,7 @@ use casper::rust::blocks::proposer::proposer::DeploySelection;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::v6::block_record::BlockRecord;
 use casper::rust::v6::body::V6Records;
+use casper::rust::v6::resource_policy::PROTOCOL_V6;
 use casper::rust::v6::V6Engine;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
@@ -14,7 +15,6 @@ use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
-use casper::rust::v6::resource_policy::PROTOCOL_V6;
 
 pub fn engine(node: &TestNode) -> Arc<V6Engine> {
     node.casper

@@ -113,13 +113,12 @@ impl RevStacks {
         let (channel, id) = self.locate(owner);
         let _guard = self.lock(&id);
         let (count, total) = self.read_cells(&channel)?;
-        let remaining = total
-            .checked_sub(amount)
-            .filter(|r| *r >= keep)
-            .ok_or(RevStackError::InsufficientFunds {
+        let remaining = total.checked_sub(amount).filter(|r| *r >= keep).ok_or(
+            RevStackError::InsufficientFunds {
                 balance: total,
                 requested: amount,
-            })?;
+            },
+        )?;
         if count > 1 || remaining != total {
             self.rewrite(&channel, count, remaining)?;
         }

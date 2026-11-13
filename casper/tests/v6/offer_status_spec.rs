@@ -68,12 +68,9 @@ async fn an_offer_reports_unknown_pending_rejected_pending_then_ordered() {
         .deploys
         .iter()
         .any(|deploy| deploy.deploy.sig == offer.sig));
-    assert_eq!(
-        status(&node, &id).await,
-        OfferedStatus::Ordered {
-            block_hash: block.block_hash.clone(),
-        }
-    );
+    assert_eq!(status(&node, &id).await, OfferedStatus::Ordered {
+        block_hash: block.block_hash.clone(),
+    });
 }
 
 #[tokio::test]

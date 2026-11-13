@@ -23,7 +23,9 @@ fn ledger_channel(process: &WalletOwner) -> Par {
     }])
 }
 
-fn malformed() -> RevStackError { RevStackError::CorruptWallet("a funder share is malformed".into()) }
+fn malformed() -> RevStackError {
+    RevStackError::CorruptWallet("a funder share is malformed".into())
+}
 
 pub fn shares(store: &dyn CellStore, process: &WalletOwner) -> Result<Shares, RevStackError> {
     let mut out: Shares = Vec::new();
@@ -47,7 +49,11 @@ pub fn shares(store: &dyn CellStore, process: &WalletOwner) -> Result<Shares, Re
     Ok(out)
 }
 
-fn write(store: &dyn CellStore, process: &WalletOwner, shares: &Shares) -> Result<(), RevStackError> {
+fn write(
+    store: &dyn CellStore,
+    process: &WalletOwner,
+    shares: &Shares,
+) -> Result<(), RevStackError> {
     let channel = ledger_channel(process);
     let n = store.get_data(&channel).len();
     for index in (0..n).rev() {
@@ -65,14 +71,11 @@ fn write(store: &dyn CellStore, process: &WalletOwner, shares: &Shares) -> Resul
             seal: None,
         };
         let source = Produce::create(&channel, &a, false);
-        store.put_datum(
-            &channel,
-            Datum {
-                a,
-                persist: false,
-                source,
-            },
-        );
+        store.put_datum(&channel, Datum {
+            a,
+            persist: false,
+            source,
+        });
     }
     Ok(())
 }

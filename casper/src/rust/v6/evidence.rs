@@ -233,9 +233,7 @@ impl Evidence {
         })
     }
 
-    pub fn digest(&self) -> EvidenceDigest {
-        domain_digest(EVIDENCE_DIGEST_DOMAIN, &self.encode())
-    }
+    pub fn digest(&self) -> EvidenceDigest { domain_digest(EVIDENCE_DIGEST_DOMAIN, &self.encode()) }
 }
 
 pub trait EvidenceSink: Send + Sync {

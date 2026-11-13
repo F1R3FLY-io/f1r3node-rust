@@ -9,11 +9,11 @@ use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLo
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash as stable_hash, hash_from_vec};
 use rspace_plus_plus::rspace::history::history_reader::HistoryReader;
+use rspace_plus_plus::rspace::hot_store_action::{DeleteAction, HotStoreAction, InsertAction};
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndexFold;
 use rspace_plus_plus::rspace::merger::merging_logic::{NumberChannelsDiff, NumberChannelsEndVal};
-use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash as stable_hash, hash_from_vec};
-use rspace_plus_plus::rspace::hot_store_action::{DeleteAction, HotStoreAction, InsertAction};
 use rspace_plus_plus::rspace::merger::state_change::{ChangeReader, StateChange};
 use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
@@ -58,7 +58,9 @@ impl<R> RunChanges<R> {
         for action in actions {
             match action {
                 HotStoreAction::Insert(InsertAction::InsertData(i)) => {
-                    changes.data.insert(stable_hash(&i.channel), binaries(&i.data));
+                    changes
+                        .data
+                        .insert(stable_hash(&i.channel), binaries(&i.data));
                 }
                 HotStoreAction::Insert(InsertAction::InsertContinuations(i)) => {
                     changes
@@ -66,13 +68,17 @@ impl<R> RunChanges<R> {
                         .insert(hash_from_vec(&i.channels), binaries(&i.continuations));
                 }
                 HotStoreAction::Insert(InsertAction::InsertJoins(i)) => {
-                    changes.joins.insert(stable_hash(&i.channel), i.joins.clone());
+                    changes
+                        .joins
+                        .insert(stable_hash(&i.channel), i.joins.clone());
                 }
                 HotStoreAction::Delete(DeleteAction::DeleteData(d)) => {
                     changes.data.insert(stable_hash(&d.channel), Vec::new());
                 }
                 HotStoreAction::Delete(DeleteAction::DeleteContinuations(d)) => {
-                    changes.continuations.insert(hash_from_vec(&d.channels), Vec::new());
+                    changes
+                        .continuations
+                        .insert(hash_from_vec(&d.channels), Vec::new());
                 }
                 HotStoreAction::Delete(DeleteAction::DeleteJoins(d)) => {
                     changes.joins.insert(stable_hash(&d.channel), Vec::new());
@@ -146,12 +152,21 @@ pub fn merge_runs(
         .zip(diffs)
         .map(|(effect, diff)| {
             let mut fold = EventLogIndexFold::default();
-            fold.add(&create_event_log_index(effect.user_log, repository.clone(), &base, diff))
-                .map_err(history)?;
+            fold.add(&create_event_log_index(
+                effect.user_log,
+                repository.clone(),
+                &base,
+                diff,
+            ))
+            .map_err(history)?;
             let event_log_index = fold.finish();
-            let pre = repository.get_history_reader_struct(&base).map_err(history)?;
+            let pre = repository
+                .get_history_reader_struct(&base)
+                .map_err(history)?;
             let post = RunChanges::new(
-                repository.get_history_reader_struct(&base).map_err(history)?,
+                repository
+                    .get_history_reader_struct(&base)
+                    .map_err(history)?,
                 effect.changes,
             );
             let state_changes = StateChange::new(pre, post, &event_log_index).map_err(history)?;

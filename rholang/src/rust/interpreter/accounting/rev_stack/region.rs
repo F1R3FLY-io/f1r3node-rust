@@ -193,11 +193,7 @@ fn name_signature(signature: &CostSignature, scope: &mut Scope, named: &mut Vec<
     visit_signature_pars(signature, scope, named);
 }
 
-fn visit_signature_pars(
-    signature: &CostSignature,
-    scope: &mut Scope,
-    named: &mut Vec<Named>,
-) {
+fn visit_signature_pars(signature: &CostSignature, scope: &mut Scope, named: &mut Vec<Named>) {
     match &signature.value {
         Some(Value::Quote(par)) | Some(Value::Name(par)) => visit_par(par, scope, named),
         Some(Value::Compound(compound)) => compound
@@ -371,7 +367,9 @@ pub fn signature_owner_among(
 ) -> Result<WalletOwner, RevStackError> {
     match &signature.value {
         Some(Value::Signer(index)) => signers.get(*index as usize).cloned().ok_or_else(|| {
-            RevStackError::InvalidOwner(format!("the seal names signer {index}, which the origin does not have"))
+            RevStackError::InvalidOwner(format!(
+                "the seal names signer {index}, which the origin does not have"
+            ))
         }),
         Some(Value::Compound(compound)) if names_a_signer(signature) => WalletOwner::compound(
             compound

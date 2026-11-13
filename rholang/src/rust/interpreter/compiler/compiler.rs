@@ -61,7 +61,10 @@ impl Compiler {
         normalizer_env: HashMap<String, Par>,
         origin: models::rhoapi::SealOrigin,
     ) -> Result<Par, InterpreterError> {
-        let deployer = normalizer_env.get("rho:system:deployerId").cloned().unwrap_or_default();
+        let deployer = normalizer_env
+            .get("rho:system:deployerId")
+            .cloned()
+            .unwrap_or_default();
         super::normalizer::cost_accounting::elaborate::within(
             Some(elaboration_of(origin, deployer, false)),
             || Self::source_to_adt_with_normalizer_env(source, normalizer_env),
@@ -100,7 +103,9 @@ impl Compiler {
             validated::Validated::Good(procs) => {
                 if procs.len() == 1 {
                     let proc = procs.into_iter().next().unwrap();
-                    let proc = if super::normalizer::cost_accounting::elaborate::current().is_some_and(|e| e.pass) {
+                    let proc = if super::normalizer::cost_accounting::elaborate::current()
+                        .is_some_and(|e| e.pass)
+                    {
                         super::normalizer::cost_accounting::elaborate::elaborate(proc, &parser)?
                     } else {
                         proc
@@ -204,5 +209,9 @@ pub fn elaboration_of(
     deployer: Par,
     pass: bool,
 ) -> super::normalizer::cost_accounting::elaborate::Elaboration {
-    super::normalizer::cost_accounting::elaborate::Elaboration { origin, deployer, pass }
+    super::normalizer::cost_accounting::elaborate::Elaboration {
+        origin,
+        deployer,
+        pass,
+    }
 }

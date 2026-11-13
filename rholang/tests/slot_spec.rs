@@ -100,10 +100,10 @@ async fn holding_a_slot_name_is_the_authority_to_draw_on_its_stack() {
         bob.address
     );
     run(&runtime, &alice, &term).await;
-    assert_eq!(
-        replies(&runtime, "drawn").await,
-        vec![(true, Par::default())]
-    );
+    assert_eq!(replies(&runtime, "drawn").await, vec![(
+        true,
+        Par::default()
+    )]);
     let left = replies(&runtime, "left").await;
     assert_eq!(RhoNumber::unapply(&left[0].1), Some(300));
     assert_eq!(stacks(&runtime).balance(&bob.owner).unwrap(), 200);
@@ -237,7 +237,12 @@ async fn an_expired_grant_returns_each_funders_share() {
     run(&runtime, &anyone, &give_back(&sponsor.address, "too-soon")).await;
     assert!(!replies(&runtime, "too-soon").await[0].0);
     at_block(&runtime, 21, &anyone).await;
-    run(&runtime, &anyone, &give_back(&sponsor.address, "sponsor-back")).await;
+    run(
+        &runtime,
+        &anyone,
+        &give_back(&sponsor.address, "sponsor-back"),
+    )
+    .await;
     run(&runtime, &anyone, &give_back(&carol.address, "carol-back")).await;
     assert!(replies(&runtime, "sponsor-back").await[0].0);
     assert!(replies(&runtime, "carol-back").await[0].0);

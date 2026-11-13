@@ -9,9 +9,7 @@ use prost::bytes::Bytes;
 
 use super::body::StateHash;
 use super::executor::gate_inputs;
-use super::gate::{
-    gate_block, resolve_joint_wallets, BoundDemand, Refusal, StoreReader, Verdict,
-};
+use super::gate::{gate_block, resolve_joint_wallets, BoundDemand, Refusal, StoreReader, Verdict};
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
