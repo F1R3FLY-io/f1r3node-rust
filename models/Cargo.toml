@@ -102,6 +102,10 @@ path = "tests/cold_store_records.rs"
 name = "drive_configuration_gate"
 path = "tests/drive_configuration_gate.rs"
 
+[[test]]
+name = "egress_format_domain_separation"
+path = "tests/egress_format_domain_separation.rs"
+
 # The repository-owned Par is a compact PathMap handle. Pin that it remains
 # compact and that clone/mutation preserve PathMap's CoW sharing contract.
 [[test]]

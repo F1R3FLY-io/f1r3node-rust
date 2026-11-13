@@ -879,7 +879,7 @@
       "checker": "scripts/check-epathmap-core-obligations.py",
       "family": "epathmap_core",
       "manifest": "formal/epathmap_core_obligations.generated.json",
-      "manifest_sha256": "7e36f5f3aa7ffb08a164492be62fd904e232f55a94935d672432a96d6ddf4aa2",
+      "manifest_sha256": "a930d037c7430d78c377723ab718b468dc30d28ef89b41ec2d0c2a0dfbb5d0ac",
       "obligations": {
         "boundary": "Concrete witnesses exercise selected EPathMap operations and EPM1 map snapshot round trips. The generic PDA and Verus worklist equivalence obligations are proof-only; no direct executable refinement of arbitrary finite trees is claimed.",
         "delegated_epm1_positional_tla": {
@@ -1771,7 +1771,7 @@
           "formal/tlaplus/stack_safe_pda/PDAEquivalence.cfg": "efa8bbad0b869ea2c14e865120c8cbd4c2060e4b75d0b0549f11645accfb4889",
           "formal/tlaplus/stack_safe_pda/PDAEquivalence.tla": "1b010477e0dde9d836b70183c425a9929d47fb70b5caadc3fa54a7e13e1ae173",
           "formal/verus/epathmap_canonical_worklist.rs": "2bfc8da59684812bc6488f0121d31832d7fddcab6019cc86d3b9182978e9ddfb",
-          "models/Cargo.toml": "2cbb1425f54dfd37599dbb5298c6449ed7761419b77dc4dd43af21bf1640fc53",
+          "models/Cargo.toml": "a0636b192c83084228e9f57d3af7ac5b25d2f3473ff7090d7b856dfe55c5ef8b",
           "models/tests/epathmap_algebra.rs": "977bcb70f275bb7362e85d90f48619af0c8b3bbf6f19ba4ba05f2d5e3ada5cb4",
           "models/tests/epathmap_epm1_snapshot.rs": "4de60d1b8e36083394a2ed87de0556ccbe5e35917178530d0770aaa8fef4fad2"
         },
@@ -2857,7 +2857,7 @@
       "checker": "scripts/check-parbag-egress-obligations.py",
       "family": "parbag_egress",
       "manifest": "formal/parbag_egress_obligations.generated.json",
-      "manifest_sha256": "4799801be019a895dd5bfbba152def8c4d16a3c4e89d8666789ef00ae482cefa",
+      "manifest_sha256": "eb90f6a87071b35b225fec5e5252d7d5774946949692dd2d593071c198063ca6",
       "obligations": {
         "bincode_formal_boundary": "The canonical-egress Verus source models fixed bincode framing and preflight arithmetic; this registry has no separate formal model of the general-purpose bincode encoder.",
         "boundary": "Concrete witnesses exercise selected production bytes and slot order. The canonical-egress Verus source covers bincode envelope and length arithmetic, while full encoder byte equivalence and publication remain proof-only here.",
@@ -4264,7 +4264,7 @@
           "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressMutant.cfg": "88f76d0f24068dc757898b080cb294d019ed164801fb8c3c048837f9c9ad0a3d",
           "formal/tlaplus/stack_safe_pda/RSpaceCanonicalEgressValidationMutant.cfg": "c8295658de039605037e58c0c25f1e5fab030d1fe2e0e230fdf3dbddee32126b",
           "formal/verus/rspace_canonical_egress.rs": "92897d041c846ba513d875ea0b1c986ab0841880779107ab3abade4b1bc6c997",
-          "models/Cargo.toml": "2cbb1425f54dfd37599dbb5298c6449ed7761419b77dc4dd43af21bf1640fc53",
+          "models/Cargo.toml": "a0636b192c83084228e9f57d3af7ac5b25d2f3473ff7090d7b856dfe55c5ef8b",
           "models/tests/par_protobuf_stack_safety.rs": "991d21786b1e463da13a1c6d84b7edcbc83d92f90c9c4bde7bcfc105de65bb35",
           "models/tests/protobuf_encoder_space.rs": "9e5464f3fe646b8c97e13ef8496c58c58b993d56190d86389ee3f3b8a9a9533b"
         },
