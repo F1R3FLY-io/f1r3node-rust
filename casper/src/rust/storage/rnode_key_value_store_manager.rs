@@ -47,11 +47,6 @@ fn deploy_storage_env_config() -> LmdbEnvConfig {
     LmdbEnvConfig::new("deploystorage".to_string(), GB)
 }
 
-// Temporary storage / cache
-fn casper_buffer_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("casperbuffer".to_string(), GB)
-}
-
 fn reporting_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("reporting".to_string(), 10 * TB) }
 
 fn transaction_env_config() -> LmdbEnvConfig { LmdbEnvConfig::new("transaction".to_string(), GB) }
@@ -132,10 +127,6 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
-            Db::new("last-finalized-block".to_string(), None),
-            dag_storage_env_config(),
-        ),
-        (
             // Single-slot register for the shard's genesis hash (learned during
             // a truncated restore). Opened in BlockDagKeyValueStorage::new like
             // the indices above.
@@ -174,11 +165,6 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new("reporting-cache".to_string(), None),
             reporting_env_config(),
         ),
-        // CasperBuffer
-        (
-            Db::new("parents-map".to_string(), None),
-            casper_buffer_env_config(),
-        ),
         // Rholang evaluator store
         (
             Db::new("eval-history".to_string(), None),
@@ -198,6 +184,16 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             transaction_env_config(),
         ),
     ];
+
+    for name in [
+        "dag-membership-v1",
+        "dag-height-v1",
+        "dag-children-v1",
+        "dag-history-state-v1",
+        "dag-gc-retry-v1",
+    ] {
+        mappings.push((Db::new(name.to_string(), None), dag_storage_env_config()));
+    }
 
     // RSpace
     if !legacy_rspace_paths {
@@ -239,12 +235,43 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
 
 #[cfg(test)]
 mod tests {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
     use block_storage::rust::deploy::key_value_deploy_storage::{
         KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
     };
+    use models::rust::block_implicits::get_random_block_default;
     use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 
     use super::*;
+
+    #[tokio::test]
+    async fn production_lmdb_mapping_supports_bigint_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
+        let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let mut block = get_random_block_default();
+        block.header.parents_hash_list.clear();
+        block.body.state.block_number = 0;
+        block.body.state.bonds[0].stake = "100000000000000000000".parse().unwrap();
+        dag.insert(&block, InsertMode::Approved).unwrap();
+        drop(dag);
+        manager.shutdown().await.unwrap();
+        drop(manager);
+        let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
+        let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        assert_eq!(
+            dag.get_representation()
+                .unwrap()
+                .lookup(&block.block_hash)
+                .unwrap()
+                .unwrap()
+                .weight_map[&block.body.state.bonds[0].validator],
+            block.body.state.bonds[0].stake
+        );
+        drop(dag);
+    }
 
     #[tokio::test]
     async fn deploy_records_reopen_without_a_verification_environment() {

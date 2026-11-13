@@ -400,9 +400,9 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
             let store = block_storage::rust::key_value_block_store::KeyValueBlockStore::create_from_kvm(&mut manager).await.unwrap();
             let dag = block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
             let view = dag.get_representation().unwrap();
-            assert!(!view.contains(&invalid.block_hash), "Invalid signature must not enter the native DAG");
+            assert!(!view.contains(&invalid.block_hash).unwrap(), "Invalid signature must not enter the native DAG");
             for block in &native_blocks {
-                assert!(view.contains(&block.block_hash));
+                assert!(view.contains(&block.block_hash).unwrap());
                 assert_eq!(store.get(&block.block_hash).unwrap().unwrap().body.state.post_state_hash, block.body.state.post_state_hash);
             }
             manager.shutdown().await.unwrap();

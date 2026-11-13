@@ -23,10 +23,11 @@ use models::rust::casper::protocol::casper_message::{
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
-use rspace_plus_plus::rspace::errors::HistoryError;
+use shared::rust::blocking::in_blocking;
 use tracing;
 
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -244,6 +245,25 @@ fn retry_frontier_deferral_lease_expired(next_block: i64, rejection_height: i64)
     next_block.saturating_sub(rejection_height) > RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS
 }
 
+/// The disposition-walk start validation uses for a block carrying these
+/// retries. A retry older than the tip window has its records below it.
+fn retry_walk_start(
+    tip_start: i64,
+    ctx: &FloorContext,
+    deploy_lifespan: i64,
+    valid_afters: impl Iterator<Item = i64>,
+) -> Result<i64, CasperError> {
+    match valid_afters.min() {
+        Some(oldest) => crate::rust::util::deploy_window::repeat_scan_start(
+            tip_start,
+            ctx.floor.block_number,
+            deploy_lifespan,
+            oldest,
+        ),
+        None => Ok(tip_start),
+    }
+}
+
 /// One line per deferred retry with the gate's basis — a recurring deferral
 /// for one sig is the starvation tripwire, and the basis says which of the
 /// gate's closed conditions is holding it.
@@ -432,11 +452,6 @@ fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
     match err {
-        CasperError::HistoryError(HistoryError::MergeError(msg)) => {
-            msg.contains("single-value cell")
-                && msg.contains("would hold")
-                && msg.contains("after merge")
-        }
         CasperError::RuntimeError(msg) => {
             (msg.contains("number channel")
                 && msg.contains("holds")
@@ -552,6 +567,85 @@ async fn derive_floor_context(
     )
     .await
     .map(Some)
+}
+
+enum ProposalShape {
+    AsSnapshot(Option<FloorContext>),
+    Witness {
+        snapshot: CasperSnapshot,
+        floor_ctx: FloorContext,
+    },
+}
+
+/// Over the floor-distance cap no multi-parent merge can be built, so the
+/// proposer declares only fork choice's main parent and still cites every
+/// latest message. Fork choice weighs main parents only and the oracle reads
+/// main chains and justifications only, so the block carries the same
+/// testimony a full merge would; the other tips stay tips and are merged once
+/// the floor is back within the cap. The block carries no user deploys, and
+/// it is built only when its parent's state holds the block's own floor, so
+/// it takes the single-parent fast path and never re-bases into the refusal.
+async fn shape_proposal(
+    casper_snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    floor_ctx: Option<FloorContext>,
+    selection: super::proposer::DeploySelection,
+) -> Result<ProposalShape, CasperError> {
+    let Some(floor_ctx) = floor_ctx else {
+        return Ok(ProposalShape::AsSnapshot(None));
+    };
+    let distance = casper_snapshot.max_block_num - floor_ctx.floor.block_number;
+    if casper_snapshot.parents.len() < 2
+        || !interpreter_util::merge_scope_backstop_exceeded(distance)
+    {
+        return Ok(ProposalShape::AsSnapshot(Some(floor_ctx)));
+    }
+    let refusal = CasperError::FloorDistanceExceeded {
+        distance,
+        cap: interpreter_util::MAX_FLOOR_DISTANCE_BLOCKS,
+        floor_block: floor_ctx.floor.block_number,
+        parents: casper_snapshot.parents.len(),
+    };
+    if !selection.allows_empty() {
+        return Err(refusal);
+    }
+
+    let main_parent = casper_snapshot.parents[0].clone();
+    let mut witness = casper_snapshot.clone();
+    witness.max_block_num = main_parent.body.state.block_number;
+    witness.parents = vec![main_parent];
+    let witness_floor_ctx = derive_floor_context(&witness, block_store)
+        .await?
+        .expect("a snapshot with one parent always derives a floor");
+    let parent = crate::rust::finality::floor::Floor {
+        hash: witness.parents[0].block_hash.clone(),
+        block_number: witness.parents[0].body.state.block_number,
+    };
+    let parent_holds_floor = in_blocking(|| {
+        crate::rust::finality::floor::state_contains(
+            &witness.dag,
+            block_store,
+            &parent,
+            &witness_floor_ctx.floor,
+            &mut crate::rust::finality::floor::IntroducedSigsMemo::new(),
+        )
+    })?;
+    if !parent_holds_floor {
+        return Err(refusal);
+    }
+    tracing::info!(
+        target: "f1r3fly.casper.witness",
+        distance,
+        cap = interpreter_util::MAX_FLOOR_DISTANCE_BLOCKS,
+        floor_block = floor_ctx.floor.block_number,
+        witness_floor_block = witness_floor_ctx.floor.block_number,
+        parents_left_as_tips = casper_snapshot.parents.len() - 1,
+        "floor distance exceeds the merge cap: proposing a single-parent witness block"
+    );
+    Ok(ProposalShape::Witness {
+        snapshot: witness,
+        floor_ctx: witness_floor_ctx,
+    })
 }
 
 /// The parents-rooted canonical-won walk, through the operation context's
@@ -743,16 +837,27 @@ async fn prepare_user_deploys_with_policy(
     };
 
     // The retry gate, proposer side — the SAME predicate validation runs
-    // (`FloorContext::retry_gate_open`), so a proposal the gate admits is a
-    // proposal every validator accepts. A buffered retry stays parked until
-    // its latest kept rejection settles into the floor closure; re-proposal
-    // against a live contest regenerated same-sig sibling copies faster
-    // than merges could adjudicate them. No derivable floor (`None`) defers
-    // every retry — delay, never loss: the buffer's floor-window retain
-    // keeps custody.
+    // (`FloorContext::retry_gate_open`) over the same walk start, so a
+    // proposal the gate admits is a proposal every validator accepts. A
+    // buffered retry stays parked until its latest kept rejection settles
+    // into the floor closure; re-proposal against a live contest regenerated
+    // same-sig sibling copies faster than merges could adjudicate them. No
+    // derivable floor (`None`) defers every retry — delay, never loss: the
+    // buffer's floor-window retain keeps custody.
     let recovered: HashSet<Signed<DeployData>> = if allow_recovered_deploys {
         let mut kept: HashSet<Signed<DeployData>> = HashSet::new();
         let mut gated_count = 0usize;
+        let buffered_walk_start = match floor_ctx {
+            Some(ctx) => retry_walk_start(
+                earliest_block_number,
+                ctx,
+                casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+                buffered_deploys
+                    .iter()
+                    .map(|deploy| deploy.data.valid_after_block_number),
+            )?,
+            None => earliest_block_number,
+        };
         for deploy in buffered_deploys {
             let candidate = !canonical_won_buffer_sigs.contains(&deploy.sig)
                 && (!casper_snapshot.deploys_in_scope.contains(&deploy.sig)
@@ -765,7 +870,7 @@ async fn prepare_user_deploys_with_policy(
                     match ctx.retry_gate_basis(
                         &casper_snapshot.dag,
                         block_store,
-                        earliest_block_number,
+                        buffered_walk_start,
                         &deploy.sig,
                     )? {
                         RetryGateBasis::Open => {
@@ -1022,6 +1127,18 @@ async fn prepare_user_deploys_with_policy(
     // mints a block every validator rejects as `PrematureDeployRetry`.
     let mut retry_candidates: HashSet<Signed<DeployData>> = HashSet::new();
     let mut gated_pool_retries = 0usize;
+    let pool_walk_start = match floor_ctx {
+        Some(ctx) => retry_walk_start(
+            earliest_block_number,
+            ctx,
+            casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+            valid_unique
+                .iter()
+                .filter(|d| is_retry_candidate(d))
+                .map(|deploy| deploy.data.valid_after_block_number),
+        )?,
+        None => earliest_block_number,
+    };
     for deploy in valid_unique.iter().filter(|d| is_retry_candidate(d)) {
         if recovered_sigs.contains(&deploy.sig) {
             retry_candidates.insert(deploy.clone());
@@ -1032,7 +1149,7 @@ async fn prepare_user_deploys_with_policy(
                 match ctx.retry_gate_basis(
                     &casper_snapshot.dag,
                     block_store,
-                    earliest_block_number,
+                    pool_walk_start,
                     &deploy.sig,
                 )? {
                     RetryGateBasis::Open => {
@@ -1084,7 +1201,7 @@ async fn prepare_user_deploys_with_policy(
             let rejection_heights = match floor_ctx {
                 Some(ctx) => ctx.latest_kept_rejection_heights(
                     block_store,
-                    earliest_block_number,
+                    pool_walk_start,
                     retry_candidates.iter().map(|deploy| &deploy.sig),
                 )?,
                 None => HashMap::new(),
@@ -1543,31 +1660,33 @@ fn walk_unfinalized_cone(
     bounds: &UnfinalizedConeBounds,
     mut visit: impl FnMut(&BlockHash, &BlockFacts) -> bool,
 ) -> Result<(), CasperError> {
-    let mut stack: Vec<BlockHash> = roots.to_vec();
-    let mut seen: HashSet<BlockHash> = HashSet::new();
-    while let Some(block_hash) = stack.pop() {
-        if !seen.insert(block_hash.clone())
-            || block_hash == casper_snapshot.last_finalized_block
-            || casper_snapshot.dag.is_finalized(&block_hash)
-        {
-            continue;
+    in_blocking(|| {
+        let mut stack: Vec<BlockHash> = roots.to_vec();
+        let mut seen: HashSet<BlockHash> = HashSet::new();
+        while let Some(block_hash) = stack.pop() {
+            if !seen.insert(block_hash.clone())
+                || block_hash == casper_snapshot.last_finalized_block
+                || casper_snapshot.dag.is_finalized(&block_hash)?
+            {
+                continue;
+            }
+            let Some(facts) = held_block_facts(block_store, &block_hash)? else {
+                continue;
+            };
+            if bounds
+                .last_finalized_block_number
+                .is_some_and(|lfb_number| facts.block_number <= lfb_number)
+                || facts.block_number <= bounds.earliest_block_number
+            {
+                continue;
+            }
+            if !visit(&block_hash, &facts) {
+                return Ok(());
+            }
+            stack.extend(facts.parents.iter().cloned());
         }
-        let Some(facts) = held_block_facts(block_store, &block_hash)? else {
-            continue;
-        };
-        if bounds
-            .last_finalized_block_number
-            .is_some_and(|lfb_number| facts.block_number <= lfb_number)
-            || facts.block_number <= bounds.earliest_block_number
-        {
-            continue;
-        }
-        if !visit(&block_hash, &facts) {
-            return Ok(());
-        }
-        stack.extend(facts.parents.iter().cloned());
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn parent_hashes(casper_snapshot: &CasperSnapshot) -> Vec<BlockHash> {
@@ -1715,29 +1834,23 @@ fn storage_has_unresolved_in_scope_deploys(
 #[cfg(test)]
 fn filter_slashable_invalid_messages(
     invalid_latest_messages: HashMap<Validator, BlockHash>,
-    bonds_map: &HashMap<Validator, i64>,
+    bonds_map: &HashMap<Validator, BigInt>,
     active_validators: &[Validator],
 ) -> Vec<(Validator, BlockHash)> {
     invalid_latest_messages
         .into_iter()
         .filter(|(validator, _)| {
-            bonds_map.get(validator).copied().unwrap_or(0) > 0
+            bonds_map.get(validator).cloned().unwrap_or_default() > 0.into()
                 && active_validators.contains(validator)
         })
         .collect()
 }
 
-/// Build one `SlashDeploy` from its offender evidence. BOTH proposer-side slash
-/// paths — the freshly-detected `prepare_slashing_deploys` and the merge-rejected
-/// `recovered_rejected_slashes` recovery in `create_block` — previously constructed the
-/// deploy with two byte-identical inline copies. This single seam is where the deploy's
-/// `initial_rand` seed is wired, and by MainTheorem T-Slash
-/// (`main_TSlash_deploy_seed_uses_invalid_block_hash`,
-/// formal/rocq/slashing/theories/MainTheorem.v:302) that seed MUST be a pure function of
-/// `(proposer pubkey, seq_num, invalid_block_hash)` — deriving it from the offender's OWN
-/// `invalid_block_hash` is what lets every node and the replay path recompute the identical
-/// randomness. Extracting the copies removes the standing risk that a future edit to one
-/// silently diverges the seed-wiring (mirrors `finality::floor::floor_committee`).
+/// Build one `SlashDeploy` from its offender evidence. Its `initial_rand` seed MUST
+/// be a pure function of `(proposer pubkey, seq_num, invalid_block_hash)` (MainTheorem
+/// T-Slash, `main_TSlash_deploy_seed_uses_invalid_block_hash`): deriving it from the
+/// offender's OWN `invalid_block_hash` is what lets every node and the replay path
+/// recompute the identical randomness.
 fn build_slash_deploy(
     invalid_block_hash: &BlockHash,
     proposer_public_key: &PublicKey,
@@ -1773,7 +1886,7 @@ async fn prepare_slashing_deploys(
     // `validate_received_slash_deploys` does NOT require the block sender to
     // be bonded — it only checks the slash *target* is bonded (rule 6). The
     // block-sender-bonded invariant is enforced at admission
-    // (`BlockProcessor::check_sender_authorization`) and at validation
+    // (block ingest's `Intake::sender_authorization`) and at validation
     // (`block_sender_has_weight` in `run_validation_steps`); this proposer-side filter is
     // an optimization, not an authorization predicate. The two cannot
     // diverge in a way that admits unauthorized slashes.
@@ -1789,9 +1902,9 @@ async fn prepare_slashing_deploys(
         .on_chain_state
         .bonds_map
         .get(&self_id)
-        .copied()
-        .unwrap_or(0);
-    if proposer_bond <= 0 {
+        .cloned()
+        .unwrap_or_default();
+    if proposer_bond <= BigInt::from(0) {
         return Ok(Vec::new());
     }
 
@@ -2025,7 +2138,7 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
                 .on_chain_state
                 .bonds_map
                 .iter()
-                .filter(|(_, stake)| **stake > 0)
+                .filter(|(_, stake)| **stake > BigInt::from(0))
                 .map(|(validator, _)| validator.clone())
                 .collect()
         };
@@ -2836,6 +2949,27 @@ pub async fn create_with_progress(
     selection: super::proposer::DeploySelection,
     finality_progress: &mut FinalityProgress,
 ) -> Result<BlockCreatorResult, CasperError> {
+    // The one derivation of the floor (and its post-state) for this whole
+    // propose; every walk and probe below reads it. `None` only for
+    // parentless fixture shapes, where the floor requirement surfaces at
+    // bonds packaging exactly as before.
+    let derived_floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
+    let witness_snapshot: CasperSnapshot;
+    let (casper_snapshot, floor_ctx, selection) =
+        match shape_proposal(casper_snapshot, block_store, derived_floor_ctx, selection).await? {
+            ProposalShape::AsSnapshot(floor_ctx) => (casper_snapshot, floor_ctx, selection),
+            ProposalShape::Witness {
+                snapshot,
+                floor_ctx,
+            } => {
+                witness_snapshot = snapshot;
+                (
+                    &witness_snapshot,
+                    Some(floor_ctx),
+                    super::proposer::DeploySelection::RecoveryEmpty,
+                )
+            }
+        };
     let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
@@ -2904,12 +3038,6 @@ pub async fn create_with_progress(
     );
 
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
-
-    // The one derivation of the floor (and its post-state) for this whole
-    // propose; every walk and probe below reads it. `None` only for
-    // parentless fixture shapes, where the floor requirement surfaces at
-    // bonds packaging exactly as before.
-    let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
     // Prepare deploys
     let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
@@ -3120,18 +3248,10 @@ pub async fn create_with_progress(
         v
     };
 
-    // Merge the parents once up front. Two reasons to do this before the
-    // empty-block skip check below:
-    //   1. To discover slashes that were rejected by cost-optimal merge
-    //      resolution — those slashes must be re-issued by this proposer
-    //      so the slash effect lands in the merge block regardless of the
-    //      merge's rejection decision.
-    //   2. To include rejected-slash recovery in the "do we have work?"
-    //      decision. A heartbeat-disabled proposer that wakes with no user
-    //      deploys and no own-detected slashes would otherwise skip,
-    //      stranding any merge-rejected slashes from parent merging.
-    // The merge result is cached so the downstream compute_deploys_checkpoint
-    // call hits the cache.
+    // Merge the parents once up front: slash targets and selected deploys are
+    // both judged against the pre-state this block executes on, and what
+    // survives decides whether there is work at all. The merge result is
+    // cached so the downstream compute_deploys_checkpoint call hits the cache.
     let __merge_pre_t = std::time::Instant::now();
     let latest_messages: BTreeMap<Validator, BlockHash> = casper_snapshot
         .justifications
@@ -3156,7 +3276,27 @@ pub async fn create_with_progress(
         "source" => CASPER_METRICS_SOURCE
     )
     .record(__merge_pre_t.elapsed().as_secs_f64());
-    let rejected_slashes = merge_pre_info.rejected_slashes.clone();
+
+    // Targets were picked from the floor's bonds, before the merge; an
+    // offender the pre-state already shows unbonded was slashed by a parent,
+    // and slashing it again is unauthorized once the floor shows it too.
+    let slashing_deploys = {
+        let pre_state_bonds = runtime_manager.compute_bonds(&merge_pre_info.state).await?;
+        let mut still_bonded = Vec::with_capacity(slashing_deploys.len());
+        for slash_deploy in slashing_deploys {
+            let offender = casper_snapshot
+                .dag
+                .lookup_unsafe(&slash_deploy.invalid_block_hash)?
+                .sender;
+            if pre_state_bonds
+                .iter()
+                .any(|bond| bond.validator == offender && !bond.stake.is_zero())
+            {
+                still_bonded.push(slash_deploy);
+            }
+        }
+        still_bonded
+    };
 
     // NEVER EXECUTE A DEPLOY WHOSE EFFECT IS ALREADY IN THE PRE-STATE.
     //
@@ -3222,90 +3362,12 @@ pub async fn create_with_progress(
     };
     let has_user_or_dummy_deploys = !user_deploys.is_empty() || !dummy_deploys.is_empty();
 
-    // Union own slashes with merge-rejected slashes, dedup by
-    // `invalid_block_hash`. Own detections take priority — any
-    // merge-rejected slash for an equivocator already covered by
-    // prepare_slashing_deploys is dropped. `filter_recoverable` also
-    // collapses multiple rejected slashes for the same equivocator
-    // (e.g., from different original issuers) down to a single entry,
-    // then the evidence filter drops stale or no-longer-invalid hashes.
-    let own_invalid_block_hashes = slashing_deploys
-        .iter()
-        .map(|sd| sd.invalid_block_hash.clone());
-    let epoch_length = casper_snapshot.on_chain_state.shard_conf.epoch_length;
-    let candidate_recovered_rejected_slashes =
-        crate::rust::merging::rejected_slash::filter_recoverable(
-            rejected_slashes,
-            own_invalid_block_hashes,
-        );
-    let (recovered_target_activation_epoch, recovered_rejected_slashes) =
-        if candidate_recovered_rejected_slashes.is_empty() {
-            (None, Vec::new())
-        } else {
-            let recovered_target_activation_epoch =
-                crate::rust::slashing_authorization::epoch_for_block_number(
-                    next_block_num,
-                    epoch_length,
-                )
-                .map_err(|e| {
-                    CasperError::RuntimeError(format!(
-                        "Failed to compute current epoch for recovered slash deploy: {:?}",
-                        e
-                    ))
-                })?
-                .get();
-            let recovered_rejected_slashes =
-                crate::rust::merging::rejected_slash::filter_recoverable_with_evidence(
-                    candidate_recovered_rejected_slashes,
-                    Vec::<BlockHash>::new(),
-                    |invalid_block_hash| {
-                        let Some(metadata) = casper_snapshot
-                            .dag
-                            .lookup(invalid_block_hash)
-                            .map_err(CasperError::from)?
-                        else {
-                            return Ok::<bool, CasperError>(false);
-                        };
-                        if !metadata.invalid {
-                            return Ok::<bool, CasperError>(false);
-                        }
-                        let evidence_epoch =
-                            crate::rust::slashing_authorization::epoch_for_block_number(
-                                metadata.block_number,
-                                epoch_length,
-                            )
-                            .map_err(|e| {
-                                CasperError::from(
-                                    crate::rust::slashing_authorization::SlashAuthError::from(e),
-                                )
-                            })?;
-                        Ok::<bool, CasperError>(
-                            evidence_epoch.get() == recovered_target_activation_epoch,
-                        )
-                    },
-                )?;
-            (
-                Some(recovered_target_activation_epoch),
-                recovered_rejected_slashes,
-            )
-        };
-
     // Check if we have any new work to process.
     // If empty blocks are disabled, skip closeBlock-only proposals to avoid no-op checkpoint cost.
     // If empty blocks are enabled (heartbeat/liveness mode), continue and emit closeBlock.
-    // Recovered rejected slashes count as work — without this check, a
-    // heartbeat-disabled proposer would silently drop merge-rejected slashes
-    // on a wake with no other pending work.
     let has_slashing_deploys = !slashing_deploys.is_empty();
-    let has_recovered_rejected_slashes = !recovered_rejected_slashes.is_empty();
-    if !has_user_or_dummy_deploys
-        && !has_slashing_deploys
-        && !has_recovered_rejected_slashes
-        && !allow_empty_blocks
-    {
-        tracing::info!(
-            "Skipping empty block creation: no new user deploys, no slashing deploys, no merge-rejected slashes to recover"
-        );
+    if !has_user_or_dummy_deploys && !has_slashing_deploys && !allow_empty_blocks {
+        tracing::info!("Skipping empty block creation: no new user deploys, no slashing deploys");
         record_empty_block_skip();
         return Ok(BlockCreatorResult::NoNewDeploys);
     }
@@ -3316,33 +3378,8 @@ pub async fn create_with_progress(
     // Make sure closeBlock is the last system Deploy
     let mut system_deploys_converted: Vec<SystemDeployEnum> = Vec::new();
 
-    // Add own-detected slashes
     for slash_deploy in slashing_deploys {
         system_deploys_converted.push(SystemDeployEnum::Slash(slash_deploy));
-    }
-
-    // Re-issue slashes that the merge dropped. The proposer signs these
-    // under its own identity, matching the existing slashing convention.
-    // Per T-9.8, `target_activation_epoch` must equal the *current* epoch
-    // of the block carrying the slash — for recovered slashes the current
-    // epoch is the one that will be assigned to the block we are creating,
-    // i.e. `epoch_for_block_number(next_block_num, epoch_length)`.
-    if let Some(recovered_target_activation_epoch) = recovered_target_activation_epoch {
-        for rs in &recovered_rejected_slashes {
-            let slash_deploy = build_slash_deploy(
-                &rs.invalid_block_hash,
-                &validator_identity.public_key,
-                recovered_target_activation_epoch,
-                next_seq_num,
-            );
-            tracing::info!(
-                "Recovering merge-rejected slash: invalid_block={}, one_of_original_issuers={}, target_activation_epoch={}",
-                pretty_printer::PrettyPrinter::build_string_bytes(&rs.invalid_block_hash),
-                hex::encode(&rs.issuer_public_key.bytes),
-                recovered_target_activation_epoch
-            );
-            system_deploys_converted.push(SystemDeployEnum::Slash(slash_deploy));
-        }
     }
 
     // Add the actual close block deploy
@@ -3705,6 +3742,7 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 #[cfg(test)]
 mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use rspace_plus_plus::rspace::errors::HistoryError;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -3849,10 +3887,18 @@ mod tests {
             .expect("treat rejected parent-scope user deploy as unresolved"));
         snapshot.rejected_in_scope.remove(&user_sig);
 
-        snapshot.dag.finalized_blocks_set.insert(user_hash.clone());
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .insert(user_hash.clone());
         assert!(!scope_has_unfinalized_user_deploys(&snapshot, &block_store)
             .expect("ignore finalized parent-scope user deploy"));
-        snapshot.dag.finalized_blocks_set.remove(&user_hash);
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .remove(&user_hash);
 
         snapshot.last_finalized_block = user_hash;
         assert!(!scope_has_unfinalized_user_deploys(&snapshot, &block_store)
@@ -3982,7 +4028,7 @@ mod tests {
                 DeployData {
                     term: format!("@{}!(Nil)", time_stamp),
                     time_stamp,
-                    phlo_price: 1,
+                    phlo_price: (1).into(),
                     phlo_limit: 100_000,
                     valid_after_block_number,
                     shard_id: "test".to_string(),
@@ -5358,7 +5404,7 @@ mod tests {
             while let Some(block_hash) = stack.pop() {
                 if !seen.insert(block_hash.clone())
                     || block_hash == casper_snapshot.last_finalized_block
-                    || casper_snapshot.dag.is_finalized(&block_hash)
+                    || casper_snapshot.dag.is_finalized(&block_hash).unwrap()
                 {
                     continue;
                 }
@@ -5584,7 +5630,7 @@ mod tests {
         invalid_latest_messages.insert(equivocator.clone(), invalid_block.clone());
 
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 5);
+        bonds_map.insert(equivocator.clone(), 5.into());
 
         let active_validators = vec![equivocator.clone()];
 
@@ -5610,7 +5656,7 @@ mod tests {
         invalid_latest_messages.insert(equivocator.clone(), invalid_block);
 
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 0);
+        bonds_map.insert(equivocator.clone(), 0.into());
 
         let active_validators = vec![equivocator];
 
@@ -5638,7 +5684,7 @@ mod tests {
 
         // Bond floor > 0 — equivocator's stake stays at 1 after slash.
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 1);
+        bonds_map.insert(equivocator.clone(), 1.into());
 
         // PoS has removed the slashed validator from the active set.
         let active_validators: Vec<Validator> = vec![];
@@ -5665,7 +5711,6 @@ mod tests {
     /// replay path — recomputes the identical randomness. A regression wiring the seed from a
     /// DIFFERENT input (the offender pubkey, a constant, the proposer's own block hash) would
     /// still pass every candidate-FILTERING test above yet silently fork replay.
-    /// `build_slash_deploy` is the single construction seam both proposer slash paths use.
     #[test]
     fn build_slash_deploy_wires_seed_from_invalid_block_hash() {
         let invalid_block = invalid_block_hash(0xD5);
@@ -5711,12 +5756,6 @@ mod tests {
 
     #[test]
     fn detects_retryable_single_value_batch_errors() {
-        let err = CasperError::HistoryError(HistoryError::MergeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        ));
-
-        assert!(is_retryable_single_value_batch_error(&err));
-
         let runtime = CasperError::RuntimeError(
             "number channel abc holds 2 values [0, 0]; IntegerAdd single-value invariant violated"
                 .to_string(),
@@ -5732,11 +5771,6 @@ mod tests {
             "MergeType mismatch on channel abc".to_string(),
         ));
         assert!(!is_retryable_single_value_batch_error(&other));
-
-        let unrelated_runtime = CasperError::RuntimeError(
-            "single-value cell abc would hold 2 values after merge".to_string(),
-        );
-        assert!(!is_retryable_single_value_batch_error(&unrelated_runtime));
     }
 
     #[test]

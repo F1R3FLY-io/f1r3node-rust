@@ -15,6 +15,7 @@ pub(super) async fn drain_requests(requests: &TaskScope) -> Result<(), Consensus
 
 pub(super) async fn cleanup(
     tasks: [Arc<TaskScope>; 5],
+    ingest_tasks: Option<Arc<tokio::sync::Mutex<tokio::task::JoinSet<()>>>>,
     engine: Option<casper::rust::engine::engine_cell::EngineCell>,
     observer: Option<RunningObserver>,
     mut store_manager: Box<dyn KeyValueStoreManager>,
@@ -24,6 +25,9 @@ pub(super) async fn cleanup(
     }
     for scope in &tasks {
         scope.shutdown().await;
+    }
+    if let Some(ingest_tasks) = ingest_tasks {
+        ingest_tasks.lock().await.shutdown().await;
     }
     let mut background_result = Ok(());
     if let Some(engine) = engine {
@@ -90,16 +94,28 @@ mod tests {
     struct Adapter {
         exit: Exit,
         tasks: [Arc<TaskScope>; 5],
+        ingest_tasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<()>>>,
         store: Store,
     }
 
     #[async_trait::async_trait]
     impl ConsensusAdapter for Adapter {
         async fn run(self: Box<Self>, mut context: AdapterContext) -> Result<(), ConsensusError> {
-            let Self { exit, tasks, store } = *self;
+            let Self {
+                exit,
+                tasks,
+                ingest_tasks,
+                store,
+            } = *self;
             context
                 .cleanup
-                .send(Box::pin(cleanup(tasks, None, None, Box::new(store))))
+                .send(Box::pin(cleanup(
+                    tasks,
+                    Some(ingest_tasks),
+                    None,
+                    None,
+                    Box::new(store),
+                )))
                 .map_err(|_| ConsensusError::Stopped)?;
             context.control.ready();
             context.control.cancelled().await;
@@ -115,6 +131,13 @@ mod tests {
     async fn storage_shutdown_follows_task_cleanup_after_success_error_and_timeout() {
         for exit in [Exit::Success, Exit::Failure, Exit::Stuck] {
             let events = Events::default();
+            let mut ingest = tokio::task::JoinSet::new();
+            let guard = TaskGuard(events.clone());
+            ingest.spawn(async move {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            });
+            let ingest_tasks = Arc::new(tokio::sync::Mutex::new(ingest));
             let tasks = std::array::from_fn(|_| Arc::new(TaskScope::default()));
             for scope in &tasks {
                 let guard = TaskGuard(events.clone());
@@ -146,6 +169,7 @@ mod tests {
             .build(Box::new(Adapter {
                 exit,
                 tasks: tasks.clone(),
+                ingest_tasks: ingest_tasks.clone(),
                 store: Store {
                     events: events.clone(),
                     fail: false,
@@ -155,7 +179,9 @@ mod tests {
             runtime.handle().wait_ready().await.unwrap();
             assert_eq!(runtime.shutdown().await, expected);
             assert!(tasks.iter().all(|scope| scope.is_empty()));
+            assert!(ingest_tasks.lock().await.is_empty());
             assert_eq!(*events.lock().unwrap(), [
+                "task stopped",
                 "task stopped",
                 "task stopped",
                 "task stopped",
@@ -171,6 +197,7 @@ mod tests {
         let events = Events::default();
         let result = cleanup(
             std::array::from_fn(|_| Arc::new(TaskScope::default())),
+            None,
             None,
             None,
             Box::new(Store {
@@ -198,7 +225,13 @@ mod tests {
             scopes[1] = requests.clone();
             context
                 .cleanup
-                .send(Box::pin(cleanup(scopes, None, None, Box::new(self.store))))
+                .send(Box::pin(cleanup(
+                    scopes,
+                    None,
+                    None,
+                    None,
+                    Box::new(self.store),
+                )))
                 .map_err(|_| ConsensusError::Stopped)?;
             context.control.ready();
             context.control.cancelled().await;

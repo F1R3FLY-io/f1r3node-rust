@@ -184,6 +184,15 @@ impl NodeRuntime {
             );
         }
 
+        let known_peers = comm::rust::discovery::known_peers::KnownPeers::load(
+            self.node_conf.storage.data_dir.join("known-peers"),
+        );
+
+        info!(
+            "Loaded {} known peer(s) from the previous run",
+            known_peers.peers().len()
+        );
+
         // Create NodeDiscovery
         let node_discovery = node_discover(
             self.id.clone(),
@@ -231,6 +240,7 @@ impl NodeRuntime {
             rp_conf_cell,
             rp_connections,
             kademlia_store,
+            known_peers,
             node_discovery,
             packet_handler,
             event_bus,
@@ -260,6 +270,7 @@ impl NodeRuntime {
                 comm::rust::discovery::grpc_kademlia_rpc::GrpcKademliaRPC,
             >,
         >,
+        known_peers: comm::rust::discovery::known_peers::KnownPeers,
         node_discovery: Arc<dyn comm::rust::discovery::node_discovery::NodeDiscovery + Send + Sync>,
         packet_handler: Arc<
             dyn comm::rust::p2p::packet_handler::PacketHandler + Send + Sync + 'static,
@@ -393,6 +404,7 @@ impl NodeRuntime {
         // Node discovery loop (Tier 3: Supportive)
         // Start BEFORE wait_for_first_connection so it can help establish the first connection
         let nd_clone = node_discovery.clone();
+        let kademlia_store_clone = kademlia_store.clone();
         let rp_conn_clone = rp_connections.clone();
         let rp_conf_cell_clone = rp_conf_cell.clone();
         let transport_clone = transport.clone();
@@ -401,6 +413,8 @@ impl NodeRuntime {
         spawn_named_task(&mut critical_tasks, "Node Discovery Loop", async move {
             node_discovery_loop(
                 nd_clone,
+                kademlia_store_clone,
+                known_peers,
                 rp_conn_clone,
                 rp_conf_cell_clone,
                 transport_clone,
@@ -583,6 +597,12 @@ async fn shutdown_signal() {
 /// Uses configured lookup_interval from peers_discovery settings.
 async fn node_discovery_loop(
     node_discovery: Arc<dyn comm::rust::discovery::node_discovery::NodeDiscovery + Send + Sync>,
+    kademlia_store: Arc<
+        comm::rust::discovery::kademlia_store::KademliaStore<
+            comm::rust::discovery::grpc_kademlia_rpc::GrpcKademliaRPC,
+        >,
+    >,
+    mut known_peers: comm::rust::discovery::known_peers::KnownPeers,
     connections: comm::rust::rp::connect::ConnectionsCell,
     rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
     transport: comm::rust::transport::grpc_transport_client::GrpcTransportClient,
@@ -596,6 +616,21 @@ async fn node_discovery_loop(
 
     loop {
         tracing::debug!("nodeDiscoveryLoop: Starting iteration");
+
+        if !node_conf.standalone {
+            match connections.read() {
+                Ok(conns) if conns.is_empty() => match rp_conf_cell.read() {
+                    Ok(conf) => match known_peers.seed(&kademlia_store, &conf.local.id).await {
+                        Ok(0) => {}
+                        Ok(seeded) => info!("Seeded discovery with {} known peer(s)", seeded),
+                        Err(e) => tracing::warn!("Failed to seed known peers: {}", e),
+                    },
+                    Err(e) => tracing::warn!("Failed to read RPConf to seed known peers: {}", e),
+                },
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Failed to read connections to seed known peers: {}", e),
+            }
+        }
 
         // Discover new peers
         if let Err(e) = node_discovery.discover().await {
@@ -641,6 +676,15 @@ async fn node_discovery_loop(
             Err(e) => {
                 tracing::warn!("Find and connect failed: {}", e);
             }
+        }
+
+        match connections.read() {
+            Ok(conns) => {
+                if let Err(e) = known_peers.save(conns.into_vec()) {
+                    tracing::warn!("{}", e);
+                }
+            }
+            Err(e) => tracing::warn!("Failed to read connections to save known peers: {}", e),
         }
 
         // Sleep for configured lookup interval before next iteration

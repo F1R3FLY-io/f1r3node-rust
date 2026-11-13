@@ -507,6 +507,8 @@ dependencies = [
  "metrics",
  "models",
  "num-bigint",
+ "num-rational",
+ "num-traits",
  "parking_lot",
  "prost",
  "rand 0.9.5",
@@ -1223,7 +1225,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2305,6 +2307,8 @@ dependencies = [
  "crypto",
  "hex",
  "itertools",
+ "num-bigint",
+ "num-traits",
  "pathmap",
  "proptest",
  "proptest-derive",
@@ -3284,7 +3288,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -3299,7 +3303,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -3308,7 +3312,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=527af8afb37f6cad470516fe316076f120b9c353#527af8afb37f6cad470516fe316076f120b9c353"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
 dependencies = [
  "anyhow",
  "quote",
@@ -3424,15 +3428,15 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3723,6 +3727,7 @@ dependencies = [
  "indexmap",
  "lz4_flex",
  "metrics",
+ "num-bigint",
  "prost",
  "rand 0.9.5",
  "serde",
@@ -3985,10 +3990,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

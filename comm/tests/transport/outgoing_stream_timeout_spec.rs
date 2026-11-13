@@ -7,7 +7,7 @@ use std::time::Duration;
 use comm::rust::errors::CommError;
 use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::transport::f1r3fly_connector::F1r3flyConnector;
-use comm::rust::transport::f1r3fly_server::F1r3flyServer;
+use comm::rust::transport::f1r3fly_server::{F1r3flyIncoming, F1r3flyServer};
 use comm::rust::transport::grpc_transport::GrpcTransport;
 use comm::rust::transport::grpc_transport_client::GrpcTransportClient;
 use comm::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
@@ -23,7 +23,15 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
-use super::transport_layer_runtime::{get_free_port, TransportLayerTestRuntime};
+use super::transport_layer_runtime::{get_free_port, TlsEnvironment, TransportLayerTestRuntime};
+
+fn serve_from_bound_listener(remote: &mut TlsEnvironment) -> F1r3flyIncoming {
+    let listener = remote.listener.take().expect("a bound environment");
+    let address = listener.local_addr().unwrap();
+    F1r3flyServer::builder("test".to_string(), &remote.cert, &remote.key, address)
+        .unwrap()
+        .incoming_from_listener(tokio::net::TcpListener::from_std(listener).unwrap())
+}
 
 struct SilentPeer {
     requests_seen: Arc<AtomicUsize>,
@@ -55,16 +63,13 @@ impl ServerTransportLayer for SilentPeer {
 }
 
 #[tokio::test]
-async fn timed_out_stream_does_not_block_the_next_queued_stream() {
+async fn timed_out_stream_discards_queue_and_allows_a_later_send() {
     let runtime = TransportLayerTestRuntime::new("test".to_string());
     let local = runtime
         .create_environment(get_free_port().await.unwrap())
         .await
         .unwrap();
-    let remote = runtime
-        .create_environment(get_free_port().await.unwrap())
-        .await
-        .unwrap();
+    let mut remote = runtime.create_bound_environment().await.unwrap();
 
     let requests_seen = Arc::new(AtomicUsize::new(0));
     let request_started = Arc::new(Notify::new());
@@ -74,12 +79,7 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
         request_started: request_started.clone(),
         first_request_dropped: first_request_dropped.clone(),
     };
-    let address = format!("127.0.0.1:{}", remote.port).parse().unwrap();
-    let incoming = F1r3flyServer::builder("test".to_string(), &remote.cert, &remote.key, address)
-        .unwrap()
-        .incoming()
-        .await
-        .unwrap();
+    let incoming = serve_from_bound_listener(&mut remote);
     let server = tokio::spawn(async move {
         Server::builder()
             .add_service(TransportLayerServer::new(peer))
@@ -87,6 +87,7 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
             .await
     });
 
+    let channels_map = Arc::new(Mutex::new(HashMap::new()));
     let client = GrpcTransportClient::new(
         "test".to_string(),
         ChainIdCell::unknown(),
@@ -95,7 +96,7 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
         runtime.max_message_size,
         runtime.max_message_size,
         8,
-        Arc::new(Mutex::new(HashMap::new())),
+        channels_map.clone(),
         Duration::from_secs(1),
     )
     .unwrap();
@@ -120,13 +121,42 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
         .stream(&remote.peer, &make_blob("second"))
         .await
         .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), first_request_dropped.notified())
+        .await
+        .unwrap();
+    let closed_channel = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let channel = channels_map
+                .lock()
+                .await
+                .get(&remote.peer)
+                .and_then(|cell| cell.get().cloned());
+            if let Some(channel) = channel.filter(|channel| channel.buffer.is_complete()) {
+                break channel;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(requests_seen.load(Ordering::SeqCst), 1);
+
+    client
+        .stream(&remote.peer, &make_blob("third"))
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(15), request_started.notified())
         .await
         .unwrap();
     assert_eq!(requests_seen.load(Ordering::SeqCst), 2);
-    tokio::time::timeout(Duration::from_secs(15), first_request_dropped.notified())
+    let current_channel = channels_map
+        .lock()
         .await
-        .unwrap();
+        .get(&remote.peer)
+        .and_then(|cell| cell.get().cloned())
+        .expect("the third send opens a channel");
+    assert!(!Arc::ptr_eq(&current_channel, &closed_channel));
+    assert!(!current_channel.buffer.is_complete());
 
     client.disconnect(&remote.peer).await.unwrap();
     server.abort();
@@ -157,23 +187,14 @@ async fn tls_stream_observes_both_receiver_and_sender_deadlines() {
         ),
         (Duration::from_millis(300), Duration::from_millis(300), None),
     ] {
-        let remote = runtime
-            .create_environment(get_free_port().await.unwrap())
-            .await
-            .unwrap();
+        let mut remote = runtime.create_bound_environment().await.unwrap();
         let requests_seen = Arc::new(AtomicUsize::new(0));
         let peer = SilentPeer {
             requests_seen: requests_seen.clone(),
             request_started: Arc::new(Notify::new()),
             first_request_dropped: Arc::new(Notify::new()),
         };
-        let address = format!("127.0.0.1:{}", remote.port).parse().unwrap();
-        let incoming =
-            F1r3flyServer::builder("test".to_string(), &remote.cert, &remote.key, address)
-                .unwrap()
-                .incoming()
-                .await
-                .unwrap();
+        let incoming = serve_from_bound_listener(&mut remote);
         let server = tokio::spawn(async move {
             Server::builder()
                 .timeout(server_timeout)

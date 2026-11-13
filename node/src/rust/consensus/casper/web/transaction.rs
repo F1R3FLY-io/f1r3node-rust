@@ -1,4 +1,5 @@
 use models::rhoapi::Par;
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -7,7 +8,9 @@ use utoipa::ToSchema;
 pub struct Transaction {
     pub from_addr: String,
     pub to_addr: String,
-    pub amount: i64,
+    #[serde(with = "shared::rust::decimal::signed")]
+    #[schema(value_type = String)]
+    pub amount: BigInt,
     #[serde(skip, default)]
     pub ret_unforgeable: Par,
     pub fail_reason: Option<String>,
@@ -79,6 +82,8 @@ pub fn transfer_unforgeable() -> Par {
 
 pub mod helpers {
     use models::rust::par_ext::ParExt;
+    use num_bigint::BigInt;
+    use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 
     use crate::rust::consensus::casper::web::transaction::Transaction;
 
@@ -92,7 +97,9 @@ pub mod helpers {
         if pars.len() >= 6 {
             let from_addr = pars[0].get_g_string()?;
             let to_addr = pars[2].get_g_string()?;
-            let amount = pars[3].get_g_int()?;
+            let amount = RhoNumber::unapply(&pars[3])
+                .map(BigInt::from)
+                .or_else(|| RhoBigInt::unapply(&pars[3]))?;
             let ret_unforgeable = pars[5].clone();
 
             Some(Transaction {

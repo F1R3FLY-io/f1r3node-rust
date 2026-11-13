@@ -27,7 +27,7 @@
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
@@ -35,6 +35,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::epoch::Epoch;
@@ -189,7 +190,9 @@ pub fn slash_evidence_epoch_matches_target(
         .map(|evidence_epoch| target_activation_epoch == evidence_epoch)
 }
 
-pub fn slash_target_has_positive_bond(bond: i64) -> bool { bond > 0 }
+pub fn slash_target_has_positive_bond<T: PartialOrd + From<i32>>(bond: T) -> bool {
+    bond > T::from(0)
+}
 
 pub fn slash_target_key(
     offender: &Validator,
@@ -221,12 +224,12 @@ pub fn slash_target_key_collides<T: Eq>(
 /// conjunction is the precondition proven sufficient by Theorem T-9.13
 /// (`formal/rocq/slashing/theories/BugFixSlashAuthorization.v`) and modeled
 /// in `kani_proofs::received_slash_deploy_authorized_*`.
-pub fn received_slash_deploy_authorized(
+pub fn received_slash_deploy_authorized<T: PartialOrd + From<i32>>(
     reference_block_number: i64,
     evidence_block_number: i64,
     target_activation_epoch: Epoch,
     epoch_length: i32,
-    bond: i64,
+    bond: T,
     invalid: bool,
 ) -> Result<bool, DomainError> {
     let current = slash_target_epoch_is_current(
@@ -244,6 +247,30 @@ pub fn received_slash_deploy_authorized(
 
 fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, DomainError> {
     epoch_for_block_number(metadata.block_number, epoch_length)
+}
+
+/// The evidence a block at `block_number` may slash on: invalid blocks in
+/// that block's epoch whose senders hold stake in `committee`, the bonds
+/// received slashes are authorized against.
+pub fn slashable_evidence(
+    invalid_blocks: impl IntoIterator<Item = BlockMetadata>,
+    block_number: i64,
+    epoch_length: i32,
+    committee: &HashMap<Validator, BigInt>,
+) -> Result<Vec<BlockMetadata>, DomainError> {
+    let epoch = epoch_for_block_number(block_number, epoch_length)?;
+    let mut evidence = Vec::new();
+    for metadata in invalid_blocks {
+        if metadata.invalid
+            && committee
+                .get(&metadata.sender)
+                .is_some_and(|stake| *stake > BigInt::from(0))
+            && evidence_epoch(&metadata, epoch_length)? == epoch
+        {
+            evidence.push(metadata);
+        }
+    }
+    Ok(evidence)
 }
 
 /// Proposer-side enumeration of slash candidates for the block being built.
@@ -270,81 +297,24 @@ pub fn authorized_slash_candidates(
             snapshot.max_block_num
         ))
     })?;
-    // Phase 9 (C-6): `epoch_for_block_number` now returns
-    // `Result<i64, DomainError>`. Map directly to the corresponding
-    // `SlashAuthError` (and on into `CasperError::SlashAuth` via the
-    // `From` impl in `errors.rs`).
     let current_epoch =
         epoch_for_block_number(proposed_block_num, epoch_length).map_err(SlashAuthError::from)?;
-
-    // A proposal view that trails this node's OWN finalized frontier is a
-    // catch-up view: the finalizer walks the whole DAG while the snapshot's
-    // epoch derives from justification-fed latest messages, and on a restored
-    // joiner the two clocks separate by whole epochs. Slashes issued from
-    // such a view match its stale epoch and are DOA at every live peer
-    // (receive rule 2), minting UnauthorizedSlashDeploy verdicts on the
-    // carriers instead of punishing anyone. Issuance waits until the view
-    // catches its own frontier; peers with current views lose nothing. An
-    // LFB without local metadata proves no lag, so issuance proceeds.
-    if let Some(lfb_metadata) = snapshot.dag.lookup(&snapshot.last_finalized_block)? {
-        let lfb_epoch = epoch_for_block_number(lfb_metadata.block_number, epoch_length)
-            .map_err(SlashAuthError::from)?;
-        if lfb_epoch > current_epoch {
-            tracing::debug!(
-                lfb_number = lfb_metadata.block_number,
-                lfb_epoch = lfb_epoch.get(),
-                current_epoch = current_epoch.get(),
-                "slash issuance suppressed: proposal view trails this node's \
-                 finalized frontier (mid-catch-up)"
-            );
-            return Ok(Vec::new());
-        }
-    }
+    let evidence = slashable_evidence(
+        snapshot.dag.invalid_blocks(),
+        proposed_block_num,
+        epoch_length,
+        &snapshot.on_chain_state.bonds_map,
+    )
+    .map_err(SlashAuthError::from)?;
 
     // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
     // the resulting Vec is what feeds the block body.
     let mut by_offender: BTreeMap<Validator, AuthorizedSlashCandidate> = BTreeMap::new();
-    for metadata in snapshot.dag.invalid_blocks() {
-        if !metadata.invalid {
-            continue;
-        }
-        // Phase 9 (C-6): skip blocks whose own (sender's) metadata has a
-        // domain-invalid block number — protocol invariant says this
-        // can't happen for already-stored blocks, but the typed Result
-        // makes the explicit-skip choice visible. We `warn!` because a
-        // hit here means either the configured `epoch_length` is invalid
-        // (operator misconfiguration) or the metadata store contains a
-        // domain-invalid record (corruption). Silently producing an empty
-        // slash list would mask both modes.
-        let target_activation_epoch = match evidence_epoch(&metadata, epoch_length) {
-            Ok(epoch) => epoch,
-            Err(e) => {
-                tracing::warn!(
-                    "authorized_slash_candidates: skipping invalid-block metadata for {} \
-                     (sender {}): {}; check `epoch_length` configuration",
-                    hex::encode(&metadata.block_hash),
-                    hex::encode(&metadata.sender),
-                    e
-                );
-                continue;
-            }
-        };
-        if target_activation_epoch != current_epoch {
-            continue;
-        }
-        let bond = snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
-            continue;
-        }
+    for metadata in evidence {
         let candidate = AuthorizedSlashCandidate {
             offender: metadata.sender.clone(),
-            invalid_block_hash: metadata.block_hash.clone(),
-            target_activation_epoch,
+            invalid_block_hash: metadata.block_hash,
+            target_activation_epoch: current_epoch,
         };
         match by_offender.entry(metadata.sender.clone()) {
             Entry::Vacant(entry) => {
@@ -494,9 +464,9 @@ pub fn validate_received_slash_deploys(
             .on_chain_state
             .bonds_map
             .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
+            .cloned()
+            .unwrap_or_default();
+        if bond <= BigInt::from(0) {
             return Err(SlashAuthError::TargetNotBonded {
                 validator: hex::encode(&metadata.sender),
             }
@@ -812,5 +782,69 @@ mod kani_proofs {
             ),
             left_offender == right_offender && left_epoch == right_epoch
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use models::rust::block_metadata::BlockMetadata;
+    use models::rust::validator::Validator;
+    use num_bigint::BigInt;
+    use prost::bytes::Bytes;
+
+    use super::slashable_evidence;
+
+    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
+
+    fn evidence(sender: u8, block_number: i64) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: Bytes::from(vec![sender; 32]),
+            parents: Vec::new(),
+            sender: validator(sender),
+            justifications: Vec::new(),
+            weight_map: BTreeMap::new(),
+            block_number,
+            sequence_number: block_number as i32,
+            invalid: true,
+            directly_finalized: false,
+            finalized: false,
+            fault_tolerance_value: 0.0,
+            merge_base: Bytes::new(),
+        }
+    }
+
+    #[test]
+    fn only_invalid_committee_evidence_in_the_block_epoch_is_slashable() {
+        let committee: HashMap<Validator, BigInt> = [
+            (validator(1), BigInt::from(100)),
+            (validator(2), BigInt::from(0)),
+            (validator(4), BigInt::from(100)),
+            (validator(5), BigInt::from(100)),
+        ]
+        .into_iter()
+        .collect();
+        let valid = BlockMetadata {
+            invalid: false,
+            ..evidence(5, 94)
+        };
+
+        let slashable = slashable_evidence(
+            vec![
+                evidence(1, 94),
+                evidence(2, 94),
+                evidence(3, 94),
+                evidence(4, 84),
+                valid,
+            ],
+            95,
+            10,
+            &committee,
+        )
+        .expect("valid epoch length and block numbers");
+
+        let senders: Vec<Validator> = slashable.into_iter().map(|m| m.sender).collect();
+        assert_eq!(senders, vec![validator(1)]);
     }
 }

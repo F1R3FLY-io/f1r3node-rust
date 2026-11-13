@@ -5,10 +5,10 @@
 //! moment. Anything admitted afterwards — a settled-history straggler the
 //! restore's closure missed — arrives with bytes but no state, and a block
 //! built on it cannot replay. The replay reports the missing root typed
-//! ([`RootError::RootNotFound`] → [`BlockError::AwaitingState`]); the block
-//! defers as a pendant and retries; this module is what makes the retry
-//! eventually succeed: it asks a peer for the root's trie, imports the
-//! content-addressed chunks, and records the root once verification passes.
+//! ([`RootError::RootNotFound`] → [`BlockError::AwaitingState`]); block ingest
+//! holds the block until the root arrives. This module fetches it: it asks a
+//! peer for the root's trie, imports the content-addressed chunks, records the
+//! root once verification passes, and reports each fetch's outcome.
 //!
 //! Trust model, unchanged from the restore-time horizon sync this reuses the
 //! wire protocol of: chunks are radix nodes validated against their own
@@ -32,6 +32,7 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
 
+use crate::rust::blocks::ingest::ingest_state::{StateFetchDrop, StateFetchResult};
 use crate::rust::engine::lfs_horizon_requester::{
     HasRootFn, HorizonRequesterOps, MAX_IN_FLIGHT_REQUESTS,
 };
@@ -76,6 +77,7 @@ struct Core {
     fetched_total: u64,
     importer: Arc<dyn RSpaceImporter>,
     has_root: HasRootFn,
+    outcomes: Vec<(Blake2b256Hash, StateFetchResult)>,
 }
 
 impl Core {
@@ -87,17 +89,35 @@ impl Core {
             fetched_total: 0,
             importer,
             has_root,
+            outcomes: Vec::new(),
+        }
+    }
+
+    /// How each root asked for since the last call was resolved.
+    fn take_outcomes(&mut self) -> Vec<(Blake2b256Hash, StateFetchResult)> {
+        std::mem::take(&mut self.outcomes)
+    }
+
+    fn has_root(&self, root: &Blake2b256Hash) -> bool {
+        match (self.has_root)(root) {
+            Ok(present) => present,
+            Err(error) => {
+                tracing::warn!(%root, %error, "state requester: root presence check failed");
+                false
+            }
         }
     }
 
     /// A root was named as missing. Returns the chunk path to request, or
     /// `None` when nothing should be sent (already present, already in
-    /// flight, or budget exhausted).
+    /// flight, or budget exhausted). A root already in flight is resolved by
+    /// that fetch's own outcome.
     fn on_fetch(&mut self, root: Blake2b256Hash) -> Option<StatePartPath> {
         if self.pending.contains_key(&root) || self.queued.contains(&root) {
             return None;
         }
-        if (self.has_root)(&root).unwrap_or(false) {
+        if self.has_root(&root) {
+            self.outcomes.push((root, StateFetchResult::Imported));
             return None;
         }
         if self.fetched_total >= ROOT_FETCH_BUDGET {
@@ -105,8 +125,12 @@ impl Core {
                 %root,
                 budget = ROOT_FETCH_BUDGET,
                 "State-root fetch budget exhausted; the root stays absent and its \
-                 dependents stay deferred"
+                 dependents are dropped"
             );
+            self.outcomes.push((
+                root,
+                StateFetchResult::Dropped(StateFetchDrop::BudgetExhausted),
+            ));
             return None;
         }
         self.fetched_total += 1;
@@ -146,7 +170,8 @@ impl Core {
             let Some(root) = self.queued.pop_front() else {
                 break;
             };
-            if (self.has_root)(&root).unwrap_or(false) {
+            if self.has_root(&root) {
+                self.outcomes.push((root, StateFetchResult::Imported));
                 continue;
             }
             paths.push(self.activate(root));
@@ -182,7 +207,10 @@ impl Core {
                 "state requester: peer served an empty terminal first chunk — it does \
                  not have this root; dropping the fetch"
             );
-            self.drop_root(&root);
+            self.drop_root(
+                &root,
+                StateFetchResult::Dropped(StateFetchDrop::PeerLacksRoot),
+            );
             return None;
         }
 
@@ -235,22 +263,23 @@ impl Core {
 
         if is_terminal {
             self.importer.set_root(&root);
-            let verified = (self.has_root)(&root).unwrap_or(false);
-            if verified {
-                let chunks = pending.chunks_imported;
+            let chunks = pending.chunks_imported;
+            let outcome = if self.has_root(&root) {
                 tracing::info!(
                     %root,
                     chunks,
                     "state requester: root imported and verified present"
                 );
+                StateFetchResult::Imported
             } else {
                 tracing::error!(
                     %root,
                     "state requester: import completed but the root did not verify — \
                      peer shipped incomplete data; dropping the fetch"
                 );
-            }
-            self.drop_root(&root);
+                StateFetchResult::Dropped(StateFetchDrop::Unverified)
+            };
+            self.drop_root(&root, outcome);
             None
         } else {
             pending.outstanding.insert(last_path.clone());
@@ -274,9 +303,9 @@ impl Core {
                 %root,
                 deadline = ?ROOT_DEADLINE,
                 "state requester: no peer served this root within the deadline; \
-                 dropping the fetch — dependents stay deferred"
+                 dropping the fetch"
             );
-            self.drop_root(&root);
+            self.drop_root(&root, StateFetchResult::Dropped(StateFetchDrop::Deadline));
         }
         let now = Instant::now();
         self.pending
@@ -290,11 +319,12 @@ impl Core {
             .collect()
     }
 
-    fn drop_root(&mut self, root: &Blake2b256Hash) {
+    fn drop_root(&mut self, root: &Blake2b256Hash, outcome: StateFetchResult) {
         if let Some(pending) = self.pending.remove(root) {
             for path in pending.outstanding {
                 self.path_to_root.remove(&path);
             }
+            self.outcomes.push((root.clone(), outcome));
         }
     }
 }
@@ -325,12 +355,13 @@ impl<T: TransportLayer + Send + Sync> HorizonRequesterOps for BootstrapChunkSend
     }
 }
 
-/// The senders the rest of the node holds: `fetch_tx` for naming missing
-/// roots, `items_tx` for routing incoming [`StoreItemsMessage`]s from Running.
-#[derive(Clone)]
+/// The handles the rest of the node holds: `fetch_tx` for naming missing
+/// roots, `items_tx` for routing incoming [`StoreItemsMessage`]s from Running,
+/// and `results` for how each named root was resolved.
 pub struct StateRequesterHandles {
     pub fetch_tx: mpsc::Sender<Blake2b256Hash>,
     pub items_tx: mpsc::Sender<StoreItemsMessage>,
+    pub results: mpsc::UnboundedReceiver<(Blake2b256Hash, StateFetchResult)>,
 }
 
 /// Spawn the requester task and return its handles.
@@ -356,6 +387,7 @@ pub fn prepare<T: TransportLayer + Send + Sync + 'static>(
 ) {
     let (fetch_tx, mut fetch_rx) = mpsc::channel::<Blake2b256Hash>(256);
     let (items_tx, mut items_rx) = mpsc::channel::<StoreItemsMessage>(64);
+    let (results_tx, results) = mpsc::unbounded_channel();
     let sender = BootstrapChunkSender { transport, rp_conf };
 
     let task = async move {
@@ -385,6 +417,11 @@ pub fn prepare<T: TransportLayer + Send + Sync + 'static>(
                 else => break,
             };
             to_request.extend(core.fill_window());
+            for outcome in core.take_outcomes() {
+                if results_tx.send(outcome).is_err() {
+                    tracing::debug!("state requester: no one reads fetch results");
+                }
+            }
             for path in to_request {
                 if let Err(e) = sender.request_for_horizon_chunk(&path, PAGE_SIZE).await {
                     tracing::warn!(error = %e, "state requester: chunk request failed; the resend tick will retry");
@@ -394,7 +431,14 @@ pub fn prepare<T: TransportLayer + Send + Sync + 'static>(
         tracing::info!("state requester: channels closed, stopping");
     };
 
-    (StateRequesterHandles { fetch_tx, items_tx }, task)
+    (
+        StateRequesterHandles {
+            fetch_tx,
+            items_tx,
+            results,
+        },
+        task,
+    )
 }
 
 #[cfg(test)]
@@ -482,6 +526,22 @@ mod tests {
              moment the deferred block's next retry starts succeeding"
         );
         assert!(core.pending.is_empty(), "nothing left outstanding");
+        assert_eq!(core.take_outcomes(), vec![(r, StateFetchResult::Imported)]);
+    }
+
+    #[test]
+    fn an_import_that_does_not_verify_is_reported_unverified() {
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(RecordingImporter {
+            recorded: Arc::new(Mutex::new(HashSet::new())),
+        });
+        let mut core = Core::new(importer, Arc::new(|_| Ok(false)));
+        let r = root(0x4F);
+        let path = core.on_fetch(r.clone()).expect("fetch starts");
+        deliver(&mut core, chunk(path.clone(), path, 2), true);
+        assert_eq!(core.take_outcomes(), vec![(
+            r,
+            StateFetchResult::Dropped(StateFetchDrop::Unverified)
+        )]);
     }
 
     /// Pagination continues the walk under the same root until the cursor is
@@ -553,6 +613,30 @@ mod tests {
     }
 
     #[test]
+    fn a_queued_root_present_by_its_turn_is_reported_imported() {
+        let (mut core, recorded) = core_with_store();
+        let roots: Vec<Blake2b256Hash> = (1..=MAX_IN_FLIGHT_REQUESTS as u8 + 1).map(root).collect();
+        let started: Vec<StatePartPath> = roots
+            .iter()
+            .filter_map(|r| core.on_fetch(r.clone()))
+            .collect();
+        let queued = roots[MAX_IN_FLIGHT_REQUESTS].clone();
+        recorded.lock().unwrap().insert(queued.clone());
+
+        let first = started[0].clone();
+        deliver(&mut core, chunk(first.clone(), first, 1), true);
+        assert!(
+            core.fill_window().is_empty(),
+            "a present root is not fetched"
+        );
+        assert!(
+            core.take_outcomes()
+                .contains(&(queued, StateFetchResult::Imported)),
+            "the blocks waiting on a queued root are released when it is present"
+        );
+    }
+
+    #[test]
     fn resends_of_an_unanswered_root_back_off() {
         let (mut core, _) = core_with_store();
         let r = root(0x4F);
@@ -592,6 +676,10 @@ mod tests {
             core.pending.is_empty(),
             "the failed fetch is dropped, not retried forever"
         );
+        assert_eq!(core.take_outcomes(), vec![(
+            r,
+            StateFetchResult::Dropped(StateFetchDrop::PeerLacksRoot)
+        )]);
     }
 
     /// Present and in-flight roots are not re-fetched; the budget bounds the
@@ -617,6 +705,17 @@ mod tests {
         assert!(
             core.on_fetch(root(0x51)).is_none(),
             "past the budget the node degrades to deferral, never silent growth"
+        );
+        assert_eq!(
+            core.take_outcomes(),
+            vec![
+                (root(0x50), StateFetchResult::Imported),
+                (
+                    root(0x51),
+                    StateFetchResult::Dropped(StateFetchDrop::BudgetExhausted)
+                ),
+            ],
+            "a present root is reported imported and an in-flight one reports nothing yet"
         );
     }
 }

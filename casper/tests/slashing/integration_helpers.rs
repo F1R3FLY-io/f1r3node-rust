@@ -17,6 +17,7 @@ use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::rholang::{interpreter_util, system_deploy_util};
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use num_traits::ToPrimitive;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 
@@ -50,20 +51,51 @@ pub async fn production_snapshot_at(
     // adapter's expected `&[(Bytes, i64)]`.
     let bonds_table: Vec<(Bytes, i64)> = bonds
         .iter()
-        .map(|b| (b.validator.clone(), b.stake))
+        .map(|b| {
+            (
+                b.validator.clone(),
+                b.stake
+                    .as_bigint()
+                    .to_i64()
+                    .expect("finite slashing fixture stake"),
+            )
+        })
         .collect();
     let active_table: Vec<Bytes> = active_set.to_vec();
 
     // Coop-vault formula per design §14.6 stake-conservation
     // invariant: genesis_total_stake = sum(current_bonds) + coop_vault
     // (modulo bond-floor residue from already-slashed validators).
-    let genesis_total: i64 = genesis_block.body.state.bonds.iter().map(|b| b.stake).sum();
-    let current_total: i64 = bonds.iter().map(|b| b.stake).sum();
+    let genesis_total: i64 = genesis_block
+        .body
+        .state
+        .bonds
+        .iter()
+        .map(|b| {
+            b.stake
+                .as_bigint()
+                .to_i64()
+                .expect("finite slashing fixture stake")
+        })
+        .sum();
+    let current_total: i64 = bonds
+        .iter()
+        .map(|b| {
+            b.stake
+                .as_bigint()
+                .to_i64()
+                .expect("finite slashing fixture stake")
+        })
+        .sum();
     // Bond-floor residue: bonds at the test-mode floor (typically 1)
     // are validators that have been slashed but still hold the floor
     // amount. `coop_vault = genesis_total - current_total - residue`.
     let bond_floor: i64 = 1;
-    let residue: i64 = bonds.iter().filter(|b| b.stake == bond_floor).count() as i64 * bond_floor;
+    let residue: i64 = bonds
+        .iter()
+        .filter(|b| b.stake == (bond_floor as u64).into())
+        .count() as i64
+        * bond_floor;
     let coop_vault = genesis_total - current_total - residue;
 
     SlashingProductionAdapter::snapshot(
@@ -387,73 +419,20 @@ pub async fn propose_with_explicit_justifications(
     Ok(signed)
 }
 
-/// Process a block bypassing `check_if_of_interest` (the upstream
-/// shard / version / age filter on
-/// `BlockProcessor::check_if_of_interest`). Used for UC-32
-/// InvalidShardId where the upstream filter would otherwise reject
-/// the block as `NotOfInterest` BEFORE reaching the
-/// `Validate::shard_identifier` validator inside `block_summary`.
-///
-/// The deeper-layer `InvalidShardId` is defence-in-depth — the same
-/// check at a different layer of the pipeline. The dispatcher's
-/// catch-all routes it through `is_slashable()` (block_status.rs:181)
-/// so we still want to verify the catch-all minted a record when
-/// it fires; we just have to bypass the upstream early-rejection.
-///
-/// Reference: `casper/tests/helper/test_node.rs::process_block_through_pipe`
-/// for the full pipeline.
+/// Process a block past intake's of-interest filter (shard, version, age).
+/// Used for UC-32 InvalidShardId, which that filter would otherwise reject
+/// as `NotOfInterest` before `Validate::shard_identifier` inside
+/// `block_summary` sees it. The deeper check is defence in depth, and the
+/// dispatcher's catch-all routes it through `is_slashable()`, so the test
+/// verifies the catch-all minted a record when it fires.
 pub async fn process_block_bypassing_of_interest_filter(
     node: &mut TestNode,
     block: models::rust::casper::protocol::casper_message::BlockMessage,
-) -> Result<
-    rspace_plus_plus::rspace::history::Either<
-        casper::rust::block_status::BlockError,
-        casper::rust::block_status::ValidBlock,
-    >,
-    CasperError,
-> {
-    use casper::rust::block_status::BlockStatus;
-    use casper::rust::blocks::block_processor::{CheckedBlock, IntegrityFailure, StoreVerdict};
-    use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
-    let checked = match CheckedBlock::check(block.clone(), BLOCK_PROCESSOR_METRICS_SOURCE) {
-        Ok(checked) => checked,
-        Err((_, IntegrityFailure::Malformed)) => {
-            return Ok(rspace_plus_plus::rspace::history::Either::Left(
-                BlockStatus::invalid_format(),
-            ))
-        }
-        Err((_, IntegrityFailure::HashMismatch)) => {
-            return Ok(rspace_plus_plus::rspace::history::Either::Left(
-                BlockStatus::invalid_block_hash(),
-            ))
-        }
-    };
-    let Some(store_mode) = node
-        .block_processor
-        .check_sender_authorization(&checked)?
-        .store_mode()
-    else {
-        return Ok(rspace_plus_plus::rspace::history::Either::Left(
-            BlockStatus::invalid_sender(),
-        ));
-    };
-    let store_verdict = node.block_processor.store(&checked, store_mode).await?;
-    if store_verdict != StoreVerdict::Stored {
-        return Ok(rspace_plus_plus::rspace::history::Either::Left(
-            BlockStatus::invalid_format(),
-        ));
-    }
-    let dependencies_ready = node
-        .block_processor
-        .check_dependencies_with_effects(node.casper.clone(), &checked)
-        .await?;
-    if !dependencies_ready {
-        return Ok(rspace_plus_plus::rspace::history::Either::Left(
-            BlockStatus::missing_blocks(),
-        ));
-    }
-    node.block_processor
-        .validate_with_effects(node.casper.clone(), &checked, None)
+) -> Result<casper::rust::ValidBlockProcessing, CasperError> {
+    node.ingest
+        .lock()
+        .await
+        .validate_past_interest_filter(node.casper.clone(), block)
         .await
 }
 

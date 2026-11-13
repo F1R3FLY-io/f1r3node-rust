@@ -50,8 +50,8 @@
 //!
 //! Deploy-STORAGE release keys on the deploy-lifecycle register's
 //! write-once terminal verdicts, never on the finality marker itself: after
-//! each cycle, `settle_after_cycle` writes every verdict the persisted LFB
-//! decides and removes the pool copy of every terminal sig.
+//! each cycle, `settle_after_cycle` writes every verdict the floor of the
+//! persisted LFB decides and removes the pool copy of every terminal sig.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,7 +60,6 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -178,7 +177,7 @@ impl DivergenceMonitor {
                 pinned_lfb = %PrettyPrinter::build_string_bytes(current_lfb),
                 latest_refused_floor = derived_number,
                 "FINALITY DIVERGENCE: the shard keeps finalizing floors whose \
-                 state is missing effects settled under this node's LFB. This \
+                 state is missing effects settled under this node's LFB floor. This \
                  node's finalized read surface is frozen and will not recover \
                  without operator action (resync from a peer snapshot); its \
                  block production continues and remains valid"
@@ -418,8 +417,11 @@ async fn settle_after_cycle(
     memo: Arc<parking_lot::Mutex<LineageMemo>>,
     advanced: bool,
 ) {
-    match tokio::task::spawn_blocking(move || settle_blocking(&ctx, &mut memo.lock(), advanced))
-        .await
+    let basis = resolve_verdict_basis(&ctx).await;
+    match tokio::task::spawn_blocking(move || {
+        settle_blocking(&ctx, basis, &mut memo.lock(), advanced)
+    })
+    .await
     {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::error!(
@@ -435,12 +437,20 @@ async fn settle_after_cycle(
     }
 }
 
+async fn resolve_verdict_basis(ctx: &FinalizationContext) -> Result<BlockHash, CasperError> {
+    let dag = ctx.block_dag_storage.get_representation()?;
+    crate::rust::finality::deploy_lifecycle::verdict_basis(&dag, &ctx.block_store, ctx.ftt()).await
+}
+
 fn settle_blocking(
     ctx: &FinalizationContext,
+    basis: Result<BlockHash, CasperError>,
     memo: &mut LineageMemo,
     advanced: bool,
 ) -> Result<(), CasperError> {
-    use crate::rust::finality::deploy_lifecycle::{record_settle_timing, release_settled, settle};
+    use crate::rust::finality::deploy_lifecycle::{
+        record_settle_timing, release_settled, settle, Settled,
+    };
 
     if let Err(e) = ctx.finalized_bond_cache.refresh(&ctx.block_dag_storage) {
         tracing::error!(
@@ -451,13 +461,29 @@ fn settle_blocking(
     }
     let dag = ctx.block_dag_storage.get_representation()?;
     let settle_started = std::time::Instant::now();
-    let settled = settle(
-        &dag,
-        &ctx.block_store,
-        ctx.shard_conf.deploy_lifespan,
-        ctx.citability_horizon(),
-        memo,
-    );
+    let settled = match basis {
+        Ok(basis) => settle(
+            &dag,
+            &ctx.block_store,
+            &basis,
+            ctx.shard_conf.deploy_lifespan,
+            ctx.citability_horizon(),
+            memo,
+        ),
+        Err(CasperError::BlockNotHeld(missing, _)) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.lifecycle",
+                missing = %PrettyPrinter::build_string_bytes(&missing),
+                "the adopted LFB's floor is below the blocks this node holds; \
+                 verdicts wait until it is held"
+            );
+            Ok(Settled {
+                terminal: Vec::new(),
+                walked: 0,
+            })
+        }
+        Err(e) => Err(e),
+    };
     let settle_ms = settle_started.elapsed().as_millis();
     if let Ok(settled) = &settled {
         tracing::debug!(
@@ -736,7 +762,7 @@ pub(crate) fn read_last_finalized_block(
     })
 }
 
-impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
+impl MultiParentCasperImpl {
     /// Waits for a finalizer cycle that started after this call to complete,
     /// and returns the LFB it leaves.
     pub async fn finalize(&self) -> Result<BlockMessage, CasperError> {
@@ -748,13 +774,13 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
 /// Trigger a finalization run if the new block crosses the finalization
 /// rate boundary. Free function (matches the rest of `engine/multi_parent_casper/*`
 /// module idiom — every other operation in this sub-module is a free
-/// function taking `this: &MultiParentCasperImpl<T>`).
+/// function taking `this: &MultiParentCasperImpl`).
 ///
 /// Promoted from inherent `impl` block during the engine::multi_parent_casper
 /// refactor (Phase-3+ cleanup). Caller:
 /// `block_admission::admit_handle_valid_block`.
-pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
+pub(crate) async fn update_last_finalized_block(
+    this: &MultiParentCasperImpl,
     new_block: &BlockMessage,
 ) -> Result<(), CasperError> {
     if this.casper_shard_conf.finalization_rate <= 0 {

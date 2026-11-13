@@ -70,6 +70,7 @@ awk '
 mkdir -p "$TMP/control/.github"
 printf 'SYSTEM_INTEGRATION_REF=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$TMP/control/.github/oci-validation.env"
 mkdir -p "$TMP/control/.github/scripts"
+cp "$ROOT/.github/scripts/read-system-integration-pin.sh" "$TMP/control/.github/scripts/"
 cat >"$TMP/control/.github/scripts/require-repository-commit.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -79,8 +80,13 @@ SH
 cat >"$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$@" >"$FAKE_GH_ARGS"
-printf '%s\n' "$FAKE_TARGET_SHA"
+printf '%s\n' "$@" >>"$FAKE_GH_ARGS"
+case "$*" in
+	'api repos/example/node/commits/feature%2Fheartbeat --jq .sha') printf '%s\n' "$FAKE_TARGET_SHA" ;;
+	'api --method GET -H Accept: application/vnd.github.raw+json repos/example/node/contents/.github/oci-validation.env?ref=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+		printf 'SYSTEM_INTEGRATION_REF=%s\n' "${FAKE_HARNESS_SHA:-cccccccccccccccccccccccccccccccccccccccc}" ;;
+	*) exit 1 ;;
+esac
 SH
 chmod +x "$TMP/bin/gh"
 resolve_case() {
@@ -93,7 +99,8 @@ resolve_case() {
 }
 resolve_case 20
 grep -Fxq 'target_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$TMP/resolved"
-grep -Fxq 'harness_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$TMP/resolved"
+grep -Fxq 'harness_sha=cccccccccccccccccccccccccccccccccccccccc' "$TMP/resolved"
+grep -Fxq 'launcher_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$TMP/resolved"
 grep -Fxq 'repetitions=20' "$TMP/resolved"
 grep -Fxq 'repos/example/node/commits/feature%2Fheartbeat' "$TMP/gh-args"
 printf '%s\n' https://github.example/example/node.git aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa |
@@ -122,5 +129,10 @@ if [ -e "$TMP/guard-args" ]; then
 	printf 'The workflow checked an unvalidated node revision.\n' >&2
 	exit 1
 fi
+if FAKE_HARNESS_SHA=invalid resolve_case 20; then
+	printf 'The workflow accepted an invalid target harness pin.\n' >&2
+	exit 1
+fi
+[ ! -s "$TMP/resolved" ]
 bash "$ROOT/.github/scripts/test-ephemeral-run-tagging.sh" "$ROOT/.github/workflows/heartbeat-timing.yml"
 printf 'Heartbeat timing driver checks passed.\n'

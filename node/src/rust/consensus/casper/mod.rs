@@ -15,7 +15,6 @@ use std::time::Duration;
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::blocks::block_processor::{BlockProcessor, BlockQueueItem, InFlightBlocks};
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
 use casper::rust::casper::Casper;
 use casper::rust::engine::casper_launch::CasperLaunch;
@@ -37,7 +36,6 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 
 use self::manifest::ManifestGuard;
-use crate::rust::consensus::casper::instances::block_processor_instance::BlockProcessorInstance;
 use crate::rust::consensus::casper::instances::heartbeat_proposer::HeartbeatProposer;
 use crate::rust::consensus::casper::instances::proposer_instance::ProposerInstance;
 
@@ -67,11 +65,7 @@ pub(crate) struct CasperConsensusAdapter<T: TransportLayer + Send + Sync + 'stat
     proposer_pending: Arc<AtomicUsize>,
     proposer_capacity: usize,
     proposer_state: Option<Arc<RwLock<ProposerState>>>,
-    block_processor: BlockProcessor<T>,
-    pipeline_width: usize,
-    block_state: Arc<InFlightBlocks>,
-    block_tx: mpsc::Sender<BlockQueueItem>,
-    block_rx: mpsc::Receiver<BlockQueueItem>,
+    ingest_tasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<()>>>,
     propose: Option<Arc<ProposeFunction>>,
     validator: Option<casper::rust::validator_identity::ValidatorIdentity>,
     heartbeat_conf: casper::rust::casper_conf::HeartbeatConf,
@@ -130,11 +124,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
             proposer_pending,
             proposer_capacity,
             proposer_state,
-            block_processor,
-            pipeline_width,
-            block_state,
-            block_tx,
-            block_rx,
+            ingest_tasks,
             propose,
             validator,
             heartbeat_conf,
@@ -170,6 +160,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                     native_tasks.clone(),
                     workers.clone(),
                 ],
+                Some(ingest_tasks.clone()),
                 Some(engine.clone()),
                 observer,
                 store_manager,
@@ -193,19 +184,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
                 }
             })?;
         }
-        let (mut block_results, block_task) = BlockProcessorInstance::new(
-            (block_rx, block_tx),
-            Arc::new(block_processor),
-            block_state,
-            pipeline_width,
-        )
-        .supervised(worker_shutdown.clone());
-        workers.spawn("block processor", async move {
-            tokio::try_join!(async { block_task.await.map_err(native_error) }, async {
-                while block_results.recv().await.is_some() {}
-                Ok(())
-            },)?;
-            Ok(())
+        tasks.spawn("block ingest", async move {
+            match ingest_tasks.lock().await.join_next().await {
+                Some(Err(error)) => Err(native_error(error)),
+                Some(Ok(())) | None => Err(native_error("block ingest task stopped")),
+            }
         })?;
         if let (Some(proposer), Some(state)) = (proposer, proposer_state) {
             let (mut results, task) = ProposerInstance::new(

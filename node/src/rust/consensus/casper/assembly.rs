@@ -5,17 +5,12 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use casper::rust::blocks::block_processor::{
-    BlockQueueItem, InFlightBlocks, IN_FLIGHT_MARKER_MAX_WARN_AGE,
-};
+use casper::rust::blocks::ingest::block_ingest::{self, IngestSetup};
 use casper::rust::blocks::proposer::proposer::ProposerResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
-use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
-    BLOCK_PROCESSING_IN_FLIGHT_METRIC, BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC,
-    BLOCK_PROCESSING_QUEUE_PENDING_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
 };
 use casper::rust::state::instances::ProposerState;
@@ -26,7 +21,6 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::transport::transport_layer::TransportLayer;
 use consensus_api::{Capabilities, ProtocolDescriptor};
 use consensus_runtime::{RuntimeBuilder, RuntimeConfig};
-use models::rust::casper::pretty_printer::PrettyPrinter;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, info, trace, warn};
@@ -35,17 +29,12 @@ use super::api_compat::PreparedApplication;
 use super::{CasperConsensusAdapter, CasperLoop, NativeTask};
 use crate::rust::configuration::NodeConf;
 use crate::rust::consensus::casper::api::servers::APIServers;
+use crate::rust::consensus::casper::instances::validation_width::resolve_validation_width;
 use crate::rust::consensus::casper::manifest::ManifestGuard;
 use crate::rust::consensus::casper::web::reporting_routes::ReportingRoutes;
 use crate::rust::runtime::setup::PreparedNode;
 
 const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
-const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
-
-const _: () = assert!(
-    casper::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING
-        <= BLOCK_PROCESSOR_QUEUE_MAX_PENDING
-);
 
 type ProposerQueueEntry = (
     Arc<dyn Casper + Send + Sync>,
@@ -55,8 +44,6 @@ type ProposerQueueEntry = (
 );
 
 fn proposer_queue_max_pending() -> usize { PROPOSER_QUEUE_MAX_PENDING }
-
-fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
 
 fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool {
     is_node_read_only || dev_mode
@@ -315,14 +302,6 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                 .map_err(|error| CasperError::RuntimeError(error.to_string()))
         });
     let mut background: Vec<(&'static str, NativeTask)> = Vec::new();
-    let block_retriever = BlockRetriever::new(
-        Arc::new(Mutex::new(std::collections::HashMap::new())),
-        transport_layer.clone(),
-        rp_connections.clone(),
-        rp_conf_cell
-            .read()
-            .map_err(|e| CasperError::Other(e.to_string()))?,
-    );
     let last_approved_block = Arc::new(Mutex::new(None));
     info!(data_dir = ?conf.storage.data_dir, "Initializing key-value store manager");
 
@@ -340,33 +319,15 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         KeyValueBlockStore::create_from_kvm(&mut rnode_store_manager).await?
     };
 
-    // Last finalized Block storage
-    let last_finalized_storage = {
-        use block_storage::rust::finality::LastFinalizedKeyValueStorage;
-
-        LastFinalizedKeyValueStorage::create_from_kvm(&mut rnode_store_manager).await?
-    };
-
-    // Migrate LastFinalizedStorage to BlockDagStorage
-    let lfb_require_migration = last_finalized_storage.require_migration()?;
-    if lfb_require_migration {
-        use tracing::info;
-
-        info!("Migrating LastFinalizedStorage to BlockDagStorage.");
-        last_finalized_storage
-            .migrate_lfb(&mut rnode_store_manager, &block_store)
-            .await?;
-    }
-    info!(
-        lfb_migration = lfb_require_migration,
-        "LastFinalized storage checked"
-    );
-
     // Block DAG storage
     let block_dag_storage = {
         use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 
-        BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
+        BlockDagKeyValueStorage::new_with_hot_window(
+            &mut rnode_store_manager,
+            conf.casper.dag_hot_window_depth,
+        )
+        .await?
     };
 
     // Repeat-deploy carrier-index watermark (same pattern as the LFB
@@ -395,13 +356,6 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         carrier_index_watermark = ?carrier_index_watermark,
         "repeat-deploy carrier index checked"
     );
-
-    // Casper requesting blocks cache
-    let casper_buffer_storage = {
-        use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-
-        CasperBufferKeyValueStorage::new_from_kvm(&mut rnode_store_manager).await?
-    };
 
     // Deploy storage
     let (deploy_storage, deploy_storage_arc) = {
@@ -480,7 +434,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     };
 
     // Runtime manager (play and replay runtimes)
-    let pipeline_width = super::instances::block_processor_instance::resolve_pipeline_width();
+    let validation_width = resolve_validation_width();
     let (runtime_manager, history_repo) = {
         use casper::rust::genesis::genesis::Genesis;
         use casper::rust::util::rholang::runtime_manager::{
@@ -513,7 +467,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                 );
                 exploratory
             },
-            Arc::new(ReplayLock::with_permits(pipeline_width + 2)),
+            Arc::new(ReplayLock::with_permits(validation_width + 2)),
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result
@@ -571,55 +525,6 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         }
     };
 
-    // Block processor queue - mpsc channel connecting producers (CasperLaunch, Running)
-    // to consumer (BlockProcessorInstance)
-    let block_processor_queue_max_pending = block_processor_queue_max_pending();
-    let (block_processor_queue_tx, block_processor_queue_rx) =
-        mpsc::channel::<BlockQueueItem>(block_processor_queue_max_pending);
-
-    // Queue depth is where memory pressure moves when parallel drain is
-    // bounded, so it must be observable alongside block-processing.active.
-    // Sampled from the channel's own permit accounting via a WeakSender so
-    // the sampler can never hold the queue open past the last real producer.
-    metrics::gauge!(
-        BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
-        "source" => BLOCK_PROCESSOR_METRICS_SOURCE
-    )
-    .set(0.0);
-    let block_processor_queue_watch = block_processor_queue_tx.downgrade();
-    let block_processor_state_ref = Arc::new(InFlightBlocks::new());
-    let block_processor_state_watch = Arc::downgrade(&block_processor_state_ref);
-    background.push((
-        "queue metrics",
-        Box::pin(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                interval.tick().await;
-                let Some(queue_tx) = block_processor_queue_watch.upgrade() else {
-                    break;
-                };
-                let pending = queue_tx.max_capacity().saturating_sub(queue_tx.capacity());
-                metrics::gauge!(
-                    BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
-                    "source" => BLOCK_PROCESSOR_METRICS_SOURCE
-                )
-                .set(pending as f64);
-                if let Some(in_flight) = block_processor_state_watch.upgrade() {
-                    metrics::gauge!(BLOCK_PROCESSING_IN_FLIGHT_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE).set(in_flight.len() as f64);
-                    let oldest = in_flight.oldest(std::time::Instant::now());
-                    metrics::gauge!(BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE).set(oldest.as_ref().map_or(0.0, |(_, age)| age.as_secs_f64()));
-                    if let Some((hash, age)) = oldest {
-                        if age > IN_FLIGHT_MARKER_MAX_WARN_AGE {
-                            warn!(block = %PrettyPrinter::build_string_bytes(&hash), age_secs = age.as_secs(), in_flight = in_flight.len(), "in-flight block marker is older than the warning age");
-                        }
-                    }
-                }
-            }
-            Ok(())
-        }),
-    ));
-
     // Read RPConf once for use in multiple places
     let rp_conf = rp_conf_cell
         .read()
@@ -627,9 +532,9 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
 
     // Runtime state requester: fetches rspace roots named as missing while the
     // node runs — the state a settled-history admission arrives without, and
-    // the state a deferred replay is waiting on. The processor names roots on
-    // `fetch_tx`; Running routes incoming StoreItemsMessage chunks to
-    // `items_tx`.
+    // the state a deferred replay is waiting on. Block ingest names roots on
+    // `fetch_tx` and hears each fetch's outcome on `results`; Running routes
+    // incoming StoreItemsMessage chunks to `items_tx`.
     let (state_requester_handles, state_requester_task) = {
         let has_root_rm = runtime_manager.clone();
         let has_root: casper::rust::engine::lfs_horizon_requester::HasRootFn =
@@ -650,17 +555,17 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         }),
     ));
 
-    // Block processor
-    let block_processor = casper::rust::blocks::block_processor::new_block_processor(
-        block_store.clone(),
-        casper_buffer_storage.clone(),
-        block_dag_storage.clone(),
-        block_retriever.clone(),
-        transport_layer.clone(),
-        rp_connections.clone(),
-        rp_conf.clone(),
-        Some(state_requester_handles.fetch_tx.clone()),
-    );
+    let (ingest, ingest_tasks) = block_ingest::spawn(IngestSetup {
+        block_store: block_store.clone(),
+        dag: block_dag_storage.clone(),
+        transport: transport_layer.clone(),
+        connections: rp_connections.clone(),
+        conf: rp_conf.clone(),
+        validation_width,
+        max_number_of_parents: conf.casper.max_number_of_parents,
+        state_root_fetch_tx: Some(state_requester_handles.fetch_tx.clone()),
+        state_root_results: Some(state_requester_handles.results),
+    })?;
 
     // Clone validator_identity for heartbeat (used by both proposer and heartbeat)
     let validator_identity_for_heartbeat = validator_identity_opt.clone();
@@ -687,7 +592,6 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
             block_store.clone(),
             deploy_storage_arc.clone(),
             rejected_deploy_buffer_arc.clone(),
-            block_retriever.clone(),
             transport_layer.clone(),
             rp_connections.clone(),
             rp_conf.clone(),
@@ -816,19 +720,16 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                 rp_connections.clone(),
                 last_approved_block,
                 event_publisher.clone(),
-                block_retriever.clone(),
                 Arc::new(engine_cell.clone()),
                 block_store.clone(),
                 block_dag_storage.clone(),
                 deploy_storage,
                 rejected_deploy_buffer_arc.clone(),
-                casper_buffer_storage.clone(),
                 rspace_state_manager,
                 Arc::new(runtime_manager.clone()),
                 estimator.clone(),
                 // Explicit parameters
-                block_processor_queue_tx.clone(),
-                block_processor_state_ref.clone(),
+                ingest,
                 propose_f_for_launch,
                 conf.casper.clone(),
                 !conf.protocol_client.disable_lfs,
@@ -884,7 +785,8 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         block_store.clone(),
         oracle,
         conf.dev_mode,
-    );
+    )
+    .with_report_cache_retention(conf.api_server.report_cache_retention_blocks);
 
     // API Servers - gRPC services for REPL, Deploy, Propose, and LSP
     let is_node_read_only = conf.casper.validator_private_key.is_none();
@@ -993,7 +895,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         transfer_unforgeable.clone(),
         conf.protocol_server.network_id.clone(),
         conf.casper.shard_name.clone(),
-        conf.casper.min_phlo_price,
+        conf.casper.min_phlo_price.clone(),
         conf.casper.genesis_block_data.native_token_name.clone(),
         conf.casper.genesis_block_data.native_token_symbol.clone(),
         conf.casper.genesis_block_data.native_token_decimals,
@@ -1014,49 +916,23 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
     // at runtime rather than being captured at route creation time
     let reporting_routes = ReportingRoutes::create_router();
 
-    // Casper Loop - maintenance loop body for Casper consensus
-    // This closure is executed repeatedly to:
-    // 1. Fetch missing block dependencies from CasperBuffer
-    // 2. Maintain requested blocks with timeout management
-    // 3. Sleep for the configured interval
+    // Casper loop: until casper runs, lets the engine act on each tick.
     let casper_loop = {
-        trace!("Casper loop tick");
         let engine_cell_clone = engine_cell.clone();
-        let block_retriever_clone = block_retriever.clone();
-        let requested_blocks_timeout = conf.casper.requested_blocks_timeout;
         let casper_loop_interval = conf.casper.casper_loop_interval;
 
         move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
             let engine_cell = engine_cell_clone.clone();
-            let block_retriever = block_retriever_clone.clone();
 
             Box::pin(async move {
-                // Read the engine from engine cell
                 let engine = engine_cell.get().await;
-
-                // Fetch dependencies from CasperBuffer
-                if let Some(casper) = engine.with_casper() {
-                    trace!("Fetching Casper dependencies");
-                    if let Err(err) = casper.fetch_dependencies().await {
-                        tracing::warn!("Casper dependency fetch failed: {}", err);
-                    }
-                } else {
-                    warn!("Casper engine present but Casper not initialized yet");
+                if engine.with_casper().is_none() {
+                    trace!("Casper not initialized yet; no-casper tick");
                     if let Err(err) = engine.on_no_casper_tick().await {
                         warn!("no-casper tick failed: {}", err);
                     }
                 }
-
-                // Maintain RequestedBlocks for Casper
-                if let Err(err) = block_retriever.request_all(requested_blocks_timeout).await {
-                    tracing::warn!("RequestedBlocks maintenance failed: {}", err);
-                } else {
-                    trace!(timeout = ?requested_blocks_timeout, "RequestedBlocks maintenance executed");
-                }
-
-                // Sleep for the configured interval
                 tokio::time::sleep(casper_loop_interval).await;
-
                 Ok::<(), CasperError>(())
             })
         }
@@ -1155,7 +1031,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
             conf.dev_mode,
             conf.protocol_server.network_id.clone(),
             conf.casper.shard_name.clone(),
-            conf.casper.min_phlo_price,
+            conf.casper.min_phlo_price.clone(),
             conf.casper.genesis_block_data.native_token_name.clone(),
             conf.casper.genesis_block_data.native_token_symbol.clone(),
             conf.casper.genesis_block_data.native_token_decimals,
@@ -1232,47 +1108,43 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
                     };
                     let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
 
-                    // Run GC. `collect_garbage` awaits `floor_of_block`, so on the
-                    // common multi-thread runtime the whole pass (including the
-                    // blocking LMDB reads in `get_representation`/`block_store`)
-                    // runs inside `block_in_place`, driven via a nested `block_on`
-                    // — the standard pattern for calling async code from a
-                    // blocking context without starving other workers.
-                    match tokio::runtime::Handle::try_current() {
-                        Ok(rt_handle)
-                            if rt_handle.runtime_flavor()
-                                == tokio::runtime::RuntimeFlavor::MultiThread =>
-                        {
-                            tokio::task::block_in_place(move || {
-                                let dag = gc_block_dag_storage
-                                    .get_representation()
-                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-                                let mut gc_state = gc_state.blocking_lock();
-                                rt_handle
-                                    .block_on(mergeable_channels_gc::collect_garbage(
-                                        &mut gc_state,
-                                        &dag,
-                                        &gc_block_store,
-                                        &gc_runtime_manager,
-                                        &gc_casper_shard_conf,
-                                    ))
-                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))
-                            })?;
-                        }
-                        _ => {
-                            let dag = gc_block_dag_storage
-                                .get_representation()
-                                .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-                            let mut gc_state = gc_state.lock().await;
-                            mergeable_channels_gc::collect_garbage(
-                                &mut gc_state,
-                                &dag,
-                                &gc_block_store,
-                                &gc_runtime_manager,
-                                &gc_casper_shard_conf,
-                            )
-                            .await
-                            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                    loop {
+                        let progress = match tokio::runtime::Handle::try_current() {
+                            Ok(rt_handle)
+                                if rt_handle.runtime_flavor()
+                                    == tokio::runtime::RuntimeFlavor::MultiThread =>
+                            {
+                                tokio::task::block_in_place(|| {
+                                    let mut gc_state = gc_state.blocking_lock();
+                                    rt_handle
+                                        .block_on(mergeable_channels_gc::collect_garbage(
+                                            &mut gc_state,
+                                            &gc_block_dag_storage,
+                                            &gc_block_store,
+                                            &gc_runtime_manager,
+                                            &gc_casper_shard_conf,
+                                        ))
+                                        .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                                })?
+                            }
+                            _ => {
+                                let mut gc_state = gc_state.lock().await;
+                                mergeable_channels_gc::collect_garbage(
+                                    &mut gc_state,
+                                    &gc_block_dag_storage,
+                                    &gc_block_store,
+                                    &gc_runtime_manager,
+                                    &gc_casper_shard_conf,
+                                )
+                                .await
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))?
+                            }
+                        };
+                        match progress {
+                            mergeable_channels_gc::GcProgress::Complete { .. } => break,
+                            mergeable_channels_gc::GcProgress::Yielded { .. } => {
+                                tokio::task::yield_now().await
+                            }
                         }
                     }
 
@@ -1307,11 +1179,7 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         proposer_pending: proposer_queue_pending,
         proposer_capacity: proposer_queue_max_pending,
         proposer_state: proposer_state_ref_opt_for_return,
-        block_processor,
-        pipeline_width,
-        block_state: block_processor_state_ref,
-        block_tx: block_processor_queue_tx,
-        block_rx: block_processor_queue_rx,
+        ingest_tasks: Arc::new(tokio::sync::Mutex::new(ingest_tasks)),
         propose: trigger_propose_f_opt_for_return,
         validator: validator_identity_for_heartbeat,
         heartbeat_conf: conf.casper.heartbeat_conf,
@@ -1418,7 +1286,7 @@ fn build_deploy_transfers(
                 .map(|t| TransferEvent {
                     from_addr: t.from_addr,
                     to_addr: t.to_addr,
-                    amount: t.amount,
+                    amount: t.amount_raw,
                     success: t.success,
                 })
                 .collect(),
@@ -1440,11 +1308,11 @@ mod tests {
         assert!(!block_report_prewarm_enabled(false, false));
     }
 
-    fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
+    fn transfer(from: &str, to: &str, amount: impl ToString) -> TransferInfo {
         TransferInfo {
             from_addr: from.to_string(),
             to_addr: to.to_string(),
-            amount,
+            amount_raw: amount.to_string(),
             success: true,
             fail_reason: String::new(),
         }
@@ -1462,7 +1330,7 @@ mod tests {
         let entry = &out[0];
         assert_eq!(entry.deploy_id, "deploy_with");
         assert_eq!(entry.transfers.len(), 1);
-        assert_eq!(entry.transfers[0].amount, 10);
+        assert_eq!(entry.transfers[0].amount, "10");
     }
 
     #[test]
@@ -1491,8 +1359,24 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].transfers.len(), 2);
-        assert_eq!(out[0].transfers[0].amount, 1);
-        assert_eq!(out[0].transfers[1].amount, 2);
+        assert_eq!(out[0].transfers[0].amount, "1");
+        assert_eq!(out[0].transfers[1].amount, "2");
+    }
+
+    #[test]
+    fn websocket_transfers_carry_exact_amounts() {
+        let above_uint256 = (num_bigint::BigInt::from(1u8) << 256usize).to_string();
+        for amount in ["0", "-5", "10000000000000000000", above_uint256.as_str()] {
+            let mut transfer = transfer("sender", "recipient", amount);
+            transfer.success = false;
+            let out = build_deploy_transfers(std::collections::HashMap::from([(
+                "deploy".to_string(),
+                vec![transfer],
+            )]));
+            let json = serde_json::to_value(&out[0].transfers[0]).unwrap();
+            assert_eq!(json["amount"], amount);
+            assert_eq!(json["success"], false);
+        }
     }
     // ---------- register_consensus_bundle_roots_core ----------
 

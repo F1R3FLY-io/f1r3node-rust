@@ -225,6 +225,9 @@ impl Drop for TemporaryManifest {
 }
 
 fn open_readonly(path: &Path) -> eyre::Result<heed::Env> {
+    if let Some(env) = rspace_plus_plus::rspace::shared::get_cached_env(path) {
+        return Ok(env.as_ref().clone());
+    }
     let mut options = heed::EnvOpenOptions::new();
     options.max_dbs(128);
     unsafe {
