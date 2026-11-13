@@ -256,16 +256,30 @@ mod batched_put_tests {
 
     use super::*;
 
-    pub(super) fn open_env() -> Arc<Env> {
+    // Owns a `TempDir` alongside the `Arc<Env>` so that when the test binding
+    // drops, the Env closes before the directory is removed. Leaking the
+    // TempDir (as the pre-#1014 helper did) kept the Env alive until process
+    // exit and, on macOS, leaked one SysV semaphore set per test env.
+    pub(super) struct TestEnv {
+        env: Arc<Env>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for TestEnv {
+        type Target = Arc<Env>;
+        fn deref(&self) -> &Self::Target { &self.env }
+    }
+
+    pub(super) fn open_env() -> TestEnv {
         let dir = tempfile::tempdir().unwrap();
-        // Leak the tempdir path so the Env (and its mmap) stay valid for the
-        // lifetime of the test; each test opens its own directory.
-        let path = Box::leak(Box::new(dir)).path();
         let mut builder = EnvOpenOptions::new();
         builder.map_size(10 * 1024 * 1024);
         builder.max_dbs(4);
-        let env = unsafe { builder.open(path).unwrap() };
-        Arc::new(env)
+        let env = unsafe { builder.open(dir.path()).unwrap() };
+        TestEnv {
+            env: Arc::new(env),
+            _dir: dir,
+        }
     }
 
     pub(super) fn open_store(env: &Arc<Env>, name: &str) -> LmdbKeyValueStore {
@@ -273,6 +287,25 @@ mod batched_put_tests {
         let db = env.create_database(&mut wtxn, Some(name)).unwrap();
         wtxn.commit().unwrap();
         LmdbKeyValueStore::new(env.clone(), db)
+    }
+
+    // Bundles an owned TestEnv with the store so the Env closes and the
+    // TempDir is removed when the test binding drops. Returned by the helper
+    // tests that used to leak the dir.
+    pub(super) struct TestLmdbStore {
+        store: LmdbKeyValueStore,
+        _env: TestEnv,
+    }
+
+    impl std::ops::Deref for TestLmdbStore {
+        type Target = LmdbKeyValueStore;
+        fn deref(&self) -> &Self::Target { &self.store }
+    }
+
+    pub(super) fn open_scoped_store(name: &str) -> TestLmdbStore {
+        let env = open_env();
+        let store = open_store(&env, name);
+        TestLmdbStore { store, _env: env }
     }
 
     pub(super) fn kv(pairs: &[(&str, &str)]) -> Vec<(ByteBuffer, ByteBuffer)> {
@@ -423,11 +456,11 @@ mod batched_put_tests {
 mod store_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::batched_put_tests::{kv, open_env, open_store};
+    use super::batched_put_tests::{kv, open_env, open_scoped_store, open_store, TestLmdbStore};
     use super::*;
 
-    fn seeded_store() -> LmdbKeyValueStore {
-        let store = open_store(&open_env(), "s");
+    fn seeded_store() -> TestLmdbStore {
+        let store = open_scoped_store("s");
         store
             .put(kv(&[("k1", "v1"), ("k2", "v2"), ("k3", "v3")]))
             .unwrap();
@@ -459,7 +492,7 @@ mod store_tests {
 
     #[test]
     fn put_one_if_absent_inserts_once_and_keeps_first_value() {
-        let store = open_store(&open_env(), "s");
+        let store = open_scoped_store("s");
         assert!(store
             .put_one_if_absent(b"k".to_vec(), b"first".to_vec())
             .unwrap());
@@ -579,7 +612,7 @@ mod store_tests {
 
     #[test]
     fn non_empty_flips_when_first_entry_lands() {
-        let store = open_store(&open_env(), "s");
+        let store = open_scoped_store("s");
         assert!(!store.non_empty().unwrap());
         store.put_one(b"k".to_vec(), b"v".to_vec()).unwrap();
         assert!(store.non_empty().unwrap());
@@ -634,7 +667,7 @@ mod store_tests {
     #[ignore]
     async fn concurrent_point_reads_scale_with_readers() {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-        let store = open_store(&open_env(), "reads");
+        let store = open_scoped_store("reads");
         let keys: Arc<Vec<ByteBuffer>> =
             Arc::new((0..1024u32).map(|i| i.to_be_bytes().to_vec()).collect());
         store
