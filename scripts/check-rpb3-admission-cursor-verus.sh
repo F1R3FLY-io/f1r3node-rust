@@ -1998,6 +1998,18 @@ proofs_rpb3_observable_simulation=(
   lemma_live_root_noscore_product_frames
   lemma_live_root_noscore_frames
   lemma_live_root_noscore_extract
+  lemma_single_step_is_segment
+  witness_scored_raw_par_return_segment
+  witness_nested_return_segment
+  lemma_handoff_witness_step_exists
+  witness_handoff_segment
+  witness_act_unwind_segment
+  witness_act_forward_segment
+  lemma_epm_finish_accept_witness_step_exists
+  witness_epm_finish_accept_segment
+  witness_canonical_path_root_segment
+  witness_noscore_root_segment
+  witness_backward_hypotheses_hold
 )
 proofs_rpb3_path_parser_refinement=(
   initial_parser_source_snapshot_has_witness
@@ -5285,7 +5297,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: observable simulation module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 83 verified, 0 errors' "$observable_simulation_log"; then
+if ! rg -q '^verification results:: 95 verified, 0 errors' "$observable_simulation_log"; then
   cat "$observable_simulation_log"
   echo "rpb3-admission-cursor: observable simulation module did not verify" >&2
   exit 1

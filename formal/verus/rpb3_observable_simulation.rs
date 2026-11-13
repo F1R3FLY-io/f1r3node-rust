@@ -10,6 +10,7 @@ use crate::{
     rpb3_canonical_path_driver_product_integration as path_driver,
     rpb3_epathmap_event_refinement as epm, rpb3_epm_live_handoff as handoff,
     rpb3_epm_obligation_return_live as obligation_return,
+    rpb3_epm_obligation_return_witness as obligation_witness,
     rpb3_epm_push_live_action_refinement as epm_push_live,
     rpb3_epm_push_source_action_refinement as epm_push_source,
     rpb3_epm_source_accept_refinement as epm_accept, rpb3_epm_unwind_event_lift as unwind,
@@ -4341,6 +4342,228 @@ pub proof fn lemma_accept_shape_refines(
     } else {
         lemma_plain_parent_accept_refines(before, after, score_len, score_after);
     }
+}
+
+pub proof fn lemma_single_step_is_segment(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        segment_internal_arm(action_arm(action)) || visible_class(before, action) is Some,
+    ensures integrated_segment(seq![before, after], seq![action]),
+{
+    hide(dispatcher::integrated_step);
+    let states = seq![before, after];
+    let actions = seq![action];
+    assert(states[0] == before && states[1] == after && actions[0] == action);
+    assert forall|index: int| 0 <= index < actions.len() implies #[trigger]
+        dispatcher::integrated_step(states[index], states[index + 1], actions[index]) by {
+        assert(index == 0);
+    }
+    assert(dispatcher::integrated_trace(states, actions));
+    assert(segment_visible_index(actions) == 0);
+}
+
+pub proof fn witness_scored_raw_par_return_segment()
+    ensures
+        exists|states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>|
+            #[trigger] integrated_segment(states, actions) && actions.len() == 2
+                && segment_score_arm(action_arm(actions[0]))
+                && action_arm(actions[1]) is EpmRawParReturn,
+{
+    hide(dispatcher::integrated_step);
+    obligation_witness::epm_raw_par_witness_trace();
+    let (states, actions) = choose|states: Seq<dispatcher::IntegratedState>,
+        actions: Seq<dispatcher::IntegratedAction>|
+        #[trigger] dispatcher::integrated_trace(states, actions) && actions.len() == 2
+            && segment_score_arm(action_arm(actions[0]))
+            && action_arm(actions[1]) is EpmRawParReturn;
+    assert(segment_visible_index(actions) == 1);
+    assert(visible_class(states[1], actions[1])
+        == Some(observable::ObservableClass::MessageComplete));
+    assert(integrated_segment(states, actions));
+}
+
+pub proof fn witness_nested_return_segment()
+    ensures
+        exists|states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>|
+            #[trigger] integrated_segment(states, actions) && actions.len() == 1
+                && action_arm(actions[0]) is EpmNestedReturn,
+{
+    hide(dispatcher::integrated_step);
+    obligation_witness::epm_nested_dead_witness_is_integrated_step();
+    let (before, after, action) = choose|before: dispatcher::IntegratedState,
+        after: dispatcher::IntegratedState, action: dispatcher::IntegratedAction|
+        dispatcher::integrated_wf(before)
+            && #[trigger] dispatcher::integrated_step(before, after, action)
+            && action_arm(action) is EpmNestedReturn;
+    assert(visible_class(before, action) is Some);
+    lemma_single_step_is_segment(before, after, action);
+    assert(seq![action][0] == action);
+}
+
+pub proof fn lemma_handoff_witness_step_exists()
+    ensures
+        exists|before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+            action: dispatcher::IntegratedAction|
+            dispatcher::integrated_wf(before)
+                && #[trigger] dispatcher::integrated_step(before, after, action)
+                && action_arm(action) is EpmHandoff,
+{
+    hide(dispatcher::integrated_step);
+    handoff::epm_handoff_witness_is_integrated_step();
+}
+
+pub proof fn witness_handoff_segment()
+    ensures
+        exists|states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>|
+            #[trigger] integrated_segment(states, actions) && actions.len() == 1
+                && action_arm(actions[0]) is EpmHandoff,
+{
+    hide(dispatcher::integrated_step);
+    lemma_handoff_witness_step_exists();
+    let (before, after, action) = choose|before: dispatcher::IntegratedState,
+        after: dispatcher::IntegratedState, action: dispatcher::IntegratedAction|
+        dispatcher::integrated_wf(before)
+            && #[trigger] dispatcher::integrated_step(before, after, action)
+            && action_arm(action) is EpmHandoff;
+    assert(segment_internal_arm(action_arm(action)));
+    lemma_single_step_is_segment(before, after, action);
+    assert(seq![action][0] == action);
+}
+
+pub proof fn witness_act_unwind_segment()
+    ensures
+        exists|states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>|
+            #[trigger] integrated_segment(states, actions) && actions.len() == 1
+                && action_arm(actions[0]) is ActUnwind,
+{
+    hide(dispatcher::integrated_step);
+    dispatcher::act_unwind_witness_is_integrated_step();
+    let (before, after, action) = choose|before: dispatcher::IntegratedState,
+        after: dispatcher::IntegratedState, action: dispatcher::IntegratedAction|
+        dispatcher::integrated_wf(before)
+            && #[trigger] dispatcher::integrated_step(before, after, action)
+            && action_arm(action) is ActUnwind;
+    assert(segment_internal_arm(action_arm(action)));
+    lemma_single_step_is_segment(before, after, action);
+    assert(seq![action][0] == action);
+}
+
+pub proof fn witness_act_forward_segment()
+    ensures
+        exists|states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>|
+            #[trigger] integrated_segment(states, actions) && actions.len() == 1
+                && action_arm(actions[0]) is ActForward,
+{
+    hide(dispatcher::integrated_step);
+    dispatcher::act_forward_witness_is_integrated_step();
+    let (before, after, action) = choose|before: dispatcher::IntegratedState,
+        after: dispatcher::IntegratedState, action: dispatcher::IntegratedAction|
+        dispatcher::integrated_wf(before)
+            && #[trigger] dispatcher::integrated_step(before, after, action)
+            && action_arm(action) is ActForward;
+    assert(segment_internal_arm(action_arm(action)));
+    lemma_single_step_is_segment(before, after, action);
+    assert(seq![action][0] == action);
+}
+
+pub proof fn lemma_epm_finish_accept_witness_step_exists()
+    ensures
+        exists|before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+            action: dispatcher::IntegratedAction|
+            dispatcher::integrated_wf(before)
+                && #[trigger] dispatcher::integrated_step(before, after, action)
+                && action_arm(action) is LiveEpmFinishAccept,
+{
+    hide(dispatcher::integrated_step);
+    dispatcher::live_nested_epm_finish_accept_is_integrated_step();
+}
+
+pub proof fn witness_epm_finish_accept_segment()
+    ensures
+        exists|states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>|
+            #[trigger] integrated_segment(states, actions) && actions.len() == 1
+                && action_arm(actions[0]) is LiveEpmFinishAccept,
+{
+    hide(dispatcher::integrated_step);
+    lemma_epm_finish_accept_witness_step_exists();
+    let (before, after, action) = choose|before: dispatcher::IntegratedState,
+        after: dispatcher::IntegratedState, action: dispatcher::IntegratedAction|
+        dispatcher::integrated_wf(before)
+            && #[trigger] dispatcher::integrated_step(before, after, action)
+            && action_arm(action) is LiveEpmFinishAccept;
+    assert(visible_class(before, action) is Some);
+    lemma_single_step_is_segment(before, after, action);
+    assert(seq![action][0] == action);
+}
+
+pub proof fn witness_canonical_path_root_segment()
+    ensures
+        exists|states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>|
+            #[trigger] integrated_segment(states, actions) && actions.len() == 1
+                && action_arm(actions[0]) is PathRootComplete && states.last() is Accepted,
+{
+    hide(dispatcher::integrated_step);
+    dispatcher::boolean_root_canonical_path_complete_is_integrated_step();
+    let (before, after, action) = choose|before: dispatcher::IntegratedState,
+        after: dispatcher::IntegratedState, action: dispatcher::IntegratedAction|
+        dispatcher::integrated_wf(before)
+            && #[trigger] dispatcher::integrated_step(before, after, action)
+            && action_arm(action) is PathRootComplete && after is Accepted;
+    assert(visible_class(before, action) is Some);
+    lemma_single_step_is_segment(before, after, action);
+    assert(seq![action][0] == action);
+    assert(seq![before, after].last() == after);
+}
+
+pub proof fn witness_noscore_root_segment()
+    ensures
+        exists|states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>|
+            #[trigger] integrated_segment(states, actions) && actions.len() == 1
+                && action_arm(actions[0]) is LiveRootCompleteNoScore && states.last() is Accepted,
+{
+    hide(dispatcher::integrated_step);
+    dispatcher::live_unit_root_noscore_complete_is_accepting_trace();
+    let (before, after, action) = choose|before: dispatcher::IntegratedState,
+        after: dispatcher::IntegratedState, action: dispatcher::IntegratedAction|
+        dispatcher::integrated_wf(before)
+            && #[trigger] dispatcher::integrated_step(before, after, action)
+            && action_arm(action) is LiveRootCompleteNoScore && after is Accepted;
+    assert(visible_class(before, action) is Some);
+    lemma_single_step_is_segment(before, after, action);
+    assert(seq![action][0] == action);
+    assert(seq![before, after].last() == after);
+}
+
+pub proof fn witness_backward_hypotheses_hold()
+    ensures
+        exists|state: dispatcher::IntegratedState, event: observable::ObservableEvent|
+            dispatcher::integrated_wf(state)
+                && (#[trigger] observable::observable_next(project(state), event)) is Some
+                && canonical_path_top_is_root(state)
+                && nested_return_event(state_frames(state), event),
+{
+    hide(dispatcher::integrated_step);
+    obligation_witness::epm_nested_dead_witness_is_integrated_step();
+    let (before, after, action) = choose|before: dispatcher::IntegratedState,
+        after: dispatcher::IntegratedState, action: dispatcher::IntegratedAction|
+        before is Active && dispatcher::integrated_wf(before)
+            && #[trigger] dispatcher::integrated_step(before, after, action)
+            && action_arm(action) is EpmNestedReturn;
+    lemma_epm_nested_return_extract(before, after, action);
+    let frames = state_frames(before);
+    lemma_accept_shape_refines(
+        frames, state_frames(after), state_score_len(before), state_score_len(after),
+    );
+    lemma_project_frame_reads(frames, frames.len() - 2);
+    let event = observable::observable_image_event(
+        accept_class(frames.last().frame_kind), project(before), project(after),
+    );
+    assert(observable::observable_next(project(before), event) is Some);
+    assert(nested_return_event(frames, event));
 }
 
 }
