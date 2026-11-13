@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::AtomicI64;
+use std::sync::Arc;
 
 use block_storage::rust::pending_blocks::{PendingBlockLimits, PendingUsage};
 use comm::rust::peer_node::PeerNode;
@@ -222,7 +224,13 @@ fn a_block_received_twice_is_held_and_dispatched_once() {
 fn a_cited_block_at_or_below_the_anchor_is_admitted_as_settled_history() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
-    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(
+        IngestInput::Attached {
+            effective_anchor: Arc::new(AtomicI64::new(50)),
+        },
+        0,
+        &dag,
+    );
     s.handle(received(meta(10, 41, &[9])), 0, &dag);
     s.handle(received(meta(9, 40, &[3])), 0, &dag);
     assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
@@ -244,7 +252,13 @@ fn a_cited_block_at_or_below_the_anchor_is_admitted_as_settled_history() {
 fn a_block_below_the_anchor_that_the_node_requested_itself_is_offered_as_settled_history() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
-    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(
+        IngestInput::Attached {
+            effective_anchor: Arc::new(AtomicI64::new(50)),
+        },
+        0,
+        &dag,
+    );
     s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
     s.handle(received(meta(9, 40, &[0])), 0, &dag);
     assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
@@ -254,7 +268,13 @@ fn a_block_below_the_anchor_that_the_node_requested_itself_is_offered_as_settled
 fn a_held_block_below_the_anchor_that_the_node_then_requests_is_admitted_as_settled_history() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
-    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(
+        IngestInput::Attached {
+            effective_anchor: Arc::new(AtomicI64::new(50)),
+        },
+        0,
+        &dag,
+    );
     s.handle(received(meta(9, 40, &[3])), 0, &dag);
     assert!(
         s.is_needed(&hash(3)) && s.next_dispatch().is_none(),
@@ -272,7 +292,13 @@ fn a_held_block_below_the_anchor_that_the_node_then_requests_is_admitted_as_sett
 fn a_held_block_below_the_anchor_that_a_bonded_block_then_cites_is_admitted_as_settled_history() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
-    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(
+        IngestInput::Attached {
+            effective_anchor: Arc::new(AtomicI64::new(50)),
+        },
+        0,
+        &dag,
+    );
     s.handle(received(meta(9, 40, &[3])), 0, &dag);
     s.handle(received(meta(10, 41, &[9])), 0, &dag);
     assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
@@ -282,7 +308,13 @@ fn a_held_block_below_the_anchor_that_a_bonded_block_then_cites_is_admitted_as_s
 fn a_held_block_above_the_anchor_stays_held_for_validation_when_the_node_requests_it() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
-    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(
+        IngestInput::Attached {
+            effective_anchor: Arc::new(AtomicI64::new(50)),
+        },
+        0,
+        &dag,
+    );
     s.handle(received(meta(9, 51, &[0])), 0, &dag);
     s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
     assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
@@ -293,7 +325,13 @@ fn a_block_below_the_anchor_awaiting_a_state_root_is_admitted_as_settled_history
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
     let root = Blake2b256Hash::new(b"root");
-    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(
+        IngestInput::Attached {
+            effective_anchor: Arc::new(AtomicI64::new(50)),
+        },
+        0,
+        &dag,
+    );
     s.handle(received(meta(9, 40, &[0])), 0, &dag);
     assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
     s.handle(
@@ -318,7 +356,13 @@ fn a_block_below_the_anchor_requested_during_its_validation_is_admitted_as_settl
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
     let root = Blake2b256Hash::new(b"root");
-    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(
+        IngestInput::Attached {
+            effective_anchor: Arc::new(AtomicI64::new(50)),
+        },
+        0,
+        &dag,
+    );
     s.handle(received(meta(9, 40, &[0])), 0, &dag);
     assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
     s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
@@ -339,7 +383,13 @@ fn a_block_that_settled_history_admission_declined_stays_held_for_validation_whe
 {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
-    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
+    s.handle(
+        IngestInput::Attached {
+            effective_anchor: Arc::new(AtomicI64::new(50)),
+        },
+        0,
+        &dag,
+    );
     s.handle(IngestInput::Need { hash: hash(9) }, 0, &dag);
     s.handle(received(meta(9, 40, &[0])), 0, &dag);
     assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));

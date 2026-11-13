@@ -1097,6 +1097,7 @@ impl DetachedDagSnapshot {
             history: None,
             view_sequence: u64::MAX,
             view_max_height: None,
+            pruning_cutoff: 0,
             dag_set: self.dag_set.iter().cloned().collect(),
             latest_messages_map: self
                 .latest_messages

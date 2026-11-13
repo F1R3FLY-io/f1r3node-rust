@@ -9,6 +9,7 @@
 //! ("how the casper engine binds into its public protocol surface").
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -50,6 +51,10 @@ impl Casper for MultiParentCasperImpl {
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         super::block_admission::admit_get_approved_block(self)
     }
+
+    fn effective_anchor_number(&self) -> i64 { self.effective_anchor.load(Ordering::Acquire) }
+
+    fn effective_anchor_handle(&self) -> Arc<AtomicI64> { self.effective_anchor.clone() }
 
     fn deploy(
         &self,

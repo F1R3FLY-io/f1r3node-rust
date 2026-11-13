@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -98,6 +99,28 @@ pub trait Casper {
     fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError>;
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError>;
+
+    /// Current effective anchor height: blocks at or below this height are
+    /// treated as settled history, so walks are not expected to reach them
+    /// and `BlockNotHeld` below the anchor defers rather than judging. On
+    /// a sync-rooted node this is the restore anchor; on a genesis-rooted
+    /// node it starts at zero and advances as block-store GC prunes past
+    /// the citation horizon. Default reads the approved block's height so
+    /// effect mocks inherit "genesis-rooted at approved-block height".
+    fn effective_anchor_number(&self) -> i64 {
+        self.get_approved_block()
+            .ok()
+            .map(crate::rust::util::proto_util::block_number)
+            .unwrap_or(0)
+    }
+
+    /// Shared handle on the effective-anchor height. Used by block ingest
+    /// to admit below-anchor settled history live and by GC to advance the
+    /// anchor after a successful prune. Defaulted to a fresh atomic seeded
+    /// with the current anchor so effect mocks need no shared state.
+    fn effective_anchor_handle(&self) -> Arc<AtomicI64> {
+        Arc::new(AtomicI64::new(self.effective_anchor_number()))
+    }
 
     fn deploy(
         &self,
@@ -355,6 +378,17 @@ pub async fn hash_set_casper(
 
     let finalized_bond_cache =
         FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
+    // Effective anchor: whichever is higher — the approved block's height
+    // (startup baseline) or the persisted GC pruning cutoff (survives
+    // restart). Block-store GC only advances this, so the max is monotone.
+    let anchor_from_approved = crate::rust::util::proto_util::block_number(&approved_block);
+    let anchor_persisted = block_dag_storage
+        .gc_store()
+        .effective_anchor()?
+        .unwrap_or(anchor_from_approved);
+    let effective_anchor = Arc::new(std::sync::atomic::AtomicI64::new(
+        anchor_from_approved.max(anchor_persisted),
+    ));
     let finalization = crate::rust::engine::multi_parent_casper::FinalizationContext {
         observer: Arc::new(std::sync::OnceLock::new()),
         finalized_bond_cache: finalized_bond_cache.clone(),
@@ -383,6 +417,7 @@ pub async fn hash_set_casper(
         finalized_bond_cache,
         casper_shard_conf: finalization.shard_conf.clone(),
         approved_block,
+        effective_anchor,
         finalizer: crate::rust::engine::multi_parent_casper::Finalizer::start(finalization),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
@@ -669,6 +704,7 @@ pub mod test_helpers {
             let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
                 history: None,
                 view_sequence: u64::MAX,
+            pruning_cutoff: 0,
                 view_max_height: None,
                 dag_set: imbl::HashSet::new(),
                 latest_messages_map: imbl::HashMap::new(),

@@ -1100,6 +1100,7 @@ impl TestNode {
             finalized_bond_cache,
             casper_shard_conf: finalization.shard_conf.clone(),
             approved_block: genesis.clone(),
+            effective_anchor: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
             finalizer: casper::rust::engine::multi_parent_casper::Finalizer::start(finalization),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),

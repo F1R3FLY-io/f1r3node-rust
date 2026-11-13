@@ -4374,13 +4374,15 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
     conf.max_parent_depth = 3;
     conf.mergeable_channels_gc_depth_buffer = 1;
     let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
+    let effective_anchor = std::sync::atomic::AtomicI64::new(0);
     assert_eq!(
         mergeable_channels_gc::collect_garbage(
             &mut gc_sweep,
             &dag_storage,
             &block_store,
             &rm,
-            &conf
+            &conf,
+            &effective_anchor,
         )
         .await
         .unwrap(),
@@ -4416,6 +4418,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
             &block_store,
             &rm,
             &conf,
+            &effective_anchor,
         )
         .await
         .expect("collect_garbage")

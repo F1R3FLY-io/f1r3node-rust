@@ -2041,6 +2041,7 @@ mod tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -2120,6 +2121,7 @@ mod tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
@@ -110,6 +111,7 @@ fn run_turn<F>(
     storage: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
     conf: &CasperShardConf,
+    effective_anchor: &AtomicI64,
     delete: &mut F,
     page: usize,
 ) -> Result<GcProgress, KvStoreError>
@@ -262,6 +264,17 @@ where
                     }
                     None => {
                         sweep.pending_len = 0;
+                        // Body pruning only — the mergeable-only path leaves
+                        // bodies on disk, so walks cannot descend into a
+                        // missing body and no anchor advancement is needed.
+                        // Order: evict DAG metadata BEFORE flipping the
+                        // atomic so no walker can read metadata, then fetch
+                        // a body that is already gone, under the new
+                        // effective_anchor.
+                        if pass.conf.enable_block_store_gc && pass.target >= 0 {
+                            storage.advance_pruning_cutoff(pass.target)?;
+                            effective_anchor.fetch_max(pass.target, Ordering::Release);
+                        }
                         return Ok(GcProgress::Complete {
                             deleted,
                             blocks_deleted,
@@ -279,12 +292,21 @@ pub fn collect_garbage_with<F>(
     storage: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
     conf: &CasperShardConf,
+    effective_anchor: &AtomicI64,
     delete: &mut F,
 ) -> Result<GcProgress, KvStoreError>
 where
     F: FnMut(&BlockMessage) -> Result<bool, KvStoreError>,
 {
-    let result = run_turn(sweep, storage, blocks, conf, delete, GC_PAGE_SIZE);
+    let result = run_turn(
+        sweep,
+        storage,
+        blocks,
+        conf,
+        effective_anchor,
+        delete,
+        GC_PAGE_SIZE,
+    );
     if result.is_err() {
         sweep.phase = Phase::Idle;
         sweep.pending_len = 0;
@@ -298,6 +320,7 @@ pub async fn collect_garbage(
     blocks: &KeyValueBlockStore,
     runtime: &Arc<RuntimeManager>,
     conf: &CasperShardConf,
+    effective_anchor: &AtomicI64,
 ) -> Result<GcProgress, KvStoreError> {
     let started = std::time::Instant::now();
     let result = run_turn(
@@ -305,6 +328,7 @@ pub async fn collect_garbage(
         storage,
         blocks,
         conf,
+        effective_anchor,
         &mut |block| {
             runtime
                 .delete_mergeable_channels(
@@ -393,12 +417,14 @@ mod tests {
         let mut sweep = GcSweep::new();
         let mut deleted = HashSet::new();
         let mut restarted = false;
+        let effective_anchor = AtomicI64::new(0);
         for _ in 0..1_000 {
             let progress = run_turn(
                 &mut sweep,
                 storage,
                 blocks,
                 conf,
+                &effective_anchor,
                 &mut |block| {
                     assert!(
                         deleted.insert(block.block_hash.clone()),
@@ -707,12 +733,14 @@ mod tests {
         let mut sweep = GcSweep::new();
         let mut total_blocks_deleted = 0usize;
         let mut total_mergeable_deleted = 0usize;
+        let effective_anchor = AtomicI64::new(0);
         for _ in 0..1_000 {
             let progress = run_turn(
                 &mut sweep,
                 &storage,
                 &blocks,
                 &conf,
+                &effective_anchor,
                 &mut |_block| Ok(true),
                 GC_PAGE_SIZE,
             )
@@ -742,5 +770,117 @@ mod tests {
             }
         }
         panic!("GC did not complete");
+    }
+
+    /// After a Delete-phase completion with `enable_block_store_gc = true`,
+    /// the shared effective anchor advances to the pass target and the
+    /// DAG store persists the same height. This is the write that tells
+    /// validation "below this height is settled history" and that
+    /// `open_windowed` reads on restart to refuse re-loading evicted
+    /// metadata.
+    #[tokio::test]
+    async fn effective_anchor_advances_after_delete_phase() {
+        let (storage, blocks, conf, _all) = linear_chain_with_block_store(true).await;
+
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &mut |_block| Ok(true),
+                GC_PAGE_SIZE,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        let anchor = effective_anchor.load(Ordering::Acquire);
+        assert!(
+            anchor > 0,
+            "block-store GC must advance the effective anchor past zero"
+        );
+        assert_eq!(
+            storage.gc_store().effective_anchor().unwrap(),
+            Some(anchor),
+            "the advanced anchor is persisted to the GC store",
+        );
+    }
+
+    /// Metadata eviction follows anchor advancement: once a Delete-phase
+    /// completion advances the pruning cutoff, below-cutoff blocks no
+    /// longer resolve through the DAG. This is what makes guard_deferral's
+    /// permissive branch safe — walks cannot reach a below-anchor block,
+    /// so there is no deferral loop to fall into.
+    #[tokio::test]
+    async fn advance_pruning_cutoff_evicts_metadata() {
+        let (storage, blocks, conf, all) = linear_chain_with_block_store(true).await;
+
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &mut |_block| Ok(true),
+                GC_PAGE_SIZE,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        let cutoff = effective_anchor.load(Ordering::Acquire);
+        assert!(
+            cutoff > 0,
+            "pass must advance the anchor to a positive height"
+        );
+
+        let dag = storage.get_representation().unwrap();
+        for (height, hash) in all.iter().enumerate() {
+            if (height as i64) < cutoff {
+                assert!(
+                    dag.lookup(hash).unwrap().is_none(),
+                    "height {height} must be evicted below cutoff {cutoff}"
+                );
+            }
+        }
+    }
+
+    /// With the flag off the mergeable-only GC leaves bodies in place, so
+    /// there is nothing to advance past — the effective anchor stays at
+    /// zero. Pinning this avoids an operator who runs mergeable-only GC
+    /// from silently flipping other nodes into "treat below-anchor as
+    /// settled history" mode.
+    #[tokio::test]
+    async fn effective_anchor_does_not_advance_when_body_pruning_is_off() {
+        let (storage, blocks, conf, _all) = linear_chain_with_block_store(false).await;
+
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                &conf,
+                &effective_anchor,
+                &mut |_block| Ok(true),
+                GC_PAGE_SIZE,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        assert_eq!(effective_anchor.load(Ordering::Acquire), 0);
+        assert_eq!(storage.gc_store().effective_anchor().unwrap(), None);
     }
 }

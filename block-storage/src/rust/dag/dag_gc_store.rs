@@ -12,6 +12,7 @@ pub const GC_PAGE_SIZE: usize = 1_024;
 
 const DISCOVERY_KEY: &[u8] = b"gc.discovery";
 const RETRY_CURSOR_KEY: &[u8] = b"gc.retry-cursor";
+const EFFECTIVE_ANCHOR_KEY: &[u8] = b"gc.effective-anchor";
 
 #[derive(Clone, Copy)]
 pub struct DagGcSlots {
@@ -158,6 +159,36 @@ impl DagGcStore {
         self.group.transaction(|tx| {
             tx.delete(self.slots.retry, hash)?;
             Ok(())
+        })
+    }
+
+    pub fn effective_anchor(&self) -> Result<Option<i64>, KvStoreError> {
+        self.group
+            .get(self.slots.state, EFFECTIVE_ANCHOR_KEY)?
+            .map(|bytes| decode(&bytes))
+            .transpose()
+    }
+
+    /// Monotonically raise the persisted anchor to `height`, returning the
+    /// resulting anchor. A lower incoming height is a no-op: GC only
+    /// advances the anchor, and a restart reading an earlier floor must
+    /// not regress past-prune state.
+    pub fn advance_effective_anchor(&self, height: i64) -> Result<i64, KvStoreError> {
+        self.group.transaction(|tx| {
+            let current = tx
+                .get(self.slots.state, EFFECTIVE_ANCHOR_KEY)?
+                .map(|bytes| decode::<i64>(&bytes))
+                .transpose()?
+                .unwrap_or(i64::MIN);
+            let next = current.max(height);
+            if next != current {
+                tx.put(
+                    self.slots.state,
+                    EFFECTIVE_ANCHOR_KEY.to_vec(),
+                    encode(&next)?,
+                )?;
+            }
+            Ok(next)
         })
     }
 }
