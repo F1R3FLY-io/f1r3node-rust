@@ -529,3 +529,155 @@ proptest! {
         })?;
     }
 }
+
+struct AlphaPair {
+    name: &'static str,
+    left: &'static str,
+    right: &'static str,
+    swapped: &'static str,
+    arrival: Vec<Par>,
+}
+
+fn alpha_pairs() -> [AlphaPair; 3] {
+    [
+        AlphaPair {
+            name: "receive binder",
+            left: r#"for (@x, @y <- @"alpha") { @"out"!(x, y) }"#,
+            right: r#"for (@first, @second <- @"alpha") { @"out"!(first, second) }"#,
+            swapped: r#"for (@x, @y <- @"alpha") { @"out"!(y, x) }"#,
+            arrival: vec![integer(1), integer(2)],
+        },
+        AlphaPair {
+            name: "nested new",
+            left: r#"for (@x, @y <- @"beta") { new ack in { ack!(x) | @"out"!(y) } }"#,
+            right: r#"for (@x, @y <- @"beta") { new reply in { reply!(x) | @"out"!(y) } }"#,
+            swapped: r#"for (@x, @y <- @"beta") { new ack in { ack!(y) | @"out"!(x) } }"#,
+            arrival: vec![integer(3), integer(4)],
+        },
+        AlphaPair {
+            name: "match case binder",
+            left: r#"for (@x <- @"gamma") { match x { [head, tail] => @"out"!(head, tail) } }"#,
+            right: r#"for (@x <- @"gamma") { match x { [first, rest] => @"out"!(first, rest) } }"#,
+            swapped: r#"for (@x <- @"gamma") { match x { [head, tail] => @"out"!(tail, head) } }"#,
+            arrival: vec![new_elist_par(
+                vec![integer(5), integer(6)],
+                Vec::new(),
+                false,
+                None,
+                Vec::new(),
+                false,
+            )],
+        },
+    ]
+}
+
+fn normalized(label: &str, source: &str) -> Par {
+    match rholang::rust::interpreter::compiler::compiler::Compiler::source_to_adt(source) {
+        Ok(process) => process,
+        Err(error) => panic!("{label}: the Rholang source must compile: {error:?}"),
+    }
+}
+
+fn receive_case(name: &'static str, process: &Par, arrival: &[Par]) -> Case {
+    let receive = match <[models::rhoapi::Receive; 1]>::try_from(
+        process.decode_occurrences::<models::rhoapi::Receive>(),
+    ) {
+        Ok([receive]) => receive,
+        Err(receives) => panic!("{name}: expected one receive, found {}", receives.len()),
+    };
+    assert!(
+        !receive.persistent && !receive.peek,
+        "{name}: the receive is linear and consuming"
+    );
+    let receive_bind = match <[models::rhoapi::ReceiveBind; 1]>::try_from(receive.binds) {
+        Ok([receive_bind]) => receive_bind,
+        Err(binds) => panic!("{name}: expected one bind, found {}", binds.len()),
+    };
+    let source = receive_bind
+        .source
+        .expect("a compiled receive bind carries its source");
+    Case {
+        name,
+        channels: vec![source.clone()],
+        patterns: vec![bind(
+            receive_bind.patterns,
+            receive_bind.remainder,
+            receive_bind.free_count,
+        )],
+        background: Vec::new(),
+        arrival: (source.clone(), datum(arrival.to_vec())),
+        continuation: TaggedContinuation {
+            tagged_cont: Some(models::rhoapi::tagged_continuation::TaggedCont::ParBody(
+                models::rhoapi::ParWithRandom {
+                    body: receive.body,
+                    random_state: name.as_bytes().to_vec(),
+                },
+            )),
+            guard: receive
+                .condition
+                .filter(|condition| *condition != Par::default()),
+            ..TaggedContinuation::default()
+        },
+        peeks: BTreeSet::new(),
+        expected_bindings: vec![arrival.to_vec()],
+        remaining: vec![(source, Vec::new())],
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn alpha_equivalent_receives_match_alike_in_both_directions() {
+    for pair in alpha_pairs() {
+        assert_ne!(
+            pair.left, pair.right,
+            "{}: the two sources differ in the names of bound variables",
+            pair.name
+        );
+        let left = normalized(pair.name, pair.left);
+        let right = normalized(pair.name, pair.right);
+        let swapped = normalized(pair.name, pair.swapped);
+        let left_bytes = prost::Message::encode_to_vec(&left);
+        assert_eq!(
+            left_bytes,
+            prost::Message::encode_to_vec(&right),
+            "{}: receives that differ only in bound names normalize to identical protobuf bytes",
+            pair.name
+        );
+        assert_ne!(
+            left_bytes,
+            prost::Message::encode_to_vec(&swapped),
+            "{}: swapping the uses of two bound variables changes the normalized protobuf bytes",
+            pair.name
+        );
+
+        let left_case = receive_case(pair.name, &left, &pair.arrival);
+        let right_case = receive_case(pair.name, &right, &pair.arrival);
+        for (order, direction) in [
+            ("consume last", Direction::ConsumeLast),
+            ("produce last", Direction::ProduceLast),
+        ] {
+            let left_seen = observe(Matcher, &left_case, direction).await;
+            let right_seen = observe(Matcher, &right_case, direction).await;
+            assert_eq!(
+                left_seen.selection, right_seen.selection,
+                "{}, {order}: selection",
+                pair.name
+            );
+            assert_eq!(
+                left_seen.state, right_seen.state,
+                "{}, {order}: post-state",
+                pair.name
+            );
+            assert_eq!(
+                left_seen.root, right_seen.root,
+                "{}, {order}: root",
+                pair.name
+            );
+            assert_eq!(
+                comm_trace(&left_seen.log),
+                comm_trace(&right_seen.log),
+                "{}, {order}: COMM trace",
+                pair.name
+            );
+        }
+    }
+}
