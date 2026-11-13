@@ -81,101 +81,17 @@ async fn derive_floor_context(
     .await
 }
 
-/// Replays an equivocating block so this node holds its post-state, for a
-/// block built on it. The equivocation verdict stands whatever the replay
-/// finds: a block whose state does not replay is one no honest validator
-/// builds on.
-async fn replay_equivocation(
+/// What `block`'s parents held as equivocations say about `block`. A twin is
+/// stored without its contents judged, so a block built on one is judged
+/// only once the twin is: an invalid twin makes the block invalid, and a twin
+/// that cannot be judged yet defers it for the same reason. A valid twin's
+/// judgement replays it, so its post-state is held for the block's replay.
+async fn equivocating_parents_verdict(
     this: &MultiParentCasperImpl,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
     local_validator: Option<&models::rust::validator::Validator>,
-) {
-    let floor_ctx = if block.header.parents_hash_list.is_empty() {
-        None
-    } else {
-        match derive_floor_context(this, block, snapshot).await {
-            Ok(ctx) => Some(ctx),
-            Err(error) => {
-                tracing::warn!(
-                    block = %PrettyPrinter::build_string_bytes(&block.block_hash),
-                    %error,
-                    "equivocation not replayed: its floor cannot be derived"
-                );
-                return;
-            }
-        }
-    };
-    let mut verdict = validate_block_checkpoint(
-        block,
-        &this.block_store,
-        snapshot,
-        &this.runtime_manager,
-        Some(&this.rejected_deploy_buffer),
-        floor_ctx.as_ref(),
-        local_validator,
-    )
-    .await;
-    if lacks_state(verdict.as_ref())
-        && matches!(
-            Box::pin(replay_equivocating_parents(
-                this,
-                block,
-                snapshot,
-                local_validator
-            ))
-            .await,
-            Ok(true)
-        )
-    {
-        verdict = validate_block_checkpoint(
-            block,
-            &this.block_store,
-            snapshot,
-            &this.runtime_manager,
-            Some(&this.rejected_deploy_buffer),
-            floor_ctx.as_ref(),
-            local_validator,
-        )
-        .await;
-    }
-    match verdict {
-        Ok(Either::Right(Some(_))) => {}
-        Ok(verdict) => tracing::warn!(
-            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
-            ?verdict,
-            "equivocation's state does not replay"
-        ),
-        Err(error) => tracing::warn!(
-            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
-            %error,
-            "equivocation not replayed"
-        ),
-    }
-}
-
-/// Whether a replay stopped on a state root this node does not hold, as a
-/// verdict or as a replay error.
-fn lacks_state<A>(outcome: Result<&Either<BlockError, A>, &CasperError>) -> bool {
-    match outcome {
-        Ok(verdict) => matches!(verdict, Either::Left(BlockError::AwaitingState(_))),
-        Err(error) => matches!(
-            BlockError::from_validation_error(error.clone()),
-            BlockError::AwaitingState(_)
-        ),
-    }
-}
-
-/// Replays each parent of `block` this node holds as an equivocation and
-/// whose post-state it lacks. Returns whether any of those post-states is
-/// now held.
-async fn replay_equivocating_parents(
-    this: &MultiParentCasperImpl,
-    block: &BlockMessage,
-    snapshot: &mut CasperSnapshot,
-    local_validator: Option<&models::rust::validator::Validator>,
-) -> Result<bool, CasperError> {
-    let mut replayed = false;
+) -> Result<Option<BlockError>, CasperError> {
     for parent_hash in &block.header.parents_hash_list {
         let held_as_equivocation = snapshot
             .dag
@@ -190,14 +106,32 @@ async fn replay_equivocating_parents(
                 PrettyPrinter::build_string_bytes(parent_hash)
             ))
         })?;
-        let root = Blake2b256Hash::from_bytes_prost(&parent.body.state.post_state_hash);
-        if this.runtime_manager.has_root(&root)? {
-            continue;
+        let verdict = Box::pin(validate_contents(
+            this,
+            &parent,
+            snapshot,
+            false,
+            local_validator,
+            "stored equivocation",
+        ))
+        .await?;
+        match verdict {
+            Either::Right(_) => {
+                update_mergeable_cache_after_validation(this, &parent, "stored equivocation").await;
+            }
+            Either::Left(BlockError::Invalid(reason)) => {
+                tracing::warn!(
+                    block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                    parent = %PrettyPrinter::build_string_bytes(parent_hash),
+                    ?reason,
+                    "block built on an equivocation whose contents are invalid"
+                );
+                return Ok(Some(BlockError::Invalid(InvalidBlock::InvalidParents)));
+            }
+            Either::Left(deferred) => return Ok(Some(deferred)),
         }
-        replay_equivocation(this, &parent, snapshot, local_validator).await;
-        replayed |= this.runtime_manager.has_root(&root)?;
     }
-    Ok(replayed)
+    Ok(None)
 }
 
 /// Runs the validator chain that's shared between `dispatch_validate` and
@@ -270,6 +204,35 @@ async fn run_validation_steps(
         return Ok(Either::Left(block_error));
     }
 
+    validate_contents(
+        this,
+        block,
+        snapshot,
+        skip_checkpoint_and_bonds,
+        local_validator.as_ref(),
+        &t0,
+    )
+    .await
+}
+
+/// Judges everything about `block` but whether it equivocates: its parents
+/// held as equivocations, its summary, its replay, its bonds, the
+/// equivocations it neglects and its phlo price. `equivocation_time` is the
+/// timing of the equivocation step, for the breakdown log.
+async fn validate_contents(
+    this: &MultiParentCasperImpl,
+    block: &BlockMessage,
+    snapshot: &mut CasperSnapshot,
+    skip_checkpoint_and_bonds: bool,
+    local_validator: Option<&models::rust::validator::Validator>,
+    equivocation_time: &str,
+) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    if let Some(block_error) =
+        equivocating_parents_verdict(this, block, snapshot, local_validator).await?
+    {
+        return Ok(Either::Left(block_error));
+    }
+
     // The per-validate derivation slot: block_summary fills it at the first
     // floor-consuming step; the checkpoint and bonds steps below reuse it.
     let mut floor_ctx: Option<crate::rust::finality::floor_context::FloorContext> = None;
@@ -309,7 +272,7 @@ async fn run_validation_steps(
                 Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
             }
         }
-        let checkpoint = timed_step(
+        let (validate_block_checkpoint_result, t2) = timed_step(
             "checkpoint",
             BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
             validate_block_checkpoint(
@@ -319,33 +282,10 @@ async fn run_validation_steps(
                 &this.runtime_manager,
                 Some(&this.rejected_deploy_buffer),
                 floor_ctx.as_ref(),
-                local_validator.as_ref(),
+                local_validator,
             ),
         )
-        .await;
-        // A parent this node holds as an equivocation has no post-state until
-        // a block built on it needs one.
-        let needs_parent_state = lacks_state(checkpoint.as_ref().map(|(result, _)| result));
-        let (validate_block_checkpoint_result, t2) = if needs_parent_state
-            && replay_equivocating_parents(this, block, snapshot, local_validator.as_ref()).await?
-        {
-            timed_step(
-                "checkpoint",
-                BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
-                validate_block_checkpoint(
-                    block,
-                    &this.block_store,
-                    snapshot,
-                    &this.runtime_manager,
-                    Some(&this.rejected_deploy_buffer),
-                    floor_ctx.as_ref(),
-                    local_validator.as_ref(),
-                ),
-            )
-            .await?
-        } else {
-            checkpoint?
-        };
+        .await?;
         tracing::debug!(target: "f1r3fly.casper", "transactions-validated");
         if let Either::Left(block_error) = validate_block_checkpoint_result {
             return Ok(Either::Left(block_error));
@@ -431,12 +371,12 @@ async fn run_validation_steps(
     let timing_breakdown = match (t2_opt, t3_opt) {
         (Some(t2), Some(t3)) => format!(
             "equiv={}, summary={}, checkpoint={}, bonds={}, neglected-equiv={}, phlo={}",
-            t0, t1, t2, t3, t5, t6
+            equivocation_time, t1, t2, t3, t5, t6
         ),
         _ => format!(
             "equiv={}, summary={}, neglected-equiv={}, phlo={} \
              (checkpoint and bonds-cache skipped — self-created)",
-            t0, t1, t5, t6
+            equivocation_time, t1, t5, t6
         ),
     };
     tracing::debug!(target: "f1r3fly.casper", "Validation timing breakdown: {}", timing_breakdown);

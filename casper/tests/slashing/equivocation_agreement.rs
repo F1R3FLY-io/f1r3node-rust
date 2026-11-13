@@ -667,3 +667,76 @@ async fn a_block_built_on_an_equivocation_replays_it_on_demand() {
     accept(&mut nodes[1], &built_on_sibling, "v1 judges v2's block").await;
     assert!(holds_post_state(&nodes[1], &sibling));
 }
+
+/// v0 signs b1 and a twin t that carries other deploys but declares b1's
+/// post-state; v2 builds c on t. v3 receives t first and refuses it on its
+/// contents. v1 holds b1 first and t as the equivocation, so it judges t's
+/// contents when c needs them, and refuses c.
+#[serial_test::serial]
+#[tokio::test]
+async fn a_block_built_on_an_invalid_twin_is_held_by_no_node() {
+    let (mut nodes, shard_id) = network(4, None).await;
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
+    let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(100, &shard_id)])
+        .await
+        .expect("sibling");
+    let mut forged = sibling.clone();
+    forged.body.state.post_state_hash = b1.body.state.post_state_hash.clone();
+    let t = nodes[0]
+        .validator_id_opt
+        .as_ref()
+        .expect("v0 identity")
+        .sign_block(&forged);
+
+    accept(&mut nodes[2], &b1, "v2 accepts b1").await;
+    let built = nodes[2]
+        .create_block_unsafe(&[deploy(10, &shard_id)])
+        .await
+        .expect("v2 block");
+    assert!(built.header.parents_hash_list.contains(&b1.block_hash));
+    let mut on_t = built.clone();
+    for parent in on_t.header.parents_hash_list.iter_mut() {
+        if *parent == b1.block_hash {
+            *parent = t.block_hash.clone();
+        }
+    }
+    for justification in on_t.justifications.iter_mut() {
+        if justification.validator == b1.sender {
+            justification.latest_block_hash = t.block_hash.clone();
+        }
+    }
+    let c = nodes[2]
+        .validator_id_opt
+        .as_ref()
+        .expect("v2 identity")
+        .sign_block(&on_t);
+
+    let v3_t = nodes[3].process_block(t.clone()).await.expect("v3 t");
+    assert!(
+        matches!(v3_t, Either::Left(BlockError::Invalid(_))),
+        "v3 receives t first and refuses it on its contents: {v3_t:?}"
+    );
+
+    accept(&mut nodes[1], &b1, "v1 accepts b1").await;
+    let v1_t = nodes[1].process_block(t.clone()).await.expect("v1 t");
+    assert!(
+        is_equivocation(&v1_t),
+        "v1 holds t as the equivocation: {v1_t:?}"
+    );
+    let v1_c = nodes[1].process_block(c.clone()).await.expect("v1 c");
+    assert!(
+        matches!(
+            v1_c,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidParents))
+        ),
+        "v1 refuses c, built on a twin whose contents are invalid: {v1_c:?}"
+    );
+    assert_eq!(
+        held_pair(&nodes[1], &c.block_hash),
+        None,
+        "v1 does not hold c"
+    );
+}
