@@ -44,6 +44,134 @@ Theorem adversarial_fixtures_are_non_vacuous :
   reverse_payloads_tree topology_only_comb = [].
 Proof. vm_compute. auto. Qed.
 
+(** Run fixtures of barrier-free Phase B.  The frames list the ancestors of the
+    leaf being removed, from its parent up to the zipper root (the last frame),
+    with the children each one holds to the left of the removed path.
+    [forked_spine]: the parent forks (a line of eight edges to the left).
+    [valued_spine]: the parent holds a real value.
+    [unary_spine]: two value-free single-child parents below a fork. *)
+Definition forked_spine : list run_frame :=
+  [RunFrame None (FCons (topology_line 8) FNil); RunFrame None FNil].
+
+Definition valued_spine : list run_frame :=
+  [RunFrame (Some (SetMember 40)) FNil; RunFrame None FNil; RunFrame None FNil].
+
+Definition unary_spine : list run_frame :=
+  [RunFrame None FNil; RunFrame None FNil;
+   RunFrame None (FCons topology_leaf FNil); RunFrame None FNil].
+
+Theorem barrier_free_run_fixtures_are_non_vacuous :
+  barrier_free_run None forked_spine = [RunStep OneBytePrune 1 []] /\
+  barrier_free_run None valued_spine = [RunStep OneBytePrune 1 []] /\
+  barrier_free_run None unary_spine =
+    [RunStep BranchCut 1 []; RunStep BranchCut 1 []; RunStep OneBytePrune 1 []].
+Proof. vm_compute. auto. Qed.
+
+Lemma a_failing_step_refutes_the_run : forall steps step,
+  In step steps -> ~ run_step_is_one_edge_without_payload_loss step ->
+  ~ Forall run_step_is_one_edge_without_payload_loss steps.
+Proof.
+  intros steps step member failing all_steps.
+  apply failing. exact (proj1 (Forall_forall _ _) all_steps step member).
+Qed.
+
+(** Mutant: the branch cut is also chosen below a fork.  [remove_branches]
+    at the fork then detaches every left sibling subtree with the child's
+    edge: ten logical edges in one step on [forked_spine]. *)
+Definition mutant_fork_cut_policy (view : step_view) : phase_b_step_kind :=
+  if frame_is_root (view_parent view) ||
+     holds_payload (frame_cell (view_parent view))
+  then OneBytePrune else BranchCut.
+
+Theorem kill_cut_at_forking_parent :
+  barrier_free_run_with mutant_fork_cut_policy None forked_spine =
+    [RunStep BranchCut 10 []; RunStep OneBytePrune 1 []] /\
+  ~ Forall run_step_is_one_edge_without_payload_loss
+      (barrier_free_run_with mutant_fork_cut_policy None forked_spine).
+Proof.
+  assert (computed :
+    barrier_free_run_with mutant_fork_cut_policy None forked_spine =
+      [RunStep BranchCut 10 []; RunStep OneBytePrune 1 []])
+    by (vm_compute; reflexivity).
+  split; [exact computed|]. rewrite computed.
+  apply (a_failing_step_refutes_the_run _ (RunStep BranchCut 10 []));
+    [left; reflexivity|].
+  intros [edges _]. discriminate edges.
+Qed.
+
+(** Mutant: the branch cut is also chosen below a valued parent.  The run then
+    goes on above that parent, now a valued leaf, and the next cut drops the
+    real value [SetMember 40] instead of leaving it to Phase A's disposer. *)
+Definition mutant_valued_cut_policy (view : step_view) : phase_b_step_kind :=
+  if frame_is_root (view_parent view) ||
+     match view_left_children view with FNil => false | FCons _ _ => true end
+  then OneBytePrune else BranchCut.
+
+Theorem kill_cut_at_valued_parent :
+  barrier_free_run_with mutant_valued_cut_policy None valued_spine =
+    [RunStep BranchCut 1 []; RunStep BranchCut 1 [SetMember 40];
+     RunStep OneBytePrune 1 []] /\
+  ~ Forall run_step_is_one_edge_without_payload_loss
+      (barrier_free_run_with mutant_valued_cut_policy None valued_spine).
+Proof.
+  assert (computed :
+    barrier_free_run_with mutant_valued_cut_policy None valued_spine =
+      [RunStep BranchCut 1 []; RunStep BranchCut 1 [SetMember 40];
+       RunStep OneBytePrune 1 []])
+    by (vm_compute; reflexivity).
+  split; [exact computed|]. rewrite computed.
+  apply (a_failing_step_refutes_the_run _
+    (RunStep BranchCut 1 [SetMember 40])); [right; left; reflexivity|].
+  intros [_ dropped]. discriminate dropped.
+Qed.
+
+(** Mutant: the stopping prune is not bounded to one byte.  It climbs past
+    the stopping parent up to the zipper root and detaches every branch it
+    passes: on [forked_spine] the one step below the fork removes all eleven
+    logical edges of the trie. *)
+Fixpoint unbounded_prune_edges (frames : list run_frame) : nat :=
+  match frames with
+  | [] => 0
+  | frame :: higher =>
+      S (match higher with
+         | [] => 0
+         | _ :: _ =>
+             forest_edges (run_frame_left frame) + unbounded_prune_edges higher
+         end)
+  end.
+
+Fixpoint mutant_unbounded_prune_run (current : option payload)
+    (frames : list run_frame) : list run_step :=
+  match frames with
+  | [] => []
+  | frame :: higher =>
+      match barrier_free_step_kind (run_view frame higher) with
+      | BranchCut =>
+          RunStep BranchCut
+            (step_detached_edges BranchCut (run_view frame higher))
+            (option_list current ++
+              reverse_payloads_forest (run_frame_left frame)) ::
+          mutant_unbounded_prune_run (run_frame_cell frame) higher
+      | OneBytePrune => [RunStep OneBytePrune (unbounded_prune_edges frames) []]
+      end
+  end.
+
+Theorem kill_unbounded_stopping_prune :
+  mutant_unbounded_prune_run None forked_spine =
+    [RunStep OneBytePrune 11 []] /\
+  ~ Forall run_step_is_one_edge_without_payload_loss
+      (mutant_unbounded_prune_run None forked_spine).
+Proof.
+  assert (computed :
+    mutant_unbounded_prune_run None forked_spine =
+      [RunStep OneBytePrune 11 []])
+    by (vm_compute; reflexivity).
+  split; [exact computed|]. rewrite computed.
+  apply (a_failing_step_refutes_the_run _ (RunStep OneBytePrune 11 []));
+    [left; reflexivity|].
+  intros [edges _]. discriminate edges.
+Qed.
+
 (** Mutant: enumerate only stored values.  Topology-only leaves and tails are
     then invisible and remain owned by recursive PathMap Drop. *)
 Definition mutant_value_only_prune_widths (subject : trie) : list nat :=
@@ -54,7 +182,12 @@ Theorem kill_value_only_walk_on_topology_only_comb :
   prune_widths (drain_tree topology_only_comb).
 Proof. vm_compute. discriminate. Qed.
 
-(** Mutant: an absent parent is not guarded, so one detach spans two logical
+(** Controls of the live removal path's barrier step [prune_segment], which
+    keeps its barriers.  Until the barrier-free remedy they were Phase B
+    controls; Phase B now installs no barrier, and its own controls are the
+    three mutants above.
+
+    Mutant: an absent parent is not guarded, so one detach spans two logical
     edges instead of the exact immediate child edge. *)
 Definition mutant_missing_barrier : list teardown_event := [PruneSpan 2].
 
@@ -570,11 +703,25 @@ Proof.
     apply every_quarantine_mutant_has_a_causal_counterexample.
 Qed.
 
+(** Three entries were retired when Phase B became barrier-free: they were
+    wrong barrier segments of Phase B, which no longer has a barrier.  Their
+    kill theorems [kill_missing_immediate_parent_barrier],
+    [kill_wrong_level_or_late_barrier] and [kill_real_parent_value_overwrite]
+    stay as controls of the live removal path's step [prune_segment].
+    [CutAtForkingParent], [CutAtValuedParent] and [UnboundedStoppingPrune]
+    take their registry positions.  The retired bindings were:
+
+    | MissingBarrier => ~ branch_safe_segment false mutant_missing_barrier
+    | WrongLevelBarrier =>
+        ~ branch_safe_segment false mutant_wrong_level_barrier
+    | OverwriteRealParent =>
+        ~ branch_safe_segment true mutant_overwrite_real_parent
+*)
 Inductive teardown_mutant : Type :=
 | ValueOnlyWalk
-| MissingBarrier
-| WrongLevelBarrier
-| OverwriteRealParent
+| CutAtForkingParent
+| CutAtValuedParent
+| UnboundedStoppingPrune
 | RecursiveRemoveValuePrune
 | SkippedPayload
 | DuplicatedPayload
@@ -600,7 +747,7 @@ Inductive teardown_mutant : Type :=
 | ErrorPrecedenceInversion.
 
 Definition all_teardown_mutants : list teardown_mutant :=
-  [ValueOnlyWalk; MissingBarrier; WrongLevelBarrier; OverwriteRealParent;
+  [ValueOnlyWalk; CutAtForkingParent; CutAtValuedParent; UnboundedStoppingPrune;
    RecursiveRemoveValuePrune; SkippedPayload; DuplicatedPayload;
    RootPayloadOmission; CompressedInternalValueOmission;
    DelayedPhaseADisposal; RetainAllPhaseAValues;
@@ -618,11 +765,15 @@ Definition teardown_mutant_killed (mutant : teardown_mutant) : Prop :=
   | ValueOnlyWalk =>
       mutant_value_only_prune_widths topology_only_comb <>
       prune_widths (drain_tree topology_only_comb)
-  | MissingBarrier => ~ branch_safe_segment false mutant_missing_barrier
-  | WrongLevelBarrier =>
-      ~ branch_safe_segment false mutant_wrong_level_barrier
-  | OverwriteRealParent =>
-      ~ branch_safe_segment true mutant_overwrite_real_parent
+  | CutAtForkingParent =>
+      ~ Forall run_step_is_one_edge_without_payload_loss
+          (barrier_free_run_with mutant_fork_cut_policy None forked_spine)
+  | CutAtValuedParent =>
+      ~ Forall run_step_is_one_edge_without_payload_loss
+          (barrier_free_run_with mutant_valued_cut_policy None valued_spine)
+  | UnboundedStoppingPrune =>
+      ~ Forall run_step_is_one_edge_without_payload_loss
+          (mutant_unbounded_prune_run None forked_spine)
   | RecursiveRemoveValuePrune =>
       prune_widths mutant_remove_value_with_recursive_prune <> [1]
   | SkippedPayload =>
@@ -705,9 +856,9 @@ Theorem every_teardown_mutant_has_a_causal_counterexample : forall mutant,
 Proof.
   intro mutant. destruct mutant; cbn.
   - apply kill_value_only_walk_on_topology_only_comb.
-  - apply kill_missing_immediate_parent_barrier.
-  - apply kill_wrong_level_or_late_barrier.
-  - apply kill_real_parent_value_overwrite.
+  - exact (proj2 kill_cut_at_forking_parent).
+  - exact (proj2 kill_cut_at_valued_parent).
+  - exact (proj2 kill_unbounded_stopping_prune).
   - apply kill_remove_value_with_recursive_prune.
   - apply kill_skipped_payload.
   - apply kill_duplicated_payload.
@@ -772,5 +923,10 @@ Print Assumptions teardown_mutant_registry_is_unique_and_complete.
 Print Assumptions kill_retain_all_phase_a_values_memory_slope.
 Print Assumptions teardown_mutant_registry_has_exactly_twenty_seven_entries.
 Print Assumptions teardown_mutant_registry_is_unique_complete_and_exact.
+Print Assumptions barrier_free_run_fixtures_are_non_vacuous.
+Print Assumptions a_failing_step_refutes_the_run.
+Print Assumptions kill_cut_at_forking_parent.
+Print Assumptions kill_cut_at_valued_parent.
+Print Assumptions kill_unbounded_stopping_prune.
 
 End PathMapReversePruneTeardownMutants.

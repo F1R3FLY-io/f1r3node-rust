@@ -2864,6 +2864,11 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
     let rocq =
         read_repository_file("formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardown.v");
     for marker in [
+        "Theorem every_barrier_free_step_detaches_exactly_one_logical_edge",
+        "Theorem barrier_free_segment_installs_no_barrier",
+        "Theorem phase_b_emits_one_prune_event_per_logical_edge_and_nothing_else",
+        "Theorem phase_b_writes_no_value",
+        "Theorem every_run_cuts_up_to_its_first_stopping_parent_and_prunes_there",
         "Theorem drain_detaches_originals_exactly_once_in_reverse_postorder",
         "Theorem drain_prunes_every_logical_edge_once",
         "Corollary topology_adversaries_are_drained_edge_by_edge",
@@ -2874,6 +2879,13 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         "Theorem every_campaign_owned_exit_drains_before_release",
         "Theorem invariant_catalog_has_exactly_twenty_five_entries",
         "Theorem campaign_branch_safe_pathmap_teardown_capstone",
+        "Module BarrierFreeNodeRefinement.",
+        "Definition pathmap_premises (focus : zipper_focus) : Prop :=",
+        "Theorem one_slot_carries_the_cut",
+        "Theorem the_cut_is_bounded",
+        "Theorem the_stopping_cut_is_one_byte",
+        "Theorem every_barrier_free_cut_fits_the_stack_bound",
+        "Theorem measured_frame_costs_give_the_recursive_bound",
     ] {
         assert!(
             rocq.contains(marker),
@@ -2892,6 +2904,10 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         "kill_unregistered_make_mut_raw_header",
         "kill_early_pending_writer_or_iterator_drop",
         "kill_recursive_par_disposal",
+        "barrier_free_run_fixtures_are_non_vacuous",
+        "kill_cut_at_forking_parent",
+        "kill_cut_at_valued_parent",
+        "kill_unbounded_stopping_prune",
         "every_teardown_mutant_has_a_causal_counterexample",
         "teardown_mutant_registry_has_exactly_twenty_seven_entries",
     ] {
@@ -2983,8 +2999,8 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         );
     }
     for (theory, count) in [
-        ("theories/PathMapReversePruneTeardown.v", "32"),
-        ("theories/PathMapReversePruneTeardownMutants.v", "13"),
+        ("theories/PathMapReversePruneTeardown.v", "165"),
+        ("theories/PathMapReversePruneTeardownMutants.v", "18"),
     ] {
         assert!(
             has_runner_command(&runner, &["rocq_compile_with_closed_count", theory, count]),
