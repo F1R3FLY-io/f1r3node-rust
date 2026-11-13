@@ -322,7 +322,7 @@ $(awk '
     # fail. Caught by mutation testing; a guard defeated by its own
     # documentation is worse than no guard, because it reports ok.
     /^      - (name|uses):/ { flush(); start = NR }
-    /inputs\.checkout_repository/                       { is_fork = 1 }
+    /^[[:space:]]*repository:.*inputs\.checkout_repository/ { is_fork = 1 }
     /^[[:space:]]*persist-credentials:[[:space:]]*false/     { has_persist = 1 }
     /^[[:space:]]*allow-unsafe-pr-checkout:[[:space:]]*true/ { has_optin = 1 }
     END { flush() }

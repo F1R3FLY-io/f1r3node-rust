@@ -59,7 +59,7 @@ Writer source references:
 - [DAG storage](../../block-storage/src/rust/dag/block_dag_key_value_storage.rs) and [metadata store](../../block-storage/src/rust/dag/block_metadata_store.rs).
 - [Equivocation store](../../block-storage/src/rust/dag/equivocation_tracker_store.rs), [detector](../../casper/src/rust/equivocation_detector.rs), and [validation dispatch](../../casper/src/rust/engine/multi_parent_casper/validation_dispatcher.rs).
 - [Floor derivation](../../casper/src/rust/finality/floor.rs), [lifecycle store](../../block-storage/src/rust/dag/deploy_lifecycle_types.rs), [lifecycle evaluation](../../casper/src/rust/finality/deploy_lifecycle.rs), and [carrier index](../../block-storage/src/rust/dag/carrier_index.rs).
-- [Legacy migration](../../block-storage/src/rust/finality/last_finalized_key_value_storage.rs) and [startup setup](../../node/src/rust/runtime/setup.rs).
+- [Legacy migration](https://github.com/F1R3FLY-io/f1r3node-rust/blob/6d6d4fed6f84baa0913d8e87f32a7ffe2e0ca59a/block-storage/src/rust/finality/last_finalized_key_value_storage.rs) and [startup setup](../../node/src/rust/runtime/setup.rs).
 - [Genesis engine](../../casper/src/rust/engine/engine.rs), [restore engine](../../casper/src/rust/engine/initializing.rs), and [block restore](../../casper/src/rust/engine/lfs_block_requester.rs).
 - [Runtime manager](../../casper/src/rust/util/rholang/runtime_manager.rs) and [mergeable-cache collection](../../casper/src/rust/util/mergeable_channels_gc.rs).
 
