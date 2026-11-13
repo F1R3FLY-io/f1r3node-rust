@@ -28,6 +28,8 @@ ci.fetch("jobs").each do |name, job|
     abort "#{name} must check out the resolved event or exact-target revision" unless ref == expected
   end
 end
+policy = ci.dig("jobs", "commit_policy", "steps").find { |step| step["name"] == "Verify commit identities in pull request commits" }
+abort "Commit Policy must use GitHub's proposed merge revision" unless policy&.dig("env", "MERGE_SHA") == "${{ github.sha }}"
 pipeline = ci.dig("jobs", "pipeline")
 abort "CI must call the reusable workflow from its own revision" unless pipeline["uses"] == "./.github/workflows/_integration-pipeline.yml"
 abort "the reusable pipeline must receive the resolved target" unless pipeline.dig("with", "checkout_ref") == "${{ needs.build_base.outputs.TARGET_SHA }}"

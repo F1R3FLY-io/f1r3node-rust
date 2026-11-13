@@ -348,6 +348,12 @@ The fuzz lockfile now uses the workspace pin, `ad15ad2b10c2e9aeb2857f5e27f7de8f7
 The repository formatter corrects the 52 remaining branch files. Workspace and soak-chart formatting checks now pass without a skip.
 The full `scripts/ci/check-supply-chain.sh check` command passes for the workspace, fuzz crate, and soak charts.
 
-Commit Policy rejects imported Mergify commits because the `ca-canary` base lacks the source validator. No sync PR was open during this check.
-The existing `just ca-sync` workflow must transfer accepted `dev` history and policy before this ordinary PR can use them.
-The [Commit Policy guide](../../ci.md#commit-policy) describes the trusted transfer route.
+The earlier missing-policy diagnosis was incorrect. [Sync PR #1006](https://github.com/F1R3FLY-io/f1r3node-rust/pull/1006) transferred the policy into `ca-canary` at `176c0a9568666d163ca68851fa63cf69b4ef87a7`.
+The failed job checked out a merge against that commit. Its PR payload still named the October base, `78a4c4293e00d3c85f1abd848f89f1f64c18e739`.
+
+Commit Policy now reads its trusted base from the proposed merge's first parent and verifies the second parent against the event head.
+The stale-base regression failed before this change and passes afterward. Transfer, denied-identity, and untrusted-head checks remain enforced.
+The [Commit Policy guide](../../ci.md#commit-policy) describes the merge-parent selection and trusted transfer route.
+
+Checking PR #958 against the corrected base and its existing author exemptions still rejects 330 commits from one contributor identity.
+Those commits need the existing ratification process. The workflow fix preserves identity eligibility.

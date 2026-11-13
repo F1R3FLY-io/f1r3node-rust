@@ -483,6 +483,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_SHA: ${{ github.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -492,7 +493,17 @@ jobs:
         run: |
           unshallow=()
           if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
-          git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
+          [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$MERGE_SHA" "$HEAD_SHA"
+          event_base_sha="$BASE_SHA"
+          read -r merge_base_sha merge_head_sha extra_parent <<< "$(git show -s --format=%P "$MERGE_SHA")"
+          if ! [[ "$merge_base_sha" =~ ^[0-9a-f]{40}$ ]] ||
+            [ "$merge_head_sha" != "$HEAD_SHA" ] || [ -n "$extra_parent" ]; then
+            echo '::error::The proposed merge revision does not match the pull request head.'
+            exit 1
+          fi
+          BASE_SHA="$merge_base_sha"
+          echo "Commit Policy uses merge target $BASE_SHA from $MERGE_SHA."
           source_validator="$RUNNER_TEMP/commit-policy-source.sh"
           policy_revision="$BASE_SHA"
           source_branch=
@@ -514,7 +525,7 @@ jobs:
               '[.base.repo.full_name, .head.repo.full_name, .base.ref, .head.ref, .base.sha, .head.sha, .user.login, .user.type] | @tsv')"
             expected="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
               "$GITHUB_REPOSITORY" "$GITHUB_REPOSITORY" "$BASE_REF" "$HEAD_REF" \
-              "$BASE_SHA" "$HEAD_SHA" "$PR_AUTHOR" "$PR_AUTHOR_TYPE")"
+              "$event_base_sha" "$HEAD_SHA" "$PR_AUTHOR" "$PR_AUTHOR_TYPE")"
             if [ "$metadata" != "$expected" ]; then
               echo '::error::The transfer metadata does not match the workflow event.'
               exit 1

@@ -79,9 +79,14 @@ fixture() {
 }
 
 run() {
+	local merge_sha
+	merge_sha="$(git -C "$TMP/repo" commit-tree "$HEAD_SHA^{tree}" \
+		-p "${MERGE_BASE_SHA:-$BASE_SHA}" -p "${MERGE_HEAD_SHA:-$HEAD_SHA}" -m proposed-merge)"
+	git -C "$TMP/repo" push -q --force origin "$merge_sha:refs/pull/20/merge"
 	set +e
-	(cd "$TMP/repo" && env PATH="$TMP/bin:$PATH" FIXTURE_DIR="$TMP" \
+	(cd "${CHECKOUT_REPO:-$TMP/repo}" && env PATH="$TMP/bin:$PATH" FIXTURE_DIR="$TMP" \
 		GITHUB_REPOSITORY=example/repo PR_NUMBER=20 BASE_SHA="$BASE_SHA" HEAD_SHA="$HEAD_SHA" \
+		MERGE_SHA="$merge_sha" \
 		BASE_REF="$BASE_REF" HEAD_REF="$HEAD_REF" PR_AUTHOR="$PR_AUTHOR" PR_AUTHOR_TYPE="$PR_AUTHOR_TYPE" \
 		RUNNER_TEMP="$TMP/runner" EXPECTED_SOURCE=dev VALIDATOR_MARKER="$TMP/untrusted-ran" \
 		"$@" bash -euo pipefail "$TMP/check.sh" >"$TMP/out" 2>"$TMP/err")
@@ -244,5 +249,28 @@ BASE_SHA="$ACCEPTED"
 fixture
 run
 [ "$status" -eq 0 ] || fail 'an established target policy was replaced by source policy'
+
+BASE_SHA="$BASE"
+HEAD_REF=fix/ordinary
+PR_AUTHOR=maintainer
+PR_AUTHOR_TYPE=User
+fixture
+MERGE_BASE_SHA="$ACCEPTED" run
+[ "$status" -eq 0 ] || { cat "$TMP/out" "$TMP/err"; fail 'stale PR base metadata replaced the accepted merge target policy'; }
+grep -Fq "merge target $ACCEPTED" "$TMP/out" || fail 'the actual policy base was not reported'
+
+merge_sha="$(git -C "$TMP/origin.git" rev-parse refs/pull/20/merge)"
+git init -q "$TMP/shallow"
+git -C "$TMP/shallow" remote add origin "$TMP/origin.git"
+git -C "$TMP/shallow" fetch -q --depth=1 origin "$merge_sha"
+git -C "$TMP/shallow" -c core.hooksPath=/dev/null checkout -q --detach FETCH_HEAD
+[ "$(git -C "$TMP/shallow" rev-parse --is-shallow-repository)" = true ] || fail 'the shallow fixture has full history'
+MERGE_BASE_SHA="$ACCEPTED" CHECKOUT_REPO="$TMP/shallow" run
+[ "$status" -eq 0 ] || { cat "$TMP/out" "$TMP/err"; fail 'a shallow checkout did not resolve the accepted merge target'; }
+
+MERGE_BASE_SHA="$ACCEPTED" MERGE_HEAD_SHA="$BASE" run
+[ "$status" -ne 0 ] || fail 'a merge revision for another PR head passed'
+run MERGE_SHA="$HEAD_SHA"
+[ "$status" -ne 0 ] || fail 'a PR head commit was accepted as its proposed merge'
 
 printf 'PASS: workflow transfers use verified shared source policy and preserve identity restrictions.\n'

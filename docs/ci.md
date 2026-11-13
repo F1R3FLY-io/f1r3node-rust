@@ -139,6 +139,12 @@ The job verifies commit identities in pull requests. It reads the pull request h
 
 Ordinary pull requests use the base commit's checker and denied identities list. Before these files reach the base branch, the step uses the copies in the pull request. Approved workflow transfers can use verified source policy as described below.
 
+The policy base is the first parent of GitHub's proposed merge commit, pinned by `github.sha`.
+The job requires two parents and verifies that the second matches the event's PR head.
+PR payload metadata can retain an older base SHA after the target branch advances.
+The original payload base SHA serves only transfer metadata checks.
+The resolved merge target selects trusted policy, ratified history, and the checked commit range.
+
 `.github/scripts/commit-policy-exemptions.sh` lists the exempt commits: the commits of a human pull request author, and the contributor commits of an imported fork pull request. The step runs the base copy of that script.
 
 Approved branch transfers can also use source history to ratify identities. This prevents a target branch from rejecting authors already accepted on the source.
