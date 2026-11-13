@@ -2875,6 +2875,288 @@ pub proof fn lemma_message_child_complete_extract(
     lemma_message_child_complete_frames(before, after, action);
 }
 
+pub proof fn lemma_map_key_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMapKey,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let map_top = before_frames.last();
+            let keyed_top = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len()
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& map_top.frame_kind == 2
+            &&& keyed_top.frame_kind == map_top.frame_kind
+            &&& keyed_top.region_end == map_top.region_end
+            &&& keyed_top.slot_count == map_top.slot_count
+            &&& keyed_top.returns == map_top.returns
+            &&& map_top.cursor < keyed_top.cursor
+            &&& keyed_top.cursor <= map_top.region_end
+            &&& map_top.slot_count == 2
+            &&& keyed_top.last_slot == Some(0usize)
+            &&& map_top.last_slot is None
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MapKey, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && crate::live_runtime_product_map_key_step(product, next)) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            assert(crate::live_source_product_map_key_step(product.source, next.source));
+            let field = wire_source::wire_source_next_field(
+                product.source.wire.last().unwrap(),
+            )->field;
+            let key = map::IntegratedAdmissionAction::MapKey { field };
+            assert(crate::product_map_step(old, new, key));
+            assert(map::integrated_admission_driver_step(old.map, key)
+                == Some(map::IntegratedAdmissionOutcome::MapKeyContinued { state: new.map }));
+            let frame = old.map.map_frames[old.map.admission.frames.len() - 1].unwrap();
+            let keyed = map::map_admission_key_continue(frame, old.map.admission, field).unwrap();
+            assert(new.bridge.admission == keyed.1);
+            assert(keyed.1 == admission::admission_continue_step(
+                old.map.admission, field.encoded_end, 0, false, 1,
+            ).unwrap());
+            assert(new.bridge.transcript == old.bridge.transcript);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_map_key_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMapKey,
+    ensures
+        field_step(before, after),
+        state_frames(before).last().frame_kind == 2,
+{
+    hide(dispatcher::integrated_step);
+    lemma_map_key_frames(before, after, action);
+}
+
+pub proof fn lemma_map_value_push_plain_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMapValuePush,
+        action->route is Plain,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let map_top = before_frames.last();
+            let map_parent = after_frames[before_frames.len() - 1];
+            let value_child = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len() + 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& map_top.frame_kind == 2
+            &&& map_parent.frame_kind == map_top.frame_kind
+            &&& map_parent.region_end == map_top.region_end
+            &&& value_child.frame_kind == 1
+            &&& value_child.cursor == 0
+            &&& value_child.last_slot is None
+            &&& value_child.returns.len() == 0
+            &&& value_child.region_end <= map_top.region_end
+            &&& map_parent.slot_count == map_top.slot_count
+            &&& map_parent.returns == map_top.returns
+            &&& map_top.cursor < map_parent.cursor
+            &&& map_parent.cursor <= map_top.region_end
+            &&& map_top.slot_count == 2
+            &&& map_parent.last_slot == Some(1usize)
+            &&& map_top.last_slot != Some(1usize)
+            &&& slot_order_kept(map_top.last_slot, 1usize)
+            &&& map_parent.waiting_slot == Some(1usize)
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MapValuePush {
+                request, actual_top_kind, after_len, after_capacity, stats_frame_variant_bytes,
+            },
+            route: dispatcher::IntegratedPushRoute::Plain,
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && dispatcher::integrated_map_value_push_route_step(
+                    product, next, request, actual_top_kind, after_len, after_capacity,
+                    stats_frame_variant_bytes, dispatcher::IntegratedPushRoute::Plain,
+                )) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            let frame_bytes = product.source.runtime.frame_bytes;
+            let value = map::IntegratedAdmissionAction::MapValue {
+                field: request.field,
+                child: request.child,
+                frame_bytes,
+            };
+            assert(crate::product_map_step(old, new, value));
+            assert(map::integrated_admission_driver_step(old.map, value)
+                == Some(map::IntegratedAdmissionOutcome::MapValuePushed { state: new.map }));
+            let frame = old.map.map_frames[old.map.admission.frames.len() - 1].unwrap();
+            let pushed = map::map_admission_value_push(
+                frame, old.map.admission, request.field, request.child, frame_bytes,
+            ).unwrap();
+            assert(new.bridge.admission == pushed.1);
+            assert(pushed.1 == admission::admission_push_step(
+                old.map.admission, request.field.encoded_end, request.child, 1, false, 2,
+                frame_bytes,
+            ).unwrap());
+            assert(new.bridge.transcript == old.bridge.transcript);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_map_value_push_indexed_frames(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMapValuePush,
+        action->route is Indexed,
+    ensures
+        ({
+            let before_frames = state_frames(before);
+            let after_frames = state_frames(after);
+            let map_top = before_frames.last();
+            let map_parent = after_frames[before_frames.len() - 1];
+            let value_child = after_frames.last();
+            &&& after is Active
+            &&& state_score_len(after) == state_score_len(before)
+            &&& before_frames.len() > 0
+            &&& after_frames.len() == before_frames.len() + 1
+            &&& lower_frames_kept(before_frames, after_frames, before_frames.len() - 1)
+            &&& map_top.frame_kind == 2
+            &&& map_parent.frame_kind == map_top.frame_kind
+            &&& map_parent.region_end == map_top.region_end
+            &&& value_child.frame_kind == 1
+            &&& value_child.cursor == 0
+            &&& value_child.last_slot is None
+            &&& value_child.returns.len() == 0
+            &&& value_child.region_end <= map_top.region_end
+            &&& map_parent.slot_count == map_top.slot_count
+            &&& map_parent.returns == map_top.returns
+            &&& map_top.cursor < map_parent.cursor
+            &&& map_parent.cursor <= map_top.region_end
+            &&& map_top.slot_count == 2
+            &&& map_parent.last_slot == Some(1usize)
+            &&& map_top.last_slot != Some(1usize)
+            &&& slot_order_kept(map_top.last_slot, 1usize)
+            &&& map_parent.waiting_slot == Some(1usize)
+        }),
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MapValuePush {
+                request, actual_top_kind, after_len, after_capacity, stats_frame_variant_bytes,
+            },
+            route: dispatcher::IntegratedPushRoute::Indexed,
+        } => {
+            let product = before->product;
+            let next = after->product;
+            assert(before is Active && after is Active
+                && dispatcher::integrated_kind_guard(product, action)
+                && dispatcher::integrated_map_value_push_route_step(
+                    product, next, request, actual_top_kind, after_len, after_capacity,
+                    stats_frame_variant_bytes, dispatcher::IntegratedPushRoute::Indexed,
+                )) by {
+                reveal(dispatcher::integrated_step);
+            }
+            let old = product.source.product;
+            let new = next.source.product;
+            let frame_bytes = product.source.runtime.frame_bytes;
+            let parent_source = crate::product_admission_source_image(old.indexed_regions.last());
+            let value = map::IntegratedAdmissionAction::MapValueIndexed {
+                field: request.field,
+                child: request.child,
+                parent_source,
+                frame_bytes,
+            };
+            assert(crate::product_map_step(old, new, value));
+            assert(map::integrated_admission_driver_step(old.map, value)
+                == Some(map::IntegratedAdmissionOutcome::MapValuePushed { state: new.map }));
+            let frame = old.map.map_frames[old.map.admission.frames.len() - 1].unwrap();
+            let pushed = map::map_admission_value_push_indexed(
+                frame, old.map.admission, request.field, request.child, parent_source,
+                frame_bytes,
+            ).unwrap();
+            assert(new.bridge.admission == pushed.1);
+            assert(pushed.1 == admission::admission_push_step(
+                old.map.admission, request.field.encoded_end, request.child, 1, false, 2,
+                frame_bytes,
+            ).unwrap());
+            assert(new.bridge.transcript == old.bridge.transcript);
+        },
+        _ => {},
+    }
+}
+
+pub proof fn lemma_map_value_push_extract(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveMapValuePush,
+    ensures
+        push_step(before, after),
+        state_frames(before).last().frame_kind == 2,
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MapValuePush { .. },
+            route: dispatcher::IntegratedPushRoute::Plain,
+        } => {
+            lemma_map_value_push_plain_frames(before, after, action);
+        },
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::MapValuePush { .. },
+            route: dispatcher::IntegratedPushRoute::Indexed,
+        } => {
+            lemma_map_value_push_indexed_frames(before, after, action);
+        },
+        _ => {},
+    }
+}
+
 pub proof fn lemma_accept_shape_refines(
     before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
     score_len: nat, score_after: nat,
