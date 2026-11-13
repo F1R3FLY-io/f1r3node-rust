@@ -379,6 +379,7 @@ mod tests {
             Status::resource_exhausted("full"),
             &IntakeError::QueueFull {
                 retry_after_secs: 12,
+                cause: crate::error::Congestion::Shard,
             },
         );
         assert_eq!(status.metadata().get("retry-after").unwrap(), "12");

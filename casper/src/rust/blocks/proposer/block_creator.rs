@@ -28,6 +28,7 @@ use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
 use shared::rust::blocking::in_blocking;
+use shared::rust::shared::f1r3fly_event::DeployAdmission;
 use tracing;
 
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -3040,8 +3041,10 @@ pub async fn create_with_progress(
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
 
     // Prepare deploys
-    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
-        (HashSet::new(), 0usize, false)
+    let (user_deploys, deploy_admission) = if selection
+        == super::proposer::DeploySelection::RecoveryEmpty
+    {
+        (HashSet::new(), None)
     } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
@@ -3223,7 +3226,15 @@ pub async fn create_with_progress(
         );
         metrics::histogram!(BLOCK_CREATOR_PREPARE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(t.elapsed().as_secs_f64());
-        (v, prepared.effective_cap, prepared.cap_hit)
+        let admission = DeployAdmission {
+            cap: prepared.effective_cap,
+            cap_hit: prepared.cap_hit,
+            byte_cap_hit: prepared.byte_cap_hit,
+            cap_source: admission_policy.ordinary_cap_source.as_str().to_string(),
+            backpressure: admission_policy.backpressure,
+            finality_lag: finality_lag_stats.lag,
+        };
+        (v, Some(admission))
     };
     let dummy_deploys = {
         let t = std::time::Instant::now();
@@ -3676,6 +3687,7 @@ pub async fn create_with_progress(
         signed_block,
         pre_state_hash_for_result,
         post_state_hash_for_result,
+        deploy_admission,
     ))
 }
 

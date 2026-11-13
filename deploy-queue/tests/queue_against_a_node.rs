@@ -11,12 +11,15 @@ use common::{deploy, eventually, finalized_verdict, FakeNode, Queue};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
-use deploy_queue::error::IntakeError;
+use deploy_queue::error::{Congestion, IntakeError};
 use deploy_queue::http::accept;
 use deploy_queue::record::QueueState;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_window::last_includable_block;
 use serde_json::{json, Value};
+
+const VALIDATOR: &str = "validator";
+const PEER: &str = "peer";
 
 fn signed(valid_after: i64, number: i64, key: [u8; 32]) -> Signed<DeployData> {
     Signed::create(
@@ -49,7 +52,7 @@ fn one_deployers_deploy(valid_after: i64, number: i64) -> Signed<DeployData> {
     signed(valid_after, number, [200; 32])
 }
 
-fn block_added(number: i64, deploy_ids: &[&[u8]]) -> Value {
+fn block_added(number: i64, creator: &str, deploy_ids: &[&[u8]]) -> Value {
     json!({
         "event": "block-added",
         "schema-version": 1,
@@ -63,16 +66,62 @@ fn block_added(number: i64, deploy_ids: &[&[u8]]) -> Value {
                 .iter()
                 .map(|id| json!({"id": hex::encode(id), "cost": 1, "deployer": "d", "errored": false}))
                 .collect::<Vec<_>>(),
-            "creator": "c",
+            "creator": creator,
             "seq-num": 1,
         }
     })
 }
 
+/// The validator's block-created event: its block could take `cap` fresh
+/// deploys, and `cap_hit` says the cap left deploys in the pool.
+fn block_created(number: i64, cap: usize, cap_hit: bool, backpressure: bool) -> Value {
+    let mut event = block_added(number, VALIDATOR, &[]);
+    event["event"] = json!("block-created");
+    event["payload"]["deploy-admission"] = json!({
+        "cap": cap, "cap-hit": cap_hit, "byte-cap-hit": false,
+        "cap-source": if backpressure { "hard" } else { "normal" },
+        "backpressure": backpressure, "finality-lag": if backpressure { 9 } else { 2 },
+    });
+    event
+}
+
+/// The validator creates block `number`, which the node then adds carrying
+/// `deploy_ids`.
+fn own_block(node: &FakeNode, number: i64, cap: usize, cap_hit: bool, deploy_ids: &[&[u8]]) {
+    node.emit(block_created(number, cap, cap_hit, false));
+    node.emit(block_added(number, VALIDATOR, deploy_ids));
+}
+
 fn block_finalised(number: i64) -> Value {
-    let mut event = block_added(number, &[]);
+    let mut event = block_added(number, PEER, &[]);
     event["event"] = json!("block-finalised");
     event
+}
+
+/// Peer blocks for tips `from..=to`, finality one behind each.
+fn advance(node: &FakeNode, from: i64, to: i64) {
+    for tip in from..=to {
+        node.emit(block_added(tip, PEER, &[]));
+        node.emit(block_finalised(tip - 1));
+    }
+}
+
+fn received_sigs(node: &FakeNode) -> Vec<Vec<u8>> {
+    node.received()
+        .iter()
+        .map(|request| request.to_signed().unwrap().sig.to_vec())
+        .collect()
+}
+
+fn distinct_received(node: &FakeNode) -> HashSet<Vec<u8>> {
+    received_sigs(node).into_iter().collect()
+}
+
+async fn reaches_tip(queue: &Queue, tip: i64) {
+    eventually("the queue reaches the tip", || async {
+        queue.handle.snapshot().await.unwrap().tip == Some(tip)
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -92,7 +141,7 @@ async fn a_deploy_is_released_and_follows_the_node_to_its_verdict() {
     assert_eq!(node.received()[0].to_signed().unwrap(), deploy);
     assert_eq!(queue.state(&sig).await, Some(QueueState::Submitted));
 
-    node.emit(block_added(11, &[&sig]));
+    node.emit(block_added(11, VALIDATOR, &[&sig]));
     eventually("the deploy is in a block", || async {
         queue.state(&sig).await == Some(QueueState::InBlock)
     })
@@ -112,22 +161,94 @@ async fn a_deploy_is_released_and_follows_the_node_to_its_verdict() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn release_waits_while_finality_trails_the_tip() {
-    let node = FakeNode::new(40, 10);
+async fn release_keeps_the_validators_pool_at_what_its_next_block_takes() {
+    // The shard's blocks take at most four user deploys.
+    let node = FakeNode::new(10, 9);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+    for number in 0..12 {
+        accept(&queue.handle, numbered_deploy(10, number))
+            .await
+            .unwrap();
+    }
+    eventually("a full block's worth is released", || async {
+        node.received().len() == 4
+    })
+    .await;
+
+    // The validator takes all four with room to spare. They wait in a block
+    // for verdicts that have not come, and still the next four go out:
+    // deploys in a block are the shard's to finalize, not the pool's to hold.
+    let first: Vec<Vec<u8>> = received_sigs(&node);
+    let ids: Vec<&[u8]> = first.iter().map(Vec::as_slice).collect();
+    own_block(&node, 11, 4, false, &ids);
+    eventually("the emptied pool is refilled", || async {
+        node.received().len() == 8
+    })
+    .await;
+
+    // The next block's cap of two binds, leaving two in the pool: the pool
+    // holds at the cap, so nothing more goes out.
+    let second: Vec<Vec<u8>> = received_sigs(&node)[4..].to_vec();
+    own_block(&node, 12, 2, true, &[&second[0], &second[1]]);
+    reaches_tip(&queue, 12).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(node.received().len(), 8);
+    let snapshot = queue.handle.snapshot().await.unwrap();
+    assert_eq!(
+        (snapshot.submitted, snapshot.in_block, snapshot.ready),
+        (2, 6, 4)
+    );
+    assert_eq!(snapshot.validator.unwrap().pool_target, 2);
+
+    own_block(&node, 13, 2, true, &[&second[2], &second[3]]);
+    eventually("the next two go out", || async {
+        node.received().len() == 10
+    })
+    .await;
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refusal_names_the_validator_or_the_shard() {
+    let node = FakeNode::new(10, 9);
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
 
-    let sig = accept(&queue.handle, deploy(39, "root", 2)).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        node.received().is_empty(),
-        "40 - 10 exceeds the parent depth of 25"
-    );
-    assert_eq!(queue.state(&sig).await, Some(QueueState::Queued));
+    // The validator creates one block and then none while its peers carry
+    // the shard through a full citable depth: it takes nothing.
+    own_block(&node, 11, 4, false, &[]);
+    advance(&node, 12, 40);
+    reaches_tip(&queue, 40).await;
+    assert!(matches!(
+        accept(&queue.handle, numbered_deploy(40, 1)).await,
+        Err(IntakeError::QueueFull {
+            cause: Congestion::Validator,
+            ..
+        })
+    ));
 
-    node.emit(block_finalised(20));
-    eventually("release resumes", || async { node.received().len() == 1 }).await;
+    // It proposes again, but the node holds it to one deploy a block because
+    // finality trails the tip.
+    node.emit(block_created(41, 1, true, true));
+    node.emit(block_added(41, VALIDATOR, &[]));
+    reaches_tip(&queue, 41).await;
+    let refusal = accept(&queue.handle, numbered_deploy(41, 2)).await;
+    assert!(
+        matches!(
+            refusal,
+            Err(IntakeError::QueueFull {
+                cause: Congestion::Shard,
+                ..
+            })
+        ),
+        "{:?}",
+        refusal
+    );
+    let shard = queue.handle.snapshot().await.unwrap().shard.unwrap();
+    assert!(shard.backpressure);
     queue.stop();
 }
 
@@ -174,6 +295,128 @@ async fn a_deploy_too_late_to_land_is_refused_as_full() {
         accept(&queue.handle, deploy(60, "root", 6)).await,
         Err(IntakeError::QueueFull { .. })
     ));
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backlog_past_the_citable_depth_waits_within_its_window() {
+    let node = FakeNode::new(10, 9);
+    node.status.lock().unwrap()["deployLifespan"] = json!(300);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+
+    // At one deploy per height, a deploy fits while the tip, its place in
+    // line and the 25-height depth stay inside its window: the line the
+    // queue holds scales with the shard's deploy lifespan.
+    let last = last_includable_block(10, 300).unwrap();
+    let fitting = last - 10 - 25;
+    assert!(fitting > 25, "the window, not the depth, bounds the line");
+    for number in 0..fitting {
+        accept(&queue.handle, numbered_deploy(10, number))
+            .await
+            .unwrap_or_else(|error| panic!("deploy {} of {} refused: {}", number, fitting, error));
+    }
+    assert!(matches!(
+        accept(&queue.handle, numbered_deploy(10, fitting)).await,
+        Err(IntakeError::QueueFull { .. })
+    ));
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_deployer_cannot_take_the_room_another_needs() {
+    let node = FakeNode::new(10, 9);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+
+    // At one deploy per height, a 49-height fresh window less the 25-height
+    // depth holds 24 deploys; one deployer alone may hold half.
+    for number in 0..12 {
+        accept(&queue.handle, one_deployers_deploy(10, number))
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        accept(&queue.handle, one_deployers_deploy(10, 12)).await,
+        Err(IntakeError::DeployerShareFull {
+            held: 12,
+            limit: 12,
+            ..
+        })
+    ));
+    accept(&queue.handle, deploy(10, "root", 11)).await.unwrap();
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deploy_without_time_to_reach_the_validators_next_block_is_not_released() {
+    let node = FakeNode::new(10, 9);
+    node.status.lock().unwrap()["deployLifespan"] = json!(60);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+    // Six deploys whose window runs out at block 69. Four fill the pool.
+    for number in 0..6 {
+        accept(&queue.handle, numbered_deploy(10, number))
+            .await
+            .unwrap();
+    }
+    eventually("the pool is filled", || async {
+        node.received().len() == 4
+    })
+    .await;
+
+    // The validator creates every fourth block, each at a cap that binds and
+    // takes nothing of this queue's, so the other two wait in the queue.
+    for tip in 11..=66 {
+        if tip % 4 == 0 {
+            own_block(&node, tip, 4, true, &[]);
+        } else {
+            node.emit(block_added(tip, PEER, &[]));
+        }
+    }
+    // At 67 the pool empties, but two heights of window are less than the
+    // validator takes between its blocks: the two close in the queue.
+    let pooled = received_sigs(&node);
+    let ids: Vec<&[u8]> = pooled.iter().map(Vec::as_slice).collect();
+    node.emit(block_added(67, VALIDATOR, &ids));
+    reaches_tip(&queue, 67).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(distinct_received(&node).len(), 4);
+    assert_eq!(queue.handle.snapshot().await.unwrap().closed, 2);
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deploy_no_block_carries_is_resent_after_the_citable_depth() {
+    let node = FakeNode::new(10, 9);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+    let sig = accept(&queue.handle, deploy(10, "root", 15)).await.unwrap();
+    eventually("the deploy is released", || async {
+        node.received().len() == 1
+    })
+    .await;
+
+    advance(&node, 11, 35);
+    reaches_tip(&queue, 35).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        node.received().len(),
+        1,
+        "within the depth it is not resent"
+    );
+
+    advance(&node, 36, 36);
+    eventually("the deploy is resent", || async {
+        node.received().len() == 2
+    })
+    .await;
+    assert_eq!(received_sigs(&node), vec![sig.clone(), sig.clone()]);
+    assert_eq!(queue.state(&sig).await, Some(QueueState::Submitted));
     queue.stop();
 }
 
@@ -229,32 +472,6 @@ async fn a_node_whose_validator_is_not_bonded_is_retried() {
         queue.state(&sig).await == Some(QueueState::Submitted)
     })
     .await;
-    queue.stop();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn one_deployer_cannot_take_the_room_another_needs() {
-    let node = FakeNode::new(10, 9);
-    let url = node.clone().serve().await;
-    let dir = tempfile::tempdir().unwrap();
-    let queue = Queue::start(&url, dir.path()).await;
-
-    // At one deploy per height, a 49-height fresh window less the 25-height
-    // depth holds 24 deploys; one deployer alone may hold half.
-    for number in 0..12 {
-        accept(&queue.handle, one_deployers_deploy(10, number))
-            .await
-            .unwrap();
-    }
-    assert!(matches!(
-        accept(&queue.handle, one_deployers_deploy(10, 12)).await,
-        Err(IntakeError::DeployerShareFull {
-            held: 12,
-            limit: 12,
-            ..
-        })
-    ));
-    accept(&queue.handle, deploy(10, "root", 11)).await.unwrap();
     queue.stop();
 }
 
@@ -322,362 +539,6 @@ async fn an_unreadable_event_is_skipped_and_the_link_stays_up() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn release_waits_for_released_deploys_to_settle() {
-    let node = FakeNode::new(10, 9);
-    // Full blocks large enough that the depth, not the ceiling, binds.
-    node.status.lock().unwrap()["maxUserDeploysPerBlock"] = json!(128);
-    let url = node.clone().serve().await;
-    let dir = tempfile::tempdir().unwrap();
-    let queue = Queue::start(&url, dir.path()).await;
-
-    for seed in 20..36 {
-        accept(&queue.handle, deploy(5, "root", seed))
-            .await
-            .unwrap();
-    }
-    eventually("release starts", || async { !node.received().is_empty() }).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    assert_eq!(
-        node.received().len(),
-        13,
-        "release stops at half the depth; queue {:?}",
-        queue.handle.snapshot().await.unwrap()
-    );
-    let snapshot = queue.handle.snapshot().await.unwrap();
-    assert_eq!(
-        snapshot.released_limit, 13,
-        "half of a 25-height depth at one deploy per height"
-    );
-    assert_eq!((snapshot.submitted, snapshot.ready), (13, 3));
-
-    let released: Vec<Vec<u8>> = node
-        .received()
-        .iter()
-        .map(|request| request.to_signed().unwrap().sig.to_vec())
-        .collect();
-    let ids: Vec<&[u8]> = released.iter().map(|sig| sig.as_slice()).collect();
-    node.emit(block_added(11, &ids));
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(
-        node.received().len(),
-        13,
-        "a block does not free room: its deploys still wait for verdicts"
-    );
-
-    let verdicts: Vec<Value> = released
-        .iter()
-        .map(|sig| {
-            json!({"deploy-id": hex::encode(sig), "state": "finalized",
-                   "rejection-count": 0, "block-hash": format!("{:064x}", 11)})
-        })
-        .collect();
-    node.emit(json!({
-        "event": "deploy-verdicts",
-        "schema-version": 1,
-        "payload": {"verdicts": verdicts}
-    }));
-    eventually("verdicts free room for the rest", || async {
-        node.received().len() == 16
-    })
-    .await;
-    queue.stop();
-}
-
-/// A queue at tip 10 with full blocks large enough that the window, not
-/// the ceiling, binds, holding `count` deploys.
-async fn queue_with_backlog(count: i64) -> (FakeNode, Queue, tempfile::TempDir) {
-    let node = FakeNode::new(10, 9);
-    node.status.lock().unwrap()["maxUserDeploysPerBlock"] = json!(128);
-    node.status.lock().unwrap()["deployLifespan"] = json!(300);
-    let url = node.clone().serve().await;
-    let dir = tempfile::tempdir().unwrap();
-    let queue = Queue::start(&url, dir.path()).await;
-    for number in 0..count {
-        accept(&queue.handle, numbered_deploy(10, number))
-            .await
-            .unwrap();
-    }
-    eventually("the first window is released", || async {
-        node.received().len() == 13
-    })
-    .await;
-    (node, queue, dir)
-}
-
-fn finalized_verdicts(node: &FakeNode, block: i64) -> Value {
-    let verdicts: Vec<Value> = node
-        .received()
-        .iter()
-        .map(|request| {
-            json!({"deploy-id": hex::encode(request.to_signed().unwrap().sig),
-                   "state": "finalized", "rejection-count": 0,
-                   "block-hash": format!("{:064x}", block)})
-        })
-        .collect();
-    json!({"event": "deploy-verdicts", "schema-version": 1, "payload": {"verdicts": verdicts}})
-}
-
-async fn released_limit(queue: &Queue) -> usize {
-    queue.handle.snapshot().await.unwrap().released_limit
-}
-
-/// New tips `from..=to`, finality one behind each.
-fn advance(node: &FakeNode, from: i64, to: i64) {
-    for tip in from..=to {
-        node.emit(block_added(tip, &[]));
-        node.emit(block_finalised(tip - 1));
-    }
-}
-
-fn distinct_received(node: &FakeNode) -> HashSet<Vec<u8>> {
-    node.received()
-        .iter()
-        .map(|request| request.to_signed().unwrap().sig.to_vec())
-        .collect()
-}
-
-// Rounds are 12.5 heights; the first starts when the queue connects at tip
-// 10, so rounds end at tips 23, 36, 49 and so on.
-
-async fn reaches_tip(queue: &Queue, tip: i64) {
-    eventually("the queue reaches the tip", || async {
-        queue.handle.snapshot().await.unwrap().tip == Some(tip)
-    })
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn timely_verdicts_grow_the_release_window() {
-    let (node, queue, _dir) = queue_with_backlog(60).await;
-    node.emit(block_added(11, &[]));
-    node.emit(finalized_verdicts(&node, 11));
-    eventually("the freed window is refilled", || async {
-        node.received().len() == 26
-    })
-    .await;
-    // Timely verdicts with deploys held back: at the round's end the window
-    // grows by one.
-    advance(&node, 12, 24);
-    eventually("the grown window is released", || async {
-        node.received().len() == 27
-    })
-    .await;
-    assert_eq!(released_limit(&queue).await, 14);
-    queue.stop();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn verdicts_of_deploys_that_lost_merges_do_not_cut_release() {
-    let (node, queue, _dir) = queue_with_backlog(60).await;
-    // The first window settles twenty heights after release, every deploy
-    // after losing merges: conflicts between deploys, not a shard short of
-    // room. They still show the shard settling, so the round is no stall.
-    advance(&node, 11, 30);
-    reaches_tip(&queue, 30).await;
-    let verdicts: Vec<Value> = distinct_received(&node)
-        .into_iter()
-        .map(|sig| {
-            json!({"deploy-id": hex::encode(sig), "state": "finalized",
-                   "rejection-count": 2, "block-hash": format!("{:064x}", 30)})
-        })
-        .collect();
-    node.emit(json!({"event": "deploy-verdicts", "schema-version": 1,
-                     "payload": {"verdicts": verdicts}}));
-    advance(&node, 31, 37);
-    reaches_tip(&queue, 37).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let snapshot = queue.handle.snapshot().await.unwrap();
-    assert_eq!(snapshot.release_cuts, Some(0), "{:?}", snapshot);
-    queue.stop();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_deploy_that_keeps_losing_does_not_shrink_its_queue() {
-    let (node, queue, _dir) = queue_with_backlog(200).await;
-    let stuck = node.received()[0].to_signed().unwrap().sig.to_vec();
-    // Every other released deploy settles the height after release; one
-    // never does, as a deploy that loses every merge would not.
-    for tip in 11..=60 {
-        node.emit(block_added(tip, &[]));
-        node.emit(block_finalised(tip - 1));
-        let verdicts: Vec<Value> = distinct_received(&node)
-            .into_iter()
-            .filter(|sig| *sig != stuck)
-            .map(|sig| {
-                json!({"deploy-id": hex::encode(sig), "state": "finalized",
-                       "rejection-count": 0, "block-hash": format!("{:064x}", tip)})
-            })
-            .collect();
-        node.emit(json!({"event": "deploy-verdicts", "schema-version": 1,
-                         "payload": {"verdicts": verdicts}}));
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let snapshot = queue.handle.snapshot().await.unwrap();
-    assert_eq!(queue.state(&stuck).await, Some(QueueState::Submitted));
-    assert_eq!(
-        snapshot.release_cuts,
-        Some(0),
-        "a deploy unsettled for 50 heights among timely ones never halves the window: {:?}",
-        snapshot
-    );
-    assert!(snapshot.released_limit > 13, "{:?}", snapshot);
-    queue.stop();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn admission_tightens_as_soon_as_release_is_cut() {
-    let (node, queue, _dir) = queue_with_backlog(120).await;
-    advance(&node, 11, 30);
-    reaches_tip(&queue, 30).await;
-    node.emit(finalized_verdicts(&node, 30));
-    advance(&node, 31, 37);
-    reaches_tip(&queue, 37).await;
-    // The round ending at 36 saw only verdicts 20 heights after release:
-    // the window halved to 6.5 deploys at 20 heights each, well below the
-    // settle rate the queue measured.
-    let snapshot = queue.handle.snapshot().await.unwrap();
-    let release_rate = snapshot
-        .release_rate
-        .expect("a round with verdicts sets the rate");
-    assert!(
-        release_rate < snapshot.settled_per_height.unwrap(),
-        "{:?}",
-        snapshot
-    );
-    // With about 107 deploys ahead, a fresh deploy would land in time at the
-    // measured rate but not at what the window now lets through.
-    assert!(matches!(
-        accept(&queue.handle, numbered_deploy(37, 1000)).await,
-        Err(IntakeError::QueueFull { .. })
-    ));
-    queue.stop();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_deploy_without_time_to_be_included_is_not_released() {
-    let node = FakeNode::new(10, 9);
-    node.status.lock().unwrap()["maxUserDeploysPerBlock"] = json!(128);
-    node.status.lock().unwrap()["deployLifespan"] = json!(60);
-    let url = node.clone().serve().await;
-    let dir = tempfile::tempdir().unwrap();
-    let queue = Queue::start(&url, dir.path()).await;
-    // Twenty deploys whose window runs out at block 69.
-    for number in 0..20 {
-        accept(&queue.handle, numbered_deploy(10, number))
-            .await
-            .unwrap();
-    }
-    eventually("the first window is released", || async {
-        node.received().len() == 13
-    })
-    .await;
-    // The released deploys land in a block one height later and then never
-    // settle, so the other seven wait in the queue until block 68.
-    let released: Vec<Vec<u8>> = distinct_received(&node).into_iter().collect();
-    let ids: Vec<&[u8]> = released.iter().map(Vec::as_slice).collect();
-    node.emit(block_added(11, &ids));
-    node.emit(block_finalised(10));
-    advance(&node, 12, 68);
-    node.emit(finalized_verdicts(&node, 68));
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    // One height of window left is less than the two the shard takes to
-    // include a deploy: the seven are closed in the queue, not released.
-    assert_eq!(distinct_received(&node).len(), 13);
-    assert_eq!(queue.handle.snapshot().await.unwrap().closed, 7);
-    queue.stop();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_node_that_settles_nothing_shrinks_release_without_verdicts() {
-    let (node, queue, _dir) = queue_with_backlog(60).await;
-    advance(&node, 11, 49);
-    // The first round holds the release itself; the rounds ending at 36 and
-    // 49 pass with deploys held back, no verdict, and the deploys released
-    // at 10 still waiting: 13 -> 6.5 -> 3.25.
-    eventually("the window halves twice", || async {
-        released_limit(&queue).await == 3
-    })
-    .await;
-    assert_eq!(
-        distinct_received(&node).len(),
-        13,
-        "no new deploy goes to a node that settles nothing"
-    );
-    queue.stop();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_verdict_after_a_resend_counts_from_the_first_release() {
-    let (node, queue, _dir) = queue_with_backlog(60).await;
-    // Past the citable depth the stuck deploys are re-sent; their verdicts
-    // then arrive one height after the re-send but 27 after release.
-    advance(&node, 11, 36);
-    eventually("the stuck deploys are re-sent", || async {
-        node.received().len() == 26
-    })
-    .await;
-    let window_before = queue
-        .handle
-        .snapshot()
-        .await
-        .unwrap()
-        .release_window
-        .unwrap();
-    let first = node.received()[0].to_signed().unwrap().sig.to_vec();
-    node.emit(block_added(37, &[]));
-    node.emit(finalized_verdicts(&node, 37));
-    eventually("the verdicts land", || async {
-        queue.state(&first).await == Some(QueueState::Finalized)
-    })
-    .await;
-    // The round holding those verdicts ends at 49: late verdicts halve the
-    // window, where timely ones with deploys held back would grow it.
-    advance(&node, 38, 50);
-    reaches_tip(&queue, 50).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let window_after = queue
-        .handle
-        .snapshot()
-        .await
-        .unwrap()
-        .release_window
-        .unwrap();
-    assert!(
-        window_after < window_before,
-        "verdicts 27 heights after release must count as late: {} -> {}",
-        window_before,
-        window_after
-    );
-    queue.stop();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_backlog_past_the_citable_depth_waits_within_its_window() {
-    let node = FakeNode::new(10, 9);
-    node.status.lock().unwrap()["deployLifespan"] = json!(300);
-    let url = node.clone().serve().await;
-    let dir = tempfile::tempdir().unwrap();
-    let queue = Queue::start(&url, dir.path()).await;
-
-    // At one deploy per height, a deploy fits while the tip, its place in
-    // line and the 25-height depth stay inside its window.
-    let last = last_includable_block(10, 300).unwrap();
-    let fitting = last - 10 - 25;
-    assert!(fitting > 25, "the window, not the depth, bounds the line");
-    for number in 0..fitting {
-        accept(&queue.handle, numbered_deploy(10, number))
-            .await
-            .unwrap_or_else(|error| panic!("deploy {} of {} refused: {}", number, fitting, error));
-    }
-    assert!(matches!(
-        accept(&queue.handle, numbered_deploy(10, fitting)).await,
-        Err(IntakeError::QueueFull { .. })
-    ));
-    queue.stop();
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_deploy_the_node_already_decided_takes_the_nodes_verdict() {
     let node = FakeNode::new(10, 9);
     *node.deploy_answer.lock().unwrap() = (
@@ -703,17 +564,19 @@ async fn a_deploy_the_node_already_decided_takes_the_nodes_verdict() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn queued_deploys_survive_a_restart_and_are_released_after_it() {
-    let node = FakeNode::new(40, 10);
+    let node = FakeNode::new(40, 39);
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
 
+    // Not valid until block 41, so the first queue only holds it.
     let queue = Queue::start(&url, dir.path()).await;
-    let sig = accept(&queue.handle, deploy(39, "root", 8)).await.unwrap();
+    let sig = accept(&queue.handle, deploy(41, "root", 8)).await.unwrap();
+    assert_eq!(queue.state(&sig).await, Some(QueueState::Queued));
     queue.stop();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     node.status.lock().unwrap()["latestBlockNumber"] = json!(41);
-    node.status.lock().unwrap()["lastFinalizedBlockNumber"] = json!(30);
+    node.status.lock().unwrap()["lastFinalizedBlockNumber"] = json!(40);
     let queue = Queue::start(&url, dir.path()).await;
     eventually("the restarted queue releases", || async {
         node.received().len() == 1

@@ -17,7 +17,7 @@ use tonic::transport::{Endpoint, Server};
 use tracing_subscriber::EnvFilter;
 
 /// A per-validator deploy queue. Clients deploy to it in place of the node;
-/// it releases deploys to the node at the pace the shard sustains.
+/// it releases deploys to the node as fast as the validator takes them.
 #[derive(Parser, Debug)]
 #[command(name = "deploy-queue", version)]
 struct Args {

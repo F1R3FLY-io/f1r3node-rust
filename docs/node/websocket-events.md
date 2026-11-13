@@ -33,12 +33,23 @@ These fire continuously as the node processes blocks.
 
 | Event | Description | Payload |
 |-------|-------------|---------|
-| `block-created` | Block proposed by this validator (before validation) | block-hash, block-number, timestamp, parent-hashes, justification-hashes, deploys, creator, seq-num |
-| `block-added` | Block validated and added to DAG | Same as block-created |
-| `block-finalised` | Block finalized by consensus | Same as block-created |
+| `block-created` | Block proposed by this validator (before validation) | block-hash, block-number, timestamp, parent-hashes, justification-hashes, deploys, creator, seq-num, deploy-admission |
+| `block-added` | Block validated and added to DAG | Same as block-created, without deploy-admission |
+| `block-finalised` | Block finalized by consensus | Same as block-added |
 | `transfers-available` | Transfer data extracted after finalization (readonly only) | block-hash, block-number, deploys (with transfers) |
 
 The `deploys` array in block events contains objects with `id`, `cost`, `deployer`, `errored`, and optionally `transfers` (omitted on `block-created` and `block-added`, as transfer extraction has not yet occurred).
+
+`deploy-admission` on `block-created` says how the block creator took fresh user deploys, and is `null` for a block built without selecting user deploys:
+
+| Field | Description |
+|-------|-------------|
+| `cap` | The most fresh user deploys the block could take |
+| `cap-hit` | Fresh deploys stayed in the pool because the block reached `cap` |
+| `byte-cap-hit` | Fresh deploys stayed in the pool because the block reached its byte budget |
+| `cap-source` | What set the cap: `normal`, `base`, `backlog`, `soft-backlog`, `soft-stalled`, `stale` or `hard` |
+| `backpressure` | The cap was lowered because finality trails the tip or has stalled |
+| `finality-lag` | Heights between the tip and the last finalized block when the block was created |
 
 ### Transfer Extraction Flow
 

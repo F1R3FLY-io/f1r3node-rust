@@ -2,11 +2,29 @@
 
 A per-validator deploy queue. It runs as a separate process next to one validator, from the same image
 (`/opt/docker/bin/deploy-queue`). Clients send deploys to the queue in place of the validator. The queue holds
-each deploy durably and releases it at the pace the shard settles deploys. When clients offer more than the shard
-can settle, the queue holds or refuses the excess, so the shard does not receive more work than it can finalize.
+each deploy durably and releases it as fast as the validator takes deploys into its blocks. When clients offer
+more than the validator can take before the deploys' windows close, the queue refuses the excess with a
+retry-after, so a deploy it accepts lands within its deploy lifespan.
 
 The states a client reads, the refusals and the client endpoints are in
 [Deploy queue client API](../docs/node/deploy-queue.md). This file describes how the queue decides.
+
+## Validator and shard
+
+Deploys never gossip: only the validator a queue fronts can include that queue's deploys. The queue learns
+everything else from the node's event stream:
+
+- **The validator.** Each `block-created` event carries the block creator's `deploy-admission`: the most fresh
+  deploys the block could take (`cap`), whether that cap or the byte budget left deploys in the pool, what set the
+  cap, and whether the node lowered it because finality trails the tip (`backpressure`). A block whose cap bound
+  took exactly its cap. A block that took everything it was offered was limited only by demand, so it could have
+  taken a full block (`maxUserDeploysPerBlock`). The validator's intake is what its own blocks over the last
+  citable depth (`maxParentDepth` heights) could take, per height.
+- **The shard.** Every `block-added` event, from any creator: how fast heights come, and the validator's share of
+  the blocks. The node's own `backpressure` says the shard's finality is holding the validator back.
+
+`GET /queue/status` reports both: `validator` (own blocks, block share, intake per height, pool target, latest
+cap and its source, saturated) and `shard` (seconds per height, backpressure, finality lag).
 
 ## Admission
 
@@ -15,48 +33,42 @@ validity window or Rholang term is not valid, when its `validAfterBlockNumber` i
 above the tip, or when the queue already holds it.
 
 The queue then checks capacity. Release takes the earliest deadline (last includable block) first, so a deploy
-waits behind every released deploy and every queued deploy with an earlier deadline. The queue accepts a deploy
-only when it settles before its validity window closes, with one citable depth to spare, and no queued deploy
-with a later deadline that settles in time now would stop settling in time. An accepted deploy therefore never
-expires in the queue while the settle rate holds. The settle rate is the lower of two measurements: the rate at
-which released deploys settled over recent heights, and the release window divided by the median settle delay.
-A deploy that does not fit gets `deploy_queue_full` with a retry-after: the time until a deploy signed now would
-fit.
+waits behind every deploy in the validator's pool and every queued deploy with an earlier deadline. The queue
+accepts a deploy only when, at the validator's intake, it is taken into a block before its validity window
+closes, with one citable depth to spare, and no queued deploy with a later deadline that lands in time now would
+stop landing in time. The window is the shard's `deployLifespan`, read from the node, so the line the queue holds
+scales with it. Before the validator has created a block the queue saw, the intake is one deploy per height.
+
+A deploy that does not fit gets `deploy_queue_full` with a retry-after, the time until a deploy signed now would
+fit, and a cause: the shard when the node is holding its validator back for finality, the validator otherwise
+(it takes fewer deploys than arrive, or it has created no block over a citable depth while the shard moved on).
 
 One deployer may hold at most an equal share of the queue's capacity that keeps room for one more deployer:
-`capacity / (other deployers + 2)`, and never less than one deploy. The capacity is what settles at the settle
-rate in a fresh window, less the citable depth. A deployer over its share gets `deploy_queue_full` too.
+`capacity / (other deployers + 2)`, and never less than one deploy. The capacity is what the validator takes in
+a fresh window, less the citable depth. A deployer over its share gets `deploy_queue_full` too.
 
 ## Release
 
-The ready list is ordered by deadline. The release window limits how many released deploys are not settled yet, in the node's pool or in a block. The
-queue judges the shard once per round, which is half the citable depth (`maxParentDepth`) in heights. A verdict is
-late when it came more than one round after release. At the end of each round:
+The queue keeps the validator's pool holding what its next block will take: the cap of its latest block while
+that cap binds, otherwise a full block. Deploys beyond that wait in the queue, in deadline order and within their
+deployer's share, rather than in the pool. A deploy carried by a block no longer counts against the pool; its
+verdict is the shard's to reach, so how long finality takes does not slow release.
 
-- Most timed verdicts were late: the window halves.
-- No verdict came, deploys waited for room, and an older release is still not settled: a stall, so the window
-  halves.
-- Deploys waited for room and at least one verdict came in time: the window grows by one.
-
-A deploy that lost a merge (`rejection-count` above zero) settles late because of a conflict with other deploys,
-not a lack of capacity. Its verdict counts as neither late nor on time, but it rules out a stall. The window
-starts at one deploy per height of a round, and its ceiling is two full blocks (`2 × maxUserDeploysPerBlock`).
-
-Release stops while the queue is not connected, while the node's finality is more than one citable depth behind
-its tip, and for a backoff after the node could not take a deploy (1 s, doubling up to 30 s). The node cannot
-take a deploy while its validator is not bonded (`503 validator_not_bonded`); the deploy waits in the queue and
-expires there if the validator is not bonded before its window closes. The queue does not
-release a deploy that has less window left than the median inclusion delay plus one block. That deploy closes in
-the queue, and the queue later records the node's answer for it, or `expired`. A released deploy that no block
-carries within one citable depth goes to the node again.
+Release stops while the queue is not connected and for a backoff after the node could not take a deploy (1 s,
+doubling up to 30 s). The node cannot take a deploy while its validator is not bonded (`503
+validator_not_bonded`); the deploy waits in the queue and expires there if the validator is not bonded before its
+window closes. The queue does not release a deploy whose window closes before the validator's next block is due
+(the heights between its blocks). That deploy closes in the queue, and the queue later records the node's answer
+for it, or `expired`. A released deploy that no block carries within one citable depth goes to the node again.
 
 ## Node link
 
-The queue follows the node's event stream (`/ws/events`) and does not poll. It uses `block-added`,
-`block-finalised`, `deploy-verdicts` and `entered-running-state`. On `stream-lagged`, on an event it cannot
-parse, and on every reconnect it reads every released deploy's status again. The node must publish
-`deploy-verdicts` and report `latestBlockNumber`, `deployLifespan`, `maxUserDeploysPerBlock` and a bounded
-`maxParentDepth` in `/api/status`; the queue does not connect to a node whose `maxParentDepth` is unbounded.
+The queue follows the node's event stream (`/ws/events`) and does not poll. It uses `block-created`,
+`block-added`, `block-finalised`, `deploy-verdicts` and `entered-running-state`. On `stream-lagged`, on an event
+it cannot parse, and on every reconnect it reads every released deploy's status again. The node must publish
+`deploy-verdicts` and `deploy-admission` on `block-created`, and report `latestBlockNumber`, `deployLifespan`,
+`maxUserDeploysPerBlock` and a bounded `maxParentDepth` in `/api/status`; the queue does not connect to a node
+whose `maxParentDepth` is unbounded.
 
 ## Running
 
@@ -68,8 +80,8 @@ deploy-queue --node-grpc http://validator:40401 --node-http http://validator:404
 `--grpc-listen` and `--http-listen` change the client addresses. `RUST_LOG` sets the log filter. The queue has no
 configuration file: it reads the shard's values from its node. It commits the changes of each batch of waiting
 requests to its LMDB store in one transaction before it answers, broadcasts or sends anything for them, so a
-restart keeps all held deploys. The release window and the rates start again. The store format changed with the
-persisted last-sent height: a data directory from an earlier build does not load.
+restart keeps all held deploys. What it measured of the validator and shard starts again. The store format
+changed with the persisted last-sent height: a data directory from an earlier build does not load.
 
 ## Tests
 

@@ -2,6 +2,26 @@ use http::StatusCode;
 
 use crate::record::Sig;
 
+/// What holds deploys back when the queue cannot fit one more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Congestion {
+    /// The validator takes fewer deploys than arrive, or has stopped
+    /// creating blocks while the shard moves on.
+    Validator,
+    /// The node holds its validator back because the shard's finality
+    /// trails the tip or has stalled.
+    Shard,
+}
+
+impl std::fmt::Display for Congestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Congestion::Validator => "the validator is taking fewer deploys than arrive",
+            Congestion::Shard => "the shard's finality is holding the validator back",
+        })
+    }
+}
+
 /// Why the queue refused a deploy. The kinds and messages follow the node's
 /// own deploy errors where the node has one, so a client sees the same
 /// refusal from the queue that it would have read from the node.
@@ -16,11 +36,14 @@ pub enum IntakeError {
     #[error("Deploy already known: {}", hex::encode(.0))]
     Duplicate(Sig),
     #[error(
-        "deploy queue is full: the deploys ahead of this one would not land before its \
-         validity window closes; sign it again with a current validAfterBlockNumber and \
-         retry in {retry_after_secs}s"
+        "deploy queue is full: {cause}, so the deploys ahead of this one would not land \
+         before its validity window closes; sign it again with a current \
+         validAfterBlockNumber and retry in {retry_after_secs}s"
     )]
-    QueueFull { retry_after_secs: u64 },
+    QueueFull {
+        retry_after_secs: u64,
+        cause: Congestion,
+    },
     #[error(
         "deploy queue is full for this deployer: it holds {held} of the {limit} deploys one \
          deployer may hold, so that other deployers keep room; retry in {retry_after_secs}s"
@@ -70,7 +93,9 @@ impl IntakeError {
 
     pub fn retry_after_secs(&self) -> Option<u64> {
         match self {
-            IntakeError::QueueFull { retry_after_secs }
+            IntakeError::QueueFull {
+                retry_after_secs, ..
+            }
             | IntakeError::DeployerShareFull {
                 retry_after_secs, ..
             }

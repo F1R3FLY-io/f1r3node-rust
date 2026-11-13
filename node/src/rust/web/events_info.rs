@@ -201,6 +201,7 @@ mod tests {
             vec![create_test_deploy("deploy1")],
             "creator1".to_string(),
             42,
+            None,
         );
 
         let result = EventsInfo::transform_f1r3fly_event(&event).unwrap();

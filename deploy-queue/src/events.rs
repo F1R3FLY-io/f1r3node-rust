@@ -19,6 +19,13 @@ pub enum NodeEvent {
         number: i64,
         hash: String,
         deploys: Vec<String>,
+        creator: String,
+    },
+    /// The node's validator created a block, before validating it.
+    Created {
+        number: i64,
+        creator: String,
+        admission: Option<Admission>,
     },
     Finalised {
         number: i64,
@@ -54,6 +61,27 @@ struct BlockPayload {
     block_hash: String,
     block_number: i64,
     deploys: Vec<DeployPayload>,
+    creator: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct CreatedPayload {
+    block_number: i64,
+    creator: String,
+    deploy_admission: Option<Admission>,
+}
+
+/// How the validator's block creator took fresh deploys into one block.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Admission {
+    pub cap: usize,
+    pub cap_hit: bool,
+    pub byte_cap_hit: bool,
+    pub cap_source: String,
+    pub backpressure: bool,
+    pub finality_lag: i64,
 }
 
 #[derive(Deserialize)]
@@ -83,12 +111,21 @@ struct LagPayload {
 pub fn parse_event(text: &str) -> Result<NodeEvent, serde_json::Error> {
     let envelope: Envelope = serde_json::from_str(text)?;
     Ok(match envelope.event.as_str() {
-        "block-added" | "block-created" => {
+        "block-added" => {
             let block: BlockPayload = serde_json::from_value(envelope.payload)?;
             NodeEvent::Block {
                 number: block.block_number,
                 hash: block.block_hash,
                 deploys: block.deploys.into_iter().map(|d| d.id).collect(),
+                creator: block.creator,
+            }
+        }
+        "block-created" => {
+            let block: CreatedPayload = serde_json::from_value(envelope.payload)?;
+            NodeEvent::Created {
+                number: block.block_number,
+                creator: block.creator,
+                admission: block.deploy_admission,
             }
         }
         "block-finalised" => {
@@ -218,6 +255,31 @@ mod tests {
             number: 7,
             hash: "ab".to_string(),
             deploys: vec!["01".to_string()],
+            creator: "c".to_string(),
+        });
+    }
+
+    #[test]
+    fn a_created_block_carries_how_it_admitted_deploys() {
+        let event = parse_event(
+            r#"{"event":"block-created","schema-version":1,"payload":{"block-hash":"ab",
+                "block-number":7,"timestamp":1,"parent-hashes":[],"justification-hashes":[],
+                "deploys":[],"creator":"c","seq-num":1,
+                "deploy-admission":{"cap":16,"cap-hit":true,"byte-cap-hit":false,
+                    "cap-source":"soft-backlog","backpressure":true,"finality-lag":5}}}"#,
+        )
+        .unwrap();
+        assert_eq!(event, NodeEvent::Created {
+            number: 7,
+            creator: "c".to_string(),
+            admission: Some(Admission {
+                cap: 16,
+                cap_hit: true,
+                byte_cap_hit: false,
+                cap_source: "soft-backlog".to_string(),
+                backpressure: true,
+                finality_lag: 5,
+            }),
         });
     }
 

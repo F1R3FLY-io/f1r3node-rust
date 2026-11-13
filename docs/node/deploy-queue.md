@@ -1,8 +1,9 @@
 # Deploy Queue Client API
 
 A deploy queue runs next to one validator and serves that validator's client ports. A client sends deploys and
-reads their status as it would from the node. The queue holds each deploy and releases it at the pace the shard
-settles deploys. How the queue decides is in the [deploy-queue README](../../deploy-queue/README.md).
+reads their status as it would from the node. The queue holds each deploy and releases it as fast as the
+validator takes deploys into its blocks. How the queue decides is in the
+[deploy-queue README](../../deploy-queue/README.md).
 
 | Port | Protocol | Served by the queue | Sent on to the node |
 |------|----------|---------------------|---------------------|
@@ -29,12 +30,14 @@ Read `latestBlockNumber`, `deployLifespan` and `maxParentDepth` from
 |---------|------|------|-------|---------------|
 | `invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `deploy_expired` | 400 | `ServiceError` in the response, as the node | The deploy is not valid | Correct the deploy |
 | `duplicate_deploy` | 409 | `ServiceError` | The queue already holds this deploy | Read its status |
-| `deploy_queue_full` | 503 + `Retry-After` | `RESOURCE_EXHAUSTED` + `retry-after` metadata | The deploys ahead would not settle before the window of this deploy closes, or this deployer holds its full share of the queue | Wait for `Retry-After` seconds, sign the deploy again with a current `validAfterBlockNumber`, then send it |
+| `deploy_queue_full` | 503 + `Retry-After` | `RESOURCE_EXHAUSTED` + `retry-after` metadata | At the validator's intake, the deploys ahead would keep this one out of a block until its window closes, or this deployer holds its full share of the queue | Wait for `Retry-After` seconds, sign the deploy again with a current `validAfterBlockNumber`, then send it |
 | `node_unavailable` | 503 + `Retry-After` | `UNAVAILABLE` + `retry-after` metadata | The queue is not connected to its node | Wait and send again |
 | `deploy_queue_stopped` | 503 | `UNAVAILABLE` | The queue is shutting down | Send again later |
 | `queue_store_error` | 500 | `INTERNAL` | The queue could not store the deploy | Send again later |
 
-A refused deploy is not held. The message of `deploy_queue_full` names its cause.
+A refused deploy is not held. The message of `deploy_queue_full` names its cause: the validator (it takes fewer
+deploys than arrive, or it has stopped creating blocks while the shard moves on) or the shard (the node is holding
+its validator back because finality trails the tip).
 
 ## Deploy status
 
@@ -77,6 +80,7 @@ the same transitions and ends when every named deploy is terminal.
 
 ## Queue state
 
-`GET /queue/status` answers the queue's counts per state, its release window and cuts, and its measured delays
-and rates. `GET /queue/metrics` answers Prometheus metrics. `GET /ws/events` relays the node's
+`GET /queue/status` answers the queue's counts per state, what it measures of its validator (own blocks, share
+of the shard's blocks, intake per height, pool target, latest cap and its source) and of the shard (seconds per
+height, backpressure, finality lag). `GET /queue/metrics` answers Prometheus metrics. `GET /ws/events` relays the node's
 [event stream](websocket-events.md).

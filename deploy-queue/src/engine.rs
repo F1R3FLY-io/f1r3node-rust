@@ -12,16 +12,13 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::error::{EngineStopped, IntakeError};
 use crate::events::{NodeEvent, VerdictState};
+use crate::health::{Health, ShardView, ValidatorView};
 use crate::node::{
     ChainSnapshot, NodeDeployStatus, NodeError, NodeHttp, ShardValues, SubmitOutcome,
 };
-use crate::pace::Pace;
 use crate::record::{DeployView, QueueRecord, QueueState, Sig};
 use crate::store::{QueueStore, StoreError};
-use crate::window::ReleaseWindow;
 
-/// Released deploys never exceed this many of the shard's full blocks.
-const RELEASED_CEILING_BLOCKS: usize = 2;
 const RETRY_FLOOR: Duration = Duration::from_secs(1);
 const RETRY_CEILING: Duration = Duration::from_secs(30);
 /// Retry-After for a refusal made before the queue has timed a height.
@@ -67,16 +64,9 @@ pub struct QueueSnapshot {
     pub closed: usize,
     pub submitted: usize,
     pub in_block: usize,
-    pub released_limit: usize,
-    pub release_window: Option<f64>,
-    pub release_cuts: Option<u64>,
-    pub late_share: Option<f64>,
-    pub settle_delay: Option<i64>,
-    pub inclusion_delay: Option<i64>,
-    pub release_rate: Option<f64>,
     pub held: usize,
-    pub settled_per_height: Option<f64>,
-    pub secs_per_height: Option<f64>,
+    pub validator: Option<ValidatorView>,
+    pub shard: Option<ShardView>,
 }
 
 pub enum Command {
@@ -227,8 +217,7 @@ pub struct Engine {
     held_by_deployer: HashMap<Vec<u8>, usize>,
     chain: Option<ChainSnapshot>,
     connected: bool,
-    pace: Option<Pace>,
-    window: Option<ReleaseWindow>,
+    health: Option<Health>,
     next_sequence: u64,
     retry_at: Option<Instant>,
     retry_delay: Duration,
@@ -289,8 +278,7 @@ impl Engine {
             held_by_deployer: HashMap::new(),
             chain: None,
             connected: false,
-            pace: None,
-            window: None,
+            health: None,
             next_sequence,
             retry_at: None,
             retry_delay: RETRY_FLOOR,
@@ -476,15 +464,10 @@ impl Engine {
             ))));
         }
 
-        // The rate is the slower of what the shard has been settling and what
-        // the release window now lets through, so a window just cut tightens
-        // intake at once. The depth covers a pace that slows after a deploy
-        // was accepted.
-        let pace = self.pace.as_ref().expect("a connected engine has a pace");
-        let rate = match self.window.as_ref().and_then(ReleaseWindow::release_rate) {
-            Some(releasable) => pace.settled_per_height().min(releasable),
-            None => pace.settled_per_height(),
-        };
+        // The rate is what the validator takes into its blocks. The depth
+        // covers an intake that falls after a deploy was accepted.
+        let health = self.health.as_ref().expect("a connected engine has health");
+        let rate = health.intake_per_height();
         let depth = citable_depth(shard);
         let fresh_span = last_includable(chain.tip, shard.deploy_lifespan) - chain.tip;
 
@@ -496,8 +479,8 @@ impl Engine {
         let limit = deployer_limit(capacity(rate, fresh_span, depth), others);
         if held >= limit {
             let excess = (held + 1 - limit) * (others + 1);
-            let retry_after_secs = heights_to_settle(excess, rate)
-                .and_then(|heights| pace.seconds_for(heights))
+            let retry_after_secs = heights_to_include(excess, rate)
+                .and_then(|heights| health.seconds_for(heights))
                 .unwrap_or(UNTIMED_RETRY_SECS);
             return Ok(Err(IntakeError::DeployerShareFull {
                 held,
@@ -513,7 +496,7 @@ impl Engine {
             last,
         };
         let admitted = admits(
-            self.released(),
+            self.pooled(),
             self.expiry.range(..key).count(),
             Slot {
                 releasable_from: valid_after.max(chain.tip),
@@ -528,15 +511,18 @@ impl Engine {
         if !admitted {
             // A deploy signed again now has the latest deadline of all, so
             // it waits behind every deploy held.
-            let ahead = self.released() + self.expiry.len();
-            let retry_after_secs = heights_to_settle(ahead + 1, rate)
+            let ahead = self.pooled() + self.expiry.len();
+            let retry_after_secs = heights_to_include(ahead + 1, rate)
                 .and_then(|heights| {
-                    pace.seconds_for(heights_until_a_fresh_window_fits(
+                    health.seconds_for(heights_until_a_fresh_window_fits(
                         heights, depth, fresh_span,
                     ))
                 })
                 .unwrap_or(UNTIMED_RETRY_SECS);
-            return Ok(Err(IntakeError::QueueFull { retry_after_secs }));
+            return Ok(Err(IntakeError::QueueFull {
+                retry_after_secs,
+                cause: health.congestion(),
+            }));
         }
 
         let record = QueueRecord::new(&deploy, self.next_sequence, now_ms);
@@ -566,16 +552,11 @@ impl Engine {
             max_parent_depth = chain.shard.max_parent_depth,
             "connected to the node"
         );
-        if self.pace.is_none() {
-            self.pace = Some(Pace::new(citable_depth(&chain.shard)));
-        }
-        if self.window.is_none() {
-            let mut window = ReleaseWindow::new(
+        if self.health.is_none() {
+            self.health = Some(Health::new(
                 citable_depth(&chain.shard),
-                RELEASED_CEILING_BLOCKS * chain.shard.max_user_deploys_per_block as usize,
-            );
-            window.on_tip(chain.tip, None);
-            self.window = Some(window);
+                chain.shard.max_user_deploys_per_block as usize,
+            ));
         }
         self.chain = Some(chain);
         self.connected = true;
@@ -590,6 +571,7 @@ impl Engine {
                 number,
                 hash,
                 deploys,
+                creator,
             } => {
                 let block_hash = decode_hex("block hash", &hash);
                 for id in deploys {
@@ -605,14 +587,6 @@ impl Engine {
                     if state == QueueState::Queued {
                         self.unplace(&sig);
                     }
-                    if state == QueueState::Submitted {
-                        let released_at = self.records[&sig].submitted_at_height;
-                        if let (Some(released_at), Some(window)) =
-                            (released_at, self.window.as_mut())
-                        {
-                            window.on_inclusion(number - released_at);
-                        }
-                    }
                     let hash = block_hash.clone();
                     self.update(&sig, |record| {
                         record.state = QueueState::InBlock;
@@ -621,16 +595,22 @@ impl Engine {
                         }
                     });
                 }
+                if let Some(health) = self.health.as_mut() {
+                    health.on_block(number, &creator, Instant::now());
+                }
                 self.observe_tip(number)?;
+            }
+            NodeEvent::Created {
+                number,
+                creator,
+                admission,
+            } => {
+                if let Some(health) = self.health.as_mut() {
+                    health.on_own_block(number, &creator, admission, Instant::now());
+                }
             }
             NodeEvent::Finalised { number } => self.observe_lfb(number),
             NodeEvent::Verdicts(verdicts) => {
-                // Before these verdicts settle any released deploy.
-                if self.released() > 0 {
-                    if let Some(pace) = self.pace.as_mut() {
-                        pace.record_unsettled();
-                    }
-                }
                 for verdict in verdicts {
                     let Some(sig) = decode_hex("deploy id", &verdict.deploy_id) else {
                         continue;
@@ -821,65 +801,46 @@ impl Engine {
         }
     }
 
-    /// Releases deploys to the node while the shard is finalizing and the
-    /// node's pool holds less than it can include soon.
+    /// Releases deploys, earliest deadline first, until the validator's pool
+    /// holds what its next block will take. Deploys wait in the queue, not
+    /// the pool, where they keep their order and their deployer's share.
     fn release(&mut self) -> Result<(), StoreError> {
         let Some(chain) = self.chain.clone() else {
+            return Ok(());
+        };
+        let Some((target, headroom)) = self
+            .health
+            .as_ref()
+            .map(|health| (health.pool_target(), health.heights_per_own_block()))
+        else {
             return Ok(());
         };
         if !self.release_open() {
             return Ok(());
         }
-        let shard = &chain.shard;
-        let limit = self.released_limit();
-        while self.released() < limit {
+        while self.pooled() < target {
             let Some((_, sig)) = self.ready.pop_first() else {
                 break;
             };
-            // A deploy with less window left than the shard takes to include
-            // one would only expire in the node's pool.
+            // A deploy whose window closes before the validator's next block
+            // would only expire in the node's pool.
             let valid_after = self.records[&sig].valid_after;
-            let headroom = self
-                .window
-                .as_ref()
-                .map_or(1, ReleaseWindow::release_headroom);
-            if last_includable(valid_after, shard.deploy_lifespan) - chain.tip < headroom {
+            if last_includable(valid_after, chain.shard.deploy_lifespan) - chain.tip < headroom {
                 self.close(&sig);
                 continue;
             }
             self.submit(&sig, chain.tip)?;
         }
-        if !self.ready.is_empty() {
-            if let Some(pace) = self.pace.as_mut() {
-                pace.record_held_back();
-            }
-            if let Some(window) = self.window.as_mut() {
-                window.record_held_back();
-            }
-        }
         Ok(())
     }
 
-    /// Released deploys still waiting for a verdict: in the node's pool or in
-    /// a block.
-    fn released(&self) -> usize {
-        self.count(QueueState::Submitted) + self.count(QueueState::InBlock)
-    }
-
-    fn released_limit(&self) -> usize { self.window.as_ref().map_or(0, ReleaseWindow::limit) }
-
-    /// Release height of the longest-waiting released deploy.
-    fn oldest_unsettled_release(&self) -> Option<i64> {
-        self.released_index.keys().next().map(|(height, _)| *height)
-    }
+    /// Released deploys no block has carried yet: those in the validator's pool.
+    fn pooled(&self) -> usize { self.count(QueueState::Submitted) }
 
     fn release_open(&self) -> bool {
-        let Some(chain) = &self.chain else {
-            return false;
-        };
-        self.connected
+        self.chain.is_some()
+            && self.connected
             && self.retry_at.is_none_or(|at| at <= Instant::now())
-            && chain.tip - chain.lfb <= i64::from(chain.shard.max_parent_depth)
     }
 
     fn submit(&mut self, sig: &Sig, tip: i64) -> Result<(), StoreError> {
@@ -925,26 +886,6 @@ impl Engine {
             return Ok(());
         }
         chain.tip = number;
-        let unsettled = self.released() > 0;
-        if let Some(pace) = self.pace.as_mut() {
-            if unsettled {
-                pace.record_unsettled();
-            }
-            pace.on_tip(number, Instant::now());
-        }
-        let oldest_unsettled_release = self.oldest_unsettled_release();
-        if let Some(window) = self.window.as_mut() {
-            if let Some(cut) = window.on_tip(number, oldest_unsettled_release) {
-                metrics::counter!("deploy_queue.release_cuts", "reason" => cut.name()).increment(1);
-                tracing::info!(
-                    target: "deploy_queue::engine",
-                    tip = number,
-                    reason = cut.name(),
-                    window = window.window(),
-                    "release window halved"
-                );
-            }
-        }
         let became_valid = self.waiting.split_off(&(number + 1, 0));
         let valid_now = std::mem::replace(&mut self.waiting, became_valid);
         let lifespan = self
@@ -1018,8 +959,6 @@ impl Engine {
         else {
             return Ok(());
         };
-        // The release height stays put: it is what a verdict's settle delay
-        // is measured from.
         let stale: Vec<Sig> = self
             .resend_index
             .range(..(tip - depth, 0))
@@ -1167,29 +1106,8 @@ impl Engine {
             .as_ref()
             .map(|chain| chain.tip)
             .expect("verdicts arrive once the chain is known");
-        let before = self.records[sig].state;
-        if before == QueueState::Queued {
+        if self.records[sig].state == QueueState::Queued {
             self.unplace(sig);
-        }
-        if matches!(before, QueueState::Submitted | QueueState::InBlock) {
-            if let Some(pace) = self.pace.as_mut() {
-                pace.record_settled(1);
-            }
-            // An expiry measures the deploy's window, not how long the shard
-            // took to settle it.
-            let released_at = self.records[sig].submitted_at_height;
-            if let (true, Some(released_at), Some(window)) = (
-                matches!(state, QueueState::Finalized | QueueState::Failed),
-                released_at,
-                self.window.as_mut(),
-            ) {
-                let lost_merges = node.as_ref().is_some_and(|(rejections, _)| *rejections > 0);
-                if lost_merges {
-                    window.on_lost_merge_verdict();
-                } else {
-                    window.on_verdict(tip - released_at);
-                }
-            }
         }
         self.update(sig, |record| {
             record.state = state;
@@ -1301,19 +1219,9 @@ impl Engine {
             closed: self.closed.len(),
             submitted: self.count(QueueState::Submitted),
             in_block: self.count(QueueState::InBlock),
-            released_limit: self.released_limit(),
-            release_window: self.window.as_ref().map(ReleaseWindow::window),
-            release_cuts: self.window.as_ref().map(ReleaseWindow::cuts),
-            late_share: self.window.as_ref().and_then(ReleaseWindow::late_share),
-            settle_delay: self.window.as_ref().and_then(ReleaseWindow::settle_delay),
-            inclusion_delay: self
-                .window
-                .as_ref()
-                .and_then(ReleaseWindow::inclusion_delay),
-            release_rate: self.window.as_ref().and_then(ReleaseWindow::release_rate),
             held: self.records.len(),
-            settled_per_height: self.pace.as_ref().map(Pace::settled_per_height),
-            secs_per_height: self.pace.as_ref().and_then(Pace::secs_per_height),
+            validator: self.health.as_ref().map(Health::validator_view),
+            shard: self.health.as_ref().map(Health::shard_view),
         }
     }
 
@@ -1333,9 +1241,9 @@ impl Engine {
 /// still build on another.
 fn citable_depth(shard: &ShardValues) -> i64 { i64::from(shard.max_parent_depth) }
 
-/// Heights until `deploys` more deploys settle at `rate` a height; `None`
-/// when the rate is zero: the shard is settling nothing.
-fn heights_to_settle(deploys: usize, rate: f64) -> Option<i64> {
+/// Heights until the validator takes `deploys` more at `rate` a height;
+/// `None` when the rate is zero: it is taking nothing.
+fn heights_to_include(deploys: usize, rate: f64) -> Option<i64> {
     if deploys == 0 {
         return Some(0);
     }
@@ -1350,27 +1258,28 @@ struct Slot {
     last: i64,
 }
 
-/// Whether the deploy at `position` in release order settles, at `rate`
-/// a height, with `depth` heights to spare before its window closes.
+/// Whether the deploy at `position` in release order is taken into a block,
+/// at `rate` a height, with `depth` heights to spare before its window closes.
 fn lands(slot: Slot, position: usize, rate: f64, depth: i64) -> bool {
-    heights_to_settle(position, rate)
+    heights_to_include(position, rate)
         .is_some_and(|heights| slot.releasable_from + heights + depth <= slot.last)
 }
 
 /// Whether a new deploy may join the queue. Release takes the earliest
-/// deadline first, so the deploy waits behind every released deploy and the
-/// `earlier` queued deploys whose deadline comes first, and every queued
-/// deploy in `later` moves back one place. It is admitted when it lands and
-/// no later deploy that lands now would stop landing.
+/// deadline first, so the deploy waits behind every deploy in the
+/// validator's pool and the `earlier` queued deploys whose deadline comes
+/// first, and every queued deploy in `later` moves back one place. It is
+/// admitted when it lands and no later deploy that lands now would stop
+/// landing.
 fn admits(
-    released: usize,
+    pooled: usize,
     earlier: usize,
     new: Slot,
     later: impl Iterator<Item = Slot>,
     rate: f64,
     depth: i64,
 ) -> bool {
-    let position = released + earlier + 1;
+    let position = pooled + earlier + 1;
     lands(new, position, rate, depth)
         && later.enumerate().all(|(index, slot)| {
             let without = position + index;
@@ -1378,8 +1287,8 @@ fn admits(
         })
 }
 
-/// Deploys the queue can hold: what settles at `rate` a height in a fresh
-/// window, less the depth kept to spare.
+/// Deploys the queue can hold: what the validator takes at `rate` a height
+/// in a fresh window, less the depth kept to spare.
 fn capacity(rate: f64, fresh_span: i64, depth: i64) -> usize {
     (rate * (fresh_span - depth).max(0) as f64).floor() as usize
 }
@@ -1479,8 +1388,8 @@ mod tests {
     }
 
     /// Admits each height's arrivals, then releases one deploy a height,
-    /// earliest deadline first, settling it at the next height. Panics when
-    /// an admitted deploy settles with less than `depth` heights to spare.
+    /// earliest deadline first, into the next height's block. Panics when an
+    /// admitted deploy lands with less than `depth` heights to spare.
     fn simulate(
         arrivals: impl Fn(i64) -> Vec<i64>,
         heights: i64,
@@ -1508,7 +1417,7 @@ mod tests {
             if let Some(((last, _), _)) = queue.pop_first() {
                 assert!(
                     tip + 1 + depth <= last,
-                    "a deploy admitted with deadline {last} settled at {}",
+                    "a deploy admitted with deadline {last} landed at {}",
                     tip + 1
                 );
             }

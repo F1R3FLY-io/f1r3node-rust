@@ -163,6 +163,7 @@ mod tests {
             vec![create_test_deploy_event("deploy1")],
             "creator1".to_string(),
             42,
+            None,
         )
     }
 
