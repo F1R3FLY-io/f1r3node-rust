@@ -166,13 +166,14 @@ Proof.
   intros left right key. unfold meet. apply Nat.le_min_r.
 Qed.
 
-Inductive cursor_algebra := CursorJoin | CursorMeet | CursorSubtract.
+Inductive cursor_algebra := CursorJoin | CursorMeet | CursorSubtract | CursorSum.
 
 Definition cursor_count (operation : cursor_algebra) (left right : nat) : nat :=
   match operation with
   | CursorJoin => Nat.max left right
   | CursorMeet => Nat.min left right
   | CursorSubtract => left - right
+  | CursorSum => left + right
   end.
 
 Definition cursor_result (operation : cursor_algebra) (left right : bag) : bag :=
@@ -339,6 +340,10 @@ Theorem cursor_subtract_refines_bag_subtract :
   forall left right, cursor_result CursorSubtract left right = subtract left right.
 Proof. reflexivity. Qed.
 
+Theorem cursor_sum_refines_bag_sum :
+  forall left right, cursor_result CursorSum left right = sum left right.
+Proof. reflexivity. Qed.
+
 Definition cursor_subbag_step
   (left right : bag) (accepted : bool) (key : Key) : bool :=
   andb accepted (Nat.leb (left key) (right key)).
@@ -451,11 +456,16 @@ Qed.
 
 Theorem cursor_count_respects_bound :
   forall operation left right maximum,
+    operation <> CursorSum ->
     left <= maximum -> right <= maximum ->
     cursor_count operation left right <= maximum.
 Proof.
-  intros [| |] left right maximum left_bound right_bound;
-    simpl; lia.
+  intros operation left right maximum not_sum left_bound right_bound.
+  destruct operation; simpl.
+  - lia.
+  - lia.
+  - lia.
+  - exfalso. apply not_sum. reflexivity.
 Qed.
 
 (** A normalized delta has disjoint addition and removal support.  This is the
@@ -635,5 +645,98 @@ Proof. reflexivity. Qed.
 Theorem accepted_commit_publishes_exact_proposal :
   forall subject committed, publish_atomic subject (Some committed) = committed.
 Proof. reflexivity. Qed.
+
+(** `Bag::sum` checks every endpoint of the smaller operand against the larger
+    one before it writes anything.  [maximum] is the largest multiplicity
+    ([u64::MAX] in the implementation) and [keys] lists the endpoints that the
+    cursor walk visits.  One addition above the maximum refuses the whole sum. *)
+Definition cursor_sum_fits (maximum : nat) (left right : bag) (keys : list Key) : bool :=
+  forallb (fun key => Nat.leb (left key + right key) maximum) keys.
+
+Definition checked_cursor_sum
+  (maximum : nat) (left right : bag) (keys : list Key) : option bag :=
+  if cursor_sum_fits maximum left right keys
+  then Some (snd (cursor_walk CursorSum left right keys ([], empty)))
+  else None.
+
+Theorem overflowing_endpoint_publishes_nothing :
+  forall maximum subject left right keys key,
+    In key keys ->
+    maximum < left key + right key ->
+    publish_atomic subject (checked_cursor_sum maximum left right keys) = subject.
+Proof.
+  intros maximum subject left right keys key present overflow.
+  unfold checked_cursor_sum.
+  destruct (cursor_sum_fits maximum left right keys) eqn:fits.
+  - exfalso.
+    unfold cursor_sum_fits in fits.
+    pose proof (proj1 (forallb_forall _ keys) fits key present) as bounded.
+    cbv beta in bounded.
+    apply Nat.leb_le in bounded.
+    lia.
+  - reflexivity.
+Qed.
+
+(** The positive half: when no endpoint overflows, the checked sum publishes
+    the pointwise sum.  It is stated key by key, so that the proof needs no
+    functional extensionality. *)
+Theorem checked_cursor_sum_publishes_the_bounded_sum :
+  forall maximum subject left right keys,
+    NoDup keys ->
+    (forall key, left key <> 0 \/ right key <> 0 -> In key keys) ->
+    (forall key, In key keys -> left key + right key <= maximum) ->
+    forall key,
+      publish_atomic subject (checked_cursor_sum maximum left right keys) key =
+        sum left right key.
+Proof.
+  intros maximum subject left right keys unique complete bounded key.
+  assert (fits : cursor_sum_fits maximum left right keys = true).
+  { unfold cursor_sum_fits. apply forallb_forall.
+    intros candidate present. cbv beta. apply Nat.leb_le.
+    apply bounded. exact present. }
+  unfold checked_cursor_sum. rewrite fits. cbn [publish_atomic].
+  assert (valid :
+    cursor_valid CursorSum left right
+      (snd (cursor_walk CursorSum left right keys ([], empty)))
+      (fst (cursor_walk CursorSum left right keys ([], empty)))).
+  { apply cursor_walk_preserves_exact_counts.
+    - exact unique.
+    - intros candidate present absent. inversion absent.
+    - apply empty_cursor_valid. }
+  destruct (in_dec key_eq_dec key (fst (cursor_walk CursorSum left right keys ([], empty))))
+    as [visited | unvisited].
+  - rewrite (proj1 (valid key) visited). reflexivity.
+  - rewrite (proj2 (valid key) unvisited).
+    assert (absent : ~ In key keys).
+    { intro present. apply unvisited. apply cursor_walk_visits_input. exact present. }
+    destruct (Nat.eq_dec (left key) 0) as [left_zero | left_nonzero].
+    + destruct (Nat.eq_dec (right key) 0) as [right_zero | right_nonzero].
+      * unfold sum. rewrite left_zero, right_zero. reflexivity.
+      * exfalso. apply absent. apply complete. right. exact right_nonzero.
+    + exfalso. apply absent. apply complete. left. exact left_nonzero.
+Qed.
+
+(** Negative control: a sum that wraps each addition modulo [S maximum], and so
+    publishes even when an endpoint overflows, breaks the atomicity property
+    above.  The witness overflows at the one key it visits. *)
+Definition wrapping_cursor_sum
+  (maximum : nat) (left right : bag) (keys : list Key) : option bag :=
+  Some (fun key => (left key + right key) mod (S maximum)).
+
+Theorem wrapping_cursor_sum_violates_atomicity :
+  forall key : Key,
+    exists maximum subject left right,
+      In key [key] /\
+      maximum < left key + right key /\
+      publish_atomic subject (wrapping_cursor_sum maximum left right [key]) <> subject.
+Proof.
+  intro key.
+  exists 1, (fun _ => 1), (fun _ => 1), (fun _ => 1).
+  split; [left; reflexivity |].
+  split; [simpl; lia |].
+  unfold publish_atomic, wrapping_cursor_sum. intro published.
+  apply (f_equal (fun counts : bag => counts key)) in published.
+  cbv in published. discriminate published.
+Qed.
 
 End ExactKeyBag.

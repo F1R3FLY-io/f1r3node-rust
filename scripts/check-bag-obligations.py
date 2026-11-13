@@ -31,6 +31,7 @@ cursor_walk_preserves_exact_counts cursor_finished_is_pointwise_algebra
 cursor_walk_preserves_visited cursor_walk_visits_input
 cursor_walk_refines_pointwise_algebra cursor_join_refines_bag_join
 cursor_meet_refines_bag_meet cursor_subtract_refines_bag_subtract
+cursor_sum_refines_bag_sum
 cursor_subbag_step_refines_conjunction empty_subbag_cursor_valid
 cursor_subbag_step_preserves_validity cursor_subbag_finished_is_exact
 cursor_subbag_walk_checks_every_key cursor_subbag_walk_refines_finite_support
@@ -43,11 +44,15 @@ persistent_stored_candidate_is_not_removed fresh_candidate_is_not_removed
 selected_removals_permutation_invariant selected_commit_exact_count
 permuted_play_replay_commits_equal rejected_commit_publishes_no_partial_state
 accepted_commit_publishes_exact_proposal
+overflowing_endpoint_publishes_nothing
+checked_cursor_sum_publishes_the_bounded_sum
+wrapping_cursor_sum_violates_atomicity
 """,
 )
 
 ORACLE = "bag_algebra_matches_a_btreemap_multiplicity_oracle"
 DELTA = "normalized_transaction_delta_applies_and_reverts_exactly"
+OVERFLOW = "sum_refuses_the_first_overflowing_endpoint_in_either_operand_order"
 DIRECT = {
     "set_count_is_exact": "insert_remove_and_metadata_preserve_the_absent_zero_invariant",
     **{
@@ -75,6 +80,8 @@ DIRECT = {
             "canonical_delta_round_trip",
         )
     },
+    "overflowing_endpoint_publishes_nothing": OVERFLOW,
+    "checked_cursor_sum_publishes_the_bounded_sum": ORACLE,
 }
 VERUS_DECLS = [
     ("apply_count_spec", "open spec", None),

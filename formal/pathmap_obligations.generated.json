@@ -1,9 +1,9 @@
 {
   "classified_obligations": {
-    "concrete_witness": 106,
+    "concrete_witness": 108,
     "executable_only": 9,
     "executable_refinement": 225,
-    "proof_only": 538
+    "proof_only": 540
   },
   "families": [
     {
@@ -447,7 +447,7 @@
       "checker": "scripts/check-bag-obligations.py",
       "family": "bag",
       "manifest": "formal/bag_obligations.generated.json",
-      "manifest_sha256": "09672290ee706a047c249c76e91cb5de58fcf0f2e9fc9f282ef5b5a4b141f95c",
+      "manifest_sha256": "ae896c16daed75dd4f1f4c24026b05fa6433a232df5e1905a1b4513088b9378c",
       "obligations": {
         "boundary": "Concrete witnesses exercise Bag behavior; they do not prove Rocq/Verus refinement or arbitrary inputs.",
         "delegated_tla": {
@@ -690,147 +690,175 @@
           {
             "id": "BAG-RC-32",
             "mode": "proof_only",
-            "obligation": "cursor_subbag_step_refines_conjunction",
+            "obligation": "cursor_sum_refines_bag_sum",
             "target_name": null,
             "target_source": null
           },
           {
             "id": "BAG-RC-33",
             "mode": "proof_only",
-            "obligation": "empty_subbag_cursor_valid",
+            "obligation": "cursor_subbag_step_refines_conjunction",
             "target_name": null,
             "target_source": null
           },
           {
             "id": "BAG-RC-34",
             "mode": "proof_only",
-            "obligation": "cursor_subbag_step_preserves_validity",
+            "obligation": "empty_subbag_cursor_valid",
             "target_name": null,
             "target_source": null
           },
           {
             "id": "BAG-RC-35",
             "mode": "proof_only",
-            "obligation": "cursor_subbag_finished_is_exact",
+            "obligation": "cursor_subbag_step_preserves_validity",
             "target_name": null,
             "target_source": null
           },
           {
             "id": "BAG-RC-36",
             "mode": "proof_only",
-            "obligation": "cursor_subbag_walk_checks_every_key",
+            "obligation": "cursor_subbag_finished_is_exact",
             "target_name": null,
             "target_source": null
           },
           {
             "id": "BAG-RC-37",
             "mode": "proof_only",
-            "obligation": "cursor_subbag_walk_refines_finite_support",
+            "obligation": "cursor_subbag_walk_checks_every_key",
             "target_name": null,
             "target_source": null
           },
           {
             "id": "BAG-RC-38",
             "mode": "proof_only",
-            "obligation": "cursor_count_respects_bound",
+            "obligation": "cursor_subbag_walk_refines_finite_support",
             "target_name": null,
             "target_source": null
           },
           {
             "id": "BAG-RC-39",
+            "mode": "proof_only",
+            "obligation": "cursor_count_respects_bound",
+            "target_name": null,
+            "target_source": null
+          },
+          {
+            "id": "BAG-RC-40",
             "mode": "concrete_witness",
             "obligation": "normalized_delta_reversible",
             "target_name": "normalized_transaction_delta_applies_and_reverts_exactly",
             "target_source": "rspace++/tests/bag_spec.rs"
           },
           {
-            "id": "BAG-RC-40",
+            "id": "BAG-RC-41",
             "mode": "proof_only",
             "obligation": "canonical_delta_is_normalized",
             "target_name": null,
             "target_source": null
           },
           {
-            "id": "BAG-RC-41",
+            "id": "BAG-RC-42",
             "mode": "concrete_witness",
             "obligation": "canonical_delta_is_applicable",
             "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
             "target_source": "rspace++/tests/bag_spec.rs"
           },
           {
-            "id": "BAG-RC-42",
+            "id": "BAG-RC-43",
             "mode": "concrete_witness",
             "obligation": "canonical_delta_reaches_target",
             "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
             "target_source": "rspace++/tests/bag_spec.rs"
           },
           {
-            "id": "BAG-RC-43",
+            "id": "BAG-RC-44",
             "mode": "concrete_witness",
             "obligation": "canonical_delta_round_trip",
             "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
             "target_source": "rspace++/tests/bag_spec.rs"
           },
           {
-            "id": "BAG-RC-44",
+            "id": "BAG-RC-45",
             "mode": "proof_only",
             "obligation": "nonpersistent_stored_candidate_removes_one",
             "target_name": null,
             "target_source": null
           },
           {
-            "id": "BAG-RC-45",
+            "id": "BAG-RC-46",
             "mode": "proof_only",
             "obligation": "nonpersistent_stored_candidate_is_exact",
             "target_name": null,
             "target_source": null
           },
           {
-            "id": "BAG-RC-46",
+            "id": "BAG-RC-47",
             "mode": "proof_only",
             "obligation": "persistent_stored_candidate_is_not_removed",
             "target_name": null,
             "target_source": null
           },
           {
-            "id": "BAG-RC-47",
+            "id": "BAG-RC-48",
             "mode": "proof_only",
             "obligation": "fresh_candidate_is_not_removed",
             "target_name": null,
             "target_source": null
           },
           {
-            "id": "BAG-RC-48",
+            "id": "BAG-RC-49",
             "mode": "proof_only",
             "obligation": "selected_removals_permutation_invariant",
             "target_name": null,
             "target_source": null
           },
           {
-            "id": "BAG-RC-49",
+            "id": "BAG-RC-50",
             "mode": "proof_only",
             "obligation": "selected_commit_exact_count",
             "target_name": null,
             "target_source": null
           },
           {
-            "id": "BAG-RC-50",
+            "id": "BAG-RC-51",
             "mode": "proof_only",
             "obligation": "permuted_play_replay_commits_equal",
             "target_name": null,
             "target_source": null
           },
           {
-            "id": "BAG-RC-51",
+            "id": "BAG-RC-52",
             "mode": "proof_only",
             "obligation": "rejected_commit_publishes_no_partial_state",
             "target_name": null,
             "target_source": null
           },
           {
-            "id": "BAG-RC-52",
+            "id": "BAG-RC-53",
             "mode": "proof_only",
             "obligation": "accepted_commit_publishes_exact_proposal",
+            "target_name": null,
+            "target_source": null
+          },
+          {
+            "id": "BAG-RC-54",
+            "mode": "concrete_witness",
+            "obligation": "overflowing_endpoint_publishes_nothing",
+            "target_name": "sum_refuses_the_first_overflowing_endpoint_in_either_operand_order",
+            "target_source": "rspace++/tests/bag_spec.rs"
+          },
+          {
+            "id": "BAG-RC-55",
+            "mode": "concrete_witness",
+            "obligation": "checked_cursor_sum_publishes_the_bounded_sum",
+            "target_name": "bag_algebra_matches_a_btreemap_multiplicity_oracle",
+            "target_source": "rspace++/tests/bag_spec.rs"
+          },
+          {
+            "id": "BAG-RC-56",
+            "mode": "proof_only",
+            "obligation": "wrapping_cursor_sum_violates_atomicity",
             "target_name": null,
             "target_source": null
           }
@@ -840,11 +868,11 @@
         "scope": "Bag multiplicity algebra and checked scalar delta",
         "sources_sha256": {
           "formal/accepted_match_obligations.generated.json": "013bb2d7718a0cbdde0713f17f5b4aba186cda824d3e2aab26043d1eed38f8b1",
-          "formal/rocq/stack_safe_pda/theories/Bag.v": "2d733bef66d0073c852b800e5865c161feb16e5b9c97e92d4115a4fe4d7574c1",
+          "formal/rocq/stack_safe_pda/theories/Bag.v": "0bd05b2b21e0f9ca97e1b92eed61c486eadc21933eb93fd12d0e5e1d89b6e874",
           "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
           "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",
           "rspace++/Cargo.toml": "d9a89c282bc6be737745d2bc0debec6058b64a0f4038e7ad3e65375c31fc9c54",
-          "rspace++/tests/bag_spec.rs": "7f7ea238595b50838c844ddbe05857b5ea64b30431eef5e3cef74b4e6098de2d"
+          "rspace++/tests/bag_spec.rs": "72c2be48caa4486a9cec488d5467d39f377f71568ce7383e35f4e08bba49a493"
         },
         "verus_obligations": [
           {
@@ -9116,6 +9144,6 @@
       }
     }
   ],
-  "global_obligation_ids": 892,
+  "global_obligation_ids": 896,
   "scope": "PathMap integration formal obligations and normal-suite refinement bindings"
 }

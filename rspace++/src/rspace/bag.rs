@@ -914,11 +914,53 @@ impl Bag {
     }
 
     pub fn sum(&self, other: &Self) -> Result<Self, BagError> {
-        let mut result = self.clone();
-        for (path, multiplicity) in other.iter() {
-            result.insert_many(&path, multiplicity)?;
-        }
-        Ok(result)
+        let self_is_larger = self.distinct_len >= other.distinct_len;
+        let (larger, smaller) = match self_is_larger {
+            true => (self, other),
+            false => (other, self),
+        };
+        let mut added_endpoints = 0usize;
+        smaller.try_visit_relative_prefix(&[], |path, amount| {
+            match larger.entries.get(path).copied() {
+                Some(resident) => {
+                    let (current, addend) = match self_is_larger {
+                        true => (resident, amount),
+                        false => (amount, resident),
+                    };
+                    current.checked_add(addend)?;
+                }
+                None => added_endpoints += 1,
+            }
+            Ok::<(), BagError>(())
+        })?;
+        let distinct_len = larger
+            .distinct_len
+            .checked_add(added_endpoints)
+            .expect("the distinct endpoints of two resident Bags fit usize");
+        let exact_cardinality = self
+            .exact_cardinality
+            .checked_add(other.exact_cardinality)
+            .expect("the exact cardinalities of two resident Bags fit u128");
+        let mut entries = larger.entries.clone();
+        entries.with_write_cursor(|mut cursor| {
+            smaller.visit_relative_prefix(&[], |path, amount| {
+                match larger.entries.get(path).copied() {
+                    Some(resident) => {
+                        cursor.move_to_existing_value(path);
+                        cursor.set_val(
+                            resident
+                                .checked_add(amount)
+                                .expect("Bag::sum preflighted every shared endpoint"),
+                        );
+                    }
+                    None => {
+                        cursor.move_to_path(path);
+                        cursor.set_val(amount);
+                    }
+                }
+            });
+        });
+        Ok(Self::from_guarded_with_metrics(entries, distinct_len, exact_cardinality))
     }
 
     /// Multiply every exact-path multiplicity with one copy-on-write zipper
@@ -965,17 +1007,38 @@ impl Bag {
     }
 
     pub fn join(&self, other: &Self) -> Self {
-        let (mut result, updates) = if self.distinct_len >= other.distinct_len {
-            (self.clone(), other)
-        } else {
-            (other.clone(), self)
+        let (larger, smaller) = match self.distinct_len >= other.distinct_len {
+            true => (self, other),
+            false => (other, self),
         };
-        for (path, multiplicity) in updates.iter() {
-            if multiplicity.get() > result.count(&path) {
-                result.set_count(&path, Some(multiplicity));
-            }
-        }
-        result
+        let mut distinct_len = larger.distinct_len;
+        let mut exact_cardinality = larger.exact_cardinality;
+        let mut entries = larger.entries.clone();
+        entries.with_write_cursor(|mut cursor| {
+            smaller.visit_relative_prefix(&[], |path, amount| {
+                match larger.entries.get(path).copied() {
+                    Some(resident) if amount.get() > resident.get() => {
+                        cursor.move_to_existing_value(path);
+                        cursor.set_val(amount);
+                        exact_cardinality = exact_cardinality
+                            .checked_add(u128::from(amount.get() - resident.get()))
+                            .expect("a joined Bag's exact cardinality fits u128");
+                    }
+                    Some(_) => {}
+                    None => {
+                        cursor.move_to_path(path);
+                        cursor.set_val(amount);
+                        distinct_len = distinct_len
+                            .checked_add(1)
+                            .expect("a joined Bag's distinct endpoints fit usize");
+                        exact_cardinality = exact_cardinality
+                            .checked_add(u128::from(amount.get()))
+                            .expect("a joined Bag's exact cardinality fits u128");
+                    }
+                }
+            });
+        });
+        Self::from_guarded_with_metrics(entries, distinct_len, exact_cardinality)
     }
 
     pub fn meet(&self, other: &Self) -> Self {

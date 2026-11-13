@@ -494,6 +494,43 @@ fn sum_is_additive_while_join_and_meet_are_lattice_operations() {
 }
 
 #[test]
+fn sum_refuses_the_first_overflowing_endpoint_in_either_operand_order() {
+    let nearly_full = u64::MAX - 1;
+    let smaller = bag(&[(b"b", 2), (b"d", 3)]);
+    let larger = bag(&[(b"a", 1), (b"b", nearly_full), (b"c", 1), (b"d", nearly_full), (b"e", 1)]);
+    assert_eq!(
+        smaller.sum(&larger),
+        Err(BagError::MultiplicityOverflow {
+            current: 2,
+            added: nearly_full,
+        }),
+        "sum must refuse at the first overflowing endpoint and report self's count, then other's"
+    );
+    assert_eq!(
+        larger.sum(&smaller),
+        Err(BagError::MultiplicityOverflow {
+            current: nearly_full,
+            added: 2,
+        }),
+        "sum must refuse at the first overflowing endpoint and report self's count, then other's"
+    );
+    let fitting = bag(&[(b"b", 1), (b"d", 1)]);
+    let expected = bag(&[(b"a", 1), (b"b", u64::MAX), (b"c", 1), (b"d", u64::MAX), (b"e", 1)]);
+    assert_eq!(
+        fitting
+            .sum(&larger)
+            .expect("counts that reach u64::MAX exactly fit"),
+        expected
+    );
+    assert_eq!(
+        larger
+            .sum(&fitting)
+            .expect("counts that reach u64::MAX exactly fit"),
+        expected
+    );
+}
+
+#[test]
 fn meet_combines_exact_values_when_an_overlap_is_also_a_prefix() {
     let left = bag(&[(b"\x07", 7), (b"\x08", 1)]);
     let right = bag(&[(b"\x07", 1), (b"\x07\x00", 1), (b"\x08", 1)]);

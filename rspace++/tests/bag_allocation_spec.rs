@@ -346,6 +346,58 @@ fn applying_structural_bag_deltas_allocates_no_path_buffer_per_endpoint() {
     );
 }
 
+fn overlay_operand(endpoints: usize, shared_count: u64) -> Bag {
+    delta_bag((0..endpoints).map(|index| match index % 2 {
+        0 => (DELTA_TARGET_ENDPOINTS + index, 1),
+        _ => (index, shared_count),
+    }))
+}
+
+fn overlay_expectation(endpoints: usize, shared_result: u64) -> Bag {
+    delta_bag(
+        (0..DELTA_TARGET_ENDPOINTS)
+            .map(|ordinal| match (ordinal < endpoints, ordinal % 2) {
+                (true, 1) => (ordinal, shared_result),
+                _ => (ordinal, 2),
+            })
+            .chain(
+                (0..endpoints)
+                    .step_by(2)
+                    .map(|index| (DELTA_TARGET_ENDPOINTS + index, 1)),
+            ),
+    )
+}
+
+#[test]
+fn summing_and_joining_bags_allocates_no_path_buffer_per_endpoint() {
+    let observe = |endpoints: usize| {
+        let target = delta_target();
+        let operand = overlay_operand(endpoints, 3);
+        let expected_sum = overlay_expectation(endpoints, 5);
+        let expected_join = overlay_expectation(endpoints, 3);
+        let (summed, sum_buffers) =
+            count_sized_allocations(DELTA_PATH_BYTES, || target.sum(&operand));
+        assert_eq!(summed.expect("the overlay sum fits"), expected_sum);
+        let (reversed_sum, reversed_sum_buffers) =
+            count_sized_allocations(DELTA_PATH_BYTES, || operand.sum(&target));
+        assert_eq!(reversed_sum.expect("the overlay sum fits"), expected_sum);
+        let (joined, join_buffers) =
+            count_sized_allocations(DELTA_PATH_BYTES, || target.join(&operand));
+        assert_eq!(joined, expected_join);
+        let (reversed_join, reversed_join_buffers) =
+            count_sized_allocations(DELTA_PATH_BYTES, || operand.join(&target));
+        assert_eq!(reversed_join, expected_join);
+        (sum_buffers, reversed_sum_buffers, join_buffers, reversed_join_buffers)
+    };
+    let single = observe(1);
+    let wide = observe(1024);
+    assert_eq!(
+        wide, single,
+        "path-sized buffers grew with the operand's endpoint count: (sum, reversed sum, join, \
+         reversed join) at 1,024 endpoints, then at 1"
+    );
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct CatalogValue(String);
 
