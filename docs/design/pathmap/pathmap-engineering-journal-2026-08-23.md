@@ -805,6 +805,81 @@ inferred from the codec witness. These logs are local evidence, not pgmcp-manage
 receipts. Historical J-047/J-155 and parent release evidence remain historical rather than being
 relabeled as today's complete acceptance.
 
+**Gate rerun at a committed tree (2026-11-13; task 14383).** The eight gate commands of task 5981
+ran to completion at `10884b06f59be9488e2c4f7eb925ce8341a11f3a` (tree
+`60323bcb9fa32a8df62dc976787ee5d6b893d4b0`). That commit contains the repair `253d17545` and builds
+against PathMap 0.3.4. Each command ran in its own scope,
+`systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 -p RuntimeMaxSec=7200`, pinned to
+CPUs 16-31 and 48-63, with its output in its own log. The test binaries were built beforehand, so
+each scope ran the tests and not the compiler. Every command exited 0:
+
+| Gate | Command (`cargo test --release --locked -j4` followed by) | Passed | Failed | Ignored | Wall time |
+|---|---|---|---|---|---|
+| EPM1 | `-p models --test epathmap_epm1_snapshot -- --test-threads=4` | 22 | 0 | 0 | 38.0 s |
+| RMP2 topology | `-p models --test match_path_structure --test epathmap_pathmap_native_zipper` | 38 | 0 | 0 | 7.9 s |
+| Malformed input | `-p models --test bincode_decoder_malformed` | 7 | 0 | 1 | 1,038.5 s |
+| Malformed input | `-p models --lib epathmap_trie_codec` | 86 | 0 | 3 | 98.6 s |
+| Malformed input | `-p rspace_plus_plus --lib pathmap_codec` | 33 | 0 | 0 | 113.1 s |
+| bincode and protobuf | `-p models --test bincode_decoder_differential --test protobuf_decoder_differential` | 20 | 0 | 0 | 45.2 s |
+| Replay | `-p rspace_plus_plus --test replay_rspace_tests` | 24 | 0 | 0 | 24.9 s |
+| Replay | `-p casper --test mod -- archived_deploys_replay_without_play_or_caches` | 1 | 0 | 0 | 427.3 s |
+
+The two `--lib` commands and the Casper command select their tests by name; they filter out 894,
+1,010 and 859 tests. The EPM1 binary now holds 22 tests, against 17 at the September checkpoint above.
+All 22 passed, including `nested_map_value_term_operations_are_stack_safe_on_a_256_kib_stack`, which
+did not finish then.
+
+Red control. `253d17545` removed one rejection from the collected semantic validator: a non-root
+node with no value, no line and no children was refused as “ACTree03 contains an uncompressed empty
+non-root branch”. The red control put that rejection back into both semantic validators of
+`rspace++/src/rspace/pathmap_codec.rs`: into `semantic_act_node` exactly as it was, and into
+`direct_semantic_node`, which was written later. Each validator took the root's offset as a new
+argument, passed at every call, including the unit-test call in
+`rspace++/tests/support/pathmap_codec_validated_plan.rs`. The edit was made in the exported tree only
+and never committed. Run r1 ran only the test expected to fail; run r2 ran the complete EPM1 command
+and, as a diagnostic, the two codec commands:
+
+| Red run | Command | Passed | Failed | Ignored | Failed tests |
+|---|---|---|---|---|---|
+| r1 | EPM1, `--exact root_divergent_value_free_endpoint_round_trips_the_canonical_epm1_image` | 1 | 0 | 0 | none |
+| r2 | EPM1 | 22 | 0 | 0 | none |
+| r2 | `-p models --lib epathmap_trie_codec` | 84 | 2 | 3 | `arbitrary_prefix_maps_preserve_payload_association`, `branching_set_and_topology_only_pending_frames_retire_without_publication` |
+| r2 | `-p rspace_plus_plus --lib pathmap_codec` | 28 | 5 | 0 | `validated_plan_tests::cached_value_summary_matches_independent_preorder_offsets_and_latches`, `validated_plan_tests::independent_source_witness_checks_empty_sparse_dense_and_compressed_rewinds`, `validated_plan_tests::arbitrary_pathmap_writer_images_are_accepted_with_exact_preorder_plans`, `validated_plan_tests::checked_line_transport::shared_lines_values_and_valueless_branches_preserve_all_boundaries`, `validated_plan_tests::checked_line_transport::arbitrary_branched_fragmented_images_match_every_scalar_prefix` |
+
+Each of the seven failures carries the restored rejection text. The EPM1 fixture no longer reaches
+the rejection. It creates the value-free path `dangling/endpoint` beside the key of `1`; the two paths
+diverge at their first byte, and the endpoint's remaining bytes do not fork. In
+`direct_semantic_node`, a value-free childless node is either a branch node, which the restored
+rejection refuses, or a line node without a child, which it does not refuse because the node has a
+line. (A line whose branch wrapper has no children is refused at this commit in any case.) The
+fixture passed under the rejection, so its endpoint is the line form. A childless branch node arises
+when an endpoint's last byte is itself a branch edge, the shape of the codec tests that failed. The
+EPM1 test was added by `253d17545`, which built against PathMap 0.2.2; this rerun does not
+re-establish what the 0.2.2 writer produced for it.
+
+Retained local logs and SHA-256 digests:
+
+| Log under `target/verification/` | SHA-256 |
+|---|---|
+| `epm1-endpoint-5981-r1-epm1.log` | `bbf55606127ff070298207abd8e9efe16d8a281634907392d3f28bc603212ea6` |
+| `epm1-endpoint-5981-r1-rmp2-topology.log` | `98e97edb0573b3ab5989df3b292b416c78cedc65bfe4af05e2e2d7a7d7e76c1f` |
+| `epm1-endpoint-5981-r1-malformed-bincode.log` | `b38930a41cdd17ca78cf5edcd3b25bb071998e6aa210854d62f77f5193de6cd0` |
+| `epm1-endpoint-5981-r1-malformed-trie-codec.log` | `386f9c822ec60bf4943f41dcf243dafbc6f8aa6b7bcfbe307443276ac62161d7` |
+| `epm1-endpoint-5981-r1-malformed-pathmap-codec.log` | `fe4f7344bb5f1fe4e2ca875c5fca29608c96b53ecbeaecedbdc3d011f3675543` |
+| `epm1-endpoint-5981-r1-bincode-protobuf.log` | `1e8325a594f7e5639e1c1db4500d62cdac945006575c8bdb3f3be9ae435280a5` |
+| `epm1-endpoint-5981-r1-replay-rspace.log` | `f414431d48cb3cc7df9ea969830316130e54095603c2012cd1a5f46b018b5785` |
+| `epm1-endpoint-5981-r1-replay-casper.log` | `871de8fbc37ed6760e68f4b59d344da3ec09ee018e5c7c9a1f3698ab5821c59f` |
+| `epm1-endpoint-5981-r1-red-epm1.log` | `988d0ea8ac4d18f3aa90e1e3addc63e3813bed9a45f71d69123fe97b035eb549` |
+| `epm1-endpoint-5981-r2-red-epm1.log` | `2ff445347e8ef2825f847166976644417699f9a656022512fd00f310a9b9a538` |
+| `epm1-endpoint-5981-r2-red-malformed-trie-codec.log` | `68a59378b6a18af7e723366049a6ef88d7ad154719799a82e4ff929d6be531ea` |
+| `epm1-endpoint-5981-r2-red-malformed-pathmap-codec.log` | `c7349868b8f2d37ec6008a4ec41bffc574f8e714300c5c7618c60fddcdaf5db4` |
+
+Task 5981 stays open. The acceptance of task 14383 expects `epathmap_epm1_snapshot` to report 17
+passed, but the binary already held 22 tests at `2c3f22e09`. It also expects the restored rejection
+to make at least one test of the EPM1 command fail, and none does. Both differences are reported to
+the task's owner, and the acceptance text is unchanged. These logs are local evidence, not
+pgmcp-managed verification receipts.
+
 ### J-009 — 2026-08-23: cache only the versioned RMP2 digest across a CoW clone family
 
 Question: After the RMP2 transcript becomes linear, should repeated derived-path construction walk
