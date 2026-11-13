@@ -138,7 +138,7 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
         let full = Estimator::apply()
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 latest.clone(),
                 i32::MAX,
                 None,
@@ -152,7 +152,7 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
         let neg = Estimator::apply()
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 latest.clone(),
                 -1,
                 None,
@@ -169,7 +169,7 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
         let cap1 = Estimator::apply()
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 latest.clone(),
                 1,
                 None,
@@ -187,7 +187,7 @@ async fn b2_sentinel_and_positive_cap_usize_safe() {
         let cap2 = Estimator::apply()
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 latest,
                 2,
                 None,
@@ -212,7 +212,7 @@ async fn b3_score_above_int64_preserves_the_exact_sum() {
         let result = Estimator::apply()
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 latest,
                 i32::MAX,
                 None,
@@ -258,7 +258,7 @@ async fn b4_some_depth_on_genesis_only_is_ok() {
         let forkchoice = Estimator::apply()
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 HashMap::new(),
                 i32::MAX,
                 Some(0),
@@ -332,13 +332,13 @@ proptest! {
                 .expect("dag representation");
 
             let full = Estimator::apply()
-                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest.clone(), i32::MAX, None)
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, None, None, None), latest.clone(), i32::MAX, None)
                 .await
                 .expect("full tips")
                 .tips;
 
             let capped = Estimator::apply()
-                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest, cap, None)
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, None, None, None), latest, cap, None)
                 .await
                 .expect("capped tips")
                 .tips;

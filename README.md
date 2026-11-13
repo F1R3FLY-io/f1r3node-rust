@@ -235,7 +235,6 @@ See [`scripts/`](scripts) for the full list.
 Install these tools only for the tier you run.
 
 ```bash
-cargo install cargo-nextest --locked   # loom interleaving tests
 cargo install --locked kani-verifier && cargo kani setup   # Kani proof harnesses
 cargo install --locked cargo-mutants   # mutation coverage
 cargo install --locked cargo-fuzz      # search-horizon fuzz tiers
@@ -244,9 +243,6 @@ cargo install --locked cargo-fuzz      # search-horizon fuzz tiers
 ```bash
 # Property-based tier at the CI case count
 PROPTEST_CASES=2000 cargo test --release -p casper
-
-# Loom exhaustive interleaving check
-cargo nextest run --release -p casper slashing::loom_t_9_2
 
 # One Kani harness
 cargo kani -p casper --harness <harness_name>

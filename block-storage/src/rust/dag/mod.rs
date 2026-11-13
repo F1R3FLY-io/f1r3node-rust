@@ -5,10 +5,7 @@ pub mod dag_history_index;
 pub mod dag_gc_store;
 pub(crate) mod dag_persistence;
 pub mod deploy_lifecycle_types;
-pub mod equivocation_tracker_store;
-pub mod equivocations_access;
 pub mod soak_snapshot;
-pub mod soak_equivocations;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;

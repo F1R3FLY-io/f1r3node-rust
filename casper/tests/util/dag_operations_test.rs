@@ -65,7 +65,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
             None,
         );
-        BlockMetadata::from_block(&block, false, None, None)
+        BlockMetadata::from_block(&block, None, None, None)
     }
 
     fn create_block_with_meta_and_seq(
@@ -91,7 +91,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
             None,
         );
-        BlockMetadata::from_block(&block, false, None, None)
+        BlockMetadata::from_block(&block, None, None, None)
     }
 
     fn block_metadata_to_block_hash(metadata: &BlockMetadata) -> BlockHash {
@@ -112,7 +112,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
         );
 
-        let genesis_meta = BlockMetadata::from_block(&genesis, false, None, None);
+        let genesis_meta = BlockMetadata::from_block(&genesis, None, None, None);
 
         // DAG Looks like this:
         //
@@ -324,7 +324,7 @@ async fn luca_stops_at_the_approved_block_when_the_dag_is_truncated() {
                     None,
                     None,
                 );
-                BlockMetadata::from_block(&block, false, None, None)
+                BlockMetadata::from_block(&block, None, None, None)
             };
 
             // Retained below the approved block, their own parents truncated away.

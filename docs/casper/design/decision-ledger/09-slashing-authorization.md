@@ -2,6 +2,15 @@
 
 **Status.** Ratified with modifications 2026-09-16 by jeffrey-l-turner, with dylon and spreston8. Proof: [ratification meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933).
 
+**Superseded in part.** Verified defects led to these changes after ratification. Honest validators that saw an equivocation in opposite orders rejected each other's slashes, and a late fork escaped slashing.
+
+- The rejected-slash recovery loop is removed.
+- Activation-epoch protection is removed. An equivocation is slashable while its sender holds stake, bonded or in withdrawal quarantine.
+- The pair-evidence wire form is adopted now. A slash carries both blocks' commitments, ordered by hash and bound to the shard and chain.
+- Authorization reads only that evidence and the stake a slash can take at the block's floor, never the receiver's invalid flags.
+
+The neglect policy and inactive economic neglect slashing stand. [Consensus Protocol](../../CONSENSUS_PROTOCOL.md) section 9 describes the current rules. This entry needs re-ratification.
+
 **Kind.** Protocol.
 
 **Sources.**

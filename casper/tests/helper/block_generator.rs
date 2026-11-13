@@ -22,7 +22,7 @@ use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
 
 pub fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
-    CasperSnapshot::new(dag)
+    CasperSnapshot::new(dag, BlockHash::new())
 }
 
 pub async fn step(
@@ -190,7 +190,7 @@ pub fn create_genesis_block(
     );
 
     let modified_block = indexed_block_dag_storage
-        .insert_indexed(&genesis, &genesis, false)
+        .insert_indexed(&genesis, &genesis, None)
         .unwrap();
 
     block_store
@@ -199,6 +199,9 @@ pub fn create_genesis_block(
 
     genesis
 }
+
+/// The sibling recorded for a fixture block created invalid.
+pub fn fixture_sibling() -> BlockHash { BlockHash::from(vec![0xEE; 32]) }
 
 pub fn create_block(
     block_store: &mut KeyValueBlockStore,
@@ -259,7 +262,7 @@ pub fn create_block(
     block.body.rejected_deploys = merge_facts.rejected_deploys;
 
     let modified_block = indexed_block_dag_storage
-        .insert_indexed(&block, genesis, invalid)
+        .insert_indexed(&block, genesis, invalid.then(fixture_sibling))
         .unwrap();
 
     block_store

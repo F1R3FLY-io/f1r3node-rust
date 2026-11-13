@@ -1,6 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
 
-use block_storage::rust::dag::soak_equivocations::EquivocationSnapshot;
 use block_storage::rust::dag::soak_snapshot::DetachedDagSnapshot;
 use models::rust::block_hash::BlockHash;
 use models::rust::validator::Validator;
@@ -23,41 +22,16 @@ pub struct DisplayInputs {
     pub distinct_equivocators: usize,
     pub finalized_set_member: bool,
     pub metadata_finalized: bool,
-    pub equivocation_digest: String,
 }
 
+/// The display value of `hash`: its fault tolerance less the initial fault
+/// the equivocations the snapshot holds account for.
 pub fn calculate(
     snapshot: &DetachedDagSnapshot,
-    tracker: &EquivocationSnapshot,
     hash: &BlockHash,
     base: Option<(&'static str, u32)>,
     meter: &CheckedWork,
 ) -> Result<(u32, DisplayInputs), String> {
-    let identity_scan = (snapshot.transactions.len() as u64)
-        .checked_add(tracker.transactions().len() as u64)
-        .and_then(|count| count.checked_add(2))
-        .ok_or("display_work_overflow")?;
-    meter
-        .charge(WorkKind::Metadata, identity_scan, 0)
-        .map_err(|e| e.to_string())?;
-    let identity_work = snapshot
-        .transactions
-        .iter()
-        .chain(tracker.transactions())
-        .try_fold(2u64, |work, transaction| {
-            work.checked_add(transaction.environment.len() as u64)
-                .and_then(|work| work.checked_add(1))
-        })
-        .ok_or("display_work_overflow")?;
-    meter
-        .charge(WorkKind::Metadata, identity_work, 0)
-        .map_err(|e| e.to_string())?;
-    if snapshot.insertion_generation != tracker.insertion_generation()
-        || snapshot.transactions != tracker.transactions()
-    {
-        return Err("display_capture_mismatch".into());
-    }
-    meter.step(WorkKind::Metadata).map_err(|e| e.to_string())?;
     let block = snapshot.blocks.get(hash).ok_or("target_not_held")?;
     meter.step(WorkKind::Metadata).map_err(|e| e.to_string())?;
     let finalized_set_member = snapshot.finalized_block_set.contains(hash);
@@ -99,8 +73,9 @@ pub fn calculate(
         checked_total += weight.as_bigint();
         weights.insert(validator.clone(), weight.to_bigint());
     }
+    let equivocations = initial_fault::equivocations(snapshot.invalid_blocks.values());
     meter
-        .allocate(tracker.rows().len(), 32 * std::mem::size_of::<usize>())
+        .allocate(equivocations.len(), 32 * std::mem::size_of::<usize>())
         .map_err(|e| e.to_string())?;
     let mut checked_matched = BigInt::from(0);
     let mut matched_records = 0usize;
@@ -108,14 +83,14 @@ pub fn calculate(
         .checked_add(4)
         .ok_or("display_work_overflow")?;
     let mut distinct = BTreeSet::new();
-    for row in tracker.rows() {
-        let key_cost = (row.equivocator.len() as u64)
+    for (equivocator, _) in &equivocations {
+        let key_cost = (equivocator.len() as u64)
             .checked_add(1)
             .ok_or("display_work_overflow")?;
         scans = scans.checked_add(key_cost).ok_or("display_work_overflow")?;
         let compare_cost = key_cost
             .checked_mul(
-                (tracker.rows().len() as u64)
+                (equivocations.len() as u64)
                     .checked_add(weights.len() as u64)
                     .and_then(|cost| cost.checked_add(2))
                     .and_then(|cost| cost.checked_mul(2))
@@ -125,17 +100,19 @@ pub fn calculate(
         meter
             .charge(WorkKind::Oracle, compare_cost, 0)
             .map_err(|e| e.to_string())?;
-        if let Some(weight) = weights.get(&row.equivocator) {
+        if let Some(weight) = weights.get(equivocator) {
             checked_matched += weight;
             matched_records += 1;
-            distinct.insert(&row.equivocator);
+            distinct.insert(equivocator);
         }
     }
     meter
         .charge(WorkKind::Oracle, scans, 0)
         .map_err(|e| e.to_string())?;
-    let matched =
-        initial_fault::equivocating_weight(&weights, tracker.rows().iter().map(|r| &r.equivocator));
+    let matched = initial_fault::equivocating_weight(
+        &weights,
+        equivocations.iter().map(|(equivocator, _)| equivocator),
+    );
     let total = initial_fault::total_weight(&weights);
     if matched != checked_matched || total != checked_total {
         return Err("initial_fault_sum_mismatch".into());
@@ -153,6 +130,5 @@ pub fn calculate(
         distinct_equivocators: distinct.len(),
         finalized_set_member,
         metadata_finalized,
-        equivocation_digest: hex::encode(tracker.digest()),
     }))
 }

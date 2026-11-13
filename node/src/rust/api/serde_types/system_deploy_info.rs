@@ -2,12 +2,15 @@
 //!
 //! This module provides custom JSON serialization for protobuf types that don't have serde derives by default.
 
+use casper::rust::util::proto_util;
 use models::casper::{
-    BondInfo, CloseBlockSystemDeployDataProto, JustificationInfo, PeekProto, RejectedDeployInfo,
-    ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto, SingleReport,
-    SlashSystemDeployDataProto, SystemDeployDataProto, SystemDeployInfoWithEventData,
+    BlockCommitmentProto, BondInfo, CloseBlockSystemDeployDataProto, HeaderProto,
+    JustificationInfo, PeekProto, RejectedDeployInfo, ReportCommProto, ReportConsumeProto,
+    ReportProduceProto, ReportProto, SingleReport, SlashSystemDeployDataProto,
+    SystemDeployDataProto, SystemDeployInfoWithEventData,
 };
 use models::rhoapi::{BindPattern, ListParWithRandom, Par};
+use models::rust::casper::protocol::casper_message::BlockCommitment;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -76,26 +79,155 @@ impl From<RejectedDeployInfoSerde> for RejectedDeployInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HeaderSerde {
+    #[serde(rename = "parentsHashList", with = "base64_bytes::list")]
+    pub parents_hash_list: Vec<Vec<u8>>,
+    pub timestamp: i64,
+    pub version: i64,
+    #[serde(rename = "extraBytes", with = "base64_bytes")]
+    pub extra_bytes: Vec<u8>,
+    #[serde(rename = "chainId", with = "base64_bytes")]
+    pub chain_id: Vec<u8>,
+}
+
+impl From<HeaderProto> for HeaderSerde {
+    fn from(data: HeaderProto) -> Self {
+        Self {
+            parents_hash_list: data.parents_hash_list.iter().map(|h| h.to_vec()).collect(),
+            timestamp: data.timestamp,
+            version: data.version,
+            extra_bytes: data.extra_bytes.to_vec(),
+            chain_id: data.chain_id.to_vec(),
+        }
+    }
+}
+
+impl From<HeaderSerde> for HeaderProto {
+    fn from(data: HeaderSerde) -> Self {
+        Self {
+            parents_hash_list: data.parents_hash_list.into_iter().map(Into::into).collect(),
+            timestamp: data.timestamp,
+            version: data.version,
+            extra_bytes: data.extra_bytes.into(),
+            chain_id: data.chain_id.into(),
+        }
+    }
+}
+
+/// A block as its hash and signature commit to it, with the hash.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct BlockCommitmentSerde {
+    #[serde(rename = "blockHash", with = "base64_bytes")]
+    pub block_hash: Vec<u8>,
+    pub header: HeaderSerde,
+    #[serde(rename = "preStateHash", with = "base64_bytes")]
+    pub pre_state_hash: Vec<u8>,
+    #[serde(rename = "postStateHash", with = "base64_bytes")]
+    pub post_state_hash: Vec<u8>,
+    #[serde(rename = "bondsRoot", with = "base64_bytes")]
+    pub bonds_root: Vec<u8>,
+    #[serde(rename = "justificationsRoot", with = "base64_bytes")]
+    pub justifications_root: Vec<u8>,
+    #[serde(rename = "blockNumber")]
+    pub block_number: i64,
+    #[serde(rename = "rejectedRoot", with = "base64_bytes")]
+    pub rejected_root: Vec<u8>,
+    #[serde(rename = "appliedFromScopeRoot", with = "base64_bytes")]
+    pub applied_from_scope_root: Vec<u8>,
+    #[serde(rename = "mergeBase", with = "base64_bytes")]
+    pub merge_base: Vec<u8>,
+    #[serde(rename = "bodyExtraBytes", with = "base64_bytes")]
+    pub body_extra_bytes: Vec<u8>,
+    #[serde(with = "base64_bytes")]
+    pub sender: Vec<u8>,
+    #[serde(rename = "sigAlgorithm")]
+    pub sig_algorithm: String,
+    #[serde(rename = "seqNum")]
+    pub seq_num: i32,
+    #[serde(rename = "shardId")]
+    pub shard_id: String,
+    #[serde(rename = "extraBytes", with = "base64_bytes")]
+    pub extra_bytes: Vec<u8>,
+    #[serde(rename = "deploysRoot", with = "base64_bytes")]
+    pub deploys_root: Vec<u8>,
+    #[serde(with = "base64_bytes")]
+    pub sig: Vec<u8>,
+}
+
+impl From<BlockCommitmentProto> for BlockCommitmentSerde {
+    fn from(data: BlockCommitmentProto) -> Self {
+        let commitment = BlockCommitment::from_proto(data)
+            .expect("a reported commitment is built from a block, so it has a header");
+        Self {
+            block_hash: proto_util::commitment_hash(&commitment).to_vec(),
+            header: commitment.header.to_proto().into(),
+            pre_state_hash: commitment.pre_state_hash.to_vec(),
+            post_state_hash: commitment.post_state_hash.to_vec(),
+            bonds_root: commitment.bonds_root.to_vec(),
+            justifications_root: commitment.justifications_root.to_vec(),
+            block_number: commitment.block_number,
+            rejected_root: commitment.rejected_root.to_vec(),
+            applied_from_scope_root: commitment.applied_from_scope_root.to_vec(),
+            merge_base: commitment.merge_base.to_vec(),
+            body_extra_bytes: commitment.body_extra_bytes.to_vec(),
+            sender: commitment.sender.to_vec(),
+            sig_algorithm: commitment.sig_algorithm,
+            seq_num: commitment.seq_num,
+            shard_id: commitment.shard_id,
+            extra_bytes: commitment.extra_bytes.to_vec(),
+            deploys_root: commitment.deploys_root.to_vec(),
+            sig: commitment.sig.to_vec(),
+        }
+    }
+}
+
+// `block_hash` is derived from the other fields, so it is not carried back.
+impl From<BlockCommitmentSerde> for BlockCommitmentProto {
+    fn from(data: BlockCommitmentSerde) -> Self {
+        Self {
+            header: Some(data.header.into()),
+            pre_state_hash: data.pre_state_hash.into(),
+            post_state_hash: data.post_state_hash.into(),
+            bonds_root: data.bonds_root.into(),
+            justifications_root: data.justifications_root.into(),
+            block_number: data.block_number,
+            rejected_root: data.rejected_root.into(),
+            applied_from_scope_root: data.applied_from_scope_root.into(),
+            merge_base: data.merge_base.into(),
+            body_extra_bytes: data.body_extra_bytes.into(),
+            sender: data.sender.into(),
+            sig_algorithm: data.sig_algorithm,
+            seq_num: data.seq_num,
+            shard_id: data.shard_id,
+            extra_bytes: data.extra_bytes.into(),
+            deploys_root: data.deploys_root.into(),
+            sig: data.sig.into(),
+        }
+    }
+}
+
+/// A slash and its evidence: two blocks one sender signed at one sequence
+/// number, ordered by block hash.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SlashSystemDeployDataSerde {
-    #[serde(rename = "invalidBlockHash", with = "base64_bytes")]
-    pub invalid_block_hash: Vec<u8>,
     #[serde(rename = "issuerPublicKey", with = "base64_bytes")]
     pub issuer_public_key: Vec<u8>,
-    // `default` preserves API back-compat with pre-§9 clients that don't know
-    // about `targetActivationEpoch`. Such payloads deserialize to epoch 0,
-    // which the receiver's authorization predicate
-    // (`validate_received_slash_deploys`) then rejects against the current
-    // epoch — old clients fail cleanly rather than silently slashing.
-    #[serde(rename = "targetActivationEpoch", default)]
-    pub target_activation_epoch: i64,
+    pub first: BlockCommitmentSerde,
+    pub second: BlockCommitmentSerde,
 }
 
 impl From<SlashSystemDeployDataProto> for SlashSystemDeployDataSerde {
     fn from(data: SlashSystemDeployDataProto) -> Self {
         Self {
-            invalid_block_hash: data.invalid_block_hash.to_vec(),
             issuer_public_key: data.issuer_public_key.to_vec(),
-            target_activation_epoch: data.target_activation_epoch,
+            first: data
+                .first
+                .expect("a reported slash carries both blocks of its evidence")
+                .into(),
+            second: data
+                .second
+                .expect("a reported slash carries both blocks of its evidence")
+                .into(),
         }
     }
 }
@@ -103,9 +235,9 @@ impl From<SlashSystemDeployDataProto> for SlashSystemDeployDataSerde {
 impl From<SlashSystemDeployDataSerde> for SlashSystemDeployDataProto {
     fn from(data: SlashSystemDeployDataSerde) -> Self {
         Self {
-            invalid_block_hash: data.invalid_block_hash.into(),
             issuer_public_key: data.issuer_public_key.into(),
-            target_activation_epoch: data.target_activation_epoch,
+            first: Some(data.first.into()),
+            second: Some(data.second.into()),
         }
     }
 }
@@ -409,39 +541,64 @@ impl From<SystemDeployInfoWithEventSerde> for SystemDeployInfoWithEventData {
 mod tests {
     use super::*;
 
-    #[test]
-    fn slash_system_deploy_preserves_target_activation_epoch() {
-        let proto = SlashSystemDeployDataProto {
-            invalid_block_hash: vec![1, 2, 3].into(),
-            issuer_public_key: vec![4, 5, 6].into(),
-            target_activation_epoch: 42,
-        };
+    fn commitment(seed: u8) -> BlockCommitmentProto {
+        BlockCommitmentProto {
+            header: Some(HeaderProto {
+                parents_hash_list: vec![vec![seed; 32].into(), vec![seed + 1; 32].into()],
+                timestamp: i64::from(seed),
+                version: 1,
+                extra_bytes: vec![seed].into(),
+                chain_id: vec![seed + 3; 32].into(),
+            }),
+            pre_state_hash: vec![seed; 32].into(),
+            post_state_hash: vec![seed + 2; 32].into(),
+            bonds_root: vec![seed + 3; 32].into(),
+            justifications_root: vec![seed + 11; 32].into(),
+            block_number: i64::from(seed) + 10,
+            rejected_root: vec![seed + 4; 32].into(),
+            applied_from_scope_root: vec![seed + 5; 32].into(),
+            merge_base: vec![seed + 6; 32].into(),
+            body_extra_bytes: vec![seed + 7].into(),
+            sender: vec![0x04; 65].into(),
+            sig_algorithm: "secp256k1".to_string(),
+            seq_num: 3,
+            shard_id: "root".to_string(),
+            extra_bytes: vec![seed + 8].into(),
+            deploys_root: vec![seed + 9; 32].into(),
+            sig: vec![seed + 10; 70].into(),
+        }
+    }
 
-        let serde: SlashSystemDeployDataSerde = proto.clone().into();
-        assert_eq!(serde.target_activation_epoch, 42);
-
-        let roundtrip: SlashSystemDeployDataProto = serde.into();
-        assert_eq!(roundtrip, proto);
+    fn slash(issuer: u8) -> SlashSystemDeployDataProto {
+        SlashSystemDeployDataProto {
+            issuer_public_key: vec![issuer; 65].into(),
+            first: Some(commitment(1)),
+            second: Some(commitment(20)),
+        }
     }
 
     #[test]
-    fn slash_system_deploy_json_defaults_missing_target_activation_epoch() {
-        // Back-compat: legacy JSON payloads that pre-date the
-        // target_activation_epoch field deserialize with default 0. The
-        // back-compat default must NOT silently widen the slashable
-        // surface — when current_epoch > 0 the receive-side predicate
-        // must reject the slash as EpochMismatch. That contract is pinned
-        // by `received_stale_slash_deploy_is_rejected_before_replay` in
-        // `casper/tests/slashing/slash_authorization_regressions.rs:177-194`,
-        // which constructs a slash deploy with target_activation_epoch=0
-        // at block_number=11 (current_epoch=1 under epoch_length=10) and
-        // verifies the resulting error contains "non-current epoch".
-        let json = r#"{"invalidBlockHash":"AQID","issuerPublicKey":"BAUG"}"#;
-        let serde: SlashSystemDeployDataSerde = serde_json::from_str(json).unwrap();
+    fn slash_evidence_round_trips_through_json() {
+        let proto = slash(9);
 
-        assert_eq!(serde.invalid_block_hash, vec![1, 2, 3]);
-        assert_eq!(serde.issuer_public_key, vec![4, 5, 6]);
-        assert_eq!(serde.target_activation_epoch, 0);
+        let json = serde_json::to_string(&SlashSystemDeployDataSerde::from(proto.clone())).unwrap();
+        let back: SlashSystemDeployDataProto =
+            serde_json::from_str::<SlashSystemDeployDataSerde>(&json)
+                .unwrap()
+                .into();
+
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn each_evidence_block_reports_its_hash() {
+        let serde = SlashSystemDeployDataSerde::from(slash(9));
+        for (reported, seed) in [(&serde.first, 1), (&serde.second, 20)] {
+            let expected = proto_util::commitment_hash(
+                &BlockCommitment::from_proto(commitment(seed)).unwrap(),
+            );
+            assert_eq!(reported.block_hash, expected.to_vec());
+        }
     }
 
     fn sample_par() -> Par {
@@ -510,13 +667,7 @@ mod tests {
     fn system_deploy_data_slash_variant_roundtrips() {
         let proto = SystemDeployDataProto {
             system_deploy: Some(
-                models::casper::system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(
-                    SlashSystemDeployDataProto {
-                        invalid_block_hash: vec![1].into(),
-                        issuer_public_key: vec![2].into(),
-                        target_activation_epoch: 3,
-                    },
-                ),
+                models::casper::system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(slash(2)),
             ),
         };
         let serde: SystemDeployDataSerde = proto.clone().into();
@@ -658,11 +809,7 @@ mod tests {
             system_deploy: Some(SystemDeployDataProto {
                 system_deploy: Some(
                     models::casper::system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(
-                        SlashSystemDeployDataProto {
-                            invalid_block_hash: vec![7].into(),
-                            issuer_public_key: vec![8].into(),
-                            target_activation_epoch: 1,
-                        },
+                        slash(8),
                     ),
                 ),
             }),
