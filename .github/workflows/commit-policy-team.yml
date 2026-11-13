@@ -1,0 +1,57 @@
+name: Commit Policy Team
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [in_progress]
+
+permissions: {}
+
+jobs:
+  snapshot:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-credentials
+    permissions:
+      contents: read
+    steps:
+      - name: Require master
+        env:
+          REF: ${{ github.ref }}
+        shell: bash -euo pipefail {0}
+        run: test "$REF" = refs/heads/master
+
+      - name: Checkout trusted scripts
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Create membership reader token
+        id: membership
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ vars.IDENTITY_APP_ID }}
+          private-key: ${{ secrets.IDENTITY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-members: read
+
+      - name: Read active CI maintainers
+        env:
+          GH_TOKEN: ${{ steps.membership.outputs.token }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          CI_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/commit-policy-team.sh snapshot "$RUNNER_TEMP/maintainers.json"
+
+      - name: Publish the run-bound membership snapshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: commit-policy-maintainers-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/maintainers.json
+          if-no-files-found: error
+          retention-days: 1

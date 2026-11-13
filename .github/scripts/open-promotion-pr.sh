@@ -77,7 +77,9 @@ if ! gh pr create --repo "$repo" --base "$target_branch" --head "$branch" \
 	--title "Promote $source_branch to $target_branch ($stamp)" \
 	--body "Promotes \`$source_branch\` at \`${sha:0:9}\` to \`$target_branch\` ($count commits).
 
-This pull request comes from the temporary branch \`$branch\`, $creator. GitHub deletes \`$branch\` after the merge. No open pull request targets it, so no pull request is retargeted.$review"; then
+This pull request comes from the temporary branch \`$branch\`, $creator. GitHub deletes \`$branch\` after the merge. No open pull request targets it, so no pull request is retargeted.$review
+
+After the required reviews and checks, tick the Mergify queue checkbox or comment \`@Mergifyio queue\`."; then
 	echo "ERROR: the pull request was not opened. Deleting $branch." >&2
 	gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null ||
 		echo "WARNING: delete $branch by hand." >&2

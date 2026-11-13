@@ -50,7 +50,12 @@ if [ -n "${BACKMERGE_TRIGGERED_BY:-}" ]; then
 	creator="created by the Promote and Back-merge workflow for @$BACKMERGE_TRIGGERED_BY"
 	review="
 
-@$BACKMERGE_TRIGGERED_BY started this $kind. A different member of @F1R3FLY-io/ci-maintainers approves it."
+@$BACKMERGE_TRIGGERED_BY started this $kind."
+	if [ "$source_branch:$target_branch" != ca-release:ca-canary ]; then
+		review="$review A different member of @F1R3FLY-io/ci-maintainers approves it."
+	else
+		creator="created by the Release Train Daily Back-merge workflow for @$BACKMERGE_TRIGGERED_BY"
+	fi
 elif [ "${BACKMERGE_SCHEDULED:-}" = 1 ]; then
 	case "$source_branch:$target_branch" in
 		ca-release:ca-canary) ;;
@@ -67,7 +72,13 @@ if [ "$kind" = sync ]; then
 	labels=(--label ci-heavy)
 	review="$review
 
-Mergify queues this sync after its CI checks pass and a different member of @F1R3FLY-io/ci-maintainers approves it."
+A different member of @F1R3FLY-io/ci-maintainers approves this sync after its CI checks pass."
+fi
+
+if [ "${BACKMERGE_SCHEDULED:-}" != 1 ] || [ -n "${BACKMERGE_TRIGGERED_BY:-}" ]; then
+	review="$review
+
+After the required reviews and checks, tick the Mergify queue checkbox or comment \`@Mergifyio queue\`."
 fi
 
 remote="${BACKMERGE_REMOTE:-origin}"
