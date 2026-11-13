@@ -26,6 +26,8 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+- **Maintainer identity ratification (2026-11-13).** Status: implemented locally on `ci/maintainer-identity-ratificatio`, claimed by Codex. The maintainer selected active `ci-maintainers` membership as an additional authority for commit authors. Focused policy, workflow, queue, and release checks passed. The registry proposal was removed. Review, commit, App configuration, and rollout through `master` and `ca-canary` remain pending.
+
 ### TASK-031-2: Correct HTTP deploy validation errors
 
 ```yaml
