@@ -605,7 +605,7 @@ source and no persisted byte. Besides its own 31 specification and five Rholang
 tests, the runner's `--receive-accelerator` flag pins the behavior that the
 relation relies on with `hot_store_spec` (57 tests), `ordered_receive_view_spec`
 (13), the `rspace::record_index` library tests (20), the
-`accepted_match_formal_bindings` library tests (15), the continuation and join
+`accepted_match_formal_bindings` library tests (17), the continuation and join
 lifecycle equivalence (1), `guarded_matching_tests` (18), `replay_comm_order` (3),
 `ordered_receive_view_rholang` (4) and `matching_lifecycle_acceptance` (2).
 Task 8011 implements that accelerator: `ProductionAccelerator`, the production

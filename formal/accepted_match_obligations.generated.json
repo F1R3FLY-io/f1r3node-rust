@@ -81,9 +81,9 @@
     },
     {
       "id": "ACM-RC-07",
-      "mode": "proof_only",
+      "mode": "executable_refinement",
       "obligation": "comm_publication_follows_a_complete_commit",
-      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+      "target_name": "comm_event_is_logged_only_after_the_complete_commit"
     },
     {
       "id": "ACM-RC-08",
@@ -93,9 +93,9 @@
     },
     {
       "id": "ACM-RC-09",
-      "mode": "proof_only",
+      "mode": "executable_refinement",
       "obligation": "play_replay_same_ticket_same_result",
-      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+      "target_name": "play_and_replay_apply_the_same_ticket_to_the_same_state"
     }
   ],
   "tlc_invariants": [
@@ -113,9 +113,9 @@
     },
     {
       "id": "ACM-TLA-03",
-      "mode": "proof_only",
+      "mode": "executable_refinement",
       "obligation": "ReplayPublishesOneCompleteState",
-      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+      "target_name": "comm_event_is_logged_only_after_the_complete_commit"
     },
     {
       "id": "ACM-TLA-04",
@@ -125,9 +125,9 @@
     },
     {
       "id": "ACM-TLA-05",
-      "mode": "proof_only",
+      "mode": "executable_refinement",
       "obligation": "EventPublicationFollowsCommit",
-      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+      "target_name": "comm_event_is_logged_only_after_the_complete_commit"
     },
     {
       "id": "ACM-TLA-06",
@@ -155,9 +155,9 @@
     },
     {
       "id": "ACM-TLA-10",
-      "mode": "proof_only",
+      "mode": "executable_refinement",
       "obligation": "PlayReplayTraceEquivalent",
-      "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+      "target_name": "play_and_replay_apply_the_same_ticket_to_the_same_state"
     }
   ]
 }

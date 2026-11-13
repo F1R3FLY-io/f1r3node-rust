@@ -1,11 +1,21 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 
 use proptest::prelude::*;
 
 use super::*;
 use crate::rspace::bag::Multiplicity;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::history::history_repository::HistoryRepositoryInstances;
+use crate::rspace::internal::ConsumeCandidate;
+use crate::rspace::logging::{RSpaceLogger, StepCommObserver};
+use crate::rspace::r#match::Match;
+use crate::rspace::replay_rspace::ReplayRSpace;
+use crate::rspace::rspace::RSpace;
+use crate::rspace::rspace_interface::{ISpace, MaybeProduceResult};
+use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use crate::rspace::trace::event::{COMM, Event};
 
 type TestStore = InMemHotStore<String, String, String, String>;
 type TestSnapshot = HotStoreState<String, String, String, String>;
@@ -927,6 +937,805 @@ fn maximal_arrival_boundary_commits_exactly_once_without_projection() {
     assert!(state.joins.installed_records().is_empty());
 }
 
+type TestHotStore = dyn HotStore<String, String, String, String>;
+type SpaceStoreCell = Arc<RwLock<Arc<Box<TestHotStore>>>>;
+type ProduceOutcome = MaybeProduceResult<String, String, String, String>;
+
+const RESTING_DATUM: &str = "selected-left";
+const ARRIVING_DATUM: &str = "selected-right";
+const UNRELATED: &str = "unrelated";
+const SELECTED_CONTINUATION: &str = "selected";
+const RIVAL_CONTINUATION: &str = "rival";
+const WILDCARD_PATTERN: &str = "wildcard";
+const BLOCKED_PATTERN: &str = "blocked";
+
+fn rendezvous_group() -> Vec<String> { vec!["left".to_owned(), "right".to_owned()] }
+
+fn waiting_on_group(
+    pattern: &str,
+    continuation: &str,
+    persist: bool,
+) -> WaitingContinuation<String, String> {
+    WaitingContinuation::create(
+        &rendezvous_group(),
+        &vec![pattern.to_owned(); 2],
+        &continuation.to_owned(),
+        persist,
+        BTreeSet::new(),
+    )
+}
+
+#[derive(Debug, PartialEq)]
+struct MatchProgress {
+    resting_datum: bool,
+    stored_arrival: bool,
+    selected_continuation: bool,
+    join: bool,
+}
+
+impl MatchProgress {
+    const PENDING: Self = Self {
+        resting_datum: true,
+        stored_arrival: false,
+        selected_continuation: true,
+        join: true,
+    };
+}
+
+struct StoreImage {
+    state: TestSnapshot,
+    journal: PendingDeltas,
+}
+
+impl StoreImage {
+    fn of(store: &TestHotStore) -> Self {
+        Self {
+            state: store.snapshot(),
+            journal: store
+                .pending_deltas()
+                .expect("the hot store exposes its pending journals"),
+        }
+    }
+
+    fn first_difference(&self, other: &Self) -> Option<&'static str> {
+        fn same_entries<V>(left: &Option<PathMap<V>>, right: &Option<PathMap<V>>) -> bool
+        where V: Clone + PartialEq + Send + Sync + Unpin {
+            match (left, right) {
+                (Some(left), Some(right)) => left.iter().eq(right.iter()),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+
+        let (state, journal) = (&self.state, &self.journal);
+        [
+            ("data", state.data == other.state.data),
+            ("continuations", state.continuations == other.state.continuations),
+            (
+                "installed continuations",
+                state.installed_continuations == other.state.installed_continuations,
+            ),
+            ("joins", state.joins == other.state.joins),
+            ("installed joins", state.installed_joins == other.state.installed_joins),
+            ("data journal", journal.data == other.journal.data),
+            ("continuation journal", journal.continuations == other.journal.continuations),
+            (
+                "continuation content journal",
+                same_entries(&journal.continuation_content, &other.journal.continuation_content),
+            ),
+            (
+                "continuation source journal",
+                same_entries(
+                    &journal.continuation_source_bytes,
+                    &other.journal.continuation_source_bytes,
+                ),
+            ),
+            ("join journal", journal.joins == other.journal.joins),
+        ]
+        .into_iter()
+        .find_map(|(domain, equal)| (!equal).then_some(domain))
+    }
+
+    fn match_progress(&self) -> MatchProgress {
+        let group = rendezvous_group();
+        MatchProgress {
+            resting_datum: self
+                .state
+                .data
+                .get(&group[0])
+                .is_some_and(|data| data.iter().any(|datum| *datum.a == RESTING_DATUM)),
+            stored_arrival: self
+                .state
+                .data
+                .get(&group[1])
+                .is_some_and(|data| !data.is_empty()),
+            selected_continuation: self.state.continuations.get(&group).is_some_and(|waiting| {
+                waiting
+                    .iter()
+                    .any(|continuation| *continuation.continuation == SELECTED_CONTINUATION)
+            }),
+            join: self
+                .state
+                .joins
+                .get(&group[1])
+                .is_some_and(|joins| joins.contains(&group)),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum EventOrderDefect {
+    RefusedCommitPublishedComm,
+    RefusedCommitChanged(&'static str),
+    CommPrecededCompleteCommit(&'static str),
+    AcceptedCommitPublished(usize),
+    AcceptedCommitChangedNothing,
+}
+
+fn event_order_defect(
+    must_commit: bool,
+    before: &StoreImage,
+    published: &[&StoreImage],
+    after: &StoreImage,
+) -> Option<EventOrderDefect> {
+    match (must_commit, published) {
+        (false, []) => before
+            .first_difference(after)
+            .map(EventOrderDefect::RefusedCommitChanged),
+        (false, _) => Some(EventOrderDefect::RefusedCommitPublishedComm),
+        (true, [image]) => match (image.first_difference(after), before.first_difference(after)) {
+            (Some(domain), _) => Some(EventOrderDefect::CommPrecededCompleteCommit(domain)),
+            (None, None) => Some(EventOrderDefect::AcceptedCommitChangedNothing),
+            (None, Some(_)) => None,
+        },
+        (true, images) => Some(
+            images
+                .iter()
+                .find_map(|image| image.first_difference(after))
+                .map_or(
+                    EventOrderDefect::AcceptedCommitPublished(images.len()),
+                    EventOrderDefect::CommPrecededCompleteCommit,
+                ),
+        ),
+    }
+}
+
+struct ObservedSelection {
+    continuation: String,
+    matched: Vec<String>,
+    published_before: usize,
+    image: StoreImage,
+}
+
+struct ObservedPublication {
+    comm: COMM,
+    image: StoreImage,
+}
+
+#[derive(Default)]
+struct CommitObservations {
+    arriving_rival: Option<WaitingContinuation<String, String>>,
+    selections: Vec<ObservedSelection>,
+    publications: Vec<ObservedPublication>,
+}
+
+#[derive(Default)]
+struct CommitProbe {
+    store: OnceLock<SpaceStoreCell>,
+    observations: Mutex<CommitObservations>,
+}
+
+impl CommitProbe {
+    fn attach(&self, store: SpaceStoreCell) {
+        assert!(self.store.set(store).is_ok(), "a commit probe observes exactly one space");
+    }
+
+    fn hot_store(&self) -> Arc<Box<TestHotStore>> {
+        self.store
+            .get()
+            .expect("the commit probe is attached to its space")
+            .read()
+            .expect("space store lock")
+            .clone()
+    }
+
+    fn image(&self) -> StoreImage { StoreImage::of(&**self.hot_store()) }
+
+    fn observations(&self) -> MutexGuard<'_, CommitObservations> {
+        self.observations.lock().expect("commit observations lock")
+    }
+
+    fn publish(&self, comm: &COMM) {
+        let image = self.image();
+        self.observations().publications.push(ObservedPublication {
+            comm: comm.clone(),
+            image,
+        });
+    }
+}
+
+struct ProbeHooks(Arc<CommitProbe>);
+
+impl Match<String, String, String> for ProbeHooks {
+    fn get(&self, pattern: &String, datum: &String) -> Option<String> {
+        (pattern == WILDCARD_PATTERN).then(|| datum.clone())
+    }
+
+    fn check_commit(&self, continuation: &String, matched: &[&String]) -> bool {
+        let mut observations = self.0.observations();
+        if let Some(rival) = observations.arriving_rival.take() {
+            assert_eq!(
+                self.0
+                    .hot_store()
+                    .put_continuation(&rendezvous_group(), rival),
+                Some(true),
+                "the arriving rival is a new continuation of the selected group"
+            );
+        }
+        let published_before = observations.publications.len();
+        observations.selections.push(ObservedSelection {
+            continuation: continuation.clone(),
+            matched: matched.iter().copied().cloned().collect(),
+            published_before,
+            image: self.0.image(),
+        });
+        true
+    }
+}
+
+impl StepCommObserver<String, String, String, String> for ProbeHooks {
+    fn observe_comm(
+        &self,
+        _channels: &[String],
+        _consumed: &[String],
+        _patterns: &[String],
+        _continuation: &String,
+        comm: &COMM,
+        _label: &str,
+    ) {
+        self.0.publish(comm);
+    }
+}
+
+impl RSpaceLogger<String, String, String, String> for ProbeHooks {
+    fn log_comm(
+        &self,
+        _data_candidates: &Vec<ConsumeCandidate<String, String>>,
+        _channels: &Vec<String>,
+        _wk: WaitingContinuation<String, String>,
+        comm: COMM,
+        _label: &str,
+    ) -> COMM {
+        self.0.publish(&comm);
+        comm
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Rival {
+    Absent,
+    Resting,
+    Arriving,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MatchScenario {
+    persist: bool,
+    rival: Rival,
+}
+
+const MATCH_SCENARIOS: [MatchScenario; 6] = [
+    MatchScenario {
+        persist: false,
+        rival: Rival::Absent,
+    },
+    MatchScenario {
+        persist: false,
+        rival: Rival::Resting,
+    },
+    MatchScenario {
+        persist: false,
+        rival: Rival::Arriving,
+    },
+    MatchScenario {
+        persist: true,
+        rival: Rival::Absent,
+    },
+    MatchScenario {
+        persist: true,
+        rival: Rival::Resting,
+    },
+    MatchScenario {
+        persist: true,
+        rival: Rival::Arriving,
+    },
+];
+
+#[derive(Debug, PartialEq)]
+struct CommittedState {
+    left_data: Vec<Datum<String>>,
+    right_data: Vec<Datum<String>>,
+    unrelated_data: Vec<Datum<String>>,
+    continuations: Vec<WaitingContinuation<String, String>>,
+    left_joins: Vec<Vec<String>>,
+    right_joins: Vec<Vec<String>>,
+}
+
+impl MatchScenario {
+    fn attempts(self) -> &'static [bool] {
+        match self.rival {
+            Rival::Arriving => &[false, true],
+            Rival::Absent | Rival::Resting => &[true],
+        }
+    }
+
+    fn joins_remain(self) -> bool { self.persist || self.rival != Rival::Absent }
+
+    fn committed_progress(self) -> MatchProgress {
+        MatchProgress {
+            resting_datum: false,
+            stored_arrival: false,
+            selected_continuation: self.persist,
+            join: self.joins_remain(),
+        }
+    }
+
+    fn committed_state(self) -> CommittedState {
+        let continuations = [
+            (self.rival != Rival::Absent)
+                .then(|| waiting_on_group(BLOCKED_PATTERN, RIVAL_CONTINUATION, false)),
+            self.persist
+                .then(|| waiting_on_group(WILDCARD_PATTERN, SELECTED_CONTINUATION, true)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let joins = if self.joins_remain() {
+            vec![rendezvous_group()]
+        } else {
+            Vec::new()
+        };
+        CommittedState {
+            left_data: Vec::new(),
+            right_data: Vec::new(),
+            unrelated_data: vec![Datum::create(&UNRELATED.to_owned(), UNRELATED.to_owned(), false)],
+            continuations,
+            left_joins: joins.clone(),
+            right_joins: joins,
+        }
+    }
+}
+
+struct SideObservation {
+    selections: Vec<ObservedSelection>,
+    publications: Vec<ObservedPublication>,
+    outcome: ProduceOutcome,
+    settled: StoreImage,
+    committed: CommittedState,
+    rows: HashMap<Vec<String>, Row<String, String, String>>,
+}
+
+impl SideObservation {
+    fn event_order_defect(&self, attempt: usize, must_commit: bool) -> Option<EventOrderDefect> {
+        let selection = &self.selections[attempt];
+        let (after, published_until) = match self.selections.get(attempt + 1) {
+            Some(next) => (&next.image, next.published_before),
+            None => (&self.settled, self.publications.len()),
+        };
+        let published = self.publications[selection.published_before..published_until]
+            .iter()
+            .map(|publication| &publication.image)
+            .collect::<Vec<_>>();
+        event_order_defect(must_commit, &selection.image, &published, after)
+    }
+
+    fn published_comms(&self) -> Vec<COMM> {
+        self.publications
+            .iter()
+            .map(|publication| publication.comm.clone())
+            .collect()
+    }
+}
+
+struct ScenarioObservation {
+    staged_root: Blake2b256Hash,
+    play: SideObservation,
+    play_log: Vec<Event>,
+    play_root: Blake2b256Hash,
+    replay: SideObservation,
+    replay_data_check: Result<(), RSpaceError>,
+    replay_data_exhausted: bool,
+    replay_root: Result<Blake2b256Hash, RSpaceError>,
+}
+
+async fn observe_match<S>(
+    space: &S,
+    probe: &CommitProbe,
+    scenario: MatchScenario,
+) -> SideObservation
+where
+    S: ISpace<String, String, String, String>,
+{
+    {
+        let mut observations = probe.observations();
+        assert!(
+            observations.selections.is_empty() && observations.publications.is_empty(),
+            "staging reaches no complete selection and publishes no COMM"
+        );
+        observations.arriving_rival = (scenario.rival == Rival::Arriving)
+            .then(|| waiting_on_group(BLOCKED_PATTERN, RIVAL_CONTINUATION, false));
+    }
+    let group = rendezvous_group();
+    let outcome = space
+        .produce(group[1].clone(), ARRIVING_DATUM.to_owned(), false)
+        .await
+        .expect("the produce that completes the match");
+    let settled = probe.image();
+    let mut continuations = space.get_waiting_continuations(group.clone()).await;
+    continuations.sort_by(|left, right| left.continuation.cmp(&right.continuation));
+    let committed = CommittedState {
+        left_data: space.get_data(&group[0]).await,
+        right_data: space.get_data(&group[1]).await,
+        unrelated_data: space.get_data(&UNRELATED.to_owned()).await,
+        continuations,
+        left_joins: space.get_joins(group[0].clone()).await,
+        right_joins: space.get_joins(group[1].clone()).await,
+    };
+    let rows = space.to_map().await;
+    let CommitObservations {
+        selections,
+        publications,
+        ..
+    } = std::mem::take(&mut *probe.observations());
+    SideObservation {
+        selections,
+        publications,
+        outcome,
+        settled,
+        committed,
+        rows,
+    }
+}
+
+async fn observe_scenario(scenario: MatchScenario) -> ScenarioObservation {
+    let mut manager = InMemoryStoreManager::new();
+    let stores = manager
+        .r_space_stores()
+        .await
+        .expect("in-memory RSpace stores");
+    let history = Arc::new(
+        HistoryRepositoryInstances::<String, String, String, String>::repository(
+            stores.authority(),
+        )
+        .expect("history repository"),
+    );
+    let reader = history
+        .get_history_reader(&history.root())
+        .expect("history reader");
+    let play_probe = Arc::new(CommitProbe::default());
+    let replay_probe = Arc::new(CommitProbe::default());
+    let mut play = RSpace::apply(
+        history.clone(),
+        HotStoreInstances::create_from_hs_and_hr(TestSnapshot::default(), reader.base()),
+        Arc::new(Box::new(ProbeHooks(Arc::clone(&play_probe)))),
+    );
+    play.set_step_observer(Some(Arc::new(ProbeHooks(Arc::clone(&play_probe)))));
+    play_probe.attach(Arc::clone(&play.store));
+    let replay = ReplayRSpace::apply_with_logger(
+        history,
+        Arc::new(HotStoreInstances::create_from_hs_and_hr(TestSnapshot::default(), reader.base())),
+        Arc::new(Box::new(ProbeHooks(Arc::clone(&replay_probe)))),
+        Box::new(ProbeHooks(Arc::clone(&replay_probe))),
+    );
+    replay_probe.attach(Arc::clone(&replay.store));
+
+    let group = rendezvous_group();
+    for (channel, datum) in [(group[0].clone(), RESTING_DATUM), (UNRELATED.to_owned(), UNRELATED)] {
+        let stored = play
+            .produce(channel, datum.to_owned(), false)
+            .await
+            .expect("stage a datum");
+        assert!(stored.is_none(), "a staged datum meets no continuation");
+    }
+    let staged_continuations = [
+        Some((WILDCARD_PATTERN, SELECTED_CONTINUATION, scenario.persist)),
+        (scenario.rival == Rival::Resting).then_some((BLOCKED_PATTERN, RIVAL_CONTINUATION, false)),
+    ];
+    for (pattern, continuation, persist) in staged_continuations.into_iter().flatten() {
+        let waiting = play
+            .consume(
+                group.clone(),
+                vec![pattern.to_owned(); 2],
+                continuation.to_owned(),
+                persist,
+                BTreeSet::new(),
+            )
+            .await
+            .expect("stage a continuation");
+        assert!(waiting.is_none(), "a staged continuation finds no complete match");
+    }
+    let staged = play
+        .create_checkpoint()
+        .await
+        .expect("checkpoint of the staged state");
+
+    let play_side = observe_match(&play, &play_probe, scenario).await;
+    let played = play
+        .create_checkpoint()
+        .await
+        .expect("play checkpoint after the match");
+
+    replay
+        .rig_and_reset(staged.root.clone(), played.log.clone())
+        .await
+        .expect("rig replay with play's log at the staged root");
+    let replay_side = observe_match(&replay, &replay_probe, scenario).await;
+    let replay_data_check = replay.check_replay_data().await;
+    let replay_data_exhausted = replay
+        .replay_data
+        .lock()
+        .expect("replay data lock")
+        .is_empty();
+    let replay_root = replay
+        .create_checkpoint()
+        .await
+        .map(|checkpoint| checkpoint.root);
+
+    ScenarioObservation {
+        staged_root: staged.root,
+        play: play_side,
+        play_log: played.log,
+        play_root: played.root,
+        replay: replay_side,
+        replay_data_check,
+        replay_data_exhausted,
+        replay_root,
+    }
+}
+
+fn run_to_completion<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime")
+        .block_on(future)
+}
+
+fn logged_comms(log: &[Event]) -> Vec<COMM> {
+    log.iter()
+        .filter_map(|event| match event {
+            Event::Comm(comm) => Some(comm.clone()),
+            Event::IoEvent(_) => None,
+        })
+        .collect()
+}
+
+enum CommitOrder {
+    AtomicCommitThenComm,
+    CommThenFrozenSplit,
+}
+
+struct FixtureTrace {
+    before: StoreImage,
+    published: Vec<StoreImage>,
+    after: StoreImage,
+}
+
+impl FixtureTrace {
+    fn event_order_defect(&self, must_commit: bool) -> Option<EventOrderDefect> {
+        let published = self.published.iter().collect::<Vec<_>>();
+        event_order_defect(must_commit, &self.before, &published, &self.after)
+    }
+}
+
+fn fixture_commit_trace(order: CommitOrder, stale_selection: bool) -> FixtureTrace {
+    let fixture = Fixture::new(1, 1, 0, false);
+    let ticket = fixture.transition(transition_delta(&fixture.paths, 1, 1, 0));
+    if stale_selection {
+        assert_eq!(
+            fixture.store.put_continuation(
+                &fixture.channels,
+                waiting_on_group(BLOCKED_PATTERN, RIVAL_CONTINUATION, false)
+            ),
+            Some(true),
+            "the rival is a new continuation of the selected group"
+        );
+    }
+    let before = StoreImage::of(&fixture.store);
+    let published = match order {
+        CommitOrder::AtomicCommitThenComm => {
+            let outcome = fixture
+                .store
+                .apply_accepted_match(ticket)
+                .expect("the atomic transaction decides the ticket");
+            match outcome {
+                AcceptedMatchOutcome::Committed { .. } => vec![StoreImage::of(&fixture.store)],
+                AcceptedMatchOutcome::Stale => Vec::new(),
+            }
+        }
+        CommitOrder::CommThenFrozenSplit => {
+            let published = vec![StoreImage::of(&fixture.store)];
+            apply_frozen_split_predecessor(&fixture, true, false);
+            published
+        }
+    };
+    FixtureTrace {
+        before,
+        published,
+        after: StoreImage::of(&fixture.store),
+    }
+}
+
+#[test]
+fn comm_event_is_logged_only_after_the_complete_commit() {
+    for scenario in MATCH_SCENARIOS {
+        let observation = run_to_completion(observe_scenario(scenario));
+        for (side, observed) in [("play", &observation.play), ("replay", &observation.replay)] {
+            assert_eq!(
+                observed.selections.len(),
+                scenario.attempts().len(),
+                "{side} {scenario:?}: one commit attempt follows each complete selection"
+            );
+            for (attempt, must_commit) in scenario.attempts().iter().enumerate() {
+                assert_eq!(
+                    observed.selections[attempt].image.match_progress(),
+                    MatchProgress::PENDING,
+                    "{side} {scenario:?} attempt {attempt}: the store holds the initial state \
+                     until the commit is decided"
+                );
+                assert_eq!(
+                    observed.event_order_defect(attempt, *must_commit),
+                    None,
+                    "{side} {scenario:?} attempt {attempt}: a COMM is published only after a \
+                     complete commit"
+                );
+            }
+            let [publication] = observed.publications.as_slice() else {
+                panic!(
+                    "{side} {scenario:?}: the accepted match publishes one COMM, not {}",
+                    observed.publications.len()
+                )
+            };
+            assert_eq!(
+                publication.image.match_progress(),
+                scenario.committed_progress(),
+                "{side} {scenario:?}: the store holds the complete commit when the COMM is \
+                 published"
+            );
+            assert_eq!(
+                observed.committed,
+                scenario.committed_state(),
+                "{side} {scenario:?}: the committed state is the complete proposal"
+            );
+            let Some((fired, consumed, _)) = &observed.outcome else {
+                panic!("{side} {scenario:?}: the accepted match returns its continuation")
+            };
+            assert_eq!(
+                (fired.continuation.as_str(), fired.persistent),
+                (SELECTED_CONTINUATION, scenario.persist),
+                "{side} {scenario:?}: the fired continuation is the selected one"
+            );
+            assert_eq!(
+                consumed
+                    .iter()
+                    .map(|datum| datum.matched_datum.as_str())
+                    .collect::<Vec<_>>(),
+                [RESTING_DATUM, ARRIVING_DATUM],
+                "{side} {scenario:?}: the COMM consumes the selected data"
+            );
+        }
+        assert_eq!(
+            logged_comms(&observation.play_log),
+            observation.play.published_comms(),
+            "{scenario:?}: play's event log holds exactly the published COMM"
+        );
+    }
+
+    for stale_selection in [false, true] {
+        let must_commit = !stale_selection;
+        let atomic = fixture_commit_trace(CommitOrder::AtomicCommitThenComm, stale_selection);
+        assert_eq!(
+            atomic.event_order_defect(must_commit),
+            None,
+            "the atomic commit publishes a COMM only after a complete commit (stale selection: \
+             {stale_selection})"
+        );
+        let predecessor = fixture_commit_trace(CommitOrder::CommThenFrozenSplit, stale_selection);
+        let reported = if stale_selection {
+            EventOrderDefect::RefusedCommitPublishedComm
+        } else {
+            EventOrderDefect::CommPrecededCompleteCommit("data")
+        };
+        assert_eq!(
+            predecessor.event_order_defect(must_commit),
+            Some(reported),
+            "the frozen split predecessor publishes its COMM before the commit (stale selection: \
+             {stale_selection})"
+        );
+    }
+}
+
+#[test]
+fn play_and_replay_apply_the_same_ticket_to_the_same_state() {
+    for scenario in MATCH_SCENARIOS {
+        let observation = run_to_completion(observe_scenario(scenario));
+        let (play, replay) = (&observation.play, &observation.replay);
+        let attempts = scenario.attempts().len();
+        assert_eq!(
+            (play.selections.len(), replay.selections.len()),
+            (attempts, attempts),
+            "{scenario:?}: play and replay make the same commit attempts"
+        );
+        for (attempt, (played, replayed)) in
+            play.selections.iter().zip(&replay.selections).enumerate()
+        {
+            assert_eq!(
+                (&played.continuation, &played.matched, played.published_before),
+                (&replayed.continuation, &replayed.matched, replayed.published_before),
+                "{scenario:?} attempt {attempt}: play and replay select the same ticket"
+            );
+            assert_eq!(
+                played.image.first_difference(&replayed.image),
+                None,
+                "{scenario:?} attempt {attempt}: play and replay select from the same state"
+            );
+        }
+        assert!(play.outcome.is_some(), "{scenario:?}: the match fires");
+        assert_eq!(
+            play.outcome, replay.outcome,
+            "{scenario:?}: play and replay return the same result"
+        );
+        let logged = logged_comms(&observation.play_log);
+        assert_eq!(logged.len(), 1, "{scenario:?}: play logs one COMM");
+        assert_eq!(play.published_comms(), logged, "{scenario:?}: play publishes the COMM it logs");
+        assert_eq!(
+            replay.published_comms(),
+            logged,
+            "{scenario:?}: replay publishes the COMM play logged"
+        );
+        for (played, replayed) in play.publications.iter().zip(&replay.publications) {
+            assert_eq!(
+                played.image.first_difference(&replayed.image),
+                None,
+                "{scenario:?}: play and replay publish the COMM over the same state"
+            );
+        }
+        assert_eq!(
+            play.settled.first_difference(&replay.settled),
+            None,
+            "{scenario:?}: play and replay leave the same state and journals"
+        );
+        assert!(
+            play.settled
+                .journal
+                .data
+                .as_ref()
+                .is_some_and(|delta| !delta.is_empty()),
+            "{scenario:?}: the compared journals record the commit"
+        );
+        assert_eq!(
+            play.committed, replay.committed,
+            "{scenario:?}: play and replay read the same committed state"
+        );
+        assert_eq!(play.rows, replay.rows, "{scenario:?}: play and replay hold the same rows");
+        assert_eq!(
+            observation.replay_data_check,
+            Ok(()),
+            "{scenario:?}: replay consumed every recorded COMM"
+        );
+        assert!(observation.replay_data_exhausted, "{scenario:?}: the replay data is exhausted");
+        assert_eq!(
+            observation.replay_root.as_ref(),
+            Ok(&observation.play_root),
+            "{scenario:?}: play and replay reach the same checkpoint root"
+        );
+        assert_ne!(
+            observation.play_root, observation.staged_root,
+            "{scenario:?}: the match changes the checkpoint root"
+        );
+    }
+}
+
 fn assert_extracted_commit_obligations_have_stable_normal_suite_bindings() {
     struct Binding {
         id: &'static str,
@@ -988,9 +1797,9 @@ fn assert_extracted_commit_obligations_have_stable_normal_suite_bindings() {
         Binding {
             id: "ACM-RC-07",
             obligation: "comm_publication_follows_a_complete_commit",
-            proof_only: true,
-            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
-            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+            proof_only: false,
+            target_name: "comm_event_is_logged_only_after_the_complete_commit",
+            target: comm_event_is_logged_only_after_the_complete_commit,
         },
         Binding {
             id: "ACM-RC-08",
@@ -1002,9 +1811,9 @@ fn assert_extracted_commit_obligations_have_stable_normal_suite_bindings() {
         Binding {
             id: "ACM-RC-09",
             obligation: "play_replay_same_ticket_same_result",
-            proof_only: true,
-            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
-            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+            proof_only: false,
+            target_name: "play_and_replay_apply_the_same_ticket_to_the_same_state",
+            target: play_and_replay_apply_the_same_ticket_to_the_same_state,
         },
     ];
     let tla = [
@@ -1025,9 +1834,9 @@ fn assert_extracted_commit_obligations_have_stable_normal_suite_bindings() {
         Binding {
             id: "ACM-TLA-03",
             obligation: "ReplayPublishesOneCompleteState",
-            proof_only: true,
-            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
-            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+            proof_only: false,
+            target_name: "comm_event_is_logged_only_after_the_complete_commit",
+            target: comm_event_is_logged_only_after_the_complete_commit,
         },
         Binding {
             id: "ACM-TLA-04",
@@ -1040,9 +1849,9 @@ fn assert_extracted_commit_obligations_have_stable_normal_suite_bindings() {
         Binding {
             id: "ACM-TLA-05",
             obligation: "EventPublicationFollowsCommit",
-            proof_only: true,
-            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
-            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+            proof_only: false,
+            target_name: "comm_event_is_logged_only_after_the_complete_commit",
+            target: comm_event_is_logged_only_after_the_complete_commit,
         },
         Binding {
             id: "ACM-TLA-06",
@@ -1077,9 +1886,9 @@ fn assert_extracted_commit_obligations_have_stable_normal_suite_bindings() {
         Binding {
             id: "ACM-TLA-10",
             obligation: "PlayReplayTraceEquivalent",
-            proof_only: true,
-            target_name: "bounded_multichannel_transition_refines_independent_sparse_count_oracle",
-            target: bounded_multichannel_transition_refines_independent_sparse_count_oracle,
+            proof_only: false,
+            target_name: "play_and_replay_apply_the_same_ticket_to_the_same_state",
+            target: play_and_replay_apply_the_same_ticket_to_the_same_state,
         },
     ];
 

@@ -2190,7 +2190,7 @@ lists all 25 controls with their formal counterparts, killing tests and logs. Be
 specification tests and the five Rholang tests, the focused flag runs the existing suites that
 pin the behavior this family relies on: `hot_store_spec` (57 tests),
 `ordered_receive_view_spec` (13), the `rspace::record_index` library tests (20), the
-`accepted_match_formal_bindings` library tests (15), the continuation and join lifecycle
+`accepted_match_formal_bindings` library tests (17), the continuation and join lifecycle
 equivalence (1), `guarded_matching_tests` (18), `replay_comm_order` (3),
 `ordered_receive_view_rholang` (4) and `matching_lifecycle_acceptance` (2).
 

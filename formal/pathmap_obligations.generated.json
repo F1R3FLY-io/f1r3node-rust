@@ -2,15 +2,15 @@
   "classified_obligations": {
     "concrete_witness": 106,
     "executable_only": 9,
-    "executable_refinement": 220,
-    "proof_only": 543
+    "executable_refinement": 225,
+    "proof_only": 538
   },
   "families": [
     {
       "checker": "scripts/check-accepted-match-obligations.py",
       "family": "accepted_match",
       "manifest": "formal/accepted_match_obligations.generated.json",
-      "manifest_sha256": "0527988ebed3cef81836be44cafa809de81b03268725ca5f6c8e2da43bec0dd5",
+      "manifest_sha256": "013bb2d7718a0cbdde0713f17f5b4aba186cda824d3e2aab26043d1eed38f8b1",
       "obligations": {
         "causal_mutants": [
           {
@@ -94,9 +94,9 @@
           },
           {
             "id": "ACM-RC-07",
-            "mode": "proof_only",
+            "mode": "executable_refinement",
             "obligation": "comm_publication_follows_a_complete_commit",
-            "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+            "target_name": "comm_event_is_logged_only_after_the_complete_commit"
           },
           {
             "id": "ACM-RC-08",
@@ -106,9 +106,9 @@
           },
           {
             "id": "ACM-RC-09",
-            "mode": "proof_only",
+            "mode": "executable_refinement",
             "obligation": "play_replay_same_ticket_same_result",
-            "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+            "target_name": "play_and_replay_apply_the_same_ticket_to_the_same_state"
           }
         ],
         "tlc_invariants": [
@@ -126,9 +126,9 @@
           },
           {
             "id": "ACM-TLA-03",
-            "mode": "proof_only",
+            "mode": "executable_refinement",
             "obligation": "ReplayPublishesOneCompleteState",
-            "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+            "target_name": "comm_event_is_logged_only_after_the_complete_commit"
           },
           {
             "id": "ACM-TLA-04",
@@ -138,9 +138,9 @@
           },
           {
             "id": "ACM-TLA-05",
-            "mode": "proof_only",
+            "mode": "executable_refinement",
             "obligation": "EventPublicationFollowsCommit",
-            "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+            "target_name": "comm_event_is_logged_only_after_the_complete_commit"
           },
           {
             "id": "ACM-TLA-06",
@@ -168,9 +168,9 @@
           },
           {
             "id": "ACM-TLA-10",
-            "mode": "proof_only",
+            "mode": "executable_refinement",
             "obligation": "PlayReplayTraceEquivalent",
-            "target_name": "bounded_multichannel_transition_refines_independent_sparse_count_oracle"
+            "target_name": "play_and_replay_apply_the_same_ticket_to_the_same_state"
           }
         ]
       }
@@ -447,7 +447,7 @@
       "checker": "scripts/check-bag-obligations.py",
       "family": "bag",
       "manifest": "formal/bag_obligations.generated.json",
-      "manifest_sha256": "2929bf12659b9b72811193e3cb597499cf24e0cec53241a3d8db4692f3f28c07",
+      "manifest_sha256": "8b5c60838832771fb1f3e6dda76b5322e759909f0df8272ca2f7741bb120bf96",
       "obligations": {
         "boundary": "Concrete witnesses exercise Bag behavior; they do not prove Rocq/Verus refinement or arbitrary inputs.",
         "delegated_tla": {
@@ -839,7 +839,7 @@
         "rocq_source": "formal/rocq/stack_safe_pda/theories/Bag.v",
         "scope": "Bag multiplicity algebra and checked scalar delta",
         "sources_sha256": {
-          "formal/accepted_match_obligations.generated.json": "0527988ebed3cef81836be44cafa809de81b03268725ca5f6c8e2da43bec0dd5",
+          "formal/accepted_match_obligations.generated.json": "013bb2d7718a0cbdde0713f17f5b4aba186cda824d3e2aab26043d1eed38f8b1",
           "formal/rocq/stack_safe_pda/theories/Bag.v": "2d733bef66d0073c852b800e5865c161feb16e5b9c97e92d4115a4fe4d7574c1",
           "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
           "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",
