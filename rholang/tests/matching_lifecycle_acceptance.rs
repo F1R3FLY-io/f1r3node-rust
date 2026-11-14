@@ -460,6 +460,118 @@ fn cases() -> Vec<Case> {
                 },
             ],
         },
+        dynamic_root_case(
+            "new-ground",
+            "new x in { 1 } | _",
+            "new a in { 2 } | new b in { 3 }",
+            "new a in { 1 } | new b in { 2 }",
+            &[],
+        ),
+        dynamic_root_case(
+            "new-open",
+            "new x(`rho:id:beta`) in { y } | _",
+            "new a, b in { 3 } | new c, d in { 4 }",
+            "new a(`rho:id:alpha`) in { 1 } | new b(`rho:id:beta`) in { 2 }",
+            &["1"],
+        ),
+        dynamic_root_case(
+            "new-binder",
+            "new x in { x!(y) } | _",
+            r#"new a in { @"out"!(3) } | new b in { @"out"!(4) }"#,
+            r#"new a in { a!(1) } | new b in { @"out"!(2) }"#,
+            &["1"],
+        ),
+        dynamic_root_case(
+            "new-remainder",
+            "new x in { y } | rest",
+            "new a, b in { 3 } | new c, d in { 4 }",
+            "new a in { 1 } | new b, c in { 2 }",
+            &["1", "new b, c in { 2 }"],
+        ),
+        dynamic_root_case(
+            "receive-ground",
+            r#"for (@a <- @"r") { 5 } | _"#,
+            r#"for (@a <- @"r") { 7 } | for (@a <- @"s") { 5 }"#,
+            r#"for (@a <- @"r") { 5 } | for (@a <- @"r") { 6 }"#,
+            &[],
+        ),
+        dynamic_root_case(
+            "receive-open",
+            r#"for (@a <- @"r") { y } | _"#,
+            r#"for (@b, @c <- @"r") { 3 } | for (@b <= @"r") { 4 }"#,
+            r#"for (@b <<- @"r") { 1 } | for (@b <- @"s") { 2 }"#,
+            &["1"],
+        ),
+        dynamic_root_case(
+            "receive-binder",
+            r#"for (@a <- @"r") { @"out"!(a, y) } | _"#,
+            r#"for (@b <- @"r") { @"out"!(2, 3) } | for (@b <- @"q") { @"out"!(b, 4) }"#,
+            r#"for (@b <- @"r") { @"out"!(b, 1) } | for (@b <- @"r") { @"out"!(1, b) }"#,
+            &["1"],
+        ),
+        dynamic_root_case(
+            "receive-remainder",
+            r#"for (@a <- @"r") { 5 | 6 } | rest"#,
+            r#"for (@a <- @"r") { 5 } | for (@a <- @"r") { 6 }"#,
+            r#"for (@a <- @"r") { 5 | 6 } | for (@a <- @"r") { 5 } | @"side"!(9)"#,
+            &[r#"for (@a <- @"r") { 5 } | @"side"!(9)"#],
+        ),
+        dynamic_root_case(
+            "match-ground",
+            "match 5 { 5 => 6 } | _",
+            "match 4 { 5 => 6 } | match 5 { 5 => 8 }",
+            "match 5 { 5 => 6 } | match 5 { 5 => 7 }",
+            &[],
+        ),
+        dynamic_root_case(
+            "match-open",
+            "match x { 5 => 6 } | _",
+            "match 5 { 4 => 6 } | match 6 { 5 => 7 }",
+            "match 5 { 5 where true => 6 } | match 7 { 4 => 6 }",
+            &["5"],
+        ),
+        dynamic_root_case(
+            "match-binder",
+            "match 5 { a => [a, y] } | _",
+            "match 5 { [b] => [b, 3] } | match 6 { b => [b, 4] }",
+            "match 5 { b => [b, 1] } | match 5 { b => [2, b] }",
+            &["1"],
+        ),
+        dynamic_root_case(
+            "match-remainder",
+            "match x { 5 => { 6 | 7 } } | rest",
+            "match 5 { 4 => { 6 | 7 } } | match 6 { 5 => { 6 | 8 } }",
+            "match 5 { 5 => { 6 | 7 } } | match 8 { 4 => { 6 | 7 } }",
+            &["5", "match 8 { 4 => { 6 | 7 } }"],
+        ),
+        dynamic_root_case(
+            "receive-bind-ground",
+            r#"for (@a <- @"p" & @b <- @"q") { y } | _"#,
+            r#"for (@c <- @"p" & @d, @e <- @"q") { 3 } | for (@c <- @"p") { 4 }"#,
+            r#"for (@c <- @"p" & @d <- @"q") { 1 } | for (@c <- @"p" & @d <- @"r") { 2 }"#,
+            &["1"],
+        ),
+        dynamic_root_case(
+            "receive-bind-open",
+            r#"for (@a <- x & @b <- @"q") { 5 } | _"#,
+            r#"for (@c <- @"p" & @d <- @"r") { 5 } | for (@c, @e <- @"p" & @d <- @"q") { 5 }"#,
+            r#"for (@c <- @"p" & @d <- @"q") { 5 } | for (@c <- @"s" & @d <- @"t") { 5 }"#,
+            &[r#""p""#],
+        ),
+        dynamic_root_case(
+            "receive-bind-binder",
+            r#"for (@[a, b] <- x & @c <- @"q") { 5 } | _"#,
+            r#"for (@[d] <- @"p" & @f <- @"q") { 5 } | for (@[d, e] <- @"p" & @f <- @"r") { 5 }"#,
+            r#"for (@[d, e] <- @"p" & @f <- @"q") { 5 } | for (@d <- @"p" & @f <- @"q") { 5 }"#,
+            &[r#""p""#],
+        ),
+        dynamic_root_case(
+            "receive-bind-remainder",
+            r#"for (@a ...@r <- x & @b <- @"q") { y } | _"#,
+            r#"for (@c <- @"p" & @d <- @"r") { 5 } | for (@c, @e <- @"p" & @d <- @"q") { 5 }"#,
+            r#"for (@c <- @"p" & @d <- @"q") { 5 } | for (@c, @e <- @"p" & @d <- @"q") { 6 }"#,
+            &[r#""p""#, "5"],
+        ),
     ]
 }
 
@@ -718,7 +830,7 @@ async fn enabled_comms(case: &Case) -> Vec<Vec<Vec<Par>>> {
 #[tokio::test(flavor = "current_thread")]
 async fn both_matching_directions_preserve_bindings_comm_state_root_and_replay() {
     let cases = cases();
-    assert_eq!(cases.len(), 12);
+    assert_eq!(cases.len(), 28);
     for case in &cases {
         let consume = observe(Matcher, case, Direction::ConsumeLast).await;
         let produce = observe(Matcher, case, Direction::ProduceLast).await;
@@ -758,6 +870,16 @@ async fn both_matching_directions_preserve_bindings_comm_state_root_and_replay()
         assert_eq!(
             produce.selection, control_produce.selection,
             "{}: produce oracle",
+            case.name
+        );
+        assert_eq!(
+            consume.state, control_consume.state,
+            "{}: consume post-state oracle",
+            case.name
+        );
+        assert_eq!(
+            produce.state, control_produce.state,
+            "{}: produce post-state oracle",
             case.name
         );
         assert_eq!(
@@ -817,6 +939,22 @@ async fn exactly_one_comm_is_enabled_in_each_case_whose_directions_must_agree() 
             "nonlinear-equal",
             "nonlinear-conflicting",
             "nonlinear-nested",
+            "new-ground",
+            "new-open",
+            "new-binder",
+            "new-remainder",
+            "receive-ground",
+            "receive-open",
+            "receive-binder",
+            "receive-remainder",
+            "match-ground",
+            "match-open",
+            "match-binder",
+            "match-remainder",
+            "receive-bind-ground",
+            "receive-bind-open",
+            "receive-bind-binder",
+            "receive-bind-remainder",
         ],
         "the cases whose two directions must agree are exactly the cases with one enabled COMM"
     );
@@ -944,6 +1082,33 @@ fn receive_case(name: &'static str, process: &Par, arrival: &[Par]) -> Case {
             bindings: vec![arrival.to_vec()],
             remaining: vec![(source, Vec::new())],
         }],
+    }
+}
+
+fn dynamic_root_case(
+    name: &'static str,
+    pattern: &str,
+    decoy: &str,
+    arrival: &str,
+    bindings: &[&str],
+) -> Case {
+    let receive = normalized(
+        name,
+        &format!("for (@{{ {pattern} }} <- @\"{name}\") {{ Nil }}"),
+    );
+    let case = receive_case(name, &receive, &[normalized(name, arrival)]);
+    let channel = case.arrival.0.clone();
+    let decoy = datum(vec![normalized(name, decoy)]);
+    Case {
+        background: vec![(channel.clone(), decoy.clone(), false)],
+        outcomes: vec![Outcome {
+            bindings: vec![bindings
+                .iter()
+                .map(|binding| normalized(name, binding))
+                .collect()],
+            remaining: vec![(channel, vec![(decoy, false)])],
+        }],
+        ..case
     }
 }
 
