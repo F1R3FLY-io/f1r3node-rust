@@ -670,7 +670,7 @@ pathmap_leaf_extension_prerequisites() {
   rocq_reject_placeholders theories/PathMapPhysicalOwnership.v theories/PathMapReversePruneTeardown.v
   rocq_compile_with_closed_count theories/PathMapPhysicalOwnership.v 16 \
     "PathMap leaf-extension physical-ownership prerequisite"
-  rocq_compile_with_closed_count theories/PathMapReversePruneTeardown.v 165 \
+  rocq_compile_with_closed_count theories/PathMapReversePruneTeardown.v 175 \
     "PathMap leaf-extension disposal prerequisite"
 }
 
@@ -1174,11 +1174,11 @@ rocq_check_modules "PathMap physical ownership" \
   StackSafePDA.PathMapPhysicalOwnership \
   StackSafePDA.PathMapPhysicalOwnershipMutants
 rocq_compile_with_closed_count \
-  theories/PathMapReversePruneTeardown.v 165 \
-  "the exact 25-primary/10-quarantine PathMap teardown authority, scoped policies and eight navigation invariants"
+  theories/PathMapReversePruneTeardown.v 175 \
+  "the exact 33-primary/10-quarantine PathMap teardown authority, scoped policies, eight navigation invariants and the floor-bounded live removal"
 rocq_compile_with_closed_count \
-  theories/PathMapReversePruneTeardownMutants.v 18 \
-  "the exact 27-teardown/13-quarantine PathMap teardown controls"
+  theories/PathMapReversePruneTeardownMutants.v 22 \
+  "the exact 31-teardown/13-quarantine PathMap teardown controls, four of them live-removal kills"
 rocq_check_modules "PathMap reverse teardown" \
   StackSafePDA.PathMapReversePruneTeardown \
   StackSafePDA.PathMapReversePruneTeardownMutants

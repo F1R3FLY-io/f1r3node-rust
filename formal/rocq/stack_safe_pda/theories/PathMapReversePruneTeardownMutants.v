@@ -1,5 +1,6 @@
 From Stdlib Require Import Bool List Arith Lia.
-From StackSafePDA Require Import PathMapReversePruneTeardown.
+From StackSafePDA Require Import PathMapPhysicalOwnership
+  PathMapReversePruneTeardown.
 
 Import ListNotations.
 Import PathMapReversePruneTeardown.
@@ -210,6 +211,159 @@ Definition mutant_overwrite_real_parent : list teardown_event :=
 Theorem kill_real_parent_value_overwrite :
   ~ branch_safe_segment true mutant_overwrite_real_parent.
 Proof. unfold branch_safe_segment, mutant_overwrite_real_parent. discriminate. Qed.
+
+(** Controls of the floor-bounded live removal ([live_prune_run]), the loop
+    of [remove_leaf_with_floor] that the in-place exclusive removal reuses.
+    Each mutant changes one decision of that loop, or drops the premise of
+    the external-image theorem, and is refuted on a fixture of the main
+    theory: [live_chain_frames], [live_floor_frames] or [live_fork_frames].
+
+    Mutant: no barrier at a value-free parent.  Nothing then stops PathMap's
+    own prune at that parent, so the first step detaches the whole dangling
+    chain up to the next real value or fork: three logical edges in one
+    prune on [live_chain_frames], where the model detaches one edge per
+    step. *)
+Fixpoint mutant_unguarded_reach (frames : list live_frame) : nat :=
+  match frames with
+  | [] => 0
+  | frame :: higher =>
+      S (if holds_payload (live_frame_cell frame) || live_frame_forks frame
+         then 0 else mutant_unguarded_reach higher)
+  end.
+
+Definition mutant_unguarded_live_run (frames : list live_frame)
+    : list teardown_event :=
+  [PruneSpan (mutant_unguarded_reach frames)].
+
+Theorem kill_live_run_missing_barrier :
+  prune_widths (live_prune_run 5 live_chain_frames) = [1; 1; 1] /\
+  prune_widths (mutant_unguarded_live_run live_chain_frames) = [3] /\
+  exists width,
+    In width (prune_widths (mutant_unguarded_live_run live_chain_frames)) /\
+    width <> 1.
+Proof.
+  split; [vm_compute; reflexivity|].
+  split; [vm_compute; reflexivity|].
+  exists 3. split.
+  - vm_compute. left. reflexivity.
+  - discriminate.
+Qed.
+
+(** Mutant: the floor is ignored.  The run stops only at a real value or a
+    fork, so on [live_floor_frames] with [above_floor = 1] it goes on past
+    the floor and detaches the floor's own edge: three steps, where
+    [live_prune_run_respects_the_floor] allows at most two. *)
+Fixpoint mutant_floorless_live_run (frames : list live_frame)
+    : list teardown_event :=
+  match frames with
+  | [] => []
+  | frame :: higher =>
+      live_frame_segment frame ++
+      (if holds_payload (live_frame_cell frame) || live_frame_forks frame
+       then [] else mutant_floorless_live_run higher)
+  end.
+
+Theorem kill_live_run_ignored_floor :
+  length (prune_widths (live_prune_run 1 live_floor_frames)) = 2 /\
+  length (prune_widths (mutant_floorless_live_run live_floor_frames)) = 3 /\
+  S 1 < length (prune_widths (mutant_floorless_live_run live_floor_frames)).
+Proof.
+  assert (floorless :
+    length (prune_widths (mutant_floorless_live_run live_floor_frames)) = 3)
+    by (vm_compute; reflexivity).
+  split; [vm_compute; reflexivity|].
+  split; [exact floorless|].
+  rewrite floorless. lia.
+Qed.
+
+(** Mutant: the barrier installed at a value-free stopping parent stays
+    installed (the retirement at the stopping frame is skipped).  On
+    [live_fork_frames] the run stops at once at the fork and leaves one
+    barrier in the live trie, where
+    [live_removal_retires_every_installed_barrier] retires every barrier the
+    removal installs. *)
+Definition mutant_retained_barrier_segment (stops : bool) (frame : live_frame)
+    : list teardown_event :=
+  if holds_payload (live_frame_cell frame) then [PruneSpan 1]
+  else if stops then [InstallBarrier; PruneSpan 1]
+  else [InstallBarrier; PruneSpan 1; DetachBarrier].
+
+Fixpoint mutant_retained_barrier_live_run (above_floor : nat)
+    (frames : list live_frame) : list teardown_event :=
+  match frames with
+  | [] => []
+  | frame :: higher =>
+      mutant_retained_barrier_segment
+        (live_frame_stops (live_at_floor above_floor) frame) frame ++
+      (if live_frame_stops (live_at_floor above_floor) frame then []
+       else mutant_retained_barrier_live_run (pred above_floor) higher)
+  end.
+
+Theorem kill_live_run_barrier_left_installed :
+  mutant_retained_barrier_live_run 4 live_fork_frames =
+    [InstallBarrier; PruneSpan 1] /\
+  installed_barrier_count
+    (mutant_retained_barrier_live_run 4 live_fork_frames) <>
+  retired_barrier_count
+    (mutant_retained_barrier_live_run 4 live_fork_frames).
+Proof.
+  split; [vm_compute; reflexivity|].
+  vm_compute. discriminate.
+Qed.
+
+(** Mutant: the removal runs on an anchor whose footprint overlaps an
+    external anchor's, the aliasing of bug 14492: after a header clone both
+    anchors hold the nodes [(0, 0)] and [(0, 1)].  Removing the endpoint at
+    [(0, 1)] below the forking root [(0, 0)], which is the floor, frees
+    [(0, 1)] and destroys part of the external image.  The overlap is
+    exactly the premise that [live_removal_run_preserves_external_images]
+    needs and this run lacks. *)
+Definition live_overlap_subject : PathMapPhysicalOwnership.physical_anchor :=
+  PathMapPhysicalOwnership.PhysicalAnchor 0
+    (PathMapPhysicalOwnership.RootAllocated (0, 0)) [(0, 0); (0, 1)]
+    [[1]; [2]] 1 1 PathMapPhysicalOwnership.WholeRootOwner.
+
+Definition live_overlap_sibling : PathMapPhysicalOwnership.physical_anchor :=
+  PathMapPhysicalOwnership.PhysicalAnchor 1
+    (PathMapPhysicalOwnership.RootAllocated (0, 0)) [(0, 0); (0, 1)]
+    [[1]; [2]] 1 1 PathMapPhysicalOwnership.WholeRootOwner.
+
+Definition live_overlap_owned : PathMapPhysicalOwnership.allocation_region :=
+  PathMapPhysicalOwnership.AllocationRegion 0 [(0, 0); (0, 1)] [].
+
+Definition live_overlap_sibling_region
+    : PathMapPhysicalOwnership.allocation_region :=
+  PathMapPhysicalOwnership.AllocationRegion 0 [(0, 0); (0, 1)] [].
+
+Definition live_overlap_frames : list live_frame :=
+  [LiveFrame (0, 0) None true].
+
+Theorem kill_live_run_on_overlapping_footprint :
+  live_run_released 0 (0, 1) live_overlap_frames = [(0, 1)] /\
+  ~ PathMapPhysicalOwnership.physical_image_intact_after_release
+      (live_released_part live_overlap_subject
+        (live_run_released 0 (0, 1) live_overlap_frames))
+      live_overlap_sibling /\
+  ~ exclusive_terminal_footprint live_overlap_owned
+      [live_overlap_sibling_region].
+Proof.
+  assert (lost :
+    ~ PathMapPhysicalOwnership.physical_image_intact_after_release
+        (live_released_part live_overlap_subject
+          (live_run_released 0 (0, 1) live_overlap_frames))
+        live_overlap_sibling) by (vm_compute; discriminate).
+  split; [vm_compute; reflexivity|].
+  split; [exact lost|].
+  intro footprint. apply lost.
+  apply (@live_removal_run_preserves_external_images live_overlap_owned
+    [live_overlap_sibling_region] live_overlap_subject live_overlap_sibling
+    live_overlap_sibling_region 0 (0, 1) live_overlap_frames footprint).
+  - left. reflexivity.
+  - reflexivity.
+  - right. left. reflexivity.
+  - intros frame member. destruct member as [same|[]].
+    subst frame. left. reflexivity.
+Qed.
 
 (** Mutant: [remove_val(true)] is used at a terminal and recursively prunes a
     unary suffix. *)
@@ -744,7 +898,11 @@ Inductive teardown_mutant : Type :=
 | RecursiveParDisposal
 | EarlyPartialPublication
 | DoubleCompletePublication
-| ErrorPrecedenceInversion.
+| ErrorPrecedenceInversion
+| LiveRunMissingBarrier
+| LiveRunIgnoredFloor
+| LiveRunBarrierLeftInstalled
+| LiveRunOverlappingFootprint.
 
 Definition all_teardown_mutants : list teardown_mutant :=
   [ValueOnlyWalk; CutAtForkingParent; CutAtValuedParent; UnboundedStoppingPrune;
@@ -758,7 +916,9 @@ Definition all_teardown_mutants : list teardown_mutant :=
    PerWrapperRawHeaderClone; ManualFamilyCounter;
    UnregisteredMakeMutAnchor; EarlyOwnerDrop;
    FailedFreshCandidateRawDrop; RecursiveParDisposal; EarlyPartialPublication;
-   DoubleCompletePublication; ErrorPrecedenceInversion].
+   DoubleCompletePublication; ErrorPrecedenceInversion;
+   LiveRunMissingBarrier; LiveRunIgnoredFloor; LiveRunBarrierLeftInstalled;
+   LiveRunOverlappingFootprint].
 
 Definition teardown_mutant_killed (mutant : teardown_mutant) : Prop :=
   match mutant with
@@ -849,6 +1009,24 @@ Definition teardown_mutant_killed (mutant : teardown_mutant) : Prop :=
   | ErrorPrecedenceInversion =>
       mutant_deferred_act_first <>
       select_failure false true true true true
+  | LiveRunMissingBarrier =>
+      exists width,
+        In width (prune_widths (mutant_unguarded_live_run live_chain_frames)) /\
+        width <> 1
+  | LiveRunIgnoredFloor =>
+      S 1 < length (prune_widths (mutant_floorless_live_run live_floor_frames))
+  | LiveRunBarrierLeftInstalled =>
+      installed_barrier_count
+        (mutant_retained_barrier_live_run 4 live_fork_frames) <>
+      retired_barrier_count
+        (mutant_retained_barrier_live_run 4 live_fork_frames)
+  | LiveRunOverlappingFootprint =>
+      ~ PathMapPhysicalOwnership.physical_image_intact_after_release
+          (live_released_part live_overlap_subject
+            (live_run_released 0 (0, 1) live_overlap_frames))
+          live_overlap_sibling /\
+      ~ exclusive_terminal_footprint live_overlap_owned
+          [live_overlap_sibling_region]
   end.
 
 Theorem every_teardown_mutant_has_a_causal_counterexample : forall mutant,
@@ -882,6 +1060,10 @@ Proof.
   - apply kill_early_partial_publication.
   - apply kill_double_complete_publication.
   - apply kill_error_precedence_inversion.
+  - exact (proj2 (proj2 kill_live_run_missing_barrier)).
+  - exact (proj2 (proj2 kill_live_run_ignored_floor)).
+  - exact (proj2 kill_live_run_barrier_left_installed).
+  - exact (proj2 kill_live_run_on_overlapping_footprint).
 Qed.
 
 Theorem teardown_mutant_registry_is_unique_and_complete :
@@ -894,20 +1076,20 @@ Proof.
     apply every_teardown_mutant_has_a_causal_counterexample.
 Qed.
 
-Theorem teardown_mutant_registry_has_exactly_twenty_seven_entries :
-  length all_teardown_mutants = 27.
+Theorem teardown_mutant_registry_has_exactly_thirty_one_entries :
+  length all_teardown_mutants = 31.
 Proof. reflexivity. Qed.
 
 Theorem teardown_mutant_registry_is_unique_complete_and_exact :
   NoDup all_teardown_mutants /\
   Forall teardown_mutant_killed all_teardown_mutants /\
-  length all_teardown_mutants = 27.
+  length all_teardown_mutants = 31.
 Proof.
   split.
   - exact (proj1 teardown_mutant_registry_is_unique_and_complete).
   - split.
     + exact (proj2 teardown_mutant_registry_is_unique_and_complete).
-    + apply teardown_mutant_registry_has_exactly_twenty_seven_entries.
+    + apply teardown_mutant_registry_has_exactly_thirty_one_entries.
 Qed.
 
 Print Assumptions adversarial_fixtures_are_non_vacuous.
@@ -921,12 +1103,16 @@ Print Assumptions quarantine_mutant_registry_is_unique_complete_and_exact.
 Print Assumptions every_teardown_mutant_has_a_causal_counterexample.
 Print Assumptions teardown_mutant_registry_is_unique_and_complete.
 Print Assumptions kill_retain_all_phase_a_values_memory_slope.
-Print Assumptions teardown_mutant_registry_has_exactly_twenty_seven_entries.
+Print Assumptions teardown_mutant_registry_has_exactly_thirty_one_entries.
 Print Assumptions teardown_mutant_registry_is_unique_complete_and_exact.
 Print Assumptions barrier_free_run_fixtures_are_non_vacuous.
 Print Assumptions a_failing_step_refutes_the_run.
 Print Assumptions kill_cut_at_forking_parent.
 Print Assumptions kill_cut_at_valued_parent.
 Print Assumptions kill_unbounded_stopping_prune.
+Print Assumptions kill_live_run_missing_barrier.
+Print Assumptions kill_live_run_ignored_floor.
+Print Assumptions kill_live_run_barrier_left_installed.
+Print Assumptions kill_live_run_on_overlapping_footprint.
 
 End PathMapReversePruneTeardownMutants.

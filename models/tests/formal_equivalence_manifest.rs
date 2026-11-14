@@ -2877,7 +2877,7 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         "Theorem make_mut_creates_one_well_formed_fresh_anchor",
         "Theorem cross_anchor_teardown_preserves_the_sibling_image",
         "Theorem every_campaign_owned_exit_drains_before_release",
-        "Theorem invariant_catalog_has_exactly_twenty_five_entries",
+        "Theorem invariant_catalog_has_exactly_thirty_three_entries",
         "Theorem campaign_branch_safe_pathmap_teardown_capstone",
         "Module BarrierFreeNodeRefinement.",
         "Definition pathmap_premises (focus : zipper_focus) : Prop :=",
@@ -2909,7 +2909,7 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         "kill_cut_at_valued_parent",
         "kill_unbounded_stopping_prune",
         "every_teardown_mutant_has_a_causal_counterexample",
-        "teardown_mutant_registry_has_exactly_twenty_seven_entries",
+        "teardown_mutant_registry_has_exactly_thirty_one_entries",
     ] {
         assert!(
             mutants.contains(marker),
@@ -3001,8 +3001,8 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         );
     }
     for (theory, count) in [
-        ("theories/PathMapReversePruneTeardown.v", "165"),
-        ("theories/PathMapReversePruneTeardownMutants.v", "18"),
+        ("theories/PathMapReversePruneTeardown.v", "175"),
+        ("theories/PathMapReversePruneTeardownMutants.v", "22"),
     ] {
         assert!(
             has_runner_command(&runner, &["rocq_compile_with_closed_count", theory, count]),

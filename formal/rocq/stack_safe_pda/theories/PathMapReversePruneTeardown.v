@@ -2168,6 +2168,714 @@ Proof.
     + repeat split; reflexivity.
 Qed.
 
+(** * The floor-bounded live removal
+
+    The in-place removal of an exhausted endpoint on an exclusive anchor
+    calls [NativePathCursor::remove_val_and_prune].  The endpoint's value is
+    taken and handed to the named disposer.  An endpoint at the zipper root
+    or with children keeps its topology.  A leaf goes through
+    [remove_leaf_with_floor] with the cursor's prefix length as the floor,
+    and its loop runs once per byte of the dangling chain:
+
+    - ascend one byte to the parent and read three facts about it before
+      changing anything: whether it is the floor, whether it holds a real
+      value, and whether it has another child (a surviving fork);
+    - if it holds no real value, install a synthetic barrier there;
+    - descend and remove the child: the real value at the first step (taken
+      counted and disposed), the previous step's barrier afterwards;
+    - remove exactly one edge ([prune_ascend]);
+    - stop at the floor, at a real value or at a fork, and retire the
+      barrier installed at the stopping parent; otherwise carry on from the
+      parent, whose barrier is now the valued leaf.
+
+    [live_frame] is what one step reads about the parent: its node, its cell
+    and whether it forks.  [live_prune_run above_floor frames] lists the
+    events of the loop over the frames from the endpoint's parent upwards,
+    where [above_floor] is the number of bytes between that parent and the
+    floor.  Each step is one [prune_segment]: a real parent value is already
+    a one-edge barrier; a value-free parent gets a barrier immediately
+    before the prune, and the barrier goes after it.
+
+    Two differences of form, neither of substance.  The model takes the
+    counted value as [RemoveValueNoPrune] and [DisposeValue] and counts the
+    edge of that first step separately, as [PruneSpan 1]: the code's
+    [take_counted_value] with [prune = true] may remove that edge itself, and
+    then only ascends; either way one edge goes.  The code retires the
+    barrier of a parent that does not stop the run one step later, when it
+    removes that parent as the next child, and installs the next barrier
+    first; the model retires it in the same segment.  Both orders have the
+    same events and counts, and in both every prune is below a real value
+    or a barrier.
+
+    The barrier-free cut of the final teardown is not this step and is not
+    modeled here: its premises assume a value-free trie that no other handle
+    observes, which a live anchor is not. *)
+Record live_frame : Type := LiveFrame {
+  live_frame_node : PathMapPhysicalOwnership.node_id;
+  live_frame_cell : option payload;
+  live_frame_forks : bool
+}.
+
+(** [above_floor] counts down by one per frame; the frame read at zero is
+    the floor. *)
+Definition live_at_floor (above_floor : nat) : bool :=
+  match above_floor with
+  | 0 => true
+  | S _ => false
+  end.
+
+(** The loop's stopping test, in the code's order: the floor, a real parent
+    value, a surviving fork. *)
+Definition live_frame_stops (at_floor : bool) (frame : live_frame) : bool :=
+  at_floor || holds_payload (live_frame_cell frame) || live_frame_forks frame.
+
+Definition live_frame_segment (frame : live_frame) : list teardown_event :=
+  prune_segment (holds_payload (live_frame_cell frame)).
+
+Fixpoint live_prune_run (above_floor : nat) (frames : list live_frame)
+    : list teardown_event :=
+  match frames with
+  | [] => []
+  | frame :: higher =>
+      live_frame_segment frame ++
+      (if live_frame_stops (live_at_floor above_floor) frame then []
+       else live_prune_run (pred above_floor) higher)
+  end.
+
+Fixpoint live_run_steps (above_floor : nat) (frames : list live_frame)
+    : nat :=
+  match frames with
+  | [] => 0
+  | frame :: higher =>
+      S (if live_frame_stops (live_at_floor above_floor) frame then 0
+         else live_run_steps (pred above_floor) higher)
+  end.
+
+(** The nodes that the run frees: the endpoint, then each parent that does
+    not stop the run and so becomes the next valued leaf.  The stopping
+    parent keeps its node. *)
+Fixpoint live_run_released (above_floor : nat)
+    (child : PathMapPhysicalOwnership.node_id) (frames : list live_frame)
+    : list PathMapPhysicalOwnership.node_id :=
+  match frames with
+  | [] => []
+  | frame :: higher =>
+      child ::
+      (if live_frame_stops (live_at_floor above_floor) frame then []
+       else live_run_released (pred above_floor) (live_frame_node frame)
+         higher)
+  end.
+
+(** The two cases of [remove_val_and_prune]: an endpoint at the zipper root
+    or with children keeps its topology; a leaf runs the loop. *)
+Inductive live_endpoint : Type :=
+| LiveValueOnlyEndpoint
+| LiveLeafEndpoint (above_floor : nat) (frames : list live_frame).
+
+Definition live_endpoint_prune (endpoint : live_endpoint)
+    : list teardown_event :=
+  match endpoint with
+  | LiveValueOnlyEndpoint => []
+  | LiveLeafEndpoint above_floor frames => live_prune_run above_floor frames
+  end.
+
+Definition live_removal_trace (value : payload) (endpoint : live_endpoint)
+    : list teardown_event :=
+  phase_a_dispose_value value ++ live_endpoint_prune endpoint.
+
+(** The counters of the code's [BarrierPruneStats]. *)
+Fixpoint installed_barrier_count (trace : list teardown_event) : nat :=
+  match trace with
+  | [] => 0
+  | InstallBarrier :: rest => S (installed_barrier_count rest)
+  | _ :: rest => installed_barrier_count rest
+  end.
+
+Fixpoint retired_barrier_count (trace : list teardown_event) : nat :=
+  match trace with
+  | [] => 0
+  | DetachBarrier :: rest => S (retired_barrier_count rest)
+  | _ :: rest => retired_barrier_count rest
+  end.
+
+(** A frame that the run passes: no real value and no other child. *)
+Definition live_frame_passes (frame : live_frame) : Prop :=
+  holds_payload (live_frame_cell frame) = false /\
+  live_frame_forks frame = false.
+
+Lemma installed_barrier_count_app : forall left right,
+  installed_barrier_count (left ++ right) =
+    installed_barrier_count left + installed_barrier_count right.
+Proof.
+  induction left as [|event rest IH]; intros right; simpl; auto.
+  destruct event; simpl; rewrite IH; reflexivity.
+Qed.
+
+Lemma retired_barrier_count_app : forall left right,
+  retired_barrier_count (left ++ right) =
+    retired_barrier_count left + retired_barrier_count right.
+Proof.
+  induction left as [|event rest IH]; intros right; simpl; auto.
+  destruct event; simpl; rewrite IH; reflexivity.
+Qed.
+
+Lemma prune_segment_balances_barriers : forall parent_has_value,
+  installed_barrier_count (prune_segment parent_has_value) =
+    retired_barrier_count (prune_segment parent_has_value).
+Proof. destruct parent_has_value; reflexivity. Qed.
+
+Lemma phase_a_dispose_value_has_no_barrier : forall value,
+  installed_barrier_count (phase_a_dispose_value value) = 0 /\
+  retired_barrier_count (phase_a_dispose_value value) = 0.
+Proof.
+  destruct value as [member|par_id children|key multiplicity|position];
+    simpl; try (split; reflexivity).
+  induction children as [|child rest IH]; simpl.
+  - split; reflexivity.
+  - exact IH.
+Qed.
+
+Lemma phase_a_dispose_value_detaches_no_original : forall value,
+  detached_payloads (phase_a_dispose_value value) = [].
+Proof.
+  destruct value as [member|par_id children|key multiplicity|position];
+    simpl; try reflexivity.
+  apply detached_par_child_events_are_empty.
+Qed.
+
+Lemma live_frame_stops_at_the_floor : forall frame,
+  live_frame_stops (live_at_floor 0) frame = true.
+Proof. intro frame. reflexivity. Qed.
+
+Lemma live_frame_passing_is_above_the_floor : forall above_floor frame,
+  live_frame_stops (live_at_floor above_floor) frame = false ->
+  exists below, above_floor = S below.
+Proof.
+  intros [|below] frame passes.
+  - rewrite live_frame_stops_at_the_floor in passes. discriminate passes.
+  - exists below. reflexivity.
+Qed.
+
+Lemma live_frame_stop_reason : forall level frame,
+  live_frame_stops (live_at_floor level) frame = true ->
+  level = 0 \/ holds_payload (live_frame_cell frame) = true \/
+  live_frame_forks frame = true.
+Proof.
+  intros level frame stops.
+  unfold live_frame_stops in stops.
+  apply orb_true_iff in stops as [floor_or_value|forks].
+  - apply orb_true_iff in floor_or_value as [floor|value].
+    + left. destruct level as [|level].
+      * reflexivity.
+      * simpl in floor. discriminate floor.
+    + right. left. exact value.
+  - right. right. exact forks.
+Qed.
+
+Lemma live_prune_run_stopping_frame : forall above_floor frame higher,
+  live_frame_stops (live_at_floor above_floor) frame = true ->
+  live_prune_run above_floor (frame :: higher) = live_frame_segment frame.
+Proof.
+  intros above_floor frame higher stops.
+  change (live_frame_segment frame ++
+    (if live_frame_stops (live_at_floor above_floor) frame then []
+     else live_prune_run (pred above_floor) higher) =
+    live_frame_segment frame).
+  rewrite stops. apply app_nil_r.
+Qed.
+
+Lemma live_prune_run_passing_frame : forall below frame higher,
+  live_frame_stops (live_at_floor (S below)) frame = false ->
+  live_prune_run (S below) (frame :: higher) =
+    live_frame_segment frame ++ live_prune_run below higher.
+Proof.
+  intros below frame higher passes.
+  change (live_frame_segment frame ++
+    (if live_frame_stops (live_at_floor (S below)) frame then []
+     else live_prune_run (pred (S below)) higher) =
+    live_frame_segment frame ++ live_prune_run below higher).
+  rewrite passes. reflexivity.
+Qed.
+
+Lemma live_run_steps_stopping_frame : forall above_floor frame higher,
+  live_frame_stops (live_at_floor above_floor) frame = true ->
+  live_run_steps above_floor (frame :: higher) = 1.
+Proof.
+  intros above_floor frame higher stops.
+  change (S (if live_frame_stops (live_at_floor above_floor) frame then 0
+    else live_run_steps (pred above_floor) higher) = 1).
+  rewrite stops. reflexivity.
+Qed.
+
+Lemma live_run_steps_passing_frame : forall below frame higher,
+  live_frame_stops (live_at_floor (S below)) frame = false ->
+  live_run_steps (S below) (frame :: higher) =
+    S (live_run_steps below higher).
+Proof.
+  intros below frame higher passes.
+  change (S (if live_frame_stops (live_at_floor (S below)) frame then 0
+    else live_run_steps (pred (S below)) higher) =
+    S (live_run_steps below higher)).
+  rewrite passes. reflexivity.
+Qed.
+
+Lemma live_run_released_stopping_frame : forall above_floor child frame
+    higher,
+  live_frame_stops (live_at_floor above_floor) frame = true ->
+  live_run_released above_floor child (frame :: higher) = [child].
+Proof.
+  intros above_floor child frame higher stops.
+  change (child ::
+    (if live_frame_stops (live_at_floor above_floor) frame then []
+     else live_run_released (pred above_floor) (live_frame_node frame)
+       higher) =
+    [child]).
+  rewrite stops. reflexivity.
+Qed.
+
+Lemma live_run_released_passing_frame : forall below child frame higher,
+  live_frame_stops (live_at_floor (S below)) frame = false ->
+  live_run_released (S below) child (frame :: higher) =
+    child :: live_run_released below (live_frame_node frame) higher.
+Proof.
+  intros below child frame higher passes.
+  change (child ::
+    (if live_frame_stops (live_at_floor (S below)) frame then []
+     else live_run_released (pred (S below)) (live_frame_node frame)
+       higher) =
+    child :: live_run_released below (live_frame_node frame) higher).
+  rewrite passes. reflexivity.
+Qed.
+
+(** One logical edge per step: the prune widths of a run are exactly one
+    [1] per step. *)
+Theorem live_prune_run_detaches_one_logical_edge_per_step :
+  forall frames above_floor,
+  prune_widths (live_prune_run above_floor frames) =
+    repeat 1 (live_run_steps above_floor frames).
+Proof.
+  induction frames as [|frame higher IH]; intros above_floor.
+  - reflexivity.
+  - destruct (live_frame_stops (live_at_floor above_floor) frame) eqn:stops.
+    + rewrite (@live_prune_run_stopping_frame above_floor frame higher stops),
+        (@live_run_steps_stopping_frame above_floor frame higher stops).
+      unfold live_frame_segment.
+      rewrite prune_segment_is_one_logical_edge.
+      reflexivity.
+    + destruct (@live_frame_passing_is_above_the_floor above_floor frame stops)
+        as [below ->].
+      rewrite (@live_prune_run_passing_frame below frame higher stops),
+        (@live_run_steps_passing_frame below frame higher stops),
+        prune_widths_app, IH.
+      unfold live_frame_segment.
+      rewrite prune_segment_is_one_logical_edge.
+      reflexivity.
+Qed.
+
+(** The floor bounds the run: at most [above_floor + 1] steps, the last one
+    below the floor itself. *)
+Theorem live_prune_run_respects_the_floor : forall frames above_floor,
+  live_run_steps above_floor frames <= S above_floor.
+Proof.
+  induction frames as [|frame higher IH]; intros above_floor.
+  - simpl. lia.
+  - destruct (live_frame_stops (live_at_floor above_floor) frame) eqn:stops.
+    + rewrite (@live_run_steps_stopping_frame above_floor frame higher stops).
+      lia.
+    + destruct (@live_frame_passing_is_above_the_floor above_floor frame stops)
+        as [below ->].
+      rewrite (@live_run_steps_passing_frame below frame higher stops).
+      specialize (IH below). lia.
+Qed.
+
+(** Where the run stops.  When the floor lies within the frames, the run
+    passes value-free single-child parents below the floor, each guarded
+    by a barrier that it retires; it stops at the first parent that is the
+    floor, holds a real value or forks, with that parent's [prune_segment];
+    and it frees the endpoint and the parents it passes, never the
+    stopping parent. *)
+Theorem live_removal_run_stops_at_the_floor_a_real_value_or_a_fork :
+  forall frames above_floor child,
+  above_floor < length frames ->
+  exists passed stop higher level,
+    frames = passed ++ stop :: higher /\
+    Forall live_frame_passes passed /\
+    level + length passed = above_floor /\
+    (level = 0 \/ holds_payload (live_frame_cell stop) = true \/
+     live_frame_forks stop = true) /\
+    live_prune_run above_floor frames =
+      flat_map (fun _ => [InstallBarrier; PruneSpan 1; DetachBarrier])
+        passed ++
+      prune_segment (holds_payload (live_frame_cell stop)) /\
+    live_run_released above_floor child frames =
+      child :: map live_frame_node passed.
+Proof.
+  induction frames as [|frame higher IH]; intros above_floor child bound.
+  - simpl in bound. exfalso. lia.
+  - destruct (live_frame_stops (live_at_floor above_floor) frame) eqn:stops.
+    + exists [], frame, higher, above_floor.
+      split; [reflexivity|].
+      split; [constructor|].
+      split; [simpl; lia|].
+      split; [exact (@live_frame_stop_reason above_floor frame stops)|].
+      split.
+      * rewrite (@live_prune_run_stopping_frame above_floor frame higher stops).
+        reflexivity.
+      * rewrite (@live_run_released_stopping_frame above_floor child frame
+          higher stops).
+        reflexivity.
+    + destruct (@live_frame_passing_is_above_the_floor above_floor frame stops)
+        as [below ->].
+      assert (higher_bound : below < length higher).
+      { simpl in bound. lia. }
+      destruct (IH below (live_frame_node frame) higher_bound) as
+        [passed [stop [rest [level
+          [shape [passing [levels [reason [trace released]]]]]]]]].
+      assert (frame_passes : live_frame_passes frame).
+      { unfold live_frame_stops in stops.
+        apply orb_false_iff in stops as [floor_or_value forks].
+        apply orb_false_iff in floor_or_value as [_ value].
+        split; [exact value|exact forks]. }
+      exists (frame :: passed), stop, rest, level.
+      split; [rewrite shape; reflexivity|].
+      split; [constructor; [exact frame_passes|exact passing]|].
+      split; [simpl; lia|].
+      split; [exact reason|].
+      split.
+      * rewrite (@live_prune_run_passing_frame below frame higher stops), trace,
+          app_assoc.
+        unfold live_frame_segment.
+        rewrite (proj1 frame_passes).
+        reflexivity.
+      * rewrite (@live_run_released_passing_frame below child frame higher
+          stops), released.
+        reflexivity.
+Qed.
+
+Lemma live_prune_run_balances_barriers : forall frames above_floor,
+  installed_barrier_count (live_prune_run above_floor frames) =
+    retired_barrier_count (live_prune_run above_floor frames).
+Proof.
+  induction frames as [|frame higher IH]; intros above_floor.
+  - reflexivity.
+  - destruct (live_frame_stops (live_at_floor above_floor) frame) eqn:stops.
+    + rewrite (@live_prune_run_stopping_frame above_floor frame higher stops).
+      unfold live_frame_segment.
+      apply prune_segment_balances_barriers.
+    + destruct (@live_frame_passing_is_above_the_floor above_floor frame stops)
+        as [below ->].
+      rewrite (@live_prune_run_passing_frame below frame higher stops),
+        installed_barrier_count_app, retired_barrier_count_app, IH.
+      unfold live_frame_segment.
+      rewrite prune_segment_balances_barriers.
+      reflexivity.
+Qed.
+
+(** Every barrier the removal installs is retired: no synthetic barrier is
+    left in the live trie. *)
+Theorem live_removal_retires_every_installed_barrier : forall value endpoint,
+  installed_barrier_count (live_removal_trace value endpoint) =
+    retired_barrier_count (live_removal_trace value endpoint).
+Proof.
+  intros value endpoint. unfold live_removal_trace.
+  rewrite installed_barrier_count_app, retired_barrier_count_app.
+  destruct (@phase_a_dispose_value_has_no_barrier value)
+    as [installed retired].
+  rewrite installed, retired.
+  destruct endpoint as [|above_floor frames].
+  - reflexivity.
+  - exact (@live_prune_run_balances_barriers frames above_floor).
+Qed.
+
+Lemma live_prune_run_moves_no_real_value : forall frames above_floor,
+  removed_without_prune (live_prune_run above_floor frames) = [] /\
+  disposed_values (live_prune_run above_floor frames) = [] /\
+  detached_payloads (live_prune_run above_floor frames) = [] /\
+  queued_par_jobs (live_prune_run above_floor frames) = [].
+Proof.
+  induction frames as [|frame higher IH]; intros above_floor.
+  - repeat split; reflexivity.
+  - destruct (live_frame_stops (live_at_floor above_floor) frame) eqn:stops.
+    + rewrite (@live_prune_run_stopping_frame above_floor frame higher stops).
+      unfold live_frame_segment.
+      destruct (holds_payload (live_frame_cell frame));
+        repeat split; reflexivity.
+    + destruct (@live_frame_passing_is_above_the_floor above_floor frame stops)
+        as [below ->].
+      rewrite (@live_prune_run_passing_frame below frame higher stops).
+      destruct (IH below) as [removed [disposed [detached queued]]].
+      rewrite removed_without_prune_app, disposed_values_app,
+        detached_payloads_app, queued_par_jobs_app, removed, disposed,
+        detached, queued.
+      unfold live_frame_segment.
+      destruct (holds_payload (live_frame_cell frame));
+        repeat split; reflexivity.
+Qed.
+
+Lemma live_endpoint_prune_moves_no_real_value : forall endpoint,
+  removed_without_prune (live_endpoint_prune endpoint) = [] /\
+  disposed_values (live_endpoint_prune endpoint) = [] /\
+  detached_payloads (live_endpoint_prune endpoint) = [] /\
+  queued_par_jobs (live_endpoint_prune endpoint) = [].
+Proof.
+  intros [|above_floor frames].
+  - repeat split; reflexivity.
+  - exact (@live_prune_run_moves_no_real_value frames above_floor).
+Qed.
+
+(** Exactly one real value is taken and disposed, the endpoint's own, and
+    no original payload is detached by a prune. *)
+Theorem live_removal_disposes_exactly_one_real_value : forall value endpoint,
+  removed_without_prune (live_removal_trace value endpoint) = [value] /\
+  disposed_values (live_removal_trace value endpoint) = [value] /\
+  detached_payloads (live_removal_trace value endpoint) = [].
+Proof.
+  intros value endpoint. unfold live_removal_trace.
+  destruct (phase_a_dispose_value_removes_and_disposes_once value)
+    as [removed disposed].
+  destruct (@live_endpoint_prune_moves_no_real_value endpoint)
+    as [removed_prune [disposed_prune [detached_prune _]]].
+  rewrite removed_without_prune_app, disposed_values_app,
+    detached_payloads_app, removed, disposed, removed_prune, disposed_prune,
+    detached_prune, phase_a_dispose_value_detaches_no_original.
+  repeat split; reflexivity.
+Qed.
+
+(** No Par job: the prune run queues none, the whole removal queues only
+    the endpoint value's own job, and a Bag endpoint has none. *)
+Theorem live_removal_queues_no_par_job : forall value endpoint,
+  queued_par_jobs (live_endpoint_prune endpoint) = [] /\
+  queued_par_jobs (live_removal_trace value endpoint) = par_job value /\
+  (forall key multiplicity,
+    value = BagMultiplicity key multiplicity ->
+    queued_par_jobs (live_removal_trace value endpoint) = []).
+Proof.
+  intros value endpoint.
+  destruct (@live_endpoint_prune_moves_no_real_value endpoint)
+    as [_ [_ [_ queued_prune]]].
+  assert (whole :
+    queued_par_jobs (live_removal_trace value endpoint) = par_job value).
+  { unfold live_removal_trace.
+    rewrite queued_par_jobs_app, queued_prune,
+      phase_a_dispose_value_queues_exact_par_job.
+    apply app_nil_r. }
+  split; [exact queued_prune|].
+  split; [exact whole|].
+  intros key multiplicity bag.
+  rewrite whole, bag. reflexivity.
+Qed.
+
+(** A release confined to an exclusive footprint frees no node of any
+    external region, so every external anchor keeps its physical image. *)
+Theorem exclusive_footprint_release_preserves_external_images : forall
+    (owned : PathMapPhysicalOwnership.allocation_region)
+    (external : list PathMapPhysicalOwnership.allocation_region)
+    (part sibling : PathMapPhysicalOwnership.physical_anchor)
+    (sibling_region : PathMapPhysicalOwnership.allocation_region),
+  exclusive_terminal_footprint owned external ->
+  In sibling_region external ->
+  PathMapPhysicalOwnership.anchor_nodes sibling =
+    PathMapPhysicalOwnership.region_nodes sibling_region ->
+  (forall node, In node (PathMapPhysicalOwnership.anchor_nodes part) ->
+    In node (PathMapPhysicalOwnership.region_nodes owned)) ->
+  PathMapPhysicalOwnership.physical_image_intact_after_release part sibling.
+Proof.
+  intros owned external part sibling sibling_region exclusive member
+    sibling_nodes within.
+  unfold exclusive_terminal_footprint in exclusive.
+  rewrite Forall_forall in exclusive.
+  destruct (exclusive sibling_region member) as [node_disjoint _].
+  apply PathMapPhysicalOwnership.release_preserves_disjoint_anchor_images.
+  intros node in_part in_sibling.
+  rewrite sibling_nodes in in_sibling.
+  exact (node_disjoint node (within node in_part) in_sibling).
+Qed.
+
+(** The part of [subject] that a removal frees, as a physical anchor for
+    [physical_image_intact_after_release]. *)
+Definition live_released_part
+    (subject : PathMapPhysicalOwnership.physical_anchor)
+    (released : list PathMapPhysicalOwnership.node_id)
+    : PathMapPhysicalOwnership.physical_anchor :=
+  PathMapPhysicalOwnership.PhysicalAnchor
+    (PathMapPhysicalOwnership.anchor_identity subject)
+    (PathMapPhysicalOwnership.anchor_root_mode subject)
+    released
+    (PathMapPhysicalOwnership.anchor_logical_paths subject)
+    (PathMapPhysicalOwnership.anchor_raw_headers subject)
+    (PathMapPhysicalOwnership.anchor_arc_wrappers subject)
+    (PathMapPhysicalOwnership.anchor_destructive_capability subject).
+
+Lemma live_run_released_within_the_chain : forall frames above_floor child
+    node,
+  In node (live_run_released above_floor child frames) ->
+  node = child \/
+  exists frame, In frame frames /\ node = live_frame_node frame.
+Proof.
+  induction frames as [|frame higher IH]; intros above_floor child node
+    member.
+  - destruct member.
+  - destruct (live_frame_stops (live_at_floor above_floor) frame) eqn:stops.
+    + rewrite (@live_run_released_stopping_frame above_floor child frame
+        higher stops) in member.
+      destruct member as [same|member].
+      * left. symmetry. exact same.
+      * destruct member.
+    + destruct (@live_frame_passing_is_above_the_floor above_floor frame stops)
+        as [below ->].
+      rewrite (@live_run_released_passing_frame below child frame higher
+        stops) in member.
+      destruct member as [same|member].
+      * left. symmetry. exact same.
+      * destruct (IH below (live_frame_node frame) node member)
+          as [same|[upper [inside same]]].
+        -- right. exists frame. split; [left; reflexivity|exact same].
+        -- right. exists upper. split; [right; exact inside|exact same].
+Qed.
+
+(** External images survive the live removal: when the endpoint and the
+    parents of the chain lie in a footprint that is exclusive of the
+    external regions, the nodes the run frees leave every external anchor's
+    image intact. *)
+Theorem live_removal_run_preserves_external_images : forall
+    (owned : PathMapPhysicalOwnership.allocation_region)
+    (external : list PathMapPhysicalOwnership.allocation_region)
+    (subject sibling : PathMapPhysicalOwnership.physical_anchor)
+    (sibling_region : PathMapPhysicalOwnership.allocation_region)
+    (above_floor : nat) (child : PathMapPhysicalOwnership.node_id)
+    (frames : list live_frame),
+  exclusive_terminal_footprint owned external ->
+  In sibling_region external ->
+  PathMapPhysicalOwnership.anchor_nodes sibling =
+    PathMapPhysicalOwnership.region_nodes sibling_region ->
+  In child (PathMapPhysicalOwnership.region_nodes owned) ->
+  (forall frame, In frame frames ->
+    In (live_frame_node frame) (PathMapPhysicalOwnership.region_nodes owned)) ->
+  PathMapPhysicalOwnership.physical_image_intact_after_release
+    (live_released_part subject (live_run_released above_floor child frames))
+    sibling.
+Proof.
+  intros owned external subject sibling sibling_region above_floor child frames
+    exclusive member sibling_nodes child_owned frames_owned.
+  apply (@exclusive_footprint_release_preserves_external_images owned external
+    (live_released_part subject (live_run_released above_floor child frames))
+    sibling sibling_region exclusive member sibling_nodes).
+  intros node released.
+  destruct (@live_run_released_within_the_chain frames above_floor child node
+      released) as [same|[frame [inside same]]].
+  - rewrite same. exact child_owned.
+  - rewrite same. exact (frames_owned frame inside).
+Qed.
+
+(** The footprint of a provenance anchor: its nodes, and the values stored
+    in them (a value is identified with its node here, so value disjointness
+    follows from node disjointness).  [structural_candidate_disjoint] does
+    not read the allocation field. *)
+Definition live_node_region
+    (anchor : PathMapPhysicalOwnership.provenance_anchor)
+    : PathMapPhysicalOwnership.allocation_region :=
+  PathMapPhysicalOwnership.AllocationRegion 0
+    (PathMapPhysicalOwnership.provenance_nodes anchor)
+    (PathMapPhysicalOwnership.provenance_nodes anchor).
+
+(** Composition with the provenance model of [PathMapPhysicalOwnership]: on
+    every reachable provenance world, an anchor that passes the production
+    gate (provenance bit set, one wrapper) has a footprint exclusive of the
+    anchors at all other positions, and so its live removal, whose chain
+    lies in its own nodes, leaves every one of their images intact. *)
+Theorem exclusive_provenance_licenses_live_removal : forall commands position
+    anchor externals,
+  nth_error
+      (PathMapPhysicalOwnership.provenance_anchors
+        (PathMapPhysicalOwnership.provenance_run commands)) position =
+    Some anchor ->
+  PathMapPhysicalOwnership.exclusive_removal_gate anchor = true ->
+  (forall other, In other externals ->
+    exists other_position,
+      nth_error
+          (PathMapPhysicalOwnership.provenance_anchors
+            (PathMapPhysicalOwnership.provenance_run commands))
+          other_position = Some other /\
+      other_position <> position) ->
+  exclusive_terminal_footprint (live_node_region anchor)
+    (map live_node_region externals) /\
+  forall above_floor child frames other,
+    In child (PathMapPhysicalOwnership.provenance_nodes anchor) ->
+    (forall frame, In frame frames ->
+      In (live_frame_node frame)
+        (PathMapPhysicalOwnership.provenance_nodes anchor)) ->
+    In other externals ->
+    PathMapPhysicalOwnership.physical_image_intact_after_release
+      (live_released_part (PathMapPhysicalOwnership.provenance_physical anchor)
+        (live_run_released above_floor child frames))
+      (PathMapPhysicalOwnership.provenance_physical other).
+Proof.
+  intros commands position anchor externals at_position gate positioned.
+  assert (footprint :
+    exclusive_terminal_footprint (live_node_region anchor)
+      (map live_node_region externals)).
+  { unfold exclusive_terminal_footprint.
+    apply Forall_forall.
+    intros region member.
+    apply in_map_iff in member as [other [region_of_other other_member]].
+    subst region.
+    destruct (positioned other other_member)
+      as [other_position [at_other different]].
+    pose proof
+      (@PathMapPhysicalOwnership.exclusive_gate_implies_physical_isolation
+        commands position anchor at_position gate other_position other at_other
+        different) as disjoint.
+    split; exact disjoint. }
+  split; [exact footprint|].
+  intros above_floor child frames other child_owned frames_owned other_member.
+  assert (region_member :
+    In (live_node_region other) (map live_node_region externals)).
+  { apply in_map. exact other_member. }
+  exact (@live_removal_run_preserves_external_images
+    (live_node_region anchor) (map live_node_region externals)
+    (PathMapPhysicalOwnership.provenance_physical anchor)
+    (PathMapPhysicalOwnership.provenance_physical other)
+    (live_node_region other) above_floor child frames footprint region_member
+    eq_refl child_owned frames_owned).
+Qed.
+
+(** Fixtures, also used by the controls in
+    PathMapReversePruneTeardownMutants.v.  [live_chain_frames]: two
+    value-free single-child parents below a valued one, far below the floor.
+    [live_floor_frames]: value-free single-child parents; with
+    [above_floor = 1] the second is the floor.  [live_fork_frames]: a
+    value-free parent that keeps another child. *)
+Definition live_bag_value : payload := BagMultiplicity 7 1.
+
+Definition live_chain_frames : list live_frame :=
+  [LiveFrame (0, 2) None false; LiveFrame (0, 1) None false;
+   LiveFrame (0, 0) (Some (SetMember 9)) false].
+
+Definition live_floor_frames : list live_frame :=
+  [LiveFrame (1, 3) None false; LiveFrame (1, 2) None false;
+   LiveFrame (1, 1) None false].
+
+Definition live_fork_frames : list live_frame :=
+  [LiveFrame (2, 1) None true; LiveFrame (2, 0) None false].
+
+(** Non-vacuity: a chain run that stops at a real value, a run that stops
+    at the floor, a run that stops at a fork, and a value-only removal. *)
+Theorem live_removal_model_is_nonvacuous :
+  live_removal_trace live_bag_value (LiveLeafEndpoint 5 live_chain_frames) =
+    [RemoveValueNoPrune live_bag_value; DisposeValue live_bag_value;
+     InstallBarrier; PruneSpan 1; DetachBarrier;
+     InstallBarrier; PruneSpan 1; DetachBarrier; PruneSpan 1] /\
+  live_run_released 5 (0, 3) live_chain_frames = [(0, 3); (0, 2); (0, 1)] /\
+  live_prune_run 1 live_floor_frames =
+    [InstallBarrier; PruneSpan 1; DetachBarrier;
+     InstallBarrier; PruneSpan 1; DetachBarrier] /\
+  live_run_released 1 (1, 4) live_floor_frames = [(1, 4); (1, 3)] /\
+  live_prune_run 4 live_fork_frames =
+    [InstallBarrier; PruneSpan 1; DetachBarrier] /\
+  live_removal_trace live_bag_value LiveValueOnlyEndpoint =
+    [RemoveValueNoPrune live_bag_value; DisposeValue live_bag_value].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
 (** Two entries were retired when Phase B became barrier-free, because they
     stated Phase B's barrier protocol and Phase B no longer installs a barrier.
     Their statements stay proved, as theorems about the live removal path's
@@ -2209,7 +2917,15 @@ Inductive invariant_id : Type :=
 | PrivatePublicationInvariant
 | FailurePrecedenceInvariant
 | TerminalAllocationOutcomeInvariant
-| CanonicalEmptyFinalAnchorFastPathInvariant.
+| CanonicalEmptyFinalAnchorFastPathInvariant
+| LiveRemovalOneEdgePerStepInvariant
+| LiveRemovalFloorBoundInvariant
+| LiveRemovalStopInvariant
+| LiveRemovalBarrierBalanceInvariant
+| LiveRemovalSingleDisposalInvariant
+| LiveRemovalNoParJobInvariant
+| LiveRemovalExternalImageInvariant
+| ExclusiveProvenanceLiveRemovalInvariant.
 
 Definition invariant_catalog : list invariant_id :=
   [AnchorArcAuthorityInvariant; PhaseAPreorderInvariant;
@@ -2226,7 +2942,12 @@ Definition invariant_catalog : list invariant_id :=
    TerminalStorageSafetyEvidenceInvariant; ParPdaTransferInvariant;
    WholePrivateRootExitInvariant; PrivatePublicationInvariant;
    FailurePrecedenceInvariant; TerminalAllocationOutcomeInvariant;
-   CanonicalEmptyFinalAnchorFastPathInvariant].
+   CanonicalEmptyFinalAnchorFastPathInvariant;
+   LiveRemovalOneEdgePerStepInvariant; LiveRemovalFloorBoundInvariant;
+   LiveRemovalStopInvariant; LiveRemovalBarrierBalanceInvariant;
+   LiveRemovalSingleDisposalInvariant; LiveRemovalNoParJobInvariant;
+   LiveRemovalExternalImageInvariant;
+   ExclusiveProvenanceLiveRemovalInvariant].
 
 Definition invariant_binding (invariant : invariant_id) : Prop :=
   match invariant with
@@ -2350,6 +3071,89 @@ Definition invariant_binding (invariant : invariant_id) : Prop :=
       queued_par_jobs
         (release_trace
           (release_final_anchor authority canonical_empty_root)) = []
+  | LiveRemovalOneEdgePerStepInvariant =>
+      forall frames above_floor,
+      prune_widths (live_prune_run above_floor frames) =
+        repeat 1 (live_run_steps above_floor frames)
+  | LiveRemovalFloorBoundInvariant =>
+      forall frames above_floor,
+      live_run_steps above_floor frames <= S above_floor
+  | LiveRemovalStopInvariant =>
+      forall frames above_floor child,
+      above_floor < length frames ->
+      exists passed stop higher level,
+        frames = passed ++ stop :: higher /\
+        Forall live_frame_passes passed /\
+        level + length passed = above_floor /\
+        (level = 0 \/ holds_payload (live_frame_cell stop) = true \/
+         live_frame_forks stop = true) /\
+        live_prune_run above_floor frames =
+          flat_map (fun _ => [InstallBarrier; PruneSpan 1; DetachBarrier])
+            passed ++
+          prune_segment (holds_payload (live_frame_cell stop)) /\
+        live_run_released above_floor child frames =
+          child :: map live_frame_node passed
+  | LiveRemovalBarrierBalanceInvariant =>
+      forall value endpoint,
+      installed_barrier_count (live_removal_trace value endpoint) =
+        retired_barrier_count (live_removal_trace value endpoint)
+  | LiveRemovalSingleDisposalInvariant =>
+      forall value endpoint,
+      removed_without_prune (live_removal_trace value endpoint) = [value] /\
+      disposed_values (live_removal_trace value endpoint) = [value] /\
+      detached_payloads (live_removal_trace value endpoint) = []
+  | LiveRemovalNoParJobInvariant =>
+      forall value endpoint,
+      queued_par_jobs (live_endpoint_prune endpoint) = [] /\
+      queued_par_jobs (live_removal_trace value endpoint) = par_job value /\
+      (forall key multiplicity,
+        value = BagMultiplicity key multiplicity ->
+        queued_par_jobs (live_removal_trace value endpoint) = [])
+  | LiveRemovalExternalImageInvariant =>
+      forall
+        (owned : PathMapPhysicalOwnership.allocation_region)
+        (external : list PathMapPhysicalOwnership.allocation_region)
+        (subject sibling : PathMapPhysicalOwnership.physical_anchor)
+        (sibling_region : PathMapPhysicalOwnership.allocation_region)
+        (above_floor : nat) (child : PathMapPhysicalOwnership.node_id)
+        (frames : list live_frame),
+      exclusive_terminal_footprint owned external ->
+      In sibling_region external ->
+      PathMapPhysicalOwnership.anchor_nodes sibling =
+        PathMapPhysicalOwnership.region_nodes sibling_region ->
+      In child (PathMapPhysicalOwnership.region_nodes owned) ->
+      (forall frame, In frame frames ->
+        In (live_frame_node frame) (PathMapPhysicalOwnership.region_nodes owned)) ->
+      PathMapPhysicalOwnership.physical_image_intact_after_release
+        (live_released_part subject (live_run_released above_floor child frames))
+        sibling
+  | ExclusiveProvenanceLiveRemovalInvariant =>
+      forall commands position
+        anchor externals,
+      nth_error
+          (PathMapPhysicalOwnership.provenance_anchors
+            (PathMapPhysicalOwnership.provenance_run commands)) position =
+        Some anchor ->
+      PathMapPhysicalOwnership.exclusive_removal_gate anchor = true ->
+      (forall other, In other externals ->
+        exists other_position,
+          nth_error
+              (PathMapPhysicalOwnership.provenance_anchors
+                (PathMapPhysicalOwnership.provenance_run commands))
+              other_position = Some other /\
+          other_position <> position) ->
+      exclusive_terminal_footprint (live_node_region anchor)
+        (map live_node_region externals) /\
+      forall above_floor child frames other,
+        In child (PathMapPhysicalOwnership.provenance_nodes anchor) ->
+        (forall frame, In frame frames ->
+          In (live_frame_node frame)
+            (PathMapPhysicalOwnership.provenance_nodes anchor)) ->
+        In other externals ->
+        PathMapPhysicalOwnership.physical_image_intact_after_release
+          (live_released_part (PathMapPhysicalOwnership.provenance_physical anchor)
+            (live_run_released above_floor child frames))
+          (PathMapPhysicalOwnership.provenance_physical other)
   end.
 
 Theorem every_primary_invariant_is_bound : forall invariant,
@@ -2403,26 +3207,34 @@ Proof.
     pose proof (terminal_allocation_failure_is_terminal authority subject)
       as [failed rest]. repeat split; assumption.
   - apply canonical_empty_final_anchor_is_an_ordinary_work_free_drop.
+  - exact @live_prune_run_detaches_one_logical_edge_per_step.
+  - exact @live_prune_run_respects_the_floor.
+  - exact @live_removal_run_stops_at_the_floor_a_real_value_or_a_fork.
+  - exact @live_removal_retires_every_installed_barrier.
+  - exact @live_removal_disposes_exactly_one_real_value.
+  - exact @live_removal_queues_no_par_job.
+  - exact @live_removal_run_preserves_external_images.
+  - exact @exclusive_provenance_licenses_live_removal.
 Qed.
 
 Theorem invariant_catalog_is_duplicate_free : NoDup invariant_catalog.
 Proof. repeat constructor; simpl; intuition discriminate. Qed.
 
-Theorem invariant_catalog_has_exactly_twenty_five_entries :
-  length invariant_catalog = 25.
+Theorem invariant_catalog_has_exactly_thirty_three_entries :
+  length invariant_catalog = 33.
 Proof. reflexivity. Qed.
 
 Theorem invariant_catalog_is_unique_complete_and_exact :
   NoDup invariant_catalog /\
   Forall invariant_binding invariant_catalog /\
-  length invariant_catalog = 25.
+  length invariant_catalog = 33.
 Proof.
   split.
   - apply invariant_catalog_is_duplicate_free.
   - split.
     + apply Forall_forall. intros invariant _.
       apply every_primary_invariant_is_bound.
-    + apply invariant_catalog_has_exactly_twenty_five_entries.
+    + apply invariant_catalog_has_exactly_thirty_three_entries.
 Qed.
 
 Theorem campaign_branch_safe_pathmap_teardown_capstone :
@@ -6888,8 +7700,18 @@ Print Assumptions complete_builder_publishes_exactly_once.
 Print Assumptions production_policy_catalog_is_unique_complete_and_exact.
 Print Assumptions named_policy_registries_are_scoped_and_complete.
 Print Assumptions quarantine_invariant_catalog_is_unique_complete_and_exact.
-Print Assumptions invariant_catalog_has_exactly_twenty_five_entries.
+Print Assumptions invariant_catalog_has_exactly_thirty_three_entries.
 Print Assumptions invariant_catalog_is_unique_complete_and_exact.
 Print Assumptions campaign_branch_safe_pathmap_teardown_capstone.
+Print Assumptions live_prune_run_detaches_one_logical_edge_per_step.
+Print Assumptions live_prune_run_respects_the_floor.
+Print Assumptions live_removal_run_stops_at_the_floor_a_real_value_or_a_fork.
+Print Assumptions live_removal_retires_every_installed_barrier.
+Print Assumptions live_removal_disposes_exactly_one_real_value.
+Print Assumptions live_removal_queues_no_par_job.
+Print Assumptions exclusive_footprint_release_preserves_external_images.
+Print Assumptions live_removal_run_preserves_external_images.
+Print Assumptions exclusive_provenance_licenses_live_removal.
+Print Assumptions live_removal_model_is_nonvacuous.
 
 End PathMapReversePruneTeardown.
