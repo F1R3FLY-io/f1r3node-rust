@@ -2,8 +2,8 @@
 
 - **Status:** discharged
 - **Adapter:** embedded
-- **Commit:** e91f2d8a07a3653adedc7ded045d8d043350d881
-- **Verified:** 2026-11-11T06:05:26Z
+- **Commit:** 3897437e3db927485830549fc38024a4d3460972
+- **Verified:** 2026-11-14T17:59:11Z
 
 Claim:
 
@@ -14,8 +14,8 @@ Claim:
   "artifact": {
     "path": ".github/scripts/report-soak-gate.sh",
     "id": "github-scripts-report-soak-gate-sh",
-    "commit": "e91f2d8a07a3653adedc7ded045d8d043350d881",
-    "sha256": "5329a9d557c239505d51e4259a53f9ea8f35ebabe9a693fbec76b38976138d55",
+    "commit": "3897437e3db927485830549fc38024a4d3460972",
+    "sha256": "129397e58189be8168f95f2e5c0a1ffa566070bb6b2dab6cc5a0fdaea31310a7",
     "commit_is_base": true,
     "working_tree": true
   },
@@ -28,8 +28,8 @@ Claim:
   "scope": "optional-item-and-release-soak-controls",
   "evidence": {
     "kind": "bounded-script-tests",
-    "ref": "docs/cbc-evidence/formal/ca-canary-merge-policy-20261111T060513Z.json",
-    "sha256": "05b7a1d4f1f99e7ed1c8a7a74af33dbaf77cdffbd96c7a1946a7089f66803b0b",
+    "ref": "docs/cbc-evidence/formal/ca-canary-merge-policy-20261114T175911Z.json",
+    "sha256": "2bb50561610e343a458c0a7e64ca513ca210f3f1e5ea8dbea7dc099dfe15451e",
     "counterexample": null
   },
   "tiers": {
@@ -39,18 +39,18 @@ Claim:
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-11-11T06:05:26Z",
-  "verification_id": "53bd44ec-1afa-4f7f-844c-62708a9daaa5",
+  "verified_at": "2026-11-14T17:59:11Z",
+  "verification_id": "b15b5001-f656-47d5-b2d9-5975dba15c34",
   "inputs": {
     "artifact": ".github/scripts/report-soak-gate.sh",
-    "source_sha256": "5329a9d557c239505d51e4259a53f9ea8f35ebabe9a693fbec76b38976138d55",
+    "source_sha256": "129397e58189be8168f95f2e5c0a1ffa566070bb6b2dab6cc5a0fdaea31310a7",
     "claim": {
       "path": "docs/claims/soak-release-gates.md",
       "sha256": "ecbec65a1cbb4482e80d8fc7dfa6c0f0e35a71ea7f52bfe4a15c4105c9fe6ff0"
     }
   },
   "evidence_files": {
-    "docs/cbc-evidence/formal/ca-canary-merge-policy-20261111T060513Z.json": "05b7a1d4f1f99e7ed1c8a7a74af33dbaf77cdffbd96c7a1946a7089f66803b0b"
+    "docs/cbc-evidence/formal/ca-canary-merge-policy-20261114T175911Z.json": "2bb50561610e343a458c0a7e64ca513ca210f3f1e5ea8dbea7dc099dfe15451e"
   }
 }
 ```
