@@ -23101,6 +23101,169 @@ verdict. Task 7756 owns the retention policy that evicts history. Task 7931 owns
 and nothing is activated here. There is no power-loss claim. Bug item 13988 owns the growth of
 allocated bytes, and this entry does not fix it.
 
+### J-259 — 2026-11-14: an exhausting Bag removal rebuilt the whole Bag (bug 14492)
+
+**QUESTION.** Three RhoSpec genesis tests, `system_vault_spec`, `tree_hash_map_spec` and
+`pos_spec`, exceeded their timeouts of 60 s, 60 s and 400 s when each ran alone in a release build
+(`cargo test --release -p casper --test mod genesis::contracts::<suite>::<suite> -- --exact`). The
+campaign's final verification cannot pass while they do. Where does their time go, and what removes
+it without changing what they compute?
+
+**MEASURED.** A gdb sampler interrupted a release run of `system_vault_spec` alone every 3 s and
+recorded the stack of every thread. The binary, called arm A in the hypothesis ledger, was built from
+tree `d98fed8cd`, the tree of commit `667321f2b`. Of 58 samples, 57 had an on-CPU stack, and 52 of
+the 57 (91%) were inside `<AnchorRoot<..> as Drop>::drop`, the guarded drain of a PathMap's final
+owner: 32 in its Phase A (`advance_to_next_value`) and 20 in its Phase B
+(`cut_value_free_leaf_and_bubble`). Three more were in Bag rebuild frames. The 52 drained drops had
+four triggers.
+
+| Trigger of the drained drop | On-CPU samples |
+|---|---|
+| `Bag::try_remove_many` dropping the old multiplicity map after `*self = self.subtract(&removal)` | 41 |
+| a value-free donor dropped by `NativePathCursor::set_val` | 5 |
+| a `ChannelSlot` map dropped by `RSpaceDataStore::apply_delta` | 5 |
+| a `Par` drop | 1 |
+| all drained drops | 52 |
+
+Of the 42 stacks that contained `try_remove_many`, 35 came from `RSpaceDataStore::remove_path` (or
+`remove`) under `HotStore::apply_accepted_match` under `locked_produce`, and 7 from the pending-delta
+loop of `RSpaceDataStore::apply_delta`. The raw samples and their classification are recorded with
+bug 14492 in pgmcp.
+
+**DERIVED.** Write $`M`$ for the number of distinct endpoints of a Bag. The code of commit
+`5e658f536` explains the profile in four steps; the figure below draws them.
+
+1. `RSpaceDataStore::remove_path` records every removal in the data store's pending delta, the
+   journal kept since commit `5753ed974`.
+2. `BagDelta::record_change` cancels the removal against the pending additions with
+   `Bag::try_remove_many`.
+3. When that takes an endpoint's count to zero in a Bag with more than one endpoint,
+   `try_remove_many`, like `remove_many`, runs `*self = self.subtract(&removal)` with a one-endpoint
+   Bag `removal`. This is the structural rebuild of commit `68534b6fc`
+   ([stack-safety report §5.60.2](../stack-safety/stack-safety-report-2026-07-29.md#5602-streaming-structural-rebuild)).
+4. `subtract` rebuilds the whole Bag through `try_from_sorted_unique`, in $`\Theta(M)`$. The old
+   Bag's `AnchorRoot` is then dropped, and `drain_pathmap` walks all of it, again in $`\Theta(M)`$
+   and with a large constant.
+
+Each exhausting cancellation therefore costs $`\Theta(M)`$, and an evaluation that makes $`R`$ of
+them on Bags of about $`M`$ endpoints costs $`\Theta(R \cdot M)`$: quadratic when $`R`$ and $`M`$
+grow together.
+
+![Bug 14492: the call chain from an accepted COMM to the drained drop, with the on-CPU sample counts, before and after the in-place removal](figures/bag-exhausting-removal-diagnosis.svg)
+
+**HYPOTHESIS.** Two earlier explanations failed, and one prediction was registered before the fix.
+
+- H-cut held that the barrier-free Phase B of commit `6642c0d13` caused the timeouts. Arm B, tree
+  `3f2bba5cb`, reverts that Phase B, and all three timeouts remained: H-cut is refuted.
+- The clause of hypothesis H-drop that the drain spends its time cloning shared nodes is not
+  supported: no `make_mut`, clone or allocation frame appears in the drained samples. The
+  clone-and-replace drops of `apply_delta` are a minor share, 5 of 52.
+- **P4.** With an in-place structural deletion whose cost does not grow with $`M`$, the three tests
+  finish inside their timeouts with unchanged outcomes. P4 is refuted if any of them still times
+  out. Its red control is the same three runs at the parent of the in-place commit, which must time
+  out.
+
+**DECISIONS.** The fix removes an exhausted endpoint in place when the anchor is provably exclusive
+and keeps the rebuild as the fallback, which yields a fresh exclusive anchor. The coordinator's
+rulings of 2026-11-14 settle six questions.
+
+1. **R1.** A panic inside the in-place removal aborts the process, following the fail-stop boundary
+   of `AnchorRoot::drop` in the same module: a stray synthetic barrier must never be observable.
+2. **R2.** The consensus-change register records a continuation note under CBR-075 for accuracy;
+   the change is not consensus-visible.
+3. **R3.** The functional Bag model `Bag.v` is unchanged. It is indifferent to in-place removal
+   versus rebuild, and the alias matrix's differential test ties the implementation to the model's
+   subtraction.
+4. **R4.** `TwoLevelRSpaceGuardedOwnership` is unchanged. Its invariant
+   `GuardInvStructuralRemovalDisjoint` covers the rebuild path, and the provenance and live-prune
+   models cover the in-place path; the invariant catalog's TLRS-PROP-07 records the scope.
+5. **R5.** Only a header clone (`AnchorRoot::clone`) clears the flag. A wrapper clone shares the
+   anchor and is covered by the gate's `Arc::get_mut` conjunct.
+6. **R6.** `normalize_live_empty` never sets the flag again.
+
+A finding of the design is recorded with them. The sequence first proposed for single-key removal,
+`take_map(false)` followed by the guarded drain and the floor-bounded prune, is the subtree-detach
+form of prefix deletion: at a leaf `take_map(false)` has nothing to take, and at an endpoint with
+children it would delete the descendants. For one key the sequence reduces to taking the value plus
+the floor-bounded prune, so neither `take_map` nor the guarded drain is called. The barrier-free cut
+of the final teardown is not used either, because its premises assume a value-free trie that no
+other owner can observe.
+
+**IMPLEMENTATION.** Commit `3f7eac8a0` gives `AnchorRoot` the provenance flag
+`exclusive: AtomicBool`. `from_map`, the only construction site, sets it and takes no map, and
+`AnchorRoot::clone` stores `false` on the source before it clones the header, with the copy starting
+cleared. `GuardedPathMap::remove_exclusive_endpoint` returns `ExclusiveRemoval::Shared` unless
+`Arc::get_mut` succeeds and the flag is set; otherwise it removes the key through `with_write_cursor`,
+`move_to_existing_value` and `NativePathCursor::remove_val_and_prune` inside `catch_unwind`, aborts on
+a panic, and returns `Removed`. The private `Bag::remove_exhausted`, called by `remove_many` and
+`try_remove_many` when a removal exhausts its endpoint, lowers `distinct_len` and
+`exact_cardinality` on `Removed` and runs the old singleton `subtract` on `Shared`. A source scan
+bans PathMap's `is_shared` in the three files involved.
+[Stack-safety report §5.60.7](../stack-safety/stack-safety-report-2026-07-29.md#5607-in-place-exclusive-single-key-bag-removal)
+gives the literate algorithm, the flag's lifecycle, the contract, the bounds of $`O(1)`$ native
+stack and $`O(\lvert k \rvert)`$ work for a key $`k`$, failure atomicity, and the callers.
+
+**FORMAL RESULT.** Leaf `bag-exclusive-removal-provenance-model` (commit `81db4de5a`) models the
+flag in `PathMapPhysicalOwnership.v`: an anchor that passes the gate is physically disjoint from
+every other live anchor (`exclusive_gate_implies_physical_isolation`), and its partial release
+preserves every external image. Leaf `bag-exclusive-removal-live-prune-model` (commit `4d7532fe6`)
+models the floor-bounded live removal in `PathMapReversePruneTeardown.v`: one logical edge per step,
+a stop at the floor, a real value or a fork, as many barriers retired as written, exactly one real
+value disposed, and `exclusive_provenance_licenses_live_removal` composing the two. Each leaf kills
+its mutants with closed counterexamples; §5.60.7 lists them.
+
+**EVIDENCE.** Commit `3f7eac8a0` adds the allocation gate
+`exhausting_single_key_removal_allocates_independently_of_bag_size`: for 16 and for 4,096 resident
+endpoints, an exhausting removal makes the same allocation calls and bytes through each of five
+removal APIs, and the test fails at the parent. Commit `d21e74df5` adds the guard's provenance and
+topology property tests, a clone probe and a 65,536-byte key on a 256 KiB stack; commit
+`677adde86` adds the Bag-level alias matrix and a differential test against a `BTreeMap` oracle.
+§5.60.7 lists the tests; their counts are 161 passed and 6 ignored with 0 failed in both debug and release, 50 passed and 5 ignored with 0 failed in both debug and release and 15 passed and 0 ignored with 0 failed in both debug and release.
+
+**RESULT.** Leaf `bag-exclusive-removal-rhospec-suites` tested prediction P4 at commit
+`677adde86`, which also holds the in-place outer delta of leaf `rspace-outer-delta-in-place`,
+at the parent of that leaf's commit, which holds the in-place removal alone, and at the parent of
+the in-place commit: refuted for `tree_hash_map_spec`, which still timed out at its 60 s limit with the in-place removal alone (at `b504c0116`, 93.40 s) while `system_vault_spec` (66.08 s) and `pos_spec` (122.01 s) passed; all three timed out at the parent of the in-place commit (`4d7532fe6`: 170.78 s, 159.28 s and 567.91 s) and passed with the in-place outer delta as well (`677adde86`: 39.88 s, 44.69 s and 62.81 s). In this entry's `system_vault_spec` profile the drains of the
+`ChannelSlot` maps that `apply_delta` releases were a minor share, 5 of 52; in the evaluation of
+`tree_hash_map_spec`, once the rebuilds were gone, they were 118 of 216 on-CPU stacks, and every
+nonempty delta drained the whole outer channel map. Leaf `rspace-outer-delta-in-place` removes
+that second term.
+
+**PATHMAP LEARNING.**
+
+- `Arc::get_mut` on a guard's anchor proves wrapper uniqueness, not node exclusivity. A header clone
+  taken by an earlier write leaves two anchors with one wrapper each that share every node, so
+  exclusivity needs a provenance record that construction sets and every header clone clears.
+- PathMap's `is_shared` must not decide correctness; its documentation says so. A provenance flag
+  depends on no PathMap internals.
+- A rebuild linear in the Bag is affordable once per soft checkpoint, but not on a path that every
+  COMM can take: such a path must cost nothing in $`M`$.
+
+**VERIFICATION BOUNDARY.** Each leaf was gated on an export of its candidate tree.
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| the provenance model | `81db4de5a` | 252 and 341 closed-context reports with 1 and 7 kernel checks in Rocq sections A and B | `14493-gate-20261114T142145Z.log` | `c376fc14a5ac7ff07f333d2ab2bd026b98a5e2878248aa1863183806b4644538` |
+| the live-prune model | `4d7532fe6` | 262 and 355 closed-context reports with 1 and 7 kernel checks in Rocq sections A and B | `14494-gate-20261114T143241Z.log` | `94e247e80b08879d44cd74a748fef23520dae6a12e3e5e70d3f4cc23d29976c7` |
+| the in-place removal | `3f7eac8a0` | 161 passed and 6 ignored with 0 failed in both debug and release | `14499-gate-20261114T144017Z.log` | `aaa1bec60d261ae7cb805fac9261593c112c17447db22c2d6f36e547d0e82767` |
+| the guard tests | `d21e74df5` | 50 passed and 5 ignored with 0 failed in both debug and release | `14495-gate-20261114T164459Z.log` | `136584ca3fa052ad2bb7b18748f07abf4c8be335f0d34f46c1c54edb19e87b0d` |
+| the alias matrix | `677adde86` | 15 passed and 0 ignored with 0 failed in both debug and release | `14496-gate-20261114T165254Z.log` | `611ce768891066684540935e8c7eae9b2d97bcd32aefda3cc7103e64d9064906` |
+| the RhoSpec suites (P4) | `677adde86` | refuted for `tree_hash_map_spec`, which still timed out at its 60 s limit with the in-place removal alone (at `b504c0116`, 93.40 s) while `system_vault_spec` (66.08 s) and `pos_spec` (122.01 s) passed; all three timed out at the parent of the in-place commit (`4d7532fe6`: 170.78 s, 159.28 s and 567.91 s) and passed with the in-place outer delta as well (`677adde86`: 39.88 s, 44.69 s and 62.81 s) | `14497-pre-landing-system_vault_spec-20261114T170223Z.log`, `14497-pre-landing-tree_hash_map_spec-20261114T170223Z.log`, `14497-pre-landing-pos_spec-20261114T170223Z.log`, `14497-pre-attribution-system_vault_spec-20261114T171143Z.log`, `14497-pre-attribution-tree_hash_map_spec-20261114T171143Z.log`, `14497-pre-attribution-pos_spec-20261114T171143Z.log`, `14497-pre-red-system_vault_spec-20261114T171810Z.log`, `14497-pre-red-tree_hash_map_spec-20261114T171810Z.log` and `14497-pre-red-pos_spec-20261114T171810Z.log` | `4ddc60335efcfa041f1e68e5f03f2407487e425cd36f8b6ea4241ec8018d2220`, `2757adffa0af0a96b9c7f406407534ee3f666b3b476959fce8eb0742238dfd2d`, `3429b4c2f7481409ea00d90a8a4892ebe2e25d41976a88a9c36e3c415761e64a`, `1b93662d82dfcb98127f07f68e23c1d83d50be2ea522502c9f4664dc7281ab13`, `c8d6e7cac2287523b654738d89361874767057fba718d1a9db0fcdf2992b6809`, `d025a275b688200f9b2f647ebdc85e03a5f054afa09c2e792b44cf0fb44a3767`, `5c1b43290d05a04362b28b73ea5947136fbb2ab65c413a16a1ca3a993083d570`, `fc444e921d0ef12c28cb51510df158e7f43e17a9f7d7ae4f03045a659597c544` and `2492f8e7a10b6afad113798192d7511c693a48be81ceced08424164ddc37720b` |
+
+These are agent-run results; independent review and the approved pgmcp verification recipe remain
+required.
+
+**BOUNDARY.** No persisted byte, wire message, physical format or consensus identity changes: the
+in-place path and the rebuild publish the same Bag, and only time, allocation and the anchor's
+identity differ ([CBR-075's continuation note](../../consensus/consensus-change-register.md)). The
+fix does not touch the other drop triggers of the profile, value-free donors and `ChannelSlot` maps
+(5 of 52 each), nor `apply_parts`' channel rebuilds or soft-checkpoint drops. P4 was refuted for
+`tree_hash_map_spec`, and the tool diagnosis that the contract of leaf
+`bag-exclusive-removal-rhospec-suites` requires found its remaining cost in the `ChannelSlot`
+drains of `apply_delta`, which leaf `rspace-outer-delta-in-place` removes. `remove_prefix`,
+`subtract`, `apply_parts` and the final teardown are unchanged, and PathMap is neither patched
+nor forked.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

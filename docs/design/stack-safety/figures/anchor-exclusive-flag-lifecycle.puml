@@ -1,0 +1,67 @@
+@startuml anchor-exclusive-flag-lifecycle
+' ============================================================================
+' The provenance flag of one AnchorRoot after bug 14492 (stack-safety report
+' section 5.60.7, "Flag lifecycle").
+'   GREEN  #2E7D32  exclusive: one wrapper and the flag set; the gate answers Removed
+'   AMBER  #EF6C00  the flag set but a second wrapper alive; the gate answers Shared
+'   RED    #C62828  the flag cleared by a header clone; the gate answers Shared
+'   BLUE   #1565C0  creation of an anchor: construction, rebuild or header clone
+'   GREY   #616161  the final drop and its guarded drain
+' w(a) is the anchor's wrapper count and f(a) its flag. R5 and R6 are bug
+' 14492's rulings: wrapper clones leave the flag alone, and
+' normalize_live_empty never sets it again.
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.4
+skinparam state {
+  BorderColor #455A64
+  FontSize 12
+}
+
+title <b>Provenance flag of one anchor</b>\nset when the anchor is built, cleared on both anchors by a header clone, never set again
+
+state "Exclusive" as Exclusive #C8E6C9
+Exclusive : <latex>w(a) = 1,\ f(a) = \mathrm{true}</latex>
+Exclusive : the gate answers ""Removed""
+state "Aliased" as Aliased #FFE0B2
+Aliased : <latex>w(a) \ge 2,\ f(a) = \mathrm{true}</latex>
+Aliased : the gate answers ""Shared"": ""Arc::get_mut"" fails,
+Aliased : so an exhausting removal falls back, and its
+Aliased : wrapper moves to a fresh exclusive anchor.
+Aliased : Wrapper clones, and drops or fallbacks that
+Aliased : leave <latex>w(a) \ge 2</latex>, keep the anchor here.
+state "Cleared" as Cleared #FFCDD2
+Cleared : <latex>f(a) = \mathrm{false}</latex>, any <latex>w(a) \ge 1</latex>
+Cleared : the gate answers ""Shared"" for the rest of the
+Cleared : anchor's life, so every exhausting removal falls
+Cleared : back, and its wrapper moves to a fresh exclusive anchor.
+Cleared : Wrapper clones, drops and writes keep the anchor here.
+
+[*] -[#1565C0,thickness=2]-> Exclusive : ""new_with_barrier"" calls ""from_map"",\nwhich builds around ""PathMap::new()"";\na fallback rebuild ends the same way
+[*] -[#1565C0,thickness=2]-> Cleared : a header clone creates the copy,\nwhich starts cleared
+Exclusive -[#2E7D32]-> Exclusive : in-place removal; a write, whose\n""make_mut"" clones nothing;\n""normalize_live_empty"" leaves the flag (R6)
+Exclusive -[#EF6C00]-> Aliased : wrapper clone (""Arc::clone""),\nflag unchanged (R5)
+Aliased -[#2E7D32]-> Exclusive : a drop or a fallback leaves one\nwrapper: <latex>w(a) = 1</latex> again
+Aliased -[#C62828,thickness=2]-> Cleared : a write through one wrapper takes a header clone:\n""AnchorRoot::clone"" stores false first (Release),\nand the writer moves to the cleared copy
+Exclusive -[#616161]-> [*] : last wrapper dropped:\nthe guarded drain
+Cleared -[#616161]-> [*] : last wrapper dropped:\nthe guarded drain
+
+note right of Aliased #FFF3E0
+  A short-lived read-only clone does not
+  disable the in-place path after it drops:
+  the ""Arc::get_mut"" conjunct refuses
+  only while the clone lives.
+end note
+
+note left of Cleared #FFEBEE
+  The anchor cannot tell whether the other
+  version still shares its nodes, so the flag
+  stays cleared; the next fallback rebuild
+  gives the Bag a fresh exclusive anchor.
+  Cost: at most one <latex>\Theta(B + M)</latex> rebuild
+  per Bag per soft checkpoint.
+end note
+@enduml

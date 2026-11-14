@@ -1,0 +1,68 @@
+@startuml bag-exhausting-removal-diagnosis
+' ============================================================================
+' Bug 14492 (PathMap journal J-259): where the RhoSpec time went, and the fix.
+'   BLUE   #1565C0  the RSpace callers of a datum removal
+'   AMBER  #EF6C00  the pending-delta cancellation and the Bag removal
+'   RED    #C62828  the work that grows with the Bag: rebuild and drain
+'   GREEN  #2E7D32  the in-place removal of stack-safety report section 5.60.7
+' Counts are on-CPU stack samples of one release run of system_vault_spec,
+' taken every 3 s (57 in all). M is the Bag's number of distinct endpoints
+' and k the removed key.
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.4
+skinparam sequence {
+  LifeLineBorderColor #455A64
+  ParticipantBorderColor #455A64
+  GroupBorderColor #455A64
+  DividerBackgroundColor #ECEFF1
+}
+
+title <b>Bug 14492: an exhausting cancellation rebuilt and drained the whole Bag</b>\n57 on-CPU samples of a release ""system_vault_spec"" run, one every 3 s
+
+participant "locked_produce" as Produce #BBDEFB
+participant "HotStore::\napply_accepted_match" as Accept #BBDEFB
+participant "RSpaceDataStore::\nremove_path" as Store #BBDEFB
+participant "BagDelta::\nrecord_change" as Delta #FFE0B2
+participant "Bag::\ntry_remove_many" as Remove #FFE0B2
+participant "Bag::subtract\n(try_from_sorted_unique)" as Rebuild #FFCDD2
+participant "AnchorRoot::drop\n(drain_pathmap)" as Drain #FFCDD2
+
+== before the fix: tree d98fed8cd (arm A) ==
+Produce -[#1565C0]> Accept : an accepted COMM
+Accept -[#1565C0]> Store : remove each consumed datum
+note right of Store #E3F2FD
+  42 stacks reach ""try_remove_many"":
+  35 through this chain and
+  7 through the pending loop
+  of ""RSpaceDataStore::apply_delta""
+end note
+Store -[#EF6C00]> Delta : record the removal in the pending delta
+Delta -[#EF6C00]> Remove : cancel a pending addition
+Remove -[#C62828]> Rebuild : the count reaches 0:\n""*self = self.subtract(&removal)""
+Rebuild --[#C62828]> Remove : a fresh Bag, <latex>\Theta(M)</latex>
+Remove -[#C62828]> Drain : drop the replaced anchor
+Drain --[#C62828]> Remove : the old trie drained, <latex>\Theta(M)</latex>
+note over Rebuild, Drain #FFEBEE
+  52 of 57 samples (91%) are inside ""AnchorRoot::drop"":
+  32 in Phase A and 20 in Phase B. Their triggers:
+  41 ""try_remove_many"" rebuilds, 5 value-free donors,
+  5 ""ChannelSlot"" maps and 1 ""Par"".
+  3 more samples are in Bag rebuild frames.
+end note
+
+== after the fix: stack-safety report 5.60.7 ==
+Produce -[#1565C0]> Accept : an accepted COMM
+Accept -[#1565C0]> Store : remove each consumed datum
+Store -[#EF6C00]> Delta : record the removal in the pending delta
+Delta -[#EF6C00]> Remove : cancel a pending addition
+alt exclusive anchor: one wrapper and the flag set
+  Remove -[#2E7D32]> Remove : prune <latex>k</latex> in place:\n<latex>O(|k|)</latex> work, <latex>O(1)</latex> stack
+else shared anchor: at most once per Bag per soft checkpoint
+  Remove -[#C62828]> Rebuild : the rebuild, as before
+  Rebuild --[#C62828]> Remove : a fresh exclusive Bag
+end
+@enduml

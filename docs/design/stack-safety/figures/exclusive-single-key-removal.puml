@@ -1,0 +1,87 @@
+@startuml exclusive-single-key-removal
+' ============================================================================
+' Exhausting single-key Bag removal after bug 14492: Algorithm 5.60.7 of the
+' stack-safety report, section 5.60.7.
+'   BLUE   #1565C0  the Bag caller and the preflight (step 0)
+'   AMBER  #EF6C00  the exclusivity gate (step 1)
+'   GREEN  #2E7D32  the in-place removal inside the fail-stop boundary (steps 2 to 7)
+'   PURPLE #6A1B9A  the floor-bounded live prune: one logical edge per iteration
+'   GREY   #616161  the unchanged fallback rebuild of section 5.60.2
+'   RED    #C62828  refusal before any mutation
+' w is the anchor's wrapper count, f its provenance flag, k the key, c its
+' count, s the length of its unique suffix, M the Bag's endpoints and B its
+' logical bytes. Activity colours use the current form ":label; <<#hex>>".
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.4
+skinparam ArrowColor #455A64
+skinparam activity {
+  BorderColor #455A64
+  FontSize 12
+  DiamondBorderColor #EF6C00
+  DiamondBackgroundColor #FFF3E0
+}
+skinparam partition {
+  BorderColor #2E7D32
+  FontColor #1B5E20
+}
+
+title <b>Exhausting single-key Bag removal</b>\nin place on an exclusive anchor, by the unchanged rebuild otherwise
+
+start
+:""remove_many"" or ""try_remove_many""
+of endpoint <latex>k</latex> with count <latex>c</latex>; <<#BBDEFB>>
+:**step 0, preflight:** read <latex>c</latex> and check the request; <<#BBDEFB>>
+if (request refused?) then (yes)
+  :""Err"": the Bag is unchanged; <<#FFCDD2>>
+  stop
+else (no)
+endif
+if (does the removal take all <latex>c</latex> copies?) then (no)
+  :write the lower count at <latex>k</latex>; <<#BBDEFB>>
+  stop
+else (yes)
+endif
+:**step 1, gate:** ""Arc::get_mut"" succeeds
+and the provenance flag is set; <<#FFE0B2>>
+if (exclusive: <latex>w = 1 \land f = \mathrm{true}</latex>?) then (Removed)
+  partition #E8F5E9 "step 2: fail-stop boundary, catch_unwind: a panic aborts the process" {
+    :**step 3,** ""with_write_cursor"":
+    ""make_mut"" of a unique ""Arc"" clones nothing; <<#C8E6C9>>
+    :**step 4,** ""move_to_existing_value(k)""; <<#C8E6C9>>
+    if (<latex>k</latex> is the root or has a child?) then (yes)
+      :**step 5,** take the value: ""value_count"" falls by 1,
+      the value is disposed, no edge is removed; <<#C8E6C9>>
+    else (no: a leaf)
+      :**step 5,** ""remove_leaf_with_floor(k, 0)""; <<#E1BEE7>>
+      repeat
+        :ascend one byte to the parent <latex>q</latex> and decide
+        now whether <latex>q</latex> stops the run; <<#E1BEE7>>
+        if (<latex>q</latex> holds a real value?) then (no)
+          :write a synthetic barrier at <latex>q</latex>; <<#E1BEE7>>
+        else (yes)
+        endif
+        :remove the child's payload and exactly one
+        logical edge: a real value is counted out of
+        ""value_count"" and disposed, a barrier discarded; <<#E1BEE7>>
+      repeat while (<latex>q</latex> at the floor, valued or forked?) is (no) not (yes)
+      :retire the barrier at <latex>q</latex> if one was written:
+      <latex>s</latex> iterations, as many barriers retired as written; <<#E1BEE7>>
+    endif
+    :**step 6,** ""normalize_live_empty""; <<#C8E6C9>>
+  }
+  :**step 7,** ""distinct_len"" falls by 1,
+  ""exact_cardinality"" by <latex>c</latex>; <<#C8E6C9>>
+  :the same anchor, still exclusive:
+  <latex>S = O(1),\ W = O(|k|),\ A = O(s + 1)</latex>; <<#C8E6C9>>
+else (Shared)
+  :**fallback:** ""*self = self.subtract(&removal)""
+  with the one-endpoint Bag ""removal"", the rebuild of 5.60.2; <<#E0E0E0>>
+  :a fresh anchor with its flag set; the old anchor's
+  final owner drains it: <latex>\Theta(B + M)</latex> in all; <<#E0E0E0>>
+endif
+stop
+@enduml

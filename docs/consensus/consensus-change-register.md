@@ -5192,6 +5192,32 @@ contract, this is retired as `BUG_FIX_RULED_NONCONSENSUS`, not retained as a val
 alternative. PathMap remains unmodified and authoritative datum multiplicity remains
 `PathMap<Multiplicity>`.
 
+**CBR-075 classification continuation (2026-11-14, bug 14492).** This note continues the CBR-075
+row of the table above, structural exact/prefix deletion and the final-owner teardown. The section
+"CBR-075 — checkpoint authority exclusion gate" further below reuses the identifier for an unrelated
+coordination change and is not affected. An exhausting single-key Bag removal, which removes the
+last copies of one endpoint through `remove_many`, `try_remove_many`, `remove`,
+`set_count(.., None)` or the cancellation of a pending `BagDelta` addition, no longer always
+publishes a freshly streamed PathMap. When the guarded anchor is exclusive, the key is removed in
+place by the guarded write cursor and the existing floor-bounded live prune, which disposes the one
+removed value and detaches one logical edge per step. Exclusive means that the anchor has a single
+wrapper and a provenance flag that construction sets and every header clone clears on both
+versions. Otherwise the removal takes this row's rebuild, unchanged.
+
+The row's statement that removed values are never cloned stays true on both paths. An exclusive
+anchor shares no node and no value with any other version, so the in-place path clones neither, and
+the fallback is the rebuild that the row already describes. Both paths publish the same Bag; only
+time, allocation and the anchor's identity differ. The change is therefore not consensus-visible:
+no resident value, datum or channel identity, multiplicity, candidate order, match, binding, COMM,
+protobuf/bincode/EPM1/RMP2 byte, hash, PathMap algebra, compute or storage charge, accepted program
+or parallel order moves, and the row stays `BUG_FIX_RULED_NONCONSENSUS`. Evidence: commits
+`81db4de5a` and `4d7532fe6` (formal models), `3f7eac8a0` (implementation and allocation gate),
+`d21e74df5` and `677adde86` (property, alias and small-stack tests), and the RhoSpec
+prediction P4, refuted for `tree_hash_map_spec`, which still timed out at its 60 s limit with the in-place removal alone (at `b504c0116`, 93.40 s) while `system_vault_spec` (66.08 s) and `pos_spec` (122.01 s) passed; all three timed out at the parent of the in-place commit (`4d7532fe6`: 170.78 s, 159.28 s and 567.91 s) and passed with the in-place outer delta as well (`677adde86`: 39.88 s, 44.69 s and 62.81 s). See
+[stack-safety report §5.60.7](../design/stack-safety/stack-safety-report-2026-07-29.md#5607-in-place-exclusive-single-key-bag-removal)
+and
+[J-259](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-259--2026-11-14-an-exhausting-bag-removal-rebuilt-the-whole-bag-bug-14492).
+
 **CBR-033 living evidence continuation (2026-08-11; pgmcp #5301).** `7983bf4b` makes the
 read-only hot-store snapshot total over the union of datum and continuation key domains. A datum
 keeps its one-channel key, while an ordinary or installed joined continuation keeps its complete

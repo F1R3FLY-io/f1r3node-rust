@@ -183,6 +183,22 @@ anchor sharing, not the old independent per-catalog Bag rebuild. Allocation
 traffic evidence does not discharge the remaining lifecycle obligations below;
 allocator-warm RSS differences are not proof of zero retained memory.
 
+Scope note (2026-11-14, bug 14492): the owner-set invariant
+`GuardInvStructuralRemovalDisjoint`, proved by `structural_removal_uses_an_ownership_disjoint_rebuild`
+in [`TwoLevelRSpaceGuardedOwnership.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceGuardedOwnership.v),
+states that a structural removal's rebuilt candidate region is disjoint from its source region. It
+therefore covers the rebuild path only. An exhausting single-key Bag removal on an exclusive anchor
+builds no candidate: it prunes the key in place
+([stack-safety report §5.60.7](../stack-safety/stack-safety-report-2026-07-29.md#5607-in-place-exclusive-single-key-bag-removal)).
+That path is covered instead by the provenance theorems of
+[`PathMapPhysicalOwnership.v`](../../../formal/rocq/stack_safe_pda/theories/PathMapPhysicalOwnership.v)
+(`exclusive_gate_implies_physical_isolation`, `exclusive_partial_release_preserves_external_images`;
+commit `81db4de5a`) and the live-prune theorems of
+[`PathMapReversePruneTeardown.v`](../../../formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardown.v)
+(`exclusive_provenance_licenses_live_removal`; commit `4d7532fe6`). The in-place path adds no
+invariant to the guarded-ownership model and changes none, so it leaves this family's status and
+open obligations unchanged.
+
 Open executable obligations:
 
 1. generated unique/shared outer and inner clone/drop orders with exact observer equality;

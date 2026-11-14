@@ -332,7 +332,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C30** | this checkpoint; campaign-root-4131 | f1r3node | record-sized kind-1 PREPARE recovery buffer $`\rightarrow`$ formally refined phase-split streaming PDA with one reusable 64 KiB scratch region and source-authenticated replay | native stack $`O(1)`$ in record/key/object depth; fixed scratch plus boxed constant state; two WAL scans for index repair rather than three | **yes for dormant physical recovery**; 89/89 invariant bindings, 53 generated properties, fixed 128/256 KiB stack matrix, 452/452 library and 877/877 package tests | [5.57](#557-formally-refined-kind-1-prepare-streaming-and-fixed-native-stack-envelope-ss-c30) |
 | **SS-C31** | this checkpoint; campaign-root-4131 | f1r3node | target-root equality and FFI response success mistaken for authority $`\rightarrow`$ generation-scoped replay reactivation plus affine capability publication and failure closure | native stack remains $`O(1)`$; no recursive traversal, stack-growth shim, or depth cap; exhaustive six-operation by three-fault-phase matrix | **no production consensus change**; 26/26 formal bindings, 7 rejected safety/liveness controls, one two-publication witness, 78/78 boundary tests, and exact release workspace 5,122/5,122 | [5.58](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31) |
 | **SS-C32** | this checkpoint; pgmcp `rspace-set-channel-prefix-local-transaction` | f1r3node | whole-store clone/mutate/publish for each newly loaded channel $`\rightarrow`$ private relative Bag plus prefix-rooted insertion into one unique guarded trie | measured new-channel construction exponent **1.99273 $`\rightarrow`$ 1.00258** through 16,000 channels; exact 20,000-bind release gate **7.52 s / 151,408 KiB / zero swap** | **yes for new-channel construction**; 27 Rocq invariants, 20 rejected mutants, frozen-success differential, and exact state metrics | [5.59](#559-prefix-local-rspace-channel-publication-ss-c32) |
-| **SS-C33** | `c3d48beb1`, `68534b6fc`, `a5c08c87c`, `e94735461`, `9ab98a331`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded replacement slope **0.99925**; four final-teardown slopes **0.95785–0.98911** | **yes for ownership/stack/time-scaling closure**; final topology remained allocation-heavy pending PMU-005 until the barrier-free cut of [5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown) (2026-11-13) removed the barrier writes behind its key splits (re-measurement pending); absolute concurrent-load latency is provisional | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
+| **SS-C33** | `c3d48beb1`, `68534b6fc`, `a5c08c87c`, `e94735461`, `9ab98a331`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded replacement slope **0.99925**; four final-teardown slopes **0.95785–0.98911** | **yes for ownership/stack/time-scaling closure**; final topology remained allocation-heavy pending PMU-005 until the barrier-free cut of [5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown) (2026-11-13) removed the barrier writes behind its key splits (re-measurement pending); absolute concurrent-load latency is provisional; an exhausting single-key Bag removal on an exclusive anchor prunes in place instead of rebuilding ([5.60.7](#5607-in-place-exclusive-single-key-bag-removal), 2026-11-14) | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
 | **SS-C36** | `941ff07d` (measured), `9ba5bc24d` (data); pgmcp experiment 446 | f1r3node | per-commit cost of a trusted commit against the current state and the retained history; a scaling measurement, no traversal converted | no stack figure: thread CPU exponents U **0.1964** [0.1881, 0.2086] and R **0.1363** [0.1333, 0.1395]; allocated bytes fail G4 at U **0.4130** and R **0.3186** | **no** (no stack claim) | [5.63](#563-fixed-delta-trusted-commit-scaling-ss-c36) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -14632,6 +14632,9 @@ Value-only multiplicity updates keep PathMap's intended CoW behavior: a unique a
 place, while a shared anchor detaches through `Arc::make_mut`. Structural exact/prefix deletion uses
 a fresh `PathMap` allocation because none of the released clone, graft, restrict, subtract, join,
 meet, ACT, or zipper operations promises a node-and-value-disjoint result after destructive prune.
+**Qualified 2026-11-14:** an exhausting single-key removal from an anchor that no other version can
+reach prunes in place instead, as [5.60.7](#5607-in-place-exclusive-single-key-bag-removal) describes; a shared anchor still
+takes this rebuild.
 
 #### 5.60.2 Streaming structural rebuild
 
@@ -14922,6 +14925,393 @@ byte-preorder disposal is unchanged, Phase B removes the same logical edges in t
 byte order, and the teardown persists, hashes and charges nothing. No Rholang value, datum
 identity, multiplicity, candidate order, matcher result, protobuf/bincode/EPM1/RMP2 byte, hash,
 COMM schedule, compute/storage charge or PathMap algebra changes.
+
+#### 5.60.7 In-place exclusive single-key Bag removal
+
+**2026-11-14 runtime change, bug 14492.** This change narrows the structural-deletion rule of
+[5.60.1](#5601-why-the-prefix-local-result-needed-an-ownership-correction) in one case: removing
+the last copies of one Bag endpoint from an anchor that no other version can reach. That removal
+now prunes the key in place, through the guarded write cursor and the live removal path of
+[5.60.3](#5603-final-owner-teardown-and-bounded-payload-retention), which keeps its synthetic
+barriers. Every other structural deletion, and the same removal on a shared anchor, keeps the
+ownership-disjoint rebuild of [5.60.2](#5602-streaming-structural-rebuild). The final teardown of
+[5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown) is unchanged, and PathMap is neither
+patched nor forked.
+
+**Why.** Write $`M`$ for the number of distinct endpoints of a Bag and $`B`$ for the logical bytes
+of its trie. Before this change, a removal that took an endpoint's count to zero ran
+`*self = self.subtract(&removal)` with a one-endpoint Bag `removal`. `subtract` streamed the
+retained endpoints into a fresh trie through `try_from_sorted_unique`, which costs $`O(B + M)`$ by
+the bound of [5.60.2](#5602-streaming-structural-rebuild), and the final drop of the replaced anchor
+then drained the whole old trie. RSpace makes such removals routine: `RSpaceDataStore::remove_path`
+records every removal in a pending delta, and `BagDelta::record_change` cancels it against an
+earlier addition with `Bag::try_remove_many`. Each such removal costs $`\Omega(M)`$, so an
+evaluation that makes $`R`$ of them on Bags of about $`M`$ endpoints spends $`\Omega(R \cdot M)`$ in
+rebuilds and drains, which is quadratic when $`R`$ and $`M`$ grow together.
+[PathMap journal J-259](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-259--2026-11-14-an-exhausting-bag-removal-rebuilt-the-whole-bag-bug-14492)
+records the diagnosis: in a release run of `system_vault_spec` alone, 52 of 57 on-CPU stack samples
+(91%) were inside the drop of an `AnchorRoot`, and 41 of those 52 drops released the old Bag of a
+`try_remove_many` rebuild. Three RhoSpec genesis suites exceeded their timeouts.
+
+**Terms.** The rest of this subsection uses these terms.
+
+- A *wrapper* is a `GuardedPathMap` value. It holds an `Arc<AnchorRoot>`, so cloning a wrapper
+  (`Arc::clone`) adds one owner of the same anchor and copies nothing else.
+- An *anchor* is the `AnchorRoot` behind a wrapper. It holds one raw PathMap header, the exact
+  endpoint count `value_count`, the disposal policy and, from this change, the *provenance flag*
+  `exclusive: AtomicBool`. Write $`w(a)`$ for the number of wrappers of anchor $`a`$, and $`f(a)`$
+  for the value of its flag.
+- A *header clone* is a call of `AnchorRoot::clone`. The guard reaches it only through
+  [`Arc::make_mut`](https://doc.rust-lang.org/std/sync/struct.Arc.html#method.make_mut) on an
+  anchor with $`w(a) \ge 2`$. It copies the PathMap header, so the two anchors share every node of
+  their tries until one of them writes (copy-on-write).
+- An *endpoint* is one complete encoded Bag key $`k`$ with its multiplicity $`c \ge 1`$. A removal
+  is *exhausting* when it removes all $`c`$ copies, so that the endpoint disappears;
+  $`\lvert k \rvert`$ is the key's length in bytes.
+- If $`k`$ is the root or has a child, an exhausting removal takes the value and removes no edge,
+  and $`s = 0`$. Otherwise $`k`$ is a *leaf*, and its *stopping ancestor* is the longest proper
+  prefix of $`k`$ that is the root, holds a value or has more than one child. The removal prunes the
+  *unique suffix*, the $`s`$ bytes of $`k`$ below the stopping ancestor.
+- A *logical edge* is one byte of one path, counted once however many paths share it, as in
+  [5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown). A *synthetic barrier* is the
+  uncounted placeholder value that the live removal path writes at a value-free parent so that one
+  `prune_ascend` removes exactly one logical edge
+  ([5.60.3](#5603-final-owner-teardown-and-bounded-payload-retention)).
+
+**The gate.** An anchor is *exclusive* when
+
+```math
+\mathrm{exclusive}(a) \iff w(a) = 1 \land f(a) = \mathrm{true}.
+```
+
+Each conjunct answers a different question.
+[`Arc::get_mut`](https://doc.rust-lang.org/std/sync/struct.Arc.html#method.get_mut) succeeds
+exactly when $`w(a) = 1`$, so that no other wrapper can observe the anchor. It cannot see the
+history of the nodes: after a write through one of two wrappers took a header clone, there are two
+anchors, each with one wrapper, whose tries share every node. The flag records that history. It is
+set only by `from_map`, which builds an anchor around `PathMap::new()`, and every header clone
+clears it on both anchors, so $`f(a)`$ holds exactly when $`a`$ was built by `from_map` and no
+header clone of $`a`$ has been taken since. The flag is therefore a provenance certificate, not a
+sharing test. PathMap 0.3.4 itself warns, in the documentation of `ZipperConcrete::is_shared`
+(`src/zipper.rs`), that "your code must never rely on the return value of `is_shared` for
+correctness"; a source scan bans `is_shared` in `guarded_pathmap.rs`, `bag.rs` and
+`pathmap_mutation.rs`, and `Arc::strong_count` stays banned.
+
+The gate reads the flag with
+[`AtomicBool::get_mut`](https://doc.rust-lang.org/std/sync/atomic/struct.Atomic.html#method.get_mut)
+(`AtomicBool` is an alias of `Atomic<bool>`), through the `&mut AnchorRoot` that only a successful
+`Arc::get_mut` returns, so the read needs no atomic load. It still sees every clearing store. A
+header clone stores `false` (with `Ordering::Release`) before its wrapper releases the old anchor,
+and `Arc::get_mut` is a safe function that hands out `&mut` access only when no other pointer
+exists. Safe Rust excludes data races
+([Rustonomicon, "Data Races and Race Conditions"](https://doc.rust-lang.org/nomicon/races.html)),
+so a successful `Arc::get_mut` synchronizes with the release of every other pointer. Under Rust's
+memory model, which follows the C++20 rules
+([`std::sync::atomic`](https://doc.rust-lang.org/std/sync/atomic/index.html#memory-model-for-atomic-accesses)),
+every write made through a released pointer, the clearing store included, therefore happens before
+the gate's read.
+
+**Flag lifecycle.** The table follows one anchor through every event that can change $`w`$ or
+$`f`$; the figure below draws the same lifecycle as a state machine.
+
+| Event | Code | Flag of this anchor | Flag of a new anchor | Gate afterwards |
+|---|---|---|---|---|
+| construction | `new_with_barrier`, which calls `from_map` with the disposer only | set | none | `Removed` |
+| wrapper clone | `GuardedPathMap::clone`, an `Arc::clone` | unchanged | none | `Shared` while the clone lives, then `Removed` again |
+| write with one wrapper | `Arc::make_mut` with $`w(a) = 1`$: no clone | unchanged | none | unchanged |
+| write with two or more wrappers | `Arc::make_mut` with $`w(a) \ge 2`$: header clone | cleared first, with `Ordering::Release` | the copy starts cleared | `Shared` on both anchors for the rest of their lives |
+| in-place removal | `remove_exclusive_endpoint` | unchanged | none | `Removed` |
+| the removal empties the map | `normalize_live_empty` installs `PathMap::new()` | unchanged; never set again | none | unchanged |
+| fallback rebuild | `subtract`, then `try_from_sorted_unique` and `new_with_barrier` | the replaced anchor loses the subject's wrapper | set | `Removed` for the subject |
+
+Bug 14492's rulings fix two rows. A wrapper clone leaves the flag alone (ruling R5): the
+`Arc::get_mut` conjunct already refuses while the clone lives, so a short-lived read-only clone
+does not disable the in-place path after it is dropped. `normalize_live_empty` never sets the flag
+again (ruling R6), because only `from_map` and a rebuild establish provenance. A cleared flag stays
+cleared even after the other version is dropped: the anchor cannot tell whether that version still
+shares its nodes, and the next fallback rebuild gives the Bag a fresh exclusive anchor.
+
+![The provenance flag of one anchor: set by construction, cleared on both anchors by a header clone, never set again; a wrapper clone only makes the gate refuse while it lives](figures/anchor-exclusive-flag-lifecycle.svg)
+
+**The algorithm.** The Bag part is the private `Bag::remove_exhausted` in
+[`bag.rs`](../../../rspace++/src/rspace/bag.rs), called by `remove_many` and `try_remove_many` when a
+removal exhausts its endpoint; the guard part is `GuardedPathMap::remove_exclusive_endpoint` in
+[`guarded_pathmap.rs`](../../../rspace++/src/rspace/guarded_pathmap.rs), which returns
+`ExclusiveRemoval::Removed` or `ExclusiveRemoval::Shared`. As elsewhere in this report, the
+algorithm is in Knuth's literate style [[Knuth 1984](#ref-knuth1984)]: each named chunk, written
+`⟨name⟩`, is defined once after the sign $`\equiv`$ and then used by its name, and the variable `bag`
+is the Bag being changed. The figure after the walk-through draws the whole flow.
+
+**Algorithm 5.60.7 (EXCLUSIVE-SINGLE-KEY-REMOVAL).** *Remove all $`c`$ copies of endpoint $`k`$
+from a Bag: in place on an exclusive anchor, by the unchanged rebuild otherwise.*
+
+```pseudocode
+⟨Remove all c copies of endpoint k from bag⟩ ≡              ── remove_many, try_remove_many
+    ⟨Step 0: preflight⟩
+    case bag.entries.remove_exclusive_endpoint(k) of
+        Removed ⇒ ⟨Step 7: update the Bag's metrics⟩
+        Shared  ⇒ ⟨Fallback: rebuild bag without k⟩
+
+⟨Step 0: preflight⟩ ≡                                       ── the only step that can fail
+    c ← bag.entries.get(k)        or return Err(InsufficientMultiplicity)
+    next ← c − amount             or return Err(InsufficientMultiplicity)
+    if next > 0 then write next at k; return Ok(next)       ── not exhausting
+    ── bag is unmodified up to here; no later step returns an error
+
+remove_exclusive_endpoint(k) ≡                              ── GuardedPathMap
+    ⟨Step 1: the gate⟩
+    ⟨Step 2: the fail-stop boundary around steps 3 to 6⟩
+    return Removed
+
+⟨Step 1: the gate⟩ ≡
+    exclusive ← case Arc::get_mut(anchor) of
+                    Some(a) ⇒ a.exclusive.get_mut()         ── no atomic load
+                    None    ⇒ false                         ── another wrapper lives
+    if ¬exclusive then return Shared                        ── nothing was touched
+
+⟨Step 2: the fail-stop boundary around steps 3 to 6⟩ ≡
+    outcome ← catch_unwind(⟨Steps 3 to 6: prune k in place⟩)
+    if outcome is a panic then abort the process            ── ruling R1
+
+⟨Steps 3 to 6: prune k in place⟩ ≡
+    with_write_cursor(cursor ⇒                              ── step 3
+        cursor.move_to_existing_value(k)                    ── step 4
+        removed ← cursor.remove_val_and_prune()             ── step 5
+        assert removed)
+    ── with_write_cursor ends with normalize_live_empty        step 6
+
+⟨Step 5: remove_val_and_prune at k⟩ ≡                       ── NativePathCursor
+    if k is the root or k has a child then
+        take k's value; value_count ← value_count − 1; dispose the value
+    else
+        remove_leaf_with_floor(k, floor = 0)
+
+remove_leaf_with_floor(k, floor) ≡                          ── one logical edge per iteration
+    carried ← the real value at k
+    loop
+        ascend one byte to the parent q
+        stop_here ← depth(q) = floor ∨ q holds a real value ∨ q has more than one child
+        if q holds no real value then write a synthetic barrier at q
+        descend back to the child
+        remove the child's carried payload and its edge:
+            a real value: counted out of value_count, taken with pruning, disposed
+            a barrier:    discarded, then prune_ascend
+        ── the value or barrier at q stops the pruning after exactly one logical edge
+        if stop_here then
+            retire the barrier at q, if this iteration wrote one; stop
+        carried ← the barrier at q                          ── q is now a childless leaf
+
+⟨Step 7: update the Bag's metrics⟩ ≡
+    bag.distinct_len ← bag.distinct_len − 1
+    bag.exact_cardinality ← bag.exact_cardinality − c
+
+⟨Fallback: rebuild bag without k⟩ ≡                         ── unchanged: 5.60.2
+    removal ← the Bag {k ↦ c}
+    bag ← bag.subtract(removal)                             ── a fresh anchor, flag set
+```
+
+*Step 0* is the existing preflight. `try_remove_many` refuses a request larger than the count, and
+`remove_many` clamps it; both reach `remove_exhausted` only when the request takes the whole count,
+so the endpoint exists and holds $`c`$. *Step 1* is the gate above: when it answers `Shared`, the
+guard has not touched the anchor, and the Bag takes the fallback. *Step 2* wraps everything that
+mutates the trie in `catch_unwind` and aborts the process on a panic, the same fail-stop rule that
+`AnchorRoot::drop` already applies to the final teardown; the failure-atomicity paragraph below
+gives the reason. *Step 3* opens the guard's root-origin, counted write cursor. Its `Arc::make_mut`
+clones nothing, because the gate proved $`w(a) = 1`$. *Step 4* positions the cursor at $`k`$, which
+step 0 proved holds a value. *Step 5* is the live removal path that guarded mutation already uses,
+`NativePathCursor::remove_val_and_prune`. At the root, or at an endpoint with children, it takes
+the value and removes no edge. At a leaf it runs the barrier loop of `remove_leaf_with_floor` with
+floor 0. The loop decides at each parent $`q`$ whether $`q`$ stops the run *before* writing anything
+there, writes a synthetic barrier at a value-free $`q`$ so that the pruning below cannot climb past
+it, removes the child's payload and exactly one edge, and stops at the floor, at a real value or at
+a fork, where it retires its last barrier. The removed real value is counted out of
+`value_count` exactly once and goes straight to the disposal policy; a barrier is never counted and
+never reaches it. `remove_val_and_prune` returns `false` only when $`k`$ holds no value, which step
+0 excludes, so the assertion cannot fire on a correct preflight. *Step 6* replaces a map that the
+removal emptied with `PathMap::new()`, because PathMap 0.3.4 may leave a private empty sentinel
+that cannot be reopened for mutation. *Step 7* lowers the Bag's two metrics; the subtractions cannot
+underflow, because step 0 saw the endpoint with count $`c`$. The *fallback* is the
+`subtract` rebuild of before, unchanged.
+
+![Exhausting single-key Bag removal: preflight, gate, the fail-stop boundary around the in-place prune with its barrier loop, and the unchanged fallback rebuild](figures/exclusive-single-key-removal.svg)
+
+**Contract.** The table compares what the two outcomes of the gate leave behind, for a Bag of
+$`M`$ endpoints and $`B`$ logical bytes from which endpoint $`k`$ with count $`c`$ is removed.
+
+| Quantity | In place (`Removed`) | Fallback (`Shared`) |
+|---|---|---|
+| resident endpoints and multiplicities | every endpoint except $`k`$, unchanged | the same |
+| `distinct_len`, `exact_cardinality` | lowered by 1 and by $`c`$ | recounted by the rebuild, to the same values |
+| `value_count` of the guard | lowered by exactly 1 by the counted cursor | the fresh anchor's exact count |
+| real values disposed during the removal | exactly one, the multiplicity of $`k`$ | none; the old anchor's final owner disposes its original values |
+| synthetic barriers | as many retired as written, at most one per pruned edge, none left behind | none |
+| nodes or values cloned | none | every retained endpoint once ([5.60.2](#5602-streaming-structural-rebuild)) |
+| anchor | the same anchor, still exclusive | a fresh anchor with its flag set |
+| work | $`O(\lvert k \rvert)`$ | $`O(B + M)`$, then the old anchor's drain at its final drop |
+
+**Example.** A Bag holds endpoint $`[1, 2, 3]`$ with count 2 and endpoint $`[1, 4]`$ with count 1,
+on an exclusive anchor. An exhausting removal of $`[1, 2, 3]`$ runs as follows.
+
+```text
+ before                        iteration 1: q = [1, 2]            iteration 2: q = [1]
+
+      root                          root                               root
+       │ 1                           │ 1                                │ 1
+      [1] ──4── [1,4]=1             [1] ──4── [1,4]=1                 [1] ──4── [1,4]=1
+       │ 2                           │ 2
+     [1,2]                        [1,2]=β
+       │ 3
+   [1,2,3]=2
+```
+
+Legend: a node is written as its path in brackets, an edge is labelled with the byte it consumes,
+`=n` is a real multiplicity and `=β` a synthetic barrier. Iteration 1 ascends to $`[1, 2]`$, which
+is not at the floor, holds no value and has one child, so it does not stop the run; it writes a
+barrier there, takes and disposes the real value 2 at $`[1, 2, 3]`$ and prunes byte 3, leaving
+$`[1, 2]`$ as a childless leaf that carries the barrier. Iteration 2 ascends to $`[1]`$, which has
+two children and therefore stops the run; it writes a barrier at $`[1]`$, discards the carried
+barrier at $`[1, 2]`$, prunes byte 2 and retires the barrier at $`[1]`$. Two barriers were written
+and two retired, one real value was disposed, $`s = 2`$ edges were removed, and the Bag's metrics
+fall from 2 and 3 to 1 and 1.
+
+**Why the bounds hold.** Write $`S`$ for the native stack, $`W`$ for the work and $`A`$ for the
+allocations of one in-place removal.
+
+- *Stack.* Steps 3 to 6 are loops over heap-backed zipper state. Each pruning step detaches one
+  logical edge below a parent that holds a value or a barrier, so a detached node is childless and
+  its destructor nests nothing; the formal model states this step as
+  `prune_segment_is_one_logical_edge` and `prune_segment_queues_no_par_job` in
+  [`PathMapReversePruneTeardown.v`](../../../formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardown.v).
+  The one real value goes to the disposal policy, which must be stack-safe by the guard's contract.
+- *Work.* The preflight lookup and the cursor's descent read the $`\lvert k \rvert`$ bytes of the
+  key, and the barrier loop runs once per pruned edge, $`s \le \lvert k \rvert`$ times, with a
+  constant number of zipper calls each.
+- *Allocations.* Each iteration writes at most one synthetic barrier, which can split one compressed
+  key; apart from that, only the cursor allocates, a constant.
+
+```math
+S = O(1), \qquad W = O(\lvert k \rvert + s) = O(\lvert k \rvert), \qquad A = O(s + 1).
+```
+
+None of the three depends on $`M`$, whereas the fallback's rebuild and drain cost
+$`\Theta(B + M)`$. The in-place path pays allocations for its barriers, in proportion to $`s`$,
+because bug 6441 kept the live removal path's barriers when it removed those of the final teardown
+([5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown)). The barrier-free cut of 5.60.6 is
+not reused here: its premises P1 to P7 assume a value-free trie that no other owner can observe,
+and a live Bag is neither.
+
+**Failure atomicity.** Step 0 is the only step that returns an error, and it returns before any
+mutation, so `try_remove_many` leaves the Bag unchanged on every `Err`. Steps 1 to 7 return no
+error. A panic inside steps 3 to 6 could stop the barrier loop with a synthetic barrier still
+written at a value-free parent. If that panic unwound into the caller, the Bag would be observable
+with an endpoint that it never held, and `value_count` would disagree with the trie. Step 2
+therefore aborts the process (ruling R1), so no execution ever observes a stray barrier. The rule
+follows the existing fail-stop boundary of `AnchorRoot::drop` in the same module, which aborts
+rather than resume an unwind over a half-drained trie. The fallback assigns `*self` only after
+`subtract` has built and checked its complete candidate, the publish-once rule of
+[5.60.2](#5602-streaming-structural-rebuild), so a panic there leaves the old Bag intact.
+
+**Callers.** One private function changes the behaviour of every exhausting single-key removal.
+
+| Caller | Route | On an exclusive anchor |
+|---|---|---|
+| `Bag::remove_many`, `Bag::remove` (one copy) and `Bag::set_count(k, None)`, when they exhaust the endpoint | `remove_exhausted` | in place |
+| `Bag::try_remove_many` that exhausts the endpoint | `remove_exhausted` | in place |
+| `BagDelta::record_change`, cancelling a pending addition for `RSpaceDataStore::remove_path` and for the pending loop of `RSpaceDataStore::apply_delta` | `try_remove_many` | in place; the dominant caller in J-259's profile |
+| ParBag `remove_bytes` and `try_remove_bytes` | `remove_many`, `try_remove_many` | in place |
+| `RSpaceDataIndex::remove_path` | its channel Bag always has a second wrapper | always the fallback |
+| `Bag::subtract`, `Bag::apply_parts`, `Bag::remove_prefix` | unchanged | the rebuild, as before |
+
+**Why the flag is kept.** PathMap 0.3.4 would be correct without it. Its write zipper calls
+`make_mut` on every node it descends through, the root included, so a destructive prune never
+mutates a node that another version shares, and production already runs `remove_val_and_prune` on a
+copy-on-write clone in `subtract_encoded_keys` (`models/src/rust/rhoapi_ext.rs`). The flag is kept
+for four reasons:
+
+1. On an exclusive anchor no node and no value is cloned, so CBR-075's statement that removed values
+   are never cloned stays true for every value type `V`, not only for cheap multiplicities.
+2. Correctness does not depend on PathMap's copy-on-write internals, which the guard does not control
+   and which have changed between releases: removal correctness defect PMU-008, reproduced on
+   PathMap 0.2.2, is fixed only in 0.3.4 (the
+   [upstream register](../pathmap/pathmap-engineering-journal-2026-08-23.md#upstream-pathmap-integration-request-register)).
+3. It is the premise `exclusive_terminal_footprint` of
+   [`PathMapReversePruneTeardown.v`](../../../formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardown.v).
+4. It answers the reason that SS-C33 gave for rebuilding, kept in the comment of
+   `Bag::remove_prefix`: destructive pruning may traverse compressed physical nodes that immutable
+   versions share. An exclusive anchor has no such version.
+
+The price is conservatism after a header clone. A soft checkpoint snapshots the pending deltas
+through the hot store's `pending_deltas`, which clones their Bags' wrappers; the next write through
+either version takes a header clone and clears both flags, and the next exhausting removal then
+rebuilds once and gets a fresh exclusive anchor. That is at most one $`\Theta(B + M)`$ rebuild per
+Bag per soft checkpoint or journal capture, not one per COMM: `BagDelta::record_change` never clones
+its Bag.
+
+**Formal evidence.** Two Rocq leaves precede the implementation; their commits, gate logs and
+counts follow.
+
+- Leaf `bag-exclusive-removal-provenance-model` (commit `81db4de5a`, gate log `14493-gate-20261114T142145Z.log`,
+  counts 252 and 341 closed-context reports with 1 and 7 kernel checks in Rocq sections A and B) extends
+  [`PathMapPhysicalOwnership.v`](../../../formal/rocq/stack_safe_pda/theories/PathMapPhysicalOwnership.v)
+  with a provenance world that pairs each physical anchor with a provenance bit. Its steps are
+  construction, wrapper clone and drop, header clone (both bits cleared, nodes shared), write
+  through one wrapper, exclusive partial release and rebuild. `provenance_run_preserves_invariant`
+  shows that every run keeps the invariant, and `exclusive_gate_implies_physical_isolation` shows
+  that an anchor that passes the gate, with its bit set and one wrapper, is physically disjoint from
+  every other live anchor. `exclusive_partial_release_preserves_external_images` shows that a
+  release by such an anchor leaves every other anchor's image unchanged.
+  `exclusive_provenance_gate_is_nonvacuous` evaluates the gate on concrete runs: it is open for a
+  fresh anchor, after a wrapper drop, after a rebuild and after an in-place removal, and closed
+  while a wrapper clone lives and on both anchors of a header clone, which share their nodes. The
+  mutants `kill_clone_that_clears_only_the_fresh_bit`, `kill_wrapper_only_removal_gate` and
+  `kill_root_only_sharing_oracle` in `PathMapPhysicalOwnershipMutants.v` refute a clone that clears
+  only the copy's bit, a gate that tests only wrapper uniqueness, and a bit computed by a sharing
+  oracle that looks only at the root.
+- Leaf `bag-exclusive-removal-live-prune-model` (commit `4d7532fe6`, gate log `14494-gate-20261114T143241Z.log`, counts
+  262 and 355 closed-context reports with 1 and 7 kernel checks in Rocq sections A and B) extends `PathMapReversePruneTeardown.v` with a live removal run made of
+  `prune_segment` steps above a floor. Its theorems state that each step removes one logical edge,
+  that the run stops at the floor, at a real value or at a fork, that it retires as many barriers as
+  it writes and disposes exactly one real value, that it queues no `Par` job, and that it preserves
+  every external image under `exclusive_terminal_footprint`; `exclusive_provenance_licenses_live_removal`
+  composes the run with the provenance theorem above. Its mutants omit a barrier, ignore the floor,
+  leave a barrier written, and run on an overlapping footprint.
+
+The guarded-ownership model is unchanged (ruling R4). Its invariant `GuardInvStructuralRemovalDisjoint`,
+proved by `structural_removal_uses_an_ownership_disjoint_rebuild` in
+[`TwoLevelRSpaceGuardedOwnership.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceGuardedOwnership.v),
+states that a rebuilt candidate region is disjoint from its source region, so it covers the fallback
+only; the in-place path builds no candidate and is covered by the two leaves above. The scope note
+of [TLRS-PROP-07](../pathmap/two-level-rspace-authority-invariant-catalog-2026-09-02.md#tlrs-prop-07--copy-on-write-and-guarded-lifecycle)
+records the same division. Neither model is a refinement proof of the Rust functions.
+
+**Test evidence.** The tests ran on exports of the committed trees; the table gives their commits,
+gate logs and counts.
+
+| Leaf | Commit | Tests | What they establish | Gate log | Counts |
+|---|---|---|---|---|---|
+| `bag-exclusive-removal-in-place` | `3f7eac8a0` | `exclusive_endpoint_removal_requires_a_unique_wrapper` and `header_clones_clear_exclusivity_on_both_versions` in `guarded_pathmap.rs`; `exhausting_single_key_removal_allocates_independently_of_bag_size` in `rspace++/tests/bag_allocation_spec.rs` | the flag lifecycle of the table above; for 16 and for 4,096 resident endpoints, the allocation calls and bytes of an exhausting removal are equal for each of five removal APIs (red at the parent) | `14499-gate-20261114T144017Z.log` | 161 passed and 6 ignored with 0 failed in both debug and release |
+| `bag-exclusive-removal-guard-tests` | `d21e74df5` | `exclusive_removal_matches_a_rebuilt_map_for_every_topology`, `gateway_decisions_follow_the_provenance_model`, `exclusive_removal_clones_no_value_and_header_clones_stay_shared`, `concurrent_header_clones_clear_exclusivity_on_every_version`, `exclusive_deep_key_removal_runs_on_a_256k_stack` in `rspace++/tests/guarded_pathmap/exclusive_endpoint_removal.rs` | the provenance invariant against a reference model; the live-prune invariants (oracle equality, exact `value_count`, ACT bytes equal to a rebuilt map's, one disposed value and no barrier at the disposer); no clone during an exclusive removal; a 65,536-byte key on a 256 KiB stack in three shapes | `14495-gate-20261114T164459Z.log` | 50 passed and 5 ignored with 0 failed in both debug and release |
+| `bag-exclusive-removal-alias-matrix` | `677adde86` | `exhausting_removal_keeps_every_alias_coherent_across_removal_apis`, `exhausting_removal_is_coherent_for_every_mixed_construction`, `a_fallback_rebuild_restores_in_place_exhausting_removal`, `exhausting_removal_of_a_deep_key_is_stack_safe`, `exhausting_removals_match_an_independent_btreemap_oracle` in `rspace++/tests/bag/cow_root_publication.rs` | five removal APIs times five ownership cases: the anchor is retained in place, replaced by the fallback, and never changed for an alias; a rebuild restores exclusivity; a deep key on a small stack; agreement with a `BTreeMap` oracle | `14496-gate-20261114T165254Z.log` | 15 passed and 0 ignored with 0 failed in both debug and release |
+
+**RhoSpec evidence (prediction P4).** Bug 14492 predicted that with an in-place removal whose cost
+does not grow with $`M`$, `system_vault_spec`, `tree_hash_map_spec` and `pos_spec` finish alone in
+release inside their timeouts of 60 s, 60 s and 400 s with unchanged outcomes, and that the same
+runs time out at the parent of the in-place commit. Leaf `bag-exclusive-removal-rhospec-suites`
+tested it at commit `677adde86`, which also holds the in-place outer delta of leaf
+`rspace-outer-delta-in-place`, at the parent of that leaf's commit, which holds the in-place removal
+alone, and at the parent of the in-place commit; logs `14497-pre-landing-system_vault_spec-20261114T170223Z.log`, `14497-pre-landing-tree_hash_map_spec-20261114T170223Z.log`, `14497-pre-landing-pos_spec-20261114T170223Z.log`, `14497-pre-attribution-system_vault_spec-20261114T171143Z.log`, `14497-pre-attribution-tree_hash_map_spec-20261114T171143Z.log`, `14497-pre-attribution-pos_spec-20261114T171143Z.log`, `14497-pre-red-system_vault_spec-20261114T171810Z.log`, `14497-pre-red-tree_hash_map_spec-20261114T171810Z.log` and `14497-pre-red-pos_spec-20261114T171810Z.log`; result refuted for `tree_hash_map_spec`, which still timed out at its 60 s limit with the in-place removal alone (at `b504c0116`, 93.40 s) while `system_vault_spec` (66.08 s) and `pos_spec` (122.01 s) passed; all three timed out at the parent of the in-place commit (`4d7532fe6`: 170.78 s, 159.28 s and 567.91 s) and passed with the in-place outer delta as well (`677adde86`: 39.88 s, 44.69 s and 62.81 s). The cost that
+`tree_hash_map_spec` still paid with the in-place removal alone is a second term quadratic in the
+evaluation: every nonempty RSpace delta drained the whole outer channel map, until leaf
+`rspace-outer-delta-in-place` applied deltas in place.
+
+The change is confined to how an exhausting removal reaches the same Bag. Both paths publish the
+endpoints and multiplicities that `Bag::subtract` defines (the `BTreeMap` oracle above), and only
+the time, the allocations and the anchor's identity differ. No Rholang value, datum identity,
+multiplicity, candidate order, matcher result, binding, protobuf/bincode/EPM1/RMP2 byte, hash,
+COMM schedule, compute/storage charge, PathMap algebra, accepted program or parallel execution
+order changes; the continuation note of CBR-075 in the
+[consensus-change register](../../consensus/consensus-change-register.md) records the
+classification.
 
 ### 5.61 Current accepted-match publication certificate [SS-C34]
 
