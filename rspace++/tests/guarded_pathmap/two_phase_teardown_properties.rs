@@ -110,9 +110,7 @@ fn assert_navigation_at(map: &mut PathMap<usize>, focus: &[u8]) {
 #[derive(Debug, PartialEq, Eq)]
 enum NavigationDrainEvent {
     Removed,
-    Installed,
     Pruned(usize),
-    Retired,
 }
 
 #[derive(Default)]
@@ -120,9 +118,7 @@ struct NavigationObserver(Vec<NavigationDrainEvent>);
 
 impl DrainObserver for NavigationObserver {
     fn removed_value(&mut self) { self.0.push(NavigationDrainEvent::Removed); }
-    fn installed_barrier(&mut self) { self.0.push(NavigationDrainEvent::Installed); }
     fn pruned(&mut self, width: usize) { self.0.push(NavigationDrainEvent::Pruned(width)); }
-    fn removed_barrier(&mut self) { self.0.push(NavigationDrainEvent::Retired); }
 }
 
 fn navigation_reference_drain(
@@ -150,9 +146,7 @@ fn navigation_reference_drain(
         order: Arc::new(Mutex::new(Vec::new())),
     };
     let mut trace = Vec::new();
-    let mut installed = 0;
     let mut pruned = 0;
-    let mut retired = 0;
     if !map.is_empty() {
         let mut cursor = map.write_zipper();
         let mut suffix = Vec::new();
@@ -174,9 +168,7 @@ fn navigation_reference_drain(
                 &disposer,
             );
             assert_eq!(step.real_values, 0);
-            installed += step.installed_barriers + 1;
             pruned += step.pruned_edges;
-            retired += step.retired_barriers;
             trace.push((
                 leaf,
                 cursor.path().to_vec(),
@@ -188,14 +180,8 @@ fn navigation_reference_drain(
         cursor.reset();
     }
     assert_eq!(state.disposed.load(Ordering::SeqCst), 0);
-    for _ in 0..installed {
-        observer.installed_barrier();
-    }
     for _ in 0..pruned {
         observer.pruned(1);
-    }
-    for _ in 0..retired {
-        observer.removed_barrier();
     }
     assert!(map.is_empty());
     (removed, trace, observer)

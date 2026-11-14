@@ -775,12 +775,6 @@ trait DrainObserver {
 
     #[inline]
     fn pruned(&mut self, _width: usize) {}
-
-    #[inline]
-    fn installed_barrier(&mut self) {}
-
-    #[inline]
-    fn removed_barrier(&mut self) {}
 }
 
 struct NoopDrainObserver;
@@ -823,9 +817,6 @@ where V: Clone + Send + Sync + Unpin + 'static {
     }
 }
 
-/// Empties `map` in reverse byte/postorder.  Each `prune_ascend` is bounded by
-/// a real or synthetic value at the immediate parent, so a detached physical
-/// subtrie can never span multiple logical edges.
 fn drain_pathmap<V, B, D>(map: &mut PathMap<V>, dispose: &D) -> usize
 where
     V: Clone + Send + Sync + Unpin + 'static,
@@ -900,7 +891,7 @@ where
 fn drain_pathmap_with_provider<V, B, D, O>(
     map: &mut PathMap<V>,
     dispose: &D,
-    barrier: &B,
+    _barrier: &B,
     observer: &mut O,
 ) -> usize
 where
@@ -947,11 +938,9 @@ where
 
     // Phase B: the provenance established above is value-free.  Walk topology
     // in reverse byte/postorder and prune exactly one logical edge at a time.
-    // Synthetic barriers bound PathMap's prune_ascend without ever entering the
-    // real-value disposal policy.
-    let stats = {
+    let pruned_edges = {
         let mut zipper = map.write_zipper();
-        let mut stats = BarrierPruneStats::default();
+        let mut pruned_edges = 0usize;
         let mut suffix = Vec::new();
         loop {
             descend_to_rightmost_leaf(&mut zipper, &mut suffix);
@@ -960,38 +949,55 @@ where
             }
 
             debug_assert!(!zipper.is_val(), "Phase B starts from value-free provenance");
-            let replaced = zipper.set_val(SyntheticBarrier::new(barrier).into_value());
-            debug_assert!(replaced.is_none());
-            stats.installed_barriers += 1;
-            let step = remove_valued_leaf_and_bubble_with_provider(
-                &mut zipper,
-                ValuedLeafOrigin::Synthetic,
-                None,
-                dispose,
-                None,
-                barrier,
-            );
-            stats.real_values += step.real_values;
-            stats.pruned_edges += step.pruned_edges;
-            stats.installed_barriers += step.installed_barriers;
-            stats.retired_barriers += step.retired_barriers;
+            pruned_edges += cut_value_free_leaf_and_bubble(&mut zipper);
         }
         zipper.reset();
-        stats
+        pruned_edges
     };
 
     debug_assert!(map.is_empty());
-    debug_assert_eq!(stats.real_values, 0, "Phase B must never consume a real value");
-    for _ in 0..stats.installed_barriers {
-        observer.installed_barrier();
-    }
-    for _ in 0..stats.pruned_edges {
+    for _ in 0..pruned_edges {
         observer.pruned(1);
     }
-    for _ in 0..stats.retired_barriers {
-        observer.removed_barrier();
-    }
     removed_values
+}
+
+fn cut_value_free_leaf_and_bubble<V>(zipper: &mut WriteZipperUntracked<'_, '_, V>) -> usize
+where V: Clone + Send + Sync + Unpin + 'static {
+    debug_assert!(zipper.path_exists());
+    debug_assert!(!zipper.is_val());
+    debug_assert_eq!(zipper.child_count(), 0);
+    let mut pruned_edges = 0usize;
+    loop {
+        if zipper.at_root() {
+            break;
+        }
+        let child_byte = *zipper
+            .path()
+            .last()
+            .expect("a non-root leaf has a final path byte");
+        let child_depth = zipper.path().len();
+        let ascended = zipper.ascend_byte();
+        debug_assert!(ascended);
+        let parent_depth = zipper.path().len();
+        debug_assert_eq!(child_depth, parent_depth + 1);
+        if zipper.at_root() || zipper.is_val() || zipper.child_count() > 1 {
+            let descended = zipper.descend_to_existing_byte(child_byte);
+            debug_assert!(descended);
+            debug_assert_eq!(zipper.path().len(), child_depth);
+            let pruned = zipper.prune_ascend();
+            debug_assert_eq!(pruned, 1);
+            debug_assert_eq!(zipper.path().len(), parent_depth);
+            pruned_edges += pruned;
+            break;
+        }
+        let removed = zipper.remove_branches(false);
+        debug_assert!(removed);
+        debug_assert!(zipper.path_exists());
+        debug_assert_eq!(zipper.child_count(), 0);
+        pruned_edges += 1;
+    }
+    pruned_edges
 }
 
 #[cfg(test)]
@@ -2092,13 +2098,11 @@ mod tests {
     }
 
     #[test]
-    fn barrier_install_prune_remove_order_is_observable_and_exact() {
+    fn value_then_one_prune_per_edge_order_is_observable_and_exact() {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Event {
             Value,
-            Install,
             Prune(usize),
-            Remove,
         }
 
         struct EventLog(Vec<Event>);
@@ -2106,10 +2110,6 @@ mod tests {
             fn removed_value(&mut self) { self.0.push(Event::Value); }
 
             fn pruned(&mut self, width: usize) { self.0.push(Event::Prune(width)); }
-
-            fn installed_barrier(&mut self) { self.0.push(Event::Install); }
-
-            fn removed_barrier(&mut self) { self.0.push(Event::Remove); }
         }
 
         let mut map = PathMap::new();
@@ -2117,17 +2117,7 @@ mod tests {
         let dispose = TestDisposer(drop);
         let mut events = EventLog(Vec::new());
         drain_pathmap_observed::<Probe, ProbeBarrier, _, _>(&mut map, &dispose, &mut events);
-        assert_eq!(events.0, vec![
-            Event::Value,
-            Event::Install,
-            Event::Install,
-            Event::Install,
-            Event::Prune(1),
-            Event::Prune(1),
-            Event::Remove,
-            Event::Remove,
-            Event::Remove,
-        ]);
+        assert_eq!(events.0, vec![Event::Value, Event::Prune(1), Event::Prune(1)]);
         assert!(map.is_empty());
     }
 
@@ -2160,14 +2150,6 @@ mod tests {
             }
 
             fn pruned(&mut self, _width: usize) {
-                assert_eq!(ACTIVE_BARRIERS.load(Ordering::SeqCst), 0);
-            }
-
-            fn installed_barrier(&mut self) {
-                assert_eq!(ACTIVE_BARRIERS.load(Ordering::SeqCst), 0);
-            }
-
-            fn removed_barrier(&mut self) {
                 assert_eq!(ACTIVE_BARRIERS.load(Ordering::SeqCst), 0);
             }
         }

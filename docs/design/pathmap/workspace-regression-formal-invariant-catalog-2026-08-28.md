@@ -1866,7 +1866,9 @@ Native witnesses in `rspace++/tests/guarded_pathmap/stateful_retirement.rs`:
 P = generated static/stateful trace erasure and independently ordered real values;
 L = lazy factory and uninstalled barrier disposal; C = CoW sibling preservation;
 D = 8,192-level branching and topology-only cleanup on a 256 KiB stack;
-F = subprocess fail-stop controls for manufacture, retirement and disposal panics.
+F = subprocess controls: an injected disposal panic fails stop, and the barrier
+manufacture and retirement modes exit normally, because final retirement has called
+neither barrier callback since 2026-11-13.
 The shared facade consumes a raw root under quarantine. Q denotes the seven
 pending-decoder witnesses in `models/tests/support/epm_owned_retirement.rs`: deep
 Map abandonment before/after attachment, Set/topology-only abandonment, final
@@ -1890,7 +1892,7 @@ recorded in J-211; the binding itself is not a test-pass claim.
 | Replacement | `replacement_retires_old_before_adopting_new`, `replacing_with_absence_retires_without_publication` | Q exercises owned replacement and latched Discard. R replaces the generated EPM field and rejects its projection with retained Map/Set topology; full generated PDA oneof routing remains pending. |
 | Frame/arena disposal | `scope_disposal_consumes_each_owned_slot_once`, `scope_disposal_preserves_order_and_drain_traces` | D, Q and R exercise branching drain, partial pending frames, builder unwind and planned-node/arena teardown. Native small-stack observations are not a Rust lifetime proof. |
 | Returning errors | `returning_failure_preserves_selected_error`, `refusal_and_projection_failure_do_not_publish` | Q pins deferred noncanonical rejection and first-semantic-error precedence. R covers planned snapshot-length overflow and generated EPM projection rejection; full generated PDA projection remains pending. |
-| Terminal cleanup failures | `cleanup_panic_is_terminal`, `cleanup_allocation_failure_is_terminal`, `retirement_reuses_existing_raw_drop_quarantine` | F requires SIGABRT at all three callback sites, not merely test failure. C checks sibling survival. Allocation failure is inherited from the existing quarantine model; no new allocator-failure injection is claimed. |
+| Terminal cleanup failures | `cleanup_panic_is_terminal`, `cleanup_allocation_failure_is_terminal`, `retirement_reuses_existing_raw_drop_quarantine` | F requires SIGABRT at the disposal callback, not merely test failure, and a normal exit of the barrier manufacture and retirement modes, which final retirement no longer reaches (2026-11-13); the model's barrier-callback panic cases are therefore bound by non-reachability rather than by an abort witness. C checks sibling survival and that final retirement never calls the barrier provider. Allocation failure is inherited from the existing quarantine model; no new allocator-failure injection is claimed. |
 
 Premises: provider state remains valid and every barrier belongs to the same live
 arena; value manufacture, retirement and real-value disposal must be bounded and

@@ -332,7 +332,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C30** | this checkpoint; campaign-root-4131 | f1r3node | record-sized kind-1 PREPARE recovery buffer $`\rightarrow`$ formally refined phase-split streaming PDA with one reusable 64 KiB scratch region and source-authenticated replay | native stack $`O(1)`$ in record/key/object depth; fixed scratch plus boxed constant state; two WAL scans for index repair rather than three | **yes for dormant physical recovery**; 89/89 invariant bindings, 53 generated properties, fixed 128/256 KiB stack matrix, 452/452 library and 877/877 package tests | [5.57](#557-formally-refined-kind-1-prepare-streaming-and-fixed-native-stack-envelope-ss-c30) |
 | **SS-C31** | this checkpoint; campaign-root-4131 | f1r3node | target-root equality and FFI response success mistaken for authority $`\rightarrow`$ generation-scoped replay reactivation plus affine capability publication and failure closure | native stack remains $`O(1)`$; no recursive traversal, stack-growth shim, or depth cap; exhaustive six-operation by three-fault-phase matrix | **no production consensus change**; 26/26 formal bindings, 7 rejected safety/liveness controls, one two-publication witness, 78/78 boundary tests, and exact release workspace 5,122/5,122 | [5.58](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31) |
 | **SS-C32** | this checkpoint; pgmcp `rspace-set-channel-prefix-local-transaction` | f1r3node | whole-store clone/mutate/publish for each newly loaded channel $`\rightarrow`$ private relative Bag plus prefix-rooted insertion into one unique guarded trie | measured new-channel construction exponent **1.99273 $`\rightarrow`$ 1.00258** through 16,000 channels; exact 20,000-bind release gate **7.52 s / 151,408 KiB / zero swap** | **yes for new-channel construction**; 27 Rocq invariants, 20 rejected mutants, frozen-success differential, and exact state metrics | [5.59](#559-prefix-local-rspace-channel-publication-ss-c32) |
-| **SS-C33** | `c3d48beb1`, `68534b6fc`, `a5c08c87c`, `e94735461`, `9ab98a331`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded replacement slope **0.99925**; four final-teardown slopes **0.95785–0.98911** | **yes for ownership/stack/time-scaling closure**; final topology remains allocation-heavy pending PMU-005; absolute concurrent-load latency is provisional | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
+| **SS-C33** | `c3d48beb1`, `68534b6fc`, `a5c08c87c`, `e94735461`, `9ab98a331`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded replacement slope **0.99925**; four final-teardown slopes **0.95785–0.98911** | **yes for ownership/stack/time-scaling closure**; final topology remained allocation-heavy pending PMU-005 until the barrier-free cut of [5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown) (2026-11-13) removed the barrier writes behind its key splits (re-measurement pending); absolute concurrent-load latency is provisional | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
 | **SS-C36** | `941ff07d` (measured), `9ba5bc24d` (data); pgmcp experiment 446 | f1r3node | per-commit cost of a trusted commit against the current state and the retained history; a scaling measurement, no traversal converted | no stack figure: thread CPU exponents U **0.1964** [0.1881, 0.2086] and R **0.1363** [0.1333, 0.1395]; allocated bytes fail G4 at U **0.4130** and R **0.3186** | **no** (no stack claim) | [5.63](#563-fixed-delta-trusted-commit-scaling-ss-c36) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -14682,6 +14682,8 @@ next zipper movement. Phase B begins from value-free provenance, walks topology 
 byte/postorder, and uses a synthetic immediate-parent barrier so each `prune_ascend` removes exactly
 one logical edge. Barriers never enter the real-payload sink. Guarded mutation uses the same
 immediate-disposal rule, eliminating the proportional `PendingDisposals` vector.
+**Superseded 2026-11-13:** Phase B no longer installs synthetic barriers; it cuts each value-free
+edge as [5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown) describes, while guarded mutation keeps its barriers.
 
 The exact endpoint count carried by `AnchorRoot` is updated by every guarded mutation gateway and
 audited iteratively before a rebuilt candidate is published. Final teardown must consume that exact
@@ -14722,6 +14724,9 @@ physical-node drain rather than a local workaround or fork. Full methods, median
 intervals, profile qualifications, caps, artifact hashes, and the idle-host evidence boundary are
 recorded in
 [`measurements/guarded-pathmap-final-teardown-and-loaded-replacement-2026-09-01.md`](measurements/guarded-pathmap-final-teardown-and-loaded-replacement-2026-09-01.md).
+The barrier-free cut of [5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown) (2026-11-13) answers this objection with
+PathMap 0.3.4's public interface and without a fork: it never lets `prune_ascend` climb past the
+immediate parent, and each `remove_branches(false)` detaches at most two nested nodes.
 
 No Rholang value, datum identity, multiplicity, candidate order, matcher result, binding,
 protobuf/bincode/EPM1/RMP2 byte, hash, COMM schedule, compute/storage charge, PathMap algebra,
@@ -14779,6 +14784,144 @@ for the preregistered protocol, checks, command, artifact hashes and limitations
 and [process resource observations](measurements/candidate-catalog-process-resources-2026-09-17.tsv)
 are committed raw data. This qualification changes no runtime code, consensus
 bytes, storage charges or Rholang semantics, and is not campaign completion.
+
+#### 5.60.6 Barrier-free Phase B of the final teardown
+
+**2026-11-13 runtime change, bug 6441, remedy R2a.** This change supersedes the barrier step of
+Phase B in [5.60.3](#5603-final-owner-teardown-and-bounded-payload-retention) and answers the
+objection recorded in [5.60.4](#5604-result-boundary). Only the final teardown changes: guarded
+mutation, whose live removal path (`remove_leaf_with_floor` and its barrier functions) still
+installs synthetic barriers, is untouched.
+
+**Why.** Write $`A_{\mathrm{drop}}(x)`$ for the allocation calls of a measured run $`x`$ whose call
+stack contains a final-teardown frame, as counted by Heaptrack, and $`N_{\mathrm{split}}(x)`$ for
+the part of them whose stack also contains PathMap's compressed-key split. The
+[measurement record of 2026-11-12](measurements/guarded-pathmap-final-teardown-pathmap-0.3.4-2026-11-12.md)
+found $`A_{\mathrm{drop}}`$ of 184,489 calls at the realistic 256-endpoint coordinate and 32,489 at
+the 16,384-byte value-free line, of which 182,623 and 31,984 were splits: to store each synthetic
+barrier, PathMap splits the compressed key that passes through the barrier's position. The
+[remedy study](guarded-pathmap-teardown-allocation-remedy-study.md) (commit `b131e935a`) found
+that PathMap 0.3.4's public interface already removes one edge without writing any value.
+
+**Terms.** A *logical edge* is one byte of one path, counted once however many paths share it. A
+*run* is one ascent of Phase B from the rightmost childless value-free leaf $`L = P\,b`$ (the path
+of its parent $`P`$ followed by the byte $`b`$) towards the root. The run's *stopping parent* is the
+first ancestor that is the zipper root, holds a value, or has more than one child (a *fork*).
+Because a run starts at the rightmost leaf, every other child of its parent is a left sibling.
+
+**Algorithm 5.60.6 (BARRIER-FREE-PHASE-B).** One run is the function
+`cut_value_free_leaf_and_bubble` in
+[`guarded_pathmap.rs`](../../../rspace++/src/rspace/guarded_pathmap.rs); Phase B repeats runs
+until the root has no child, then reports the removed edges to the observer:
+
+```pseudocode
+input:  a write zipper z at the root of a value-free trie
+output: the empty trie; one pruned(1) observer event per removed logical edge
+
+cuts <- 0
+loop
+    descend z to the rightmost childless leaf
+    if z is at the root and the root has no child then stop
+    loop                                            -- one run
+        if z is at the root then end the run
+        b <- last byte of z's path; ascend one byte  -- z is at the parent P
+        if P is the root or holds a value or has more than one child then
+            descend back to P b; prune_ascend       -- removes exactly the byte b
+            cuts <- cuts + 1; end the run
+        remove_branches(prune = false) at P         -- detaches only the edge to P b
+        cuts <- cuts + 1                            -- P is now a childless leaf
+report pruned(1) to the observer cuts times
+```
+
+At a parent that does not stop the run, `remove_branches(false)` detaches the one child edge and
+leaves the parent as the next childless leaf, so the run continues one edge higher. At the
+stopping parent, `prune_ascend` from the leaf removes the run's last edge: PathMap's pruning climbs
+only to the first ancestor that is the root, holds a value or has another branch, and here that
+ancestor is the parent itself. Phase B starts from value-free provenance, so the value test never
+fires there; it is kept so that the function never cuts below a valued parent.
+
+**Contract.** In the table below, the first column names an observer callback or a barrier-provider
+call, and the other two columns give how many times the final teardown of a value-free trie with
+$`T`$ logical edges makes it before and after this change.
+
+| Callback or call | Before 2026-11-13 | From 2026-11-13 |
+|---|---|---|
+| observer `installed_barrier` | once per synthetic barrier written | never; the callback no longer exists |
+| observer `pruned(1)` | $`T`$ times | $`T`$ times |
+| observer `removed_barrier` | once per synthetic barrier retired | never; the callback no longer exists |
+| provider manufacture and retirement | once each per synthetic barrier | never |
+
+Phase A, the signature of `retire_pathmap` and every value type's barrier interface are
+unchanged, and PathMap is neither patched nor forked.
+
+**Example.** The trie whose only path is the two bytes 1 and 2, holding one value, is torn down as
+follows; it is the trie of the guard's exact-order unit test.
+
+```text
+ after Phase A            after cut 1:                    after cut 2:
+ (value-free)             remove_branches(false) at [1]   prune_ascend from [1]
+
+     root                     root                            root
+      │ 1                      │ 1                            (no child)
+     [1]                      [1]
+      │ 2
+    [1, 2]
+```
+
+Legend: a node is written as its path in brackets, and each edge is labelled with the byte it
+consumes. Cut 1 is taken at the parent [1], which is not the root, holds no value and has one
+child. Cut 2 is taken from the leaf [1], whose parent is the root, so the run ends; the root then
+has no child and Phase B stops. The observer receives `removed_value` from Phase A and then
+`pruned(1)` twice.
+
+**Why the cut is bounded.** Write $`D`$ for the nesting depth of a drop (the number of node
+destructors active at once while a detached part is dropped), $`f`$ and $`c_0`$ for the native stack
+of PathMap's recursive destructor per nested node and in its constant part, $`S_{\mathrm{iter}}`$
+for the stack of its iterative destructor path, and $`S_{\mathrm{nav}}`$ for the constant stack of
+the zipper calls. The study's Lemma 1 shows that at a value-free parent with exactly one child,
+whose child is a childless value-free leaf, exactly one slot or cell of the focus node carries
+the edge. Its Lemma 2 shows that `remove_branches(false)` there allocates no node beyond a
+copy-on-write clone, leaves the parent as a childless value-free leaf and drops a part with
+$`D \le 2`$. Its Lemma 3 shows that `prune_ascend` below a root or forking parent removes exactly
+the byte $`b`$ and drops a part with $`D \le 1`$. Its Theorem 1 combines them: Phase B empties a
+value-free trie of $`T`$ logical edges in exactly $`T`$ cuts, and every cut needs at most
+
+```math
+S_{(e)} \le S_{\mathrm{nav}} + \max\left(2f + c_0,\ S_{\mathrm{iter}}\right)
+```
+
+of native stack, independent of the path depth and of $`T`$. With the study's measured release
+constants ($`f = 80`$, $`c_0 = 72`$ and $`S_{\mathrm{iter}} = 144`$ bytes) the destructor's part is
+at most 232 bytes per cut. The lemmas rest on premises P1 to P7 read from the PathMap 0.3.4
+sources (study §2.5); they are premises about PathMap, not theorems of this repository.
+
+**Formal evidence.** The Rocq model
+[`PathMapReversePruneTeardown.v`](../../../formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardown.v)
+(commit `6fa7c8a0f`) proves `every_barrier_free_step_detaches_exactly_one_logical_edge`,
+`barrier_free_step_classification` and `barrier_free_segment_installs_no_barrier`; its module
+`BarrierFreeNodeRefinement` proves Lemmas 1 to 3 as `one_slot_carries_the_cut`,
+`the_cut_is_bounded` and `the_stopping_cut_is_one_byte`, together with
+`every_barrier_free_cut_fits_the_stack_bound`, with premises P1 to P6 stated as the hypothesis
+`pathmap_premises` rather than as axioms. The Verus projection
+[`pathmap_reverse_prune_teardown.rs`](../../../formal/verus/pathmap_reverse_prune_teardown.rs)
+(commit `d7c330b54`) states the stopping condition as `parent_stops_the_run`, that is
+`parent_is_root || parent_has_payload || left_sibling_edges != 0`, and verifies that
+`executable_one_logical_edge_step` removes one edge and writes no value. The code evaluates the
+same condition at the parent as `zipper.at_root() || zipper.is_val() || zipper.child_count() > 1`.
+Neither model is a refinement proof of the Rust function.
+
+**Allocation evidence (prototype).** The study measured a prototype of the same algorithm with
+the record's Heaptrack protocol: $`A_{\mathrm{drop}}`$ fell from 184,489 to 1,866 calls at the
+realistic coordinate (98.9 times fewer) and from 32,489 to 505 at the line coordinate (64.3 times
+fewer), $`N_{\mathrm{split}}`$ fell to zero at both, and every other allocation site was unchanged
+to the call. These figures describe the prototype, not this commit; re-measuring the
+implementation belongs to bug 6441 (`guarded-pathmap-final-root-allocation-teardown`).
+
+The change is confined to the final teardown of a trie that no other owner can observe: Phase A's
+byte-preorder disposal is unchanged, Phase B removes the same logical edges in the same reverse
+byte order, and the teardown persists, hashes and charges nothing. No Rholang value, datum
+identity, multiplicity, candidate order, matcher result, protobuf/bincode/EPM1/RMP2 byte, hash,
+COMM schedule, compute/storage charge or PathMap algebra changes.
 
 ### 5.61 Current accepted-match publication certificate [SS-C34]
 

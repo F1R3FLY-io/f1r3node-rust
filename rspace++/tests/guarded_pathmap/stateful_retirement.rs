@@ -90,9 +90,7 @@ impl DisposeValue<Handle> for Disposer {
 #[derive(Debug, PartialEq, Eq)]
 enum Event {
     Removed,
-    Installed,
     Pruned(usize),
-    Retired,
 }
 
 #[derive(Default)]
@@ -100,12 +98,10 @@ struct Observer(Vec<Event>);
 
 impl DrainObserver for Observer {
     fn removed_value(&mut self) { self.0.push(Event::Removed); }
-    fn installed_barrier(&mut self) { self.0.push(Event::Installed); }
     fn pruned(&mut self, width: usize) {
         assert_eq!(width, 1);
         self.0.push(Event::Pruned(width));
     }
-    fn removed_barrier(&mut self) { self.0.push(Event::Retired); }
 }
 
 #[test]
@@ -138,7 +134,7 @@ fn stateful_retirement_preserves_cow_sibling_and_value_free_topology() {
     assert_eq!(retire_pathmap(map, &dispose, &provider), 257);
     assert_eq!(dispose.0.lock().unwrap().len(), 257);
     provider.assert_balanced();
-    assert!(provider.next.get() > 0);
+    assert_eq!(provider.next.get(), 0);
     assert_eq!(sibling.get_val_at([]), Some(&real(0)));
     for byte in 0..=255 {
         assert_eq!(sibling.get_val_at([byte, 0]), Some(&real(u64::from(byte) + 1)));
@@ -147,6 +143,7 @@ fn stateful_retirement_preserves_cow_sibling_and_value_free_topology() {
     assert_eq!(retire_pathmap(sibling, &dispose, &provider), 257);
     assert_eq!(dispose.0.lock().unwrap().len(), 514);
     provider.assert_balanced();
+    assert_eq!(provider.next.get(), 0);
 }
 
 #[test]
@@ -221,8 +218,9 @@ fn stateful_retirement_panics_fail_stop_without_raw_unwind() {
         let policy = PanicPolicy(mode);
         let mut map = PathMap::new();
         map.set_val_at([0, 1, 2], real(0));
-        retire_pathmap(map, &policy, &policy);
-        panic!("the injected policy must not return");
+        assert_eq!(retire_pathmap(map, &policy, &policy), 1);
+        assert_ne!(policy.0, "dispose", "the injected disposer panic must not return");
+        return;
     }
     for mode in ["make", "discard", "dispose"] {
         let output = Command::new(std::env::current_exe().unwrap())
@@ -233,6 +231,10 @@ fn stateful_retirement_panics_fail_stop_without_raw_unwind() {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .output().unwrap();
+        if mode != "dispose" {
+            assert!(output.status.success(), "{mode}: {output:?}");
+            continue;
+        }
         assert_eq!(output.status.signal(), Some(6), "{mode}: {:?}", output);
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("stateful retirement injected panic")

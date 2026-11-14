@@ -8746,7 +8746,7 @@
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "b713b2eab3bb3a7b20a46505bf014501df62351056a76293bee171e3ec32cb81",
+      "manifest_sha256": "fefa9c03a4ccaddd55b5bd9b498ae0e51eb9232423d24ff1ae409d6ade60fb78",
       "obligations": {
         "controls": [
           {
@@ -9112,7 +9112,7 @@
         },
         "source_sha256": {
           "Cargo.toml": "a844d5954934063d27770b6c5e48b5af8e6273d235e12a9f5871d493e5003dae",
-          "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md": "d9ac6b5edfa441eebb0f97aa4c2ea5979c7a7f0c380f09b75da09a1bcc474498",
+          "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md": "92d6b01b0522c7b76717fe2648db6bd2a296f3e474bebd472a47e01a99a4d844",
           "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.cfg": "7750f87604fbd59fd0a4a4dcf9ce2bd0d396d6a4dc7525d867b5c79163d4f193",
           "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.tla": "a5e53f6a66d1c3a1e06566b74adaba0bd74975c7217f2b175634d596dbd7a131",
           "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycleForeignCommitWhilePreparedWitness.cfg": "637cd1fc5da5a8fae670193cec2c74c150f773459426b9bec8c8cea10021cbb8",
