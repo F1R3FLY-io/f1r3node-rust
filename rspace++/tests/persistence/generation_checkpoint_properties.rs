@@ -752,6 +752,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("owner_transition_memo.rs"),
         include_str!("transfer_import_seal.rs"),
         include_str!("transfer_export_binding.rs"),
+        include_str!("../rho_path_v2_bridge.rs"),
     ]
     .concat();
     for (id, target) in PROPERTY_BINDINGS {

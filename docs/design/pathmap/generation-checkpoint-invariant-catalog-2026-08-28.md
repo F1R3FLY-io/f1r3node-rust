@@ -12683,6 +12683,171 @@ the returned cursor repeats the requested position, TX-07 fails in its first
 seeded script. If the parser accepts a position of fewer than 32 bytes,
 TX-09 fails. The verification record gives their results.
 
+### RCI2 image bridge with first exact legacy representatives (2026-11-13)
+
+Task 14408, leaf `rspace-key-grammar-image-bridge` of the key-grammar design,
+adds the bridge from the RCI2 image of a channel to a legacy channel, in the
+new module
+[`channel_image_bridge.rs`](../../../rspace++/src/rspace/channel_image_bridge.rs).
+It closes criterion 955 of task 6021. Nothing calls the bridge yet: the leaf
+that routes checkpoint egress through it follows. This slice changes no call
+site and no behaviour.
+
+Four terms are used below.
+
+- The **image** of a channel is the byte string that
+  `RhoPathChannelImage::rho_path_channel_image` returns, the channel field of
+  the V2 key grammar. For a `Par` it is the canonical `ChannelImageV2`, which
+  quotients out the root `locally_free` field; for a `String` it is the UTF-8
+  bytes.
+- The **legacy identity** of a channel is `rho_path_identity()`, the channel
+  field of the V1 key grammar, and its **legacy digest** is the Blake2b-256
+  hash of the legacy identity. For `Par`, `String` and the other channel
+  types of the workspace the legacy identity is `stable_hash_bytes()`, so the
+  legacy digest is the channel hash that the history uses (`hash` in
+  `stable_hash_provider.rs`).
+- Two channels are **aliases** when their images are equal and their legacy
+  identities differ, for example two `Par` values that differ only in the
+  root `locally_free` field.
+- A **forced collision** is a pair of distinct images under one legacy
+  digest. Blake2b-256 makes one unobservable in practice, so the tests force
+  it with a digest type that returns a constant.
+
+**The bridge.** `ChannelImageBridge<C, D = Blake2bLegacyDigest>` keeps two
+maps, which share one allocation per image:
+
+```text
+ buckets           legacy digest ──► [ image, image, … ]    in first-admission order
+ representatives   image ──────────► first exact representative
+```
+
+The **first exact representative** of an image is the channel value that
+admitted the image first, with every field, also a field that neither the
+image nor the legacy identity covers. `D` is a type parameter that
+implements `LegacyChannelDigest`, so a test can force collisions statically;
+`Blake2bLegacyDigest` is the Blake2b-256 hash of the legacy identity.
+`admit(channel)` takes these steps, and only the last two write:
+
+```text
+ admit(c)
+   │  image ← c.rho_path_channel_image()
+   ├─ image held? ───────────────────────────── yes ──► Ok; the first representative stays
+   │  no
+   ├─ the bridge holds its limit of images? ─── yes ──► Err(ImageLimitReached)
+   │  no
+   │  digest ← D::legacy_digest(c.rho_path_identity())
+   ├─ reserve one more image, and one more ──── refused ──► Err(AllocationFailure)
+   │  entry in the bucket of digest
+   │  reserved
+   ├─ append image to the bucket of digest, a new bucket or an existing one
+   └─ representatives[image] ← a clone of c ──────────────► Ok
+```
+
+- An image that the bridge holds is answered by its first representative,
+  whatever the legacy digest of the new channel, so an alias reuses the
+  representative and never replaces it.
+- The full image decides before the legacy digest is computed, so a digest
+  hit never stands for equality: a new image whose digest already names a
+  bucket is appended to it, beside the images that collide with it.
+- Both errors are returned before a field of the bridge changes. A bridge
+  built with `with_image_limit(n)` holds at most `n` distinct images, and
+  `new()` has no limit. A failed admission therefore leaves the bridge equal
+  to what it was before the call.
+- `representative(image)` returns the first exact representative of the
+  image or nothing, and `images_with_legacy_digest(digest)` lists one bucket
+  in first-admission order.
+
+`ChannelRepresentatives<C>` is the trait of `admit` and `representative`.
+`NoRepresentatives` is its zero-sized V1 implementation: it admits every
+channel and holds none, so a caller that falls back to the channel itself
+reads every channel as it is.
+
+**Formal counterparts.** The TLA+ model
+[`RhoPathV2Lifecycle.tla`](../../../formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.tla)
+abstracts channels to four images and two digests, and forces the images
+`img-B-V1` and `img-B-V2` into the digest `d-B`. `FullImageCollisionSafety`
+states that a bucket holds only images of its own digest, and
+`DistinctCollisionRepresentativesPreserved` that both images of `d-B` stay
+in their bucket. The mutant DigestOnly keeps one image per digest, the
+mutant Overwrite replaces the bucket of `d-B` by its second image, and each
+violates `DistinctCollisionRepresentativesPreserved`.
+`scripts/check-stack-safe-pda-proofs.sh` checks the model and its three
+mutants with TLC, and `formal/rho_path_v2_obligations.generated.json` lists
+the two invariants as RPV2-TLA-02 and RPV2-TLA-03, both proof-only with no
+test target, and the two mutants as RPV2-MUT-01 and RPV2-MUT-02. The model
+has no preimage of an image, so the rule that an equal image keeps its first
+exact representative is an executable property only. The derivation matrix
+reads the TLA+ symbols of its rows from the publication models alone, which
+do not include this model, so KG-14 is class E and cites the model here.
+
+**Tests.** The integration target
+[`rho_path_v2_bridge.rs`](../../../rspace++/tests/rho_path_v2_bridge.rs)
+holds five tests. Each checks a fixed witness and then 256 generated cases.
+The channel of the tests is a probe whose image is its name, whose legacy
+identity is its name and a tag, and which carries a third field that neither
+covers; names come from five values, among them the empty name and a zero
+byte. Every oracle is a fold over the generated channels or an independent
+hash construction, never the bridge itself.
+
+1. `forced_digest_collisions_retain_distinct_full_images`: under a constant
+   digest the one bucket lists every distinct image once, in first-admission
+   order, and the representative of each image carries that image and is the
+   first channel that admitted it. Under `Blake2bLegacyDigest` each distinct
+   image is alone in the bucket of its first representative's digest. The
+   witness mirrors the model: `img-B-V1` and `img-B-V2` collide, followed by
+   an alias of `img-B-V1`, a copy of it that differs only in the third field,
+   and `img-T-V1`.
+2. `equal_images_keep_the_first_exact_legacy_representative`: under
+   `Blake2bLegacyDigest` equal images share one entry, the representative is
+   the first exact channel of the image, the image is filed under the digest
+   of that channel, and no alias files a second entry under its own digest.
+3. `bridge_failures_are_atomic`: for limits from 0 to 4, an admission returns
+   `Ok` exactly when its image is held or the bridge holds fewer images than
+   its limit, so an image that the bridge holds is still admitted at the
+   limit. Every refusal is `ImageLimitReached` and leaves the bridge equal to
+   a clone taken before the call. `NoRepresentatives` is zero-sized, admits
+   every channel and holds none.
+4. `ordered_receive_groups_stay_positional_with_duplicates`: a group read
+   through the bridge keeps its length and the image of every position, and
+   each position reads the representative of its image; without
+   representatives every position keeps its own channel. The RhoPathV1
+   continuation prefix of either group parses back to a receive group of the
+   same count, which answers a legacy query for each channel with exactly its
+   positions, in order. Swapping two distinct channels, or dropping a
+   duplicate position, changes the prefix.
+5. `unordered_history_group_identity_ignores_channel_order`:
+   `Blake2bLegacyDigest` of each channel is its history channel hash. A
+   waiting continuation on a group, put into an `InMemHotStore` and
+   checkpointed by `checkpoint_changes`, gives the Blake2b-256 hash of the
+   sorted legacy digests of the group, for the group and for a permutation of
+   it, both without the bridge and with every channel replaced by its
+   representative; one more copy of a channel changes the identity. The
+   bridged identity equals the identity of today exactly when no position
+   holds an alias, and otherwise it is computed from the legacy identity of
+   the first representative.
+
+**Controls.** Two faults were applied, one at a time, to
+`channel_image_bridge.rs` in an export of the candidate tree, each run
+against the integration target in debug and removed:
+
+- with a digest hit taken for an image that the bridge holds, so that the
+  arm of an existing bucket returns `Ok` and records nothing, as the mutant
+  DigestOnly keeps one image per digest, only test 1 failed, with the
+  message
+  `the forced digest bucket keeps every distinct full image once, in first-admission order`;
+- with the representative of an equal image replaced by the newer channel,
+  tests 1 and 2 failed, with the messages
+  `the first exact representative of a distinct image was replaced` and
+  `an equal image reuses the first exact legacy representative and never overwrites it`.
+  Tests 3 to 5 passed, because they read a representative only through its
+  image.
+
+**The KG-14 row.**
+
+| ID | Required property | Test |
+|---|---|---|
+| KG-14 | Forced digest collisions never alias distinct images, and never replace a first representative: under a constant legacy digest the bridge keeps every distinct full image once in the bucket of that digest, in first-admission order, and the representative of each image is the first exact channel that admitted it. | `forced_digest_collisions_retain_distinct_full_images` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -12990,6 +13155,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | TM-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14350): a view checkpoint that repeats a completed transition is answered from the owner's memo without a directory write, a sync or a difference walk, and leaves the catalog slot, the current state and the journal as they were. In the owner model `CheckRequest` captures a record for every target that differs from the owner's root; the model keeps no completed transitions and has no directory I/O, no difference walk and no read budget to count. |
 | TM-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14350): the state that `checkpoint_view_from_base` returns is the same with and without the memo, over sequences of checkpoints from repeated and distinct bases. In the owner model the target `Succ(base, view)` is a function of the record's base and view by definition. That the memo's key determines the successor rests on the netting of the journal, on the anchoring of both captures at the base and on the injective encoding of the after values, which are properties of the Rust hot store and owner; XB-01 carries the obligation that the returned state is a function of the base and the journal alone. |
 | TM-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14350): the memo holds at most its capacity, which is 4,096 for an owner built by the production constructor, displaces the key that it recorded first, and is empty after `close` and in a reopened owner. Capacity, eviction order and the lifetime of a process-local memo are properties of the Rust owner; the owner model keeps no completed transitions. |
+| KG-14 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14408): under forced legacy-digest collisions the image bridge keeps every distinct RCI2 image, each answered by the first exact channel that admitted it, and an equal image never replaces that representative. RhoPathV2Lifecycle states the bucket half as `FullImageCollisionSafety` and `DistinctCollisionRepresentativesPreserved`, with the mutants DigestOnly and Overwrite, but the TLA+ sources of this matrix do not include that model, and the model has no preimage of an image. |
 
 ## Generator discipline
 
@@ -14284,6 +14450,31 @@ TLA+ file changed, and no proof or model was run for this slice. No persisted
 byte, record kind, root, identity or wire message changed, and the crate has
 no new dependency. See the section on the dynamic retained-root handoff to
 compaction.
+
+The 2026-11-13 image bridge slice of task 14408 adds KG-14, so the
+catalog/derivation/binding registry now contains **302** IDs. The
+manifest test's executable sources gain the integration target
+`rho_path_v2_bridge.rs`. No file other than the new module
+`channel_image_bridge.rs`, the line of `rspace/mod.rs` that declares it, the
+new integration target, the manifest test's file, the list of property
+bindings and this catalog changes. On an export of the candidate tree, the
+five tests of `rho_path_v2_bridge` passed in debug and in release (5 passed,
+none ignored), and so did the manifest test (1 passed, none ignored). The two
+controls of the section on the image bridge were applied one at a time to
+`channel_image_bridge.rs` in the export, each run against
+`rho_path_v2_bridge` in debug and removed, and each failed exactly the tests
+that the section names, with their messages. Each faulted file was restored
+from the candidate tree, and the export was compared with that tree after
+the runs. Clippy of `rspace_plus_plus` with every target lists no finding in
+the files of this slice, and `rustfmt --check` passes on its Rust files. The
+workspace-regression registry hashes the manifest test's file, which
+changes, so that registry and the PathMap aggregate, which holds the same
+file digest and the digest of that registry, are regenerated with this
+slice. No other registry changes. No Rocq or TLA+ file changed, and no proof
+or model was run for this slice. Nothing outside the tests calls the bridge
+yet. No persisted byte, record kind, root, identity or wire message changed,
+and the crate has no new dependency. See the section on the RCI2 image
+bridge.
 
 ## Caller-authority contract (2026-09-06)
 

@@ -21,6 +21,7 @@ pub mod hot_store;
 pub mod internal;
 pub mod logging;
 pub mod rho_path;
+pub mod channel_image_bridge;
 pub mod ordered_receive;
 pub mod rspace;
 mod space_matcher;

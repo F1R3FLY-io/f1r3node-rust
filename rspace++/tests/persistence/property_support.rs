@@ -485,6 +485,7 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
         "TM-03",
         "the_memo_is_bounded_evicts_its_oldest_transition_and_is_empty_after_close_and_a_reopen",
     ),
+    ("KG-14", "forced_digest_collisions_retain_distinct_full_images"),
 ];
 
 pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {
