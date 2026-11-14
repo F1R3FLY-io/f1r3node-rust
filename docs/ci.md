@@ -410,7 +410,7 @@ The commands run the same scripts as `just promote` and `just backmerge`. The op
 CI treats the two branches like `dev` and `master`:
 
 - A push to `ca-canary` or `ca-release` runs the heavy pipeline. The merge group reuse applies to `dev` only, so every push runs the OCI integration tests.
-- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to every pull request when it opens. Its head must not be a protected branch.
+- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label when the pull request opens. Into `ca-canary`, Mergify labels only a `ca/` head. The head must not be a protected branch.
 - An accepted `ca-release` commit gets a tag of the form `ca-v<version>`, for example `ca-v0.5.0-rc.1`. The tag runs the heavy pipeline. It does not match `v*`, so the GitHub release job does not run for it.
 
 Image publication:
@@ -429,6 +429,14 @@ Only `dev` and `master` publish without reviewer approval, through `protected-br
 ### Dev sync
 
 `dev` reaches the release train only through an occasional sync. A maintainer runs `just ca-sync`. The command opens a pull request from `dev` into `ca-canary` with the `ci-heavy` label. Its `ca/` head puts it in the `ca-item` queue, which uses the existing CI and review requirements. A merge into `ca-canary` does not require a soak. `ca-release` gets `dev` code only through a promotion from `ca-canary`.
+
+### Release train items
+
+A release train item is a pull request from a `ca/<type>-<topic>` head into `ca-canary`. Examples are `ca/feature-seal-limits` and `ca/fix-refund-payer`. The `ca-sync` operation owns the `ca/sync-dev-` prefix.
+
+An item branch starts from `ca-canary`. It must not merge `dev`, because `dev` code reaches `ca-canary` only through the sync. If an item needs `dev` changes, a maintainer runs `ca-sync` first. The item then merges `ca-canary`.
+
+The `ca-item` queue accepts only a `ca/` head into `ca-canary`. Mergify does not add `ci-heavy` to a `ca-canary` pull request with another head. That pull request matches no queue, and the Mergify comment shows that it waits for queue conditions. GitHub cannot change the head of an open pull request. To recover, push the head commit to a `ca/` branch and open a new pull request.
 
 ### Daily back-merge
 
