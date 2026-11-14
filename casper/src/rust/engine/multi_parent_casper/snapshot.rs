@@ -20,7 +20,6 @@ use shared::rust::blocking::in_blocking;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::types::MultiParentCasperImpl;
-use super::validation_dispatcher::{judge_twin, TwinJudgement};
 use crate::rust::casper::{CasperSnapshot, OnChainCasperState};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -419,8 +418,8 @@ pub(crate) async fn compute_snapshot(
         // wins, and two nodes can hold different blocks in the
         // equivocator's slot. `justification_follows` checks the set of
         // validators and fork choice uses only valid latest messages, so
-        // either block may be cited, provided its contents are valid:
-        // `cite_only_valid_twins` replaces a twin that is not.
+        // either block may be cited: `cite_no_twins` cites the one this node
+        // did not store as the twin.
         latest_msgs_hashes
             .iter()
             .filter(|(validator, _)| bonded_validators.contains_key(*validator))
@@ -587,23 +586,16 @@ pub(crate) async fn compute_snapshot(
         max_seq_nums,
         on_chain_state,
     };
-    cite_only_valid_twins(this, &mut snapshot).await?;
+    cite_no_twins(&mut snapshot)?;
     Ok(snapshot)
 }
 
-/// A node that received an invalid twin first refused it and can never hold
-/// it, so a block citing one is one that node can never add. A twin in an
-/// equivocator's slot is cited only once its contents are judged valid;
-/// otherwise the slot cites the sender's block at the same sequence number
-/// that is no twin.
-async fn cite_only_valid_twins(
-    this: &MultiParentCasperImpl,
-    snapshot: &mut CasperSnapshot,
-) -> Result<(), CasperError> {
-    let local_validator: Option<Validator> = this
-        .validator_id
-        .as_ref()
-        .map(|id| Bytes::copy_from_slice(&id.public_key.bytes));
+/// A twin's contents are unjudged, and a node that received an invalid twin
+/// first refused it and can never hold it, so a block citing one may be a
+/// block that node can never add. An equivocator's slot therefore cites the
+/// sender's block at the twin's sequence number that is no twin: this node
+/// validated it, or holds it as settled history.
+fn cite_no_twins(snapshot: &mut CasperSnapshot) -> Result<(), CasperError> {
     let cited_twins: Vec<Justification> = snapshot
         .justifications
         .iter()
@@ -615,16 +607,6 @@ async fn cite_only_valid_twins(
         .cloned()
         .collect();
     for twin in cited_twins {
-        if let TwinJudgement::Valid = judge_twin(
-            this,
-            &twin.latest_block_hash,
-            snapshot,
-            local_validator.as_ref(),
-        )
-        .await?
-        {
-            continue;
-        }
         let twin_meta = snapshot.dag.lookup_unsafe(&twin.latest_block_hash)?;
         let mut untwinned = Vec::new();
         for hash in snapshot

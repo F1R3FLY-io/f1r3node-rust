@@ -103,7 +103,7 @@ Proposals are triggered by the [heartbeat proposer](#8-liveness-heartbeat-propos
    - Limited by `max_number_of_parents` and `max_parent_depth`
 4. **Compute LCA** (Lowest Common Ancestor) of selected parents — an input to [fork-choice scoring](#5-fork-choice-lmd-ghost); the [merge scope](#6-state-merging-multi-parent) is bounded by the finalized floor, not the LCA
 5. **Build justifications**: Each bonded validator's latest message hash
-   - A latest message that is a stored equivocation is cited only if its contents are valid. Otherwise the snapshot cites the sender's block at the same sequence number that is not an equivocation. A node that received the invalid block first refused it, so it can never add a block that cites it
+   - A latest message that is a stored equivocation is not cited. The snapshot cites the sender's block at the same sequence number that is not an equivocation, which this node validated or holds as settled history. A stored equivocation's contents are unjudged, and a node that received an invalid one first refused it, so it can never add a block that cites it
 6. **Compute deploy scope**: BFS traversal within `deploy_lifespan` window to find all deploys already included in ancestor blocks
 
 **Why snapshot first?** The snapshot is immutable once created. This prevents race conditions — the proposal works against a consistent view of the DAG even as new blocks arrive concurrently.

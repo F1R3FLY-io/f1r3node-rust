@@ -84,7 +84,7 @@ async fn derive_floor_context(
 }
 
 /// The judgement of a twin's contents.
-pub(crate) enum TwinJudgement {
+enum TwinJudgement {
     Valid,
     Invalid(InvalidBlock),
     /// The contents cannot be judged yet, for this reason.
@@ -96,7 +96,7 @@ pub(crate) enum TwinJudgement {
 /// post-state is held for the replay of a block built on it, and records its
 /// deploys in the deploy history. A final verdict is remembered, so a twin is
 /// judged once however many blocks depend on it.
-pub(crate) async fn judge_twin(
+async fn judge_twin(
     this: &MultiParentCasperImpl,
     twin_hash: &BlockHash,
     snapshot: &mut CasperSnapshot,

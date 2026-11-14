@@ -603,11 +603,14 @@ fn holds_post_state(node: &TestNode, block: &BlockMessage) -> bool {
         .expect("has_root")
 }
 
-/// A sibling no block cites is recorded without a replay, so an equivocator
-/// cannot make a node replay every block it signs.
+/// A sibling no block cites is recorded without a replay, and stays so when
+/// it is its sender's latest message in the node's next snapshot, so an
+/// equivocator cannot make a node replay every block it signs.
 #[serial_test::serial]
 #[tokio::test]
 async fn an_uncited_sibling_is_not_replayed() {
+    use casper::rust::casper::Casper;
+
     let (mut nodes, shard_id) = network(2, None).await;
     let b1 = nodes[0]
         .create_block_unsafe(&[deploy(0, &shard_id)])
@@ -630,6 +633,12 @@ async fn an_uncited_sibling_is_not_replayed() {
         "{verdict:?}"
     );
     assert!(!holds_post_state(&nodes[1], &sibling));
+
+    nodes[1].casper.get_snapshot().await.expect("snapshot");
+    assert!(
+        !holds_post_state(&nodes[1], &sibling),
+        "a snapshot does not replay the sibling"
+    );
 }
 
 /// v1 holds the sibling as an equivocation without its post-state; v2
@@ -950,11 +959,11 @@ async fn a_block_citing_an_invalid_twin_is_held_by_no_node() {
 }
 
 /// v1 holds b1 and a valid twin s as the equivocation, so s is v0's latest
-/// message at v1 and v1's next block cites s. v3 received s first and
-/// accepts that block.
+/// message at v1, yet v1's next block d cites b1. v3 received s first and
+/// holds b1 as the equivocation; it judges b1 and accepts d.
 #[serial_test::serial]
 #[tokio::test]
-async fn a_block_cites_a_valid_twin_in_its_senders_slot() {
+async fn a_block_cites_the_block_its_proposer_did_not_store_as_the_twin() {
     let (mut nodes, shard_id) = network(4, None).await;
     let b1 = nodes[0]
         .create_block_unsafe(&[deploy(0, &shard_id)])
@@ -977,8 +986,18 @@ async fn a_block_cites_a_valid_twin_in_its_senders_slot() {
         .expect("d");
     assert_eq!(
         cites(&d, &b1.sender),
-        Some(s.block_hash.clone()),
-        "d cites s for v0"
+        Some(b1.block_hash.clone()),
+        "d cites b1 for v0"
+    );
+    assert!(
+        !proto_util::dependencies_hashes_of(&d).contains(&s.block_hash),
+        "d does not depend on s"
+    );
+
+    let v3_b1 = nodes[3].process_block(b1.clone()).await.expect("v3 b1");
+    assert!(
+        is_equivocation(&v3_b1),
+        "v3 holds b1 as the equivocation: {v3_b1:?}"
     );
     accept(&mut nodes[3], &d, "v3 accepts d").await;
 }
