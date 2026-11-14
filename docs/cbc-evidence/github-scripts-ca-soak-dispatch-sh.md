@@ -2,8 +2,8 @@
 
 - **Status:** discharged
 - **Adapter:** embedded
-- **Commit:** e91f2d8a07a3653adedc7ded045d8d043350d881
-- **Verified:** 2026-11-11T06:05:26Z
+- **Commit:** 3897437e3db927485830549fc38024a4d3460972
+- **Verified:** 2026-11-14T17:59:11Z
 
 Claim:
 
@@ -14,7 +14,7 @@ Claim:
   "artifact": {
     "path": ".github/scripts/ca-soak-dispatch.sh",
     "id": "github-scripts-ca-soak-dispatch-sh",
-    "commit": "e91f2d8a07a3653adedc7ded045d8d043350d881",
+    "commit": "3897437e3db927485830549fc38024a4d3460972",
     "sha256": "68e8ae11a78955dc58d6079fc6d353e55d9d219e6c4bdbe13b25863ec129f3de",
     "commit_is_base": true,
     "working_tree": true
@@ -28,8 +28,8 @@ Claim:
   "scope": "optional-item-and-release-soak-controls",
   "evidence": {
     "kind": "bounded-script-tests",
-    "ref": "docs/cbc-evidence/formal/ca-canary-merge-policy-20261111T060513Z.json",
-    "sha256": "05b7a1d4f1f99e7ed1c8a7a74af33dbaf77cdffbd96c7a1946a7089f66803b0b",
+    "ref": "docs/cbc-evidence/formal/ca-canary-merge-policy-20261114T175911Z.json",
+    "sha256": "2bb50561610e343a458c0a7e64ca513ca210f3f1e5ea8dbea7dc099dfe15451e",
     "counterexample": null
   },
   "tiers": {
@@ -39,8 +39,8 @@ Claim:
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-11-11T06:05:26Z",
-  "verification_id": "15fb00e3-8af6-4408-8f99-3fa29a764147",
+  "verified_at": "2026-11-14T17:59:11Z",
+  "verification_id": "29c3deb5-f76d-4fb7-a4ec-2de00ce473bb",
   "inputs": {
     "artifact": ".github/scripts/ca-soak-dispatch.sh",
     "source_sha256": "68e8ae11a78955dc58d6079fc6d353e55d9d219e6c4bdbe13b25863ec129f3de",
@@ -50,7 +50,7 @@ Claim:
     }
   },
   "evidence_files": {
-    "docs/cbc-evidence/formal/ca-canary-merge-policy-20261111T060513Z.json": "05b7a1d4f1f99e7ed1c8a7a74af33dbaf77cdffbd96c7a1946a7089f66803b0b"
+    "docs/cbc-evidence/formal/ca-canary-merge-policy-20261114T175911Z.json": "2bb50561610e343a458c0a7e64ca513ca210f3f1e5ea8dbea7dc099dfe15451e"
   }
 }
 ```
