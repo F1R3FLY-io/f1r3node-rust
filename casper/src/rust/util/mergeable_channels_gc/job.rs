@@ -287,9 +287,7 @@ where
                         // for every reference to below-cutoff state, which
                         // surfaced as test-patience timeouts in CI.
                         if pass.conf.enable_block_store_gc && pass.target >= 0 {
-                            storage
-                                .gc_store()
-                                .advance_effective_anchor(pass.target)?;
+                            storage.gc_store().advance_effective_anchor(pass.target)?;
                         }
                         return Ok(GcProgress::Complete {
                             deleted,
