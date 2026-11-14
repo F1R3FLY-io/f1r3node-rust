@@ -139,6 +139,7 @@ impl GenesisBuilder {
             timestamp: 0, // Using 0 like in GenesisBuilder
             version: 1,
             extra_bytes: bytes::Bytes::new(),
+            chain_id: bytes::Bytes::new(),
         };
 
         BlockMessage {

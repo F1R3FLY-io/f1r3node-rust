@@ -34,7 +34,25 @@ pipeline = ci.dig("jobs", "pipeline")
 abort "CI must call the reusable workflow from its own revision" unless pipeline["uses"] == "./.github/workflows/_integration-pipeline.yml"
 abort "the reusable pipeline must receive the resolved target" unless pipeline.dig("with", "checkout_ref") == "${{ needs.build_base.outputs.TARGET_SHA }}"
 abort "ordinary CI must not receive promotion app credentials" if ci.to_s.match?(/PROMOTION_APP_(ID|PRIVATE_KEY)/)
+abort "ordinary CI must not receive membership app credentials" if ci.to_s.match?(/IDENTITY_APP_(ID|PRIVATE_KEY)/)
+abort "Commit Policy must retain read-only credentials" unless ci.dig("jobs", "commit_policy", "permissions") == {"contents" => "read", "pull-requests" => "read", "actions" => "read"}
+abort "Commit Policy must bind team snapshots to its own run attempt" unless policy.dig("env", "CI_RUN_ID") == "${{ github.run_id }}" && policy.dig("env", "CI_RUN_ATTEMPT") == "${{ github.run_attempt }}"
+abort "Commit Policy must use accepted team policy" unless policy["run"].include?('${policy_revision}:.github/scripts/commit-policy-team.sh')
+team = load_workflow.("commit-policy-team.yml")
+abort "membership lookup must run from the default branch on every CI attempt" unless events.(team) == {"workflow_run" => {"workflows" => ["CI"], "types" => ["in_progress"]}}
+snapshot = team.dig("jobs", "snapshot")
+abort "membership lookup must retain the master-only credential environment" unless snapshot["environment"] == "release-credentials"
+abort "membership lookup must only serve PR CI" unless snapshot["if"].include?("github.event.workflow_run.event == 'pull_request'") && snapshot["if"].include?("github.event.workflow_run.path == '.github/workflows/ci.yml'")
+team_steps = snapshot.fetch("steps")
+guard = team_steps.first
+abort "membership credentials require an explicit master guard" unless guard.dig("env", "REF") == "${{ github.ref }}" && guard["run"] == 'test "$REF" = refs/heads/master'
+abort "membership lookup must not check out branch code" unless team_steps.select(&checkout).all? { |step| step.dig("with", "ref") == "${{ github.sha }}" && step.dig("with", "persist-credentials") == false }
+token = team_steps.find { |step| step["id"] == "membership" }.fetch("with")
+abort "membership lookup must use a separate read-only app" unless token["private-key"] == "${{ secrets.IDENTITY_APP_PRIVATE_KEY }}" && token.select { |key, _| key.start_with?("permission-") } == {"permission-members" => "read"}
+publication = team_steps.find { |step| step["uses"].to_s.start_with?("actions/upload-artifact@") }
+abort "membership artifact must bind the originating CI attempt" unless publication.dig("with", "name") == "commit-policy-maintainers-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}"
 abort "workflow revision tests must run in Script Tests" unless ci.dig("jobs", "script_tests", "steps").any? { |step| step["run"].to_s.include?("bash .github/scripts/test-ci-workflow-refs.sh") }
+abort "team regression tests must run in Script Tests" unless ci.dig("jobs", "script_tests", "steps").any? { |step| step["run"].to_s.include?("bash .github/scripts/test-commit-policy-team.sh") }
 
 integration = load_workflow.("_integration-pipeline.yml")
 abort "the integration pipeline must not receive promotion app credentials" if integration.to_s.match?(/PROMOTION_APP_(ID|PRIVATE_KEY)/)

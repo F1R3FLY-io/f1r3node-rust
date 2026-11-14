@@ -96,7 +96,9 @@ run() {
 }
 
 untrusted_copy() {
-	for file in commit-policy-source.sh commit-policy-exemptions.sh check-commit-trailers.sh; do
+	local files=(commit-policy-source.sh commit-policy-exemptions.sh check-commit-trailers.sh)
+	if [ -f "$TMP/repo/.github/scripts/commit-policy-team.sh" ]; then files+=(commit-policy-team.sh); fi
+	for file in "${files[@]}"; do
 		cat >"$TMP/repo/.github/scripts/$file" <<'SH'
 printf ran >"$VALIDATOR_MARKER"
 exit 90
@@ -272,5 +274,37 @@ MERGE_BASE_SHA="$ACCEPTED" MERGE_HEAD_SHA="$BASE" run
 [ "$status" -ne 0 ] || fail 'a merge revision for another PR head passed'
 run MERGE_SHA="$HEAD_SHA"
 [ "$status" -ne 0 ] || fail 'a PR head commit was accepted as its proposed merge'
+
+git -C "$TMP/repo" reset -q --hard "$ACCEPTED"
+printf '%s\n' 'printf '\''%s\n'\'' "${TEAM_EXEMPT:-}"' >"$TMP/repo/.github/scripts/commit-policy-team.sh"
+git -C "$TMP/repo" add .github
+git -C "$TMP/repo" commit -q -m accepted-team-policy
+TEAM_SOURCE="$(git -C "$TMP/repo" rev-parse HEAD)"
+SOURCE_TIP="$TEAM_SOURCE"
+git -C "$TMP/repo" push -q --force origin HEAD:refs/heads/dev
+git -C "$TMP/repo" commit -q --allow-empty --author='Team Member <member@example.com>' -m member-contribution
+HEAD_SHA="$(git -C "$TMP/repo" rev-parse HEAD)"
+BASE_SHA="$BASE"
+HEAD_REF=ca/sync-dev-team
+PR_AUTHOR='f1r3node-promotion[bot]'
+PR_AUTHOR_TYPE=Bot
+fixture
+untrusted_copy
+run TEAM_EXEMPT="$HEAD_SHA"
+[ "$status" -eq 0 ] || { cat "$TMP/out" "$TMP/err"; fail 'accepted source team policy did not exempt its member'; }
+
+BASE_SHA="$TEAM_SOURCE"
+HEAD_REF=fix/ordinary
+PR_AUTHOR=maintainer
+PR_AUTHOR_TYPE=User
+fixture
+run TEAM_EXEMPT="$HEAD_SHA"
+[ "$status" -eq 0 ] || fail 'accepted target team policy did not exempt its member'
+
+BASE_SHA="$ACCEPTED"
+fixture
+run TEAM_EXEMPT="$HEAD_SHA"
+[ "$status" -ne 0 ] || fail 'a PR-only team helper ratified its author'
+grep -q 'unratified identity:.*member@example.com' "$TMP/err" || fail 'the member author check did not run'
 
 printf 'PASS: workflow transfers use verified shared source policy and preserve identity restrictions.\n'

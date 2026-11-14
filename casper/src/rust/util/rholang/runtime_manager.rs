@@ -51,6 +51,7 @@ use crate::rust::metrics_constants::{
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::{ConsensusParameters, RuntimeOps};
 use crate::rust::util::bounded_cache::BoundedCache;
+use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::MAX_PARENT_MERGE_SCOPE_BLOCKS;
 use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
@@ -289,6 +290,7 @@ pub struct RuntimeManager {
     pub block_index_cache: Arc<BoundedCache<BlockHash, BlockIndex>>,
     pub active_validators_cache: Arc<BoundedCache<StateHash, Vec<Validator>>>,
     pub bonds_cache: Arc<BoundedCache<StateHash, Vec<Bond>>>,
+    pub quarantined_cache: Arc<BoundedCache<StateHash, Vec<Bond>>>,
     /// Cache for merged parent post-state computation keyed by parent-set snapshot context.
     pub parents_post_state_cache:
         Arc<BoundedCache<ParentsPostStateCacheKey, ParentsPostStateCacheVal>>,
@@ -509,18 +511,19 @@ impl RuntimeManager {
                     bytes.push(0);
                     match system_deploy {
                         SystemDeployData::Slash {
-                            invalid_block_hash,
+                            evidence,
                             issuer_public_key,
-                            target_activation_epoch,
                         } => {
                             bytes.push(0);
-                            push_len_prefixed(&mut bytes, invalid_block_hash);
+                            push_len_prefixed(
+                                &mut bytes,
+                                &proto_util::commitment_hash(&evidence.first),
+                            );
+                            push_len_prefixed(
+                                &mut bytes,
+                                &proto_util::commitment_hash(&evidence.second),
+                            );
                             push_len_prefixed(&mut bytes, &issuer_public_key.bytes);
-                            // Little-endian is consensus-determined for this
-                            // hash-affecting encoding — every node must agree
-                            // on the bytes fed into the post-state hash. Do
-                            // not switch to big-endian or `to_be_bytes`.
-                            bytes.extend_from_slice(&target_activation_epoch.to_le_bytes());
                         }
                         SystemDeployData::CloseBlockSystemDeployData => {
                             bytes.push(1);
@@ -1242,6 +1245,36 @@ impl RuntimeManager {
         Ok(computed)
     }
 
+    /// The stake a slash can take from each validator at `hash`: its bond
+    /// plus any withdrawn stake still in quarantine. Validators with none
+    /// are left out.
+    pub async fn slashable_stakes(
+        &self,
+        hash: &StateHash,
+    ) -> Result<HashMap<Validator, BigInt>, CasperError> {
+        let bonds = self.compute_bonds(hash).await?;
+        let quarantined = self.quarantined_stakes(hash).await?;
+        let mut stakes: HashMap<Validator, BigInt> = HashMap::new();
+        for bond in bonds.into_iter().chain(quarantined) {
+            *stakes.entry(bond.validator).or_default() += bond.stake.into_bigint();
+        }
+        stakes.retain(|_, stake| *stake > BigInt::from(0));
+        Ok(stakes)
+    }
+
+    /// Every withdrawn validator at `hash` with the stake it still holds in
+    /// quarantine, until it is paid out.
+    pub async fn quarantined_stakes(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
+        if let Some(cached) = self.quarantined_cache.get(hash) {
+            return Ok((*cached).clone());
+        }
+        let runtime = self.spawn_runtime().await?;
+        let computed = RuntimeOps::new(runtime).compute_quarantined(hash).await?;
+        self.quarantined_cache
+            .insert(hash.clone(), Arc::new(computed.clone()));
+        Ok(computed)
+    }
+
     // Executes deploy as user deploy with immediate rollback
     pub async fn play_exploratory_deploy(
         &self,
@@ -1720,6 +1753,7 @@ impl RuntimeManager {
                 Self::MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES,
             )),
             bonds_cache: Arc::new(BoundedCache::new(Self::MAX_BONDS_CACHE_ENTRIES)),
+            quarantined_cache: Arc::new(BoundedCache::new(Self::MAX_BONDS_CACHE_ENTRIES)),
             parents_post_state_cache: Arc::new(BoundedCache::new(
                 Self::MAX_PARENTS_POST_STATE_CACHE_ENTRIES,
             )),

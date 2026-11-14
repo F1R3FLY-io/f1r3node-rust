@@ -29,7 +29,8 @@
 
 mod generators;
 mod harness;
-mod integration_helpers;
+mod equivocation_agreement;
+pub(crate) mod integration_helpers;
 mod integration_t_admissible_equivocation;
 mod integration_t_contains_future_deploy;
 mod integration_t_ignorable_equivocation;
@@ -44,12 +45,8 @@ mod integration_t_invalid_shard_id;
 mod integration_t_invalid_transaction;
 mod integration_t_invalid_transaction_block_exception;
 mod integration_t_slash_auth_storage_error;
-mod integration_t_neglected_invalid_block;
 mod integration_t_valid_no_record;
 mod late_equivocation_liveness;
-mod loom_t_9_2_atomic_record;
-mod loom_t_9_2_n_threads_3;
-mod loom_t_9_2_n_threads_4;
 mod observer;
 mod oracle;
 mod oracle_adapter;
@@ -149,11 +146,9 @@ mod uc_101_detector_missing_nested_pointer;
 mod uc_102_detector_order_independence;
 mod uc_103_detector_preconditioned_bisim;
 mod uc_104_detector_no_unsafe_lookup;
-mod uc_105_detector_detected_hash_order;
 mod uc_106_detector_two_child_order;
 mod uc_107_detector_validator_churn;
 mod uc_108_detector_duplicate_child;
-mod uc_112_record_lifecycle_retention;
 
 // UC-55 through UC-72: Sage-finding-derived tests. Per
 // formal/sage/slashing/FINDINGS.md and design §14.3.3 the canonical
@@ -217,5 +212,5 @@ mod evidence_visibility_gap;
 mod stale_evidence_filtered;
 mod weighted_neglect_chain;
 mod threat_vector_ranking_priorities;
-mod unbonded_window_pollution_determinism;
 mod zero_stake_direct_offender;
+mod quarantined_stake_spec;

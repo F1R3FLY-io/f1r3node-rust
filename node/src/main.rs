@@ -498,8 +498,11 @@ fn get_private_key(
 /// Start node runtime (equivalent to Scala's NodeRuntime.start)
 async fn start_node_runtime(conf: NodeConf) -> Result<()> {
     // --- Observability Setup ---
-    #[allow(unused_variables)]
     let prometheus_reporter = node::rust::diagnostics::initialize_diagnostics(&conf)?;
+    let _prometheus_upkeep = prometheus_reporter
+        .as_ref()
+        .map(|reporter| reporter.start_upkeep())
+        .transpose()?;
 
     node::rust::runtime::node_runtime::start(conf).await
 }

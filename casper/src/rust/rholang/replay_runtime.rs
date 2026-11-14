@@ -572,20 +572,14 @@ impl ReplayRuntimeOps {
 
         match system_deploy {
             SystemDeployData::Slash {
-                invalid_block_hash,
+                evidence,
                 issuer_public_key,
-                target_activation_epoch,
             } => {
-                let mut slash_deploy = SlashDeploy {
-                    invalid_block_hash: invalid_block_hash.clone(),
-                    pk: issuer_public_key.clone(),
-                    target_activation_epoch: *target_activation_epoch,
-                    initial_rand: system_deploy_util::generate_slash_deploy_random_seed(
-                        block_data.sender.bytes.clone(),
-                        block_data.seq_num,
-                        invalid_block_hash,
-                    ),
-                };
+                let mut slash_deploy = SlashDeploy::new(
+                    (**evidence).clone(),
+                    issuer_public_key.clone(),
+                    block_data.seq_num,
+                );
 
                 self.rig_system_deploy(processed_system_deploy).await?;
                 let (_, eval_result) = self

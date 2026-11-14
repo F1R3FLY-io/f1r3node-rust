@@ -947,20 +947,15 @@ impl RuntimeOps {
             Either::Right(system_deploy_result) => {
                 let mcl = self.get_number_channels_data(&mergeable_channels).await?;
                 if let Some(SlashDeploy {
-                    invalid_block_hash,
+                    evidence,
                     pk,
-                    target_activation_epoch,
                     initial_rand: _,
                 }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
                         final_state_hash,
                         event_log,
-                        SystemDeployData::create_slash(
-                            invalid_block_hash.clone(),
-                            pk.clone(),
-                            *target_activation_epoch,
-                        ),
+                        SystemDeployData::create_slash(evidence.clone(), pk.clone()),
                         mcl,
                         system_deploy_result,
                     ))
@@ -1597,6 +1592,25 @@ impl RuntimeOps {
         Self::to_bond_vec(bonds_pars[0].to_owned())
     }
 
+    /// The stake each withdrawn validator still holds in quarantine at
+    /// `hash`, until it is paid out.
+    pub async fn compute_quarantined(
+        &mut self,
+        hash: &StateHash,
+    ) -> Result<Vec<Bond>, CasperError> {
+        let pars = self
+            .play_exploratory_par(Self::withdrawers_query_par().clone(), hash)
+            .await?;
+        match pars.as_slice() {
+            [withdrawers] => Self::to_quarantined_vec(withdrawers.clone()),
+            _ => Err(CasperError::RuntimeError(format!(
+                "Incorrect number of results from query of withdrawers in state {}: {}",
+                PrettyPrinter::build_string_bytes(hash),
+                pars.len()
+            ))),
+        }
+    }
+
     fn activate_validator_query_source() -> String {
         r#"
           new return, rl(`rho:registry:lookup`), poSCh in {
@@ -1834,6 +1848,68 @@ impl RuntimeOps {
             Compiler::source_to_adt(&Self::bonds_query_source())
                 .expect("Failed to compile bonds query source")
         })
+    }
+
+    fn withdrawers_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(
+                r#"
+                new return, rl(`rho:registry:lookup`), poSCh in {
+                  rl!(`rho:system:pos`, *poSCh) |
+                  for(@(_, PoS) <- poSCh) {
+                    @PoS!("getWithdrawers", *return)
+                  }
+                }
+                "#,
+            )
+            .expect("Failed to compile withdrawers query source")
+        })
+    }
+
+    /// Reads PoS `withdrawers`, `Map[Validator, (stake, quarantine end)]`.
+    fn to_quarantined_vec(withdrawers: Par) -> Result<Vec<Bond>, CasperError> {
+        let malformed =
+            |what: &str| CasperError::RuntimeError(format!("malformed withdrawers map: {what}"));
+        let map = match withdrawers.exprs.as_slice() {
+            [] => return Ok(Vec::new()),
+            [expr] => match expr.expr_instance.as_ref() {
+                Some(ExprInstance::EMapBody(map)) => {
+                    ParMapTypeMapper::emap_to_par_map(map.clone()).ps
+                }
+                _ => return Err(malformed("not a map")),
+            },
+            _ => return Err(malformed("more than one expression")),
+        };
+        map.map_iter(|(validator, entry)| {
+            let validator = match validator.exprs.as_slice() {
+                [expr] => match expr.expr_instance.as_ref() {
+                    Some(ExprInstance::GByteArray(bytes)) => bytes.clone().into(),
+                    _ => return Err(malformed("a validator is not a byte array")),
+                },
+                _ => return Err(malformed("a validator is not a single expression")),
+            };
+            let stake = match entry.exprs.as_slice() {
+                [expr] => match expr.expr_instance.as_ref() {
+                    Some(ExprInstance::ETupleBody(tuple)) => {
+                        match tuple.ps.first().map(|p| p.exprs.as_slice()) {
+                            Some([stake]) => match stake.expr_instance.as_ref() {
+                                Some(ExprInstance::GBigInt(bytes)) => {
+                                    TokenAmount::new(bytes_to_bigint(bytes))
+                                        .map_err(|error| malformed(&error))?
+                                }
+                                _ => return Err(malformed("a stake is not a BigInt")),
+                            },
+                            _ => return Err(malformed("an entry has no stake")),
+                        }
+                    }
+                    _ => return Err(malformed("an entry is not a tuple")),
+                },
+                _ => return Err(malformed("an entry is not a single expression")),
+            };
+            Ok(Bond { validator, stake })
+        })
+        .collect()
     }
 
     fn to_validator_vec(validators_par: Par) -> Result<Vec<Validator>, CasperError> {

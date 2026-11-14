@@ -1,271 +1,236 @@
 //! `slash_authorization_paths` — differential testing of slash authorization.
 //!
-//! Reference: docs/casper/theory/slashing/slashing-specification.md §9 + §10.
 //! Production code under test: `slashing_authorization::authorized_slash_candidates`
-//! and `validate_received_slash_deploys`.
+//! and `validate_received_slash_deploys`. Each iteration runs both against
+//! an independent oracle built from really signed blocks.
 //!
-//! Premise: this file contains an *independent re-implementation* of the
-//! authorization predicate (`expected_validation_ok` and the
-//! candidate-set construction below). Each fuzz iteration runs both the
-//! production code and this oracle against the same synthetic snapshot
-//! and asserts agreement on six properties:
+//! Proposer side: one candidate per bonded offender the snapshot holds an
+//! equivocation of, from its lowest-hash invalid block, with the evidence
+//! ordered by hash.
 //!
-//!   1. The issuer's public key equals the block sender.
-//!   2. `target_activation_epoch == current_epoch` for the block.
-//!   3. The evidence block resolves in the snapshot DAG.
-//!   4. The evidence block is flagged `invalid = true`.
-//!   5. The offender currently carries a positive bond.
-//!   6. No two slashes in the same block share (offender, target_epoch).
-//!
-//! A divergence between oracle and production means the production code
-//! drifted from the spec — exactly the regression class T-9.8 forbids.
+//! Receive side: a block's slashes are accepted iff every slash
+//!   1. is issued by the block's sender,
+//!   2. cites two blocks of this shard and chain,
+//!   3. signed by one sender, at one sequence number,
+//!   4. that are two blocks, ordered by hash, each bearing its sender's
+//!      signature over its own content,
+//!   5. whose sender is bonded with positive stake,
+//! and no two slashes target one offender.
 
 #![no_main]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use arbitrary::Arbitrary;
-use casper::rust::epoch::Epoch;
 use casper::rust::slashing_authorization::{
-    authorized_slash_candidates, epoch_for_block_number, validate_received_slash_deploys,
+    authorized_slash_candidates, validate_received_slash_deploys, AuthorizedSlashCandidate,
 };
+use casper::rust::util::proto_util;
 use libfuzzer_sys::fuzz_target;
-use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 
 mod support;
 
-#[derive(Arbitrary, Debug)]
-struct EvidenceInput {
-    hash: u8,
-    sender: u8,
-    sequence_number: i16,
-    invalid: bool,
-}
+const VALIDATORS: u8 = 4;
 
 #[derive(Arbitrary, Debug)]
-struct DeployInput {
-    hash: u8,
-    issuer: u8,
-    target_activation_epoch: i16,
-    slash: bool,
-    succeeded: bool,
+struct PairInput {
+    offender: u8,
+    seq_num: u8,
+    nonce_a: u8,
+    nonce_b: u8,
+}
+
+/// Each condition the receiver checks is one flag, so the fuzzer reaches
+/// slashes that fail exactly one of them.
+#[derive(Arbitrary, Debug)]
+struct SlashInput {
+    kind: u8,
+    foreign_issuer: bool,
+    offender: u8,
+    other_sender: bool,
+    seq_num: u8,
+    other_seq: bool,
+    nonce_a: u8,
+    nonce_b: u8,
+    other_shard: bool,
+    other_chain: bool,
+    tamper: bool,
+    swap: bool,
 }
 
 #[derive(Arbitrary, Debug)]
 struct Input {
-    validator_count: u8,
     proposer: u8,
-    max_block_num: i16,
-    block_number: i16,
-    epoch_length: i8,
-    stakes: Vec<i16>,
-    evidences: Vec<EvidenceInput>,
-    deploys: Vec<DeployInput>,
+    stakes: [i8; VALIDATORS as usize],
+    pairs: Vec<PairInput>,
+    slashes: Vec<SlashInput>,
 }
 
-fn validator_at(validators: &[Validator], index: u8) -> Validator {
-    validators[usize::from(index) % validators.len()].clone()
+fn validator(index: u8) -> Validator { support::public(&support::key(index % VALIDATORS)) }
+
+fn bonded(bonds: &HashMap<Validator, BigInt>, validator: &Validator) -> bool {
+    bonds
+        .get(validator)
+        .is_some_and(|stake| *stake > BigInt::from(0))
 }
 
-/// Cap synthetic DAG height at 16. The bound is purely a search-space
-/// cap — i16 inputs are wrapped to `[0, 16)` so libFuzzer doesn't waste
-/// iterations on unreachable epoch arithmetic (epochs at i64::MAX
-/// height never appear in production), while still covering the
-/// epoch-boundary cases (heights 0, 1, 15 within one epoch_length=16).
-fn bounded_height(value: i16) -> i64 { i64::from(value.rem_euclid(16)) }
-
-/// Oracle predicate: enumerate the six authorization rules from §9.8
-/// independently and return whether the block should validate. This is
-/// the differential-testing counterpart of `validate_received_slash_deploys`
-/// — every disagreement is a candidate bug.
-fn expected_validation_ok(
-    block: &models::rust::casper::protocol::casper_message::BlockMessage,
-    snapshot: &casper::rust::casper::CasperSnapshot,
-) -> bool {
-    let slash_deploys = block
-        .body
-        .system_deploys
-        .iter()
-        .filter_map(|system_deploy| {
-            let ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash,
-                        issuer_public_key,
-                        target_activation_epoch,
-                    },
-                ..
-            } = system_deploy
-            else {
-                return None;
-            };
-            Some((
-                invalid_block_hash.clone(),
-                issuer_public_key.bytes.clone(),
-                *target_activation_epoch,
-            ))
-        })
-        .collect::<Vec<_>>();
-
-    if slash_deploys.is_empty() {
-        return true;
+/// The slash `input` describes, and whether the oracle accepts it, with the
+/// offender it targets when the evidence names one sender.
+fn slash(
+    input: &SlashInput,
+    proposer_index: u8,
+    bonds: &HashMap<Validator, BigInt>,
+) -> (
+    models::rust::casper::protocol::casper_message::ProcessedSystemDeploy,
+    bool,
+    Validator,
+) {
+    let offender = input.offender % VALIDATORS;
+    let second_sender = offender + u8::from(input.other_sender);
+    let seq_num = i32::from(input.seq_num % 4);
+    let a = support::signed_block(
+        &support::key(offender),
+        seq_num,
+        input.nonce_a,
+        support::SHARD,
+        &support::CHAIN,
+    );
+    let b = support::signed_block(
+        &support::key(second_sender % VALIDATORS),
+        seq_num + i32::from(input.other_seq),
+        input.nonce_b,
+        if input.other_shard {
+            "other"
+        } else {
+            support::SHARD
+        },
+        if input.other_chain {
+            &[0xC2; 32]
+        } else {
+            &support::CHAIN
+        },
+    );
+    let mut evidence = support::evidence(&a, &b);
+    if input.tamper {
+        evidence.second.post_state_hash = Bytes::from(vec![0xAB; 32]);
     }
-
-    let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
-    let Ok(current_epoch) = epoch_for_block_number(block.body.state.block_number, epoch_length)
-    else {
-        return false;
-    };
-    let mut seen = BTreeSet::<(Bytes, i64)>::new();
-
-    for (invalid_block_hash, issuer, target_activation_epoch) in slash_deploys {
-        if issuer != block.sender {
-            return false;
-        }
-        if target_activation_epoch != current_epoch.get() {
-            return false;
-        }
-        let metadata = match snapshot.dag.lookup(&invalid_block_hash) {
-            Ok(Some(metadata)) => metadata,
-            _ => return false,
-        };
-        if !metadata.invalid {
-            return false;
-        }
-        if epoch_for_block_number(metadata.block_number, epoch_length)
-            != Ok(Epoch::new(target_activation_epoch))
-        {
-            return false;
-        }
-        let bond = snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&metadata.sender)
-            .cloned()
-            .unwrap_or_default();
-        if bond <= 0.into() {
-            return false;
-        }
-        if !seen.insert((metadata.sender, target_activation_epoch)) {
-            return false;
-        }
+    if input.swap {
+        std::mem::swap(&mut evidence.first, &mut evidence.second);
     }
-
-    true
+    let issuer = validator(proposer_index + u8::from(input.foreign_issuer));
+    let first_hash = proto_util::commitment_hash(&evidence.first);
+    let second_hash = proto_util::commitment_hash(&evidence.second);
+    let offender = a.sender.clone();
+    let accepted = !input.foreign_issuer
+        && !input.other_shard
+        && !input.other_chain
+        && a.sender == b.sender
+        && a.seq_num == b.seq_num
+        && a.block_hash != b.block_hash
+        && !input.tamper
+        && first_hash < second_hash
+        && bonded(bonds, &offender);
+    (support::slash_deploy(evidence, &issuer), accepted, offender)
 }
 
 fuzz_target!(|input: Input| {
-    let validator_count = usize::from(input.validator_count % 6) + 1;
-    let validators = (0..validator_count)
-        .map(|index| support::validator(index as u8))
-        .collect::<Vec<_>>();
-    let bonds = validators
-        .iter()
-        .enumerate()
-        .map(|(index, validator)| {
-            let stake = input.stakes.get(index).copied().unwrap_or(1);
-            (validator.clone(), i64::from(stake))
+    let bonds_list = (0..VALIDATORS)
+        .map(|index| {
+            (
+                validator(index),
+                i64::from(input.stakes[usize::from(index)]),
+            )
         })
         .collect::<Vec<_>>();
-    let evidences = input
-        .evidences
+    let bonds: HashMap<Validator, BigInt> = bonds_list
         .iter()
-        .enumerate()
-        .take(8)
-        .map(|(index, evidence)| support::Evidence {
-            hash: support::block_hash(evidence.hash),
-            sender: validator_at(&validators, evidence.sender),
-            block_number: index as i64,
-            sequence_number: i32::from(evidence.sequence_number),
-            invalid: evidence.invalid,
-        })
-        .collect::<Vec<_>>();
-    let epoch_length = i32::from(input.epoch_length);
-    let snapshot = support::snapshot(
-        &evidences,
-        bounded_height(input.max_block_num),
-        epoch_length,
-        bonds,
-    );
+        .map(|(validator, stake)| (validator.clone(), BigInt::from(*stake)))
+        .collect();
+    let slashable: HashMap<Validator, BigInt> = bonds
+        .iter()
+        .filter(|(validator, _)| bonded(&bonds, validator))
+        .map(|(validator, stake)| (validator.clone(), stake.clone()))
+        .collect();
 
-    let candidate_result = authorized_slash_candidates(&snapshot);
-    let current_candidate_epoch =
-        epoch_for_block_number(bounded_height(input.max_block_num) + 1, epoch_length);
-    match current_candidate_epoch {
-        Err(_) => assert!(candidate_result.is_err()),
-        Ok(current_epoch) => {
-            let candidates = candidate_result.expect("candidate authorization domain");
-            let mut expected = BTreeMap::<Validator, (Bytes, Epoch)>::new();
-            for metadata in snapshot.dag.invalid_blocks() {
-                if !metadata.invalid {
-                    continue;
-                }
-                if epoch_for_block_number(metadata.block_number, epoch_length) != Ok(current_epoch)
-                {
-                    continue;
-                }
-                let bond = snapshot
-                    .on_chain_state
-                    .bonds_map
-                    .get(&metadata.sender)
-                    .cloned()
-                    .unwrap_or_default();
-                if bond <= 0.into() {
-                    continue;
-                }
-                // Lex-smallest-hash tie-breaker mirrors the production rule
-                // in `authorized_slash_candidates` — see the BTreeMap
-                // dedup loop there. The oracle must use the *same* rule
-                // or the differential check would fire on every tie.
-                expected
-                    .entry(metadata.sender.clone())
-                    .and_modify(|(hash, _)| {
-                        if metadata.block_hash < *hash {
-                            *hash = metadata.block_hash.clone();
-                        }
-                    })
-                    .or_insert((metadata.block_hash.clone(), current_epoch));
-            }
-            assert_eq!(candidates.len(), expected.len());
-            for candidate in candidates {
-                let expected_candidate = expected
-                    .remove(&candidate.offender)
-                    .expect("candidate offender is expected");
-                assert_eq!(candidate.invalid_block_hash, expected_candidate.0);
-                assert_eq!(candidate.target_activation_epoch, expected_candidate.1);
-            }
-            assert!(expected.is_empty());
+    let mut held = Vec::new();
+    for pair in input.pairs.iter().take(6) {
+        let key = support::key(pair.offender % VALIDATORS);
+        let seq_num = i32::from(pair.seq_num % 4);
+        let a = support::signed_block(&key, seq_num, pair.nonce_a, support::SHARD, &support::CHAIN);
+        let b = support::signed_block(&key, seq_num, pair.nonce_b, support::SHARD, &support::CHAIN);
+        if a.block_hash == b.block_hash {
+            continue;
+        }
+        held.push(support::Held {
+            block: a.clone(),
+            equivocates: None,
+        });
+        held.push(support::Held {
+            block: b,
+            equivocates: Some(a.block_hash),
+        });
+    }
+    let snapshot = support::snapshot(&held, 8, bonds_list);
+    let store = support::block_store(&held);
+    let blocks: HashMap<BlockHash, BlockMessage> = held
+        .iter()
+        .map(|item| (item.block.block_hash.clone(), item.block.clone()))
+        .collect();
+
+    let mut lowest: BTreeMap<Validator, (BlockHash, BlockHash)> = BTreeMap::new();
+    for invalid in snapshot.dag.invalid_blocks().expect("invalid blocks") {
+        if !bonded(&bonds, &invalid.sender) {
+            continue;
+        }
+        let sibling = invalid
+            .equivocates
+            .clone()
+            .expect("the snapshot stores every invalid block with its sibling");
+        let entry = lowest
+            .entry(invalid.sender.clone())
+            .or_insert((invalid.block_hash.clone(), sibling.clone()));
+        if invalid.block_hash < entry.0 {
+            *entry = (invalid.block_hash.clone(), sibling);
         }
     }
-
-    let proposer = validator_at(&validators, input.proposer);
-    let deploys = input
-        .deploys
-        .iter()
-        .take(8)
-        .map(|deploy| {
-            if !deploy.succeeded {
-                support::failed_deploy()
-            } else if deploy.slash {
-                support::slash_deploy(
-                    support::block_hash(deploy.hash),
-                    validator_at(&validators, deploy.issuer),
-                    i64::from(deploy.target_activation_epoch),
-                )
-            } else {
-                support::close_deploy()
-            }
+    let expected_candidates = lowest
+        .into_iter()
+        .map(|(offender, (invalid, sibling))| AuthorizedSlashCandidate {
+            offender,
+            evidence: support::evidence(&blocks[&invalid], &blocks[&sibling]),
         })
         .collect::<Vec<_>>();
-    let block = support::block_with_system_deploys(
-        input.proposer,
-        proposer,
-        bounded_height(input.block_number),
-        deploys,
+    assert_eq!(
+        authorized_slash_candidates(&snapshot, &store, &slashable)
+            .expect("every held block is stored"),
+        expected_candidates
     );
-    let expected_ok = expected_validation_ok(&block, &snapshot);
-    let actual_ok = validate_received_slash_deploys(&block, &snapshot).is_ok();
-    assert_eq!(actual_ok, expected_ok);
+
+    let proposer_index = input.proposer % VALIDATORS;
+    let proposer = validator(proposer_index);
+    let mut expected_ok = true;
+    let mut targeted = HashSet::new();
+    let mut deploys = Vec::new();
+    for item in input.slashes.iter().take(6) {
+        match item.kind % 4 {
+            0 => deploys.push(support::failed_deploy()),
+            1 => deploys.push(support::close_deploy()),
+            _ => {
+                let (deploy, accepted, offender) = slash(item, proposer_index, &bonds);
+                expected_ok &= accepted && targeted.insert(offender);
+                deploys.push(deploy);
+            }
+        }
+    }
+    let block = support::block_with_system_deploys(input.proposer, proposer, 5, deploys);
+    assert_eq!(
+        validate_received_slash_deploys(&block, &slashable, support::SHARD, &support::CHAIN)
+            .is_ok(),
+        expected_ok
+    );
 });

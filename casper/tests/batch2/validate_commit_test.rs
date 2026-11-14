@@ -66,6 +66,40 @@ fn at(block: &BlockMessage) -> Floor {
 }
 
 #[tokio::test]
+async fn snapshot_identity_tracks_publication_without_frontier_changes() {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    let mut stores = InMemoryStoreManager::new();
+    let storage = BlockDagKeyValueStorage::new(&mut stores).await.unwrap();
+    let mut genesis = models::rust::block_implicits::get_random_block_default();
+    genesis.body.state.block_number = 0;
+    genesis.header.parents_hash_list.clear();
+    storage.insert(&genesis, InsertMode::Approved).unwrap();
+    let before = storage.get_representation().unwrap();
+    let mut historical = genesis.clone();
+    historical.block_hash = vec![0x73; 32].into();
+    historical.header.parents_hash_list = vec![genesis.block_hash.clone()];
+    historical.body.state.block_number = 1;
+    storage
+        .insert(&historical, InsertMode::SettledHistory)
+        .unwrap();
+    let after = storage.get_representation().unwrap();
+    assert_eq!(
+        before.latest_message_hashes(),
+        after.latest_message_hashes()
+    );
+    assert_eq!(before.last_finalized_block(), after.last_finalized_block());
+    let threshold = FtThreshold::from_f32_lossy(0.1);
+    assert_ne!(
+        snapshot_id(&before, threshold).unwrap(),
+        snapshot_id(&after, threshold).unwrap()
+    );
+}
+
+#[tokio::test]
 async fn validate_commit_refuses_a_candidate_not_higher_than_the_current_lfb() {
     with_storage(|mut store, mut dag_store| async move {
         let validators = [

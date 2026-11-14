@@ -1,4 +1,3 @@
 Example-based UC tests
 Property-based theorem tests
-Loom exhaustive interleaving (T-9.2)
 Pre-fix regression backstops (*)

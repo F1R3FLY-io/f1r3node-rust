@@ -847,6 +847,9 @@ pub struct Header {
     pub timestamp: i64,
     pub version: i64,
     pub extra_bytes: ByteString,
+    /// The genesis block hash of the chain the block belongs to; empty in
+    /// the genesis block.
+    pub chain_id: ByteString,
 }
 
 impl Header {
@@ -856,6 +859,7 @@ impl Header {
             timestamp: proto.timestamp,
             version: proto.version,
             extra_bytes: proto.extra_bytes,
+            chain_id: proto.chain_id,
         }
     }
 
@@ -865,6 +869,97 @@ impl Header {
             timestamp: self.timestamp,
             version: self.version,
             extra_bytes: self.extra_bytes.clone(),
+            chain_id: self.chain_id.clone(),
+        }
+    }
+}
+
+/// The fields a block hash commits to, with the deploys reduced to their
+/// root, and the block's signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockCommitment {
+    pub header: Header,
+    pub pre_state_hash: ByteString,
+    pub post_state_hash: ByteString,
+    pub bonds_root: [u8; 32],
+    pub justifications_root: [u8; 32],
+    pub block_number: i64,
+    pub rejected_root: [u8; 32],
+    pub applied_from_scope_root: [u8; 32],
+    pub merge_base: ByteString,
+    pub body_extra_bytes: ByteString,
+    pub v6: Option<V6Body>,
+    pub sender: ByteString,
+    pub sig_algorithm: String,
+    pub seq_num: i32,
+    pub shard_id: String,
+    pub extra_bytes: ByteString,
+    pub deploys_root: [u8; 32],
+    pub sig: ByteString,
+}
+
+fn commitment_root(name: &str, bytes: &ByteString) -> Result<[u8; 32], String> {
+    bytes
+        .as_ref()
+        .try_into()
+        .map_err(|_| format!("{name} is {} bytes, not 32", bytes.len()))
+}
+
+impl BlockCommitment {
+    pub fn from_proto(proto: BlockCommitmentProto) -> Result<Self, String> {
+        Ok(Self {
+            header: Header::from_proto(
+                proto
+                    .header
+                    .ok_or_else(|| "Missing header field".to_string())?,
+            ),
+            pre_state_hash: proto.pre_state_hash,
+            post_state_hash: proto.post_state_hash,
+            bonds_root: commitment_root("bonds root", &proto.bonds_root)?,
+            justifications_root: commitment_root(
+                "justifications root",
+                &proto.justifications_root,
+            )?,
+            block_number: proto.block_number,
+            rejected_root: commitment_root("rejected root", &proto.rejected_root)?,
+            applied_from_scope_root: commitment_root(
+                "applied-from-scope root",
+                &proto.applied_from_scope_root,
+            )?,
+            merge_base: proto.merge_base,
+            body_extra_bytes: proto.body_extra_bytes,
+            v6: proto.v6.map(V6Body::from_proto),
+            sender: proto.sender,
+            sig_algorithm: proto.sig_algorithm,
+            seq_num: proto.seq_num,
+            shard_id: proto.shard_id,
+            extra_bytes: proto.extra_bytes,
+            deploys_root: commitment_root("deploys root", &proto.deploys_root)?,
+            sig: proto.sig,
+        })
+    }
+
+    pub fn to_proto(&self) -> BlockCommitmentProto {
+        let root = |bytes: &[u8; 32]| ByteString::copy_from_slice(bytes);
+        BlockCommitmentProto {
+            header: Some(self.header.to_proto()),
+            pre_state_hash: self.pre_state_hash.clone(),
+            post_state_hash: self.post_state_hash.clone(),
+            bonds_root: root(&self.bonds_root),
+            justifications_root: root(&self.justifications_root),
+            block_number: self.block_number,
+            rejected_root: root(&self.rejected_root),
+            applied_from_scope_root: root(&self.applied_from_scope_root),
+            merge_base: self.merge_base.clone(),
+            body_extra_bytes: self.body_extra_bytes.clone(),
+            v6: self.v6.as_ref().map(V6Body::to_proto),
+            sender: self.sender.clone(),
+            sig_algorithm: self.sig_algorithm.clone(),
+            seq_num: self.seq_num,
+            shard_id: self.shard_id.clone(),
+            extra_bytes: self.extra_bytes.clone(),
+            deploys_root: root(&self.deploys_root),
+            sig: self.sig.clone(),
         }
     }
 }
@@ -1162,27 +1257,29 @@ impl ProcessedDeploy {
     }
 }
 
+/// Two blocks one sender signed at one sequence number: proof of an
+/// equivocation that needs nothing else to check.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EquivocationEvidence {
+    pub first: BlockCommitment,
+    pub second: BlockCommitment,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SystemDeployData {
     Slash {
-        invalid_block_hash: ByteString,
+        evidence: Box<EquivocationEvidence>,
         issuer_public_key: PublicKey,
-        target_activation_epoch: i64,
     },
     CloseBlockSystemDeployData,
     Empty,
 }
 
 impl SystemDeployData {
-    pub fn create_slash(
-        invalid_block_hash: ByteString,
-        issuer_public_key: PublicKey,
-        target_activation_epoch: i64,
-    ) -> Self {
+    pub fn create_slash(evidence: EquivocationEvidence, issuer_public_key: PublicKey) -> Self {
         Self::Slash {
-            invalid_block_hash,
+            evidence: Box::new(evidence),
             issuer_public_key,
-            target_activation_epoch,
         }
     }
 
@@ -1193,15 +1290,20 @@ impl SystemDeployData {
             .system_deploy
             .ok_or_else(|| "Missing system deploy field".to_string())?
         {
-            system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(
-                slash_system_deploy_data_proto,
-            ) => Ok(Self::Slash {
-                invalid_block_hash: slash_system_deploy_data_proto.invalid_block_hash,
-                issuer_public_key: PublicKey::from_bytes(
-                    &slash_system_deploy_data_proto.issuer_public_key,
-                ),
-                target_activation_epoch: slash_system_deploy_data_proto.target_activation_epoch,
-            }),
+            system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(slash) => {
+                let commitment = |proto: Option<BlockCommitmentProto>| {
+                    BlockCommitment::from_proto(
+                        proto.ok_or_else(|| "Missing slash evidence commitment".to_string())?,
+                    )
+                };
+                Ok(Self::Slash {
+                    evidence: Box::new(EquivocationEvidence {
+                        first: commitment(slash.first)?,
+                        second: commitment(slash.second)?,
+                    }),
+                    issuer_public_key: PublicKey::from_bytes(&slash.issuer_public_key),
+                })
+            }
             system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_) => {
                 Ok(Self::CloseBlockSystemDeployData)
             }
@@ -1211,15 +1313,14 @@ impl SystemDeployData {
     pub fn to_proto(sdd: SystemDeployData) -> SystemDeployDataProto {
         match sdd {
             Self::Slash {
-                invalid_block_hash,
+                evidence,
                 issuer_public_key,
-                target_activation_epoch,
             } => SystemDeployDataProto {
                 system_deploy: Some(SystemDeploy::SlashSystemDeploy(
                     SlashSystemDeployDataProto {
-                        invalid_block_hash,
                         issuer_public_key: issuer_public_key.bytes.into(),
-                        target_activation_epoch,
+                        first: Some(evidence.first.to_proto()),
+                        second: Some(evidence.second.to_proto()),
                     },
                 )),
             },
@@ -1558,7 +1659,7 @@ impl DeployData {
             unverified.pk,
             unverified.sig,
             unverified.sig_algorithm,
-        )?
+        )
         .ok_or_else(|| "Invalid signature".to_string())
         .and_then(DeployData::with_complete_cosignatures)
     }
@@ -2005,6 +2106,7 @@ mod approved_block_tests {
                     timestamp: 0,
                     version: 0,
                     extra_bytes: Bytes::new(),
+                    chain_id: Bytes::new(),
                 },
                 body: Body {
                     state: F1r3flyState {
@@ -2407,12 +2509,54 @@ mod tests {
         assert_eq!(info.sig, hex::encode(&deploy.sig));
     }
 
+    fn commitment(seed: u8) -> BlockCommitment {
+        BlockCommitment {
+            header: Header {
+                parents_hash_list: vec![Bytes::from(vec![seed; 32])],
+                timestamp: i64::from(seed),
+                version: 1,
+                extra_bytes: Bytes::new(),
+                chain_id: Bytes::from(vec![seed; 32]),
+            },
+            pre_state_hash: Bytes::from(vec![seed; 32]),
+            post_state_hash: Bytes::from(vec![seed + 1; 32]),
+            bonds_root: [seed + 2; 32],
+            justifications_root: [seed + 7; 32],
+            block_number: i64::from(seed),
+            rejected_root: [seed + 3; 32],
+            applied_from_scope_root: [seed + 4; 32],
+            merge_base: Bytes::new(),
+            body_extra_bytes: Bytes::new(),
+            v6: None,
+            sender: Bytes::from(vec![0x04; 65]),
+            sig_algorithm: "secp256k1".to_string(),
+            seq_num: 3,
+            shard_id: "root".to_string(),
+            extra_bytes: Bytes::new(),
+            deploys_root: [seed + 5; 32],
+            sig: Bytes::from(vec![seed + 6; 70]),
+        }
+    }
+
+    #[test]
+    fn a_commitment_root_must_be_32_bytes() {
+        let mut proto = commitment(1).to_proto();
+        assert_eq!(
+            BlockCommitment::from_proto(proto.clone()),
+            Ok(commitment(1))
+        );
+        proto.justifications_root = Bytes::from(vec![8; 31]);
+        assert!(BlockCommitment::from_proto(proto).is_err());
+    }
+
     #[test]
     fn system_deploy_data_round_trips_all_variants() {
         let slash = SystemDeployData::create_slash(
-            Bytes::from_static(b"invalid-block"),
+            EquivocationEvidence {
+                first: commitment(1),
+                second: commitment(9),
+            },
             PublicKey::from_bytes(b"issuer"),
-            5,
         );
         assert_eq!(
             SystemDeployData::from_proto(SystemDeployData::to_proto(slash.clone())).unwrap(),

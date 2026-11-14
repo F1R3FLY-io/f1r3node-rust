@@ -159,7 +159,7 @@ async fn estimator_on_empty_latest_messages_should_return_the_genesis_regardless
         let forkchoice = estimator
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 HashMap::new(),
                 i32::MAX,
                 None,
@@ -283,7 +283,7 @@ async fn estimator_on_simple_dag_should_return_the_appropriate_score_map_and_for
         let forkchoice = estimator
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 latest_blocks,
                 i32::MAX,
                 None,
@@ -411,7 +411,7 @@ async fn estimator_on_flipping_forkchoice_dag_should_return_the_appropriate_scor
 
         let estimator = Estimator::apply();
         let forkchoice = estimator
-            .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest_blocks, i32::MAX, None)
+            .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, None, None, None), latest_blocks, i32::MAX, None)
             .await
             .unwrap();
 
@@ -487,7 +487,7 @@ async fn dense_regime_scores(heights: usize) -> DenseRegimeScores {
             .iter()
             .map(|v| (v.clone(), genesis.block_hash.clone()))
             .collect();
-        let mut floor = BlockMetadata::from_block(&genesis, false, None, None);
+        let mut floor = BlockMetadata::from_block(&genesis, None, None, None);
 
         for height in 0..heights {
             let parents = level.clone();
@@ -507,7 +507,7 @@ async fn dense_regime_scores(heights: usize) -> DenseRegimeScores {
                 // first validator's blocks; a floor off that spine is not a
                 // floor any node would derive.
                 if index == 0 && height + 2 == heights {
-                    floor = BlockMetadata::from_block(&block, false, None, None);
+                    floor = BlockMetadata::from_block(&block, None, None, None);
                 }
             }
             for (validator, hash) in validators.iter().zip(next.iter()) {
@@ -536,7 +536,7 @@ async fn dense_regime_scores(heights: usize) -> DenseRegimeScores {
         let from_genesis = estimator
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 latest.clone(),
                 i32::MAX,
                 None,

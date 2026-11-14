@@ -1282,7 +1282,7 @@ mod tests {
             .write()
             .add(BlockMetadata::from_block(
                 &block,
-                false,
+                None,
                 Some(true),
                 Some(true),
             ))

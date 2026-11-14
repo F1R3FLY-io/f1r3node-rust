@@ -250,6 +250,7 @@ async fn a_block_record_carries_the_gate_and_replays_it() {
             timestamp: 1,
             version: 1,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {
@@ -372,6 +373,7 @@ async fn the_record_gives_the_block_s_rev_transfers() {
             timestamp: 1,
             version: 1,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {
@@ -469,6 +471,7 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
             timestamp: 1,
             version: 1,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {
@@ -639,6 +642,7 @@ async fn parallel_transfers_that_overdraw_together_fail_the_run_in_play_and_repl
             timestamp: 1,
             version: 1,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {
@@ -724,6 +728,7 @@ async fn a_self_sealed_envelope_is_paid_from_its_process_wallet_in_play_and_repl
             timestamp: 1,
             version: 1,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {
@@ -1474,6 +1479,7 @@ async fn the_close_cost_is_recorded_not_charged_and_replay_checks_it() {
             timestamp: 1,
             version: 1,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {

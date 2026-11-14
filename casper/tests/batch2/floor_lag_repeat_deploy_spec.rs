@@ -274,6 +274,7 @@ async fn block_carrying_again(
         timestamp,
         version: snapshot.on_chain_state.shard_conf.casper_version,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,

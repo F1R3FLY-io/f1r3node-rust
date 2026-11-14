@@ -11,7 +11,13 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
-use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
+
+fn insert_mode(equivocates: Option<BlockHash>) -> InsertMode {
+    match equivocates {
+        Some(sibling) => InsertMode::Equivocation { sibling },
+        None => InsertMode::Normal,
+    }
+}
 
 pub struct IndexedBlockDagStorage {
     underlying: BlockDagKeyValueStorage,
@@ -62,7 +68,7 @@ impl IndexedBlockDagStorage {
         &mut self,
         block: &BlockMessage,
         genesis: &BlockMessage,
-        invalid: bool,
+        equivocates: Option<BlockHash>,
     ) -> Result<BlockMessage, KvStoreError> {
         // P2-12: insert mutates; exclusive lock.
         let _lock_guard = self.underlying.global_lock.write();
@@ -93,14 +99,8 @@ impl IndexedBlockDagStorage {
         modified_block.seq_num = next_creator_seq_num;
         modified_block.body.state = new_post_state;
 
-        self.underlying.insert_internal(
-            &modified_block,
-            if invalid {
-                InsertMode::Invalid
-            } else {
-                InsertMode::Normal
-            },
-        )?;
+        self.underlying
+            .insert_internal(&modified_block, insert_mode(equivocates))?;
         self.id_to_blocks.insert(next_id, modified_block.clone());
         *current_id = next_id;
 
@@ -111,29 +111,15 @@ impl IndexedBlockDagStorage {
         &mut self,
         index: i64,
         block: BlockMessage,
-        invalid: bool,
+        equivocates: Option<BlockHash>,
     ) -> Result<(), KvStoreError> {
         // P2-12: insert mutates; exclusive lock.
         let _lock_guard = self.underlying.global_lock.write();
         self.id_to_blocks.insert(index, block.clone());
-        self.underlying.insert_internal(
-            &block,
-            if invalid {
-                InsertMode::Invalid
-            } else {
-                InsertMode::Normal
-            },
-        )?;
+        self.underlying
+            .insert_internal(&block, insert_mode(equivocates))?;
 
         Ok(())
-    }
-
-    pub fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        // Use underlying's access_equivocations_tracker which has its own lock
-        self.underlying.access_equivocations_tracker(f)
     }
 
     pub async fn record_directly_finalized<F, Fut>(
@@ -162,24 +148,9 @@ impl IndexedBlockDagStorage {
     }
 }
 
-// EquivocationsAccess trait impl — delegates to the inherent method
-// which itself delegates to the underlying BlockDagKeyValueStorage's
-// global_lock. See `crate::rust::dag::equivocations_access` for the
-// trait contract (T-9.2 anchor, atomic-RMW guarantee).
-impl crate::rust::dag::equivocations_access::EquivocationsAccess for IndexedBlockDagStorage {
-    fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        IndexedBlockDagStorage::access_equivocations_tracker(self, f)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use models::rust::block_implicits::get_random_block;
-    use models::rust::equivocation_record::EquivocationRecord;
-    use models::rust::validator::Validator;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -218,7 +189,7 @@ mod tests {
             .insert_indexed(
                 &block(0, 0, vec![genesis.block_hash.clone()]),
                 &genesis,
-                false,
+                None,
             )
             .unwrap();
         assert_eq!(first.body.state.block_number, 0);
@@ -228,7 +199,7 @@ mod tests {
             .insert_indexed(
                 &block(0, 0, vec![genesis.block_hash.clone()]),
                 &genesis,
-                false,
+                None,
             )
             .unwrap();
         assert_eq!(second.body.state.block_number, 1);
@@ -253,7 +224,7 @@ mod tests {
             .insert_indexed(
                 &block(0, 3, vec![genesis.block_hash.clone()]),
                 &genesis,
-                false,
+                None,
             )
             .unwrap();
         assert_eq!(inserted.seq_num, 3);
@@ -270,13 +241,14 @@ mod tests {
             .insert_indexed(
                 &block(0, 0, vec![genesis.block_hash.clone()]),
                 &genesis,
-                true,
+                Some(BlockHash::from(vec![6; 32])),
             )
             .unwrap();
 
         let dag = storage.get_representation().unwrap();
         assert!(dag
             .invalid_blocks()
+            .expect("invalid blocks")
             .iter()
             .any(|meta| meta.block_hash == inserted.block_hash));
     }
@@ -288,29 +260,11 @@ mod tests {
         storage.insert(&genesis, InsertMode::Approved).unwrap();
 
         let injected = block(1, 1, vec![genesis.block_hash.clone()]);
-        storage.inject(7, injected.clone(), false).unwrap();
+        storage.inject(7, injected.clone(), None).unwrap();
 
         assert_eq!(storage.lookup_by_id(7).unwrap(), Some(injected.clone()));
         let dag = storage.get_representation().unwrap();
         assert!(dag.contains(&injected.block_hash).unwrap());
-    }
-
-    #[tokio::test]
-    async fn equivocation_tracker_round_trips_through_the_indexed_wrapper() {
-        let storage = storage().await;
-        let record = EquivocationRecord::new(
-            Validator::from(vec![3u8; 65]),
-            0,
-            std::collections::BTreeSet::from([BlockHash::from(vec![0xAB; 32])]),
-        );
-
-        storage
-            .access_equivocations_tracker(|tracker| tracker.add(record.clone()))
-            .unwrap();
-        let records = storage
-            .access_equivocations_tracker(|tracker| tracker.data())
-            .unwrap();
-        assert_eq!(records, HashSet::from([record]));
     }
 
     #[tokio::test]

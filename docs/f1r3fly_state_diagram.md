@@ -167,15 +167,15 @@ flowchart TD
 
 **Block Summary Validation** (`Validate.blockSummary`): 12-step validation including hash verification, timestamp bounds (±15s drift), shard consistency, deploy validation, and sequence number enforcement.
 
-**Justification Regression Check** (`Validate.justificationRegressions`): Prevents validators from "going backwards" by enforcing `newJustification.seqNum >= currentJustification.seqNum` to maintain consensus safety.
+**Justification Regression Check** (`Validate::justification_regressions`): Prevents validators from "going backwards". For each other validator, the block cites a sequence number at least as high as its own previous block cites. The previous block is the one the block's creator justification names, so every node that holds the block reaches the same verdict.
 
 **Block Checkpoint Validation** (`InterpreterUtil.validateBlockCheckpoint`): Deterministic replay of all deploys in RSpace to verify computed post-state hash matches block's claimed state.
 
 **Bonds Cache Validation** (`Validate.bondsCache`): Verifies block's cached validator bonds exactly match current PoS contract state, ensuring authentic stake verification.
 
-**Neglected Invalid Blocks** (`Validate.neglectedInvalidBlock`): Detects when bonded validators reference known invalid blocks in justifications, preventing Byzantine fault avoidance.
+**Equivocation Detection** (`EquivocationDetector::equivocation_verdict`): A block whose sender and sequence number match a different held block is an equivocation. It is stored invalid with that sibling.
 
-**Equivocation Detection** (`EquivocationDetector.checkNeglectedEquivocationsWithUpdate`): Identifies double-voting by comparing creator's self-justification with latest DAG message, maintaining equivocation tracker.
+**Neglected Equivocations** (`EquivocationDetector::check_neglected_equivocations`): Rejects a block whose justifications show both blocks of an equivocation while leaving its sender bonded.
 
 **Clique Oracle Safety** (`SafetyOracle`): Computes mathematical finality via `(cliqueWeight * 2 - totalStake) / totalStake`, finding maximum validator cliques that agree on target blocks.
 

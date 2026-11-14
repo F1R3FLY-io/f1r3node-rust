@@ -20,7 +20,7 @@ use super::detector_totality_helpers::{assert_neglected, block, justification, D
 #[tokio::test]
 async fn uc_103_complete_pointer_view_keeps_pre_fix_behavior() {
     let fixture = DetectorFixture::new().await;
-    fixture.add_record(0, 0, &[]);
+    fixture.add_equivocation(0, 0);
 
     let child_a = block(
         10,

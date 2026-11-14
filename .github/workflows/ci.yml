@@ -462,6 +462,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -489,6 +490,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
         shell: bash -euo pipefail {0}
         run: |
           unshallow=()
@@ -543,11 +546,13 @@ jobs:
             echo "Commit Policy uses accepted $source_branch policy at $policy_revision."
           fi
           ratification=(--ratified-from "$BASE_SHA")
+          ratified_revisions=("$BASE_SHA")
           if [ -n "$source_branch" ] || git show "${BASE_SHA}:.github/scripts/commit-policy-source.sh" > "$source_validator" 2>/dev/null; then
             source_bases="$(bash "$source_validator")"
             while IFS= read -r source_sha; do
               if [ -n "$source_sha" ]; then
                 ratification+=(--ratified-from "$source_sha")
+                ratified_revisions+=("$source_sha")
               fi
             done <<< "$source_bases"
           else
@@ -555,7 +560,7 @@ jobs:
           fi
           count="$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}")"
           if [ "$count" -gt 250 ]; then
-            echo "::warning::The pull request has ${count} commits; the commits API lists 250, so later author commits are not exempt"
+            echo "::warning::The pull request has ${count} commits; contributor exemptions use the first 250 API entries. Team author checks also resolve individual commits."
           fi
           # commit-policy-exemptions.sh lists the commits of a human pull
           # request author and the commits of an imported fork pull request.
@@ -582,6 +587,21 @@ jobs:
             git show "${BASE_SHA}:.github/scripts/check-commit-trailers.sh" > "$checker" 2>/dev/null ||
               cp .github/scripts/check-commit-trailers.sh "$checker"
           fi
+          if bash "$checker" range "${BASE_SHA}..${HEAD_SHA}" \
+            "${ratification[@]}" --exempt-authors "$exempt" --denied "$denied" > "$RUNNER_TEMP/identity-errors" 2>&1; then
+            cat "$RUNNER_TEMP/identity-errors"
+            exit 0
+          else
+            result=$?
+          fi
+          team="$RUNNER_TEMP/commit-policy-team.sh"
+          if [ "$result" -ne 1 ] || grep -Eq '^  (denied identity|forbidden trailer):' "$RUNNER_TEMP/identity-errors" ||
+            ! git show "${policy_revision}:.github/scripts/commit-policy-team.sh" > "$team" 2>/dev/null; then
+            cat "$RUNNER_TEMP/identity-errors" >&2
+            exit "$result"
+          fi
+          bash "$team" exempt "${BASE_SHA}..${HEAD_SHA}" "$exempt" "${ratified_revisions[@]}" > "$RUNNER_TEMP/team-exemptions"
+          cat "$RUNNER_TEMP/team-exemptions" >> "$exempt"
           bash "$checker" range "${BASE_SHA}..${HEAD_SHA}" \
             "${ratification[@]}" --exempt-authors "$exempt" --denied "$denied"
 
@@ -785,6 +805,10 @@ jobs:
       - name: Verify Commit Policy exemptions
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-commit-policy-exemptions.sh
+
+      - name: Verify Commit Policy team membership
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-commit-policy-team.sh
 
       - name: Verify Commit Policy source history
         shell: bash -euo pipefail {0}

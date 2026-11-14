@@ -70,6 +70,7 @@ fn block(proposer: &Party, deploys: Vec<ProcessedDeploy>, number: i64) -> BlockM
             timestamp: 1,
             version: 1,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {

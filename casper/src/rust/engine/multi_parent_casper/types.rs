@@ -29,10 +29,12 @@ use parking_lot::Mutex as PlMutex;
 use prost::bytes::Bytes;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
+use crate::rust::block_status::InvalidBlock;
 use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::casper::CasperShardConf;
 use crate::rust::engine::multi_parent_casper::bond_cache::FinalizedBondCache;
 use crate::rust::estimator::Estimator;
+use crate::rust::util::bounded_cache::BoundedCache;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -109,4 +111,10 @@ pub struct MultiParentCasperImpl {
     /// Avoids re-reading from RSpace when the main parent block hasn't changed.
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,
     pub v6: Option<Arc<crate::rust::v6::V6Engine>>,
+    /// Final verdicts on the contents of equivocations held as parents.
+    pub judged_twins: Arc<BoundedCache<BlockHash, Result<(), InvalidBlock>>>,
+}
+
+impl MultiParentCasperImpl {
+    pub const MAX_JUDGED_TWINS: usize = 1024;
 }

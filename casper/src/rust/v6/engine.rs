@@ -828,6 +828,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             timestamp: now_millis,
             version: conf.casper_version,
             extra_bytes: Bytes::new(),
+            chain_id: snapshot.chain_id.clone(),
         };
         let unsigned = proto_util::unsigned_block_proto(
             body,

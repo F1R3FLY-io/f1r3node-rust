@@ -7,7 +7,6 @@ use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
-use casper::rust::util::rholang::system_deploy_util::generate_slash_deploy_random_seed;
 use casper::rust::v6::backend::ExecutionBackend;
 use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
 use casper::rust::v6::executor::BlockExecutor;
@@ -107,6 +106,7 @@ fn block(number: i64, deploys: Vec<ProcessedDeploy>, proposer: &Party) -> BlockM
             timestamp: number,
             version: 1,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {
@@ -510,13 +510,22 @@ async fn a_slash_moves_the_offenders_bond_to_the_compute_wallet() {
         .await
         .unwrap();
 
-    let invalid = Bytes::from_static(b"an-equivocation-of-the-offender");
-    let slash = SystemDeployEnum::Slash(SlashDeploy {
-        invalid_block_hash: invalid.clone(),
-        pk: proposer.pk.clone(),
-        target_activation_epoch: 0,
-        initial_rand: generate_slash_deploy_random_seed(proposer.pk.bytes.clone(), 1, &invalid),
-    });
+    let mut first = block(0, vec![], &proposer);
+    first.sender = offender.bytes.clone();
+    let mut second = first.clone();
+    second.header.timestamp += 1;
+    let mut evidence = models::rust::casper::protocol::casper_message::EquivocationEvidence {
+        first: casper::rust::util::proto_util::block_commitment(&first),
+        second: casper::rust::util::proto_util::block_commitment(&second),
+    };
+    if casper::rust::util::proto_util::commitment_hash(&evidence.first)
+        > casper::rust::util::proto_util::commitment_hash(&evidence.second)
+    {
+        std::mem::swap(&mut evidence.first, &mut evidence.second);
+    }
+    let slash = SlashDeploy::new(evidence, proposer.pk.clone(), 1);
+    let invalid = slash.cited_block_hash();
+    let slash = SystemDeployEnum::Slash(slash);
     let data = BlockData {
         time_stamp: 1,
         block_number: 1,

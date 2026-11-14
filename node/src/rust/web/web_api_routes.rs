@@ -124,6 +124,8 @@ pub async fn prepare_deploy_get_handler(State(app_state): State<AppState>) -> Re
     responses(
         (status = 200, description = "Next deploy sequence number and pre-generated unforgeable names for the given deployer/timestamp", body = PrepareResponse),
         (status = 400, description = "Malformed request body or invalid deployer hex (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
@@ -146,6 +148,8 @@ pub async fn prepare_deploy_post_handler(
     responses(
         (status = 200, description = "Channel data at the given name in the specified block", body = RhoDataResponse),
         (status = 400, description = "Malformed request body or invalid block hash (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
@@ -511,7 +515,8 @@ use crate::rust::api::web_api::{
         (status = 200, description = "Estimated phlogiston (gas) cost for the given Rholang term", body = EstimateCostResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, invalid deployer key, or invalid block hash (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"

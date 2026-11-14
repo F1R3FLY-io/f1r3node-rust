@@ -34,17 +34,11 @@ pub fn snapshot_id(
 ) -> Result<SnapshotId, CasperError> {
     let mut latest: Vec<(Validator, BlockHash)> = dag.latest_message_hashes().into_iter().collect();
     latest.sort();
-    let mut invalid: Vec<BlockHash> = dag
-        .invalid_blocks()
-        .iter()
-        .map(|metadata| metadata.block_hash.clone())
-        .collect();
-    invalid.sort();
     let lfb = dag.last_finalized_block();
     let lfb_number = dag.block_number(&lfb)?.unwrap_or(-1);
 
     let mut buffer = Vec::new();
-    push_bytes(&mut buffer, b"f1r3-floor-snapshot-v1");
+    push_bytes(&mut buffer, b"f1r3-floor-snapshot-v2");
     buffer.extend_from_slice(&(latest.len() as u64).to_be_bytes());
     for (validator, hash) in &latest {
         push_bytes(&mut buffer, validator);
@@ -54,10 +48,7 @@ pub fn snapshot_id(
     buffer.extend_from_slice(&lfb_number.to_be_bytes());
     buffer.extend_from_slice(&ftt.num.to_be_bytes());
     buffer.extend_from_slice(&ftt.den.to_be_bytes());
-    buffer.extend_from_slice(&(invalid.len() as u64).to_be_bytes());
-    for hash in &invalid {
-        push_bytes(&mut buffer, hash);
-    }
+    buffer.extend_from_slice(&dag.publication_sequence().to_be_bytes());
     let digest = Blake2b256::hash(buffer);
     let bytes: [u8; 32] = digest
         .try_into()
