@@ -428,6 +428,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         | MethodArgumentNumberMismatch { .. }
         | OperatorNotDefined { .. }
         | OperatorExpectedError { .. }
+        | PersistentSendToNonDeterministicProcess
         | SubstituteError(_)
         | SortMatchError(_) => (
             S::UNPROCESSABLE_ENTITY,

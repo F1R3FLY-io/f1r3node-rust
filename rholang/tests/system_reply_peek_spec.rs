@@ -352,3 +352,54 @@ async fn system_reply_registers_joined_bitmask_channels() {
         "the joined bitmask channel must be reported by the deploy whose system reply fired the join"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn persistent_send_to_a_non_deterministic_process_is_an_error_in_play_and_replay() {
+    for (body_ref, term) in [
+        (
+            BodyRefs::OLLAMA_MODELS,
+            r#"new svc(`rho:ollama:models`) in { svc!!("reply") }"#,
+        ),
+        (
+            BodyRefs::GRPC_TELL,
+            r#"new svc(`rho:io:grpcTell`) in { svc!!("host", 1, "payload") }"#,
+        ),
+    ] {
+        let mut manager = InMemoryStoreManager::new();
+        let store = manager.r_space_stores().await.unwrap();
+        let (mut runtime, mut replay, _) = create_runtimes(store, false, &mut Vec::new()).await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        install_recorded_service(&runtime, body_ref, calls.clone()).await;
+        install_recorded_service(&replay, body_ref, calls.clone()).await;
+        let phlo = Cost::create(200_000, "persistent send");
+        let rand = Blake2b512Random::create_from_bytes(&[0]);
+        let played = runtime
+            .evaluate(term, phlo.clone(), HashMap::new(), rand.clone())
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "{term}: service called");
+        assert_eq!(
+            played.errors,
+            vec![InterpreterError::PersistentSendToNonDeterministicProcess],
+            "{term}"
+        );
+        replay.rig(runtime.take_event_log().await).await.unwrap();
+        let replayed = replay
+            .evaluate(term, phlo, HashMap::new(), rand)
+            .await
+            .unwrap();
+        assert_eq!(replayed.errors, played.errors, "{term}");
+        assert_eq!(replayed.cost, played.cost, "{term}");
+        replay.check_replay_data().await.unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "{term}: service called in replay"
+        );
+        assert_eq!(
+            runtime.create_checkpoint().await.root,
+            replay.create_checkpoint().await.root,
+            "{term}"
+        );
+    }
+}
