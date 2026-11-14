@@ -19,6 +19,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::deploy_parameters::DeployParameter;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::bytes::Bytes;
@@ -43,6 +44,7 @@ use crate::rust::state::instances::proposer_state::ProposerState;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::{event_converter, proto_util};
+use crate::rust::v6::receipt::{receipt_of, OfferedStatus, PoolStatus};
 use crate::rust::ProposeFunction;
 pub struct BlockAPI;
 
@@ -109,6 +111,136 @@ fn deploy_is_block_expired(
         latest_block_number,
         deploy_lifespan,
     )?)
+}
+
+#[derive(Default)]
+pub(crate) struct ProposeCoalescer {
+    pending: std::sync::atomic::AtomicBool,
+    running: std::sync::atomic::AtomicBool,
+}
+
+impl ProposeCoalescer {
+    pub(crate) fn request(&self) -> bool {
+        self.pending.store(true, Ordering::SeqCst);
+        self.running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub(crate) fn take_pending(&self) -> bool { self.pending.swap(false, Ordering::SeqCst) }
+
+    pub(crate) fn finish(&self) -> bool {
+        self.running.store(false, Ordering::SeqCst);
+        self.pending.load(Ordering::SeqCst)
+            && self
+                .running
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+    }
+
+    pub(crate) async fn drain<F, Fut>(&self, mut propose: F)
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        loop {
+            while self.take_pending() {
+                propose().await;
+            }
+            if !self.finish() {
+                break;
+            }
+        }
+    }
+}
+
+fn coalescer_for(tp: &Arc<ProposeFunction>) -> Arc<ProposeCoalescer> {
+    static COALESCERS: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<usize, Arc<ProposeCoalescer>>>,
+    > = std::sync::OnceLock::new();
+    let key = Arc::as_ptr(tp) as *const () as usize;
+    let mut map = COALESCERS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    map.entry(key).or_default().clone()
+}
+
+fn request_deploy_propose(
+    tp: Arc<ProposeFunction>,
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+) {
+    let coalescer = coalescer_for(&tp);
+    if !coalescer.request() {
+        return;
+    }
+    tokio::spawn(async move {
+        coalescer
+            .drain(|| deploy_propose_with_retries(tp.clone(), casper.clone()))
+            .await;
+    });
+}
+
+async fn deploy_propose_with_retries(
+    tp: Arc<ProposeFunction>,
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+) {
+    let max_attempts = deploy_propose_max_attempts();
+    let retry_delay = deploy_propose_retry_delay();
+    let mut attempt = 1u32;
+    loop {
+        match tp(casper.clone(), false).await {
+            Ok(proposer_result) => match proposer_result {
+                ProposerResult::Failure(status, seq_number) => {
+                    if should_retry_deploy_propose(&status) && attempt < max_attempts {
+                        tracing::info!(
+                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
+                            attempt,
+                            max_attempts,
+                            seq_number,
+                            status,
+                            retry_delay
+                        );
+                        attempt += 1;
+                        tokio::time::sleep(retry_delay).await;
+                        continue;
+                    }
+
+                    if let Some(msg) = recoverable_propose_failure_message(&status) {
+                        tracing::info!("{} (seqNum {})", msg, seq_number);
+                    } else {
+                        tracing::error!("Failure: {} (seqNum {})", status, seq_number);
+                    }
+                }
+                ProposerResult::Empty => {
+                    tracing::debug!("Propose already in progress");
+                }
+                ProposerResult::Started(seq_number) => {
+                    tracing::debug!("Propose started (seqNum {})", seq_number);
+                }
+                ProposerResult::Success(_, block) => {
+                    let block_hash_hex = PrettyPrinter::build_string_no_limit(&block.block_hash);
+                    tracing::info!("Success! Block {} created and added.", block_hash_hex);
+                }
+            },
+            Err(err) => {
+                if attempt < max_attempts {
+                    tracing::warn!(
+                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
+                        attempt,
+                        max_attempts,
+                        err,
+                        retry_delay
+                    );
+                    attempt += 1;
+                    tokio::time::sleep(retry_delay).await;
+                    continue;
+                }
+                tracing::error!(error = %err, "deploy-triggered propose failed");
+            }
+        }
+        break;
+    }
 }
 
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
@@ -405,6 +537,71 @@ impl std::fmt::Display for NoNewDeploysError {
 
 impl std::error::Error for NoNewDeploysError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposeRefusal {
+    NotBonded,
+    NotEnoughNewBlocks,
+    TooFarAheadOfLastFinalized,
+    HistoryIncomplete,
+    MissingBlock,
+    FloorDistanceHold,
+}
+
+impl ProposeRefusal {
+    pub fn from_failure(failure: &ProposeFailure) -> Option<Self> {
+        match failure {
+            ProposeFailure::CheckConstraintsFailure(check) => Some(match check {
+                CheckProposeConstraintsFailure::NotBonded => ProposeRefusal::NotBonded,
+                CheckProposeConstraintsFailure::NotEnoughNewBlocks => {
+                    ProposeRefusal::NotEnoughNewBlocks
+                }
+                CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized => {
+                    ProposeRefusal::TooFarAheadOfLastFinalized
+                }
+                CheckProposeConstraintsFailure::HistoryIncomplete => {
+                    ProposeRefusal::HistoryIncomplete
+                }
+            }),
+            ProposeFailure::MissingBlock(_) => Some(ProposeRefusal::MissingBlock),
+            ProposeFailure::FloorDistanceHold => Some(ProposeRefusal::FloorDistanceHold),
+            ProposeFailure::NoNewDeploys
+            | ProposeFailure::InternalDeployError
+            | ProposeFailure::BugError => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ProposeRefusedError {
+    pub refusal: ProposeRefusal,
+    pub message: String,
+}
+
+impl std::fmt::Display for ProposeRefusedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ProposeRefusedError {}
+
+fn propose_failure_error(status: &ProposeStatus, seq_number: i32) -> eyre::Report {
+    let refusal = match status {
+        ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
+            tracing::debug!("Propose: no new deploys (seqNum {})", seq_number);
+            return eyre::Report::new(NoNewDeploysError);
+        }
+        ProposeStatus::Failure(failure) => ProposeRefusal::from_failure(failure),
+        ProposeStatus::Success(_) => None,
+    };
+    let message = format!("Failure: {} (seqNum {})", status, seq_number);
+    tracing::debug!("{}", message);
+    match refusal {
+        Some(refusal) => eyre::Report::new(ProposeRefusedError { refusal, message }),
+        None => eyre::eyre!("{}", message),
+    }
+}
+
 impl BlockAPI {
     fn find_deploy_scan_depth() -> usize { 128 }
 
@@ -497,81 +694,8 @@ impl BlockAPI {
                 Either::Right(deploy_id) => deploy_id,
             };
 
-            // Trigger propose asynchronously for deploy path to keep do_deploy latency bounded.
-            // Deploy success should not block on proposal completion; finalization is checked via
-            // propose/finalization APIs separately in integration flows.
             if let Some(tp) = trigger_propose {
-                let tp = Arc::clone(tp);
-                let casper_for_propose = casper.clone();
-                let max_attempts = deploy_propose_max_attempts();
-                let retry_delay = deploy_propose_retry_delay();
-                tokio::spawn(async move {
-                    let mut attempt = 1u32;
-                    loop {
-                        match tp(casper_for_propose.clone(), true).await {
-                            Ok(proposer_result) => match proposer_result {
-                                ProposerResult::Failure(status, seq_number) => {
-                                    if should_retry_deploy_propose(&status)
-                                        && attempt < max_attempts
-                                    {
-                                        tracing::info!(
-                                            "Deploy-triggered propose transient failure (attempt {}/{}, seqNum {}): {}; retrying in {:?}",
-                                            attempt,
-                                            max_attempts,
-                                            seq_number,
-                                            status,
-                                            retry_delay
-                                        );
-                                        attempt += 1;
-                                        tokio::time::sleep(retry_delay).await;
-                                        continue;
-                                    }
-
-                                    if let Some(msg) = recoverable_propose_failure_message(&status)
-                                    {
-                                        tracing::info!("{} (seqNum {})", msg, seq_number);
-                                    } else {
-                                        tracing::error!(
-                                            "Failure: {} (seqNum {})",
-                                            status,
-                                            seq_number
-                                        );
-                                    }
-                                }
-                                ProposerResult::Empty => {
-                                    tracing::debug!("Propose already in progress");
-                                }
-                                ProposerResult::Started(seq_number) => {
-                                    tracing::debug!("Propose started (seqNum {})", seq_number);
-                                }
-                                ProposerResult::Success(_, block) => {
-                                    let block_hash_hex =
-                                        PrettyPrinter::build_string_no_limit(&block.block_hash);
-                                    tracing::info!(
-                                        "Success! Block {} created and added.",
-                                        block_hash_hex
-                                    );
-                                }
-                            },
-                            Err(err) => {
-                                if attempt < max_attempts {
-                                    tracing::warn!(
-                                        "Deploy-triggered propose call failed (attempt {}/{}): {}; retrying in {:?}",
-                                        attempt,
-                                        max_attempts,
-                                        err,
-                                        retry_delay
-                                    );
-                                    attempt += 1;
-                                    tokio::time::sleep(retry_delay).await;
-                                    continue;
-                                }
-                                tracing::error!(error = %err, "deploy-triggered propose failed");
-                            }
-                        }
-                        break;
-                    }
-                });
+                request_deploy_propose(Arc::clone(tp), casper.clone());
             }
 
             Ok(format!(
@@ -581,7 +705,10 @@ impl BlockAPI {
         }
 
         // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), DeployValidationError> = Ok(())
+        let validation_result: Result<(), DeployValidationError> = d
+            .data
+            .validate_amounts()
+            .map_err(|message| DeployValidationError { message })
             .and_then(|_| {
                 if is_node_read_only {
                     Err(DeployValidationError {
@@ -651,7 +778,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             // The floor check reads the SAME value the validity rule reads
             // (the shard conf), never a second node-conf copy.
-            let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
+            let min_phlo_price = casper.casper_shard_conf().min_phlo_price.clone();
             if d.data.phlo_price < min_phlo_price {
                 return Err(eyre::Report::new(DeployValidationError {
                     message: format!(
@@ -661,6 +788,12 @@ impl BlockAPI {
                 }));
             }
             let dag = casper.block_dag().await?;
+            if !casper.is_local_validator_bonded() {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: "Deploy was rejected because node's validator is not bonded."
+                        .to_string(),
+                }));
+            }
             // A deploy admitted now can only ever land in a block that doesn't
             // exist yet — the next one, at `latest_block_number + 1` — never
             // in the current tip, which is already built. block_creator.rs's
@@ -724,13 +857,9 @@ impl BlockAPI {
 
             let r: ApiErr<String> = match proposer_result {
                 ProposerResult::Empty => log_debug("Failure: another propose is in progress"),
-                ProposerResult::Failure(ref status, seq_number) => match status {
-                    ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
-                        tracing::debug!("Propose: no new deploys (seqNum {})", seq_number);
-                        Err(eyre::Report::new(NoNewDeploysError))
-                    }
-                    _ => log_debug(&format!("Failure: {} (seqNum {})", status, seq_number)),
-                },
+                ProposerResult::Failure(ref status, seq_number) => {
+                    Err(propose_failure_error(status, seq_number))
+                }
                 ProposerResult::Started(seq_number) => {
                     log_success(&format!("Propose started (seqNum {})", seq_number))
                 }
@@ -1199,6 +1328,7 @@ impl BlockAPI {
     pub async fn visualize_dag<R: 'static, V, VFut>(
         engine_cell: &EngineCell,
         depth: i32,
+        max_depth_limit: i32,
         start_block_number: i32,
         visualizer: V,
         serialize: tokio::sync::oneshot::Receiver<R>,
@@ -1241,11 +1371,13 @@ impl BlockAPI {
             Ok(result)
         }
 
+        let effective_depth = clamp_depth(depth, max_depth_limit, "visualize-dag");
+
         let eng = engine_cell.get().await;
         if let Some(casper) = eng.with_casper() {
             casper_response(
                 casper.as_ref(),
-                depth,
+                effective_depth,
                 start_block_number,
                 visualizer,
                 serialize,
@@ -1442,6 +1574,42 @@ impl BlockAPI {
         }
     }
 
+    pub async fn offered_status(
+        engine_cell: &EngineCell,
+        deploy_id: &[u8],
+    ) -> ApiErr<OfferedStatus> {
+        if deploy_id.is_empty() {
+            return Err(eyre::Report::new(InvalidHashError(
+                "a deploy id must not be empty".to_string(),
+            )));
+        }
+        let eng = engine_cell.get().await;
+        let casper = eng
+            .with_casper()
+            .ok_or_else(|| eyre::eyre!("Casper instance was not available"))?;
+        let dag = casper.block_dag().await?;
+        if let Some(block_hash) = dag.deploy_canonical_appearance(deploy_id)? {
+            let Some(engine) = casper.v6_engine() else {
+                return Ok(OfferedStatus::Ordered { block_hash });
+            };
+            if let Some(receipt) = engine
+                .record(&block_hash)
+                .and_then(|record| receipt_of(&record, &block_hash, deploy_id))
+            {
+                return Ok(OfferedStatus::Executed(receipt));
+            }
+            return Ok(match engine.executed(&block_hash) {
+                Some(_) => OfferedStatus::NotRetained { block_hash },
+                None => OfferedStatus::Ordered { block_hash },
+            });
+        }
+        Ok(match casper.offered_pool_status(deploy_id)? {
+            PoolStatus::Pending => OfferedStatus::Pending,
+            PoolStatus::Rejected(rejection) => OfferedStatus::Rejected(rejection),
+            PoolStatus::Absent => OfferedStatus::Unknown,
+        })
+    }
+
     pub async fn find_deploy(
         engine_cell: &EngineCell,
         deploy_id: &DeployId,
@@ -1543,7 +1711,7 @@ impl BlockAPI {
             })?;
 
             let dag = casper.block_dag().await?;
-            if dag.contains(&block.block_hash) {
+            if dag.contains(&block.block_hash)? {
                 let block_info = BlockAPI::get_full_block_info(casper, &block).await?;
                 Ok(block_info)
             } else {
@@ -1569,10 +1737,10 @@ impl BlockAPI {
         block: &BlockMessage,
         constructor: fn(&BlockMessage, f32, bool) -> A,
     ) -> ApiErr<A> {
-        let is_finalized = dag.is_finalized(&block.block_hash);
+        let is_finalized = dag.is_finalized(&block.block_hash)?;
 
         let normalized_fault_tolerance = if is_finalized {
-            if let Ok(Some(meta)) = dag.lookup(&block.block_hash) {
+            if let Some(meta) = dag.lookup(&block.block_hash)? {
                 meta.fault_tolerance_value
             } else {
                 Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
@@ -1582,12 +1750,7 @@ impl BlockAPI {
         };
 
         let weights_map = proto_util::weight_map(block);
-        let weights_u64: HashMap<Bytes, u64> = weights_map
-            .into_iter()
-            .map(|(k, v)| (k, v as u64))
-            .collect();
-
-        let initial_fault = casper.normalized_initial_fault(weights_u64)?;
+        let initial_fault = casper.normalized_initial_fault(weights_map)?;
         let fault_tolerance = crate::rust::safety::initial_fault::display_projection(
             normalized_fault_tolerance,
             initial_fault,
@@ -1777,7 +1940,7 @@ impl BlockAPI {
                     hash
                 )))
             })?;
-            let result = dag.is_finalized(&given_block_hash.into());
+            let result = dag.is_finalized(&given_block_hash.into())?;
             Ok(result)
         } else {
             tracing::warn!("{}", error_message);
@@ -1933,6 +2096,7 @@ impl BlockAPI {
         use_pre_state_hash: bool,
         dev_mode: bool,
         deployer: Option<PublicKey>,
+        parameters: Vec<DeployParameter>,
     ) -> ApiErr<(Vec<Par>, LightBlockInfo, u64)> {
         let error_message =
             "Could not execute exploratory deploy, casper instance was not available yet.";
@@ -1996,7 +2160,7 @@ impl BlockAPI {
                             let _permit = permit;
                             let _metrics = ExploratoryDeployMetrics::new(task_outcome.clone());
                             let result = task_runtime_manager
-                                .play_exploratory_deploy(term, &state_hash, deployer)
+                                .play_exploratory_deploy(term, &state_hash, deployer, parameters)
                                 .await;
                             if result.is_ok() {
                                 task_outcome.store(
@@ -2127,11 +2291,90 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use prost::bytes::Bytes;
+
+    use super::ProposeCoalescer;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn many_deploys_during_a_proposal_coalesce_into_one_more_proposal() {
+        let coalescer = Arc::new(ProposeCoalescer::default());
+        let proposals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        assert!(coalescer.request(), "the first request starts the drain");
+        let drain = {
+            let coalescer = coalescer.clone();
+            let proposals = proposals.clone();
+            tokio::spawn(async move {
+                coalescer
+                    .drain(|| {
+                        let proposals = proposals.clone();
+                        async move {
+                            proposals.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    })
+                    .await;
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        for _ in 0..50 {
+            assert!(!coalescer.request(), "a running drain absorbs the request");
+        }
+        drain.await.unwrap();
+        assert_eq!(proposals.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn no_request_is_lost_under_concurrent_arrivals() {
+        let coalescer = Arc::new(ProposeCoalescer::default());
+        let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let requested = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..200 {
+            let coalescer = coalescer.clone();
+            let served = served.clone();
+            let requested = requested.clone();
+            handles.push(tokio::spawn(async move {
+                let seen = requested.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if coalescer.request() {
+                    coalescer
+                        .drain(|| {
+                            let served = served.clone();
+                            let requested = requested.clone();
+                            async move {
+                                tokio::task::yield_now().await;
+                                served.fetch_max(
+                                    requested.load(std::sync::atomic::Ordering::SeqCst),
+                                    std::sync::atomic::Ordering::SeqCst,
+                                );
+                            }
+                        })
+                        .await;
+                }
+                seen
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        while coalescer.running.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            served.load(std::sync::atomic::Ordering::SeqCst),
+            200,
+            "the last proposal starts after the last request"
+        );
+    }
+
     use tokio::sync::Semaphore;
 
     use super::{
-        await_exploratory_deploy_task, deploy_is_block_expired, ExploratoryDeployOutcome,
-        ExploratoryDeployTaskError,
+        await_exploratory_deploy_task, deploy_is_block_expired, propose_failure_error,
+        ExploratoryDeployOutcome, ExploratoryDeployTaskError, NoNewDeploysError, ProposeRefusal,
+        ProposeRefusedError,
+    };
+    use crate::rust::blocks::proposer::propose_result::{
+        CheckProposeConstraintsFailure, ProposeFailure, ProposeStatus,
     };
 
     struct DropSignal(Arc<AtomicBool>);
@@ -2170,5 +2413,72 @@ mod tests {
         assert!(deploy_is_block_expired(0, 50, 50).unwrap());
         assert!(!deploy_is_block_expired(1, 50, 50).unwrap());
         assert!(!deploy_is_block_expired(0, 49, 50).unwrap());
+    }
+
+    #[test]
+    fn expected_propose_refusals_are_typed() {
+        let cases = vec![
+            (
+                ProposeFailure::CheckConstraintsFailure(CheckProposeConstraintsFailure::NotBonded),
+                ProposeRefusal::NotBonded,
+                "Failure: Proposal failed: validator is not bonded (seqNum 7)",
+            ),
+            (
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::NotEnoughNewBlocks,
+                ),
+                ProposeRefusal::NotEnoughNewBlocks,
+                "Failure: Proposal failed: Must wait for more blocks from other validators (seqNum 7)",
+            ),
+            (
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
+                ),
+                ProposeRefusal::TooFarAheadOfLastFinalized,
+                "Failure: Proposal failed: too far ahead of the last finalized block (seqNum 7)",
+            ),
+            (
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::HistoryIncomplete,
+                ),
+                ProposeRefusal::HistoryIncomplete,
+                "Failure: Proposal failed: this node's history does not reach far enough to build a snapshot; it is still catching up (seqNum 7)",
+            ),
+            (
+                ProposeFailure::MissingBlock(Bytes::from_static(&[0xab; 32])),
+                ProposeRefusal::MissingBlock,
+                "Failure: Proposal failed: MissingBlock abababababababab — requested from peers, retrying (seqNum 7)",
+            ),
+            (
+                ProposeFailure::FloorDistanceHold,
+                ProposeRefusal::FloorDistanceHold,
+                "Failure: Proposal held: the merge exceeds the floor-distance cap and no witness block could be built; retrying once finality advances (seqNum 7)",
+            ),
+        ];
+
+        for (failure, expected_refusal, expected_message) in cases {
+            let err = propose_failure_error(&ProposeStatus::Failure(failure), 7);
+            let refused = err
+                .downcast_ref::<ProposeRefusedError>()
+                .unwrap_or_else(|| panic!("untyped propose refusal: {}", err));
+            assert_eq!(refused.refusal, expected_refusal);
+            assert_eq!(err.to_string(), expected_message);
+        }
+    }
+
+    #[test]
+    fn propose_faults_stay_untyped() {
+        let no_new_deploys =
+            propose_failure_error(&ProposeStatus::Failure(ProposeFailure::NoNewDeploys), 1);
+        assert!(no_new_deploys.downcast_ref::<NoNewDeploysError>().is_some());
+
+        for failure in [
+            ProposeFailure::InternalDeployError,
+            ProposeFailure::BugError,
+        ] {
+            let err = propose_failure_error(&ProposeStatus::Failure(failure), 1);
+            assert!(err.downcast_ref::<ProposeRefusedError>().is_none());
+            assert!(err.downcast_ref::<NoNewDeploysError>().is_none());
+        }
     }
 }

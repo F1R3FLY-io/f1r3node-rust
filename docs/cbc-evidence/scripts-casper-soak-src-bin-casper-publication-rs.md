@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-casper-soak-src-bin-casper-publication-rs.md

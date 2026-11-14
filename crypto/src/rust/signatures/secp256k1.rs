@@ -1,15 +1,13 @@
 use std::path::Path;
 
-use ed25519_dalek::ed25519::signature::hazmat::PrehashVerifier;
 use eyre::{Result, WrapErr};
-use k256::ecdsa::signature::hazmat::PrehashSigner;
+use k256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
-use k256::elliptic_curve::sec1::ToEncodedPoint;
-use k256::elliptic_curve::SecretKey;
+use k256::elliptic_curve::sec1::ToSec1Point;
+use k256::elliptic_curve::{Generate, SecretKey};
 use openssl::pkey::PKey;
 use pem::Pem;
 use pkcs8::DecodePrivateKey;
-use rand_core::OsRng;
 
 use super::signatures_alg::SignaturesAlg;
 use crate::rust::private_key::PrivateKey;
@@ -164,19 +162,19 @@ impl SignaturesAlg for Secp256k1 {
             SecretKey::from_slice(&sec.bytes).expect("Invalid private key");
 
         let public_key = secret_key.public_key();
-        let public_key_bytes = public_key.to_encoded_point(false).as_bytes().to_vec();
+        let public_key_bytes = public_key.to_sec1_point(false).as_bytes().to_vec();
 
         PublicKey::from_bytes(&public_key_bytes)
     }
 
     fn new_key_pair(&self) -> (PrivateKey, PublicKey) {
-        let secret_key = SecretKey::<k256::Secp256k1>::random(&mut OsRng);
+        let secret_key = SecretKey::<k256::Secp256k1>::generate();
         let raw_public_key = secret_key.public_key();
 
         let private_key = PrivateKey::from_bytes(&secret_key.to_bytes());
 
         let public_key =
-            PublicKey::from_bytes(&raw_public_key.to_encoded_point(false).as_bytes().to_vec());
+            PublicKey::from_bytes(&raw_public_key.to_sec1_point(false).as_bytes().to_vec());
 
         (private_key, public_key)
     }
@@ -572,6 +570,52 @@ mod tests {
         assert!(err.to_string().contains("Unsupported PEM tag"));
     }
 
+    /// Signing and verification bytes recorded with k256 0.13, so a dependency
+    /// upgrade cannot change which signatures validators produce or accept.
+    #[test]
+    fn signing_and_verification_match_recorded_vectors() {
+        use crate::rust::hash::blake2b256::Blake2b256;
+
+        let secp = Secp256k1;
+        let key1 = "54d4e576251b6c7b95af0349a5a31e583e982edeb9856a59bde14f6be5a302b3";
+        let key2 = "867c21c6a3245865444d80e49cac08a1c11e23b35965b566bbe9f49bb9897511";
+        let pub1 = "0418a6b57c4aeee6c7e19e3ea25aa5bae270eca8580ee5e59c28921df743e416a316c55ed10c63b99a7c2705de0e0d3c52ad7f06144b7f6ed97d3a63b871ced6ff";
+        let pub2 = "040126690519dc9b0f52876cb13458e15697794dd87d7c6477707c7efa4cce8a36b634eab5056bd4e3ba385ab14a638e4ac7d3b3e4968da3d66933fc04bc7038b5";
+        let sha = Sha256::digest(b"testing").to_vec();
+        let blake = Blake2b256::hash(b"test data for blessed contract signature".to_vec());
+        let cases = [
+            (key1, pub1, &sha, "304402207de566f205c191ef2df7c982f9aa41ed5d5df6651692540a3114be81cd280b9702203bcb8a9a30a0301c99a7f2826014652fc71e1369ddadcd5336c86c2533815f8c"),
+            (key2, pub2, &blake, "3045022100ab16bd8559e5afd13812dca1c997d8c8a5ef70735f6a83304f3a8c50921058ab02204fa20863ba0c075383c53b3b15bdc2063b2422a0cd7633b5f7feff3a74bf8eec"),
+            (key1, pub1, &blake, "30440220184cbebac1d1366f8ea24e97b46a8cb94e302a50b798f6a6be3e71b1bf52f83602202d2da9e1e118fea019ace3501c348d9efecdd4711b197b780af87031815be942"),
+        ];
+        for (key, public, hash, signature) in cases {
+            let key = hex::decode(key).unwrap();
+            let public = hex::decode(public).unwrap();
+            assert_eq!(
+                secp.to_public(&PrivateKey::from_bytes(&key)).bytes.to_vec(),
+                public
+            );
+            assert_eq!(hex::encode(secp.sign(hash, &key)), signature);
+            assert!(secp.verify(hash, &hex::decode(signature).unwrap(), &public));
+        }
+
+        let rejected = [
+            // High-S form of the first signature.
+            (pub1, &sha, "304502207de566f205c191ef2df7c982f9aa41ed5d5df6651692540a3114be81cd280b97022100c4347565cf5fcfe366580d7d9feb9acef390c97cd19ad2e88909f2679cb4e1b5"),
+            // High-S form of the second signature.
+            (pub2, &blake, "3046022100ab16bd8559e5afd13812dca1c997d8c8a5ef70735f6a83304f3a8c50921058ab022100b05df79c45f3f8ac7c3ac4c4ea423df87f8aba45e1d26c85c7d35f525b76b255"),
+            // First signature with a non-minimal (zero-padded) r.
+            (pub1, &sha, "30450221007de566f205c191ef2df7c982f9aa41ed5d5df6651692540a3114be81cd280b9702203bcb8a9a30a0301c99a7f2826014652fc71e1369ddadcd5336c86c2533815f8c"),
+        ];
+        for (public, hash, signature) in rejected {
+            assert!(!secp.verify(
+                hash,
+                &hex::decode(signature).unwrap(),
+                &hex::decode(public).unwrap()
+            ));
+        }
+    }
+
     #[test]
     fn trait_metadata_methods() {
         let secp256k1 = Secp256k1;
@@ -580,5 +624,110 @@ mod tests {
 
         let cloned = secp256k1.box_clone();
         assert!(SignaturesAlg::eq(&secp256k1, cloned.as_ref()));
+    }
+
+    const ORDER: [u8; 32] = [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36,
+        0x41, 0x41,
+    ];
+
+    fn der_parts(der: &[u8]) -> ([u8; 32], [u8; 32]) {
+        let integer = |at: usize| -> (usize, [u8; 32]) {
+            assert_eq!(der[at], 0x02);
+            let len = der[at + 1] as usize;
+            let bytes = &der[at + 2..at + 2 + len];
+            let bytes = &bytes[bytes.len().saturating_sub(32)..];
+            let mut out = [0u8; 32];
+            out[32 - bytes.len()..].copy_from_slice(bytes);
+            (at + 2 + len, out)
+        };
+        let (next, r) = integer(2);
+        let (_, s) = integer(next);
+        (r, s)
+    }
+
+    fn der_integer(value: &[u8; 32], pad: usize) -> Vec<u8> {
+        let first = value.iter().position(|b| *b != 0).unwrap_or(31);
+        let mut body = vec![0u8; pad];
+        if value[first] & 0x80 != 0 {
+            body.push(0);
+        }
+        body.extend_from_slice(&value[first..]);
+        let mut out = vec![0x02, body.len() as u8];
+        out.extend(body);
+        out
+    }
+
+    fn der(r: &[u8; 32], s: &[u8; 32], pad_r: usize, long_length: bool) -> Vec<u8> {
+        let mut body = der_integer(r, pad_r);
+        body.extend(der_integer(s, 0));
+        let mut out = vec![0x30];
+        if long_length {
+            out.push(0x81);
+        }
+        out.push(body.len() as u8);
+        out.extend(body);
+        out
+    }
+
+    fn negate(s: &[u8; 32]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let mut borrow = 0i16;
+        for i in (0..32).rev() {
+            let mut d = ORDER[i] as i16 - s[i] as i16 - borrow;
+            borrow = if d < 0 {
+                d += 256;
+                1
+            } else {
+                0
+            };
+            out[i] = d as u8;
+        }
+        out
+    }
+
+    #[test]
+    fn a_second_encoding_of_one_signature_does_not_verify() {
+        let secp256k1 = Secp256k1;
+        let (sk, pk) = secp256k1.new_key_pair();
+        let hash = Sha256::digest(b"one deploy").to_vec();
+        let signature = secp256k1.sign(&hash, &sk.bytes);
+        assert!(secp256k1.verify(&hash, &signature, &pk.bytes));
+        let (r, s) = der_parts(&signature);
+        assert_eq!(der(&r, &s, 0, false), signature);
+
+        assert_eq!(negate(&negate(&s)), s);
+        assert!(negate(&s) > s, "the signer emits the low-S form");
+        let high_s = der(&r, &negate(&s), 0, false);
+        assert!(
+            !secp256k1.verify(&hash, &high_s, &pk.bytes),
+            "a high-S signature"
+        );
+        assert!(
+            !secp256k1.verify(&hash, &der(&r, &s, 1, false), &pk.bytes),
+            "a padded integer"
+        );
+        assert!(
+            !secp256k1.verify(&hash, &der(&r, &s, 0, true), &pk.bytes),
+            "a long-form length"
+        );
+        let mut trailing = signature.clone();
+        trailing.push(0);
+        assert!(
+            !secp256k1.verify(&hash, &trailing, &pk.bytes),
+            "a trailing byte"
+        );
+
+        let eth = super::super::secp256k1_eth::Secp256k1Eth;
+        let mut rs = r.to_vec();
+        rs.extend_from_slice(&s);
+        assert!(eth.verify(&hash, &rs, &pk.bytes));
+        let mut high = r.to_vec();
+        high.extend_from_slice(&negate(&s));
+        assert!(
+            !eth.verify(&hash, &high, &pk.bytes),
+            "a high-S Ethereum signature"
+        );
     }
 }

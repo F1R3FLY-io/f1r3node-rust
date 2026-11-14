@@ -1,0 +1,74 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-21T19:43:20Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/811#issuecomment-6324960804",
+  "comment_body_sha256": "2bf5964a6606339511a2e079fa9cc12a8347bed43e9af2a2c2d9b494930e4970",
+  "comment_body_sha256_method": "sha256 of the body bytes that the GitHub API returns for the comment",
+  "revision": "32798242d1ab26ffebb2946939d7246bd2899306",
+  "tested_commit": "4c38b5489fe35b943d8d6c8db9b0e2103600fcb9"
+ },
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-01/report.json",
+  "sha256": "8da1036cda813fa71dc99b8b8eec892302e6203b5ef4e09518d7ed73aa87b110"
+ },
+ "previous_acceptance": {
+  "scripts/run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-disk-attribution-acceptance-20261019-01/report.json",
+   "sha256": "b7ee5b093d81fe4b51bd4a112a8ff99f9abf6c129a4fb39b593f0f8d52c05a68"
+  },
+  "scripts/bench/test-run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-driver-evidence-scope-acceptance-20261004-02/report.json",
+   "sha256": "5943def5a8f7dee8de9b75a8f68e642a03068484140cbd4e815f184192df832f"
+  },
+  "scripts/casper-soak/src/host_control.rs": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+   "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+  }
+ },
+ "accepted_scope": {
+  "commits": [
+   "01af6a247",
+   "70744ec35",
+   "28746e00b",
+   "ca75715cd",
+   "f79e3960c",
+   "4c38b5489"
+  ],
+  "earlier_fixture_commits": [
+   "e5c922f19",
+   "cb6201d93",
+   "2b7e06f76"
+  ],
+  "guarantee": "The owner scan of stop-owned and prefer-oom skips a same-user process when its environment read fails with EACCES or EPERM.",
+  "limitation": "An owned process with an unreadable environment escapes cleanup and the OOM preference.",
+  "failure_rule": "A failed end-of-segment stop always writes writer-stop-failure.txt, keeps an earlier reason or records writer_stop_failed, and changes a failure count of 0 to 1.",
+  "excluded": "Node correctness, the profile claims, and a live soak result."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "6488e5e5eb570f61998281cb2221e63fe6bbe6b0a4b8bde8dc22d80090886c7e"
+ },
+ "claim_digests_note": "The claim document adds the acceptance sentence of 2026-10-21 to the paragraph that the review package records at 48b1850c.",
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-segment-writer-stop",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "320127860c51ab6b1439f568b41d660fdddf04fa52bb3a1ab51c2b4f23949ac7",
+  "scripts/casper-soak/src/host_control.rs": "3c4c637574f6624f4e1d08518cee22eb8a99e76383f1fc92d0f489db6ed540a8",
+  "scripts/run-merge-recovery-soak.sh": "8486972f4b7ea2c2ba3433d0dc1c3b2cdd1efa58de01feebbe7e6726548b2758"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-21",
+ "waiver": null
+}

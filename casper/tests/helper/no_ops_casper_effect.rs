@@ -155,11 +155,9 @@ impl NoOpsCasperEffect {
 
 #[async_trait]
 impl MultiParentCasper for NoOpsCasperEffect {
-    async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
-
     fn normalized_initial_fault(
         &self,
-        _weights: HashMap<Validator, u64>,
+        _weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
         Ok(0.0)
     }
@@ -174,9 +172,13 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.shard_conf }
 
     fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+
+    fn is_local_validator_bonded(&self) -> bool { false }
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
         self.runtime_manager.get_history_repo().exporter()
@@ -195,17 +197,7 @@ impl Casper for NoOpsCasperEffect {
         ))
     }
 
-    fn contains(&self, hash: &BlockHash) -> bool {
-        // Use actual KeyValueBlockStore instead of HashMap (preserving Scala test logic)
-        match self.block_store.get(hash) {
-            Ok(maybe_block) => maybe_block.is_some(),
-            Err(_) => false,
-        }
-    }
-
-    fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
-
-    fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
+    fn dag_contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> { Ok(false) }
 
     fn deploy(
         &self,
@@ -222,8 +214,6 @@ impl Casper for NoOpsCasperEffect {
     }
 
     fn get_version(&self) -> i64 { 1 }
-
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
 
     async fn validate(
         &self,
@@ -265,10 +255,6 @@ impl Casper for NoOpsCasperEffect {
         Ok(self.block_dag_storage.clone())
     }
 
-    fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        Ok(Vec::new())
-    }
-
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         // For test purposes, this is not used by our tests but we need to implement it
         // In a real implementation, this would return the actual approved block from storage
@@ -299,10 +285,13 @@ impl NoOpsCasperEffect {
         // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala test logic)
         if let Ok(Some(block)) = self.block_store.get(&block_hash) {
             // Add to DAG set
-            self.block_dag_storage.dag_set.insert(block_hash.clone());
+            self.block_dag_storage
+                .fixture_mut()
+                .dag_set
+                .insert(block_hash.clone());
 
             // Add block metadata to the metadata store
-            let block_metadata = BlockMetadata::from_block(&block, false, None, None);
+            let block_metadata = BlockMetadata::from_block(&block, None, None, None);
             let mut metadata_guard = self.block_dag_storage.block_metadata_index.write();
             match metadata_guard.add(block_metadata) {
                 Ok(_) => {
@@ -320,6 +309,7 @@ impl NoOpsCasperEffect {
             // 1. Update latest message for block sender (if not empty)
             if !block.sender.is_empty() {
                 self.block_dag_storage
+                    .fixture_mut()
                     .latest_messages_map
                     .insert(block.sender.clone(), block.block_hash.clone());
             }
@@ -347,10 +337,12 @@ impl NoOpsCasperEffect {
             for validator in newly_bonded {
                 if !self
                     .block_dag_storage
+                    .fixture_mut()
                     .latest_messages_map
                     .contains_key(validator)
                 {
                     self.block_dag_storage
+                        .fixture_mut()
                         .latest_messages_map
                         .insert(validator.clone(), block.block_hash.clone());
                 }
@@ -377,6 +369,7 @@ impl NoOpsCasperEffect {
         // If approved, also add to finalized blocks set
         if approved {
             self.block_dag_storage
+                .fixture_mut()
                 .finalized_blocks_set
                 .insert(block.block_hash);
         }

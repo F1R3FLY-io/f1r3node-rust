@@ -33,6 +33,7 @@ pub(crate) enum LineageNext {
 
 pub(crate) struct BlockFacts {
     pub(crate) block_number: i64,
+    pub(crate) timestamp: i64,
     pub(crate) sender: Bytes,
     pub(crate) parents: Vec<BlockHash>,
     pub(crate) lineage_next: LineageNext,
@@ -80,6 +81,23 @@ impl FactsCache {
         }
         self.approx_bytes += entry_bytes;
         self.map.insert(hash, facts);
+    }
+}
+
+fn unrun() -> &'static parking_lot::Mutex<HashMap<BlockHash, HashSet<Bytes>>> {
+    static UNRUN: OnceLock<parking_lot::Mutex<HashMap<BlockHash, HashSet<Bytes>>>> =
+        OnceLock::new();
+    UNRUN.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+pub fn set_unrun(block: &BlockHash, sigs: HashSet<Bytes>) {
+    if sigs.is_empty() {
+        return;
+    }
+    unrun().lock().insert(block.clone(), sigs);
+    let mut cache = cache().lock();
+    if let Some(facts) = cache.map.remove(block) {
+        cache.approx_bytes = cache.approx_bytes.saturating_sub(facts.approx_bytes());
     }
 }
 
@@ -131,8 +149,12 @@ fn lookup(block_store: &KeyValueBlockStore, block_hash: &BlockHash) -> Result<Lo
         .map(|pd| pd.deploy.sig.clone())
         .collect();
     applied_sigs.extend(block.body.applied_from_scope.iter().cloned());
+    if let Some(unrun) = unrun().lock().get(block_hash) {
+        applied_sigs.retain(|sig| !unrun.contains(sig));
+    }
     let facts = Arc::new(BlockFacts {
         block_number: block.body.state.block_number,
+        timestamp: block.header.timestamp,
         sender: block.sender.clone(),
         deploy_sigs: block
             .body

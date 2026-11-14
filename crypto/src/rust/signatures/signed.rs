@@ -82,20 +82,20 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Signed<A> {
         pk: PublicKey,
         sig: prost::bytes::Bytes,
         sig_algorithm: Box<dyn SignaturesAlg>,
-    ) -> Result<Option<Self>, String> {
-        let serialized_data = data.to_message().encode_to_vec();
-        let hash = Signed::<A>::signature_hash(&sig_algorithm.name(), serialized_data);
+    ) -> Option<Self> {
+        let signed = Self {
+            data,
+            pk,
+            sig,
+            sig_algorithm,
+        };
+        signed.verify().then_some(signed)
+    }
 
-        if sig_algorithm.verify(&hash, &sig, &pk.bytes) {
-            Ok(Some(Self {
-                data,
-                pk,
-                sig,
-                sig_algorithm,
-            }))
-        } else {
-            Ok(None)
-        }
+    pub fn verify(&self) -> bool {
+        let serialized_data = self.data.to_message().encode_to_vec();
+        let hash = Self::signature_hash(&self.sig_algorithm.name(), serialized_data);
+        self.sig_algorithm.verify(&hash, &self.sig, &self.pk.bytes)
     }
 
     pub fn signature_hash(sig_alg_name: &str, serialized_data: Vec<u8>) -> Vec<u8> {
@@ -171,6 +171,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn verify_borrows_non_clone_data_and_uses_the_algorithm_hash() {
+        #[derive(Debug, serde::Serialize)]
+        struct NonCloneData(Vec<u8>);
+
+        impl ToMessage for NonCloneData {
+            type Type = TestData;
+
+            fn to_message(&self) -> Self::Type { test_data(&self.0) }
+        }
+
+        let algorithms: Vec<Box<dyn SignaturesAlg>> =
+            vec![Box::new(Secp256k1), Box::new(Secp256k1Eth)];
+        for algorithm in algorithms {
+            let mut signed = Signed::create(
+                NonCloneData(b"payload".to_vec()),
+                algorithm,
+                PrivateKey::from_bytes(&[1; 32]),
+            )
+            .unwrap();
+            assert!(signed.verify());
+            assert!(signed.verify());
+            signed.data.0.push(0);
+            assert!(!signed.verify());
+        }
+    }
+
     fn alg() -> Box<dyn SignaturesAlg> { Box::new(Secp256k1) }
 
     #[test]
@@ -186,8 +213,7 @@ mod tests {
             signed.pk.clone(),
             signed.sig.clone(),
             alg(),
-        )
-        .unwrap();
+        );
         assert_eq!(verified, Some(signed));
     }
 
@@ -203,8 +229,7 @@ mod tests {
             signed.pk.clone(),
             prost::bytes::Bytes::from(tampered_sig),
             alg(),
-        )
-        .unwrap();
+        );
         assert_eq!(result, None);
 
         let result = Signed::from_signed_data(
@@ -212,8 +237,7 @@ mod tests {
             signed.pk.clone(),
             signed.sig.clone(),
             alg(),
-        )
-        .unwrap();
+        );
         assert_eq!(result, None);
     }
 
@@ -238,8 +262,7 @@ mod tests {
             unbound.pk.clone(),
             unbound.sig.clone(),
             alg(),
-        )
-        .unwrap();
+        );
         assert_eq!(verified, None);
     }
 

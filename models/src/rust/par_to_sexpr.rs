@@ -453,6 +453,7 @@ mod tests {
                     source: Some(new_gstring_par("src".to_string(), Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(gint(1)),
                 persistent: false,

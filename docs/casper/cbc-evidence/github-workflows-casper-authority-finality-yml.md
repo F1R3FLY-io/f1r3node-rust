@@ -2,15 +2,18 @@
 
 Controlled verification does not qualify a node candidate. Source-bound acceptance remains pending.
 
+The maintainer accepted the PR #829 change of the Java install step of this file on 2026-10-23 (PR #829, review 5628129141) at revision `f2f3645dd`.
+
 ```json
 {
   "artifact": {
     "path": ".github/workflows/casper-authority-finality.yml",
     "id": "github-workflows-casper-authority-finality-yml",
-    "commit": "63b9ace2b2c300b9dc605903d12bbb767566ae4b",
-    "commit_is_base": true,
+    "commit": "f2f3645ddedae8d612e55141cfbd15e9c4ef884b",
+    "commit_is_base": false,
     "working_tree": true,
-    "sha256": "db9a1044cb693690f66975ff45d7954ab10b4469d353d156fe5bc402e6746721"
+    "sha256": "e4ae8673e683c21628bbb9d4b159cdd6dd41e2e6e1774793e5ef2d01f521c9c1",
+    "sha256_before_change": "db9a1044cb693690f66975ff45d7954ab10b4469d353d156fe5bc402e6746721"
   },
   "claim": "docs/claims/casper-soak-authority-finality.md",
   "claim_ids": [
@@ -50,7 +53,7 @@ Controlled verification does not qualify a node candidate. Source-bound acceptan
         "path": ".github/workflows/casper-authority-finality.yml",
         "id": "github-workflows-casper-authority-finality-yml",
         "commit": "490d21093a751b902ad4856b3bcadbf3f4af3069",
-        "commit_is_base": true,
+        "commit_is_base": false,
         "sha256": "db9a1044cb693690f66975ff45d7954ab10b4469d353d156fe5bc402e6746721"
       },
       "claim": "docs/claims/casper-soak-authority-finality.md",
@@ -86,6 +89,17 @@ Controlled verification does not qualify a node candidate. Source-bound acceptan
         "member": "docs/casper/cbc-evidence/github-workflows-casper-authority-finality-yml.md"
       }
     }
-  ]
+  ],
+  "source_change_acceptance": {
+    "ref": "docs/casper/cbc-evidence/runs/ci-preinstalled-jdk-acceptance-20261023-01/report.json",
+    "sha256": "987eb5ae70d8b738c7adaa7619ff71a713a5f0e804cf067d136c44de873c7bd9",
+    "note": "The source digest follows the accepted install change. The ledger stays pending."
+  },
+  "acceptance": {
+    "accepted_by": "jltatbeach",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/829#pullrequestreview-5628129141",
+    "revision": "f2f3645ddedae8d612e55141cfbd15e9c4ef884b",
+    "reviewed_at": "2026-10-23T12:21:29Z"
+  }
 }
 ```

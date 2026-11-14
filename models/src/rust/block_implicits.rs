@@ -35,8 +35,11 @@ pub fn validator_gen() -> impl Strategy<Value = Validator> {
 pub fn bond_gen() -> impl Strategy<Value = Bond> {
     let validator_gen = prop::collection::vec(any::<u8>(), validator::LENGTH)
         .prop_map(|byte_vec| prost::bytes::Bytes::from(byte_vec));
-    let stake_gen = 1i64..=1024i64;
-    (validator_gen, stake_gen).prop_map(|(validator, stake)| Bond { validator, stake })
+    let stake_gen = 1u64..=1024u64;
+    (validator_gen, stake_gen).prop_map(|(validator, stake)| Bond {
+        validator,
+        stake: stake.into(),
+    })
 }
 
 pub fn justification_gen() -> impl Strategy<Value = Justification> {
@@ -65,13 +68,15 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
         Signed::create(
             DeployData {
                 time_stamp: timestamp,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 9000000,
                 valid_after_block_number: 1,
                 term,
                 shard_id,
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             Box::new(secp256k1),
             sec,
@@ -196,6 +201,7 @@ pub fn block_element_gen(
                         timestamp,
                         version,
                         extra_bytes: prost::bytes::Bytes::new(),
+                        chain_id: prost::bytes::Bytes::new(),
                     },
                     body: Body {
                         state: F1r3flyState {
@@ -210,6 +216,7 @@ pub fn block_element_gen(
                         extra_bytes: prost::bytes::Bytes::new(),
                         applied_from_scope: Vec::new(),
                         merge_base: prost::bytes::Bytes::new(),
+                        v6: None,
                     },
                     justifications,
                     sender: validator.into(),

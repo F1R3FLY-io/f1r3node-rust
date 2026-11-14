@@ -22,6 +22,12 @@ pub trait KeyValueStore: Send + Sync + 'static {
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError>;
 
+    fn delete_if_value(
+        &self,
+        key: &ByteBuffer,
+        expected: &ByteBuffer,
+    ) -> Result<bool, KvStoreError>;
+
     fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError>;
     fn iterate_while(
         &self,
@@ -36,6 +42,8 @@ pub trait KeyValueStore: Send + Sync + 'static {
 
     /// Check if the store contains any entries. O(1) time and space.
     fn non_empty(&self) -> Result<bool, KvStoreError>;
+
+    fn entry_count(&self) -> Result<Option<usize>, KvStoreError> { Ok(None) }
 
     fn contains(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<bool>, KvStoreError> {
         let results = self.get(keys)?;

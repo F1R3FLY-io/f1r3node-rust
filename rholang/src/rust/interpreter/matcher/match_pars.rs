@@ -64,6 +64,7 @@ pub fn compare_receive_binds_without_locally_free(a: &ReceiveBind, b: &ReceiveBi
         && match_pars(a.source.as_ref().unwrap(), b.source.as_ref().unwrap())
         && a.remainder == b.remainder
         && a.free_count == b.free_count
+        && a.cost_signature == b.cost_signature
 }
 
 pub fn match_pars(target: &Par, pattern: &Par) -> bool {
@@ -74,6 +75,8 @@ pub fn match_pars(target: &Par, pattern: &Par) -> bool {
         && target.matches.len() == pattern.matches.len()
         && target.unforgeables.len() == pattern.unforgeables.len()
         && target.bundles.len() == pattern.bundles.len()
+        && target.cost_signed_terms == pattern.cost_signed_terms
+        && target.cost_stacks == pattern.cost_stacks
         && target
             .sends
             .iter()

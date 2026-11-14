@@ -2,15 +2,18 @@
 
 Local checks supply review evidence. Source-bound acceptance, hosted verification, and live qualification remain pending.
 
+The maintainer accepted the PR #829 change of the Java install step of this file on 2026-10-23 (PR #829, review 5628129141) at revision `f2f3645dd`.
+
 ```json
 {
   "artifact": {
     "path": ".github/workflows/casper-campaign-control.yml",
     "id": "github-workflows-casper-campaign-control-yml",
-    "commit": "515a011598c9db66ff5a1b2b014b2a2894f7c409",
-    "commit_is_base": true,
-    "sha256": "109a71c33f50577dc42daa7a8800504a8df7c0bb81ef844c8fd97e7c533a7541",
-    "working_tree": true
+    "commit": "f2f3645ddedae8d612e55141cfbd15e9c4ef884b",
+    "commit_is_base": false,
+    "sha256": "1229b3a91d4ff91f55da363913196af72d2fdc1583876b99c340cd6e5fb756c2",
+    "working_tree": true,
+    "sha256_before_change": "109a71c33f50577dc42daa7a8800504a8df7c0bb81ef844c8fd97e7c533a7541"
   },
   "claim": "docs/claims/casper-campaign-execution.md",
   "claim_ids": [
@@ -45,7 +48,7 @@ Local checks supply review evidence. Source-bound acceptance, hosted verificatio
         "path": ".github/workflows/casper-campaign-control.yml",
         "id": "github-workflows-casper-campaign-control-yml",
         "commit": "ee468f5db3fa007ecde9b104eda545a544f1354a",
-        "commit_is_base": true,
+        "commit_is_base": false,
         "sha256": "109a71c33f50577dc42daa7a8800504a8df7c0bb81ef844c8fd97e7c533a7541",
         "working_tree": true
       },
@@ -63,7 +66,7 @@ Local checks supply review evidence. Source-bound acceptance, hosted verificatio
         "path": ".github/workflows/casper-campaign-control.yml",
         "id": "github-workflows-casper-campaign-control-yml",
         "commit": "515a011598c9db66ff5a1b2b014b2a2894f7c409",
-        "commit_is_base": true,
+        "commit_is_base": false,
         "sha256": "109a71c33f50577dc42daa7a8800504a8df7c0bb81ef844c8fd97e7c533a7541",
         "working_tree": true
       },
@@ -76,6 +79,17 @@ Local checks supply review evidence. Source-bound acceptance, hosted verificatio
         "docs/claims/casper-campaign-execution.md": "8840cb6021093cb3dae8f1add287cd299a1e1ed9eb1a8b3a8f3c753e10de3f1b"
       }
     }
-  ]
+  ],
+  "source_change_acceptance": {
+    "ref": "docs/casper/cbc-evidence/runs/ci-preinstalled-jdk-acceptance-20261023-01/report.json",
+    "sha256": "987eb5ae70d8b738c7adaa7619ff71a713a5f0e804cf067d136c44de873c7bd9",
+    "note": "The source digest follows the accepted install change. The ledger stays pending."
+  },
+  "acceptance": {
+    "accepted_by": "jltatbeach",
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/829#pullrequestreview-5628129141",
+    "revision": "f2f3645ddedae8d612e55141cfbd15e9c4ef884b",
+    "reviewed_at": "2026-10-23T12:21:29Z"
+  }
 }
 ```

@@ -104,6 +104,110 @@ use crate::var::VarInstance;
 
 // See models/src/main/scala/coop/rchain/models/AlwaysEqual.scala
 
+impl PartialEq for CostSignature {
+    fn eq(&self, other: &Self) -> bool { self.value == other.value }
+}
+
+impl Hash for CostSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.value.hash(state); }
+}
+
+impl PartialEq for cost_signature::Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Ground(a), Self::Ground(b)) => a == b,
+            (Self::BoundLevel(a), Self::BoundLevel(b)) => a == b,
+            (Self::Quote(a), Self::Quote(b)) => a == b,
+            (Self::Compound(a), Self::Compound(b)) => a == b,
+            (Self::Name(a), Self::Name(b)) => a == b,
+            (Self::Unit(a), Self::Unit(b)) => a == b,
+            (Self::Signer(a), Self::Signer(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Hash for cost_signature::Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Ground(value) => {
+                0_u8.hash(state);
+                value.hash(state);
+            }
+            Self::BoundLevel(value) => {
+                1_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Quote(value) => {
+                2_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Compound(value) => {
+                3_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Name(value) => {
+                4_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Unit(value) => {
+                5_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Signer(value) => {
+                6_u8.hash(state);
+                value.hash(state);
+            }
+        }
+    }
+}
+
+impl PartialEq for CostSignatureCompound {
+    fn eq(&self, other: &Self) -> bool { self.elements == other.elements }
+}
+
+impl Hash for CostSignatureCompound {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.elements.hash(state); }
+}
+
+impl PartialEq for CostSignedTerm {
+    fn eq(&self, other: &Self) -> bool {
+        self.body == other.body && self.signature == other.signature && self.seal == other.seal
+    }
+}
+
+impl Hash for CostSignedTerm {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.body.hash(state);
+        self.signature.hash(state);
+        self.seal.hash(state);
+    }
+}
+
+impl PartialEq for ElaboratedSeal {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.origin == other.origin
+            && self.phlo_limit == other.phlo_limit
+    }
+}
+
+impl Hash for ElaboratedSeal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        self.origin.hash(state);
+        self.phlo_limit.hash(state);
+    }
+}
+
+impl PartialEq for CostStack {
+    fn eq(&self, other: &Self) -> bool { self.cells == other.cells }
+}
+
+impl Hash for CostStack {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.cells.hash(state); }
+}
+
 impl PartialEq for Par {
     fn eq(&self, other: &Self) -> bool {
         self.sends == other.sends
@@ -116,6 +220,8 @@ impl PartialEq for Par {
             && self.connectives == other.connectives
             && self.conditionals == other.conditionals
             && self.connective_used == other.connective_used
+            && self.cost_signed_terms == other.cost_signed_terms
+            && self.cost_stacks == other.cost_stacks
     }
 }
 
@@ -131,12 +237,16 @@ impl Hash for Par {
         self.connectives.hash(state);
         self.conditionals.hash(state);
         self.connective_used.hash(state);
+        self.cost_signed_terms.hash(state);
+        self.cost_stacks.hash(state);
     }
 }
 
 impl PartialEq for TaggedContinuation {
     fn eq(&self, other: &Self) -> bool {
-        self.tagged_cont == other.tagged_cont && self.guard == other.guard
+        self.tagged_cont == other.tagged_cont
+            && self.guard == other.guard
+            && self.seal == other.seal
     }
 }
 
@@ -144,6 +254,9 @@ impl Hash for TaggedContinuation {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.tagged_cont.hash(state);
         self.guard.hash(state);
+        if let Some(seal) = &self.seal {
+            seal.hash(state);
+        }
     }
 }
 
@@ -196,7 +309,9 @@ impl Hash for PCost {
 
 impl PartialEq for ListParWithRandom {
     fn eq(&self, other: &Self) -> bool {
-        self.pars == other.pars && self.random_state == other.random_state
+        self.pars == other.pars
+            && self.random_state == other.random_state
+            && self.seal == other.seal
     }
 }
 
@@ -204,6 +319,9 @@ impl Hash for ListParWithRandom {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.pars.hash(state);
         self.random_state.hash(state);
+        if let Some(seal) = &self.seal {
+            seal.hash(state);
+        }
     }
 }
 
@@ -286,6 +404,7 @@ impl PartialEq for ReceiveBind {
             && self.source == other.source
             && self.remainder == other.remainder
             && self.free_count == other.free_count
+            && self.cost_signature == other.cost_signature
     }
 }
 
@@ -295,6 +414,7 @@ impl Hash for ReceiveBind {
         self.source.hash(state);
         self.remainder.hash(state);
         self.free_count.hash(state);
+        self.cost_signature.hash(state);
     }
 }
 
@@ -469,6 +589,9 @@ impl PartialEq for expr::ExprInstance {
             (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => a == b,
             (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => a == b,
             (ExprInstance::GFloat32(a), ExprInstance::GFloat32(b)) => a == b,
+            (ExprInstance::ELambdaBody(a), ExprInstance::ELambdaBody(b)) => a == b,
+            (ExprInstance::EAppBody(a), ExprInstance::EAppBody(b)) => a == b,
+            (ExprInstance::EPiBody(a), ExprInstance::EPiBody(b)) => a == b,
             _ => false,
         }
     }
@@ -519,6 +642,9 @@ impl Hash for expr::ExprInstance {
             ExprInstance::GUint16(a) => a.hash(state),
             ExprInstance::GUint8(a) => a.hash(state),
             ExprInstance::GFloat32(a) => a.hash(state),
+            ExprInstance::ELambdaBody(a) => a.hash(state),
+            ExprInstance::EAppBody(a) => a.hash(state),
+            ExprInstance::EPiBody(a) => a.hash(state),
         }
     }
 }
@@ -643,6 +769,56 @@ impl Hash for EZipper {
         self.pathmap.hash(state);
         self.current_path.hash(state);
         self.is_write_zipper.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
+impl PartialEq for ELambda {
+    fn eq(&self, other: &Self) -> bool {
+        self.bind_count == other.bind_count
+            && self.body == other.body
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for ELambda {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bind_count.hash(state);
+        self.body.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
+impl PartialEq for EApp {
+    fn eq(&self, other: &Self) -> bool {
+        self.fun == other.fun
+            && self.args == other.args
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for EApp {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.fun.hash(state);
+        self.args.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
+impl PartialEq for EPi {
+    fn eq(&self, other: &Self) -> bool {
+        self.bind_count == other.bind_count
+            && self.param_types == other.param_types
+            && self.codomain == other.codomain
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for EPi {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bind_count.hash(state);
+        self.param_types.hash(state);
+        self.codomain.hash(state);
         self.connective_used.hash(state);
     }
 }
@@ -909,6 +1085,20 @@ impl PartialEq for ConnectiveInstance {
             (ConnectiveInstance::ConnString(a), ConnectiveInstance::ConnString(b)) => a == b,
             (ConnectiveInstance::ConnUri(a), ConnectiveInstance::ConnUri(b)) => a == b,
             (ConnectiveInstance::ConnByteArray(a), ConnectiveInstance::ConnByteArray(b)) => a == b,
+            (ConnectiveInstance::ConnType(a), ConnectiveInstance::ConnType(b)) => a == b,
+            (ConnectiveInstance::ConnInt32(a), ConnectiveInstance::ConnInt32(b)) => a == b,
+            (ConnectiveInstance::ConnUint64(a), ConnectiveInstance::ConnUint64(b)) => a == b,
+            (ConnectiveInstance::ConnUint32(a), ConnectiveInstance::ConnUint32(b)) => a == b,
+            (ConnectiveInstance::ConnUint16(a), ConnectiveInstance::ConnUint16(b)) => a == b,
+            (ConnectiveInstance::ConnUint8(a), ConnectiveInstance::ConnUint8(b)) => a == b,
+            (ConnectiveInstance::ConnFloat64(a), ConnectiveInstance::ConnFloat64(b)) => a == b,
+            (ConnectiveInstance::ConnFloat32(a), ConnectiveInstance::ConnFloat32(b)) => a == b,
+            (ConnectiveInstance::ConnBigInt(a), ConnectiveInstance::ConnBigInt(b)) => a == b,
+            (ConnectiveInstance::ConnBigRat(a), ConnectiveInstance::ConnBigRat(b)) => a == b,
+            (
+                ConnectiveInstance::ConnFixedPointBody(a),
+                ConnectiveInstance::ConnFixedPointBody(b),
+            ) => a == b,
             _ => false,
         }
     }
@@ -926,8 +1116,27 @@ impl Hash for ConnectiveInstance {
             ConnectiveInstance::ConnString(a) => a.hash(state),
             ConnectiveInstance::ConnUri(a) => a.hash(state),
             ConnectiveInstance::ConnByteArray(a) => a.hash(state),
+            ConnectiveInstance::ConnType(a) => a.hash(state),
+            ConnectiveInstance::ConnInt32(a) => a.hash(state),
+            ConnectiveInstance::ConnUint64(a) => a.hash(state),
+            ConnectiveInstance::ConnUint32(a) => a.hash(state),
+            ConnectiveInstance::ConnUint16(a) => a.hash(state),
+            ConnectiveInstance::ConnUint8(a) => a.hash(state),
+            ConnectiveInstance::ConnFloat64(a) => a.hash(state),
+            ConnectiveInstance::ConnFloat32(a) => a.hash(state),
+            ConnectiveInstance::ConnBigInt(a) => a.hash(state),
+            ConnectiveInstance::ConnBigRat(a) => a.hash(state),
+            ConnectiveInstance::ConnFixedPointBody(a) => a.hash(state),
         }
     }
+}
+
+impl PartialEq for ConnFixedPointBody {
+    fn eq(&self, other: &Self) -> bool { self.scale == other.scale }
+}
+
+impl Hash for ConnFixedPointBody {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.scale.hash(state); }
 }
 
 impl PartialEq for VarRef {
@@ -993,6 +1202,36 @@ impl Hash for UnfInstance {
             UnfInstance::GDeployerIdBody(a) => a.hash(state),
             UnfInstance::GSysAuthTokenBody(a) => a.hash(state),
         }
+    }
+}
+
+impl PartialEq for SealOrigin {
+    fn eq(&self, other: &Self) -> bool {
+        self.envelope == other.envelope
+            && self.signers == other.signers
+            && self.phlo_price == other.phlo_price
+    }
+}
+
+impl Hash for SealOrigin {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.envelope.hash(state);
+        self.signers.hash(state);
+        self.phlo_price.hash(state);
+    }
+}
+
+impl PartialEq for SealRecordProto {
+    fn eq(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.kind == other.kind && self.origin == other.origin
+    }
+}
+
+impl Hash for SealRecordProto {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.owner.hash(state);
+        self.kind.hash(state);
+        self.origin.hash(state);
     }
 }
 

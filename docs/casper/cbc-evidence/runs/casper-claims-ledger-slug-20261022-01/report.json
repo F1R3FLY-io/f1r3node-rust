@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "scope": "casper-claim-audit-ledger-slug",
+  "phase": "pre_pr216_merge",
+  "status": "change-verified-pending-acceptance",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "change": {
+    "task": "PR #700, EPIC-026 TASK-026-6 C2: ledger filename case",
+    "origin": "The shared CbC tooling (cbc-r7-bb830b2) names a ledger from the artifact path with case kept. Ten Casper ledgers used lowercase names, and check-casper-claims kept a lowercase exception for scripts/casper-soak/Cargo.toml. A lookup of these ledgers worked on a case-insensitive filesystem only.",
+    "commits": [
+      {
+        "files": [
+          "scripts/casper-soak/src/bin/check-casper-claims.rs"
+        ],
+        "change": "The ledger slug is the artifact path with each run of non-alphanumeric ASCII characters replaced by one hyphen and with leading and trailing hyphens removed. The lowercase exception for scripts/casper-soak/Cargo.toml is removed. This is the slug rule of the shared tooling."
+      }
+    ],
+    "ledger_renames": [
+      {
+        "from": "formal-tlaplus-casper-soak-campaign-campaigncontrol-tla.md",
+        "to": "formal-tlaplus-casper-soak-campaign-CampaignControl-tla.md"
+      },
+      {
+        "from": "formal-tlaplus-casper-soak-campaign-mc-campaigncontrol-approval-unsafe-cfg.md",
+        "to": "formal-tlaplus-casper-soak-campaign-MC-CampaignControl-approval-unsafe-cfg.md"
+      },
+      {
+        "from": "formal-tlaplus-casper-soak-campaign-mc-campaigncontrol-cfg.md",
+        "to": "formal-tlaplus-casper-soak-campaign-MC-CampaignControl-cfg.md"
+      },
+      {
+        "from": "formal-tlaplus-casper-soak-campaign-mc-campaigncontrol-prerequisites-unsafe-cfg.md",
+        "to": "formal-tlaplus-casper-soak-campaign-MC-CampaignControl-prerequisites-unsafe-cfg.md"
+      },
+      {
+        "from": "formal-tlaplus-casper-soak-campaign-mc-campaigncontrol-reservation-unsafe-cfg.md",
+        "to": "formal-tlaplus-casper-soak-campaign-MC-CampaignControl-reservation-unsafe-cfg.md"
+      },
+      {
+        "from": "formal-tlaplus-casper-soak-campaign-mc-campaigncontrol-schedule-unsafe-cfg.md",
+        "to": "formal-tlaplus-casper-soak-campaign-MC-CampaignControl-schedule-unsafe-cfg.md"
+      },
+      {
+        "from": "formal-tlaplus-casper-soak-campaign-mc-campaigncontrol-termination-unsafe-cfg.md",
+        "to": "formal-tlaplus-casper-soak-campaign-MC-CampaignControl-termination-unsafe-cfg.md"
+      },
+      {
+        "from": "formal-tlaplus-casper-soak-campaign-readme-md.md",
+        "to": "formal-tlaplus-casper-soak-campaign-README-md.md"
+      },
+      {
+        "from": "scripts-casper-soak-cargo-toml.md",
+        "to": "scripts-casper-soak-Cargo-toml.md"
+      },
+      {
+        "from": "scripts-casper-soak-supervisor-dockerfile.md",
+        "to": "scripts-casper-soak-supervisor-Dockerfile.md"
+      }
+    ],
+    "ledger_bytes": "The renamed ledgers keep their bytes. Their recorded artifact id fields keep the lowercase value.",
+    "symlinks": "The ten matching symlinks in docs/cbc-evidence are renamed and point to the renamed ledgers.",
+    "unchanged": "The claim document, the claim specification header, and all other audit logic are unchanged. The historical snapshot runs/casper-authority-provider-20260928-01/previous-records/scripts-casper-soak-cargo-toml.md is unchanged."
+  },
+  "source_digests_before_change": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": "3a5f28efc587b0306a9b49eb6b7e5e97be74cd91e405520e9cf63d923d5c1e55"
+  },
+  "source_digests": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": "67408ac6b96424495fd86ddb2f2a69c3ec16a9087f548aaf0c50cb1fe9c0701b"
+  },
+  "evidence_before_change": {
+    "scripts/casper-soak/src/bin/check-casper-claims.rs": {
+      "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+      "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+    }
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "d195ca6afe951e6806ccd9724a63bc5171374d3e0809196827661e2cb70bc855"
+  },
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verification": {
+    "slug_equivalence": {
+      "method": "For each of the 127 artifacts that the eight CLAIM-CASPER-SOAK claims list, compare the old auditor slug with the new slug.",
+      "result": "126 artifacts give the same slug. scripts/casper-soak/Cargo.toml changes from scripts-casper-soak-cargo-toml to scripts-casper-soak-Cargo-toml, and its ledger is renamed to match."
+    },
+    "exact_case_lookup": {
+      "method": "For each of the 127 artifacts, require a tracked ledger whose name equals the new slug, compared with case.",
+      "result": "127 found, 0 missing."
+    },
+    "claim_audit": {
+      "command": "cargo run --locked -p casper-soak --bin check-casper-claims -- --output <file>",
+      "exit": 0,
+      "result": "CLAIM-CASPER-SOAK-001 and -002 pending, -003 to -008 discharged, claim_discharge pending. These are the statuses of the claim specifications, which this change does not edit."
+    },
+    "regression_tests": {
+      "command": "cargo test --locked -p casper-soak --test models --test claims --test interruption",
+      "result": "3, 2, and 4 tests passed"
+    },
+    "static": {
+      "fmt": "cargo fmt -p casper-soak -- --check passed",
+      "clippy": "cargo clippy --locked -p casper-soak --bin check-casper-claims -- -D warnings passed"
+    },
+    "shared_gate": {
+      "tooling": "top-level-gitlab-profile cbc-r7-bb830b2 (bb830b285a3dc831a34826975b18a4f4a296b011), extracted from the tag",
+      "command": "cbc.sh discharge --strict --json over the 408 mandatory files",
+      "result": "408 rows, 179 gaps, exit 4. The per-file statuses are identical to the run before the renames."
+    }
+  },
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "1200ec4a2c1b67acf8b3d0634ee5be26f0410c53",
+    "claims_and_bindings": {
+      "run_id": 39851457805,
+      "job": "Casper driver binding fixtures",
+      "job_id": 120079934811,
+      "steps": {
+        "Audit Casper claim identities and discharge evidence": "success",
+        "Check isolated driver bindings and actual case counts": "success",
+        "Check model, claim-audit, and interruption regressions": "success",
+        "Require complete Casper claim discharge": "skipped"
+      }
+    },
+    "soak_harness_tests": {
+      "run_id": 39854462973,
+      "job_id": 120089767649,
+      "steps": {
+        "Verify isolated disk admission and emergency scenarios": "success",
+        "Verify soak fail-closed driver": "success",
+        "Verify the disk admission failure report and bounded-command liveness": "success"
+      }
+    }
+  },
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "PR #700 comment",
+    "scope": "One acceptance covers the slug change in check-casper-claims.rs and the ten ledger renames.",
+    "tested_sha": "1200ec4a2c1b67acf8b3d0634ee5be26f0410c53"
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The check-casper-claims.rs ledger keeps the digest 3a5f28ef until a maintainer accepts this package.",
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "waiver": null,
+  "soak": "pending",
+  "verified_at": "2026-10-22"
+}

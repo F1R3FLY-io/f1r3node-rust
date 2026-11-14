@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use shared::rust::token_amount::TokenAmount;
 
 /// Casper configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,14 +24,17 @@ pub struct CasperConf {
 
     #[serde(rename = "casper-loop-interval", deserialize_with = "de_duration")]
     pub casper_loop_interval: Duration,
-    #[serde(rename = "requested-blocks-timeout", deserialize_with = "de_duration")]
-    pub requested_blocks_timeout: Duration,
     #[serde(rename = "finalization-rate")]
     pub finalization_rate: i32,
     #[serde(rename = "max-number-of-parents")]
     pub max_number_of_parents: i32,
     #[serde(rename = "max-parent-depth")]
     pub max_parent_depth: i32,
+    #[serde(
+        rename = "dag-hot-window-depth",
+        default = "default_dag_hot_window_depth"
+    )]
+    pub dag_hot_window_depth: i64,
     /// Deploy validity window in blocks. Consensus-bearing (expiry and
     /// repeat-deploy validity rules read it), so the genesis value is baked
     /// into the PoS contract and adopted from chain at startup.
@@ -71,7 +75,7 @@ pub struct CasperConf {
     pub genesis_ceremony: GenesisCeremony,
 
     #[serde(rename = "min-phlo-price")]
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
 
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
@@ -110,6 +114,18 @@ pub struct CasperConf {
     )]
     pub max_user_deploys_per_block: u32,
 
+    #[serde(
+        rename = "v6-execution-lag-threshold",
+        default = "default_v6_execution_lag_threshold"
+    )]
+    pub v6_execution_lag_threshold: u64,
+
+    #[serde(
+        rename = "v6-fallback-distance",
+        default = "default_v6_fallback_distance"
+    )]
+    pub v6_fallback_distance: usize,
+
     /// Enable background garbage collection for mergeable channels.
     /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
     /// When disabled (default), mergeable data is retained.
@@ -135,11 +151,100 @@ pub struct CasperConf {
         default = "default_mergeable_channels_gc_depth_buffer"
     )]
     pub mergeable_channels_gc_depth_buffer: i32,
+
+    #[serde(
+        rename = "finalizer-oracle-cache-justifications",
+        default = "default_finalizer_oracle_cache_justifications"
+    )]
+    pub finalizer_oracle_cache_justifications: usize,
+
+    #[serde(
+        rename = "finalizer-oracle-cache-self-justifications",
+        default = "default_finalizer_oracle_cache_self_justifications"
+    )]
+    pub finalizer_oracle_cache_self_justifications: usize,
+
+    #[serde(
+        rename = "finalizer-oracle-cache-ancestors",
+        default = "default_finalizer_oracle_cache_ancestors"
+    )]
+    pub finalizer_oracle_cache_ancestors: usize,
+
+    #[serde(
+        rename = "finalizer-timeout-reruns",
+        default = "default_finalizer_timeout_reruns"
+    )]
+    pub finalizer_timeout_reruns: u32,
+
+    #[serde(
+        rename = "finalizer-derivation-budget",
+        deserialize_with = "de_duration",
+        default = "default_finalizer_derivation_budget"
+    )]
+    pub finalizer_derivation_budget: Duration,
+
+    #[serde(
+        rename = "finalizer-step-backstop",
+        deserialize_with = "de_duration",
+        default = "default_finalizer_step_backstop"
+    )]
+    pub finalizer_step_backstop: Duration,
+
+    #[serde(
+        rename = "finalizer-cursor-max-invalidations",
+        default = "default_finalizer_cursor_max_invalidations"
+    )]
+    pub finalizer_cursor_max_invalidations: u32,
+
+    #[serde(
+        rename = "deploy-pool-blocks-of-backlog",
+        default = "default_deploy_pool_blocks_of_backlog"
+    )]
+    pub deploy_pool_blocks_of_backlog: usize,
+
+    #[serde(
+        rename = "proposal-pacing-floor-distance",
+        default = "default_proposal_pacing_floor_distance"
+    )]
+    pub proposal_pacing_floor_distance: i64,
+
+    #[serde(rename = "rejection-search-cap-from-height", default)]
+    pub rejection_search_cap_from_height: Option<i64>,
+
+    #[serde(
+        rename = "rejection-search-group-branch-cap",
+        default = "default_rejection_search_group_branch_cap"
+    )]
+    pub rejection_search_group_branch_cap: usize,
+
+    #[serde(
+        rename = "v6-retained-records",
+        default = "default_v6_retained_records"
+    )]
+    pub v6_retained_records: usize,
+
+    #[serde(
+        rename = "v6-conservation-audit-interval",
+        default = "default_v6_conservation_audit_interval"
+    )]
+    pub v6_conservation_audit_interval: u64,
+
+    #[serde(
+        rename = "offer-rejection-log-capacity",
+        default = "default_offer_rejection_log_capacity"
+    )]
+    pub offer_rejection_log_capacity: usize,
+
+    #[serde(
+        rename = "offer-rejection-reason-bytes",
+        default = "default_offer_rejection_reason_bytes"
+    )]
+    pub offer_rejection_reason_bytes: usize,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
 
-fn default_deploy_lifespan() -> i64 { 50 }
+fn default_deploy_lifespan() -> i64 { crate::rust::casper::DEPLOY_LIFESPAN_DEFAULT }
 
 fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
 
@@ -153,6 +258,10 @@ fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
 
 fn default_max_user_deploys_per_block() -> u32 { 128 }
 
+pub fn default_v6_execution_lag_threshold() -> u64 { crate::rust::v6::lag::DEFAULT_LAG_THRESHOLD }
+
+pub fn default_v6_fallback_distance() -> usize { crate::rust::v6::core::DEFAULT_FALLBACK_DISTANCE }
+
 /// Matches the shipped defaults.conf value: a sparse operator conf that omits
 /// the key must not silently disable GC. Public so the node's config tests
 /// pin shipped-vs-fallback agreement.
@@ -163,6 +272,61 @@ fn default_mergeable_channels_gc_interval() -> Duration {
 }
 
 fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
+fn default_dag_hot_window_depth() -> i64 { 1024 }
+
+pub fn default_finalizer_oracle_cache_justifications() -> usize {
+    crate::rust::casper::FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT.latest_justifications
+}
+
+pub fn default_finalizer_oracle_cache_self_justifications() -> usize {
+    crate::rust::casper::FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT.self_justification
+}
+
+pub fn default_finalizer_oracle_cache_ancestors() -> usize {
+    crate::rust::casper::FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT.ancestor
+}
+
+pub fn default_finalizer_timeout_reruns() -> u32 {
+    crate::rust::casper::FINALIZER_TIMEOUT_RERUNS_DEFAULT
+}
+
+pub fn default_finalizer_derivation_budget() -> Duration {
+    crate::rust::casper::FINALIZER_DERIVATION_BUDGET_DEFAULT
+}
+
+pub fn default_finalizer_step_backstop() -> Duration {
+    crate::rust::casper::FINALIZER_STEP_BACKSTOP_DEFAULT
+}
+
+pub fn default_finalizer_cursor_max_invalidations() -> u32 {
+    crate::rust::casper::FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT
+}
+
+pub fn default_deploy_pool_blocks_of_backlog() -> usize {
+    crate::rust::casper::DEPLOY_POOL_BLOCKS_OF_BACKLOG_DEFAULT
+}
+
+pub fn default_proposal_pacing_floor_distance() -> i64 {
+    crate::rust::casper::PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT
+}
+
+pub fn default_v6_retained_records() -> usize { crate::rust::casper::V6_RETAINED_RECORDS_DEFAULT }
+
+pub fn default_v6_conservation_audit_interval() -> u64 {
+    crate::rust::v6::conservation::CONSERVATION_AUDIT_INTERVAL_DEFAULT
+}
+
+pub fn default_offer_rejection_log_capacity() -> usize {
+    block_storage::rust::deploy::offer_rejection::OFFER_REJECTION_LOG_CAPACITY_DEFAULT
+}
+
+pub fn default_offer_rejection_reason_bytes() -> usize {
+    block_storage::rust::deploy::offer_rejection::OFFER_REJECTION_REASON_BYTES_DEFAULT
+}
+
+pub fn default_rejection_search_group_branch_cap() -> usize {
+    crate::rust::casper::REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT
+}
 
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,9 +350,9 @@ pub struct GenesisBlockData {
     pub wallets_file: String,
 
     #[serde(rename = "bond-minimum")]
-    pub bond_minimum: i64,
+    pub bond_minimum: TokenAmount,
     #[serde(rename = "bond-maximum")]
-    pub bond_maximum: i64,
+    pub bond_maximum: TokenAmount,
 
     #[serde(rename = "epoch-length")]
     pub epoch_length: i32,
@@ -226,7 +390,12 @@ pub struct GenesisBlockData {
     /// `native-token-name`. Operators MUST set this in config before genesis.
     #[serde(rename = "native-token-decimals")]
     pub native_token_decimals: u32,
+
+    #[serde(rename = "protocol-version", default = "default_protocol_version")]
+    pub protocol_version: i64,
 }
+
+pub fn default_protocol_version() -> i64 { crate::rust::casper::CASPER_PROTOCOL_VERSION }
 
 /// Maximum decimal places accepted for native token. Matches the de-facto
 /// ERC-20 standard (ETH uses 18). Values above 18 exceed IEEE-754 double
@@ -498,8 +667,8 @@ mod native_token_validation_tests {
             genesis_data_dir: String::new(),
             bonds_file: String::new(),
             wallets_file: String::new(),
-            bond_minimum: 0,
-            bond_maximum: 0,
+            bond_minimum: 0.into(),
+            bond_maximum: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,
@@ -510,6 +679,7 @@ mod native_token_validation_tests {
             native_token_name: "F1R3FLY".into(),
             native_token_symbol: "F1R3".into(),
             native_token_decimals: 8,
+            protocol_version: default_protocol_version(),
         }
     }
 

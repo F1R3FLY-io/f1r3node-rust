@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use comm::rust::errors::CommError;
 use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::rp::protocol_helper;
 use comm::rust::test_instances::create_rp_conf_ask;
 use comm::rust::transport::communication_response::CommunicationResponse;
@@ -21,6 +22,7 @@ use comm::rust::transport::grpc_transport_server::{
 use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use crypto::rust::util::certificate_helper::{CertificateHelper, CertificatePrinter};
 use models::routing::Protocol;
+use prost::bytes::Bytes;
 use tokio::net::TcpListener;
 use tokio::sync::OnceCell;
 
@@ -31,6 +33,9 @@ pub struct TlsEnvironment {
     pub cert: String,
     pub key: String,
     pub peer: PeerNode,
+    /// The socket a server for this peer serves from, bound before the peer
+    /// was created so no other process can take the port
+    pub listener: Option<std::net::TcpListener>,
 }
 
 /// Test runtime for transport layer testing
@@ -38,6 +43,7 @@ pub struct TransportLayerTestRuntime {
     network_id: String,
     pub max_message_size: i32,
     max_stream_message_size: u64,
+    server_chain_id: ChainIdCell,
 }
 
 impl TransportLayerTestRuntime {
@@ -46,7 +52,14 @@ impl TransportLayerTestRuntime {
             network_id,
             max_message_size: 256 * 1024,               // 256KB
             max_stream_message_size: 200 * 1024 * 1024, // 200MB
+            server_chain_id: ChainIdCell::unknown(),
         }
+    }
+
+    /// Give the remote (server) node a known chain identity.
+    pub fn with_server_chain_id(mut self, chain_id: Bytes) -> Self {
+        self.server_chain_id = ChainIdCell::known(chain_id);
+        self
     }
 
     /// Create environment with TLS certificates and peer node
@@ -76,7 +89,25 @@ impl TransportLayerTestRuntime {
             cert,
             key,
             peer,
+            listener: None,
         })
+    }
+
+    /// Create an environment for a peer that runs a server, on a port bound
+    /// here and held until the server serves from it
+    pub async fn create_bound_environment(&self) -> Result<TlsEnvironment, CommError> {
+        let listener = std::net::TcpListener::bind("0.0.0.0:0")
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?
+            .port();
+        let mut env = self.create_environment(port).await?;
+        env.listener = Some(listener);
+        Ok(env)
     }
 
     /// Create transport layer client
@@ -91,6 +122,7 @@ impl TransportLayerTestRuntime {
 
         GrpcTransportClient::new(
             self.network_id.clone(),
+            ChainIdCell::unknown(),
             env.cert.clone(),
             env.key.clone(),
             self.max_message_size,
@@ -106,7 +138,9 @@ impl TransportLayerTestRuntime {
         // Create RP configuration for the server. The explicit timeout also
         // bounds the server-side TLS handshake; the 1ms fallback inside
         // create_rp_conf_ask aborts handshakes under load (flaky specs).
-        let rp_config = create_rp_conf_ask(env.peer.clone(), Some(Duration::from_secs(5)), None);
+        let mut rp_config =
+            create_rp_conf_ask(env.peer.clone(), Some(Duration::from_secs(5)), None);
+        rp_config.chain_id = self.server_chain_id.clone();
 
         let transport_server = GrpcTransportServer::new(
             rp_config,
@@ -118,6 +152,16 @@ impl TransportLayerTestRuntime {
             self.max_stream_message_size,
             4, // parallelism
         );
+        let transport_server = match &env.listener {
+            Some(listener) => transport_server
+                .with_listener(
+                    listener
+                        .try_clone()
+                        .expect("a bound test listener can be duplicated"),
+                )
+                .expect("a bound test listener can serve"),
+            None => transport_server,
+        };
 
         TransportServer::new(transport_server)
     }
@@ -134,16 +178,19 @@ impl TransportLayerTestRuntime {
         F: FnOnce(GrpcTransportClient, PeerNode, PeerNode) -> Fut,
         Fut: std::future::Future<Output = T>,
     {
-        // Create two environments
+        // Use provided dispatchers or create defaults
+        let protocol_dispatcher = protocol_dispatcher.unwrap_or_default();
+        let stream_dispatcher = stream_dispatcher.unwrap_or_default();
+
+        // Create dispatcher callback
+        let callback = DispatcherCallback::new();
+
+        // Create two environments; only the remote one runs a server
         let port1 = get_free_port()
             .await
             .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-        let port2 = get_free_port()
-            .await
-            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-
         let env1 = self.create_environment(port1).await?;
-        let env2 = self.create_environment(port2).await?;
+        let env2 = self.create_bound_environment().await?;
 
         // Create transport layer and server
         let local_transport = self.create_transport_layer(&env1)?;
@@ -151,13 +198,6 @@ impl TransportLayerTestRuntime {
 
         let local = env1.peer.clone();
         let remote = env2.peer.clone();
-
-        // Use provided dispatchers or create defaults
-        let protocol_dispatcher = protocol_dispatcher.unwrap_or_default();
-        let stream_dispatcher = stream_dispatcher.unwrap_or_default();
-
-        // Create dispatcher callback
-        let callback = DispatcherCallback::new();
 
         // Start the remote server
         remote_transport_server
@@ -209,20 +249,21 @@ impl TransportLayerTestRuntime {
         F: FnOnce(GrpcTransportClient, PeerNode, PeerNode, PeerNode) -> Fut,
         Fut: std::future::Future<Output = T>,
     {
-        // Create three environments
+        // Use provided dispatchers or create defaults
+        let protocol_dispatcher = protocol_dispatcher.unwrap_or_default();
+        let stream_dispatcher = stream_dispatcher.unwrap_or_default();
+
+        // Create dispatcher callbacks
+        let callback1 = DispatcherCallback::new();
+        let callback2 = DispatcherCallback::new();
+
+        // Create three environments; only the remote ones run servers
         let port1 = get_free_port()
             .await
             .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-        let port2 = get_free_port()
-            .await
-            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-        let port3 = get_free_port()
-            .await
-            .map_err(|e| CommError::InternalCommunicationError(e.to_string()))?;
-
         let env1 = self.create_environment(port1).await?;
-        let env2 = self.create_environment(port2).await?;
-        let env3 = self.create_environment(port3).await?;
+        let env2 = self.create_bound_environment().await?;
+        let env3 = self.create_bound_environment().await?;
 
         // Create transport layer and servers
         let local_transport = self.create_transport_layer(&env1)?;
@@ -232,14 +273,6 @@ impl TransportLayerTestRuntime {
         let local = env1.peer.clone();
         let remote1 = env2.peer.clone();
         let remote2 = env3.peer.clone();
-
-        // Use provided dispatchers or create defaults
-        let protocol_dispatcher = protocol_dispatcher.unwrap_or_default();
-        let stream_dispatcher = stream_dispatcher.unwrap_or_default();
-
-        // Create dispatcher callbacks
-        let callback1 = DispatcherCallback::new();
-        let callback2 = DispatcherCallback::new();
 
         // Start both remote servers
         remote_transport_server1
@@ -561,7 +594,7 @@ pub async fn send_heartbeat(
     remote: &PeerNode,
     network_id: &str,
 ) -> Result<(), CommError> {
-    let msg = protocol_helper::heartbeat(local, network_id);
+    let msg = protocol_helper::heartbeat(local, network_id, Bytes::new());
     transport.send(remote, &msg).await
 }
 
@@ -572,7 +605,7 @@ pub async fn broadcast_heartbeat(
     remotes: &[PeerNode],
     network_id: &str,
 ) -> Result<(), CommError> {
-    let msg = protocol_helper::heartbeat(local, network_id);
+    let msg = protocol_helper::heartbeat(local, network_id, Bytes::new());
     transport.broadcast(remotes, &msg).await
 }
 
@@ -587,4 +620,44 @@ pub struct ThreeNodesResult<T> {
     pub remote_node1: PeerNode,
     pub remote_node2: PeerNode,
     pub result: T,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bound environment holds its port before the server starts, and the
+    /// server delivers messages on that port.
+    #[tokio::test]
+    async fn a_server_serves_from_the_port_its_environment_holds() {
+        let runtime = TransportLayerTestRuntime::new("test".to_string());
+        let remote = runtime.create_bound_environment().await.unwrap();
+        assert!(
+            std::net::TcpListener::bind(("0.0.0.0", remote.port)).is_err(),
+            "the port must be held before the server starts"
+        );
+        let server = runtime.create_transport_layer_server(&remote);
+        let dispatcher = TestProtocolDispatcher::new();
+        let callback = DispatcherCallback::new();
+        server
+            .start(
+                dispatcher.to_handler(remote.peer.clone(), Some(callback.clone())),
+                TestStreamDispatcher::new().to_handler(remote.peer.clone(), None),
+            )
+            .await
+            .expect("start");
+
+        let local = runtime
+            .create_environment(get_free_port().await.unwrap())
+            .await
+            .unwrap();
+        let transport = runtime.create_transport_layer(&local).unwrap();
+        send_heartbeat(Arc::new(transport), &local.peer, &remote.peer, "test")
+            .await
+            .expect("heartbeat");
+        tokio::time::timeout(Duration::from_secs(5), callback.wait_until_dispatched())
+            .await
+            .expect("the heartbeat is dispatched");
+        assert_eq!(dispatcher.received().len(), 1);
+    }
 }

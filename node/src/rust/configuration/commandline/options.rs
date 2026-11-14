@@ -11,6 +11,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use humantime::parse_duration;
+use shared::rust::token_amount::TokenAmount;
 
 use super::cli_static_provisioning::{
     parse_cli_static_dir, parse_cli_static_file, CliStaticDirArg, CliStaticFileArg,
@@ -102,7 +103,8 @@ pub enum OptionsSubCommand {
     Repl,
     Deploy {
         phlo_limit: i64,
-        phlo_price: i64,
+        #[arg(value_parser = TokenAmount::parse)]
+        phlo_price: TokenAmount,
         valid_after_block: i64,
         #[arg(value_parser = ValueParser::new(PrivateKeyConverter::parse))]
         private_key: Option<PrivateKey>,
@@ -113,6 +115,9 @@ pub enum OptionsSubCommand {
     FindDeploy {
         id: Vec<u8>,
     },
+    Transfer(TransferOptions),
+    WalletBalance(WalletBalanceOptions),
+    Cosign(CosignOptions),
     Propose(ProposeOptions),
     ShowBlock {
         hash: String,
@@ -360,13 +365,9 @@ pub struct RunOptions {
     #[arg(long = "validator-private-key-path")]
     pub validator_private_key_path: Option<PathBuf>,
 
-    /// Interval for the casper loop to maintain requested blocks and missing dependent blocks
+    /// Interval of the engine tick that runs until casper is initialized
     #[arg(long = "casper-loop-interval", value_parser = ValueParser::new(parse_duration))]
     pub casper_loop_interval: Option<Duration>,
-
-    /// Timeout for blocks requests
-    #[arg(long = "requested-blocks-timeout", value_parser = ValueParser::new(parse_duration))]
-    pub requested_blocks_timeout: Option<Duration>,
 
     /// Finalization is called every `n` blocks
     #[arg(long = "finalization-rate")]
@@ -436,16 +437,16 @@ pub struct RunOptions {
     pub wallets_file: Option<String>,
 
     /// Minimum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-minimum")]
-    pub bond_minimum: Option<i64>,
+    #[arg(long = "bond-minimum", value_parser = TokenAmount::parse)]
+    pub bond_minimum: Option<TokenAmount>,
 
     /// Configure genesis blockNumber for hard fork
     #[arg(long = "genesis-block-number")]
     pub genesis_block_number: Option<i64>,
 
     /// Maximum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-maximum")]
-    pub bond_maximum: Option<i64>,
+    #[arg(long = "bond-maximum", value_parser = TokenAmount::parse)]
+    pub bond_maximum: Option<TokenAmount>,
 
     /// The length of the validation epoch in blocks
     #[arg(long = "epoch-length")]
@@ -528,7 +529,8 @@ pub struct RunOptions {
 
     /// MinPhloPrice
     #[arg(long = "min-phlo-price")]
-    pub min_phlo_price: Option<i64>,
+    #[arg(value_parser = TokenAmount::parse)]
+    pub min_phlo_price: Option<TokenAmount>,
 
     /// Enable ceremony master mode (creates genesis block if none found)
     #[arg(long = "ceremony-master-mode", action = ArgAction::SetTrue)]
@@ -693,7 +695,8 @@ pub struct DeployOptions {
 
     /// The price of phlo for this transaction in units dust/phlo
     #[arg(long = "phlo-price")]
-    pub phlo_price: u64,
+    #[arg(value_parser = TokenAmount::parse)]
+    pub phlo_price: TokenAmount,
 
     /// Set this value to one less than the current block height
     #[arg(long = "valid-after-block-number")]
@@ -713,6 +716,135 @@ pub struct DeployOptions {
 
     /// Location of the Rholang file to deploy
     pub location: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct TransferOptions {
+    #[arg(long = "to", help = "REV address of the payee")]
+    pub to: String,
+
+    #[arg(
+        long = "amount",
+        help = "Amount of REV to transfer, in its smallest unit"
+    )]
+    pub amount: i64,
+
+    #[arg(long = "phlo-limit", help = "Most phlo the transfer deploy may spend")]
+    pub phlo_limit: i64,
+
+    #[arg(long = "phlo-price", help = "REV paid per phlo")]
+    pub phlo_price: TokenAmount,
+
+    #[arg(
+        long = "valid-after-block-number",
+        default_value_t = 0,
+        help = "Block number after which the deploy is valid"
+    )]
+    pub valid_after_block_number: i64,
+
+    #[arg(
+        long = "private-key",
+        value_parser = ValueParser::new(PrivateKeyConverter::parse),
+        help = "The payer's secp256k1 private key encoded as Base16"
+    )]
+    pub private_key: Option<PrivateKey>,
+
+    #[arg(
+        long = "private-key-path",
+        help = "File with the payer's encrypted private key"
+    )]
+    pub private_key_path: Option<PathBuf>,
+
+    #[arg(long = "shard-id", default_value = "", help = "The name of the shard")]
+    pub shard_id: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CosignOptions {
+    #[command(subcommand)]
+    pub action: CosignAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum CosignAction {
+    /// Sign a deploy as its deployer and write it to an envelope file
+    Prepare {
+        #[arg(long = "phlo-limit", help = "Most phlo the deploy may spend")]
+        phlo_limit: i64,
+
+        #[arg(long = "phlo-price", help = "REV paid per phlo")]
+        phlo_price: TokenAmount,
+
+        #[arg(
+            long = "valid-after-block-number",
+            default_value_t = 0,
+            help = "Block number after which the deploy is valid"
+        )]
+        valid_after_block_number: i64,
+
+        #[arg(
+            long = "private-key",
+            value_parser = ValueParser::new(PrivateKeyConverter::parse),
+            help = "The deployer's secp256k1 private key encoded as Base16"
+        )]
+        private_key: Option<PrivateKey>,
+
+        #[arg(
+            long = "private-key-path",
+            help = "File with the deployer's encrypted private key"
+        )]
+        private_key_path: Option<PathBuf>,
+
+        #[arg(long = "shard-id", default_value = "", help = "The name of the shard")]
+        shard_id: String,
+
+        #[arg(
+            long = "cosigner",
+            help = "A required cosigner's public key encoded as Base16 (repeat for each cosigner, in order)"
+        )]
+        cosigners: Vec<String>,
+
+        #[arg(long = "envelope", help = "Envelope file to write")]
+        envelope: String,
+
+        /// Location of the Rholang file to deploy
+        location: String,
+    },
+    /// Add a cosignature to an envelope file
+    Sign {
+        #[arg(long = "envelope", help = "Envelope file to cosign in place")]
+        envelope: String,
+
+        #[arg(
+            long = "private-key",
+            value_parser = ValueParser::new(PrivateKeyConverter::parse),
+            help = "The cosigner's secp256k1 private key encoded as Base16"
+        )]
+        private_key: Option<PrivateKey>,
+
+        #[arg(
+            long = "private-key-path",
+            help = "File with the cosigner's encrypted private key"
+        )]
+        private_key_path: Option<PathBuf>,
+    },
+    /// Submit a cosigned envelope file
+    Submit {
+        #[arg(long = "envelope", help = "Envelope file to submit")]
+        envelope: String,
+    },
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct WalletBalanceOptions {
+    #[arg(long = "address", help = "REV address of the wallet")]
+    pub address: String,
+
+    #[arg(
+        long = "block-hash",
+        help = "Block whose post-state is read; the last finalized block if absent"
+    )]
+    pub block_hash: Option<String>,
 }
 
 /// Show block subcommand - View properties of a block known by Casper
@@ -918,5 +1050,135 @@ mod static_provisioning_clap_tests {
             msg.contains("not absolute"),
             "clap must surface the parser's error; got {msg}"
         );
+    }
+}
+
+#[cfg(test)]
+mod wallet_clap_tests {
+    use clap::Parser;
+
+    use super::*;
+
+    const KEY: &str = "5a0bde2f5857124b1379c78535b07a278e3b9cefbcacc02e62ab3294c02765a1";
+
+    #[test]
+    fn transfer_parses_named_flags() {
+        let opts = Options::try_parse_from([
+            "f1r3fly",
+            "transfer",
+            "--to",
+            "1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5",
+            "--amount",
+            "100",
+            "--phlo-limit",
+            "100000",
+            "--phlo-price",
+            "1",
+            "--private-key",
+            KEY,
+            "--shard-id",
+            "root",
+        ])
+        .expect("clap parse must succeed");
+        let Some(OptionsSubCommand::Transfer(t)) = opts.subcommand else {
+            panic!("expected Transfer subcommand");
+        };
+        assert_eq!(
+            t.to,
+            "1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5"
+        );
+        assert_eq!(
+            (t.amount, t.phlo_limit, t.phlo_price),
+            (100, 100000, 1.into())
+        );
+        assert_eq!(t.valid_after_block_number, 0);
+        assert!(t.private_key.is_some());
+        assert_eq!(t.shard_id, "root");
+    }
+
+    #[test]
+    fn transfer_requires_a_payee_and_an_amount() {
+        let missing = Options::try_parse_from(["f1r3fly", "transfer", "--amount", "1"]);
+        assert!(missing.is_err());
+    }
+
+    #[test]
+    fn wallet_balance_parses() {
+        let opts = Options::try_parse_from(["f1r3fly", "wallet-balance", "--address", "abc"])
+            .expect("clap parse must succeed");
+        let Some(OptionsSubCommand::WalletBalance(q)) = opts.subcommand else {
+            panic!("expected WalletBalance subcommand");
+        };
+        assert_eq!(q.address, "abc");
+        assert!(q.block_hash.is_none());
+    }
+
+    #[test]
+    fn cosign_prepare_sign_and_submit_parse() {
+        let opts = Options::try_parse_from([
+            "f1r3fly",
+            "cosign",
+            "prepare",
+            "--phlo-limit",
+            "1000",
+            "--phlo-price",
+            "2",
+            "--private-key",
+            KEY,
+            "--cosigner",
+            "04aa",
+            "--cosigner",
+            "04bb",
+            "--envelope",
+            "e.hex",
+            "deploy.rho",
+        ])
+        .expect("clap parse must succeed");
+        let Some(OptionsSubCommand::Cosign(c)) = opts.subcommand else {
+            panic!("expected Cosign subcommand");
+        };
+        let CosignAction::Prepare {
+            phlo_limit,
+            phlo_price,
+            envelope,
+            location,
+            cosigners,
+            ..
+        } = c.action
+        else {
+            panic!("expected prepare");
+        };
+        assert_eq!((phlo_limit, phlo_price), (1000, 2.into()));
+        assert_eq!(cosigners, vec!["04aa".to_string(), "04bb".to_string()]);
+        assert_eq!(
+            (envelope.as_str(), location.as_str()),
+            ("e.hex", "deploy.rho")
+        );
+
+        let opts = Options::try_parse_from([
+            "f1r3fly",
+            "cosign",
+            "sign",
+            "--envelope",
+            "e.hex",
+            "--private-key",
+            KEY,
+        ])
+        .expect("clap parse must succeed");
+        assert!(matches!(
+            opts.subcommand,
+            Some(OptionsSubCommand::Cosign(CosignOptions {
+                action: CosignAction::Sign { .. }
+            }))
+        ));
+
+        let opts = Options::try_parse_from(["f1r3fly", "cosign", "submit", "--envelope", "e.hex"])
+            .expect("clap parse must succeed");
+        assert!(matches!(
+            opts.subcommand,
+            Some(OptionsSubCommand::Cosign(CosignOptions {
+                action: CosignAction::Submit { .. }
+            }))
+        ));
     }
 }

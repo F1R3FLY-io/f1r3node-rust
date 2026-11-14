@@ -88,17 +88,28 @@ impl TrieExporter for RSpaceExporterImpl {
         &self,
         keys: Vec<Blake2b256Hash>,
     ) -> Result<Vec<(KeyHash, Value)>, KvStoreError> {
+        // Imported leaves live under the raw hash bytes, and leaves written by a
+        // checkpoint under the bincode-serialized hash. Read both, in the order
+        // `RSpaceHistoryReaderImpl` uses.
+        let raw_keys: Vec<_> = keys.iter().map(|key| key.bytes()).collect();
+        let raw = self.source_value_store.get(&raw_keys)?;
+
         let serialized_keys: Vec<_> = keys
             .iter()
-            .map(|key| bincode::serialize(&key).unwrap())
+            .zip(raw.iter())
+            .filter(|(_, value_option)| value_option.is_none())
+            .map(|(key, _)| bincode::serialize(&key).unwrap())
             .collect();
-
-        let loaded = self.source_value_store.get(&serialized_keys)?;
+        let mut serialized = self.source_value_store.get(&serialized_keys)?.into_iter();
 
         Ok(keys
             .into_iter()
-            .zip(loaded.into_iter())
-            .filter_map(|(key, value_option)| value_option.map(|value| (key, value)))
+            .zip(raw)
+            .filter_map(|(key, value_option)| {
+                value_option
+                    .or_else(|| serialized.next().flatten())
+                    .map(|value| (key, value))
+            })
             .collect())
     }
 }

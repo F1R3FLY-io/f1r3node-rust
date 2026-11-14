@@ -5,6 +5,7 @@ use heed::types::SerdeBincode;
 use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
 
 use super::key_value_store::{KeyValueStore, KvStoreError};
+use crate::rust::blocking::in_blocking;
 use crate::rust::ByteBuffer;
 
 // `heed::Database` is a `Copy` handle (a `u32` dbi) and is `Send + Sync`; it
@@ -21,28 +22,16 @@ pub struct LmdbKeyValueStore {
     pub db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
 }
 
-fn in_blocking<T>(f: impl FnOnce() -> T) -> T {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(f)
-        }
-        _ => f(),
-    }
-}
-
 impl KeyValueStore for LmdbKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
+    // Point reads run on the calling worker. A caller that loops over many of
+    // them hands the worker off around the whole loop with `in_blocking`.
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
-        in_blocking(|| {
-            let reader = self.env.read_txn()?;
-            let results = keys
-                .iter()
-                .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
-                .collect();
-            drop(reader);
-            results
-        })
+        let reader = self.env.read_txn()?;
+        keys.iter()
+            .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
+            .collect()
     }
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
@@ -71,6 +60,22 @@ impl KeyValueStore for LmdbKeyValueStore {
                 Err(HeedError::Mdb(MdbError::KeyExist)) => Ok(false),
                 Err(error) => Err(error.into()),
             }
+        })
+    }
+
+    fn delete_if_value(
+        &self,
+        key: &ByteBuffer,
+        expected: &ByteBuffer,
+    ) -> Result<bool, KvStoreError> {
+        in_blocking(|| {
+            let mut writer = self.env.write_txn()?;
+            if self.db.get(&writer, key)?.as_ref() != Some(expected) {
+                return Ok(false);
+            }
+            let removed = self.db.delete(&mut writer, key)?;
+            writer.commit()?;
+            Ok(removed)
         })
     }
 
@@ -161,12 +166,27 @@ impl KeyValueStore for LmdbKeyValueStore {
         drop(reader);
         Ok(has_first)
     }
+
+    fn entry_count(&self) -> Result<Option<usize>, KvStoreError> {
+        let reader = self.env.read_txn()?;
+        let count = self.db.len(&reader)?;
+        drop(reader);
+        Ok(Some(count as usize))
+    }
 }
 
 /// One store's worth of key/value pairs to write, paired with the store to write them to.
 pub type StoreWrite<'a> = (&'a dyn KeyValueStore, Vec<(ByteBuffer, ByteBuffer)>);
 
 type LmdbStoreWrite<'a> = (&'a LmdbKeyValueStore, &'a Vec<(ByteBuffer, ByteBuffer)>);
+
+pub fn shares_one_lmdb_env(stores: &[&dyn KeyValueStore]) -> bool {
+    let lmdb: Option<Vec<&LmdbKeyValueStore>> = stores
+        .iter()
+        .map(|store| store.as_any().downcast_ref::<LmdbKeyValueStore>())
+        .collect();
+    lmdb.is_some_and(|stores| stores.windows(2).all(|w| Arc::ptr_eq(&w[0].env, &w[1].env)))
+}
 
 /// Writes to multiple stores in a single LMDB write transaction when they
 /// are all `LmdbKeyValueStore`s backed by the same `Env` — LMDB serialises
@@ -181,26 +201,22 @@ type LmdbStoreWrite<'a> = (&'a LmdbKeyValueStore, &'a Vec<(ByteBuffer, ByteBuffe
 /// `put` is itself a plain `write_txn` + `db.put` loop + `commit`, with no
 /// additional map-full/resize handling to lose.
 pub fn batched_put(writes: Vec<StoreWrite<'_>>) -> Result<(), KvStoreError> {
-    let lmdb_stores: Option<Vec<LmdbStoreWrite<'_>>> = writes
-        .iter()
-        .map(|(store, kv_pairs)| {
-            store
-                .as_any()
-                .downcast_ref::<LmdbKeyValueStore>()
-                .map(|s| (s, kv_pairs))
-        })
-        .collect();
-
-    let batchable_stores = match &lmdb_stores {
-        Some(stores)
-            if stores
-                .windows(2)
-                .all(|w| Arc::ptr_eq(&w[0].0.env, &w[1].0.env)) =>
-        {
-            Some(stores)
-        }
-        _ => None,
+    let stores: Vec<&dyn KeyValueStore> = writes.iter().map(|(store, _)| *store).collect();
+    let lmdb_stores: Option<Vec<LmdbStoreWrite<'_>>> = if shares_one_lmdb_env(&stores) {
+        writes
+            .iter()
+            .map(|(store, kv_pairs)| {
+                store
+                    .as_any()
+                    .downcast_ref::<LmdbKeyValueStore>()
+                    .map(|s| (s, kv_pairs))
+            })
+            .collect()
+    } else {
+        None
     };
+
+    let batchable_stores = lmdb_stores.as_ref();
 
     if let Some(stores) = batchable_stores {
         let Some((first, _)) = stores.first() else {
@@ -251,16 +267,30 @@ mod batched_put_tests {
 
     use super::*;
 
-    pub(super) fn open_env() -> Arc<Env> {
+    // Owns a `TempDir` alongside the `Arc<Env>` so that when the test binding
+    // drops, the Env closes before the directory is removed. Leaking the
+    // TempDir (as the pre-#1014 helper did) kept the Env alive until process
+    // exit and, on macOS, leaked one SysV semaphore set per test env.
+    pub(super) struct TestEnv {
+        env: Arc<Env>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for TestEnv {
+        type Target = Arc<Env>;
+        fn deref(&self) -> &Self::Target { &self.env }
+    }
+
+    pub(super) fn open_env() -> TestEnv {
         let dir = tempfile::tempdir().unwrap();
-        // Leak the tempdir path so the Env (and its mmap) stay valid for the
-        // lifetime of the test; each test opens its own directory.
-        let path = Box::leak(Box::new(dir)).path();
         let mut builder = EnvOpenOptions::new();
         builder.map_size(10 * 1024 * 1024);
         builder.max_dbs(4);
-        let env = unsafe { builder.open(path).unwrap() };
-        Arc::new(env)
+        let env = unsafe { builder.open(dir.path()).unwrap() };
+        TestEnv {
+            env: Arc::new(env),
+            _dir: dir,
+        }
     }
 
     pub(super) fn open_store(env: &Arc<Env>, name: &str) -> LmdbKeyValueStore {
@@ -268,6 +298,25 @@ mod batched_put_tests {
         let db = env.create_database(&mut wtxn, Some(name)).unwrap();
         wtxn.commit().unwrap();
         LmdbKeyValueStore::new(env.clone(), db)
+    }
+
+    // Bundles an owned TestEnv with the store so the Env closes and the
+    // TempDir is removed when the test binding drops. Returned by the helper
+    // tests that used to leak the dir.
+    pub(super) struct TestLmdbStore {
+        store: LmdbKeyValueStore,
+        _env: TestEnv,
+    }
+
+    impl std::ops::Deref for TestLmdbStore {
+        type Target = LmdbKeyValueStore;
+        fn deref(&self) -> &Self::Target { &self.store }
+    }
+
+    pub(super) fn open_scoped_store(name: &str) -> TestLmdbStore {
+        let env = open_env();
+        let store = open_store(&env, name);
+        TestLmdbStore { store, _env: env }
     }
 
     pub(super) fn kv(pairs: &[(&str, &str)]) -> Vec<(ByteBuffer, ByteBuffer)> {
@@ -319,6 +368,18 @@ mod batched_put_tests {
                     Ok(true)
                 }
             }
+        }
+
+        fn delete_if_value(
+            &self,
+            key: &ByteBuffer,
+            expected: &ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            let mut map = self.map.lock().unwrap();
+            if map.get(key) != Some(expected) {
+                return Ok(false);
+            }
+            Ok(map.remove(key).is_some())
         }
 
         fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
@@ -391,6 +452,17 @@ mod batched_put_tests {
     fn empty_input_is_a_noop() { batched_put(vec![]).unwrap(); }
 
     #[test]
+    fn shares_one_lmdb_env_only_for_lmdb_stores_on_one_env() {
+        let env = open_env();
+        let (a, b) = (open_store(&env, "a"), open_store(&env, "b"));
+        let other = open_store(&open_env(), "c");
+        let mem = InMemStore::new();
+        assert!(shares_one_lmdb_env(&[&a, &b]));
+        assert!(!shares_one_lmdb_env(&[&a, &other]));
+        assert!(!shares_one_lmdb_env(&[&a, &mem]));
+    }
+
+    #[test]
     fn single_store_batches_trivially() {
         let env = open_env();
         let a = open_store(&env, "a");
@@ -406,11 +478,11 @@ mod batched_put_tests {
 mod store_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::batched_put_tests::{kv, open_env, open_store};
+    use super::batched_put_tests::{kv, open_env, open_scoped_store, open_store, TestLmdbStore};
     use super::*;
 
-    fn seeded_store() -> LmdbKeyValueStore {
-        let store = open_store(&open_env(), "s");
+    fn seeded_store() -> TestLmdbStore {
+        let store = open_scoped_store("s");
         store
             .put(kv(&[("k1", "v1"), ("k2", "v2"), ("k3", "v3")]))
             .unwrap();
@@ -442,7 +514,7 @@ mod store_tests {
 
     #[test]
     fn put_one_if_absent_inserts_once_and_keeps_first_value() {
-        let store = open_store(&open_env(), "s");
+        let store = open_scoped_store("s");
         assert!(store
             .put_one_if_absent(b"k".to_vec(), b"first".to_vec())
             .unwrap());
@@ -466,6 +538,53 @@ mod store_tests {
         assert_eq!(
             store.get_one(&b"k2".to_vec()).unwrap(),
             Some(b"v2".to_vec())
+        );
+    }
+
+    #[test]
+    fn conditional_delete_preserves_different_and_absent_values() {
+        let store = seeded_store();
+        let key = b"k1".to_vec();
+        assert!(!store.delete_if_value(&key, &b"other".to_vec()).unwrap());
+        assert_eq!(store.get_one(&key).unwrap(), Some(b"v1".to_vec()));
+        assert!(store.delete_if_value(&key, &b"v1".to_vec()).unwrap());
+        assert!(!store.delete_if_value(&key, &b"v1".to_vec()).unwrap());
+        assert_eq!(
+            store.get_one(&b"k2".to_vec()).unwrap(),
+            Some(b"v2".to_vec())
+        );
+    }
+
+    #[test]
+    fn concurrent_conditional_deletes_remove_one_lmdb_record() {
+        let env = open_env();
+        let stores = [open_store(&env, "shared"), open_store(&env, "shared")];
+        stores[0]
+            .put_one(b"key".to_vec(), b"value".to_vec())
+            .unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = stores
+            .into_iter()
+            .map(|store| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .delete_if_value(&b"key".to_vec(), &b"value".to_vec())
+                        .unwrap()
+                })
+            })
+            .collect();
+        let removed = handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(removed, 1);
+        assert_eq!(
+            open_store(&env, "shared")
+                .get_one(&b"key".to_vec())
+                .unwrap(),
+            None
         );
     }
 
@@ -514,8 +633,20 @@ mod store_tests {
     }
 
     #[test]
-    fn non_empty_flips_when_first_entry_lands() {
+    fn entry_count_tracks_puts_and_deletes() {
         let store = open_store(&open_env(), "s");
+        assert_eq!(store.entry_count().unwrap(), Some(0));
+        store.put_one(b"a".to_vec(), b"v".to_vec()).unwrap();
+        store.put_one(b"b".to_vec(), b"v".to_vec()).unwrap();
+        store.put_one(b"a".to_vec(), b"w".to_vec()).unwrap();
+        assert_eq!(store.entry_count().unwrap(), Some(2));
+        store.delete(vec![b"a".to_vec()]).unwrap();
+        assert_eq!(store.entry_count().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn non_empty_flips_when_first_entry_lands() {
+        let store = open_scoped_store("s");
         assert!(!store.non_empty().unwrap());
         store.put_one(b"k".to_vec(), b"v".to_vec()).unwrap();
         assert!(store.non_empty().unwrap());
@@ -558,5 +689,52 @@ mod store_tests {
             store.get_one(&b"k9".to_vec()).unwrap(),
             Some(b"fresh".to_vec())
         );
+    }
+
+    // Run manually:
+    // cargo test -p shared --release concurrent_point_reads -- --ignored --nocapture
+    //
+    // Point reads per second from 1, 16 and 64 concurrent tasks on a runtime
+    // with a worker per core. Throughput should grow with the readers; a read
+    // path that serializes callers caps it near the single-reader rate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore]
+    async fn concurrent_point_reads_scale_with_readers() {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+        let store = open_scoped_store("reads");
+        let keys: Arc<Vec<ByteBuffer>> =
+            Arc::new((0..1024u32).map(|i| i.to_be_bytes().to_vec()).collect());
+        store
+            .put(keys.iter().map(|key| (key.clone(), key.clone())).collect())
+            .unwrap();
+
+        for readers in [1usize, 16, 64] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let window = std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + window;
+            let tasks: Vec<_> = (0..readers)
+                .map(|reader| {
+                    let (store, keys, reads) = (store.clone(), keys.clone(), reads.clone());
+                    tokio::spawn(async move {
+                        let mut index = reader;
+                        while std::time::Instant::now() < deadline {
+                            store.get_one(&keys[index % keys.len()]).unwrap();
+                            reads.fetch_add(1, Ordering::Relaxed);
+                            index += readers;
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.await.unwrap();
+            }
+            tracing::info!(
+                target: "f1r3.bench.lmdb_point_reads",
+                readers,
+                reads_per_second = reads.load(Ordering::Relaxed) as f64 / window.as_secs_f64(),
+                "concurrent point reads"
+            );
+        }
     }
 }

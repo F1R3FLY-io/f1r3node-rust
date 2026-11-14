@@ -11,6 +11,8 @@ Claim:
 
 ```json
 {
+  "schema": "cbc-claim/v1",
+  "claim_id": "PR299-REJECTION-COUNTS",
   "artifact": {
     "path": "casper/src/rust/util/rholang/interpreter_util.rs",
     "commit": "eac5665a0",
@@ -49,6 +51,8 @@ Claim:
 
 ```json
 {
+  "schema": "cbc-claim/v1",
+  "claim_id": "CLAIM-FINALITY-001",
   "artifact": {
     "path": "casper/src/rust/util/rholang/interpreter_util.rs",
     "commit": "c9aff7732",

@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -34,8 +33,14 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
     }
 
     // Bonds function: _.map(pk => pk -> 10L).toMap
-    fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-        validators.into_iter().map(|pk| (pk, 10i64)).collect()
+    fn bonds_function(
+        validators: Vec<PublicKey>,
+    ) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
+        validators
+            .into_iter()
+            .map(|pk| (pk, 10u64))
+            .map(|(key, stake)| (key, stake.into()))
+            .collect()
     }
 
     let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(
@@ -117,8 +122,14 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
 /// that all validators agree on the last finalized block at the end.
 #[tokio::test]
 async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_robin() {
-    fn bonds_function(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-        validators.into_iter().map(|pk| (pk, 10i64)).collect()
+    fn bonds_function(
+        validators: Vec<PublicKey>,
+    ) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
+        validators
+            .into_iter()
+            .map(|pk| (pk, 10u64))
+            .map(|(key, stake)| (key, stake.into()))
+            .collect()
     }
 
     let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(
@@ -173,25 +184,25 @@ async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_
 
     // After 5 blocks in round-robin with 3 validators (equal bonds),
     // finalization should have advanced past genesis.
-    let lfb_after5 = nodes[0].casper.last_finalized_block().await.unwrap();
+    let lfb_after5 = nodes[0].casper.finalize().await.unwrap();
 
     let _block6 = TestNode::propagate_block_at_index(&mut nodes, 2, &[deploy_datas[5].clone()])
         .await
         .unwrap();
 
-    let lfb_after6 = nodes[0].casper.last_finalized_block().await.unwrap();
+    let lfb_after6 = nodes[0].casper.finalize().await.unwrap();
 
     let _block7 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[6].clone()])
         .await
         .unwrap();
 
-    let lfb_after7 = nodes[0].casper.last_finalized_block().await.unwrap();
+    let lfb_after7 = nodes[0].casper.finalize().await.unwrap();
 
     let _block8 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[7].clone()])
         .await
         .unwrap();
 
-    let lfb_after8 = nodes[0].casper.last_finalized_block().await.unwrap();
+    let lfb_after8 = nodes[0].casper.finalize().await.unwrap();
 
     // Verify finalization advances monotonically (block number never decreases)
     assert!(
@@ -228,7 +239,7 @@ async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_
             .clone()])
         .await
         .unwrap();
-        let next_lfb = nodes[0].casper.last_finalized_block().await.unwrap();
+        let next_lfb = nodes[0].casper.finalize().await.unwrap();
         assert!(
             next_lfb.body.state.block_number >= latest_lfb.body.state.block_number,
             "LFB block number should not decrease during extended round-robin: next={} < prev={}",
@@ -244,8 +255,8 @@ async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_
     );
 
     // Verify all validators agree on finalization
-    let lfb_node1 = nodes[1].casper.last_finalized_block().await.unwrap();
-    let lfb_node2 = nodes[2].casper.last_finalized_block().await.unwrap();
+    let lfb_node1 = nodes[1].casper.finalize().await.unwrap();
+    let lfb_node2 = nodes[2].casper.finalize().await.unwrap();
     assert_eq!(
         lfb_node1.block_hash, latest_lfb.block_hash,
         "Node1 LFB should match Node0 LFB"

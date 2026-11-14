@@ -26,10 +26,13 @@ on:
       - ca-release
     tags:
       - "**"
-  # `labeled` carries the ci-heavy opt-in. `edited` stays: a stacked pull
-  # request's base change arrives as an edit, and the gate reads the base ref.
+  # No `labeled` type: a labeled run replaces the checks of the head with
+  # pending checks, and the queued label of the merge queue then failed the
+  # merge (pull request #826). ci-heavy-label.yml reruns this workflow for the
+  # ci-heavy label. `edited` stays: a stacked pull request's base change
+  # arrives as an edit, and the gate reads the base ref.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   merge_group:
 
 # GitHub keeps one running item and one pending item in each concurrency group.
@@ -91,6 +94,7 @@ jobs:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HAS_HEAVY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-heavy') }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
           MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
@@ -219,6 +223,20 @@ jobs:
             printf '%s %s\n' "$second" "$run_id"
           }
 
+          # A rerun from ci-heavy-label.yml replays the event of the first
+          # run, whose labels can lack ci-heavy, so the current labels decide.
+          # An API error falls back to the labels of the event.
+          pull_request_has_heavy_label() {
+            local current
+            if [[ "${PR_NUMBER:-}" =~ ^[1-9][0-9]*$ ]] &&
+              current="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+                --jq 'any(.labels[]; .name == "ci-heavy")')"; then
+              [ "$current" = true ]
+              return
+            fi
+            [ "$PR_HAS_HEAVY_LABEL" = true ]
+          }
+
           # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
           # naming a top PR, or a PR labelled ci-heavy. A plain PR push runs the
           # GitHub-hosted checks only and reaches the heavy pipeline through the
@@ -258,7 +276,7 @@ jobs:
               reused_heavy_run=""
             fi
           elif [ "$EVENT_NAME" = pull_request ] \
-            && [ "$PR_HAS_HEAVY_LABEL" = true ] \
+            && pull_request_has_heavy_label \
             && [ "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] \
             && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ] \
               || [ "$PR_BASE_REF" = ca-canary ] || [ "$PR_BASE_REF" = ca-release ]; } \
@@ -291,7 +309,7 @@ jobs:
           git fetch origin --tags --force
 
           # Version from latest matching tag (falls back to short SHA if no tag yet)
-          VERSION="$(git describe --tags --always)"
+          VERSION="$(git describe --tags --always --exclude '*/*')"
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
           # Derive BRANCH for image tag suffix logic downstream
@@ -444,6 +462,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -465,42 +484,126 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_SHA: ${{ github.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
         shell: bash -euo pipefail {0}
         run: |
           unshallow=()
           if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
-          git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
+          [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$MERGE_SHA" "$HEAD_SHA"
+          event_base_sha="$BASE_SHA"
+          read -r merge_base_sha merge_head_sha extra_parent <<< "$(git show -s --format=%P "$MERGE_SHA")"
+          if ! [[ "$merge_base_sha" =~ ^[0-9a-f]{40}$ ]] ||
+            [ "$merge_head_sha" != "$HEAD_SHA" ] || [ -n "$extra_parent" ]; then
+            echo '::error::The proposed merge revision does not match the pull request head.'
+            exit 1
+          fi
+          BASE_SHA="$merge_base_sha"
+          echo "Commit Policy uses merge target $BASE_SHA from $MERGE_SHA."
+          source_validator="$RUNNER_TEMP/commit-policy-source.sh"
+          policy_revision="$BASE_SHA"
+          source_branch=
+          if ! git cat-file -e "${BASE_SHA}:.github/scripts/commit-policy-source.sh" 2>/dev/null &&
+            [ "${PR_AUTHOR:-}" = 'f1r3node-promotion[bot]' ] && [ "${PR_AUTHOR_TYPE:-}" = Bot ]; then
+            case "${BASE_REF:-}:${HEAD_REF:-}" in
+              master:promote/*) source_branch=dev ;;
+              ca-release:promote/ca-release-*) source_branch=ca-canary ;;
+              dev:backmerge/master-*) source_branch=master ;;
+              ca-canary:backmerge/ca-release-*) source_branch=ca-release ;;
+              ca-canary:ca/sync-dev-*) source_branch=dev ;;
+            esac
+          fi
+          if [ -n "$source_branch" ]; then
+            [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+            [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+            metadata="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq \
+              '[.base.repo.full_name, .head.repo.full_name, .base.ref, .head.ref, .base.sha, .head.sha, .user.login, .user.type] | @tsv')"
+            expected="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+              "$GITHUB_REPOSITORY" "$GITHUB_REPOSITORY" "$BASE_REF" "$HEAD_REF" \
+              "$event_base_sha" "$HEAD_SHA" "$PR_AUTHOR" "$PR_AUTHOR_TYPE")"
+            if [ "$metadata" != "$expected" ]; then
+              echo '::error::The transfer metadata does not match the workflow event.'
+              exit 1
+            fi
+            source_metadata="$(gh api "repos/$GITHUB_REPOSITORY/branches/$source_branch" --jq \
+              '[.protected, .commit.sha] | @tsv')"
+            IFS=$'\t' read -r protected source_tip <<< "$source_metadata"
+            if [ "$protected" != true ] || ! [[ "$source_tip" =~ ^[0-9a-f]{40}$ ]]; then
+              echo '::error::The transfer source must be a protected branch with a valid commit.'
+              exit 1
+            fi
+            git fetch --quiet --no-tags --filter=tree:0 origin "$source_tip"
+            policy_revision="$(git merge-base "$HEAD_SHA" "$source_tip")"
+            git show "${policy_revision}:.github/scripts/commit-policy-source.sh" > "$source_validator"
+            echo "Commit Policy uses accepted $source_branch policy at $policy_revision."
+          fi
+          ratification=(--ratified-from "$BASE_SHA")
+          ratified_revisions=("$BASE_SHA")
+          if [ -n "$source_branch" ] || git show "${BASE_SHA}:.github/scripts/commit-policy-source.sh" > "$source_validator" 2>/dev/null; then
+            source_bases="$(bash "$source_validator")"
+            while IFS= read -r source_sha; do
+              if [ -n "$source_sha" ]; then
+                ratification+=(--ratified-from "$source_sha")
+                ratified_revisions+=("$source_sha")
+              fi
+            done <<< "$source_bases"
+          else
+            echo "::notice::Source ratification is disabled until the validator exists in the base commit."
+          fi
           count="$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}")"
           if [ "$count" -gt 250 ]; then
-            echo "::warning::The pull request has ${count} commits; the commits API lists 250, so later author commits are not exempt"
+            echo "::warning::The pull request has ${count} commits; contributor exemptions use the first 250 API entries. Team author checks also resolve individual commits."
           fi
           # commit-policy-exemptions.sh lists the commits of a human pull
           # request author and the commits of an imported fork pull request.
-          # The base commit's copy runs, so a pull request cannot widen its own
-          # exemption. Before the script reaches the base branch, the pull
-          # request's copy runs.
           exempt="$RUNNER_TEMP/exempt-authors.txt"
           exemptions="$RUNNER_TEMP/commit-policy-exemptions.sh"
-          git show "${BASE_SHA}:.github/scripts/commit-policy-exemptions.sh" > "$exemptions" 2>/dev/null ||
-            cp .github/scripts/commit-policy-exemptions.sh "$exemptions"
+          if [ -n "$source_branch" ]; then
+            git show "${policy_revision}:.github/scripts/commit-policy-exemptions.sh" > "$exemptions"
+          else
+            git show "${BASE_SHA}:.github/scripts/commit-policy-exemptions.sh" > "$exemptions" 2>/dev/null ||
+              cp .github/scripts/commit-policy-exemptions.sh "$exemptions"
+          fi
           bash "$exemptions" > "$exempt"
-          # The base commit's denied list applies, so a pull request cannot
-          # remove its own block. Before the list reaches the base branch,
-          # the pull request's copy applies.
           denied="$RUNNER_TEMP/denied-identities.txt"
-          git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied" 2>/dev/null ||
-            cp .github/denied-identities.txt "$denied"
-          # The base commit's checker runs, so a pull request cannot weaken its
-          # own check. Before the checker reaches the base branch, the pull
-          # request's copy runs.
           checker="$RUNNER_TEMP/check-commit-trailers.sh"
-          git show "${BASE_SHA}:.github/scripts/check-commit-trailers.sh" > "$checker" 2>/dev/null ||
-            cp .github/scripts/check-commit-trailers.sh "$checker"
+          if [ -n "$source_branch" ]; then
+            git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied"
+            git show "${policy_revision}:.github/denied-identities.txt" > "$RUNNER_TEMP/source-denied-identities.txt"
+            printf '\n' >> "$denied"
+            cat "$RUNNER_TEMP/source-denied-identities.txt" >> "$denied"
+            git show "${policy_revision}:.github/scripts/check-commit-trailers.sh" > "$checker"
+          else
+            git show "${BASE_SHA}:.github/denied-identities.txt" > "$denied" 2>/dev/null ||
+              cp .github/denied-identities.txt "$denied"
+            git show "${BASE_SHA}:.github/scripts/check-commit-trailers.sh" > "$checker" 2>/dev/null ||
+              cp .github/scripts/check-commit-trailers.sh "$checker"
+          fi
+          if bash "$checker" range "${BASE_SHA}..${HEAD_SHA}" \
+            "${ratification[@]}" --exempt-authors "$exempt" --denied "$denied" > "$RUNNER_TEMP/identity-errors" 2>&1; then
+            cat "$RUNNER_TEMP/identity-errors"
+            exit 0
+          else
+            result=$?
+          fi
+          team="$RUNNER_TEMP/commit-policy-team.sh"
+          if [ "$result" -ne 1 ] || grep -Eq '^  (denied identity|forbidden trailer):' "$RUNNER_TEMP/identity-errors" ||
+            ! git show "${policy_revision}:.github/scripts/commit-policy-team.sh" > "$team" 2>/dev/null; then
+            cat "$RUNNER_TEMP/identity-errors" >&2
+            exit "$result"
+          fi
+          bash "$team" exempt "${BASE_SHA}..${HEAD_SHA}" "$exempt" "${ratified_revisions[@]}" > "$RUNNER_TEMP/team-exemptions"
+          cat "$RUNNER_TEMP/team-exemptions" >> "$exempt"
           bash "$checker" range "${BASE_SHA}..${HEAD_SHA}" \
-            --ratified-from "$BASE_SHA" --exempt-authors "$exempt" --denied "$denied"
+            "${ratification[@]}" --exempt-authors "$exempt" --denied "$denied"
 
   # Static analysis and repository policy checks. No behavioral test runs here.
   static_checks:
@@ -530,6 +633,10 @@ jobs:
       - name: Verify Dockerfile workspace copies
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-dockerfile-workspace.sh
+
+      - name: Verify no tracked validator keys
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/check-tracked-key-material.sh
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -583,13 +690,33 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ci-stack-gate.sh
 
+      - name: Verify workflow revision selection
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ci-workflow-refs.sh
+
+      - name: Verify candidate integration pins
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-system-integration-pin.sh
+
       - name: Verify image publish tags
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-image-publish-tags.sh
 
+      - name: Verify build identity workflow
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-build-identity-workflow.sh
+
       - name: Verify release train tag
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-tag-ca-release.sh
+
+      - name: Verify release train soak gate
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-soak-gate.sh
+
+      - name: Verify release train soak dispatch
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ca-soak-dispatch.sh
 
       - name: Verify soak schedule routing
         shell: bash -euo pipefail {0}
@@ -606,6 +733,10 @@ jobs:
       - name: Verify ephemeral runner run tagging
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ephemeral-run-tagging.sh
+
+      - name: Verify casper crash backtraces
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-casper-crash-backtraces.sh
 
       - name: Verify CI runner reclaim
         shell: bash -euo pipefail {0}
@@ -639,9 +770,21 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-open-backmerge-pr.sh
 
+      - name: Verify the ci-heavy label rerun
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-rerun-ci-for-heavy-label.sh
+
+      - name: Verify the ci-heavy waiver record
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-record-ci-heavy-waiver.sh
+
       - name: Verify Promotion Source check
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-check-promotion-source.sh
+
+      - name: Verify benchmark target check
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-require-repository-commit.sh
 
       - name: Verify daily back-merge provenance
         shell: bash -euo pipefail {0}
@@ -651,6 +794,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-check-dockerfile-workspace.sh
 
+      - name: Verify tracked validator key check
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-check-tracked-key-material.sh
+
       - name: Verify Mergify queues
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-mergify-config.sh
@@ -658,6 +805,18 @@ jobs:
       - name: Verify Commit Policy exemptions
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-commit-policy-exemptions.sh
+
+      - name: Verify Commit Policy team membership
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-commit-policy-team.sh
+
+      - name: Verify Commit Policy source history
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-commit-policy-source.sh
+
+      - name: Verify Commit Policy bootstrap
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-commit-policy-bootstrap.sh
 
       - name: Verify release promotion
         shell: bash -euo pipefail {0}
@@ -718,6 +877,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-run-integration-preflight.sh
 
+      - name: Verify heartbeat timing driver
+        shell: bash -euo pipefail {0}
+        run: bash scripts/bench/test-run-heartbeat-timing.sh
+
       - name: Verify soak dashboard restoration
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-restore-soak-dashboard-run.sh
@@ -728,7 +891,7 @@ jobs:
     name: Soak Harness Tests
     needs: build_base
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -754,9 +917,45 @@ jobs:
       - name: Build the soak harness
         run: cargo build --locked -p casper-soak --bin casper-soak
 
-      - name: Verify soak fail-closed driver
-        shell: bash -euo pipefail {0}
-        run: scripts/bench/test-run-merge-recovery-soak.sh
+      - name: Install the pinned CbC runtime
+        timeout-minutes: 5
+        run: bash scripts/ci/install-cbc-runtime.sh
+
+      - name: Install the cleanup model checker
+        timeout-minutes: 5
+        run: |
+          java_home="${JAVA_HOME_21_X64:?The runner image has no JDK 21}"
+          printf '%s\n' "$java_home/bin" >> "$GITHUB_PATH"
+          "$java_home/bin/java" -version
+          curl --fail --location --output "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" | sha256sum --check
+
+      - name: Verify soak driver and cleanup controls
+        env:
+          TLA2TOOLS_JAR: ${{ runner.temp }}/tla2tools.jar
+        run: bash scripts/ci/verify-soak-cleanup.sh --output target/soak-cleanup-verification
+
+      - name: Configure cleanup acceptance trust
+        env:
+          CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
+        run: bash scripts/ci/configure-cbc-trust.sh
+
+      - name: Require current cleanup discharge
+        env:
+          CBC_CONTROL_REVISION: ${{ needs.build_base.outputs.TARGET_SHA }}
+        run: >-
+          bash scripts/ci/check-soak-cleanup.sh --control-revision "$CBC_CONTROL_REVISION"
+          --output target/soak-cleanup-admission.json
+
+      - name: Retain cleanup verification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: soak-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/soak-cleanup-verification/
+            target/soak-cleanup-admission.json
+          if-no-files-found: warn
 
       - name: Verify isolated disk admission and emergency scenarios
         shell: bash -euo pipefail {0}
@@ -849,174 +1048,17 @@ jobs:
             './**/*.md'
           fail: true
 
+  # Each test job runs its crate's suite once, instrumented, and reports the
+  # pass/fail result and the line coverage of that one run. The lcov report is
+  # written before the doctests run, so doctests do not count toward coverage.
   test:
     name: Test (${{ matrix.crate }})
-    needs: [build_base, static_checks]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        crate:
-          - rspace_plus_plus
-          - rholang
-          - shared
-          - node
-          - models
-          - crypto
-          - block-storage
-          - comm
-          - graphz
-    steps:
-      - name: Checkout
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: nightly-2026-02-09
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: test-${{ matrix.crate }}
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
-
-      - name: Install system dependencies
-        run: bash .github/scripts/install-system-dependencies.sh
-
-      - name: Install nextest
-        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
-        with:
-          tool: nextest
-
-      - name: Run tests
-        env:
-          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-          RUST_BACKTRACE: "1"
-          RUST_MIN_STACK: "8388608"
-        run: |
-          ulimit -n 65536
-          mkdir -p /tmp/test-logs
-          # nextest runs all of the crate's unit + integration tests in one global
-          # parallel pool (vs `cargo test`, which runs each test binary sequentially),
-          # which is what keeps the ~930-test casper crate under the job timeout.
-          # `--no-tests=pass` tolerates a crate whose only tests are doctests.
-          cargo nextest run --locked --release -p ${{ matrix.crate }} --no-tests=pass 2>&1 \
-            | tee /tmp/test-logs/${{ matrix.crate }}.txt
-          nt=${PIPESTATUS[0]}
-          # nextest does NOT run doctests; run them explicitly to preserve the
-          # coverage that plain `cargo test` provided.
-          cargo test --locked --release -p ${{ matrix.crate }} --doc 2>&1 \
-            | tee /tmp/test-logs/${{ matrix.crate }}-doc.txt
-          dt=${PIPESTATUS[0]}
-          echo "nextest exit=$nt doctest exit=$dt"
-          [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
-
-      - name: Upload test logs
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: test-logs-${{ matrix.crate }}
-          path: /tmp/test-logs/
-          retention-days: 7
-
-  # casper is the one crate whose suite does not reliably fit the shared
-  # 30-minute test-job ceiling: ~23 minutes on a nominal runner (7m build +
-  # 15m tests), which a degraded runner overran on 2026-08-27 with every
-  # completed test passing. It runs here as two nextest count-partition
-  # shards so each leg carries roughly half the test wall-clock. Larger
-  # GitHub-hosted runners are not an option: the org's plan does not support
-  # them, and OCI ephemeral runners are reserved for the approval-gated
-  # heavy pipeline (shared daily instance quota).
-  test_casper:
-    name: Test (casper ${{ matrix.partition }}/2)
     needs: [build_base, static_checks]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
-        with:
-          toolchain: nightly-2026-02-09
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: test-casper
-          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
-
-      - name: Install system dependencies
-        run: bash .github/scripts/install-system-dependencies.sh
-
-      - name: Install nextest
-        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
-        with:
-          tool: nextest
-
-      - name: Run tests (shard ${{ matrix.partition }}/2)
-        env:
-          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
-          RUST_BACKTRACE: "1"
-          RUST_MIN_STACK: "8388608"
-        # Explicit pipefail: cargo's exit status survives the `tee` pipe, and
-        # `|| var=$?` captures it without tripping `-e`. This avoids the
-        # PIPESTATUS idiom, which silently depends on pipefail staying off.
-        shell: bash -euo pipefail {0}
-        run: |
-          ulimit -n 65536
-          mkdir -p /tmp/test-logs
-          # `count:m/2` deals tests round-robin across the two shards, so the
-          # slow convergence/recursion specs spread over both legs instead of
-          # landing together. `--no-tests=pass` tolerates an empty shard.
-          nt=0
-          cargo nextest run --locked --release -p casper --no-tests=pass \
-            --partition count:${{ matrix.partition }}/2 2>&1 \
-            | tee /tmp/test-logs/casper-${{ matrix.partition }}.txt || nt=$?
-          # nextest does NOT run doctests, and doctests cannot be partitioned;
-          # shard 1 runs them once for the whole crate.
-          dt=0
-          if [ "${{ matrix.partition }}" = "1" ]; then
-            cargo test --locked --release -p casper --doc 2>&1 \
-              | tee /tmp/test-logs/casper-doc.txt || dt=$?
-          fi
-          echo "nextest exit=$nt doctest exit=$dt"
-          [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
-
-      - name: Upload test logs
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: test-logs-casper-${{ matrix.partition }}
-          path: /tmp/test-logs/
-          retention-days: 7
-
-  # Codecov upload stays off until a maintainer sets the ENABLE_CODECOV
-  # variable and the CODECOV_TOKEN secret.
-  coverage:
-    name: Coverage (${{ matrix.crate }})
-    needs: [build_base, static_checks]
-    if: >-
-      github.event_name == 'pull_request'
-      && needs.build_base.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: ${{ matrix.crate == 'casper' && 60 || 45 }}
-    strategy:
-      fail-fast: false
-      matrix:
         crate:
           - rspace_plus_plus
           - rholang
@@ -1027,7 +1069,6 @@ jobs:
           - block-storage
           - comm
           - graphz
-          - casper
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -1044,55 +1085,46 @@ jobs:
       - name: Cache dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: coverage-${{ matrix.crate }}
-          save-if: false
+          shared-key: test-${{ matrix.crate }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
 
       - name: Install system dependencies
         run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Install llvm-cov and nextest
-        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2.87.1
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
         with:
           tool: cargo-llvm-cov,nextest
 
-      - name: Measure coverage
+      - name: Run tests
         env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
           RUST_BACKTRACE: "1"
           RUST_MIN_STACK: "8388608"
+          CRATE: ${{ matrix.crate }}
         shell: bash -euo pipefail {0}
-        run: |
-          ulimit -n 65536
-          mkdir -p target/coverage
-          cargo llvm-cov clean
-          cargo llvm-cov nextest --locked --release -p ${{ matrix.crate }} --no-tests=pass
-          # Src-shipped test scaffolding is compiled for cross-crate test
-          # consumers, so it can never be exercised by its own crate's run;
-          # keep it out of the denominator. Must stay identical to the regex
-          # in scripts/coverage.sh.
-          # node's process bootstrap/wiring joins the scaffolding exclusion:
-          # reachable only from a booted node (covered by the integration
-          # suites), never from the crate's own test run.
-          ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|node/src/rust/runtime/|node/src/rust/instances/(block_processor_instance|proposer_instance)\.rs)'
-          cargo llvm-cov report --release -p ${{ matrix.crate }} \
-            --ignore-filename-regex "$ignore_regex" \
-            --json --summary-only --output-path target/coverage/coverage-${{ matrix.crate }}.json
-          cargo llvm-cov report --release -p ${{ matrix.crate }} \
-            --ignore-filename-regex "$ignore_regex" \
-            --lcov --output-path target/coverage/coverage-${{ matrix.crate }}.lcov
+        run: bash .github/scripts/run-crate-tests.sh
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-logs-${{ matrix.crate }}
+          path: /tmp/test-logs/
+          retention-days: 7
 
       - name: Upload coverage data
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ matrix.crate }}
-          path: |
-            target/coverage/coverage-${{ matrix.crate }}.json
-            target/coverage/coverage-${{ matrix.crate }}.lcov
+          path: target/coverage/coverage-${{ matrix.crate }}.lcov
           retention-days: 30
           if-no-files-found: error
 
       - name: Upload to Codecov
         if: >-
           vars.ENABLE_CODECOV == 'true'
+          && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
         with:
@@ -1101,13 +1133,113 @@ jobs:
           flags: ${{ matrix.crate }}
           fail_ci_if_error: false
 
+  # casper is the one crate whose suite does not fit the shared test-job
+  # limit, so it runs as two nextest count-partition shards. Uninstrumented,
+  # the shards took 16-35 minutes on 2026-11-11 and shard 2 reached 45; the
+  # instrumented run here is slower, hence 60. Larger GitHub-hosted runners
+  # are not an option: the org's plan does not support them, and OCI
+  # ephemeral runners are reserved for the ci-heavy pipeline (shared daily
+  # instance quota).
+  test_casper:
+    name: Test (casper ${{ matrix.partition }}/2)
+    needs: [build_base, static_checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: nightly-2026-02-09
+          components: llvm-tools-preview
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: test-casper
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master') }}
+
+      - name: Install system dependencies
+        run: bash .github/scripts/install-system-dependencies.sh
+
+      - name: Install llvm-cov and nextest
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: cargo-llvm-cov,nextest
+
+      - name: Enable crash core files
+        run: bash .github/scripts/casper-crash-backtraces.sh setup
+
+      # `count:m/2` deals tests round-robin across the two shards, so the slow
+      # convergence/recursion specs spread over both legs. Doctests cannot be
+      # partitioned; shard 1 runs them for the whole crate.
+      - name: Run tests (shard ${{ matrix.partition }}/2)
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
+          RUST_BACKTRACE: "1"
+          RUST_MIN_STACK: "8388608"
+          CRATE: casper
+          PARTITION: ${{ matrix.partition }}/2
+          DOCTESTS: ${{ matrix.partition == 1 }}
+        shell: bash -euo pipefail {0}
+        run: |
+          # Issue #911: a core file gives the native stack of a crashed test.
+          ulimit -c unlimited || true
+          bash .github/scripts/run-crate-tests.sh
+
+      - name: Report crash backtraces
+        if: failure()
+        timeout-minutes: 10
+        run: bash .github/scripts/casper-crash-backtraces.sh report
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-logs-casper-${{ matrix.partition }}
+          path: /tmp/test-logs/
+          retention-days: 7
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-casper-${{ matrix.partition }}
+          path: target/coverage/coverage-casper-${{ matrix.partition }}.lcov
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload to Codecov
+        if: >-
+          vars.ENABLE_CODECOV == 'true'
+          && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/coverage/coverage-casper-${{ matrix.partition }}.lcov
+          flags: casper
+          fail_ci_if_error: false
+
+  # Reads the coverage files the test jobs upload. Codecov upload in the test
+  # jobs stays off until a maintainer sets the ENABLE_CODECOV variable and the
+  # CODECOV_TOKEN secret.
   coverage_summary:
     name: Coverage Summary
-    needs: [build_base, coverage]
+    needs: [build_base, test, test_casper]
     if: >-
       always()
       && github.event_name == 'pull_request'
-      && needs.coverage.result != 'skipped'
+      && needs.test.result != 'skipped'
+      && needs.test_casper.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1148,11 +1280,10 @@ jobs:
           path: target-coverage-summary.md
           retention-days: 30
 
-  # Ruleset gate. The branch ruleset requires a status check named exactly
-  # `Test (casper)` (formerly the matrix leg's name). This collapses the two
-  # shard jobs into that one required context, in the same style as the
-  # per-arch integration aggregators below. `needs` on a matrix job resolves
-  # to success only when every shard succeeds.
+  # Ruleset gate. The master ruleset and the master merge queue require this
+  # check; dev requires the two shard checks instead. It collapses both shards
+  # and, on a pull request, the coverage summary into one context. `needs` on a
+  # matrix job resolves to success only when every shard succeeds.
   test_casper_gate:
     name: Test Gate (casper)
     needs: [test_casper, coverage_summary]
@@ -1179,9 +1310,13 @@ jobs:
 
   # Integration pipeline (native Docker build -> ephemeral OCI runner launch ->
   # integration matrix -> smoke) lives in the reusable _integration-pipeline.yml.
+  # Static Checks and Script Tests (which covers the runner launch, tagging and
+  # reclaim scripts) gate the OCI quota. Soak Harness Tests covers only the
+  # casper-soak tool, which this pipeline does not run; the merge queue still
+  # requires it, so it does not delay the pipeline.
   pipeline:
     name: Integration Pipeline
-    needs: [build_base, static_checks, script_tests, soak_harness_tests]
+    needs: [build_base, static_checks, script_tests]
     # A newer branch or PR head replaces obsolete heavy work. Version tags use
     # separate groups and run to completion. OCI launch remains globally locked.
     # A merge group is never cancelled: the queue reads a cancelled required
@@ -1201,6 +1336,7 @@ jobs:
     with:
       gated: false
       checkout_ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+      build_id: ${{ needs.build_base.outputs.VERSION }}
       oci_tests: ${{ needs.build_base.outputs.OCI_TESTS != 'false' }}
     secrets: inherit
 

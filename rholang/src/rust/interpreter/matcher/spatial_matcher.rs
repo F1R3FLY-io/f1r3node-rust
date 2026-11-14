@@ -24,7 +24,9 @@ list_match!(
     Match,
     Bundle,
     GUnforgeable,
-    ReceiveBind
+    ReceiveBind,
+    CostSignedTerm,
+    CostStack
 );
 
 pub trait SpatialMatcher<T, P> {
@@ -43,13 +45,26 @@ impl SpatialMatcherContext {
         }
     }
 
-    pub fn spatial_match_result(&mut self, target: Par, pattern: Par) -> Option<&FreeMap> {
-        let do_match = self.spatial_match(target, pattern);
+    /// Matches `target` against `pattern` and hands back the bindings found.
+    pub fn into_match_result(mut self, target: Par, pattern: Par) -> Option<FreeMap> {
+        self.spatial_match(target, pattern).map(|_| self.free_map)
+    }
 
-        match do_match {
-            Some(_) => Some(&self.free_map),
-            None => None,
+    /// Borrowing variant used by hot `match` fall-through loops that would
+    /// otherwise clone a possibly large scrutinee once per case before
+    /// discovering the case did not match. The literal-pattern fast path
+    /// (shared with `spatial_match<Par, Par>` at `pattern.connective_used ==
+    /// false`) completes without any clone of `target`.
+    pub fn match_result(mut self, target: &Par, pattern: Par) -> Option<FreeMap> {
+        if !pattern.connective_used {
+            return if match_pars(target, &pattern) {
+                Some(self.free_map)
+            } else {
+                None
+            };
         }
+        self.spatial_match(target.clone(), pattern)
+            .map(|_| self.free_map)
     }
 }
 
@@ -139,6 +154,106 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                     expr_instance: Some(GByteArray(_)),
                 }) => Some(()),
                 _ => None,
+            },
+
+            Some(ConnInt32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GInt32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint64(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint64(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint16(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint16(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint8(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint8(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnFloat64(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GDouble(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnFloat32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GFloat32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnBigInt(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GBigInt(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnBigRat(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GBigRat(_)),
+                }) => Some(()),
+                _ => None,
+            },
+
+            Some(ConnFixedPointBody(body)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GFixedPoint(gfp)),
+                }) => {
+                    let scale_target = Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(GInt(gfp.scale as i64)),
+                    }]);
+                    let scale_pattern = body.scale.unwrap_or_default();
+                    self.spatial_match(scale_target, scale_pattern)
+                }
+                _ => None,
+            },
+
+            // CoC Phase 2c: `Type` matches any type-level value. Phase
+            // 2d (typechecker) will refine this to "target typechecks to
+            // Type". For now, match the universe constant, Pi types, and
+            // base-type tokens as the inhabitants.
+            Some(ConnType(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(EPiBody(_)),
+                }) => Some(()),
+                _ => match target.connectives.first() {
+                    Some(c) => match &c.connective_instance {
+                        Some(ConnBool(_))
+                        | Some(ConnInt(_))
+                        | Some(ConnString(_))
+                        | Some(ConnUri(_))
+                        | Some(ConnByteArray(_))
+                        | Some(ConnType(_))
+                        | Some(ConnInt32(_))
+                        | Some(ConnUint64(_))
+                        | Some(ConnUint32(_))
+                        | Some(ConnUint16(_))
+                        | Some(ConnUint8(_))
+                        | Some(ConnFloat64(_))
+                        | Some(ConnFloat32(_))
+                        | Some(ConnBigInt(_))
+                        | Some(ConnBigRat(_))
+                        | Some(ConnFixedPointBody(_)) => Some(()),
+                        _ => None,
+                    },
+                    None => None,
+                },
             },
 
             None => None,
@@ -307,7 +422,43 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                     wildcard,
                 )
             })
+            .and_then(|_| {
+                self.list_match_single_(
+                    remainder.cost_signed_terms,
+                    pattern.cost_signed_terms,
+                    &|mut p, s| {
+                        p.cost_signed_terms = s;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
+            .and_then(|_| {
+                self.list_match_single_(
+                    remainder.cost_stacks,
+                    pattern.cost_stacks,
+                    &|mut p, s| {
+                        p.cost_stacks = s;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
         }
+    }
+}
+
+impl SpatialMatcher<CostSignedTerm, CostSignedTerm> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: CostSignedTerm, pattern: CostSignedTerm) -> Option<()> {
+        guard(target == pattern)
+    }
+}
+
+impl SpatialMatcher<CostStack, CostStack> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: CostStack, pattern: CostStack) -> Option<()> {
+        guard(target == pattern)
     }
 }
 
@@ -579,8 +730,10 @@ impl SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - receiveBindSpatialMatcherInstance
 impl SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: ReceiveBind, pattern: ReceiveBind) -> Option<()> {
-        guard(target.patterns == pattern.patterns)
-            .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
+        guard(
+            target.patterns == pattern.patterns && target.cost_signature == pattern.cost_signature,
+        )
+        .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
     }
 }
 

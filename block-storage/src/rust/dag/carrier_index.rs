@@ -10,8 +10,10 @@
 // the block becomes DAG-visible. The persisted height watermark W is the
 // height since which that contract has held on this database; the fast
 // path engages only for scan windows that start at or above W, so no
-// startup backfill is ever needed. Rows at heights below the expiration
-// window are pruned on floor advances.
+// startup backfill is ever needed. Rows below the node's own expiration
+// window are pruned on finalization, and the recorded prune cutoff bounds
+// the fast path from below as W does: a late block's window can start
+// under it.
 
 use std::sync::Arc;
 
@@ -37,6 +39,7 @@ pub struct CarrierIndex {
 impl CarrierIndex {
     const WATERMARK_KEY: &'static str = "watermark";
     const LAST_PRUNE_KEY: &'static str = "last-prune";
+    const PRUNE_CUTOFF_KEY: &'static str = "prune-cutoff";
     /// Pruning walks the whole table, so it runs only when the cutoff has
     /// advanced by at least this many blocks since the last walk.
     const PRUNE_STRIDE: i64 = 64;
@@ -76,7 +79,7 @@ impl CarrierIndex {
 
     /// True when the index holds NO carrier for the sig. Sound as an
     /// absence proof only when the caller's scan window starts at or
-    /// above the watermark.
+    /// above both the watermark and the prune cutoff.
     pub fn proves_absence(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
         Ok(self
             .carriers
@@ -86,6 +89,12 @@ impl CarrierIndex {
 
     pub fn watermark(&self) -> Result<Option<i64>, KvStoreError> {
         self.meta.get_one(&Self::WATERMARK_KEY.to_string())
+    }
+
+    /// The highest cutoff any prune walk has started with. Rows below it
+    /// may be gone; rows at or above it are all present.
+    pub fn prune_cutoff(&self) -> Result<Option<i64>, KvStoreError> {
+        self.meta.get_one(&Self::PRUNE_CUTOFF_KEY.to_string())
     }
 
     /// First-boot initialization: records the height since which every
@@ -99,10 +108,12 @@ impl CarrierIndex {
         Ok(w)
     }
 
-    /// Drop entries below the cutoff (they are below every future scan
-    /// window). Strided: the full-table walk runs only when the cutoff
-    /// advanced by `PRUNE_STRIDE` since the last walk. Returns the number
-    /// of entries removed.
+    /// Drop entries below the cutoff. The cutoff is recorded before any row
+    /// is removed, so a reader that sees `prune_cutoff` at or below its scan
+    /// start after probing knows the walk removed no row it read. Strided:
+    /// the full-table walk runs only when the cutoff advanced by
+    /// `PRUNE_STRIDE` since the last completed walk. Returns the number of
+    /// entries removed.
     pub fn prune_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
         let last = self
             .meta
@@ -110,6 +121,13 @@ impl CarrierIndex {
             .unwrap_or(i64::MIN);
         if last != i64::MIN && cutoff < last.saturating_add(Self::PRUNE_STRIDE) {
             return Ok(0);
+        }
+        if self
+            .prune_cutoff()?
+            .is_none_or(|recorded| recorded < cutoff)
+        {
+            self.meta
+                .put_one(Self::PRUNE_CUTOFF_KEY.to_string(), cutoff)?;
         }
         let mut removed: u64 = 0;
         let mut emptied: Vec<ByteString> = Vec::new();
@@ -209,6 +227,12 @@ mod tests {
             self.writes
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.put_one_if_absent(key, value)
+        }
+
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.delete_if_value(key, expected)
         }
 
         fn delete(&self, keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
@@ -338,6 +362,11 @@ mod tests {
         fail_puts.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(index.prune_below(400).is_err());
         fail_puts.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            index.prune_cutoff().expect("cutoff"),
+            Some(400),
+            "a walk that removed rows and then failed has recorded its cutoff"
+        );
 
         let removed = index.prune_below(400).expect("re-run");
 

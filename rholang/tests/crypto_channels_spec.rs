@@ -103,6 +103,7 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![expected],
             random_state: rand().to_bytes(),
+            seal: None,
         })
         .await;
     }
@@ -134,6 +135,7 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![expected],
             random_state: rand().to_bytes(),
+            seal: None,
         })
         .await;
     }
@@ -165,6 +167,7 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![expected],
             random_state: rand().to_bytes(),
+            seal: None,
         })
         .await;
     }
@@ -218,6 +221,7 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![new_gbool_par(true, Vec::new(), false)],
             random_state: rand().to_bytes(),
+            seal: None,
         })
         .await;
     }
@@ -265,6 +269,7 @@ mod tests {
         assert_store_contains(runtime, ack_channel(), ListParWithRandom {
             pars: vec![new_gbool_par(true, Vec::new(), false)],
             random_state: rand().to_bytes(),
+            seal: None,
         })
         .await;
     }

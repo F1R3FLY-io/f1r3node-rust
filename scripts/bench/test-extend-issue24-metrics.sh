@@ -34,23 +34,21 @@ cmp "$tmp/once.py" "$tmp/metrics.py"
 
 for metric in \
     dag_merge_relation_items \
-    deploy_pool_lock_wait_time \
-    deploy_pool_lock_hold_time \
     proposer_queue_depth \
     runtime_scheduler_delay_time \
     compute_parents_post_state_floor_distance \
     deploy_store_read_all_decoded \
+    deploy_lifecycle_release_failures \
+    deploy_lifecycle_settle_row_failures \
     proposer_create_time \
     proposer_effect_time \
-    deploy_lifecycle_observe_time \
+    deploy_lifecycle_settle_time \
     deploy_lifecycle_carrier_prune_time \
     block_creator_deploy_admission_cap_source_soft_stalled \
     block_creator_deploy_admission_cap_source_hard \
     finalizer_run_time \
-    finalizer_api_lfb_time \
     deploy_selection_age_time \
     finalizer_run_timeouts \
-    finalizer_api_lfb_overlaps \
     block_creator_ordinary_deploys_deferred \
     block_creator_empty_block_skipped \
     block_creator_empty_block_built \
@@ -108,23 +106,16 @@ registries = {
     and node.targets[0].id in {"METRICS_TO_SCRAPE", "COUNTERS_TO_SCRAPE"}
 }
 histograms = registries["METRICS_TO_SCRAPE"]
+assert "deploy_pool_lock_wait_time" not in histograms
+assert "deploy_pool_lock_hold_time" not in histograms
 counters = registries["COUNTERS_TO_SCRAPE"]
 assert len(histograms) == len(set(histograms))
 assert len(counters) == len(set(counters))
 assert not set(histograms) & set(counters)
 root = Path(sys.argv[2])
-release_path = {
-    "CASPER_BUFFER_PARK_TIME_METRIC": histograms,
-    "RELEASE_QUEUE_WAIT_METRIC": histograms,
-    "CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC": histograms,
-    "BLOCK_REQUESTS_RECOVERY_METRIC": counters,
-}
-release_path_seen = set()
 for filename in [
     "casper/src/rust/metrics_constants.rs",
     "rspace++/src/rspace/metrics_constants.rs",
-    "block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs",
-    "node/src/rust/instances/release_queue.rs",
 ]:
     for constant, name in re.findall(r'pub const (\w+): &str =\s*"([^"]+)";', (root / filename).read_text()):
         exported = re.sub(r"[.-]", "_", name)
@@ -132,10 +123,6 @@ for filename in [
             assert exported in histograms, constant
         if constant.startswith("HISTORY_REPO_") or constant in ("BLOCK_ARRIVED_UNCITABLE_METRIC", "BLOCK_REPLAY_RUNTIME_REPORTING_DEFERRED_METRIC"):
             assert exported in counters, constant
-        if constant in release_path:
-            assert exported in release_path[constant], constant
-            release_path_seen.add(constant)
-assert release_path_seen == set(release_path), sorted(set(release_path) - release_path_seen)
 assert "is_mergeable_channel_calls" in counters
 module = runpy.run_path(sys.argv[1])
 compute = module["compute_metric_deltas"]

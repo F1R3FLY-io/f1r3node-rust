@@ -8,6 +8,7 @@ use crate::rust::interpreter::compiler::exports::{
     FreeMap, NameVisitInputs, ProcVisitInputs, ProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern;
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
@@ -17,7 +18,7 @@ use crate::rust::interpreter::util::filter_and_adjust_bitset;
 
 pub fn normalize_p_contr<'ast>(
     name: &'ast Name<'ast>,
-    formals: &rholang_parser::ast::Names<'ast>,
+    formals: &'ast rholang_parser::ast::Names<'ast>,
     body: &'ast AnnProc<'ast>,
     input: ProcVisitInputs,
     env: &HashMap<String, Par>,
@@ -36,6 +37,11 @@ pub fn normalize_p_contr<'ast>(
     let mut init_acc = (vec![], FreeMap::<VarSort>::default(), Vec::new());
 
     for name in formals.names.iter() {
+        // Reject cost syntax in contract-formal pattern position (W1 §1.5): a
+        // signed term / token stack inside a formal `@{...}` is a process form
+        // (recognized + metered), not a contract pattern.
+        reject_cost_syntax_in_name_pattern(name)?;
+
         let res = normalize_name(
             name,
             NameVisitInputs {
@@ -53,10 +59,9 @@ pub fn normalize_p_contr<'ast>(
         init_acc.1 = result.free_map.clone();
         init_acc.2 = union(
             init_acc.clone().2,
-            result.par.locally_free(
-                result.par.clone(),
-                (input.bound_map_chain.depth() + 1) as i32,
-            ),
+            result
+                .par
+                .locally_free((input.bound_map_chain.depth() + 1) as i32),
         );
     }
 
@@ -82,25 +87,23 @@ pub fn normalize_p_contr<'ast>(
             source: Some(name_match_result.par.clone()),
             remainder: remainder_result.0.clone(),
             free_count: bound_count as i32,
+            cost_signature: None,
         }],
         body: Some(body_result.par.clone()),
         persistent: true,
         peek: false,
         bind_count: bound_count as i32,
         locally_free: union(
-            name_match_result.par.locally_free(
-                name_match_result.par.clone(),
-                input.bound_map_chain.depth() as i32,
-            ),
+            name_match_result
+                .par
+                .locally_free(input.bound_map_chain.depth() as i32),
             union(
                 init_acc.2,
                 filter_and_adjust_bitset(body_result.par.clone().locally_free, bound_count),
             ),
         ),
-        connective_used: name_match_result
-            .par
-            .connective_used(name_match_result.par.clone())
-            || body_result.par.connective_used(body_result.par.clone()),
+        connective_used: name_match_result.par.connective_used()
+            || body_result.par.connective_used(),
         condition: None,
     };
     //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into
@@ -185,6 +188,7 @@ mod tests {
                 source: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                 remainder: None,
                 free_count: 3,
+                cost_signature: None,
             }],
             body: Some(new_send_par(
                 new_boundvar_par(2, create_bit_vector(&[2]), false),
@@ -275,6 +279,7 @@ mod tests {
                 source: Some(new_boundvar_par(0, create_bit_vector(&[0]), false)),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             }],
             body: Some(new_send_par(
                 new_boundvar_par(0, create_bit_vector(&[0]), false),

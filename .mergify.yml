@@ -6,23 +6,37 @@
 # included. An org admin who must merge by hand changes that ruleset, and the
 # audit log records the change. docs/ci.md describes the rulesets.
 #
-# Mergify adds ci-heavy to an approved pull request of this repository, so the
-# heavy pipeline runs on its head. A queue merges only after the Integration
-# gates succeed. check-success does not accept a skipped check, so a pull
-# request without a heavy run cannot merge. Each queue checks one pull request
-# at a time on its own head, after Mergify merges the current base into it.
+# Mergify adds ci-heavy to every open pull request of this repository into
+# dev, master, ca-canary (ca/ heads only), and ca-release, so the heavy
+# pipeline runs on its head. Protected heads get no label. A draft gets the
+# label when it is ready for review. If the label is removed without a valid
+# waiver, Mergify adds it again. check-success does not accept a skipped check,
+# so without a waiver a queue merges only after the Integration gates succeed.
+# Each queue checks one pull request at a time on its own head, after Mergify
+# merges the current base into it.
+#
+# Waiver. The dev, master, and ca-item queues accept the ci-heavy-waived label
+# in place of ci-heavy and the Integration gates, only when the author is in
+# the ci-maintainers team. The author waives by removing ci-heavy:
+# ci-heavy-label.yml then adds ci-heavy-waived and reruns CI with the current
+# labels, so the gates report skipped. Mergify does not add ci-heavy again to a
+# waived pull request of a ci-maintainers author, except into ca-release. For
+# another author, Mergify adds ci-heavy again, so the heavy pipeline runs.
+# devProtect requires both gates, and GitHub counts a skipped gate job as
+# passing, so a waived pull request can merge into dev. masterProtect does not
+# require the gates. The promotion app is the author of every promotion, so
+# only a hotfix can carry the waiver into master. The ca-release queue has no
+# waiver. A merge into master still runs the heavy pipeline on the push, and a
+# release needs a CI run of its source that has all Integration Pipeline jobs.
+#
+# The rulesets require a branch to be up to date before a merge. Mergify then
+# accepts only in-place checks: a serial queue with one check at a time, a
+# batch size of 1, no check retries, and merge_conditions identical to
+# queue_conditions. Each queue therefore lists its checks in both. A pull
+# request enters a queue only after its checks pass.
 #
 #   dev       a pull request into dev, including the master back-merge.
 #   master    a promotion (promote/<stamp>) or a hotfix/ branch into master.
-#   ca-item   a ca/<item> pull request into ca-canary. It also needs the
-#             ca-soaked label. The ca-soak label starts its 22-hour soak. A
-#             passed soak adds ca-soaked and posts Soak Gate (22h) on the
-#             soaked commit. The label stays when Mergify merges the base into
-#             the pull request, and a push by the author removes it. A commit
-#             status cannot do this: Mergify dequeues a pull request whose
-#             queue conditions stop matching, and a new head has no status.
-#             The occasional dev sync (`just ca-sync`, head ca/sync-dev-<sha>)
-#             is a ca/ item too, so it needs the same soak.
 #   ca-daily  the daily back-merge (backmerge/ca-release-<sha> into
 #             ca-canary) from ca-daily-sync.yml. It needs the light ci.yml
 #             checks only and no review, so it accepts only pull requests
@@ -30,6 +44,11 @@
 #             release source and each clean base merge with trusted code. A
 #             push to ca-canary runs the heavy pipeline after the merge.
 #   ca-release  a promotion (promote/ca-release-<stamp>) into ca-release.
+#
+# Review. A pull request into dev or ca-canary needs one approval, or an
+# author in the ci-maintainers team. Every requested reviewer or team must
+# review first, and no review may request changes. The master and ca-release
+# queues keep the required approval for promotions and hotfixes.
 #
 # A pull request from a fork gets no heavy run. A maintainer pushes its head
 # unchanged to a branch of this repository and opens a pull request from that
@@ -42,9 +61,67 @@
 # list the required checks of the devProtect and masterProtect rulesets.
 # test-mergify-config.sh keeps the lists and these rules in step.
 
+merge_queue:
+  mode: serial
+  max_parallel_checks: 1
+  queue_controls_comment: true
+  status_comments: all
+
+# Priority. The priority rules apply across all queues, and the first rule
+# that matches sets the priority. A pull request that no rule matches gets
+# medium (2000), the lowest tier here.
+#
+#   6000  security: the security label, or a head that contains security or
+#         rustsec. A rule below adds the label to such a head. Only this tier
+#         interrupts the checks that run.
+#   5000  fix/ into dev, hotfix/ into master
+#   4000  release flow: promote/, backmerge/, and ca/ heads
+#   3000  perf/
+#   2500  ci/
+#   2000  every other head, for example feat/, feature/, docs/, and chore/
+priority_rules:
+  - name: Security fix
+    conditions:
+      - or:
+          - label=security
+          - head~=(?i)(security|rustsec)
+    priority: 6000
+    allow_checks_interruption: true
+
+  - name: Fix into dev or hotfix into master
+    conditions:
+      - or:
+          - and:
+              - base=dev
+              - head~=^fix/
+          - and:
+              - base=master
+              - head~=^hotfix/
+    priority: 5000
+    allow_checks_interruption: false
+
+  - name: Release flow
+    conditions:
+      - head~=^(promote|backmerge|ca)/
+    priority: 4000
+    allow_checks_interruption: false
+
+  - name: Performance
+    conditions:
+      - head~=^perf/
+    priority: 3000
+    allow_checks_interruption: false
+
+  - name: CI
+    conditions:
+      - head~=^ci/
+    priority: 2500
+    allow_checks_interruption: false
+
 queue_rules:
   - name: dev
     batch_size: 1
+    max_checks_retries: 0
     merge_method: merge
     update_method: merge
     queue_conditions:
@@ -52,10 +129,23 @@ queue_rules:
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - -head~=^(dev|master|ca-canary|ca-release)$
       - -draft
-      - label=ci-heavy
-      - "#approved-reviews-by>=1"
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - author=@F1R3FLY-io/ci-maintainers
+      - or:
+          - "#approved-reviews-by>=1"
+          - author=@F1R3FLY-io/ci-maintainers
+      - "#review-requested=0"
+      - or:
+          - author=@F1R3FLY-io/ci-maintainers
+          - approved-reviews-by=@F1R3FLY-io/ci-maintainers
+          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|SECURITY\.md$|docs/security-advisory-process\.md$|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
       - "#changes-requested-reviews-by=0"
-    merge_conditions:
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests
@@ -73,11 +163,49 @@ queue_rules:
       - check-success=Test (casper 1/2)
       - check-success=Test (casper 2/2)
       - check-success=Test (rspace_plus_plus)
-      - check-success=Integration Gate (amd64)
-      - check-success=Integration Gate (arm64)
+    merge_conditions:
+      - base=dev
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - -head~=^(dev|master|ca-canary|ca-release)$
+      - -draft
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - author=@F1R3FLY-io/ci-maintainers
+      - or:
+          - "#approved-reviews-by>=1"
+          - author=@F1R3FLY-io/ci-maintainers
+      - "#review-requested=0"
+      - or:
+          - author=@F1R3FLY-io/ci-maintainers
+          - approved-reviews-by=@F1R3FLY-io/ci-maintainers
+          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|SECURITY\.md$|docs/security-advisory-process\.md$|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
+      - "#changes-requested-reviews-by=0"
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
 
   - name: master
     batch_size: 1
+    max_checks_retries: 0
     merge_method: merge
     update_method: merge
     queue_conditions:
@@ -85,10 +213,16 @@ queue_rules:
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - head~=^(promote/[0-9]{8}-[0-9]{6}|hotfix/.+)$
       - -draft
-      - label=ci-heavy
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - author=@F1R3FLY-io/ci-maintainers
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
-    merge_conditions:
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests
@@ -107,22 +241,155 @@ queue_rules:
       - check-success=Test (casper 2/2)
       - check-success=Test Gate (casper)
       - check-success=Test (rspace_plus_plus)
-      - check-success=Integration Gate (amd64)
-      - check-success=Integration Gate (arm64)
+    merge_conditions:
+      - base=master
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - head~=^(promote/[0-9]{8}-[0-9]{6}|hotfix/.+)$
+      - -draft
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - author=@F1R3FLY-io/ci-maintainers
+      - "#approved-reviews-by>=1"
+      - "#changes-requested-reviews-by=0"
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test Gate (casper)
+      - check-success=Test (rspace_plus_plus)
 
   - name: ca-item
     batch_size: 1
+    max_checks_retries: 0
     merge_method: merge
     update_method: merge
     queue_conditions:
       - base=ca-canary
       - head~=^ca/
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - author=@F1R3FLY-io/ci-maintainers
+      - or:
+          - "#approved-reviews-by>=1"
+          - author=@F1R3FLY-io/ci-maintainers
+      - "#review-requested=0"
+      - "#changes-requested-reviews-by=0"
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
+    merge_conditions:
+      - base=ca-canary
+      - head~=^ca/
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - author=@F1R3FLY-io/ci-maintainers
+      - or:
+          - "#approved-reviews-by>=1"
+          - author=@F1R3FLY-io/ci-maintainers
+      - "#review-requested=0"
+      - "#changes-requested-reviews-by=0"
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+      - check-success=Test (block-storage)
+      - check-success=Test (comm)
+      - check-success=Test (crypto)
+      - check-success=Test (graphz)
+      - check-success=Test (models)
+      - check-success=Test (rholang)
+      - check-success=Test (node)
+      - check-success=Test (shared)
+      - check-success=Test (casper 1/2)
+      - check-success=Test (casper 2/2)
+      - check-success=Test (rspace_plus_plus)
+
+  - name: ca-daily
+    batch_size: 1
+    max_checks_retries: 0
+    merge_method: merge
+    update_method: merge
+    queue_conditions:
+      - base=ca-canary
+      - head~=^backmerge/ca-release-[0-9a-f]{12}$
+      - author=f1r3node-promotion[bot]
+      - check-success=CA Daily Provenance
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+    merge_conditions:
+      - base=ca-canary
+      - head~=^backmerge/ca-release-[0-9a-f]{12}$
+      - author=f1r3node-promotion[bot]
+      - check-success=CA Daily Provenance
+      - check-success=Static Checks
+      - check-success=Script Tests
+      - check-success=Soak Harness Tests
+      - check-success=cargo-deny
+      - check-success=Commit Policy
+      - check-success=Promotion Source
+
+  - name: ca-release
+    batch_size: 1
+    max_checks_retries: 0
+    merge_method: merge
+    update_method: merge
+    queue_conditions:
+      - base=ca-release
+      - head-repo-full-name=F1R3FLY-io/f1r3node-rust
+      - head~=^promote/ca-release-[0-9]{8}-[0-9]{6}$
+      - -draft
       - label=ci-heavy
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
-      - label=ca-soaked
-    merge_conditions:
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests
@@ -142,29 +409,7 @@ queue_rules:
       - check-success=Test (rspace_plus_plus)
       - check-success=Integration Gate (amd64)
       - check-success=Integration Gate (arm64)
-
-  - name: ca-daily
-    batch_size: 1
-    merge_method: merge
-    update_method: merge
-    queue_conditions:
-      - base=ca-canary
-      - head~=^backmerge/ca-release-[0-9a-f]{12}$
-      - author=f1r3node-promotion[bot]
     merge_conditions:
-      - check-success=CA Daily Provenance
-      - check-success=Static Checks
-      - check-success=Script Tests
-      - check-success=Soak Harness Tests
-      - check-success=cargo-deny
-      - check-success=Commit Policy
-      - check-success=Promotion Source
-
-  - name: ca-release
-    batch_size: 1
-    merge_method: merge
-    update_method: merge
-    queue_conditions:
       - base=ca-release
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - head~=^promote/ca-release-[0-9]{8}-[0-9]{6}$
@@ -172,7 +417,6 @@ queue_rules:
       - label=ci-heavy
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
-    merge_conditions:
       - check-success=Static Checks
       - check-success=Script Tests
       - check-success=Soak Harness Tests
@@ -194,54 +438,43 @@ queue_rules:
       - check-success=Integration Gate (arm64)
 
 pull_request_rules:
-  - name: Run the heavy pipeline for an approved pull request
+  - name: Add ci-heavy to every pull request
     conditions:
       - base~=^(dev|master|ca-canary|ca-release)$
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - -head~=^backmerge/ca-release-
+      - -head~=^(dev|master|ca-canary|ca-release)$
+      - or:
+          - -base=ca-canary
+          - head~=^ca/
+      - -closed
       - -draft
       - -label=ci-heavy
-      - "#approved-reviews-by>=1"
-      - "#changes-requested-reviews-by=0"
+      - or:
+          - -label=ci-heavy-waived
+          - -author=@F1R3FLY-io/ci-maintainers
+          - base=ca-release
     actions:
       label:
         add:
           - ci-heavy
 
-  - name: Queue a pull request into dev
+  - name: Label a security fix
     conditions:
-      - base=dev
+      - head~=(?i)(security|rustsec)
+      - -closed
+      - -label=security
     actions:
-      queue:
-        name: dev
-
-  - name: Queue a pull request into master
-    conditions:
-      - base=master
-    actions:
-      queue:
-        name: master
-
-  - name: Queue a release train item
-    conditions:
-      - base=ca-canary
-      - head~=^ca/
-    actions:
-      queue:
-        name: ca-item
+      label:
+        add:
+          - security
 
   - name: Queue the daily back-merge
     conditions:
       - base=ca-canary
       - head~=^backmerge/ca-release-[0-9a-f]{12}$
       - author=f1r3node-promotion[bot]
+      - body~=created by the scheduled Release Train Daily Back-merge workflow
     actions:
       queue:
         name: ca-daily
-
-  - name: Queue a release train promotion
-    conditions:
-      - base=ca-release
-    actions:
-      queue:
-        name: ca-release

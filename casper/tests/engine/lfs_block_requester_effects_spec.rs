@@ -210,6 +210,8 @@ impl Mock {
 
     /// Provides access to mutable test state for controlling mock behavior
     pub fn setup(&self) -> Arc<Mutex<TestST>> { self.test_state.clone() }
+
+    pub fn block_sender(&self) -> mpsc::Sender<BlockMessage> { self.block_receiver_tx.clone() }
 }
 
 /// Mock implementation of BlockRequesterOps for testing
@@ -284,23 +286,6 @@ impl BlockRequesterOps for MockBlockRequesterOps {
         let state = self.test_state.lock().expect("Lock error");
         !state.invalid.contains(&block.block_hash)
     }
-
-    /// No-op — these tests don't exercise the mergeable-entry path.
-    async fn request_for_mergeable_entry(
-        &self,
-        _block_hash: &BlockHash,
-    ) -> Result<(), CasperError> {
-        Ok(())
-    }
-
-    /// No-op — these tests don't exercise the mergeable-entry path.
-    fn put_mergeable_entry(
-        &self,
-        _block_hash: &BlockHash,
-        _serialized_entry: &[u8],
-    ) -> Result<(), CasperError> {
-        Ok(())
-    }
 }
 
 pub async fn dag_from_block<F, Fut>(
@@ -341,14 +326,11 @@ where
 
         let empty_queue = std::collections::VecDeque::new();
         let response_queue_pending = Arc::new(AtomicUsize::new(0));
-        // Unused receiver to satisfy the stream signature.
-        let (_mergeable_tx, mergeable_rx) = tokio::sync::mpsc::channel(50);
         let lfs_stream = casper::rust::engine::lfs_block_requester::stream(
             &approved_block,
             &empty_queue,
             response_rx,
             response_queue_pending.clone(),
-            mergeable_rx,
             0,
             request_timeout,
             &mut mock_ops,
@@ -917,6 +899,87 @@ mod tests {
                 Ok(())
             },
         )
+        .await
+        .expect("Test should complete successfully");
+    }
+
+    #[tokio::test]
+    async fn should_accept_requested_block_after_an_invalid_copy() {
+        init_logger();
+
+        let (b9, b8, ..) = get_blocks();
+
+        dag_from_block(
+            b9,
+            true,
+            std::time::Duration::from_secs(10 * 24 * 3600),
+            |mut mock| async move {
+                let (_, hash8, ..) = get_hashes();
+                assert_eq!(mock.next_request().await, Some(hash8.clone()));
+
+                mock.setup()
+                    .lock()
+                    .expect("Lock should work")
+                    .set_invalid(std::collections::HashSet::from([hash8.clone()]));
+                mock.receive_block(std::slice::from_ref(&b8))
+                    .await
+                    .expect("Should receive the invalid copy");
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_millis(100), mock.next_save())
+                        .await
+                        .is_err(),
+                    "The invalid copy must not be saved"
+                );
+
+                mock.setup()
+                    .lock()
+                    .expect("Lock should work")
+                    .set_invalid(std::collections::HashSet::new());
+                mock.receive_block(&[b8]).await.expect("Should receive b8");
+                let saved =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), mock.next_save())
+                        .await
+                        .expect("The original block must be saved")
+                        .expect("Should save b8");
+                assert_eq!(saved.0, hash8, "The original block must be accepted");
+
+                Ok(())
+            },
+        )
+        .await
+        .expect("Test should complete successfully");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ignored_messages_do_not_postpone_a_resend() {
+        init_logger();
+
+        let (b9, _, _, _, b5, ..) = get_blocks();
+        let request_timeout = std::time::Duration::from_secs(1);
+
+        dag_from_block(b9, true, request_timeout, |mut mock| async move {
+            let (_, hash8, ..) = get_hashes();
+            assert_eq!(mock.next_request().await, Some(hash8.clone()));
+
+            let blocks = mock.block_sender();
+            let deadline = tokio::time::sleep(request_timeout * 3);
+            tokio::pin!(deadline);
+            let mut ignored_traffic = tokio::time::interval(request_timeout / 4);
+            loop {
+                tokio::select! {
+                    _ = &mut deadline => panic!("hash8 must be requested again"),
+                    _ = ignored_traffic.tick() => {
+                        let _ = blocks.send(b5.clone()).await;
+                    }
+                    request = mock.next_request() => {
+                        if request == Some(hash8.clone()) {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
         .await
         .expect("Test should complete successfully");
     }

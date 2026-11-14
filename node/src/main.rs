@@ -1,17 +1,18 @@
 use std::path::PathBuf;
 
-use casper::rust::util::comm::deploy_runtime::DeployRuntime;
+use casper::rust::util::comm::deploy_runtime::{DeployParams, DeployRuntime};
 use casper::rust::util::comm::grpc_deploy_service::GrpcDeployService;
 use casper::rust::util::comm::grpc_propose_service::GrpcProposeService;
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::util::key_util::KeyUtil;
 use eyre::Result;
 use node::rust::configuration::commandline::options::{
-    OptionsSubCommand, GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT,
+    CosignAction, OptionsSubCommand, GRPC_EXTERNAL_PORT, GRPC_INTERNAL_PORT,
 };
 use node::rust::configuration::config_check::{
     check_api_server, check_host, check_ports, load_private_key_from_file,
@@ -95,7 +96,7 @@ async fn start_node(options: Options) -> Result<()> {
         options.log_sink.clone(),
     );
     // Defaults are baked into the binary via include_str!; the optional
-    // <data-dir>/rnode.conf override and CLI flags layer on top.
+    // <data-dir>/f1r3fly.conf override and CLI flags layer on top.
     let (mut node_conf, profile, config_file, deferred_warnings) =
         node::rust::configuration::builder::build(options)?;
 
@@ -205,6 +206,93 @@ fn run_cli(options: Options, rt: &Runtime, console: &mut impl ConsoleIO) -> Resu
                     &private_key,
                     &location,
                     &shard_id,
+                ));
+                Ok(())
+            }
+            OptionsSubCommand::Transfer(transfer) => {
+                let mut deploy_client = deploy_client()?;
+
+                let private_key =
+                    get_private_key(transfer.private_key, transfer.private_key_path, console)?;
+                let params = DeployParams {
+                    phlo_limit: transfer.phlo_limit,
+                    phlo_price: transfer.phlo_price,
+                    valid_after_block: transfer.valid_after_block_number,
+                    shard_id: transfer.shard_id,
+                };
+                rt.block_on(DeployRuntime::transfer_program(
+                    &mut deploy_client,
+                    &transfer.to,
+                    transfer.amount,
+                    &params,
+                    &private_key,
+                ));
+                Ok(())
+            }
+            OptionsSubCommand::Cosign(cosign) => match cosign.action {
+                CosignAction::Prepare {
+                    phlo_limit,
+                    phlo_price,
+                    valid_after_block_number,
+                    private_key,
+                    private_key_path,
+                    shard_id,
+                    cosigners,
+                    envelope,
+                    location,
+                } => {
+                    let private_key = get_private_key(private_key, private_key_path, console)?;
+                    let cosigners = cosigners
+                        .iter()
+                        .map(|key| {
+                            hex::decode(key)
+                                .map(|bytes| PublicKey::from_bytes(&bytes))
+                                .map_err(|e| eyre::eyre!("Bad cosigner key {key}: {e}"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let params = DeployParams {
+                        phlo_limit,
+                        phlo_price,
+                        valid_after_block: valid_after_block_number,
+                        shard_id,
+                    };
+                    rt.block_on(DeployRuntime::envelope_prepare_program(
+                        &location,
+                        &envelope,
+                        &params,
+                        &cosigners,
+                        &private_key,
+                    ));
+                    Ok(())
+                }
+                CosignAction::Sign {
+                    envelope,
+                    private_key,
+                    private_key_path,
+                } => {
+                    let private_key = get_private_key(private_key, private_key_path, console)?;
+                    rt.block_on(DeployRuntime::envelope_cosign_program(
+                        &envelope,
+                        &private_key,
+                    ));
+                    Ok(())
+                }
+                CosignAction::Submit { envelope } => {
+                    let mut deploy_client = deploy_client()?;
+                    rt.block_on(DeployRuntime::envelope_submit_program(
+                        &mut deploy_client,
+                        &envelope,
+                    ));
+                    Ok(())
+                }
+            },
+            OptionsSubCommand::WalletBalance(query) => {
+                let mut deploy_client = deploy_client()?;
+
+                rt.block_on(DeployRuntime::wallet_balance_program(
+                    &mut deploy_client,
+                    &query.address,
+                    query.block_hash,
                 ));
                 Ok(())
             }
@@ -365,9 +453,9 @@ fn generate_key(
     let secp256k1 = Secp256k1;
     let (private_key, public_key) = <Secp256k1 as SignaturesAlg>::new_key_pair(&secp256k1);
 
-    let private_pem_key_path = path.join("rnode.key");
-    let public_pem_key_path = path.join("rnode.pub.pem");
-    let public_key_hex_file = path.join("rnode.pub.hex");
+    let private_pem_key_path = path.join("f1r3fly.key");
+    let public_pem_key_path = path.join("f1r3fly.pub.pem");
+    let public_key_hex_file = path.join("f1r3fly.pub.hex");
 
     KeyUtil::write_keys(
         &private_key,
@@ -410,8 +498,11 @@ fn get_private_key(
 /// Start node runtime (equivalent to Scala's NodeRuntime.start)
 async fn start_node_runtime(conf: NodeConf) -> Result<()> {
     // --- Observability Setup ---
-    #[allow(unused_variables)]
     let prometheus_reporter = node::rust::diagnostics::initialize_diagnostics(&conf)?;
+    let _prometheus_upkeep = prometheus_reporter
+        .as_ref()
+        .map(|reporter| reporter.start_upkeep())
+        .transpose()?;
 
     node::rust::runtime::node_runtime::start(conf).await
 }

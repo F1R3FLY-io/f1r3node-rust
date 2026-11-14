@@ -17,7 +17,7 @@ F1r3fly uses **CBC Casper** (Correct-by-Construction Casper), a proof-of-stake c
 3. Snapshot: select parents via LMD GHOST fork choice, compute justifications and deploy scope
 4. Create block: select deploys, execute in RSpace, compute state hash, sign
 5. Self-validate, broadcast to peers
-6. Receivers: replay deploys, verify state hash, check equivocations
+6. Receivers: check equivocations, replay deploys, verify state hash
 7. Valid → insert into DAG → trigger finalization
 8. Finalizer: clique oracle computes fault tolerance → if FT > threshold, block finalized
 
@@ -32,7 +32,7 @@ F1r3fly uses **CBC Casper** (Correct-by-Construction Casper), a proof-of-stake c
 | Equivocation detection (`equivocation_detector.rs`) | P2P transport (`TransportLayer`) |
 | Pre-proposal constraint checks | Engine trait (`Arc<dyn MultiParentCasper>`) |
 | | Block creation/assembly, signing |
-| | Validation steps 1-3, 6 (format, signature, deps, replay) |
+| | Validation steps 1-3, 8 (format, signature, deps, replay) |
 
 ---
 
@@ -107,8 +107,6 @@ Proposals are triggered by the [heartbeat proposer](#8-liveness-heartbeat-propos
 
 **Why snapshot first?** The snapshot is immutable once created. This prevents race conditions — the proposal works against a consistent view of the DAG even as new blocks arrive concurrently.
 
-**Guard**: If finalization is in progress (`finalization_in_progress` flag), snapshot creation fails. This prevents proposing against a stale view that the finalizer is about to advance.
-
 ### Step 2: Check Constraints
 
 Before building a block, the proposer verifies:
@@ -158,16 +156,31 @@ Finally: `create_checkpoint()` produces the post-state hash.
 
 - Header: version, timestamp, sender, block number (max parent + 1), sequence number
 - Body: pre-state hash, post-state hash, processed deploys, rejected deploys, system deploys
-- Justifications: One per bonded validator
+- Justifications: One per bonded validator, in strictly ascending validator order
 - Bonds cache: Current validator set with stakes
-- Hash the block via Blake2b256
-- Sign with validator's Secp256k1 key
+- Hash the block with the Merkle block hash, scheme version 3 (`proto_util::hash_block`). The top hash combines a header leaf and a Merkle root of the processed and system deploys. The header leaf includes Merkle roots of the bonds, the justifications, the rejected deploys, and the applied-from-scope signatures. Each variable-length field of the header leaf is preceded by its length, so bytes cannot move between adjacent fields. The hash covers every field except `blockHash` and `sig`.
+- Sign the block hash with validator's Secp256k1 key
 
 **Timestamp hardening**: If current time < max parent timestamp (clock skew), the timestamp is clamped to the parent's timestamp. This prevents `InvalidTimestamp` validation errors.
 
 ### Step 6: Self-Validate
 
 The proposer validates its own block before broadcasting. If pre/post-state hashes don't match expectations, the block is rejected as `BlockException` (not panicked).
+
+### Block Hash Compatibility
+
+The fix for issue #679 changed the block hash rule. The old rule and the new rule give different hashes for the same block, so builds before and after the fix are not compatible:
+
+- A node of the new build refuses blocks, approved blocks, and genesis blocks that an older build hashed.
+- A node of an older build refuses blocks of the new build as `InvalidBlockHash`.
+- A node of the new build does not start on a data directory that an older build created. It stops with an error that names the stored approved block.
+
+There is no compatibility setting. To upgrade a network to the new build:
+
+1. Stop all nodes.
+2. Remove the data directory of each node.
+3. Install the new build on all nodes.
+4. Start a new network from a new genesis ceremony.
 
 ---
 
@@ -178,54 +191,64 @@ The proposer validates its own block before broadcasting. If pre/post-state hash
 3. Proposer streams the full `BlockMessage` to requesting peer
 4. Receiving peer enters the [validation pipeline](#4-block-validation)
 
-The block retriever (`block_retriever.rs`) handles missing dependencies:
-- Tracks pending requests per block hash
-- Implements retry budgets, cooldowns, and quarantine for stuck requests
-- Deduplicates requests to avoid flooding
+[Block ingest](./BLOCK_INGEST.md) fetches missing dependencies. One owner keeps what the node needs and asks peers for it on a paced schedule.
 
 ---
 
 ## 4. Block Validation
 
-`BlockProcessor` runs an 8-step pipeline on received blocks:
+[Block ingest](./BLOCK_INGEST.md) takes a received block through these steps.
+
+Before a block enters ingest, the node recomputes the block hash and verifies the signature. If the hash or the signature does not match, the node drops the copy and changes nothing keyed by that block hash, so the original block can still arrive.
+
+The node limits these checks. It runs at most 2 checks at a time, and one at a time for each peer. It keeps at most 512 blocks in this stage, and at most 16 blocks from one peer. If a limit is full, the node drops the block, and block ingest asks for it again if the node needs it. Copies of one block hash are checked one at a time. Once a copy passes, the others are skipped.
 
 ### Step 1: Interest Check
-- Already in DAG or casper buffer? Skip.
+- Already in the DAG or held by block ingest? Skip.
 - Shard ID and version match the approved block? Required.
-- Block number >= approved block number? Required (no ancient blocks).
+- Block number >= approved block number? Required (no ancient blocks), unless the node asked for the block.
 
-### Step 2: Format & Signature
-- Verify cryptographic signature (Secp256k1, Schnorr, or FROST)
+### Step 2: Format
 - Check field validity: hash length, timestamp within ±15s of local time, required fields present
+- Require justifications in strictly ascending validator order. This also refuses a duplicate validator.
 
 ### Step 3: Dependency Resolution
-- All parent blocks must be in the DAG
-- If missing: store block in **casper buffer** (max ~16K entries), request missing parents from peers
-- Casper buffer tracks retry attempts per dependency and quarantines blocks after budget exhaustion
+- All dependencies must be in the DAG before the block is validated
+- If one is missing: block ingest holds the block, and the missing block becomes a need that it fetches from peers
+- The insert of the last missing dependency releases the block for validation
 
 ### Step 4: Snapshot Computation
 - Recompute `CasperSnapshot` with the block's actual parents as tips
 - This ensures validation uses the same state the proposer had
 
-### Step 5: Block Summary
-- Structural consistency: block number progression, sender weight, justification format
+### Step 5: Identity and Equivocation
+- Shard ID and chain ID match? Otherwise `InvalidShardId` or `InvalidChainId`
+- Sender has stake in the main parent? Otherwise `InvalidSender`
+- **Equivocation**: a different held block has the same sender and sequence number. The node stores the block invalid with its sibling and judges nothing else of it. See [Equivocation](#equivocation)
 
-### Step 6: Checkpoint Validation (Deploy Replay)
+### Step 6: Parents Held as Equivocations
+- An equivocation is stored without a judgement of its contents. Before a block built on one is judged, the node judges that parent's contents with steps 7 to 10
+- Invalid parent contents make the block `InvalidParents`. A parent that the node cannot judge yet defers the block
+- The node keeps a final verdict, so it judges a parent once for all blocks built on it
+
+### Step 7: Block Summary
+- Recompute the block hash again
+- Structural consistency: block number progression, justification format
+
+### Step 8: Checkpoint Validation (Deploy Replay)
 - **Replay every deploy** via `ReplayRSpace` (replay runtime, not play runtime)
 - Verify computed post-state hash matches the block's claimed hash
 - This is the most expensive step — it proves the proposer executed correctly
 
-### Step 7: Equivocation Checks
-- **Simple equivocation**: Block creator's latest message should match their creator justification. If not:
-  - `AdmissibleEquivocation`: Block was requested as a dependency — store as invalid but keep in DAG for tracking
-  - `IgnorableEquivocation`: Block arrived unsolicited — drop entirely
-- **Neglected equivocation**: Block justifies a known equivocator without slashing them — block is invalid
+### Step 9: Neglected Equivocation
+- The block's justifications include both blocks of a held pair, and the sender of the pair is bonded in the block's post-state: `NeglectedEquivocation`, block is invalid
 
-### Step 8: Deploy & State Validation
+### Step 10: Deploy & State Validation
 - Deploys are within scope, not duplicated
   - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window, without a validity qualifier: a signature carried only by an invalid ancestor is still a repeat
+  - The scan starts at `min(tip_start, max(oldest_valid_after + 1, floor - deploy_lifespan + 2))`, where `tip_start` is `max_parent_height + 1 - deploy_lifespan` and `oldest_valid_after` is the lowest `valid_after_block_number` in the block. The expiry check reads the floor clock, so a live deploy can have a copy below the tip window. The retry exemption and the retry gate read the same start, and so does the proposer's retry gate
   - A rejected-in-scope signature is exempt when its retry gate is open (see the glossary); a closed gate returns `PrematureDeployRetry`
-  - The repeat-deploy signature index (see the glossary) may skip the scan for a signature with no in-window carrier; an index hit or read failure falls back to scope-verified scanning, so index-served and scan-served verdicts are equal
+  - The repeat-deploy signature index (see the glossary) may skip the scan for a signature with no in-window carrier when the scan starts at or above the index watermark and the recorded prune cutoff; an index hit or read failure falls back to scope-verified scanning, so index-served and scan-served verdicts are equal
 - Phlogiston price meets minimum
 - Invalid block tracking applied
 
@@ -248,7 +271,7 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 3. **Compute LCA**: Lowest Common Ancestor of all latest messages (iterative LUCA-many algorithm)
 4. **Score**: BFS from each latest message up to LCA. Each validator's stake weight flows down through the main-parent chain.
 5. **Rank recursively**: Starting from LCA, greedily pick the highest-scored child. Repeat until no higher-scored descendants exist.
-6. **Apply depth filter**: Main parent (rank 1) always included. Secondary parents filtered to within `max_parent_depth` of main parent.
+6. **Apply depth filter**: Main parent (rank 1) always included. The kept parents span at most `max_parent_depth` heights around the main parent; a parent outside that window is dropped, including the proposer's own tip.
 
 ### Why LMD GHOST?
 
@@ -287,7 +310,7 @@ The merge scope is bounded by the finalized floor of the block. The floor is a p
 
 - Merge cost: O(visible_blocks^2 x deploys^2) for conflict resolution
 - Floor scoping keeps visible_blocks bounded
-- **Δ-backstop**: When the floor distance `Δ = num(maxParent) − num(floor)` exceeds the cap (`MAX_FLOOR_DISTANCE_BLOCKS` = 256), `compute_parents_post_state` refuses the merge with a deterministic error keyed on Δ alone. On propose the round parks and retries after finality advances. On validate an over-Δ block is deterministically invalid. The merge never substitutes a lossy single-parent post-state (R-BACKSTOP — the former fallback dropped co-parent writes, the ~400-block bug).
+- **Δ-backstop**: When the floor distance `Δ = num(maxParent) − num(floor)` exceeds the cap (`MAX_FLOOR_DISTANCE_BLOCKS` = 256), `compute_parents_post_state` refuses the merge with a deterministic error keyed on Δ alone. On validate an over-Δ block is deterministically invalid. On propose, a proposal that may be empty becomes a single-parent witness block: it declares only fork choice's main parent, cites every latest message, and carries no user deploys, so it builds no merge. A proposal that must carry deploys is held (`FloorDistanceHold`, HTTP 503 `floor_distance_hold`) until finality advances. The merge never substitutes a lossy single-parent post-state (R-BACKSTOP — the former fallback dropped co-parent writes, the ~400-block bug). A witness is not such a substitution: it declares one parent, so there is no co-parent write to drop.
 - The visible-scope size (`MAX_PARENT_MERGE_SCOPE_BLOCKS` = 512) is an advisory metric only. Branch width is not node-deterministic, so scope size never gates admission.
 
 ### Validation progress evidence
@@ -320,7 +343,7 @@ Finalization determines when a block is **mathematically irreversible**. Once fi
 
 ### Trigger
 
-Finalization runs asynchronously after each valid block is added to the DAG. A single-flight guard (`finalizer_task_in_progress`) prevents concurrent runs. A `finalization_in_progress` flag prevents snapshot creation during finalization (avoids stale proposals).
+Finalization runs asynchronously after each valid block is added to the DAG. Every cycle runs on the casper instance's one finalizer task, one cycle at a time, so the LFB has one writer; reading the LFB never advances it. After every cycle, the same task writes the deploy verdicts the floor of the persisted LFB decides and releases the pool copy of every deploy with a verdict. The floor, not the LFB, is the verdict basis: two blocks at one height can both be finalized, and the merge above them can reject the deploys of the one it does not base on, so only the floor's state is settled. Snapshot creation does not wait for a cycle.
 
 ### Algorithm (`floor.rs::floor_of_view` + `finalization_runner.rs`)
 
@@ -334,7 +357,7 @@ operation uses.
    - Build an agreement graph: edge between validators A and B if they "never eventually see disagreement" about the target block
    - Find the maximum weighted clique (largest fully-connected subgraph by stake)
    - Decide finalization with exact integer arithmetic (`2·q·den ⋛ S·(den+num)` — the integer form of `FT = (2·clique_weight − total_stake) / total_stake ≥ θ`)
-4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the current LFB's settled effects — the read surface can never designate a state missing settled content
+4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the state of the current LFB's floor — the read surface can never designate a state missing settled content. A restored node that does not hold that floor checks against the LFB itself
 5. **LFB advancement**: Update last finalized block, clean up deploy storage, emit `BlockFinalised` event
 
 ### "Never Eventually See Disagreement"
@@ -352,7 +375,7 @@ A finalizer cycle that derives a higher floor but does not adopt it ends in
 one of two holds:
 
 - **ContainmentHold** — the derived floor's state is missing effects settled
-  under the current LFB. One refusal is routine (a rejected-then-recovered
+  under the current LFB's floor. One refusal is routine (a rejected-then-recovered
   deploy legitimately fails containment until its re-homed carrier
   finalizes); a streak of refusals with RISING derived floors means the
   shard is finalizing without this node. The `DivergenceMonitor` detects
@@ -452,54 +475,80 @@ When the synchrony constraint blocks proposals:
 
 ## 9. Equivocation & Slashing
 
-### Equivocation Types
+### Equivocation
 
-| Type | What happened | Detection | Action |
-|------|--------------|-----------|--------|
-| Simple | Validator created two blocks at same sequence number | Creator justification != latest message | Block rejected |
-| Admissible | Equivocating block needed as dependency by another block | Same as simple, but block is in dependency chain | Stored as invalid in DAG for tracking |
-| Ignorable | Equivocating block arrived unsolicited | Same as simple, not needed as dependency | Dropped entirely |
-| Neglected | Validator had evidence of equivocation but didn't slash | Justifications reference known equivocator | Block rejected (no stake penalty: the neglect verdict is view-relative and is demoted from evidence minting pending re-promotion — see the slashing-specification amendment) |
+An equivocation is two distinct blocks signed by one sender at one sequence
+number, on this shard and chain. Validation judges a block in this order,
+before any other check that could discard it:
+
+1. A block of another shard or chain is refused as `InvalidShardId` or
+   `InvalidChainId`.
+2. A block whose sender and sequence number match a different held block is
+   an equivocation (`EquivocationDetector::equivocation_of`, a lookup in the
+   DAG's `(sender, seq)` index).
+
+The verdict is the same in any arrival order.
+
+| Verdict | When | Action |
+|---------|------|--------|
+| `AdmissibleEquivocation` | The block was requested as a dependency of another block | Stored invalid in the DAG with its sibling |
+| `IgnorableEquivocation` | The block arrived unsolicited | Stored invalid in the DAG with its sibling |
+| `NeglectedEquivocation` | Both blocks of a pair are in the block's justifications and the block leaves their sender bonded | Block rejected, no stake penalty |
+
+Only the two equivocation verdicts store their block. Every other invalid
+block, a neglecting one included, is dropped without becoming evidence.
+Those verdicts depend on the receiver's own state, so two honest nodes can
+disagree on them.
+
+A node also records a pair when both blocks arrive without validation, by
+restore or as settled history: the second block of a sender and sequence
+number is stored with its sibling. So every node that holds both blocks
+holds the pair, and judges neglect of it alike.
+
+An equivocation is stored without a judgement of its contents, and without
+a replay. A block built on one has that parent's contents judged first
+(step 6 of [Block Validation](#4-block-validation)).
 
 ### Slashing Flow
 
-1. Equivocation detected during block validation
-2. `EquivocationRecord` created and stored persistently
-3. Honest validators emit a `SlashDeploy` from their `invalid_latest_messages` (`prepare_slashing_deploys` in `block_creator.rs`); only validators with non-zero stake who are in `active_validators` can be slashed
-4. `SlashDeploy` executes PoS contract to remove equivocator from bonds
-5. Equivocator loses entire stake; PoS slash is idempotent for already-slashed validators (returns true with no further state change)
+1. The stored invalid block's metadata records its sibling (`BlockMetadata::equivocates`).
+2. A bonded proposer issues one `SlashDeploy` per offender whose pair it holds and that still holds stake at the block's floor (`slashing_authorization::authorized_slash_candidates`, called from `prepare_slashing_deploys`). Stake in withdrawal quarantine counts.
+3. The slash carries both blocks' commitments, ordered by block hash. The evidence is self-contained: any node can check it without its own DAG.
+4. A receiver accepts the block's slashes only if each slash meets all of these conditions (`validate_received_slash_deploys`):
+   - The block's sender issued it.
+   - Both commitments hash to blocks that one sender signed at one sequence number, on this shard and chain.
+   - Its offender holds stake at the block's floor, bonded or in withdrawal quarantine.
+   - No other slash in the block targets the same offender.
 
-### Multi-Parent Merge & Slash Recovery
+   A rejected slash makes the block `UnauthorizedSlashDeploy`.
+5. `SlashDeploy` executes the PoS contract, which zeroes the equivocator's bond and any stake it has in quarantine. A slash of an already-slashed validator changes nothing. A withdrawal emptied by a slash is closed at the end of its quarantine without a payout.
 
-A `SlashDeploy` issued in one parent can be **rejected** by cost-optimal merge resolution when the merge proposer combines parents — the slash chain may be the loser of a conflict and dropped from canonical state. PR #488 closes this gap with a recovery loop in `block_creator::create`:
-
-1. Before block assembly, the proposer runs `compute_parents_post_state` on its tip set. The merge engine returns `(pre_state, rejected_user_sigs, rejected_slashes)`.
-2. `merging::rejected_slash::filter_recoverable` deduplicates rejected slashes by `invalid_block_hash` and drops any that the proposer's own `prepare_slashing_deploys` already covers.
-3. The proposer re-issues each surviving `RejectedSlash` under its own validator identity, so the slash effect lands in the merge block regardless of the merge's rejection decision.
-4. Re-issued slashes ride the same code path as own-detected slashes; PoS idempotency makes the re-issue safe even if the equivocator has already been slashed in a parent.
+An equivocation is slashable while its sender is bonded. There is no
+evidence epoch. Nodes that saw the two blocks in different orders issue
+byte-identical evidence and accept each other's slashes.
 
 ### Multi-Slash Blocks
 
-A single block can carry more than one `SlashDeploy`:
-- own + recovered for distinct equivocators, or
-- two own slashes for two equivocators in `invalid_latest_messages`, or
-- recovered slashes for multiple equivocators surfaced by the merge.
-
-Each `SlashDeploy`'s RNG is keyed on `(validator, seq_num, invalid_block_hash)` (`util::rholang::system_deploy_util::generate_slash_deploy_random_seed`). Without `invalid_block_hash` in the seed, two slashes in the same block from the same proposer would alias the unforgeable channel names allocated by the slash contract, corrupting tuplespace state and the per-slash return-channel routing.
+A single block can carry one `SlashDeploy` per offender. The RNG of each
+`SlashDeploy` is keyed on `(validator, seq_num, cited_block_hash)`. The
+cited block is the lower-hash block of the evidence
+(`util::rholang::system_deploy_util::generate_slash_deploy_random_seed`).
+Without the cited block in the seed, two slashes of one proposer in one
+block would alias the unforgeable channel names of the slash contract.
 
 ### Empty-Block Skip
 
-Heartbeat-disabled proposers (`allow_empty_blocks = false`, the production default) skip block creation when there is no work — but recovered rejected slashes count as work. The skip predicate evaluates `all_deploys.is_empty() && !has_slashing_deploys && recovered_rejected_slashes.is_empty()`, so a proposer that wakes with no user deploys and no own-detected slashes still proposes when the parent merge has produced rejected slashes that need recovery.
+Heartbeat-disabled proposers (`allow_empty_blocks = false`, the production
+default) skip block creation when there is no work. Slashes count as work.
+A proposer with no user deploys still proposes when it has an offender to
+slash.
 
 ### Two-Level Slashing
 
-- **Level 1**: Direct equivocator — loses entire stake (live)
-- **Level 2**: Validator that neglected to report equivocation — block
-  rejected; the stake penalty is currently inactive. Neglect verdicts are
-  judged against the receiver's own tracker (view-relative), so they are
-  demoted from evidence minting until shown admission-order-free — see the
-  slashing-specification amendment. Level-2 stake loss resumes on
-  re-promotion; the collusion-irrationality argument holds fully only then.
+- **Level 1**: Direct equivocator — loses entire stake.
+- **Level 2**: A block that neglects an equivocation it can see is rejected.
+  The block has both blocks of the pair in its justifications and leaves
+  their sender bonded. The neglecting validator keeps its stake.
 
 ---
 
@@ -555,7 +604,7 @@ See [F1R3FLY-io/f1r3node issues](https://github.com/F1R3FLY-io/f1r3node/issues) 
 |------|------|
 | `casper/src/rust/blocks/proposer/proposer.rs` | Proposal orchestration, constraint checks |
 | `casper/src/rust/blocks/proposer/block_creator.rs` | Deploy selection, block assembly |
-| `casper/src/rust/blocks/block_processor.rs` | 8-step validation pipeline, casper buffer |
+| `casper/src/rust/blocks/ingest/` | Block ingest: intake, dependency tracking, fetching, validation dispatch |
 | `casper/src/rust/validate.rs` | Individual validation rules |
 
 ### Fork Choice & Safety
@@ -571,15 +620,15 @@ See [F1R3FLY-io/f1r3node issues](https://github.com/F1R3FLY-io/f1r3node/issues) 
 |------|------|
 | `casper/src/rust/merging/dag_merger.rs` | Multi-parent state merge |
 | `casper/src/rust/merging/conflict_set_merger.rs` | Deploy conflict resolution |
-| `casper/src/rust/merging/rejected_slash.rs` | `RejectedSlash` type and `filter_recoverable` dedup for slash recovery |
 
 ### Slashing
 | File | Role |
 |------|------|
-| `casper/src/rust/equivocation_detector.rs` | Equivocation types and detection |
-| `casper/src/rust/util/rholang/system_deploy_util.rs` | System-deploy RNG seeds (slash seed keyed on `invalid_block_hash`) |
+| `casper/src/rust/equivocation_detector.rs` | Equivocation verdict and neglect check |
+| `casper/src/rust/slashing_authorization.rs` | Slash candidates and received-slash authorization |
+| `casper/src/rust/util/rholang/system_deploy_util.rs` | System-deploy RNG seeds (slash seed keyed on the cited block) |
 | `casper/src/rust/util/rholang/costacc/slash_deploy.rs` | `SlashDeploy` system-deploy definition |
-| `casper/src/rust/blocks/proposer/block_creator.rs` | `prepare_slashing_deploys`, `filter_slashable_invalid_messages`, slash recovery loop |
+| `casper/src/rust/blocks/proposer/block_creator.rs` | `prepare_slashing_deploys` |
 
 ### Liveness
 | File | Role |

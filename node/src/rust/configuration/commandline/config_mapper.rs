@@ -234,10 +234,6 @@ impl ConfigMapper<Options> for NodeConf {
                 run.casper_loop_interval,
             );
             Self::try_override_value(
-                &mut self.casper.requested_blocks_timeout,
-                run.requested_blocks_timeout,
-            );
-            Self::try_override_value(
                 &mut self.casper.fork_choice_stale_threshold,
                 run.fork_choice_stale_threshold,
             );
@@ -498,7 +494,6 @@ mod tests {
         "--validator-private-key=111111",
         "--validator-private-key-path=/var/lib/rnode/pem.key",
         "--casper-loop-interval=111111seconds",
-        "--requested-blocks-timeout=111111seconds",
         "--finalization-rate=111111",
         "--max-number-of-parents=111111",
         "--max-parent-depth=111111",
@@ -675,7 +670,6 @@ mod tests {
                 validator_private_key: Some("111111".to_string()),
                 validator_private_key_path: Some(PathBuf::from("/var/lib/rnode/pem.key")),
                 casper_loop_interval: Some(Duration::from_secs(111111)),
-                requested_blocks_timeout: Some(Duration::from_secs(111111)),
                 finalization_rate: Some(111111),
                 max_number_of_parents: Some(111111),
                 max_parent_depth: Some(111111),
@@ -689,9 +683,9 @@ mod tests {
                 frrd_drop_peer_after_retries: Some(111111),
                 bonds_file: Some("/var/lib/rnode/genesis/bonds1.txt".to_string()),
                 wallets_file: Some("/var/lib/rnode/genesis/wallets1.txt".to_string()),
-                bond_minimum: Some(111111),
+                bond_minimum: Some(111111.into()),
                 genesis_block_number: Some(222),
-                bond_maximum: Some(111111),
+                bond_maximum: Some(111111.into()),
                 epoch_length: Some(111111),
                 quarantine_length: Some(111111),
                 number_of_active_validators: Some(111111),
@@ -710,7 +704,7 @@ mod tests {
                 deploy_timestamp: Some(111111),
                 dev_mode: true,
                 deployer_private_key: Some("test-key".to_string()),
-                min_phlo_price: Some(1),
+                min_phlo_price: Some((1).into()),
                 ceremony_master_mode: false,
                 enable_mergeable_channel_gc: false,
                 disable_mergeable_channel_gc: false,
@@ -780,6 +774,7 @@ mod tests {
                 http_max_body_bytes: 16777216,
                 max_blocks_limit: 100,
                 enable_reporting: false,
+                report_cache_retention_blocks: 0,
                 exploratory_deploy_max_concurrent: 1,
                 exploratory_deploy_phlo_limit: 5_000_000,
                 exploratory_deploy_execution_timeout: Duration::from_secs(15),
@@ -812,10 +807,10 @@ mod tests {
                 shard_name: "".to_string(),
                 parent_shard_id: "/".to_string(),
                 casper_loop_interval: Duration::from_secs(1),
-                requested_blocks_timeout: Duration::from_secs(30),
                 finalization_rate: 1,
                 max_number_of_parents: 1,
                 max_parent_depth: 1,
+                dag_hot_window_depth: 1024,
                 deploy_lifespan: 50,
                 deploy_play_budget: Duration::ZERO,
                 fork_choice_stale_threshold: Duration::from_secs(30),
@@ -831,8 +826,8 @@ mod tests {
                     genesis_data_dir: "/var/lib/rnode/genesis".to_string(),
                     bonds_file: "".to_string(),
                     wallets_file: "".to_string(),
-                    bond_minimum: 1,
-                    bond_maximum: 1000000000,
+                    bond_minimum: 1.into(),
+                    bond_maximum: 1000000000.into(),
                     epoch_length: 10000,
                     quarantine_length: 10000,
                     number_of_active_validators: 5,
@@ -843,6 +838,7 @@ mod tests {
                     native_token_name: "F1R3CAP".to_string(),
                     native_token_symbol: "F1R3".to_string(),
                     native_token_decimals: 8,
+                    protocol_version: casper::rust::casper_conf::default_protocol_version(),
                 },
                 genesis_ceremony: casper::rust::casper_conf::GenesisCeremony {
                     required_signatures: 0,
@@ -852,7 +848,7 @@ mod tests {
                     genesis_validator_mode: false,
                     ceremony_master_mode: false,
                 },
-                min_phlo_price: 1,
+                min_phlo_price: (1).into(),
                 heartbeat_conf: casper::rust::casper_conf::HeartbeatConf {
                     enabled: false,
                     check_interval: Duration::from_secs(30),
@@ -863,12 +859,43 @@ mod tests {
                 enable_mergeable_channel_gc: false,
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
+                rejection_search_cap_from_height: None,
+                rejection_search_group_branch_cap:
+                    casper::rust::casper_conf::default_rejection_search_group_branch_cap(),
+                v6_retained_records: casper::rust::casper_conf::default_v6_retained_records(),
+                v6_conservation_audit_interval:
+                    casper::rust::casper_conf::default_v6_conservation_audit_interval(),
+                offer_rejection_log_capacity:
+                    casper::rust::casper_conf::default_offer_rejection_log_capacity(),
+                offer_rejection_reason_bytes:
+                    casper::rust::casper_conf::default_offer_rejection_reason_bytes(),
                 synchrony_recovery_stall_window: Duration::from_secs(60),
                 synchrony_recovery_cooldown: Duration::from_secs(20),
                 synchrony_recovery_max_bypasses: 2,
                 synchrony_finalized_baseline_enabled: true,
                 synchrony_finalized_baseline_max_distance: 2048,
                 max_user_deploys_per_block: 128,
+                finalizer_oracle_cache_justifications:
+                    casper::rust::casper_conf::default_finalizer_oracle_cache_justifications(),
+                finalizer_oracle_cache_self_justifications:
+                    casper::rust::casper_conf::default_finalizer_oracle_cache_self_justifications(),
+                finalizer_oracle_cache_ancestors:
+                    casper::rust::casper_conf::default_finalizer_oracle_cache_ancestors(),
+                finalizer_timeout_reruns:
+                    casper::rust::casper_conf::default_finalizer_timeout_reruns(),
+                finalizer_derivation_budget:
+                    casper::rust::casper_conf::default_finalizer_derivation_budget(),
+                finalizer_step_backstop: casper::rust::casper_conf::default_finalizer_step_backstop(
+                ),
+                finalizer_cursor_max_invalidations:
+                    casper::rust::casper_conf::default_finalizer_cursor_max_invalidations(),
+                deploy_pool_blocks_of_backlog:
+                    casper::rust::casper_conf::default_deploy_pool_blocks_of_backlog(),
+                proposal_pacing_floor_distance:
+                    casper::rust::casper_conf::default_proposal_pacing_floor_distance(),
+                v6_execution_lag_threshold:
+                    casper::rust::casper_conf::default_v6_execution_lag_threshold(),
+                v6_fallback_distance: casper::rust::casper_conf::default_v6_fallback_distance(),
             },
             metrics: crate::rust::configuration::model::Metrics {
                 prometheus: false,
@@ -1051,10 +1078,6 @@ mod tests {
             default_config.casper.casper_loop_interval,
             Duration::from_secs(111111)
         );
-        assert_eq!(
-            default_config.casper.requested_blocks_timeout,
-            Duration::from_secs(111111)
-        );
         assert_eq!(default_config.casper.finalization_rate, 111111);
         assert_eq!(default_config.casper.max_number_of_parents, 111111);
         assert_eq!(default_config.casper.max_parent_depth, 111111);
@@ -1079,7 +1102,7 @@ mod tests {
         );
         assert_eq!(default_config.casper.height_constraint_threshold, 111111);
         assert_eq!(default_config.casper.max_user_deploys_per_block, 777777);
-        assert_eq!(default_config.casper.min_phlo_price, 1);
+        assert_eq!(default_config.casper.min_phlo_price, 1.into());
 
         // Heartbeat configuration
         // --heartbeat-disabled takes precedence over --heartbeat-enabled (both set in test options)
@@ -1177,11 +1200,11 @@ mod tests {
         );
         assert_eq!(
             default_config.casper.genesis_block_data.bond_minimum,
-            111111
+            111111.into()
         );
         assert_eq!(
             default_config.casper.genesis_block_data.bond_maximum,
-            111111
+            111111.into()
         );
         assert_eq!(
             default_config.casper.genesis_block_data.epoch_length,

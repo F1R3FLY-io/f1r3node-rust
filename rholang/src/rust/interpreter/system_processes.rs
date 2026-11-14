@@ -23,6 +23,7 @@ use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token
 use prost::Message;
 use shared::rust::{BitSet, Byte};
 
+use super::accounting::rev_stack;
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
@@ -32,7 +33,6 @@ use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
-use super::rho_runtime::RhoISpace;
 use super::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
     RhoSysAuthToken, RhoUri,
@@ -199,6 +199,14 @@ impl FixedChannels {
     pub fn vault_address() -> Par { byte_name(12) }
 
     pub fn deployer_id_ops() -> Par { byte_name(13) }
+
+    pub fn rev_wallet() -> Par { byte_name(69) }
+
+    pub fn rev_genesis() -> Par { byte_name(70) }
+
+    pub fn rev_bond() -> Par { byte_name(71) }
+
+    pub fn rev_bond_admin() -> Par { byte_name(72) }
 
     pub fn reg_lookup() -> Par { byte_name(14) }
 
@@ -452,6 +460,15 @@ impl FixedChannels {
     /// without tripping `eval_new`'s "No value set for URN" check,
     /// even before the real handler landed.
     pub fn fs_remove_dir() -> Par { byte_name(58) }
+
+    /// `rho:io:fs:native:1.0.0/mkdir` — directory creation.
+    /// Signature `(root, rel, mode: Int, parents: Bool, cmode)`.
+    /// `parents = true` mirrors Node.js `fs.mkdir(..., {recursive:
+    /// true})`: EEXIST on a directory is success, intermediate
+    /// parents are created automatically.  `parents = false`:
+    /// EEXIST is `FSERR_EXISTS`, missing parent is
+    /// `FSERR_NOT_FOUND`.  Verifying mutation; constant cost.
+    pub fn fs_mkdir() -> Par { byte_name(41) }
 }
 
 pub struct BodyRefs;
@@ -470,6 +487,10 @@ impl BodyRefs {
     pub const GET_INVALID_BLOCKS: i64 = 12;
     pub const VAULT_ADDRESS: i64 = 13;
     pub const DEPLOYER_ID_OPS: i64 = 14;
+    pub const REV_WALLET: i64 = 69;
+    pub const REV_GENESIS: i64 = 70;
+    pub const REV_BOND: i64 = 71;
+    pub const REV_BOND_ADMIN: i64 = 72;
     pub const REG_OPS: i64 = 15;
     pub const SYS_AUTHTOKEN_OPS: i64 = 16;
     pub const REG_OPS_V1: i64 = 17;
@@ -589,6 +610,10 @@ impl BodyRefs {
     /// 5.142 (URN swap from stub to `FsProcesses::fs_remove_dir`).
     /// See `FixedChannels::fs_remove_dir` above.
     pub const FS_REMOVE_DIR: i64 = 58;
+
+    /// `rho:io:fs:native:1.0.0/mkdir` body-ref.  Uses the free slot
+    /// at 41 (previously a gap between FS_OPEN=40 and FS_READ=42).
+    pub const FS_MKDIR: i64 = 41;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -601,12 +626,50 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::OLLAMA_MODELS,
         BodyRefs::GRPC_TELL,
         BodyRefs::CHROMA_QUERY,
+        // File I/O: every fs_* syscall reply must be replay-cached so a
+        // follower's Oracular-echo path (dispatch_via_trait step 4) sees
+        // byte-identical `previous_output` and produces a matching
+        // ack-channel Produce hash.  Without this, the leader's recorded
+        // Produce events carry output_value=[] (mark_as_non_deterministic
+        // never runs), the follower echoes empty data on ack, the hash
+        // diverges from the recorded one, the downstream Rholang
+        // for-binding never fires, and check_replay_data trips with
+        // UnusedCommEvent.  See fileio_replay_spec.rs for the
+        // regression harness.
+        BodyRefs::FS_OPEN,
+        BodyRefs::FS_CLOSE,
+        BodyRefs::FS_READ,
+        BodyRefs::FS_READ_AT,
+        BodyRefs::FS_WRITE,
+        BodyRefs::FS_WRITE_AT,
+        BodyRefs::FS_SEEK,
+        BodyRefs::FS_TELL,
+        BodyRefs::FS_SIZE,
+        BodyRefs::FS_TRUNCATE,
+        BodyRefs::FS_FLUSH,
+        BodyRefs::FS_STAT,
+        BodyRefs::FS_EXISTS,
+        BodyRefs::FS_ENTRIES,
+        BodyRefs::FS_RENAME,
+        BodyRefs::FS_COPY_FILE,
+        BodyRefs::FS_REMOVE_FILE,
+        BodyRefs::FS_REMOVE_DIR,
+        BodyRefs::FS_CHMOD,
+        BodyRefs::FS_CHOWN,
+        BodyRefs::FS_QUARANTINE,
+        BodyRefs::FS_LOCK_RANGE,
+        BodyRefs::FS_LOCK_SEQUENTIAL,
+        BodyRefs::FS_RELEASE_LOCK,
+        BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
+        BodyRefs::FS_ENTRIES_STREAM_OPEN,
+        BodyRefs::FS_ENTRIES_STREAM_NEXT,
+        BodyRefs::FS_ENTRIES_STREAM_CLOSE,
+        BodyRefs::FS_MKDIR,
     ])
 }
 
 #[derive(Clone)]
 pub struct ProcessContext {
-    pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
@@ -621,7 +684,6 @@ pub struct ProcessContext {
 
 impl ProcessContext {
     pub fn create(
-        space: RhoISpace,
         dispatcher: RhoDispatch,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
@@ -631,9 +693,9 @@ impl ProcessContext {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        urn_phase: UrnPhase,
     ) -> Self {
         ProcessContext {
-            space: space.clone(),
             dispatcher: dispatcher.clone(),
             block_data: block_data.clone(),
             invalid_blocks,
@@ -641,7 +703,6 @@ impl ProcessContext {
             urn_map: urn_map.clone(),
             system_processes: SystemProcesses::create(
                 dispatcher,
-                space,
                 block_data,
                 deploy_data,
                 urn_map,
@@ -649,6 +710,7 @@ impl ProcessContext {
                 ollama_service,
                 grpc_client_service,
                 chromadb_service,
+                urn_phase,
             ),
         }
     }
@@ -774,6 +836,9 @@ pub struct DeployData {
     pub timestamp: i64,
     pub deployer_id: PublicKey,
     pub deploy_id: Vec<u8>,
+    pub cosigners: Vec<PublicKey>,
+    pub phlo_price: u64,
+    pub phlo_limit: u64,
 }
 
 impl DeployData {
@@ -782,6 +847,9 @@ impl DeployData {
             timestamp: 0,
             deployer_id: PublicKey::from_bytes(&[0]),
             deploy_id: vec![0],
+            cosigners: Vec::new(),
+            phlo_price: 0,
+            phlo_limit: 0,
         }
     }
 
@@ -790,15 +858,101 @@ impl DeployData {
             timestamp: template.data.time_stamp,
             deployer_id: template.pk.clone(),
             deploy_id: template.sig.to_vec(),
+            cosigners: casper_message::Cosignature::verified_cosigners(template)
+                .unwrap_or_default(),
+            phlo_price: u64::try_from(template.data.phlo_price.as_bigint()).unwrap_or(0),
+            phlo_limit: u64::try_from(template.data.phlo_limit).unwrap_or(0),
         }
     }
+}
+
+#[derive(Clone)]
+pub struct UrnPhase {
+    pub fs_native_filtered: Arc<std::sync::atomic::AtomicBool>,
+    pub genesis: Arc<std::sync::atomic::AtomicBool>,
+    pub seal_records: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl UrnPhase {
+    pub fn refusal(&self, urn: &str, resolved: Option<&Par>) -> Option<String> {
+        urn_refusal(
+            urn,
+            resolved,
+            self.fs_native_filtered
+                .load(std::sync::atomic::Ordering::Acquire),
+            self.genesis.load(std::sync::atomic::Ordering::Acquire),
+            in_process_region(),
+        )
+    }
+
+    pub fn is_genesis(&self) -> bool { self.genesis.load(std::sync::atomic::Ordering::Acquire) }
+
+    pub fn seals_recorded(&self) -> bool {
+        self.seal_records.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+pub fn genesis_only_channels() -> [Par; 2] {
+    [
+        FixedChannels::rev_genesis(),
+        FixedChannels::rev_bond_admin(),
+    ]
+}
+
+pub fn runner_context_channels() -> [Par; 2] {
+    [
+        FixedChannels::get_block_data(),
+        FixedChannels::deploy_data(),
+    ]
+}
+
+pub fn resolved_channel(value: &Par) -> Option<&Par> {
+    match value.bundles.as_slice() {
+        [bundle] if value.sends.is_empty() && value.unforgeables.is_empty() => bundle.body.as_ref(),
+        _ => None,
+    }
+}
+
+pub fn in_process_region() -> bool {
+    rev_stack::seal::current()
+        .is_some_and(|record| record.kind == rev_stack::seal::SealKind::Process)
+}
+
+pub fn urn_refusal(
+    urn: &str,
+    resolved: Option<&Par>,
+    fs_native_filtered: bool,
+    genesis: bool,
+    in_process_region: bool,
+) -> Option<String> {
+    let channel = resolved.and_then(resolved_channel);
+    let resolves_to = |channels: [Par; 2]| channel.is_some_and(|c| channels.contains(c));
+    if fs_native_filtered && urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
+        return Some(format!(
+            "urn `{urn}` is not resolvable in this phase; \
+             rho:io:fs:native:* URNs are reserved for the \
+             genesis-blessed FsGenesis deploy — user code \
+             must instead go through the Fs cap published \
+             at genesis"
+        ));
+    }
+    if !genesis
+        && (rev_stack::genesis::is_genesis_only_urn(urn) || resolves_to(genesis_only_channels()))
+    {
+        return Some(format!("urn `{urn}` is reserved for genesis"));
+    }
+    if in_process_region && resolves_to(runner_context_channels()) {
+        return Some(format!(
+            "urn `{urn}` answers from the running deployment, which a `# P` region may not read"
+        ));
+    }
+    None
 }
 
 // TODO: Remove Clone
 #[derive(Clone)]
 pub struct SystemProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
     /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
@@ -806,6 +960,7 @@ pub struct SystemProcesses {
     /// legacy URNs.
     pub urn_map: Arc<HashMap<String, Par>>,
     openai_service: SharedOpenAIService,
+    urn_phase: UrnPhase,
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     pretty_printer: PrettyPrinter,
@@ -816,7 +971,6 @@ pub struct SystemProcesses {
 impl SystemProcesses {
     fn create(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
         urn_map: Arc<HashMap<String, Par>>,
@@ -824,10 +978,10 @@ impl SystemProcesses {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        urn_phase: UrnPhase,
     ) -> Self {
         SystemProcesses {
             dispatcher,
-            space,
             block_data,
             deploy_data,
             urn_map,
@@ -836,12 +990,12 @@ impl SystemProcesses {
             grpc_client_service,
             pretty_printer: PrettyPrinter::new(),
             chromadb_service,
+            urn_phase,
         }
     }
 
     fn is_contract_call(&self) -> ContractCall {
         ContractCall {
-            space: self.space.clone(),
             dispatcher: self.dispatcher.clone(),
         }
     }
@@ -1064,6 +1218,150 @@ impl SystemProcesses {
         produce(&[response], ack).await
     }
 
+    async fn wallet_authority(&self) -> Vec<rev_stack::WalletOwner> {
+        match rev_stack::seal::current_owner() {
+            Some(rev_stack::WalletOwner::Compound(components)) => {
+                let mut authority = components.clone();
+                authority.push(rev_stack::WalletOwner::Compound(components));
+                authority
+            }
+            Some(owner) => vec![owner],
+            None if self.urn_phase.seals_recorded() => Vec::new(),
+            None => {
+                let data = self.deploy_data.read().await;
+                std::iter::once(&data.deployer_id)
+                    .chain(data.cosigners.iter())
+                    .filter_map(|pk| rev_stack::WalletOwner::from_public_key(pk).ok())
+                    .collect()
+            }
+        }
+    }
+
+    pub async fn rev_wallet(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("rev_wallet"));
+        };
+
+        let [first_par, second_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("rev_wallet"));
+        };
+
+        let Some(command) = RhoString::unapply(first_par) else {
+            return Err(illegal_argument_error("rev_wallet"));
+        };
+
+        let signers = self.wallet_authority().await;
+        let block_number = self.block_data.read().await.block_number;
+        let Some(response) = rev_stack::native::handle(
+            self.dispatcher.reducer()?.space.hot_store(),
+            &command,
+            second_par,
+            &signers,
+            block_number,
+        ) else {
+            return Err(illegal_argument_error("rev_wallet"));
+        };
+
+        produce(&[response], ack).await
+    }
+
+    pub async fn rev_bond(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let random_state = contract_args
+            .0
+            .first()
+            .map(|call| call.random_state.clone())
+            .unwrap_or_default();
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("rev_bond"));
+        };
+
+        let [first_par, second_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("rev_bond"));
+        };
+
+        let Some(command) = RhoString::unapply(first_par) else {
+            return Err(illegal_argument_error("rev_bond"));
+        };
+
+        let Some(response) = rev_stack::bond::handle(
+            self.dispatcher.reducer()?.space.hot_store(),
+            &command,
+            second_par,
+            &self.wallet_authority().await,
+            &random_state,
+        ) else {
+            return Err(illegal_argument_error("rev_bond"));
+        };
+
+        produce(&[response], ack).await
+    }
+
+    pub async fn rev_bond_admin(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("rev_bond_admin"));
+        };
+
+        let [first_par, second_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("rev_bond_admin"));
+        };
+
+        let Some(command) = RhoString::unapply(first_par) else {
+            return Err(illegal_argument_error("rev_bond_admin"));
+        };
+
+        let Some(response) = rev_stack::bond::admin_handle(
+            self.dispatcher.reducer()?.space.hot_store(),
+            &command,
+            second_par,
+        ) else {
+            return Err(illegal_argument_error("rev_bond_admin"));
+        };
+
+        produce(&[response], ack).await
+    }
+
+    pub async fn rev_genesis(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("rev_genesis"));
+        };
+
+        if !self.urn_phase.is_genesis() {
+            return Err(InterpreterError::ReduceError(
+                "rho:rev:genesis runs only during genesis".to_string(),
+            ));
+        }
+
+        let [first_par, second_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("rev_genesis"));
+        };
+
+        let Some(command) = RhoString::unapply(first_par) else {
+            return Err(illegal_argument_error("rev_genesis"));
+        };
+
+        let Some(response) = rev_stack::genesis::handle(
+            self.dispatcher.reducer()?.space.hot_store(),
+            &command,
+            second_par,
+        ) else {
+            return Err(illegal_argument_error("rev_genesis"));
+        };
+
+        produce(&[response], ack).await
+    }
+
     pub async fn registry_ops(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -1186,6 +1484,10 @@ impl SystemProcesses {
             .ok_or_else(|| {
                 illegal_argument_error("registry_lookup: urn arg must be a String or Uri")
             })?;
+
+        if let Some(reason) = self.urn_phase.refusal(&urn_str, self.urn_map.get(&urn_str)) {
+            return Err(InterpreterError::ReduceError(reason));
+        }
 
         // 1. Legacy URN: serve directly from urn_map.
         if let Some(stored) = self.urn_map.get(&urn_str) {
@@ -1322,9 +1624,16 @@ impl SystemProcesses {
         };
 
         let data = deploy_data.read().await;
+        // The middle element is the deployer's pubkey as a plain ByteArray.
+        // Observational uses (URN construction, replay-protection hashes
+        // in Registry.rho::insertSigned) want the raw bytes; the canonical
+        // way to obtain a `GDeployerId` unforgeable is the
+        // `rho:system:deployerId` URN, resolved at normalization time from
+        // the deployer's own `new`-binding. Keeping the two surfaces
+        // distinct avoids callers reaching for whichever is nearest.
         let output = vec![
             Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
-            RhoDeployerId::create_par(data.deployer_id.bytes.as_ref().to_vec()),
+            RhoByteArray::create_par(data.deployer_id.bytes.as_ref().to_vec()),
             RhoDeployId::create_par(data.deploy_id.clone()),
         ];
 
@@ -2567,8 +2876,9 @@ mod body_refs_fs_tests {
             ("FS_WRITE", BodyRefs::FS_WRITE),
             ("FS_WRITE_AT", BodyRefs::FS_WRITE_AT),
             ("FS_REMOVE_DIR", BodyRefs::FS_REMOVE_DIR),
+            ("FS_MKDIR", BodyRefs::FS_MKDIR),
         ];
-        const EXPECTED_FS_BODY_REF_COUNT: usize = 28;
+        const EXPECTED_FS_BODY_REF_COUNT: usize = 29;
         assert_eq!(
             ENUMERATED_FS_BODY_REFS.len(),
             EXPECTED_FS_BODY_REF_COUNT,

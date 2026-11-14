@@ -20,18 +20,20 @@ use shared::rust::store::soak_snapshot::{
 use super::block_dag_key_value_storage::{BlockDagKeyValueStorage, KeyValueDagRepresentation};
 use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
+use super::dag_history_index::MembershipRecord;
 use super::deploy_lifecycle_types::DeployLifecycleTables;
-use super::soak_equivocations::{self, EquivocationSnapshot};
 use crate::rust::key_value_block_store::{BlockDecodeLimits, KeyValueBlockStore};
 
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 pub const SNAPSHOT_SCOPE: &str = "batch-b1-bounded-detached-capture";
-pub const EXCLUDED_STORES: [&str; 5] = [
+pub const EXCLUDED_STORES: [&str; 7] = [
     "blocks-approved",
     "deploy-lifecycle-events",
     "deploy-lifecycle-terminal",
     "carrier-index",
     "carrier-index-meta",
+    "finalization-commit-marker",
+    "lfb-pointer",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +119,7 @@ pub struct SnapshotData {
     pub limits: CaptureLimits,
     pub coverage: Coverage,
     pub insertion_generation: u64,
+    pub view_sequence: u64,
     pub transactions: Vec<TransactionIdentity>,
     pub usage: ReadUsage,
     pub work: usize,
@@ -243,9 +246,15 @@ fn preflight_metadata(
     }
     for _ in 0..wire.count("metadata validators", limits.max_validators)? {
         wire.bytes()?;
-        wire.take(8)?;
+        wire.bytes()?;
     }
-    wire.take(19)?;
+    wire.take(12)?;
+    match wire.take(1)?[0] {
+        0 => {}
+        1 => wire.bytes()?,
+        _ => return Err(malformed("The metadata pair tag is invalid.")),
+    }
+    wire.take(6)?;
     wire.bytes()?;
     if !wire.0.is_empty() {
         return Err(malformed("The metadata record has trailing bytes."));
@@ -321,42 +330,15 @@ pub fn capture_observed(
     request: &CaptureRequest<'_>,
     observe: impl FnMut(CapturePhase),
 ) -> Result<DetachedDagSnapshot, SnapshotError> {
-    capture_inner(dag, blocks, request, None, observe).map(|(snapshot, _)| snapshot)
-}
-
-pub fn capture_with_equivocations(
-    dag: &BlockDagKeyValueStorage,
-    blocks: &KeyValueBlockStore,
-    request: &CaptureRequest<'_>,
-    max_rows: usize,
-) -> Result<(DetachedDagSnapshot, EquivocationSnapshot), SnapshotError> {
-    capture_with_equivocations_observed(dag, blocks, request, max_rows, |_| {})
-}
-
-pub fn capture_with_equivocations_observed(
-    dag: &BlockDagKeyValueStorage,
-    blocks: &KeyValueBlockStore,
-    request: &CaptureRequest<'_>,
-    max_rows: usize,
-    observe: impl FnMut(CapturePhase),
-) -> Result<(DetachedDagSnapshot, EquivocationSnapshot), SnapshotError> {
-    let (snapshot, tracker) = capture_inner(dag, blocks, request, Some(max_rows), observe)?;
-    Ok((
-        snapshot,
-        tracker.ok_or_else(|| malformed("equivocation capture missing"))?,
-    ))
+    capture_inner(dag, blocks, request, observe)
 }
 
 fn capture_inner(
     dag: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
     request: &CaptureRequest<'_>,
-    max_rows: Option<usize>,
     mut observe: impl FnMut(CapturePhase),
-) -> Result<(DetachedDagSnapshot, Option<EquivocationSnapshot>), SnapshotError> {
-    if let Some(limit) = max_rows {
-        soak_equivocations::validate_row_limit(limit)?;
-    }
+) -> Result<DetachedDagSnapshot, SnapshotError> {
     let limits = &request.limits;
     limits.validate()?;
     let mut work = WorkMeter {
@@ -379,12 +361,12 @@ fn capture_inner(
     let access = dag.soak_capture_access(deadline, limits.lock_wait)?;
     observe(CapturePhase::GuardsHeld);
     let generation_before = access.generation();
-    let state = access
+    let mut state = access
         .metadata_store()
         .capture_state(deadline, limits.lock_wait)?;
     observe(CapturePhase::StateCopied);
 
-    let held_blocks = state.dag_set.len();
+    let mut held_blocks = state.dag_set.len();
     if held_blocks > limits.max_blocks {
         return Err(SnapshotError::LimitExceeded {
             kind: "held blocks",
@@ -438,31 +420,59 @@ fn capture_inner(
     }
     let metadata_typed = access.metadata_store().capture_typed_store();
     let latest_typed = access.latest_messages_index();
-    let invalid_typed = access.invalid_blocks_index();
     let floor_typed = access.floor_index();
     let frontier_typed = access.frontier_index();
     let metadata_raw = metadata_typed.raw_store();
     let latest_raw = latest_typed.raw_store();
-    let invalid_raw = invalid_typed.raw_store();
     let floor_raw = floor_typed.raw_store();
     let frontier_raw = frontier_typed.raw_store();
     let blocks_raw = blocks.soak_capture_store();
 
-    let tracker_raw = max_rows.map(|_| access.equivocations_index().store.raw_store());
+    let membership_raw = access.membership_index();
     let mut stores = vec![
         metadata_raw,
         latest_raw,
-        invalid_raw,
         floor_raw,
         frontier_raw,
         blocks_raw,
     ];
-    if let Some(raw) = tracker_raw {
+    if let Some(raw) = membership_raw {
         stores.push(raw);
     }
     let mut reader = BoundedLmdbReader::open(&stores, limits.read.clone())?;
 
-    let dag_set: BTreeSet<BlockHash> = state.dag_set.iter().cloned().collect();
+    let membership = if let Some(raw) = membership_raw {
+        let rows = scan(&mut reader, raw, limits.max_blocks, &mut work)?;
+        let mut membership = BTreeMap::new();
+        for (key, value) in rows {
+            work.charge(key.len())?;
+            work.charge(value.len())?;
+            let hash = BlockHash::from(key);
+            if hash.len() != models::rust::block_hash::LENGTH {
+                return Err(malformed("Invalid membership hash length"));
+            }
+            let record: MembershipRecord = bincode::deserialize(&value).map_err(malformed)?;
+            if record.sequence <= state.sequence {
+                membership.insert(hash, record);
+            }
+        }
+        Some(membership)
+    } else {
+        None
+    };
+    let dag_set: BTreeSet<BlockHash> = match &membership {
+        Some(rows) => rows.keys().cloned().collect(),
+        None => state.dag_set.iter().cloned().collect(),
+    };
+    held_blocks = dag_set.len();
+    bounded("held blocks", held_blocks, limits.max_blocks)?;
+    if membership.is_some() {
+        state.child_map.clear();
+        state.height_map.clear();
+        state.block_number_map.clear();
+        state.main_parent_map.clear();
+        state.self_justification_map.clear();
+    }
     let mut captured_blocks: BTreeMap<BlockHash, DetachedBlock> = BTreeMap::new();
     let mut parent_edges = 0usize;
     for hash in &dag_set {
@@ -489,6 +499,46 @@ fn capture_inner(
                 hex::encode(&metadata.block_hash)
             )));
         }
+        if let Some(membership) = &membership {
+            let record = &membership[hash];
+            if record.height != metadata.block_number || record.invalid != metadata.is_invalid() {
+                return Err(malformed("Membership and metadata disagree"));
+            }
+            work.charge(7)?;
+            work.charge(hash.len().saturating_mul(5))?;
+            state.child_map.entry(hash.clone()).or_default();
+            for parent in &metadata.parents {
+                work.charge(parent.len())?;
+                work.charge(hash.len())?;
+                state
+                    .child_map
+                    .entry(parent.clone())
+                    .or_default()
+                    .insert(hash.clone());
+            }
+            if !metadata.is_invalid() {
+                state
+                    .height_map
+                    .entry(metadata.block_number)
+                    .or_default()
+                    .insert(hash.clone());
+            }
+            state
+                .block_number_map
+                .insert(hash.clone(), metadata.block_number);
+            if let Some(parent) = metadata.parents.first() {
+                state.main_parent_map.insert(hash.clone(), parent.clone());
+            }
+            if let Some(justification) = metadata
+                .justifications
+                .iter()
+                .find(|j| j.validator == metadata.sender)
+            {
+                state
+                    .self_justification_map
+                    .insert(hash.clone(), justification.latest_block_hash.clone());
+            }
+        }
         let floor = match read_value(&mut reader, floor_raw, &key, &mut work)? {
             None => Availability::Absent,
             Some(bytes) => {
@@ -512,6 +562,11 @@ fn capture_inner(
         });
     }
 
+    if membership.is_some() && state.height_map.keys().next_back().copied() != state.max_height {
+        return Err(SnapshotError::Incomplete(
+            "Captured valid-height maximum differs from the published view".into(),
+        ));
+    }
     let latest_rows = scan(&mut reader, latest_raw, limits.max_validators, &mut work)?;
     if latest_rows.len() > limits.max_validators {
         return Err(SnapshotError::LimitExceeded {
@@ -530,20 +585,11 @@ fn capture_inner(
         latest_messages.insert(validator, hash);
     }
 
-    let invalid_rows = scan(&mut reader, invalid_raw, limits.max_blocks, &mut work)?;
-    let mut invalid_blocks: BTreeMap<BlockHash, BlockMetadata> = BTreeMap::new();
-    let mut invalid_parent_edges = 0usize;
-    for (key, value) in invalid_rows {
-        work.charge(1)?;
-        work.charge(key.len())?;
-        let hash = BlockHash::from(decode_length_prefixed(&key)?);
-        preflight_metadata(&value, limits, &mut invalid_parent_edges, &mut work)?;
-        let metadata: BlockMetadata = invalid_typed.decode_value(&value).map_err(malformed)?;
-        if metadata.block_hash != hash {
-            return Err(malformed("The invalid metadata key differs."));
-        }
-        invalid_blocks.insert(hash, metadata);
-    }
+    let invalid_blocks: BTreeMap<BlockHash, BlockMetadata> = captured_blocks
+        .iter()
+        .filter(|(_, block)| block.metadata.is_invalid())
+        .map(|(hash, block)| (hash.clone(), block.metadata.clone()))
+        .collect();
 
     let mut bodies: BTreeMap<BlockHash, BlockBody> = BTreeMap::new();
     for hash in request.bodies {
@@ -582,63 +628,6 @@ fn capture_inner(
         }
         bodies.insert(hash.clone(), BlockBody::Held(raw));
     }
-    let tracker_rows = match (max_rows, tracker_raw) {
-        (Some(limit), Some(raw)) => {
-            let before_bytes = reader.usage().bytes;
-            let raw_rows = scan(&mut reader, raw, limit, &mut work)?;
-            let raw_bytes = reader.usage().bytes - before_bytes;
-            work.charge(
-                raw_rows
-                    .len()
-                    .checked_mul(128)
-                    .ok_or(SnapshotError::CounterOverflow("equivocation allocation"))?,
-            )?;
-            let mut rows = Vec::with_capacity(raw_rows.len());
-            for (key, value) in raw_rows {
-                let amount = key
-                    .len()
-                    .checked_mul(2)
-                    .and_then(|n| value.len().checked_mul(3).and_then(|v| n.checked_add(v)))
-                    .and_then(|n| n.checked_add(128))
-                    .ok_or(SnapshotError::CounterOverflow("equivocation work"))?;
-                work.charge(amount)?;
-                rows.push(soak_equivocations::decode_row(
-                    &key,
-                    &value,
-                    limits.max_blocks,
-                )?);
-            }
-            let longest = rows.iter().map(|r| r.equivocator.len()).max().unwrap_or(0);
-            let amount = rows
-                .len()
-                .checked_mul(rows.len())
-                .and_then(|n| n.checked_mul(longest.saturating_add(64)))
-                .and_then(|n| n.checked_mul(4))
-                .and_then(|n| n.checked_add(256))
-                .ok_or(SnapshotError::CounterOverflow("equivocation sealing"))?;
-            work.charge(amount)?;
-            let canonical_bytes = rows
-                .iter()
-                .try_fold(128usize, |total, row| {
-                    total
-                        .checked_add(row.equivocator.len())
-                        .and_then(|n| n.checked_add(52))
-                })
-                .ok_or(SnapshotError::CounterOverflow(
-                    "equivocation canonical bytes",
-                ))?;
-            bounded(
-                "equivocation canonical bytes",
-                canonical_bytes,
-                limits
-                    .read
-                    .max_total_bytes
-                    .saturating_sub(reader.usage().bytes),
-            )?;
-            Some((rows, raw_bytes))
-        }
-        _ => None,
-    };
     observe(CapturePhase::RowsRead);
 
     let usage = reader.usage();
@@ -655,21 +644,6 @@ fn capture_inner(
     drop(access);
     observe(CapturePhase::GuardsReleased);
 
-    if tracker_rows.is_some() {
-        work.charge(
-            transactions
-                .iter()
-                .try_fold(256usize, |n, t| n.checked_add(t.environment.len()))
-                .ok_or(SnapshotError::CounterOverflow(
-                    "equivocation transaction copy",
-                ))?,
-        )?;
-    }
-    let tracker = tracker_rows
-        .map(|(rows, raw_bytes)| {
-            EquivocationSnapshot::seal(rows, raw_bytes, generation_before, transactions.clone())
-        })
-        .transpose()?;
     let data = SnapshotData {
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         scope: SNAPSHOT_SCOPE,
@@ -680,6 +654,7 @@ fn capture_inner(
             requested_bodies: request.bodies.len(),
         },
         insertion_generation: generation_before,
+        view_sequence: state.sequence,
         transactions,
         usage,
         work: work.used,
@@ -716,7 +691,7 @@ fn capture_inner(
         blocks: captured_blocks,
         bodies,
     };
-    DetachedDagSnapshot::seal(data, work).map(|snapshot| (snapshot, tracker))
+    DetachedDagSnapshot::seal(data, work)
 }
 
 struct CanonicalEncoder {
@@ -770,11 +745,17 @@ impl CanonicalEncoder {
         self.u64(metadata.weight_map.len() as u64)?;
         for (validator, weight) in &metadata.weight_map {
             self.bytes(validator)?;
-            self.i64(*weight)?;
+            self.bytes(&weight.as_bigint().to_signed_bytes_be())?;
         }
         self.i64(metadata.block_number)?;
         self.i32(metadata.sequence_number)?;
-        self.bool(metadata.invalid)?;
+        match &metadata.equivocates {
+            None => self.bool(false)?,
+            Some(sibling) => {
+                self.bool(true)?;
+                self.bytes(sibling)?;
+            }
+        }
         self.bool(metadata.directly_finalized)?;
         self.bool(metadata.finalized)?;
         self.u32(metadata.fault_tolerance_value.to_bits())?;
@@ -811,6 +792,8 @@ impl SnapshotData {
         enc.u64(self.coverage.requested_bodies as u64)?;
         enc.tag("generation")?;
         enc.u64(self.insertion_generation)?;
+        enc.tag("view_sequence")?;
+        enc.u64(self.view_sequence)?;
         enc.tag("transactions")?;
         enc.u64(self.transactions.len() as u64)?;
         for txn in &self.transactions {
@@ -1009,6 +992,9 @@ impl DetachedDagSnapshot {
         frontier_index.put(frontier_rows).map_err(read_failed)?;
 
         let representation = KeyValueDagRepresentation {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set: self.dag_set.iter().cloned().collect(),
             latest_messages_map: self
                 .latest_messages
@@ -1050,7 +1036,6 @@ impl DetachedDagSnapshot {
                 .iter()
                 .map(|(hash, justification)| (hash.clone(), justification.clone()))
                 .collect(),
-            invalid_blocks_set: self.invalid_blocks.values().cloned().collect(),
             last_finalized_block_hash,
             finalized_blocks_set: self.finalized_block_set.iter().cloned().collect(),
             block_metadata_index: Arc::new(RwLock::new(metadata_store)),
@@ -1101,9 +1086,8 @@ mod tests {
         ));
         let stores = [
             "block-metadata",
-            "equivocation-tracker",
             "latest-messages",
-            "invalid-blocks",
+            "dag-equivocations-v1",
             "floor-index",
             "frontier-index",
             "deploy-lifecycle-events",
@@ -1111,8 +1095,17 @@ mod tests {
             "carrier-index",
             "carrier-index-meta",
             "genesis-hash",
+            "finalization-commit-marker",
+            "lfb-pointer",
+            "v6-executor-state",
             "blocks",
             "blocks-approved",
+            "dag-membership-v1",
+            "dag-height-v1",
+            "dag-children-v1",
+            "dag-history-state-v1",
+            "dag-gc-retry-v1",
+            "dag-sequence-v1",
         ];
         let mapping = stores
             .into_iter()

@@ -15,7 +15,7 @@ tests:
 references:
   - docs/plans/soak-recurrence-prevention-2026-09-08.md
   - docs/tdd-plans/soak-gates-2026-09-08.md
-  - docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md
+  - docs/casper/cbc-evidence/scripts-run-merge-recovery-soak-sh.md
 ```
 
 ## Claim

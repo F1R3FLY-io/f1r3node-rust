@@ -156,6 +156,9 @@ pub fn sub_pars(
             .collect()
     }
 
+    let remainder_signed_terms = par.cost_signed_terms.clone();
+    let remainder_stacks = par.cost_stacks.clone();
+
     min_max_subsets(&par.sends, send_min, send_max)
         .into_iter()
         .cartesian_product(min_max_subsets(&par.receives, receive_min, receive_max).into_iter())
@@ -165,7 +168,7 @@ pub fn sub_pars(
         .cartesian_product(min_max_subsets(&par.unforgeables, unf_min, unf_max).into_iter())
         .cartesian_product(min_max_subsets(&par.bundles, bundle_min, bundle_max).into_iter())
         .map(
-            |(
+            move |(
                 (((((sub_sends, sub_receives), sub_news), sub_exprs), sub_matches), sub_unfs),
                 sub_bundles,
             )| {
@@ -182,6 +185,8 @@ pub fn sub_pars(
                         conditionals: Vec::default(),
                         locally_free: Vec::default(),
                         connective_used: false,
+                        cost_signed_terms: Vec::new(),
+                        cost_stacks: Vec::new(),
                     },
                     Par {
                         sends: sub_sends.1,
@@ -195,6 +200,8 @@ pub fn sub_pars(
                         conditionals: Vec::default(),
                         locally_free: Vec::default(),
                         connective_used: false,
+                        cost_signed_terms: remainder_signed_terms.clone(),
+                        cost_stacks: remainder_stacks.clone(),
                     },
                 )
             },

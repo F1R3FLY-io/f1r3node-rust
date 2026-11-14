@@ -27,8 +27,8 @@
 //! unconditional advance, the pre-F world — the r-witnessed probe
 //! designates R and the settled-effect assertion fails. Neutering the
 //! candidate arm ALONE stays green: `floor_of_view`'s guard independently
-//! refuses the uncapturing floor ("does not capture the current LFB;
-//! holding") — the two capture sites are genuine defense in depth.
+//! refuses the uncapturing floor ("does not contain the state of the LFB's
+//! floor; holding") — the two capture sites are genuine defense in depth.
 //! Restored, the spec holds end to end.
 
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
-use casper::rust::finality::floor::{floor_of_view, Floor};
+use casper::rust::finality::floor::Floor;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
@@ -46,16 +46,20 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 
 use crate::helper::test_node::TestNode;
+use crate::util::floor_cursor_check::floor_of_view;
 use crate::util::genesis_builder::GenesisBuilder;
 
 /// v0=3, v1=3, v2=4 of S=10 at ftt 0.1 (witness needs q > 5.5): no single
 /// validator witnesses anything alone — every finalization step requires a
 /// mutual-visibility pair, giving the staging the witnessing LAG the live
 /// erasure depended on — and v0+v1 form a clique without v2.
-fn lagged_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+fn lagged_bonds(
+    pks: Vec<PublicKey>,
+) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
     pks.into_iter()
         .enumerate()
         .map(|(i, pk)| (pk, if i == 2 { 4 } else { 3 }))
+        .map(|(key, stake)| (key, stake.into()))
         .collect()
 }
 
@@ -221,7 +225,6 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
     let c_b = {
         nodes[2]
             .deploy_storage
-            .lock()
             .remove_by_sig(&contender_a.sig)
             .expect("purge contender a from the pool");
         let mut snapshot = nodes[2].casper.get_snapshot().await.expect("snapshot");
@@ -229,7 +232,6 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         snapshot.parents = vec![s_block.clone()];
         nodes[2]
             .deploy_storage
-            .lock()
             .add(vec![contender_b.clone()])
             .expect("stage contender b");
         let validator_identity = nodes[2]
@@ -416,7 +418,7 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
     ]);
     for node in nodes.iter_mut() {
         for b in &topology {
-            if !node.casper.dag_contains(&b.block_hash) {
+            if !node.casper.dag_contains(&b.block_hash).unwrap() {
                 node.process_block(b.clone()).await.expect("topology flush");
             }
         }

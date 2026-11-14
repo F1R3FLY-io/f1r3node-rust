@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-bench-casper-soak-manifest-py.md

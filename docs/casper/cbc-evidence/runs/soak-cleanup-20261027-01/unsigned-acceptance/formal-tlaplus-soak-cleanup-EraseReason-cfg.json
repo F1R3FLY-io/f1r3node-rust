@@ -1,0 +1,15 @@
+{
+  "schema": "cbc-acceptance/v2",
+  "artifact": "formal/tlaplus/soak_cleanup/EraseReason.cfg",
+  "source_sha256": "780cd403582eb1935d416588b4e80c89024c65f8fe2b6d0ef39e9c7d74e8a35b",
+  "claim": {
+    "path": "docs/claims/soak-segment-cleanup.md",
+    "sha256": "d0b3a2ed788637e51a19c3330783068edc3d497dfcf642890bbf78bf4e15f7ba"
+  },
+  "claim_id": "CLAIM-SOAK-CLEANUP-001",
+  "claim_set_sha256": "f167e24f026cd5565fd385c643e81ce676b28ce519d621044995de8a9435b4d0",
+  "evidence_sha256": "c6bf7b38e2f712f0486af9b254e9f3e7a397ab0efe58ee5b006287f94246f0ed",
+  "accepted_by": "",
+  "approved_at": "",
+  "approval_ref": ""
+}

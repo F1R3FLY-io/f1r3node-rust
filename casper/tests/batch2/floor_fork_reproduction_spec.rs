@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::finality::floor::{floor_of_block, floor_of_view, Floor};
+use casper::rust::finality::floor::{floor_of_block, Floor};
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
@@ -37,13 +37,17 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 
 use crate::helper::test_node::TestNode;
+use crate::util::floor_cursor_check::floor_of_view;
 use crate::util::genesis_builder::GenesisBuilder;
 
 /// Equal stakes, mirroring the live shard (100/100/100 at ftt 0.1): no
 /// validator witnesses anything alone, any two form a witnessing clique —
 /// the symmetry that let BOTH siblings certify.
-fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-    pks.into_iter().map(|pk| (pk, 100)).collect()
+fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
+    pks.into_iter()
+        .map(|pk| (pk, 100))
+        .map(|(key, stake)| (key, stake.into()))
+        .collect()
 }
 
 async fn equal_three_node_network() -> (Vec<TestNode>, String, BlockMessage) {

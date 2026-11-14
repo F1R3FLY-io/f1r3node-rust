@@ -24,10 +24,10 @@ fn response() -> Value {
             "target":"d".repeat(64),"input_scope":"captured_latest_messages","comparator":"ge",
             "threshold_numerator":1,"threshold_denominator":3,
             "oracle_decision":available(json!(true), 'c'),
-            "oracle_witness":available(json!({"decision":true,"total_stake":3,
-                "agreeing_stake":3,"clique_weight":2,"early_return":null}), 'c'),
+            "oracle_witness":available(json!({"decision":true,"total_stake":"3",
+                "agreeing_stake":"3","clique_weight":"2","early_return":null}), 'c'),
             "original_fault_tolerance":available(json!((1.0f32/3.0).to_bits()), 'c'),
-            "display_projection":missing("equivocation_snapshot_unavailable", 'c'),
+            "display_projection":missing("display_not_requested", 'c'),
             "persisted_fault_tolerance":missing("not_finalized", 'a'),
             "reference_comparison":{"availability":"not_requested"}
         }],
@@ -148,7 +148,7 @@ fn mapping_rejects_cross_input_values_bad_witnesses_and_inventory_changes() {
         ),
         (
             "/result/value/targets/0/oracle_witness/value/clique_weight",
-            json!(1),
+            json!("1"),
         ),
         (
             "/result/value/targets/0/oracle_decision/value",
@@ -173,11 +173,64 @@ fn mapping_rejects_cross_input_values_bad_witnesses_and_inventory_changes() {
 }
 
 #[test]
+fn mapping_preserves_stakes_and_threshold_products_above_i128() {
+    let scale = num_bigint::BigInt::from(1u8) << 140usize;
+    for strict in [false, true] {
+        let mut value = response();
+        value["result"]["value"]["request"]["strict"] = json!(strict);
+        let target = &mut value["result"]["value"]["targets"][0];
+        target["comparator"] = json!(if strict { "gt" } else { "ge" });
+        target["oracle_decision"]["value"] = json!(!strict);
+        let witness = &mut target["oracle_witness"]["value"];
+        witness["decision"] = json!(!strict);
+        witness["total_stake"] = json!((&scale * 3u8).to_string());
+        witness["agreeing_stake"] = witness["total_stake"].clone();
+        witness["clique_weight"] = json!((&scale * 2u8).to_string());
+        assert_eq!(
+            mapping::map(&value).unwrap()["targets"][0]["oracle"]["recomputed"],
+            !strict
+        );
+        let target = &mut value["result"]["value"]["targets"][0];
+        target["oracle_decision"]["value"] = json!(true);
+        target["oracle_witness"]["value"]["decision"] = json!(true);
+        target["oracle_witness"]["value"]["clique_weight"] =
+            json!((&scale * 2u8 + 1u8).to_string());
+        assert_eq!(
+            mapping::map(&value).unwrap()["targets"][0]["oracle"]["recomputed"],
+            true
+        );
+    }
+}
+
+#[test]
+fn mapping_rejects_invalid_stake_values_without_skipping_comparison() {
+    for invalid in [
+        json!(3),
+        json!(null),
+        json!(""),
+        json!("3.0"),
+        json!("+3"),
+        json!("03"),
+        json!("-3"),
+    ] {
+        let mut value = response();
+        value["result"]["value"]["targets"][0]["oracle_witness"]["value"]["total_stake"] = invalid;
+        assert!(mapping::map(&value).is_err());
+    }
+    let mut value = response();
+    value["result"]["value"]["targets"][0]["oracle_witness"]["value"]
+        .as_object_mut()
+        .unwrap()
+        .remove("total_stake");
+    assert!(mapping::map(&value).is_err());
+}
+
+#[test]
 fn early_returns_do_not_require_an_invented_clique_weight() {
     for (reason, total, agreeing) in [
         ("target_not_held", Value::Null, Value::Null),
-        ("non_positive_stake", json!(0), Value::Null),
-        ("no_strict_majority", json!(4), json!(2)),
+        ("non_positive_stake", json!("0"), Value::Null),
+        ("no_strict_majority", json!("4"), json!("2")),
     ] {
         let mut value = response();
         let target = &mut value["result"]["value"]["targets"][0];
@@ -222,7 +275,7 @@ fn unavailable_failed_and_persisted_values_keep_their_distinct_meanings() {
 
 fn display_response() -> Value {
     let mut value = response();
-    value["result"]["value"]["request"]["display"] = json!({"max_equivocation_records":16});
+    value["result"]["value"]["request"]["display"] = json!({});
     let target = &mut value["result"]["value"]["targets"][0];
     target["display_projection"] = available(json!(0.25f32.to_bits()), 'e');
     target["display_inputs"] = available(
@@ -230,7 +283,7 @@ fn display_response() -> Value {
             "base_source":"original_oracle","base_bits":0.5f32.to_bits(),
             "initial_fault_bits":0.25f32.to_bits(),"equivocating_weight":"1","total_weight":"4",
             "matched_records":1,"distinct_equivocators":1,"finalized_set_member":false,
-            "metadata_finalized":false,"equivocation_digest":"f".repeat(64)
+            "metadata_finalized":false
         }),
         'e',
     );
@@ -257,6 +310,25 @@ fn display_mapping_keeps_its_digest_separate_from_the_oracle() {
 }
 
 #[test]
+fn display_mapping_preserves_weights_above_i128_and_rejects_negative_weights() {
+    let mut value = display_response();
+    let weight = num_bigint::BigInt::from(1u8) << 140usize;
+    let inputs = &mut value["result"]["value"]["targets"][0]["display_inputs"]["value"];
+    inputs["equivocating_weight"] = json!(weight.to_string());
+    inputs["total_weight"] = json!((&weight * 4u8).to_string());
+    let mapped = mapping::map(&value).unwrap();
+    assert_eq!(
+        mapped["targets"][0]["display_inputs"],
+        value["result"]["value"]["targets"][0]["display_inputs"]
+    );
+    for field in ["equivocating_weight", "total_weight"] {
+        let mut invalid = value.clone();
+        invalid["result"]["value"]["targets"][0]["display_inputs"]["value"][field] = json!("-1");
+        assert!(mapping::map(&invalid).is_err());
+    }
+}
+
+#[test]
 fn display_mapping_rejects_cross_capture_inputs_and_availability_mismatch() {
     for (pointer, replacement) in [
         (
@@ -272,8 +344,8 @@ fn display_mapping_rejects_cross_capture_inputs_and_availability_mismatch() {
             json!(4294967296u64),
         ),
         (
-            "/result/value/targets/0/display_inputs/value/equivocation_digest",
-            json!("invalid"),
+            "/result/value/targets/0/display_inputs/value/matched_records",
+            json!("one"),
         ),
     ] {
         let mut value = display_response();

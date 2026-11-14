@@ -262,12 +262,12 @@ as the async ISpace provides its own interior mutability and per-channel locking
 `registry_bootstrap.rs` -- Built-in registry contracts installed at genesis.
 
 **Legacy URI aliases**: For backward compatibility with older clients (e.g., rust-client), the following `rho:rchain:*` URIs are aliased to their canonical `rho:system:*` equivalents:
-- `rho:rchain:pos` -> `rho:system:pos` (PoS contract)
-- `rho:rchain:revVault` -> `rho:vault:system` (SystemVault)
 - `rho:rchain:deployId` -> `rho:system:deployId` (deploy context)
 - `rho:rchain:deployerId` -> `rho:system:deployerId` (deploy context)
 
-Aliases are resolved at the registry and normalizer level. Usage is logged at debug level (`f1r3fly.legacy-uri`).
+`rho:rchain:pos` and `rho:rchain:revVault` were never wired up as aliases and do not appear anywhere in the codebase; use `rho:system:pos` and `rho:vault:system` directly.
+
+Aliases are resolved in the normalizer environment. Usage is logged at debug level (`f1r3fly.models.legacy_uri`).
 
 ## Tests
 

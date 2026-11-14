@@ -35,7 +35,7 @@
 use std::collections::HashMap;
 
 use casper::rust::casper::{Casper, MultiParentCasper};
-use casper::rust::finality::floor::{floor_of_block, floor_of_view, Floor};
+use casper::rust::finality::floor::{floor_of_block, Floor};
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
@@ -45,10 +45,14 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 
 use crate::helper::test_node::TestNode;
+use crate::util::floor_cursor_check::floor_of_view;
 use crate::util::genesis_builder::GenesisBuilder;
 
-fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-    pks.into_iter().map(|pk| (pk, 100)).collect()
+fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
+    pks.into_iter()
+        .map(|pk| (pk, 100))
+        .map(|(key, stake)| (key, stake.into()))
+        .collect()
 }
 
 async fn equal_three_node_network() -> (Vec<TestNode>, String, BlockMessage) {
@@ -279,7 +283,7 @@ async fn a_stale_based_merge_keeps_its_main_parents_settled_content() {
     // every node.
     for b in [&m, &a, &t] {
         for i in [0usize, 1usize] {
-            if !nodes[i].casper.dag_contains(&b.block_hash) {
+            if !nodes[i].casper.dag_contains(&b.block_hash).unwrap() {
                 nodes[i]
                     .process_block((*b).clone())
                     .await

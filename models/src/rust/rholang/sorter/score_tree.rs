@@ -139,44 +139,45 @@ pub struct ScoredTerm<T> {
     pub score: Tree<ScoreAtom>,
 }
 
+fn compare_score_nodes(left: &[Tree<ScoreAtom>], right: &[Tree<ScoreAtom>]) -> std::cmp::Ordering {
+    match (left.first(), right.first()) {
+        (None, None) => std::cmp::Ordering::Equal,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (Some(left_head), Some(right_head)) => {
+            let result = compare_score(left_head, right_head);
+            if result == std::cmp::Ordering::Equal {
+                compare_score_nodes(&left[1..], &right[1..])
+            } else {
+                result
+            }
+        }
+    }
+}
+
+fn compare_score(s1: &Tree<ScoreAtom>, s2: &Tree<ScoreAtom>) -> std::cmp::Ordering {
+    match (s1, s2) {
+        (Tree::Leaf(a), Tree::Leaf(b)) => a.compare(b).cmp(&0),
+
+        (Tree::Leaf(_), Tree::Node(_)) => std::cmp::Ordering::Less,
+
+        (Tree::Node(_), Tree::Leaf(_)) => std::cmp::Ordering::Greater,
+
+        (Tree::Node(a), Tree::Node(b)) => match (a.is_empty(), b.is_empty()) {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => compare_score_nodes(a.as_slice(), b.as_slice()),
+        },
+    }
+}
+
+pub fn compare_score_trees(a: &Tree<ScoreAtom>, b: &Tree<ScoreAtom>) -> std::cmp::Ordering {
+    compare_score(a, b)
+}
+
 impl<T: Clone> ScoredTerm<T> {
     pub fn sort_vec(scored_terms: &mut Vec<ScoredTerm<T>>) {
-        fn compare_score_nodes(
-            left: &[Tree<ScoreAtom>],
-            right: &[Tree<ScoreAtom>],
-        ) -> std::cmp::Ordering {
-            match (left.first(), right.first()) {
-                (None, None) => std::cmp::Ordering::Equal,
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (Some(left_head), Some(right_head)) => {
-                    let result = compare_score(left_head, right_head);
-                    if result == std::cmp::Ordering::Equal {
-                        compare_score_nodes(&left[1..], &right[1..])
-                    } else {
-                        result
-                    }
-                }
-            }
-        }
-
-        fn compare_score(s1: &Tree<ScoreAtom>, s2: &Tree<ScoreAtom>) -> std::cmp::Ordering {
-            match (s1, s2) {
-                (Tree::Leaf(a), Tree::Leaf(b)) => a.compare(b).cmp(&0),
-
-                (Tree::Leaf(_), Tree::Node(_)) => std::cmp::Ordering::Less,
-
-                (Tree::Node(_), Tree::Leaf(_)) => std::cmp::Ordering::Greater,
-
-                (Tree::Node(a), Tree::Node(b)) => match (a.is_empty(), b.is_empty()) {
-                    (true, true) => std::cmp::Ordering::Equal,
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    (false, false) => compare_score_nodes(a.as_slice(), b.as_slice()),
-                },
-            }
-        }
-
         scored_terms.sort_by(|s1, s2| compare_score(&s1.score, &s2.score));
     }
 }
@@ -247,6 +248,9 @@ impl Score {
     pub const EPLUSPLUS: i32 = 120;
     pub const EMINUSMINUS: i32 = 121;
     pub const EMOD: i32 = 122;
+    pub const ELAMBDA: i32 = 123;
+    pub const EAPP: i32 = 124;
+    pub const EPI: i32 = 125;
 
     // Other
     pub const QUOTE: i32 = 203;
@@ -271,6 +275,27 @@ impl Score {
     pub const CONNECTIVE_STRING: i32 = 406;
     pub const CONNECTIVE_URI: i32 = 407;
     pub const CONNECTIVE_BYTEARRAY: i32 = 408;
+    pub const CONNECTIVE_INT32: i32 = 409;
+    pub const CONNECTIVE_UINT64: i32 = 410;
+    pub const CONNECTIVE_UINT32: i32 = 411;
+    pub const CONNECTIVE_UINT16: i32 = 412;
+    pub const CONNECTIVE_UINT8: i32 = 413;
+    pub const CONNECTIVE_FLOAT64: i32 = 414;
+    pub const CONNECTIVE_FLOAT32: i32 = 415;
+    pub const CONNECTIVE_BIG_INT: i32 = 416;
+    pub const CONNECTIVE_BIG_RAT: i32 = 417;
+    pub const CONNECTIVE_FIXED_POINT: i32 = 418;
+    pub const CONNECTIVE_TYPE: i32 = 419;
+
+    pub const COST_SIG_GROUND: i32 = 310;
+    pub const COST_SIG_BOUND: i32 = 311;
+    pub const COST_SIG_QUOTE: i32 = 312;
+    pub const COST_SIG_COMPOUND: i32 = 313;
+    pub const COST_SIGNED_TERM: i32 = 314;
+    pub const COST_STACK: i32 = 315;
+    pub const COST_SIG_NAME: i32 = 316;
+    pub const COST_SIG_UNIT: i32 = 317;
+    pub const COST_SIG_SIGNER: i32 = 318;
 
     pub const PAR: i32 = 999;
 }

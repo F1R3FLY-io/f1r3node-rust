@@ -21,7 +21,7 @@ This branch validates the corrections developed on `fix/merge-recovery-finalizat
 | Merge scope | Scope remains bounded as DAG height grows and never silently drops parent effects | Deep-DAG scope and 400-block soak |
 | Mergeable state | Missing locally materialized mergeable entries are reconstructed from their source blocks | Missing-mergeable reconstruction regression |
 | Single-value cells | Concurrent writes keep one deterministic value and recover the rejected writes | Two- and three-writer convergence regressions |
-| Produce-only overfill | A number cell never commits more than one datum after a produce-only conflict | Single-value number-cell integration assertions |
+| Tagged number cells | A tagged number cell never commits more than one datum, and an untagged write to a folded channel is rejected | Tag-recording and folded-channel unit validation, and the untagged integer resend merge regression |
 | Integer arithmetic | Merge arithmetic rejects terminal overflow instead of laundering it through wrapping state | Integer-add overflow unit validation |
 | Deploy ordering | Distinct deploy chains never compare equal | Strict-total-order unit validation |
 | Recovery | Merge-rejected deploys remain observable, retryable, and cannot be double-applied | Rejected-buffer and deploy-status lifecycle tests |

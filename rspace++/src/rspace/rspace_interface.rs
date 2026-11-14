@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
+use super::hot_store::HotStore;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
@@ -112,6 +113,11 @@ pub trait ISpace<
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError>;
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
+
+    fn hot_store(&self) -> Option<std::sync::Arc<Box<dyn HotStore<C, P, A, K>>>>
+    where C: Clone {
+        None
+    }
 
     /// Reads `channel` as it was at `checkpoint`, without reverting to it.
     async fn get_data_at(

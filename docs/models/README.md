@@ -22,20 +22,20 @@ pub struct BlockMetadata {
     pub parents: Vec<BlockHash>,
     pub sender: Validator,
     pub justifications: Vec<Justification>,
-    pub weight_map: BTreeMap<Validator, i64>,
+    pub weight_map: BTreeMap<Validator, TokenAmount>,
     pub block_number: i64,
     pub sequence_number: i32,
-    pub invalid: bool,
+    pub equivocates: Option<BlockHash>,  // the sibling, when held as an equivocation
     pub directly_finalized: bool,
     pub finalized: bool,
     pub fault_tolerance_value: f32,  // cached normalized FT at finalization time
+    pub merge_base: BlockHash,
 }
 ```
 
-**`EquivocationRecord`** -- Tracks validator double-signing:
-- `equivocator: Validator`
-- `equivocation_base_block_seq_num: i32`
-- `equivocation_detected_block_hashes: BTreeSet<BlockHash>`
+**`BlockCommitment`** -- the fields a block's hash and signature cover, with
+the deploys reduced to their Merkle root. A slash's `EquivocationEvidence`
+is two of them, ordered by block hash.
 
 ## Deploy & Transfer Types (Protobuf)
 
@@ -46,9 +46,11 @@ pub struct BlockMetadata {
 **`TransferInfo`** (proto) -- REV transfer extracted from deploy execution:
 - `fromAddr: string` -- Sender address
 - `toAddr: string` -- Recipient address
-- `amount: int64` -- Amount in dust (smallest unit)
 - `success: bool` -- Whether the transfer succeeded
 - `failReason: string` -- Error message if success is false
+- `amountRaw: string` -- Exact amount in dust (smallest unit) as a canonical decimal string, for `Int` and `BigInt` amounts. Field 3 is reserved.
+
+See [64-bit integers and token amounts](../node/api-reference.md#64-bit-integers-and-token-amounts).
 
 ## Casper Protocol Messages
 

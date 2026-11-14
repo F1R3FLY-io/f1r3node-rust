@@ -95,7 +95,7 @@ async fn build_ucc_i6_fork(
         .iter()
         .map(|v| Bond {
             validator: v.clone(),
-            stake: 100,
+            stake: 100.into(),
         })
         .collect();
 
@@ -211,7 +211,7 @@ async fn the_head_must_not_leave_a_majority_branch_for_a_hash_earlier_rival() {
             let head = estimator
                 .tips_with_latest_messages(
                     &mut dag,
-                    &BlockMetadata::from_block(&fork.genesis, false, None, None),
+                    &BlockMetadata::from_block(&fork.genesis, None, None, None),
                     fork.latest.clone(),
                     i32::MAX,
                     None,
@@ -296,7 +296,10 @@ proptest! {
             let bonds: Vec<Bond> = validators
                 .iter()
                 .zip(shape.stakes.iter())
-                .map(|(v, stake)| Bond { validator: v.clone(), stake: *stake })
+                .map(|(v, stake)| Bond {
+                    validator: v.clone(),
+                    stake: u64::try_from(*stake).expect("fixture stake").into(),
+                })
                 .collect();
             let genesis = create_genesis_block(
                 &mut block_store,
@@ -356,7 +359,7 @@ proptest! {
                 .expect("dag representation");
             let estimator = Estimator::apply();
             let head = estimator
-                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, false, None, None), latest, i32::MAX, None)
+                .tips_with_latest_messages(&mut dag, &BlockMetadata::from_block(&genesis, None, None, None), latest, i32::MAX, None)
                 .await
                 .expect("tips")
                 .tips

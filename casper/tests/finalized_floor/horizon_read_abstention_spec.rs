@@ -11,7 +11,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::estimator::Estimator;
-use casper::rust::finality::floor::{floor_of_view, Floor, FloorOfView};
+use casper::rust::finality::floor::{Floor, FloorOfView};
 use casper::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block_default;
@@ -23,6 +23,7 @@ use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueSt
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use crate::helper::block_util::generate_validator;
+use crate::util::floor_cursor_check::floor_of_view;
 
 fn bonded_block(
     number: i64,
@@ -38,7 +39,7 @@ fn bonded_block(
         .iter()
         .map(|(validator, stake)| Bond {
             validator: validator.clone(),
-            stake: *stake,
+            stake: u64::try_from(*stake).expect("fixture stake").into(),
         })
         .collect();
     block
@@ -59,10 +60,10 @@ fn restored_dag_with_stale_lm() -> (KeyValueDagRepresentation, BlockMessage, Blo
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let mut metadata_index = BlockMetadataStore::new(metadata_store);
     metadata_index
-        .add(BlockMetadata::from_block(&genesis, false, None, None))
+        .add(BlockMetadata::from_block(&genesis, None, None, None))
         .expect("seed genesis metadata");
     metadata_index
-        .add(BlockMetadata::from_block(&target, false, None, None))
+        .add(BlockMetadata::from_block(&target, None, None, None))
         .expect("seed target metadata");
 
     let mut dag_set = imbl::HashSet::new();
@@ -91,7 +92,10 @@ fn restored_dag_with_stale_lm() -> (KeyValueDagRepresentation, BlockMessage, Blo
     let mut finalized_blocks_set = imbl::HashSet::new();
     finalized_blocks_set.insert(genesis.block_hash.clone());
 
-    let dag = KeyValueDagRepresentation {
+    let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+        history: None,
+        view_sequence: u64::MAX,
+        view_max_height: None,
         dag_set,
         latest_messages_map,
         child_map,
@@ -99,7 +103,6 @@ fn restored_dag_with_stale_lm() -> (KeyValueDagRepresentation, BlockMessage, Blo
         block_number_map,
         main_parent_map,
         self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: genesis.block_hash.clone(),
         finalized_blocks_set,
         block_metadata_index: Arc::new(PlRwLock::new(metadata_index)),
@@ -111,12 +114,13 @@ fn restored_dag_with_stale_lm() -> (KeyValueDagRepresentation, BlockMessage, Blo
         carrier_index: Arc::new(PlRwLock::new(
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
-    };
+    }
+    .build();
     (dag, genesis, target)
 }
 
 fn stale_validator(dag: &KeyValueDagRepresentation, target: &BlockMessage) -> Validator {
-    dag.latest_messages_map
+    dag.latest_message_hashes()
         .iter()
         .find(|(_, hash)| **hash != target.block_hash)
         .map(|(validator, _)| validator.clone())
@@ -174,13 +178,21 @@ async fn the_finality_decision_is_identical_with_and_without_the_stale_block() {
     let v_stale = stale_validator(&restored_dag, &target);
     let old = bonded_block(0, vec![], v_stale.clone(), &[]);
     restored_dag
+        .fixture_mut()
         .latest_messages_map
         .insert(v_stale.clone(), old.block_hash.clone());
 
     let mut held_dag = restored_dag.clone();
-    held_dag.dag_set.insert(old.block_hash.clone());
-    held_dag.block_number_map.insert(old.block_hash.clone(), 0);
     held_dag
+        .fixture_mut()
+        .dag_set
+        .insert(old.block_hash.clone());
+    held_dag
+        .fixture_mut()
+        .block_number_map
+        .insert(old.block_hash.clone(), 0);
+    held_dag
+        .fixture_mut()
         .height_map
         .entry(0)
         .or_insert_with(imbl::HashSet::new)
@@ -188,13 +200,14 @@ async fn the_finality_decision_is_identical_with_and_without_the_stale_block() {
     held_dag
         .block_metadata_index
         .write()
-        .add(BlockMetadata::from_block(&old, false, None, None))
+        .add(BlockMetadata::from_block(&old, None, None, None))
         .expect("seed old-block metadata");
 
     let ftt = FtThreshold::from_f32_lossy(0.1);
     let held_snapshot: BTreeMap<Validator, BlockHash> =
-        held_dag.latest_messages_map.clone().into_iter().collect();
+        held_dag.latest_message_hashes().into_iter().collect();
     let restored_snapshot: BTreeMap<Validator, BlockHash> = restored_dag
+        .fixture_mut()
         .latest_messages_map
         .clone()
         .into_iter()
@@ -232,6 +245,7 @@ async fn a_sub_horizon_main_parent_crossing_resolves_deterministically() {
     let (mut dag, _genesis, target) = restored_dag_with_stale_lm();
 
     let v_live = dag
+        .fixture_mut()
         .latest_messages_map
         .iter()
         .find(|(_, hash)| **hash == target.block_hash)
@@ -239,19 +253,23 @@ async fn a_sub_horizon_main_parent_crossing_resolves_deterministically() {
         .expect("live validator");
     let below_horizon_parent = BlockHash::from(b"below-restore-horizon-mp".to_vec());
     let side = bonded_block(2, vec![below_horizon_parent.clone()], v_live.clone(), &[]);
-    dag.dag_set.insert(side.block_hash.clone());
-    dag.block_number_map.insert(side.block_hash.clone(), 2);
-    dag.main_parent_map
+    dag.fixture_mut().dag_set.insert(side.block_hash.clone());
+    dag.fixture_mut()
+        .block_number_map
+        .insert(side.block_hash.clone(), 2);
+    dag.fixture_mut()
+        .main_parent_map
         .insert(side.block_hash.clone(), below_horizon_parent);
     dag.block_metadata_index
         .write()
-        .add(BlockMetadata::from_block(&side, false, None, None))
+        .add(BlockMetadata::from_block(&side, None, None, None))
         .expect("seed side metadata");
-    dag.latest_messages_map
+    dag.fixture_mut()
+        .latest_messages_map
         .insert(v_live, side.block_hash.clone());
 
     let snapshot: BTreeMap<Validator, BlockHash> =
-        dag.latest_messages_map.clone().into_iter().collect();
+        dag.latest_message_hashes().into_iter().collect();
 
     let verdict = CliqueOracle::ft_witnessed_exact(
         &target.block_hash,
@@ -287,13 +305,13 @@ async fn a_stale_latest_message_does_not_fail_fault_tolerance() {
 async fn a_stale_latest_message_does_not_fail_fork_choice() {
     let (mut dag, genesis, target) = restored_dag_with_stale_lm();
     let latest_messages: HashMap<Validator, BlockHash> =
-        dag.latest_messages_map.clone().into_iter().collect();
+        dag.latest_message_hashes().into_iter().collect();
 
     let estimator = Estimator::apply();
     let result = estimator
         .tips_with_latest_messages(
             &mut dag,
-            &BlockMetadata::from_block(&genesis, false, None, None),
+            &BlockMetadata::from_block(&genesis, None, None, None),
             latest_messages,
             1,
             None,

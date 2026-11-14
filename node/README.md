@@ -16,6 +16,9 @@ cargo build --profile dev -p node   # debug mode
 See [docker/README.md](../docker/README.md) for complete Docker setup.
 
 ```bash
+# docker/.env is not tracked: copy the development template (public keys, local use only)
+cp -n docker/.env.example docker/.env
+
 # Standalone (single node, instant finalization)
 docker compose -f docker/standalone.yml up -d
 

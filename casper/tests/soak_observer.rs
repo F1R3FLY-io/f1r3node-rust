@@ -45,11 +45,10 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::key_value_store::KeyValueStore;
 
-const STORES: [&str; 13] = [
+const STORES: [&str; 21] = [
     "block-metadata",
-    "equivocation-tracker",
     "latest-messages",
-    "invalid-blocks",
+    "dag-equivocations-v1",
     "floor-index",
     "frontier-index",
     "deploy-lifecycle-events",
@@ -57,8 +56,17 @@ const STORES: [&str; 13] = [
     "carrier-index",
     "carrier-index-meta",
     "genesis-hash",
+    "finalization-commit-marker",
+    "lfb-pointer",
+    "v6-executor-state",
     "blocks",
     "blocks-approved",
+    "dag-membership-v1",
+    "dag-height-v1",
+    "dag-children-v1",
+    "dag-history-state-v1",
+    "dag-gc-retry-v1",
+    "dag-sequence-v1",
 ];
 
 struct Fixture {
@@ -97,7 +105,7 @@ impl Fixture {
                 Some(vec![]),
                 Some(vec![Bond {
                     validator: validator.clone(),
-                    stake: 100,
+                    stake: 100.into(),
                 }]),
                 Some("root".to_string()),
                 None,
@@ -144,7 +152,9 @@ impl Fixture {
                 if index == 0 {
                     InsertMode::Approved
                 } else if invalid.contains(&block.block_hash) {
-                    InsertMode::Invalid
+                    InsertMode::Equivocation {
+                        sibling: BlockHash::from(vec![0xEE; 32]),
+                    }
                 } else {
                     InsertMode::Normal
                 },
@@ -246,10 +256,10 @@ impl MultiParentCasper for AttachedCasper {
             &self.approved,
         ))
     }
-    async fn fetch_dependencies(&self) -> Result<(), CasperError> {
-        panic!("observer invoked consensus")
-    }
-    fn normalized_initial_fault(&self, _: HashMap<Validator, u64>) -> Result<f32, CasperError> {
+    fn normalized_initial_fault(
+        &self,
+        _: HashMap<Validator, num_bigint::BigInt>,
+    ) -> Result<f32, CasperError> {
         panic!("observer read the equivocation tracker")
     }
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
@@ -259,10 +269,14 @@ impl MultiParentCasper for AttachedCasper {
         panic!("observer invoked consensus")
     }
     fn block_store(&self) -> &KeyValueBlockStore { panic!("observer invoked consensus") }
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
+        panic!("observer invoked consensus")
+    }
     fn casper_shard_conf(&self) -> &CasperShardConf { panic!("observer invoked consensus") }
     fn get_validator(&self) -> Option<ValidatorIdentity> {
         panic!("observer read validator identity")
     }
+    fn is_local_validator_bonded(&self) -> bool { panic!("observer read validator bonds") }
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
         panic!("observer read runtime state")
     }
@@ -277,9 +291,9 @@ impl Casper for AttachedCasper {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         panic!("observer invoked the production snapshot")
     }
-    fn contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
-    fn dag_contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
-    fn buffer_contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
+    fn dag_contains(&self, _: &BlockHash) -> Result<bool, CasperError> {
+        panic!("observer invoked consensus")
+    }
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         panic!("observer invoked consensus")
     }
@@ -321,12 +335,6 @@ impl Casper for AttachedCasper {
         _: &InvalidBlock,
         _: &KeyValueDagRepresentation,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        panic!("observer invoked consensus")
-    }
-    fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        panic!("observer invoked consensus")
-    }
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
         panic!("observer invoked consensus")
     }
 }
@@ -461,7 +469,7 @@ async fn detached_evaluation_preserves_stores_and_compares_separate_results() {
     );
     assert!(available(&response.floor_comparison).matches);
     assert!(
-        matches!(&target.display_projection, Value::Unavailable { reason, .. } if reason == "equivocation_snapshot_unavailable")
+        matches!(&target.display_projection, Value::Unavailable { reason, .. } if reason == "display_not_requested")
     );
     assert!(response.work.complete);
     assert!(response.work.measured.metadata > 0);
@@ -1239,7 +1247,7 @@ fn bonded_block(
         .iter()
         .map(|(v, stake)| Bond {
             validator: Bytes::from(vec![*v; 65]),
-            stake: *stake,
+            stake: u64::try_from(*stake).expect("fixture stake").into(),
         })
         .collect();
     block
@@ -1690,15 +1698,19 @@ fn clique_matches_exhaustive_subsets_for_all_five_vertex_graphs() {
                 expected = expected.max(vertices.iter().map(|v| weights[v]).sum());
             }
         }
+        let weights = weights
+            .iter()
+            .map(|(key, value)| (*key, (*value).into()))
+            .collect();
         let meter = meter(work_limits());
         assert_eq!(
             Clique::find_maximum_clique_by_weight_metered(&meter, &edges, &weights).unwrap(),
-            expected,
+            expected.into(),
             "graph {graph}"
         );
         assert_eq!(
             Clique::find_maximum_clique_by_weight(&edges, &weights),
-            expected
+            expected.into()
         );
     }
 }
@@ -1726,6 +1738,10 @@ fn clique_stops_at_each_work_limit() {
         }),
     ] {
         let meter = meter(limits);
+        let weights = weights
+            .iter()
+            .map(|(key, value)| (*key, (*value).into()))
+            .collect();
         let error =
             Clique::find_maximum_clique_by_weight_metered(&meter, &edges, &weights).unwrap_err();
         assert!(error.to_string().contains(name), "{error}");
@@ -1864,11 +1880,11 @@ fn graph_block(
     block.body.state.bonds = vec![
         Bond {
             validator: Bytes::from(vec![7; 65]),
-            stake: 6,
+            stake: 6.into(),
         },
         Bond {
             validator: Bytes::from(vec![8; 65]),
-            stake: 4,
+            stake: 4.into(),
         },
     ];
     block.body.merge_base = Bytes::new();
@@ -1897,8 +1913,8 @@ async fn reference_detects_wrong_threshold_traversal_and_clique_controls() {
         .oracle(target, &captured.latest_messages, false)
         .unwrap();
     assert!(!expected.decision);
-    assert_eq!(expected.agreeing_stake, Some(6));
-    assert_eq!(expected.clique_weight, Some(6));
+    assert_eq!(expected.agreeing_stake, Some(6.into()));
+    assert_eq!(expected.clique_weight, Some(6.into()));
     let mut scratch = captured.scratch_view().unwrap();
     let measured = CliqueOracle::ft_witnessed_exact(
         target,
@@ -1931,6 +1947,7 @@ async fn reference_detects_wrong_threshold_traversal_and_clique_controls() {
         .unwrap());
     scratch
         .representation
+        .fixture_mut()
         .main_parent_map
         .insert(latest_b.clone(), target.clone());
     let wrong_traversal = CliqueOracle::ft_witnessed_exact(
@@ -2038,9 +2055,7 @@ fn metered_ordering_preserves_duplicates_and_stops_before_unbounded_sorting() {
 
 async fn display_response(fixture: &Fixture, mut request: AuthorityRequest) -> AuthorityResponse {
     use casper::rust::soak_observer::evaluation::DisplaySelection;
-    request.display = Some(DisplaySelection {
-        max_equivocation_records: 16,
-    });
+    request.display = Some(DisplaySelection {});
     let controller = ObserverController::new("display-fixture".into());
     controller.install(Some(fixture.casper(true).as_ref()));
     controller
@@ -2049,61 +2064,68 @@ async fn display_response(fixture: &Fixture, mut request: AuthorityRequest) -> A
         .unwrap()
 }
 
-fn add_display_record(fixture: &Fixture, validator: u8, sequence: i32) {
-    use models::rust::equivocation_record::EquivocationRecord;
+/// Stores a block of `validator` at `sequence` as an equivocation.
+fn add_display_equivocation(fixture: &Fixture, validator: u8, sequence: i32) {
+    let mut block = get_random_block(
+        Some(sequence as i64),
+        Some(sequence),
+        None,
+        None,
+        Some(Bytes::from(vec![validator; 65])),
+        Some(1),
+        Some(sequence as i64),
+        Some(vec![]),
+        Some(vec![]),
+        Some(vec![]),
+        Some(vec![]),
+        Some(vec![]),
+        Some("root".to_string()),
+        None,
+    );
+    let mut hash = vec![0xEC; 32];
+    hash[0] = validator;
+    hash[1] = sequence as u8;
+    block.block_hash = Bytes::from(hash);
     fixture
         .dag
-        .access_equivocations_tracker(|tracker| {
-            tracker.add(EquivocationRecord::new(
-                vec![validator; 65].into(),
-                sequence,
-                std::collections::BTreeSet::from([vec![3; 32].into()]),
-            ))
+        .insert(&block, InsertMode::Equivocation {
+            sibling: BlockHash::from(vec![0xEE; 32]),
         })
         .unwrap();
 }
 
 #[test]
-fn display_admission_rejects_null_duplicates_and_invalid_limits() {
+fn display_admission_rejects_null_duplicates_and_unknown_fields() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let fixture = runtime.block_on(Fixture::new());
     let plain = serde_json::to_value(fixture.request()).unwrap();
     assert!(plain.get("display").is_none());
     for value in [
         serde_json::Value::Null,
-        serde_json::json!({}),
-        serde_json::json!({"max_equivocation_records": 1.5}),
-        serde_json::json!({"max_equivocation_records": 1, "extra": true}),
+        serde_json::json!({"max_equivocation_records": 1}),
+        serde_json::json!({"extra": true}),
     ] {
         let mut request = plain.clone();
         request["display"] = value;
         assert!(serde_json::from_value::<AuthorityRequest>(request).is_err());
     }
-    for limit in [0, 4097] {
-        let mut request = plain.clone();
-        request["display"] = serde_json::json!({"max_equivocation_records": limit});
-        assert!(serde_json::from_value::<AuthorityRequest>(request)
-            .unwrap()
-            .validate()
-            .is_err());
-    }
     let mut request = plain.clone();
-    request["display"] = serde_json::json!({"max_equivocation_records": 4096});
+    request["display"] = serde_json::json!({});
     assert!(serde_json::from_value::<AuthorityRequest>(request)
         .unwrap()
         .validate()
         .is_ok());
     let serialized = serde_json::to_string(&plain).unwrap();
-    let duplicated = serialized.replacen('{', "{\"display\":{\"max_equivocation_records\":1},\"display\":{\"max_equivocation_records\":2},", 1);
+    let duplicated = serialized.replacen('{', "{\"display\":{},\"display\":{},", 1);
     assert!(serde_json::from_str::<AuthorityRequest>(&duplicated).is_err());
 }
 
 #[tokio::test]
 async fn display_bits_use_shared_arithmetic_and_record_multiplicity_without_live_calls() {
     let fixture = Fixture::new().await;
-    add_display_record(&fixture, 7, 0);
-    add_display_record(&fixture, 7, 1);
-    add_display_record(&fixture, 9, 0);
+    add_display_equivocation(&fixture, 7, 0);
+    add_display_equivocation(&fixture, 7, 1);
+    add_display_equivocation(&fixture, 9, 0);
     let before = fixture.stored();
     let response = display_response(&fixture, fixture.request()).await;
     let target = &response.targets[0];
@@ -2121,10 +2143,6 @@ async fn display_bits_use_shared_arithmetic_and_record_multiplicity_without_live
     assert_eq!(
         response.display_scope,
         Some("batch-e-detached-display-projection")
-    );
-    assert_eq!(
-        available(response.equivocation_capture.as_ref().unwrap()).row_count,
-        3
     );
     assert!(response.work.measured.oracle > 0);
     assert_eq!(before, fixture.stored());
@@ -2189,81 +2207,60 @@ async fn display_finalized_set_and_metadata_flag_remain_separate() {
 }
 
 #[tokio::test]
-async fn display_digest_changes_with_tracker_inputs_without_store_writes() {
+async fn display_digest_changes_with_held_equivocations_without_store_writes() {
     let fixture = Fixture::new().await;
     let first = display_response(&fixture, fixture.request()).await;
-    add_display_record(&fixture, 7, 4);
+    add_display_equivocation(&fixture, 7, 4);
     let before = fixture.stored();
     let second = display_response(&fixture, fixture.request()).await;
     assert_ne!(first.authority_digest, second.authority_digest);
-    assert_ne!(
-        available(first.equivocation_capture.as_ref().unwrap()).digest,
-        available(second.equivocation_capture.as_ref().unwrap()).digest
-    );
     assert_eq!(before, fixture.stored());
 }
 
 fn display_capture(
     fixture: &Fixture,
-) -> (
-    block_storage::rust::dag::soak_snapshot::DetachedDagSnapshot,
-    block_storage::rust::dag::soak_equivocations::EquivocationSnapshot,
-) {
-    use block_storage::rust::dag::soak_snapshot::{
-        capture_with_equivocations, CaptureLimits, CaptureRequest,
-    };
+) -> block_storage::rust::dag::soak_snapshot::DetachedDagSnapshot {
+    use block_storage::rust::dag::soak_snapshot::{capture, CaptureLimits, CaptureRequest};
     use block_storage::rust::key_value_block_store::BlockDecodeLimits;
     use shared::rust::store::soak_snapshot::ReadLimits;
-    capture_with_equivocations(
-        &fixture.dag,
-        &fixture.blocks,
-        &CaptureRequest {
-            limits: CaptureLimits {
-                read: ReadLimits {
-                    max_value_bytes: 1 << 20,
-                    max_total_bytes: 1 << 24,
-                    max_records: 4096,
-                    max_operations: 100_000,
-                },
-                block_decode: BlockDecodeLimits {
-                    max_compressed_bytes: 1 << 20,
-                    max_decompressed_bytes: 1 << 20,
-                    max_expansion_ratio: 4096,
-                },
-                max_blocks: 128,
-                max_validators: 64,
-                max_edges: 4096,
-                max_work: 2_000_000,
-                lock_wait: Duration::from_millis(100),
+    capture(&fixture.dag, &fixture.blocks, &CaptureRequest {
+        limits: CaptureLimits {
+            read: ReadLimits {
+                max_value_bytes: 1 << 20,
+                max_total_bytes: 1 << 24,
+                max_records: 4096,
+                max_operations: 100_000,
             },
-            bodies: &[],
+            block_decode: BlockDecodeLimits {
+                max_compressed_bytes: 1 << 20,
+                max_decompressed_bytes: 1 << 20,
+                max_expansion_ratio: 4096,
+            },
+            max_blocks: 128,
+            max_validators: 64,
+            max_edges: 4096,
+            max_work: 2_000_000,
+            lock_wait: Duration::from_millis(100),
         },
-        16,
-    )
+        bodies: &[],
+    })
     .unwrap()
 }
 
 #[tokio::test]
-async fn request_without_display_preserves_legacy_fields_and_ignores_tracker_rows() {
+async fn request_without_display_preserves_legacy_fields() {
     let fixture = Fixture::new().await;
-    let position = STORES
-        .iter()
-        .position(|name| *name == "equivocation-tracker")
-        .unwrap();
-    fixture.handles[position]
-        .put(vec![(vec![1], vec![2])])
-        .unwrap();
+    add_display_equivocation(&fixture, 7, 1);
     let before = fixture.stored();
     let controller = ObserverController::new("legacy-display-fixture".into());
     controller.install(Some(fixture.casper(true).as_ref()));
     let response = evaluate(&fixture, &controller).await;
     let json = serde_json::to_value(&response).unwrap();
     assert!(json.get("display_scope").is_none());
-    assert!(json.get("equivocation_capture").is_none());
     assert!(json["targets"][0].get("display_inputs").is_none());
     assert_eq!(
         refusal(&response.targets[0].display_projection),
-        ("unavailable", "equivocation_snapshot_unavailable")
+        ("unavailable", "display_not_requested")
     );
     assert_eq!(before, fixture.stored());
 }
@@ -2271,7 +2268,7 @@ async fn request_without_display_preserves_legacy_fields_and_ignores_tracker_row
 fn update_display_metadata(
     fixture: &Fixture,
     update: impl FnOnce(&mut models::rust::block_metadata::BlockMetadata),
-) {
+) -> Result<(), shared::rust::store::key_value_store::KvStoreError> {
     use models::rust::block_hash::BlockHashSerde;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
     let hash = fixture.chain[1].block_hash.clone();
@@ -2288,34 +2285,34 @@ fn update_display_metadata(
         .position(|name| *name == "block-metadata")
         .unwrap();
     let store = KeyValueTypedStoreImpl::new(fixture.handles[position].clone());
-    store.put_one(BlockHashSerde(hash), metadata).unwrap();
+    store.put_one(BlockHashSerde(hash), metadata)
 }
 
 #[tokio::test]
-async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
-    use casper::rust::soak_observer::display::calculate;
-    let fixture = Fixture::new().await;
-    add_display_record(&fixture, 7, 0);
-    add_display_record(&fixture, 7, 1);
-    for weights in [
-        BTreeMap::from([(validator(7), -1), (validator(8), 1)]),
-        BTreeMap::from([(validator(7), -1)]),
-    ] {
-        update_display_metadata(&fixture, |m| m.weight_map = weights);
-        let before = fixture.stored();
-        let (snapshot, tracker) = display_capture(&fixture);
+async fn snapshot_and_scratch_view_preserve_uint256_stakes() {
+    let original = Fixture::new().await;
+    let mut chain = original.chain.clone();
+    let amount = shared::rust::token_amount::TokenAmount::max();
+    for block in &mut chain {
+        block.body.state.bonds[0].stake = amount.clone();
+    }
+    let fixture = Fixture::from_chain(chain).await;
+    let snapshot = display_capture(&fixture);
+    let scratch = snapshot.scratch_view().unwrap();
+    for block in &fixture.chain {
         assert_eq!(
-            calculate(
-                &snapshot,
-                &tracker,
-                &fixture.chain[1].block_hash,
-                Some(("original_oracle", 1f32.to_bits())),
-                &meter(work_limits())
-            )
-            .unwrap_err(),
-            "initial_fault_weight_overflow"
+            snapshot.blocks[&block.block_hash].metadata.weight_map[&validator(7)],
+            amount
         );
-        assert_eq!(before, fixture.stored());
+        assert_eq!(
+            scratch
+                .representation
+                .lookup(&block.block_hash)
+                .unwrap()
+                .unwrap()
+                .weight_map[&validator(7)],
+            amount
+        );
     }
 }
 
@@ -2323,20 +2320,21 @@ async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
 async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits() {
     use casper::rust::soak_observer::display::calculate;
     let fixture = Fixture::new().await;
-    add_display_record(&fixture, 7, 0);
-    add_display_record(&fixture, 7, 1);
-    add_display_record(&fixture, 9, 0);
+    add_display_equivocation(&fixture, 7, 0);
+    add_display_equivocation(&fixture, 7, 1);
+    add_display_equivocation(&fixture, 9, 0);
     for (a, b, fault_bits) in [
         (0, 0, 0),
         (1, 2, 0x3f2a_aaab),
-        (16_777_217, 16_777_219, 0x3f7f_fffe),
-        (i64::MAX / 2, i64::MAX / 2, 0x3f80_0000),
+        (16_777_217, 16_777_219, 0x3f7f_ffff),
+        ((i64::MAX / 2) as u64, (i64::MAX / 2) as u64, 0x3f80_0000),
     ] {
         update_display_metadata(&fixture, |m| {
-            m.weight_map = BTreeMap::from([(validator(7), a), (validator(8), b)])
-        });
+            m.weight_map = BTreeMap::from([(validator(7), a.into()), (validator(8), b.into())])
+        })
+        .unwrap();
         let before = fixture.stored();
-        let (snapshot, tracker) = display_capture(&fixture);
+        let snapshot = display_capture(&fixture);
         for bits in [
             0,
             0x8000_0000,
@@ -2347,7 +2345,6 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
         ] {
             let (actual, inputs) = calculate(
                 &snapshot,
-                &tracker,
                 &fixture.chain[1].block_hash,
                 Some(("original_oracle", bits)),
                 &meter(work_limits()),
@@ -2358,8 +2355,8 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
                 (f32::from_bits(bits) - f32::from_bits(fault_bits)).to_bits()
             );
             assert_eq!(inputs.initial_fault_bits, fault_bits);
-            assert_eq!(inputs.equivocating_weight, (2 * a as u64).to_string());
-            assert_eq!(inputs.total_weight, (a as u64 + b as u64).to_string());
+            assert_eq!(inputs.equivocating_weight, (2 * a).to_string());
+            assert_eq!(inputs.total_weight, (a + b).to_string());
             assert_eq!(inputs.matched_records, 2);
             assert_eq!(inputs.distinct_equivocators, 1);
         }
@@ -2371,9 +2368,9 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
 async fn display_charges_work_allocation_deadline_and_cancellation_before_results() {
     use casper::rust::soak_observer::display::calculate;
     let fixture = Fixture::new().await;
-    add_display_record(&fixture, 7, 0);
+    add_display_equivocation(&fixture, 7, 0);
     let before = fixture.stored();
-    let (snapshot, tracker) = display_capture(&fixture);
+    let snapshot = display_capture(&fixture);
     let hash = &fixture.chain[1].block_hash;
     let base = Some(("original_oracle", 0.75f32.to_bits()));
     for operations in [1, 2, 3, 10, 100] {
@@ -2382,7 +2379,7 @@ async fn display_charges_work_allocation_deadline_and_cancellation_before_result
             ..work_limits()
         });
         assert!(is_limit_error(
-            &calculate(&snapshot, &tracker, hash, base, &work).unwrap_err()
+            &calculate(&snapshot, hash, base, &work).unwrap_err()
         ));
         assert!(work.usage().0.operations <= operations);
     }
@@ -2391,7 +2388,7 @@ async fn display_charges_work_allocation_deadline_and_cancellation_before_result
         ..work_limits()
     });
     assert!(is_limit_error(
-        &calculate(&snapshot, &tracker, hash, base, &work).unwrap_err()
+        &calculate(&snapshot, hash, base, &work).unwrap_err()
     ));
     for (deadline, cancelled) in [
         (Instant::now() - Duration::from_secs(1), false),
@@ -2406,7 +2403,7 @@ async fn display_charges_work_allocation_deadline_and_cancellation_before_result
         )
         .unwrap();
         assert!(is_limit_error(
-            &calculate(&snapshot, &tracker, hash, base, &work).unwrap_err()
+            &calculate(&snapshot, hash, base, &work).unwrap_err()
         ));
     }
     assert_eq!(before, fixture.stored());
@@ -2416,11 +2413,10 @@ async fn display_charges_work_allocation_deadline_and_cancellation_before_result
 async fn display_allocations_cover_hash_table_capacity_and_input_keys() {
     use casper::rust::soak_observer::display::calculate;
     let fixture = Fixture::new().await;
-    let (snapshot, tracker) = display_capture(&fixture);
+    let snapshot = display_capture(&fixture);
     let work = meter(work_limits());
     calculate(
         &snapshot,
-        &tracker,
         &fixture.chain[1].block_hash,
         Some(("original_oracle", 0.75f32.to_bits())),
         &work,
@@ -2440,16 +2436,17 @@ async fn display_allocations_cover_hash_table_capacity_and_input_keys() {
 async fn display_metadata_flag_alone_uses_persisted_bits_without_an_original() {
     use casper::rust::soak_observer::display::calculate;
     let fixture = Fixture::new().await;
-    add_display_record(&fixture, 7, 0);
+    add_display_equivocation(&fixture, 7, 0);
     update_display_metadata(&fixture, |metadata| {
         metadata.finalized = true;
         metadata.fault_tolerance_value = 0.75;
-    });
+    })
+    .unwrap();
     let before = fixture.stored();
-    let (snapshot, tracker) = display_capture(&fixture);
+    let snapshot = display_capture(&fixture);
     let hash = &fixture.chain[1].block_hash;
     assert!(!snapshot.finalized_block_set.contains(hash));
-    let (bits, inputs) = calculate(&snapshot, &tracker, hash, None, &meter(work_limits())).unwrap();
+    let (bits, inputs) = calculate(&snapshot, hash, None, &meter(work_limits())).unwrap();
     assert_eq!(bits, (-0.25f32).to_bits());
     assert_eq!(inputs.base_source, "persisted_metadata");
     assert!(!inputs.finalized_set_member);
@@ -2484,36 +2481,9 @@ async fn display_typed_missing_history_uses_minimum_without_a_fabricated_origina
 }
 
 #[tokio::test]
-async fn display_refuses_tracker_inputs_from_a_different_capture_interval() {
-    use casper::rust::soak_observer::display::calculate;
+async fn display_response_binds_separate_values() {
     let fixture = Fixture::new().await;
-    let (snapshot, _) = display_capture(&fixture);
-    add_display_record(&fixture, 7, 0);
-    let (_, tracker) = display_capture(&fixture);
-    let before = fixture.stored();
-    assert_eq!(
-        snapshot.insertion_generation,
-        tracker.insertion_generation()
-    );
-    assert_ne!(snapshot.transactions, tracker.transactions());
-    assert_eq!(
-        calculate(
-            &snapshot,
-            &tracker,
-            &fixture.chain[1].block_hash,
-            Some(("original_oracle", 0.75f32.to_bits())),
-            &meter(work_limits())
-        )
-        .unwrap_err(),
-        "display_capture_mismatch"
-    );
-    assert_eq!(before, fixture.stored());
-}
-
-#[tokio::test]
-async fn display_response_binds_separate_values_and_contains_no_tracker_rows() {
-    let fixture = Fixture::new().await;
-    add_display_record(&fixture, 7, 0);
+    add_display_equivocation(&fixture, 7, 0);
     let before = fixture.stored();
     let response = display_response(&fixture, fixture.request()).await;
     let json = serde_json::to_value(&response).unwrap();
@@ -2530,15 +2500,6 @@ async fn display_response_binds_separate_values_and_contains_no_tracker_rows() {
         target["display_projection"]["input_digest"],
         target["persisted_fault_tolerance"]["input_digest"]
     );
-    assert_eq!(
-        target["display_inputs"]["value"]["equivocation_digest"],
-        json["equivocation_capture"]["value"]["digest"]
-    );
-    let capture = json["equivocation_capture"]["value"].as_object().unwrap();
-    assert!(capture.contains_key("row_count"));
-    assert!(capture.contains_key("byte_count"));
-    assert!(!capture.contains_key("rows"));
-    assert!(!capture.contains_key("validators"));
     assert!(serde_json::to_vec(&response).unwrap().len() < 65_536);
     assert_eq!(before, fixture.stored());
 }

@@ -24,7 +24,7 @@ struct CountingStore {
 }
 
 impl KeyValueStore for CountingStore {
-    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any { self.inner.as_any() }
 
     fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
         self.reads.fetch_add(keys.len(), Ordering::SeqCst);
@@ -37,6 +37,10 @@ impl KeyValueStore for CountingStore {
 
     fn put_one_if_absent(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, KvStoreError> {
         self.inner.put_one_if_absent(key, value)
+    }
+
+    fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+        self.inner.delete_if_value(key, expected)
     }
 
     fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> { self.inner.delete(keys) }
@@ -83,7 +87,20 @@ impl KeyValueStoreManager for CountingStoreManager {
     async fn shutdown(&mut self) -> Result<(), heed::Error> { self.inner.shutdown().await }
 }
 
-fn block(
+/// In-memory DAG storage whose `block-metadata` store counts the rows read.
+pub(crate) async fn counting_dag_storage() -> (BlockDagKeyValueStorage, Arc<AtomicUsize>) {
+    let metadata_reads = Arc::new(AtomicUsize::new(0));
+    let mut kvm = CountingStoreManager {
+        inner: InMemoryStoreManager::new(),
+        metadata_reads: metadata_reads.clone(),
+    };
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+        .await
+        .expect("dag storage");
+    (dag_storage, metadata_reads)
+}
+
+pub(crate) fn block(
     number: i64,
     sender: &Validator,
     parents: Vec<BlockHash>,
@@ -109,14 +126,7 @@ fn block(
 }
 
 async fn metadata_reads_for_one_oracle_call(validator_count: usize) -> usize {
-    let metadata_reads = Arc::new(AtomicUsize::new(0));
-    let mut kvm = CountingStoreManager {
-        inner: InMemoryStoreManager::new(),
-        metadata_reads: metadata_reads.clone(),
-    };
-    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
-        .await
-        .expect("dag storage");
+    let (dag_storage, metadata_reads) = counting_dag_storage().await;
 
     let validators: Vec<Validator> = (0..validator_count)
         .map(|i| generate_validator(Some(&format!("metadata-reads {}", i))))
@@ -125,7 +135,7 @@ async fn metadata_reads_for_one_oracle_call(validator_count: usize) -> usize {
         .iter()
         .map(|validator| Bond {
             validator: validator.clone(),
-            stake: 10,
+            stake: 10.into(),
         })
         .collect();
 

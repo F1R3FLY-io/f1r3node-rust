@@ -15,7 +15,6 @@
 #   • casper/src/rust/blocks/proposer/block_creator.rs (bug #8)
 #   • casper/src/rust/block_status.rs            (bug #1 is_slashable)
 #   • casper/src/rust/validate.rs                (bug #6)
-#   • block-storage/src/rust/dag/equivocation_tracker_store.rs (bug #2 store)
 #
 # Running just the slashing tests as the verification command
 # (`cargo test -p casper -- slashing`) keeps each mutant evaluation
@@ -29,7 +28,6 @@ examine_globs = [
     "casper/src/rust/blocks/proposer/block_creator.rs",
     "casper/src/rust/block_status.rs",
     "casper/src/rust/validate.rs",
-    "block-storage/src/rust/dag/equivocation_tracker_store.rs",
 ]
 
 # Verification command per mutant.

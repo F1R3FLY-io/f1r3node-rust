@@ -9,10 +9,47 @@ use crate::rust::metrics_constants::{DISCONNECT_METRIC, RP_HANDLE_METRICS_SOURCE
 use crate::rust::p2p::packet_handler::PacketHandler;
 use crate::rust::peer_node::PeerNode;
 use crate::rust::rp::connect::ConnectionsCell;
-use crate::rust::rp::protocol_helper;
+use crate::rust::rp::protocol_helper::{self, PROTOCOL_FORMAT_VERSION};
 use crate::rust::rp::rp_conf::RPConf;
 use crate::rust::transport::communication_response::CommunicationResponse;
 use crate::rust::transport::transport_layer::TransportLayer;
+
+/// Compare a peer's advertised `format_version` against our own and log
+/// anything surprising.  Returns the peer's version so callers can
+/// decide what to do with it; the current policy is advisory-only
+/// (log + continue) so a mid-rollout mixed network can still handshake.
+///
+/// Policy:
+///   * `peer == 0`  — the peer predates the field; accept quietly.
+///   * `peer == ours` — perfect; `debug!`.
+///   * `peer != ours && peer != 0` — explicit mismatch; `warn!`.  The
+///     connection still proceeds because the paper (§5 of
+///     capnp-vs-protobuf.pdf) frames this as a diagnostic aid: operators
+///     should see a clear log line before a block fails validation,
+///     not an opaque decode error later.  Hard disconnect is a future
+///     tightening.
+fn note_peer_format_version(peer: &PeerNode, peer_version: u32, kind: &str) -> u32 {
+    if peer_version == 0 {
+        tracing::debug!(
+            peer = %peer, kind,
+            "peer did not advertise a protocol format version (field unset)",
+        );
+    } else if peer_version == PROTOCOL_FORMAT_VERSION {
+        tracing::debug!(
+            peer = %peer, kind, version = peer_version,
+            "peer advertises matching protocol format version",
+        );
+    } else {
+        tracing::warn!(
+            peer = %peer, kind,
+            peer_version, our_version = PROTOCOL_FORMAT_VERSION,
+            "peer advertises a different protocol format version — \
+             expect decode or validation errors on messages that depend \
+             on the format (e.g. block hash scheme)",
+        );
+    }
+    peer_version
+}
 
 pub async fn handle(
     protocol: &Protocol,
@@ -28,11 +65,13 @@ pub async fn handle(
             handle_heartbeat(&sender, connections_cell)
         }
 
-        Some(models::routing::protocol::Message::ProtocolHandshake(_)) => {
+        Some(models::routing::protocol::Message::ProtocolHandshake(hs)) => {
+            note_peer_format_version(&sender, hs.format_version, "handshake");
             handle_protocol_handshake(&sender, transport_layer, connections_cell, rp_conf).await
         }
 
-        Some(models::routing::protocol::Message::ProtocolHandshakeResponse(_)) => {
+        Some(models::routing::protocol::Message::ProtocolHandshakeResponse(hs)) => {
+            note_peer_format_version(&sender, hs.format_version, "handshake_response");
             handle_protocol_handshake_response(&sender, connections_cell)
         }
 
@@ -59,10 +98,27 @@ pub fn handle_disconnect(
     sender: &PeerNode,
     connections_cell: &ConnectionsCell,
 ) -> Result<CommunicationResponse, CommError> {
-    tracing::info!("Forgetting about {}", sender);
-    connections_cell
-        .flat_modify(|connections| connections.remove_conn_and_report(sender.clone()))?;
-    metrics::counter!(DISCONNECT_METRIC, "source" => RP_HANDLE_METRICS_SOURCE).increment(1);
+    let mut removed = false;
+    connections_cell.flat_modify(|connections| {
+        if connections
+            .iter()
+            .any(|known| known.id.key == sender.id.key)
+        {
+            removed = true;
+            connections.remove_conn_and_report(sender.clone())
+        } else {
+            Ok(connections)
+        }
+    })?;
+    if removed {
+        tracing::info!("Forgetting about {}", sender);
+        metrics::counter!(DISCONNECT_METRIC, "source" => RP_HANDLE_METRICS_SOURCE).increment(1);
+    } else {
+        tracing::debug!(
+            "Ignoring a disconnect from {}, which is not connected",
+            sender
+        );
+    }
     Ok(CommunicationResponse::handled_without_message())
 }
 
@@ -91,8 +147,11 @@ pub async fn handle_protocol_handshake(
     connections_cell: &ConnectionsCell,
     rp_conf: &RPConf,
 ) -> Result<CommunicationResponse, CommError> {
-    let response =
-        protocol_helper::protocol_handshake_response(&rp_conf.local, &rp_conf.network_id);
+    let response = protocol_helper::protocol_handshake_response(
+        &rp_conf.local,
+        &rp_conf.network_id,
+        rp_conf.chain_id.to_wire(),
+    );
 
     match transport_layer.send(peer, &response).await {
         Ok(_) => {

@@ -17,6 +17,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
+use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::ByteString;
 use prost::bytes::Bytes;
@@ -27,6 +28,27 @@ use crate::util::genesis_builder::DEFAULT_VALIDATOR_SKS;
 use crate::util::rholang::resources;
 
 const DEPLOY_LIFESPAN: i64 = 50;
+
+fn decoded_pool_deploys(snapshotter: &Snapshotter) -> u64 {
+    snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter_map(|(key, _, _, value)| {
+            if key.key().name() == "deploy-store.read-all.decoded"
+                && key
+                    .key()
+                    .labels()
+                    .any(|label| label.key() == "store" && label.value() == "deploy_storage")
+            {
+                if let DebugValue::Counter(count) = value {
+                    return Some(count);
+                }
+            }
+            None
+        })
+        .sum()
+}
 
 /// Creates a signed deploy with the given parameters
 fn create_deploy(
@@ -40,12 +62,14 @@ fn create_deploy(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0),
-        phlo_price: 1,
+        phlo_price: (1).into(),
         phlo_limit: 1000,
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
         expiration_timestamp,
         parameters: Vec::new(),
+        cosignatures: Vec::new(),
+        required_cosigners: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
@@ -178,19 +202,19 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         height_constraint_threshold: 0,
         deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
-        bond_minimum: 0,
-        bond_maximum: i64::MAX,
+        bond_minimum: 0.into(),
+        bond_maximum: (i64::MAX as u64).into(),
         epoch_length: 0,
         quarantine_length: 0,
-        min_phlo_price: 0,
+        min_phlo_price: (0).into(),
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
         disable_validator_progress_check: false,
         ..CasperShardConf::new()
     };
 
-    let mut bonds_map: HashMap<ByteString, i64> = HashMap::new();
-    bonds_map.insert(validator_id.clone(), 100);
+    let mut bonds_map: HashMap<ByteString, num_bigint::BigInt> = HashMap::new();
+    bonds_map.insert(validator_id.clone(), 100.into());
 
     // Set maxSeqNums like Scala does: Map(validatorId -> 0)
     let mut max_seq_nums: HashMap<ByteString, u64> = HashMap::new();
@@ -216,7 +240,67 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         max_block_num,
         max_seq_nums,
         on_chain_state,
+        chain_id: Bytes::new(),
     }
+}
+
+#[tokio::test]
+async fn recovery_empty_and_disabled_ordinary_admission_skip_full_pool_reads() {
+    let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
+    let validator_identity = ValidatorIdentity::new(&validator_sk);
+    let snapshot = create_snapshot(100, validator_identity.public_key.bytes.clone());
+    let mut kvm = InMemoryStoreManager::new();
+    let deploy_storage = Arc::new(KeyValueDeployStorage::new(&mut kvm).await.unwrap());
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .unwrap(),
+    ));
+    let mut block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+    let rspace_store = kvm.r_space_stores().await.unwrap();
+    let mergeable_store = resources::mergeable_store_from_dyn(&mut kvm).await.unwrap();
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
+        rspace_store,
+        mergeable_store,
+        casper::rust::genesis::genesis::Genesis::default_mergeable_tags_arc(),
+        rholang::rust::interpreter::external_services::ExternalServices::noop(),
+    );
+    let deploy = create_deploy(60, None, &validator_sk);
+    deploy_storage.add(vec![deploy.clone()]).unwrap();
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let _guard = metrics::set_default_local_recorder(&recorder);
+
+    let _ = block_creator::create(
+        &snapshot,
+        &validator_identity,
+        None,
+        deploy_storage.clone(),
+        rejected_deploy_buffer.clone(),
+        &runtime_manager,
+        &mut block_store,
+        casper::rust::blocks::proposer::proposer::DeploySelection::RecoveryEmpty,
+    )
+    .await;
+    assert_eq!(decoded_pool_deploys(&snapshotter), 0);
+
+    let prepared = block_creator::prepare_user_deploys(
+        &snapshot,
+        101,
+        i64::MAX,
+        deploy_storage.clone(),
+        rejected_deploy_buffer,
+        &block_store,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(prepared.deploys.is_empty());
+    assert_eq!(decoded_pool_deploys(&snapshotter), 0);
+    assert!(deploy_storage.contains_sig(&deploy.sig).unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -227,11 +311,11 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -247,7 +331,6 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
     let deploy = create_deploy(1, None, &validator_sk);
 
     deploy_storage
-        .lock()
         .add(vec![deploy.clone()])
         .expect("add deploy");
     snapshot.deploys_in_scope.insert(deploy.sig.clone());
@@ -352,11 +435,11 @@ async fn ordinary_deploys_are_ignored_when_user_deploy_leadership_is_disabled() 
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -372,7 +455,6 @@ async fn ordinary_deploys_are_ignored_when_user_deploy_leadership_is_disabled() 
     let deploy = create_deploy(1, None, &validator_sk);
 
     deploy_storage
-        .lock()
         .add(vec![deploy.clone()])
         .expect("add deploy");
 
@@ -394,7 +476,6 @@ async fn ordinary_deploys_are_ignored_when_user_deploy_leadership_is_disabled() 
         "non-leaders must not propose ordinary deploys"
     );
     assert!(deploy_storage
-        .lock()
         .read_all()
         .expect("read ordinary deploy storage")
         .iter()
@@ -427,11 +508,11 @@ async fn unrelated_ordinary_deploys_remain_selectable_while_scope_has_user_work(
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -449,7 +530,6 @@ async fn unrelated_ordinary_deploys_remain_selectable_while_scope_has_user_work(
 
     snapshot.deploys_in_scope.insert(in_scope.sig.clone());
     deploy_storage
-        .lock()
         .add(vec![in_scope.clone(), pending.clone()])
         .expect("seed deploy storage");
 
@@ -478,11 +558,11 @@ async fn ordinary_deploy_selection_uses_config_cap() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -502,10 +582,7 @@ async fn ordinary_deploy_selection_uses_config_cap() {
     let deploys: Vec<Signed<DeployData>> = (1..=60)
         .map(|n| create_deploy(n, None, &validator_sk))
         .collect();
-    deploy_storage
-        .lock()
-        .add(deploys)
-        .expect("seed ordinary deploys");
+    deploy_storage.add(deploys).expect("seed ordinary deploys");
 
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
@@ -536,11 +613,11 @@ async fn ordinary_deploy_selection_is_bounded_only_by_the_configured_cap() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -563,10 +640,7 @@ async fn ordinary_deploy_selection_is_bounded_only_by_the_configured_cap() {
         .map(|n| create_deploy(n, None, &validator_sk))
         .collect();
 
-    deploy_storage
-        .lock()
-        .add(deploys)
-        .expect("seed ordinary deploys");
+    deploy_storage.add(deploys).expect("seed ordinary deploys");
 
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
@@ -597,11 +671,11 @@ async fn recovered_deploy_selection_uses_normal_retry_window() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -689,11 +763,11 @@ async fn rejected_in_scope_ordinary_deploy_waits_for_recovery_buffer() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -719,7 +793,6 @@ async fn rejected_in_scope_ordinary_deploy_waits_for_recovery_buffer() {
         snapshot.rejected_in_scope.insert(deploy.sig.clone());
     }
     deploy_storage
-        .lock()
         .add(rejected)
         .expect("seed ordinary rejected deploys");
 
@@ -759,11 +832,11 @@ async fn pool_retry_of_an_unsettled_rejection_is_deferred_by_the_gate() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -786,7 +859,6 @@ async fn pool_retry_of_an_unsettled_rejection_is_deferred_by_the_gate() {
     let deploy = create_deploy(6, None, &validator_sk);
     snapshot.rejected_in_scope.insert(deploy.sig.clone());
     deploy_storage
-        .lock()
         .add(vec![deploy.clone()])
         .expect("seed pool retry");
 
@@ -846,11 +918,11 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -865,7 +937,6 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
     let deploy = create_deploy(0, None, &validator_sk);
     snapshot.deploys_in_scope.insert(deploy.sig.clone());
     deploy_storage
-        .lock()
         .add(vec![deploy.clone()])
         .expect("seed deploy storage");
 
@@ -884,7 +955,6 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
 
     assert!(prepared.deploys.is_empty());
     assert!(!deploy_storage
-        .lock()
         .read_all()
         .expect("read deploy storage")
         .contains(&deploy));
@@ -904,11 +974,11 @@ async fn block_expired_rejected_deploy_is_purged_not_retried() {
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -927,7 +997,6 @@ async fn block_expired_rejected_deploy_is_purged_not_retried() {
     let deploy = create_deploy(0, None, &validator_sk);
     snapshot.rejected_in_scope.insert(deploy.sig.clone());
     deploy_storage
-        .lock()
         .add(vec![deploy.clone()])
         .expect("seed deploy storage");
 
@@ -946,7 +1015,6 @@ async fn block_expired_rejected_deploy_is_purged_not_retried() {
 
     assert!(prepared.deploys.is_empty());
     assert!(!deploy_storage
-        .lock()
         .read_all()
         .expect("read deploy storage")
         .contains(&deploy));
@@ -960,11 +1028,11 @@ async fn buffered_retry_admission_follows_the_recovered_deploys_policy_switch() 
     let validator_identity = ValidatorIdentity::new(&validator_sk);
     let validator_id: Bytes = validator_identity.public_key.bytes.clone();
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -1073,11 +1141,11 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
 
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -1113,7 +1181,7 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
 
     // Add both deploys to storage
     {
-        let mut ds = deploy_storage.lock();
+        let ds = &deploy_storage;
         ds.add(vec![expired_deploy.clone(), valid_deploy.clone()])
             .expect("Failed to add deploys");
 
@@ -1128,6 +1196,9 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     // Call BlockCreator.create
     // The cleanup happens in prepare_user_deploys before block creation
     // Block creation may fail due to empty parents, but that's after cleanup
+    let recorder = DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    let recorder_guard = metrics::set_default_local_recorder(&recorder);
     let _ = block_creator::create(
         &snapshot,
         &validator_identity,
@@ -1140,9 +1211,16 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     )
     .await;
 
+    assert_eq!(
+        decoded_pool_deploys(&snapshotter),
+        2,
+        "scope, statistics, and selection share one decode of both stored deploys"
+    );
+    drop(recorder_guard);
+
     // Verify: expired deploy removed, valid deploy kept
     {
-        let ds = deploy_storage.lock();
+        let ds = &deploy_storage;
         let deploys_after = ds.read_all().expect("Failed to read deploys");
         assert_eq!(
             deploys_after.len(),
@@ -1174,11 +1252,11 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
     // Create all stores from a single InMemoryStoreManager (like Scala's kvm pattern)
     let mut kvm = InMemoryStoreManager::new();
 
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -1223,7 +1301,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
 
     // Add all deploys to storage
     {
-        let mut ds = deploy_storage.lock();
+        let ds = &deploy_storage;
         ds.add(vec![
             block_expired_deploy.clone(),
             time_expired_deploy.clone(),
@@ -1254,7 +1332,7 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
 
     // Verify: both expired deploys removed, valid deploy kept
     {
-        let ds = deploy_storage.lock();
+        let ds = &deploy_storage;
         let deploys_after = ds.read_all().expect("Failed to read deploys");
         assert_eq!(
             deploys_after.len(),
@@ -1280,11 +1358,11 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
 
     let mut kvm = InMemoryStoreManager::new();
 
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -1322,7 +1400,7 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
     let valid_deploy = create_deploy(60, None, &validator_sk);
 
     {
-        let mut buf = rejected_deploy_buffer.lock().unwrap();
+        let buf = rejected_deploy_buffer.lock().unwrap();
         buf.add(vec![
             block_expired_deploy.clone(),
             time_expired_deploy.clone(),

@@ -8,18 +8,21 @@ use async_trait::async_trait;
 use hex;
 use models::routing::transport_layer_client::TransportLayerClient;
 use models::routing::Protocol;
+use prost::bytes::Bytes;
 use tokio::sync::{Mutex, OnceCell};
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 
 use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{STREAM_OUTGOING_TIMEOUTS_METRIC, TRANSPORT_METRICS_SOURCE};
 use crate::rust::peer_node::{NodeIdentifier, PeerNode};
+use crate::rust::rp::chain_id::ChainIdCell;
 use crate::rust::transport::f1r3fly_connector::F1r3flyConnector;
-use crate::rust::transport::grpc_transport::GrpcTransport;
+use crate::rust::transport::grpc_transport::{GrpcTransport, TransportLayerClientTrait};
 use crate::rust::transport::packet_ops::PacketOps;
 use crate::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
 use crate::rust::transport::stream_observable::StreamObservable;
-use crate::rust::transport::transport_layer::{Blob, TransportLayer};
+use crate::rust::transport::transport_layer::{best_effort, Blob, TransportLayer};
 use crate::rust::utils::resolve_hostname_to_ip;
 
 type StreamCache = Arc<dashmap::DashMap<String, Vec<u8>>>;
@@ -36,7 +39,7 @@ pub struct BufferedGrpcStreamChannel {
         >,
     >,
     /// Buffer implementing some kind of overflow policy
-    pub buffer: StreamObservable,
+    pub buffer: Arc<StreamObservable>,
     /// Buffer subscriber handle
     pub buffer_subscriber: tokio::task::JoinHandle<()>,
     /// Max message size (to be applied to individual service clients)
@@ -50,7 +53,7 @@ impl BufferedGrpcStreamChannel {
         transport_client: TransportLayerClient<
             InterceptedService<Channel, SslSessionClientInterceptor>,
         >,
-        buffer: StreamObservable,
+        buffer: Arc<StreamObservable>,
         buffer_subscriber: tokio::task::JoinHandle<()>,
         max_message_size: i32,
     ) -> Self {
@@ -79,6 +82,7 @@ impl BufferedGrpcStreamChannel {
 #[derive(Clone)]
 pub struct GrpcTransportClient {
     network_id: String,
+    chain_id: ChainIdCell,
     cert: String,
     key: String,
     max_message_size: i32,
@@ -96,10 +100,71 @@ const MAX_CHANNEL_MAP_ENTRIES: usize = 1024;
 const STREAM_TIMEOUT_MICROS_PER_BYTE: u64 = 5;
 const CHANNEL_LIVENESS_CHECK_TIMEOUT: Duration = Duration::from_millis(50);
 
+fn stream_timeout(packet_size: usize, default_send_timeout: Duration) -> Duration {
+    let packet_based_timeout =
+        Duration::from_micros((packet_size as u64).saturating_mul(STREAM_TIMEOUT_MICROS_PER_BYTE));
+    packet_based_timeout
+        .max(default_send_timeout)
+        .min(super::GRPC_REQUEST_TIMEOUT)
+}
+
+struct StreamAttempt {
+    packet_size: usize,
+    timeout: Duration,
+    outcome: StreamOutcome,
+}
+
+enum StreamOutcome {
+    Sent,
+    Failed(CommError),
+    TimedOut,
+}
+
+async fn send_cached_stream<T: TransportLayerClientTrait>(
+    key: &str,
+    client: &mut T,
+    peer: &PeerNode,
+    sender: &PeerNode,
+    cache: &StreamCache,
+    network_id: &str,
+    chain_id: Bytes,
+    default_send_timeout: Duration,
+    packet_chunk_size: usize,
+) -> Result<StreamAttempt, CommError> {
+    let packet = PacketOps::restore(key, cache)?;
+    let packet_size = packet.content.len();
+    let timeout = stream_timeout(packet_size, default_send_timeout);
+    tracing::debug!(
+        "Attempting to stream packet to {} with timeout: {}ms",
+        peer.to_address(),
+        timeout.as_millis()
+    );
+    let blob = Blob {
+        sender: sender.clone(),
+        packet,
+    };
+    let outcome = match tokio::time::timeout(
+        timeout,
+        GrpcTransport::stream(client, peer, network_id, chain_id, &blob, packet_chunk_size),
+    )
+    .await
+    {
+        Ok(Ok(())) => StreamOutcome::Sent,
+        Ok(Err(error)) => StreamOutcome::Failed(error),
+        Err(_) => StreamOutcome::TimedOut,
+    };
+    Ok(StreamAttempt {
+        packet_size,
+        timeout,
+        outcome,
+    })
+}
+
 impl GrpcTransportClient {
     /// Create a new GrpcTransportClient
     pub fn new(
         network_id: String,
+        chain_id: ChainIdCell,
         cert: String,
         key: String,
         max_message_size: i32,
@@ -116,9 +181,17 @@ impl GrpcTransportClient {
                 effective_timeout.as_millis()
             );
         }
+        if effective_timeout > super::GRPC_REQUEST_TIMEOUT {
+            tracing::warn!(
+                configured_timeout_ms = effective_timeout.as_millis(),
+                max_stream_timeout_ms = super::GRPC_REQUEST_TIMEOUT.as_millis(),
+                "Configured network timeout exceeds the outgoing stream timeout limit"
+            );
+        }
 
         Ok(Self {
             network_id,
+            chain_id,
             cert,
             key,
             max_message_size,
@@ -237,20 +310,22 @@ impl GrpcTransportClient {
             self.cache.clone(),
         );
 
+        let mut subscription = buffer.subscribe().ok_or_else(|| {
+            CommError::InternalCommunicationError(
+                "Failed to create stream subscription".to_string(),
+            )
+        })?;
+
         // Create buffer subscriber
+        let buffer = Arc::new(buffer);
         let buffer_subscriber = {
             let peer_clone = peer.clone();
+            let buffer_for_task = buffer.clone();
             let cache_clone = self.cache.clone();
             let network_id = self.network_id.clone();
+            let chain_id = self.chain_id.clone();
             let default_send_timeout = self.default_send_timeout;
             let packet_chunk_size = self.packet_chunk_size;
-
-            // Get subscription from buffer
-            let mut subscription = buffer.subscribe().ok_or_else(|| {
-                CommError::InternalCommunicationError(
-                    "Failed to create stream subscription".to_string(),
-                )
-            })?;
 
             // Clone the transport client for use in spawned task
             let client_for_task = Arc::new(tokio::sync::Mutex::new(transport_client.clone()));
@@ -261,30 +336,27 @@ impl GrpcTransportClient {
 
                 while let Some(stream_msg) = subscription.next().await {
                     // Call static stream_blob_file_with_client method with pre-created client
-                    let result = Self::stream_blob_file_with_client(
+                    let timed_out = Self::stream_blob_file_with_client(
                         &stream_msg.key,
                         &peer_clone,
                         &stream_msg.sender,
                         &cache_clone,
                         &network_id,
+                        &chain_id,
                         default_send_timeout,
                         packet_chunk_size,
                         client_for_task.clone(),
                     )
                     .await;
 
-                    // Log any errors but continue processing
-                    if let Err(e) = result {
-                        tracing::debug!(
-                            "Error in stream_blob_file for key {}: {}",
-                            stream_msg.key,
-                            e
-                        );
-                    }
-
                     // Clean up cache
                     // This happens regardless of success/failure
                     cache_clone.remove(&stream_msg.key);
+                    if timed_out {
+                        let dropped = buffer_for_task.close_and_discard();
+                        tracing::warn!(peer = %peer_clone.to_address(), dropped, "Stopped outgoing stream queue after timeout");
+                        break;
+                    }
                 }
             })
         };
@@ -333,6 +405,7 @@ impl GrpcTransportClient {
                             if let Some(victim_channel_cell) = channels_map.remove(&victim) {
                                 if let Some(victim_channel) = victim_channel_cell.get() {
                                     victim_channel.buffer_subscriber.abort();
+                                    victim_channel.buffer.close_and_discard();
                                 }
                                 evicted_peer_ids.push(victim.id);
                             }
@@ -378,10 +451,16 @@ impl GrpcTransportClient {
 
                 // Clean up: cancel subscriber and remove from map
                 channel.buffer_subscriber.abort();
+                channel.buffer.close_and_discard();
 
                 {
                     let mut channels_map = self.channels_map.lock().await;
-                    channels_map.remove(peer);
+                    if channels_map
+                        .get(peer)
+                        .is_some_and(|current| Arc::ptr_eq(current, &once_cell))
+                    {
+                        channels_map.remove(peer);
+                    }
                 }
                 self.clear_dns_failure(peer).await;
 
@@ -449,12 +528,16 @@ impl GrpcTransportClient {
     ///
     /// This method uses a pre-created transport client, eliminating the need for
     /// complex connection management in spawned tasks.
+    ///
+    /// Returns true when the stream hit a deadline, so the caller stops this
+    /// peer's queue.
     async fn stream_blob_file_with_client(
         key: &str,
         peer: &PeerNode,
         sender: &PeerNode,
         cache: &StreamCache,
         network_id: &str,
+        chain_id: &ChainIdCell,
         default_send_timeout: Duration,
         packet_chunk_size: i32,
         client: Arc<
@@ -462,67 +545,89 @@ impl GrpcTransportClient {
                 TransportLayerClient<InterceptedService<Channel, SslSessionClientInterceptor>>,
             >,
         >,
-    ) -> Result<(), CommError> {
-        let calculate_timeout = |packet: &models::routing::Packet| -> Duration {
-            let packet_based_timeout =
-                Duration::from_micros(packet.content.len() as u64 * STREAM_TIMEOUT_MICROS_PER_BYTE);
-            std::cmp::max(packet_based_timeout, default_send_timeout)
-        };
+    ) -> bool {
+        let mut client_guard = client.lock().await;
+        let attempt = send_cached_stream(
+            key,
+            &mut *client_guard,
+            peer,
+            sender,
+            cache,
+            network_id,
+            chain_id.to_wire(),
+            default_send_timeout,
+            packet_chunk_size as usize,
+        )
+        .await;
+        drop(client_guard);
 
-        // Restore packet from cache
-        match PacketOps::restore(key, cache) {
-            Ok(packet) => {
-                let timeout = calculate_timeout(&packet);
-
-                tracing::debug!(
-                    "Attempting to stream packet to {} with timeout: {}ms",
-                    peer.to_address(),
-                    timeout.as_millis()
-                );
-
-                // Create blob for streaming
-                let blob = Blob {
-                    sender: sender.clone(),
-                    packet: packet.clone(),
-                };
-
-                // Use pre-created client directly (no connection management needed)
-                let mut client_guard = client.lock().await;
-                let stream_result = GrpcTransport::stream(
-                    &mut *client_guard,
-                    peer,
-                    network_id,
-                    &blob,
-                    packet_chunk_size as usize,
-                )
-                .await;
-                drop(client_guard); // Release lock
-
-                // Handle the result
-                match stream_result {
-                    Ok(()) => {
-                        tracing::debug!("Streamed packet {} to {}", key, peer.to_address());
-                    }
-                    Err(error) => {
-                        tracing::debug!(
-                            "Error while streaming packet to {} (timeout: {}ms): {}",
-                            peer.to_address(),
-                            timeout.as_millis(),
-                            error
-                        );
-                    }
+        let timed_out = matches!(
+            &attempt,
+            Ok(StreamAttempt {
+                outcome: StreamOutcome::TimedOut | StreamOutcome::Failed(CommError::TimeOut),
+                ..
+            })
+        );
+        match attempt {
+            Ok(StreamAttempt {
+                packet_size,
+                timeout,
+                outcome,
+            }) => match outcome {
+                StreamOutcome::Sent => {
+                    tracing::debug!("Streamed packet {} to {}", key, peer.to_address());
                 }
-                Ok(())
-            }
+                // The result of a stream does not reach the caller, so the
+                // peer is not dropped here: it refuses the next heartbeat
+                // too, and `clear_connections` evicts it then.
+                StreamOutcome::Failed(
+                    error @ (CommError::WrongNetwork(..) | CommError::WrongChainId(..)),
+                ) => {
+                    tracing::warn!(
+                        "Stream of packet {} to {} refused: {}",
+                        key,
+                        peer.to_address(),
+                        error
+                    );
+                }
+                StreamOutcome::Failed(error) => {
+                    if matches!(&error, CommError::TimeOut) {
+                        metrics::counter!(STREAM_OUTGOING_TIMEOUTS_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
+                                .increment(1);
+                    }
+                    tracing::warn!(
+                        key = %key,
+                        peer = %peer.to_address(),
+                        packet_size_bytes = packet_size,
+                        timeout_ms = timeout.as_millis(),
+                        error = %error,
+                        "Outgoing stream failed"
+                    );
+                }
+                StreamOutcome::TimedOut => {
+                    metrics::counter!(STREAM_OUTGOING_TIMEOUTS_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
+                            .increment(1);
+                    tracing::warn!(
+                        key = %key,
+                        peer = %peer.to_address(),
+                        packet_size_bytes = packet_size,
+                        timeout_ms = timeout.as_millis(),
+                        "Outgoing stream timed out"
+                    );
+                }
+            },
             Err(error) => {
                 tracing::error!(key = %key, peer = %peer.to_address(), error = %error, "packet streaming failed");
-                Ok(())
             }
         }
+        timed_out
     }
 
     /// Check if a channel is terminated
     async fn is_channel_terminated(channel: &BufferedGrpcStreamChannel) -> bool {
+        if channel.buffer.is_complete() {
+            return true;
+        }
         // 1. First check: Is the buffer subscriber task finished?
         // This indicates the streaming mechanism is broken
         if channel.buffer_subscriber.is_finished() {
@@ -562,8 +667,16 @@ impl TransportLayer for GrpcTransportClient {
 
     /// Broadcast a Protocol message to multiple peers in parallel
     async fn broadcast(&self, peers: &[PeerNode], msg: &Protocol) -> Result<(), CommError> {
+        self.broadcast_reporting_refusals(peers, msg).await.0
+    }
+
+    async fn broadcast_reporting_refusals(
+        &self,
+        peers: &[PeerNode],
+        msg: &Protocol,
+    ) -> (Result<(), CommError>, Vec<PeerNode>) {
         if peers.is_empty() {
-            return Ok(());
+            return (Ok(()), Vec::new());
         }
 
         // Create a vector of futures for parallel execution
@@ -572,18 +685,24 @@ impl TransportLayer for GrpcTransportClient {
         // Execute all sends in parallel and collect results
         let results = futures::future::join_all(send_futures).await;
 
-        // Check if any send failed - if so, return the first error
-        for result in results {
-            result?; // Return early on first error
-        }
-
-        Ok(())
+        let refused = peers
+            .iter()
+            .zip(&results)
+            .filter(|(_, result)| matches!(result, Err(CommError::WrongChainId(..))))
+            .map(|(peer, _)| peer.clone())
+            .collect();
+        (best_effort("broadcast", peers, results), refused)
     }
 
     /// Stream a blob to a peer by enqueueing it in the buffer
     async fn stream(&self, peer: &PeerNode, blob: &Blob) -> Result<(), CommError> {
-        let channel = self.get_channel(peer).await?;
-        channel.buffer.enque(blob).await
+        loop {
+            let channel = self.get_channel(peer).await?;
+            match channel.buffer.enque(blob).await {
+                Err(CommError::PeerUnavailable(_)) if channel.buffer.is_complete() => continue,
+                result => return result,
+            }
+        }
     }
 
     /// Stream a blob to multiple peers in parallel
@@ -598,12 +717,7 @@ impl TransportLayer for GrpcTransportClient {
         // Execute all streams in parallel and collect results
         let results = futures::future::join_all(stream_futures).await;
 
-        // Check if any stream failed - if so, return the first error
-        for result in results {
-            result?; // Return early on first error
-        }
-
-        Ok(())
+        best_effort("stream", peers, results)
     }
 
     /// Disconnect from a peer, shutting down any gRPC channels
@@ -615,6 +729,7 @@ impl TransportLayer for GrpcTransportClient {
             // If the channel was initialized, abort its buffer subscriber
             if let Some(channel) = channel_cell.get() {
                 channel.buffer_subscriber.abort();
+                channel.buffer.close_and_discard();
             }
             // The channel itself will be dropped when removed from the map
         }
@@ -630,10 +745,36 @@ impl TransportLayer for GrpcTransportClient {
 
 #[cfg(test)]
 mod tests {
-    use prost::bytes::Bytes;
+    use models::routing::tl_response::Payload;
+    use models::routing::{Ack, Chunk, Packet, TlRequest, TlResponse};
+    use rand::{RngCore, SeedableRng};
+    use tokio_stream::StreamExt;
+    use tonic::Status;
 
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::transport::chunker::Chunker;
+
+    struct SlowClient {
+        chunk_delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl TransportLayerClientTrait for SlowClient {
+        async fn send(&mut self, _: TlRequest) -> Result<TlResponse, Status> {
+            panic!("unexpected unary request")
+        }
+
+        async fn stream<S>(&mut self, mut input: S) -> Result<TlResponse, Status>
+        where S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static {
+            while input.next().await.is_some() {
+                tokio::time::sleep(self.chunk_delay).await;
+            }
+            Ok(TlResponse {
+                payload: Some(Payload::Ack(Ack { header: None })),
+            })
+        }
+    }
 
     fn peer(name: &str) -> PeerNode {
         PeerNode {
@@ -647,6 +788,7 @@ mod tests {
     fn client(network_timeout: Duration) -> GrpcTransportClient {
         GrpcTransportClient::new(
             "test".to_string(),
+            ChainIdCell::unknown(),
             "cert".to_string(),
             "key".to_string(),
             1024,
@@ -662,6 +804,82 @@ mod tests {
     fn new_accepts_normal_and_too_low_timeouts() {
         client(Duration::from_secs(5));
         client(Duration::from_millis(1));
+    }
+
+    #[test]
+    fn stream_timeout_preserves_small_packet_budget_and_caps_large_packets() {
+        assert_eq!(
+            stream_timeout(1, Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            stream_timeout(10_000_000, Duration::from_secs(5)),
+            crate::rust::transport::GRPC_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            stream_timeout(1, Duration::from_secs(60)),
+            crate::rust::transport::GRPC_REQUEST_TIMEOUT
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_stream_completes_before_deadline_and_times_out_after_it() {
+        let sender = peer("sender");
+        let receiver = peer("receiver");
+
+        for (stream_duration, should_timeout) in [
+            (Duration::from_secs(26), false),
+            (Duration::from_secs(32), true),
+        ] {
+            let cache = Arc::new(dashmap::DashMap::new());
+            let mut content = vec![0; 6 * 1024 * 1024];
+            rand::rngs::StdRng::seed_from_u64(1).fill_bytes(&mut content);
+            let packet = Packet {
+                type_id: "test".to_string(),
+                content: Bytes::from(content),
+            };
+            let blob = Blob {
+                sender: sender.clone(),
+                packet: packet.clone(),
+            };
+            let chunk_size = 64 * 1024;
+            let chunk_count =
+                Chunker::chunk_it("test", Bytes::new(), &blob, chunk_size).len() as u32;
+            let mut client = SlowClient {
+                chunk_delay: stream_duration / chunk_count,
+            };
+            let key = PacketOps::store(&packet, &cache).unwrap();
+            assert_eq!(cache.len(), 1);
+            let start = tokio::time::Instant::now();
+            let attempt = send_cached_stream(
+                &key,
+                &mut client,
+                &receiver,
+                &sender,
+                &cache,
+                "test",
+                Bytes::new(),
+                Duration::from_secs(1),
+                chunk_size,
+            )
+            .await
+            .unwrap();
+            assert_eq!(attempt.packet_size, 6 * 1024 * 1024);
+            assert_eq!(
+                attempt.timeout,
+                crate::rust::transport::GRPC_REQUEST_TIMEOUT
+            );
+
+            if should_timeout {
+                assert!(matches!(attempt.outcome, StreamOutcome::TimedOut));
+                assert_eq!(start.elapsed(), attempt.timeout);
+            } else {
+                assert!(matches!(attempt.outcome, StreamOutcome::Sent));
+                assert!(start.elapsed() >= Duration::from_secs(25));
+                assert!(start.elapsed() < attempt.timeout);
+            }
+            assert!(cache.is_empty());
+        }
     }
 
     #[tokio::test]
@@ -698,5 +916,20 @@ mod tests {
         assert!(c.stream_mult(&[], &blob).await.is_ok());
 
         assert!(c.get_channeled_peers().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn best_effort_fails_only_when_no_peer_was_reached() {
+        let peers = [peer("a"), peer("b")];
+        let refused = || CommError::WrongNetwork("b".to_string(), "other chain".to_string());
+
+        assert!(best_effort("broadcast", &peers, vec![Ok(()), Err(refused())]).is_ok());
+        assert!(matches!(
+            best_effort("broadcast", &peers, vec![
+                Err(CommError::TimeOut),
+                Err(refused())
+            ]),
+            Err(CommError::TimeOut)
+        ));
     }
 }

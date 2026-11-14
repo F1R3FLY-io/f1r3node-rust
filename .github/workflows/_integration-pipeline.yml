@@ -28,6 +28,11 @@ on:
         type: string
         required: false
         default: ""
+      build_id:
+        description: "Build identity for the selected source. Empty uses git describe."
+        type: string
+        required: false
+        default: ""
       gated:
         description: "When true, launch_ephemeral_runners uses the ephemeral-launch environment (required-reviewer approval)."
         type: boolean
@@ -50,7 +55,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 942de7b7ead62cb215fc162efce7ae1b6206e261
+  SYSTEM_INTEGRATION_REF: 43732580f6d51c81d9297f4f665991bcc8b226b3
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -80,7 +85,10 @@ jobs:
   # rather than on each other.
   build_docker_image:
     name: Build Docker Image (${{ matrix.arch }})
-    needs: await_approval
+    needs: [await_approval, resolve_harness]
+    outputs:
+      build_id: ${{ steps.identity.outputs.build_id }}
+      node_version: ${{ steps.identity.outputs.node_version }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -109,6 +117,7 @@ jobs:
         with:
           repository: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
           ref: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
           # Fork PRs reach this pipeline through ci-fork-pr.yml's
           # pull_request_target, and recent actions/checkout releases refuse to
@@ -143,11 +152,34 @@ jobs:
             echo "Docker daemon config already up to date, skipping restart"
           fi
 
+      - name: Resolve build identity
+        id: identity
+        env:
+          REQUESTED_BUILD_ID: ${{ inputs.build_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          VERSION="$REQUESTED_BUILD_ID"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(git describe --tags --always --exclude '*/*')"
+          fi
+          if [[ -z "$VERSION" || "$VERSION" == unknown || "$VERSION" =~ [[:space:][:cntrl:]] ]]; then
+            echo "::error::The build identity must be known and contain no whitespace or control characters."
+            exit 1
+          fi
+          NODE_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' node/Cargo.toml | head -n 1)"
+          if [ -z "$NODE_VERSION" ]; then
+            echo "::error::Cannot read the node package version from node/Cargo.toml."
+            exit 1
+          fi
+          echo "build_id=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "node_version=$NODE_VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Build Docker Image
+        env:
+          VERSION: ${{ steps.identity.outputs.build_id }}
         shell: bash -ex {0}
         run: |
           docker context use default
-          VERSION="$(git describe --tags --always)"
           docker buildx build \
             --platform ${{ matrix.platform }} \
             --file node/Dockerfile \
@@ -155,6 +187,14 @@ jobs:
             --tag ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }} \
             --load \
             .
+
+      - name: Verify image build identity
+        env:
+          IMAGE_NAME: ${{ env.DOCKER_IMAGE_NAME }}:${{ matrix.arch }}
+          EXPECTED_BUILD_ID: ${{ steps.identity.outputs.build_id }}
+        shell: bash -euo pipefail {0}
+        run: |
+          bash .github/scripts/check-image-build-identity.sh "$IMAGE_NAME" "$EXPECTED_BUILD_ID"
 
       - name: Export Docker Image
         shell: bash -ex {0}
@@ -205,6 +245,35 @@ jobs:
       - name: Approval recorded
         shell: bash -e {0}
         run: echo "Ephemeral launch approved for this run; proceeding to OCI launch."
+
+  resolve_harness:
+    name: Resolve Candidate Integration Pin
+    needs: await_approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      system_integration_ref: ${{ steps.pin.outputs.system_integration_ref }}
+    steps:
+      - name: Checkout pin reader
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Read candidate integration pin
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ inputs.checkout_repository != '' && inputs.checkout_repository || github.repository }}
+          SOURCE_SHA: ${{ inputs.checkout_ref != '' && inputs.checkout_ref || github.sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          pin="$(bash .github/scripts/read-system-integration-pin.sh --repository "$SOURCE_REPOSITORY" "$SOURCE_SHA")"
+          echo "system_integration_ref=$pin" >> "$GITHUB_OUTPUT"
+          echo "integration suite pin: $pin"
 
   # Launch ephemeral OCI VMs that will pick up the integration-tests matrix
   # jobs. Each VM boots from a baked image, registers as a GitHub Actions runner
@@ -483,7 +552,7 @@ jobs:
   # in ci.yml / ci-fork-pr.yml match on contains("Integration Tests (amd64-").
   integration_tests:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }})
-    needs: [build_docker_image, launch_ephemeral_runners]
+    needs: [build_docker_image, launch_ephemeral_runners, resolve_harness]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
@@ -567,7 +636,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
-          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          ref: ${{ needs.resolve_harness.outputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
 
@@ -655,7 +724,7 @@ jobs:
   # ci-fork-pr.yml count these legs without modification.
   ucc_tests:
     name: Integration Tests (${{ matrix.arch }}-${{ matrix.provider }}, ucc)
-    needs: [build_docker_image, launch_ephemeral_runners]
+    needs: [build_docker_image, launch_ephemeral_runners, resolve_harness]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     permissions:
@@ -703,7 +772,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: F1R3FLY-io/system-integration
-          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          ref: ${{ needs.resolve_harness.outputs.system_integration_ref }}
           path: system-integration
           persist-credentials: false
 
@@ -974,7 +1043,11 @@ jobs:
 
       - name: Start standalone node
         shell: bash -ex {0}
-        run: docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml up -d
+        # docker/.env is not tracked (#745). Compose reads the node keys from
+        # it, so the job copies the development template first.
+        run: |
+          cp docker/.env.example docker/.env
+          docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml up -d
 
       - name: Wait for Running state
         shell: bash -ex {0}
@@ -989,9 +1062,25 @@ jobs:
           done
           docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml logs 2>&1 | grep "Making a transition to Running state" || (echo "FAIL: Node did not reach Running state" && exit 1)
 
-      - name: Verify HTTP API
-        shell: bash -ex {0}
-        run: curl -sf http://localhost:14403/api/status
+      - name: Verify node build identity
+        env:
+          EXPECTED_BUILD_ID: ${{ needs.build_docker_image.outputs.build_id }}
+          NODE_VERSION: ${{ needs.build_docker_image.outputs.node_version }}
+        shell: bash -exu -o pipefail {0}
+        run: |
+          test -n "$EXPECTED_BUILD_ID"
+          test "$EXPECTED_BUILD_ID" != unknown
+          EXPECTED="F1r3node Rust $NODE_VERSION ($EXPECTED_BUILD_ID)"
+          STATUS_VERSION="$(curl -fsS http://localhost:14403/api/status | jq -er '.version.node')"
+          HTTP_VERSION="$(curl -fsS http://localhost:14403/version)"
+          test "$STATUS_VERSION" = "$EXPECTED"
+          test "$HTTP_VERSION" = "$EXPECTED"
+          GRPC_VERSION="$(docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml \
+            exec -T standalone grpcurl -plaintext 127.0.0.1:40401 casper.v1.DeployService/status \
+            | jq -er '.status.version.node')"
+          test "$GRPC_VERSION" = "$EXPECTED"
+          docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml logs --no-color \
+            | grep -F "$EXPECTED"
 
       - name: Wait for 10 finalized blocks
         shell: bash -ex {0}
@@ -1082,7 +1171,11 @@ jobs:
 
       - name: Start shard
         shell: bash -ex {0}
-        run: docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml up -d
+        # docker/.env is not tracked (#745). Compose reads the node keys from
+        # it, so the job copies the development template first.
+        run: |
+          cp docker/.env.example docker/.env
+          docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml up -d
 
       - name: Wait for bootstrap Running state
         shell: bash -ex {0}
@@ -1214,9 +1307,13 @@ jobs:
           # inside the ephemeral range the Actions agent draws from. This job
           # binds on the host directly, so the ports move via CLI flags rather
           # than a compose mapping.
+          # The key is the development standalone key from docker/.env.example
+          # (#745), so no key value is written into this workflow.
+          validator_key="$(sed -n 's/^STANDALONE_PRIVATE_KEY=//p' docker/.env.example)"
+          test -n "$validator_key"
           ./target/release/node run -s \
             --config-file=run-local/conf/standalone.conf \
-            --validator-private-key=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657 \
+            --validator-private-key="$validator_key" \
             --host=localhost \
             --protocol-port=14400 \
             --api-port-grpc-external=14401 \

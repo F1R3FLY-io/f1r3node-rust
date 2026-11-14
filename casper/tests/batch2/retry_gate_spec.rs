@@ -15,23 +15,26 @@
 //   carrier sender is the retry owner; the record is live (above every
 //   floor) immediately after M.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::{Casper, MultiParentCasper};
-use casper::rust::finality::floor::floor_of_block;
+use casper::rust::finality::floor::{floor_of_block, Floor};
+use casper::rust::finality::floor_context::FloorContext;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::{construct_deploy, proto_util};
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, F1r3flyState, Header, Justification,
 };
+use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
-use crate::helper::test_node::TestNode;
+use crate::helper::test_node::{ShardOverrides, TestNode};
 use crate::util::genesis_builder::GenesisBuilder;
 
 fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
@@ -45,7 +48,7 @@ fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
 
 fn short(sig: &Bytes) -> String { hex::encode(&sig[..8.min(sig.len())]) }
 
-async fn three_node_network() -> (Vec<TestNode>, String) {
+async fn three_node_network(deploy_lifespan: Option<i64>) -> (Vec<TestNode>, String) {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
@@ -54,9 +57,17 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None, None)
-        .await
-        .expect("create_network");
+    let mut nodes = match deploy_lifespan {
+        Some(lifespan) => {
+            TestNode::create_network_with_overrides(genesis, n_validators, ShardOverrides {
+                deploy_lifespan: Some(lifespan),
+                ..Default::default()
+            })
+            .await
+        }
+        None => TestNode::create_network(genesis, n_validators, None, None, None, None).await,
+    }
+    .expect("create_network");
     for node in nodes.iter_mut() {
         node.allow_empty_blocks = true;
     }
@@ -67,8 +78,10 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
 /// merge M (nodes[1]) rejects exactly one with a record. Returns
 /// (nodes, shard_id, loser_sig, loser_owner_index, [carrier A, carrier B,
 /// M] in causal order for delivery).
-async fn stage_live_rejection() -> (Vec<TestNode>, String, Bytes, usize, Vec<BlockMessage>) {
-    let (mut nodes, shard_id) = three_node_network().await;
+async fn stage_live_rejection(
+    deploy_lifespan: Option<i64>,
+) -> (Vec<TestNode>, String, Bytes, usize, Vec<BlockMessage>) {
+    let (mut nodes, shard_id) = three_node_network(deploy_lifespan).await;
 
     let seed = construct_deploy::source_deploy_now_full(
         r#"@"gate_cell"!("s")"#.to_string(),
@@ -186,7 +199,8 @@ async fn deliver_everywhere(nodes: &mut [TestNode], blocks: &[BlockMessage]) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn premature_retry_is_rejected_by_every_validator() {
-    let (mut nodes, shard_id, loser_sig, loser_owner, staged_blocks) = stage_live_rejection().await;
+    let (mut nodes, shard_id, loser_sig, loser_owner, staged_blocks) =
+        stage_live_rejection(None).await;
 
     // Everyone validates the contest and M (populate arms the owner's
     // buffer), then the owner attempts the retry IMMEDIATELY — the
@@ -287,6 +301,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,
         merge_base: checkpoint.merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: snapshot
@@ -297,6 +312,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
         timestamp: now_millis,
         version: 1,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let justifications: Vec<Justification> = snapshot.justifications.iter().cloned().collect();
     let unsigned = proto_util::unsigned_block_proto(
@@ -327,7 +343,8 @@ async fn premature_retry_is_rejected_by_every_validator() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn settled_rejection_opens_the_gate_and_the_owner_retries() {
-    let (mut nodes, shard_id, loser_sig, loser_owner, staged_blocks) = stage_live_rejection().await;
+    let (mut nodes, shard_id, loser_sig, loser_owner, staged_blocks) =
+        stage_live_rejection(None).await;
     let m_block = staged_blocks.last().expect("staged M").clone();
     let m_height = m_block.body.state.block_number;
 
@@ -436,6 +453,165 @@ async fn settled_rejection_opens_the_gate_and_the_owner_retries() {
                 "a gate-open retry must validate everywhere; nodes[{}] said {:?}",
                 i,
                 verdict,
+            );
+        }
+    }
+}
+
+/// The floor `node` derives for `block` from the block's own justifications,
+/// as validation does.
+async fn validation_floor(node: &TestNode, block: &BlockMessage) -> Floor {
+    let snapshot = node.casper.get_snapshot().await.expect("snapshot");
+    let latest_messages: BTreeMap<Validator, BlockHash> = block
+        .justifications
+        .iter()
+        .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+        .collect();
+    FloorContext::derive(
+        &snapshot.dag,
+        &node.block_store,
+        &block.header.parents_hash_list,
+        &latest_messages,
+        FtThreshold::from_ppm(
+            snapshot
+                .on_chain_state
+                .shard_conf
+                .fault_tolerance_threshold_ppm,
+        ),
+    )
+    .await
+    .expect("floor derivation")
+    .floor
+}
+
+/// THE GATE under floor lag: the floor settles the rejection record and then
+/// stalls while a minority validator carries the tip more than a lifespan
+/// past it. The retry is still live on the floor clock and its record is
+/// settled, so the owner re-proposes it and every validator accepts it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn a_settled_rejection_below_the_tip_window_opens_the_gate_while_the_floor_lags() {
+    const LIFESPAN: i64 = 8;
+    let (mut nodes, _shard_id, loser_sig, loser_owner, staged_blocks) =
+        stage_live_rejection(Some(LIFESPAN)).await;
+    let m_block = staged_blocks.last().expect("staged M").clone();
+    let m_height = m_block.body.state.block_number;
+    deliver_everywhere(&mut nodes, &staged_blocks).await;
+
+    let mut settled = false;
+    for _ in 0..30 {
+        let b = nodes[2]
+            .add_block_from_deploys(&[])
+            .await
+            .expect("settle round");
+        for (other, node) in nodes.iter_mut().enumerate() {
+            if other != 2 {
+                node.process_block(b.clone())
+                    .await
+                    .expect("settle delivery");
+            }
+        }
+        let dag = nodes[loser_owner].casper.block_dag().await.expect("dag");
+        let floor = floor_of_block(
+            &dag,
+            &nodes[loser_owner].block_store,
+            &b.block_hash,
+            FtThreshold::from_f32_lossy(0.0),
+        )
+        .await
+        .expect("floor_of_block");
+        if floor.hash == m_block.block_hash
+            || (floor.block_number >= m_height
+                && dag
+                    .is_dag_ancestor(&m_block.block_hash, &floor.hash)
+                    .expect("ancestor query"))
+        {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "staging: the floor must come to cover the record");
+
+    let minority = if loser_owner == 0 { 1 } else { 0 };
+    let mut lag_blocks = Vec::new();
+    loop {
+        let tip = nodes[minority]
+            .casper
+            .get_snapshot()
+            .await
+            .expect("snapshot")
+            .max_block_num;
+        if tip >= m_height + LIFESPAN {
+            break;
+        }
+        let b = nodes[minority]
+            .add_block_from_deploys(&[])
+            .await
+            .expect("lag round");
+        nodes[loser_owner]
+            .process_block(b.clone())
+            .await
+            .expect("lag delivery");
+        lag_blocks.push(b);
+    }
+
+    let retried = nodes[loser_owner]
+        .create_block_unsafe(&[])
+        .await
+        .expect("owner proposes");
+    let floor = validation_floor(&nodes[loser_owner], &retried).await;
+    let block_number = retried.body.state.block_number;
+    let dag = nodes[loser_owner].casper.block_dag().await.expect("dag");
+    assert!(
+        floor.hash == m_block.block_hash
+            || dag
+                .is_dag_ancestor(&m_block.block_hash, &floor.hash)
+                .expect("ancestor query"),
+        "geometry: the record at {m_height} must be settled in the floor at {}",
+        floor.block_number
+    );
+    assert!(
+        floor.block_number - LIFESPAN < 0,
+        "geometry: the retry (valid after 0) must be live at floor {} (lifespan {LIFESPAN})",
+        floor.block_number
+    );
+    assert!(
+        m_height < block_number - LIFESPAN,
+        "geometry: the record at {m_height} must lie below the tip window of block {block_number}"
+    );
+
+    assert!(
+        retried
+            .body
+            .deploys
+            .iter()
+            .any(|pd| pd.deploy.sig == loser_sig),
+        "a settled, floor-live retry must be re-proposed by its owner (floor {}, block {}, \
+         record {})",
+        floor.block_number,
+        block_number,
+        m_height
+    );
+    for b in &lag_blocks {
+        if !nodes[2].contains(&b.block_hash) {
+            nodes[2]
+                .process_block(b.clone())
+                .await
+                .expect("lag delivery to nodes[2]");
+        }
+    }
+    for (i, node) in nodes.iter_mut().enumerate() {
+        if i != loser_owner {
+            let verdict = node
+                .process_block(retried.clone())
+                .await
+                .expect("validator processes the retry");
+            assert!(
+                matches!(
+                    verdict,
+                    Either::Right(casper::rust::block_status::ValidBlock::Valid)
+                ),
+                "nodes[{i}] must accept the retry; it said {verdict:?}",
             );
         }
     }

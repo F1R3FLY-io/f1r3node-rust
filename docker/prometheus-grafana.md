@@ -9,6 +9,7 @@
 Prometheus and Grafana are included in `docker/shard.yml` and start automatically with the shard:
 
 ```bash
+cp -n docker/.env.example docker/.env
 docker compose -f docker/shard.yml up -d
 ```
 

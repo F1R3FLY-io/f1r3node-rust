@@ -30,6 +30,9 @@ use super::accounting::_cost;
 use super::accounting::cost_accounting::CostAccounting;
 use super::accounting::costs::Cost;
 use super::accounting::has_cost::HasCost;
+use super::accounting::rev_stack::bond::{REV_BOND_ADMIN_URN, REV_BOND_URN};
+use super::accounting::rev_stack::genesis::REV_GENESIS_URN;
+use super::accounting::rev_stack::native::REV_WALLET_URN;
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -41,7 +44,7 @@ use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
-    Remainder, RhoDispatchMap,
+    Remainder, RhoDispatchMap, UrnPhase,
 };
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
@@ -186,6 +189,12 @@ pub trait RhoRuntime: HasCost {
      */
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError>;
 
+    async fn reset_to_soft_checkpoint(
+        &mut self,
+        root: &Blake2b256Hash,
+        checkpoint: SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    ) -> Result<(), InterpreterError>;
+
     /**
      * Consume the result in the rspace.
      *
@@ -319,6 +328,57 @@ pub struct RhoRuntimeImpl {
 }
 
 impl RhoRuntimeImpl {
+    pub async fn is_replay(&self) -> bool { self.reducer.space.is_replay().await }
+
+    fn reset_files(&mut self, root: &Blake2b256Hash) {
+        // PB-M-13 / Slice 28: seed FileHandleTable::next_fd from the
+        // state root.  Every block boundary triggers a reset via this
+        // path (see `casper::rholang::runtime::play_deploys_for_state`,
+        // `play_deploys_for_genesis`, `play_system_deploy`), and every
+        // validator resetting to the same root computes the same
+        // watermark — so fd values captured by the leader are
+        // reproducibly replayable by followers.
+        //
+        // **Consensus commitment**: fd values are consensus-observable
+        // via Rholang tuplespace state (`fdP` cells inside File
+        // agents).  This seed derivation is therefore an implicit
+        // consensus commitment — any future change to
+        // `seed_next_fd_from_state_hash`'s derivation constants or
+        // hash algorithm is a hard fork.
+        //
+        // **Aliasing prevention**: a fresh runtime spawned per block
+        // (via `RuntimeManager::spawn_runtime`) starts fd allocation
+        // from the state-hash-derived watermark, NOT from `next_fd =
+        // 1`.  Two independent runtimes at the same state hash
+        // allocate identical fd sequences (leader/follower replay).
+        self.fs_handles.seed_next_fd_from_state_hash(&root.bytes());
+        // Streaming-backing slice (2026-08-25): seed the dir-stream
+        // fd counter from the same state hash.  Same PB-M-13 aliasing
+        // threat as file fds — dir-stream fd values flow through the
+        // tuplespace as GInt, so a joining validator (or restart) that
+        // allocated fresh dir-stream fds starting from 1 could alias a
+        // stream fd a prior lifetime stashed in tuplespace state.
+        self.fs_handles
+            .dir_handles
+            .seed_next_fd_from_state_hash(&root.bytes());
+        // H-29-F2 review fix (defense in depth): clear the consensus
+        // WAL on reset.  All correctness paths drain the WAL per-
+        // deploy via `Wal::take_deploy_entries`; this clear guarantees
+        // that if a caller resets to a state root without first
+        // draining, the follower observes an empty WAL — no ghost
+        // entries from an earlier block leak into the next.
+        self.fs_handles.wal.clear();
+        // M6 round-2 fix: also clear stashed checkpoint marks so a
+        // subsequent revert doesn't pop a stale mark (which would
+        // truncate the fd table to a pre-reset watermark or the WAL
+        // to a length below the cleared zero).  A reset semantically
+        // means "start fresh at this state root"; leaving a mark
+        // stashed is inconsistent with that.
+        self.fs_snapshot_stack.lock().unwrap().clear();
+        self.dir_fs_snapshot_stack.lock().unwrap().clear();
+        self.wal_snapshot_stack.lock().unwrap().clear();
+    }
+
     fn new(
         reducer: Arc<DebruijnInterpreter>,
         cost: _cost,
@@ -362,6 +422,27 @@ impl RhoRuntimeImpl {
 
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
 
+    pub fn set_seal_records(&self, recorded: bool) {
+        self.reducer
+            .seal_records
+            .store(recorded, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_funding(
+        &self,
+        funding: Option<Arc<crate::rust::interpreter::accounting::membrane::MembraneMeter>>,
+    ) {
+        if let Ok(mut slot) = self.reducer.funding.lock() {
+            *slot = funding;
+        }
+    }
+
+    pub fn seal_records(&self) -> bool {
+        self.reducer
+            .seal_records
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Enable the rho:io:fs:native:* URN filter.  Every subsequent
     /// `new x(`rho:io:fs:native:...`)` inside a deploy returns
     /// `ReduceError` from `eval_new`.  This is the default state.
@@ -396,6 +477,18 @@ impl RhoRuntimeImpl {
         FsNativeUrnFilterExemption {
             flag: self.reducer.filter_fs_native_urns.clone(),
         }
+    }
+
+    pub fn enter_genesis_phase(&self) -> GenesisPhase {
+        let flag = self.reducer.genesis_phase.clone();
+        let prev = flag.swap(true, std::sync::atomic::Ordering::AcqRel);
+        GenesisPhase { flag, prev }
+    }
+
+    pub fn in_genesis_phase(&self) -> bool {
+        self.reducer
+            .genesis_phase
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Introspection helper for tests and diagnostics.  Returns
@@ -556,54 +649,22 @@ impl RhoRuntime for RhoRuntimeImpl {
         checkpoint
     }
 
+    async fn reset_to_soft_checkpoint(
+        &mut self,
+        root: &Blake2b256Hash,
+        checkpoint: SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    ) -> Result<(), InterpreterError> {
+        self.reducer
+            .space
+            .revert_to_soft_checkpoint(checkpoint)
+            .await?;
+        self.reset_files(root);
+        Ok(())
+    }
+
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
         self.reducer.space.reset(root).await?;
-        // PB-M-13 / Slice 28: seed FileHandleTable::next_fd from the
-        // state root.  Every block boundary triggers a reset via this
-        // path (see `casper::rholang::runtime::play_deploys_for_state`,
-        // `play_deploys_for_genesis`, `play_system_deploy`), and every
-        // validator resetting to the same root computes the same
-        // watermark — so fd values captured by the leader are
-        // reproducibly replayable by followers.
-        //
-        // **Consensus commitment**: fd values are consensus-observable
-        // via Rholang tuplespace state (`fdP` cells inside File
-        // agents).  This seed derivation is therefore an implicit
-        // consensus commitment — any future change to
-        // `seed_next_fd_from_state_hash`'s derivation constants or
-        // hash algorithm is a hard fork.
-        //
-        // **Aliasing prevention**: a fresh runtime spawned per block
-        // (via `RuntimeManager::spawn_runtime`) starts fd allocation
-        // from the state-hash-derived watermark, NOT from `next_fd =
-        // 1`.  Two independent runtimes at the same state hash
-        // allocate identical fd sequences (leader/follower replay).
-        self.fs_handles.seed_next_fd_from_state_hash(&root.bytes());
-        // Streaming-backing slice (2026-08-25): seed the dir-stream
-        // fd counter from the same state hash.  Same PB-M-13 aliasing
-        // threat as file fds — dir-stream fd values flow through the
-        // tuplespace as GInt, so a joining validator (or restart) that
-        // allocated fresh dir-stream fds starting from 1 could alias a
-        // stream fd a prior lifetime stashed in tuplespace state.
-        self.fs_handles
-            .dir_handles
-            .seed_next_fd_from_state_hash(&root.bytes());
-        // H-29-F2 review fix (defense in depth): clear the consensus
-        // WAL on reset.  All correctness paths drain the WAL per-
-        // deploy via `Wal::take_deploy_entries`; this clear guarantees
-        // that if a caller resets to a state root without first
-        // draining, the follower observes an empty WAL — no ghost
-        // entries from an earlier block leak into the next.
-        self.fs_handles.wal.clear();
-        // M6 round-2 fix: also clear stashed checkpoint marks so a
-        // subsequent revert doesn't pop a stale mark (which would
-        // truncate the fd table to a pre-reset watermark or the WAL
-        // to a length below the cleared zero).  A reset semantically
-        // means "start fresh at this state root"; leaving a mark
-        // stashed is inconsistent with that.
-        self.fs_snapshot_stack.lock().unwrap().clear();
-        self.dir_fs_snapshot_stack.lock().unwrap().clear();
-        self.wal_snapshot_stack.lock().unwrap().clear();
+        self.reset_files(root);
         Ok(())
     }
 
@@ -649,6 +710,7 @@ impl RhoRuntime for RhoRuntimeImpl {
     async fn set_deploy_data(&self, deploy_data: DeployData) -> () {
         let mut lock = self.deploy_data_ref.write().await;
         *lock = deploy_data;
+        self.reducer.request_elaboration();
     }
 
     async fn set_invalid_blocks(&self, invalid_blocks: HashMap<BlockHash, Validator>) -> () {
@@ -705,6 +767,18 @@ impl HasCost for RhoRuntimeImpl {
 #[must_use = "the exemption ends when the guard is dropped; letting it drop \
               immediately after construction re-enables the filter and \
               the enclosed code sees the filter ON"]
+pub struct GenesisPhase {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+    prev: bool,
+}
+
+impl Drop for GenesisPhase {
+    fn drop(&mut self) {
+        self.flag
+            .store(self.prev, std::sync::atomic::Ordering::Release);
+    }
+}
+
 pub struct FsNativeUrnFilterExemption {
     flag: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -754,6 +828,7 @@ where
         let continuation = TaggedContinuation {
             tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
             guard: None,
+            seal: None,
         };
 
         for space in &mut spaces {
@@ -866,6 +941,58 @@ fn std_system_processes() -> Vec<Definition> {
                 Box::new(move |args| {
                     let ctx = ctx.clone();
                     Box::pin(async move { ctx.system_processes.clone().vault_address(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: REV_WALLET_URN.to_string(),
+            fixed_channel: FixedChannels::rev_wallet(),
+            arity: 3,
+            body_ref: BodyRefs::REV_WALLET,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().rev_wallet(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: REV_BOND_URN.to_string(),
+            fixed_channel: FixedChannels::rev_bond(),
+            arity: 3,
+            body_ref: BodyRefs::REV_BOND,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().rev_bond(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: REV_BOND_ADMIN_URN.to_string(),
+            fixed_channel: FixedChannels::rev_bond_admin(),
+            arity: 3,
+            body_ref: BodyRefs::REV_BOND_ADMIN,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().rev_bond_admin(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: REV_GENESIS_URN.to_string(),
+            fixed_channel: FixedChannels::rev_genesis(),
+            arity: 3,
+            body_ref: BodyRefs::REV_GENESIS,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().rev_genesis(args).await })
                 })
             }),
             remainder: None,
@@ -1295,7 +1422,6 @@ fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 /// (slice 5.33).
 fn fs_handlers_to_definitions(
     dispatcher: RhoDispatch,
-    space: RhoISpace,
     fs_handles: super::io::handle_table::FileHandleTable,
 ) -> (
     Vec<Definition>,
@@ -1309,7 +1435,6 @@ fn fs_handlers_to_definitions(
     let fs_metering: Arc<dyn Metering> = Arc::new(NoopMetering);
     let fs_processes = FsProcesses::new(
         dispatcher,
-        space,
         fs_handles,
         ConsensusMode::Consensus,
         fs_metering,
@@ -1338,7 +1463,6 @@ fn fs_handlers_to_definitions(
 }
 
 fn dispatch_table_creator(
-    space: RhoISpace,
     dispatcher: RhoDispatch,
     block_data: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
@@ -1350,6 +1474,7 @@ fn dispatch_table_creator(
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     fs_handles: super::io::handle_table::FileHandleTable,
+    urn_phase: UrnPhase,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1373,10 +1498,9 @@ fn dispatch_table_creator(
     // The dispatcher clone threaded here is the same `RhoDispatch`
     // instance that every other Definition's handler receives
     // through its `ProcessContext`, so the fs native handlers see
-    // the same reducer / space / dispatcher as the rest of the
+    // the same reducer / dispatcher as the rest of the
     // system-processes layer.
-    let (fs_defs, fs_processes) =
-        fs_handlers_to_definitions(dispatcher.clone(), space.clone(), fs_handles);
+    let (fs_defs, fs_processes) = fs_handlers_to_definitions(dispatcher.clone(), fs_handles);
     all_processes.extend(fs_defs);
 
     // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
@@ -1407,7 +1531,6 @@ fn dispatch_table_creator(
 
     for def in all_processes.iter_mut() {
         let tuple = def.to_dispatch_table(ProcessContext::create(
-            space.clone(),
             dispatcher.clone(),
             block_data.clone(),
             invalid_blocks.clone(),
@@ -1417,6 +1540,7 @@ fn dispatch_table_creator(
             ollama_service.clone(),
             grpc_client_service.clone(),
             chromadb_service.clone(),
+            urn_phase.clone(),
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -1499,6 +1623,11 @@ async fn setup_reducer(
     cost: _cost,
     fs_handles: super::io::handle_table::FileHandleTable,
 ) -> Arc<DebruijnInterpreter> {
+    let urn_phase = UrnPhase {
+        fs_native_filtered: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        genesis: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        seal_records: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
     let temp_dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1513,18 +1642,18 @@ async fn setup_reducer(
     let urn_map = Arc::new(urn_map);
 
     let replay_dispatch_table = dispatch_table_creator(
-        charging_rspace.clone(),
         temp_dispatcher.clone(),
         block_data_ref,
         invalid_blocks,
         urn_map.clone(),
-        deploy_data_ref,
+        deploy_data_ref.clone(),
         extra_system_processes,
         openai_service,
         ollama_service,
         grpc_client_service,
         chromadb_service,
         fs_handles,
+        urn_phase.clone(),
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1543,7 +1672,12 @@ async fn setup_reducer(
         single_term_evaluations: Arc::new(AtomicU64::new(0)),
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
-        filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        filter_fs_native_urns: urn_phase.fs_native_filtered.clone(),
+        genesis_phase: urn_phase.genesis.clone(),
+        deploy_data: deploy_data_ref,
+        seal_records: urn_phase.seal_records.clone(),
+        elaborate_next: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        funding: Arc::new(std::sync::Mutex::new(None)),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -1585,6 +1719,22 @@ fn setup_maps_and_refs(
         .for_each(|(key, value)| {
             urn_map.insert(key, value);
         });
+
+    let genesis_only = super::system_processes::genesis_only_channels();
+    let bound_to_genesis_only: Vec<&String> = urn_map
+        .iter()
+        .filter(|(_, value)| {
+            super::system_processes::resolved_channel(value)
+                .is_some_and(|channel| genesis_only.contains(channel))
+        })
+        .map(|(urn, _)| urn)
+        .collect();
+    assert!(
+        bound_to_genesis_only
+            .iter()
+            .all(|urn| super::accounting::rev_stack::genesis::is_genesis_only_urn(urn)),
+        "a URN outside the genesis-only list resolves to a genesis-only channel: {bound_to_genesis_only:?}"
+    );
 
     let mut proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes
         .iter()
@@ -1647,6 +1797,22 @@ fn setup_maps_and_refs(
         // the Dir.rho call-site `fsRemoveDir!(canonRoot, joined, b,
         // cmode, *retCh)`.
         proc_defs.push((fixed_channel, 5 as Arity, None, BodyRefs::FS_REMOVE_DIR));
+    }
+
+    // Wildcard URNs (`rho:lib:*:…`, `rho:registry:1.*`, …) have no stable
+    // static binding — their resolution depends on registry state that is
+    // not known at genesis time. The `new chan(URI)` sugar compiles them to
+    // a dynamic `registry_lookup` round-trip; registering one here would
+    // short-circuit that path and silently freeze "latest" at genesis.
+    // Fail loudly instead.
+    for urn in urn_map.keys() {
+        if super::registry::versioned_urn::is_wildcard_urn(urn) {
+            panic!(
+                "wildcard URN `{urn}` registered in urn_map; wildcard URNs \
+                 must be resolved dynamically via `new chan(`URN`)` sugar \
+                 and cannot be registered as static Definitions"
+            );
+        }
     }
 
     (
@@ -1968,33 +2134,17 @@ pub async fn create_runtime_from_kv_store(
 
 #[cfg(test)]
 mod tests {
-    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-
     use super::*;
     use crate::rust::interpreter::io::handler_trait::{
         EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS,
     };
     use crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX as FS_NATIVE_URN_FILTER_PREFIX;
-    use crate::rust::interpreter::matcher::r#match::Matcher;
 
-    async fn minimal_dispatch_and_space() -> (RhoDispatch, RhoISpace) {
-        let reducer_cell = Arc::new(std::sync::OnceLock::new());
-        let dispatcher: RhoDispatch = Arc::new(RholangAndScalaDispatcher {
+    fn minimal_dispatcher() -> RhoDispatch {
+        Arc::new(RholangAndScalaDispatcher {
             _dispatch_table: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            reducer: reducer_cell,
-        });
-
-        let mut kvm = InMemoryStoreManager::new();
-        let store = kvm.r_space_stores().await.unwrap();
-        let space = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
-            store,
-            Arc::new(Box::new(Matcher)),
-        )
-        .unwrap();
-        let rspace: RhoISpace = Arc::new(Box::new(space));
-
-        (dispatcher, rspace)
+            reducer: Arc::new(std::sync::OnceLock::new()),
+        })
     }
 
     /// Registration-count regression gate: walking `FS_HANDLERS` via
@@ -2007,10 +2157,8 @@ mod tests {
     /// entries after `FsProcesses` construction.
     #[tokio::test]
     async fn fs_handlers_to_definitions_count_matches_registry() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         assert_eq!(
@@ -2031,10 +2179,8 @@ mod tests {
     /// handler at registration — a silent dispatch regression.
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_unique() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         let mut seen = std::collections::HashSet::new();
@@ -2061,10 +2207,8 @@ mod tests {
     /// visibility gate (slices 5.32/5.33/5.35).
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_match_filter_prefix() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         for def in &defs {
@@ -2088,10 +2232,8 @@ mod tests {
     /// returned Vec.
     #[tokio::test]
     async fn fs_handlers_to_definitions_covers_every_registry_entry() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         let def_urns: std::collections::HashSet<&str> =
