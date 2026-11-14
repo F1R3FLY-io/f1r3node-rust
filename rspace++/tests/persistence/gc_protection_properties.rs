@@ -17,7 +17,13 @@ use super::durable_publication::{
     publish_data_successor,
 };
 use super::durable_recovery::{checkpoint_image_from_source, limits};
+use super::durable_rspace_authority::{
+    Profile, fixture as owner_fixture, poll_checkpoint_with, populate, publication_limits,
+};
 use super::support::{TestSemanticProfile, trial_scratch};
+use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use crate::rspace::history::durable_history_repository::DurableHistoryRepositoryV1;
+use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::persistence::durable::{
     DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError, DurablePublishedCoreV1,
     DurableStateRootV1, DurableViewReadHandleV1,
@@ -1377,5 +1383,273 @@ fn durable_views_on_an_old_generation_defer_reclamation_until_dropped() {
         observed, expected,
         "GP-04: every durable view must keep its exact old generation present and unretired while \
          it lives, and give it up when it drops"
+    );
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeRequest {
+    Replay,
+    Reset,
+    Rollback,
+    Clear,
+    Spawn,
+}
+
+const RUNTIME_VIEW_REQUESTS: [RuntimeRequest; 5] = [
+    RuntimeRequest::Replay,
+    RuntimeRequest::Reset,
+    RuntimeRequest::Rollback,
+    RuntimeRequest::Clear,
+    RuntimeRequest::Spawn,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileWrite {
+    Created,
+    Removed,
+    Appended,
+    Rewritten,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RequestWrites {
+    request: RuntimeRequest,
+    resolved_target: bool,
+    leases_added: Option<usize>,
+    writes: BTreeMap<String, FileWrite>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CrashRecord {
+    successor_is_fresh: bool,
+    intent_while_viewed: IntentRole,
+    viewed_generation_while_viewed: Presence,
+    leases_after_crash: usize,
+    intent_after_crash: IntentRole,
+    viewed_generation_after_crash: Presence,
+    successor_selected_after_recovery: bool,
+    intent_after_recovery: IntentRole,
+    viewed_generation_after_recovery: Presence,
+    leases_after_recovery: usize,
+    leases_with_successor_view: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ObligationRecord {
+    checkpoint_writes: BTreeMap<String, FileWrite>,
+    requests: Vec<RequestWrites>,
+    accepted_view_obligations: Vec<ReclamationCandidateV1>,
+    persisted_view_obligation: Option<ReclamationCandidateV1>,
+    crash: Result<CrashRecord, String>,
+}
+
+fn durable_writes(
+    before: &BTreeMap<String, Vec<u8>>,
+    after: &BTreeMap<String, Vec<u8>>,
+) -> BTreeMap<String, FileWrite> {
+    let names = before.keys().chain(after.keys()).collect::<BTreeSet<_>>();
+    let mut writes = BTreeMap::new();
+    for name in names {
+        let write = match (before.get(name), after.get(name)) {
+            (Some(old), Some(new)) if old == new => continue,
+            (Some(old), Some(new)) if new.len() > old.len() && new.starts_with(old) => {
+                FileWrite::Appended
+            }
+            (Some(_), Some(_)) => FileWrite::Rewritten,
+            (None, Some(_)) => FileWrite::Created,
+            (Some(_), None) => FileWrite::Removed,
+            (None, None) => continue,
+        };
+        writes.insert(name.clone(), write);
+    }
+    writes
+}
+
+fn reclamation_intent_role(
+    root: &Path,
+    old: GenerationLeaseKeyV1,
+    successor: GenerationLeaseKeyV1,
+) -> IntentRole {
+    match fs::read(root.join("reclaim.v1")) {
+        Err(error) if error.kind() == ErrorKind::NotFound => IntentRole::Absent,
+        Err(_) => IntentRole::Other,
+        Ok(bytes) => match ReclamationCandidateV1::decode(&bytes) {
+            Ok(candidate) if candidate.old() == old && candidate.successor() == successor => {
+                IntentRole::Exact
+            }
+            Ok(_) | Err(_) => IntentRole::Other,
+        },
+    }
+}
+
+fn crash_with_live_views(
+    root: &Path,
+    registry: GenerationLeaseRegistryV1,
+    viewed: GenerationLeaseKeyV1,
+    process: impl Sized,
+) -> Result<CrashRecord, String> {
+    let viewed_files = generation_files(root, viewed)?;
+    let writer = DurableDirectoryV1::open(root)
+        .map_err(|error| format!("the store directory does not open: {error:?}"))?
+        .recover_and_admit_v1::<Profile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .map_err(|error| format!("admission with live views was refused: {error:?}"))?
+        .publish_generation_checkpoint_v1(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .map_err(|error| format!("the generation checkpoint was refused: {error:?}"))?;
+    let successor = GenerationLeaseKeyV1::from_catalog(writer.catalog());
+    let intent_while_viewed = reclamation_intent_role(root, viewed, successor);
+    let viewed_generation_while_viewed = generation_presence(&viewed_files);
+    drop((writer, process));
+    let leases_after_crash = registry.active_lease_count_for_test();
+    let intent_after_crash = reclamation_intent_role(root, viewed, successor);
+    let viewed_generation_after_crash = generation_presence(&viewed_files);
+    drop(registry);
+    let authority = recover_read_authority::<Profile>(
+        root,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+    )
+    .map_err(|error| format!("recovery after the crash was refused: {error:?}"))?;
+    let registry = authority.generation_leases();
+    let leases_after_recovery = registry.active_lease_count_for_test();
+    let handle = authority
+        .read_handle()
+        .map_err(|error| format!("the recovered authority refused a view: {error:?}"))?;
+    let leases_with_successor_view = registry.active_lease_count_for_test();
+    drop(handle);
+    Ok(CrashRecord {
+        successor_is_fresh: successor.first_live_pack() > viewed.active_pack(),
+        intent_while_viewed,
+        viewed_generation_while_viewed,
+        leases_after_crash,
+        intent_after_crash,
+        viewed_generation_after_crash,
+        successor_selected_after_recovery: GenerationLeaseKeyV1::from_catalog(authority.catalog()) ==
+            successor,
+        intent_after_recovery: reclamation_intent_role(root, viewed, successor),
+        viewed_generation_after_recovery: generation_presence(&viewed_files),
+        leases_after_recovery,
+        leases_with_successor_view,
+    })
+}
+
+fn run_obligation_trial() -> Result<ObligationRecord, String> {
+    let (scratch, hot, gate, mut owner) = owner_fixture();
+    let root = scratch.path();
+    let registry = owner.generation_leases();
+    let first = owner.generation_key();
+    let pre_state = Blake2b256Hash::from(owner.current_root());
+    populate(&hot);
+    let before = directory_snapshot(root);
+    poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits())
+        .map_err(|error| format!("the owner's checkpoint was refused: {error:?}"))?;
+    let checkpoint_writes = durable_writes(&before, &directory_snapshot(root));
+    let viewed = owner.generation_key();
+    let repository = DurableHistoryRepositoryV1::new(owner.published_core())
+        .map_err(|error| format!("the durable repository does not open: {error:?}"))?;
+    let mut requests = Vec::with_capacity(RUNTIME_VIEW_REQUESTS.len());
+    let mut views = Vec::with_capacity(RUNTIME_VIEW_REQUESTS.len());
+    for request in RUNTIME_VIEW_REQUESTS {
+        let target = match request {
+            RuntimeRequest::Replay | RuntimeRequest::Rollback => pre_state.clone(),
+            RuntimeRequest::Reset | RuntimeRequest::Spawn => repository.root(),
+            RuntimeRequest::Clear => repository.empty_root(),
+        };
+        let before = directory_snapshot(root);
+        let leases = registry.active_lease_count_for_test();
+        let view = repository
+            .reset(&target)
+            .map_err(|error| format!("the {request:?} view was refused: {error:?}"))?;
+        requests.push(RequestWrites {
+            request,
+            resolved_target: view.root() == target,
+            leases_added: registry.active_lease_count_for_test().checked_sub(leases),
+            writes: durable_writes(&before, &directory_snapshot(root)),
+        });
+        views.push(view);
+    }
+    owner
+        .close()
+        .map_err(|error| format!("the owner does not close: {error:?}"))?;
+    let mut lease = DurableDirectoryV1::open(root)
+        .and_then(DurableDirectoryV1::try_acquire_writer)
+        .map_err(|error| format!("the closed owner left the writer lock taken: {error:?}"))?;
+    let generations = [first, viewed];
+    let mut accepted_view_obligations = Vec::with_capacity(generations.len() * generations.len());
+    for old in generations {
+        for successor in generations {
+            if let Ok(candidate) = ReclamationCandidateV1::new(old, successor) {
+                accepted_view_obligations.push(candidate);
+            }
+        }
+    }
+    if let Some(&candidate) = accepted_view_obligations.first() {
+        lease
+            .write_reclamation_candidate(candidate)
+            .map_err(|error| format!("the reclamation intent was not written: {error:?}"))?;
+    }
+    let persisted_view_obligation = lease
+        .read_reclamation_candidate()
+        .map_err(|error| format!("the reclamation intent cannot be read: {error:?}"))?;
+    drop(lease);
+    let crash =
+        crash_with_live_views(root, registry, viewed, (owner, hot, gate, repository, views));
+    Ok(ObligationRecord {
+        checkpoint_writes,
+        requests,
+        accepted_view_obligations,
+        persisted_view_obligation,
+        crash,
+    })
+}
+
+#[test]
+fn only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash() {
+    let publication = BTreeMap::from([
+        ("catalog.v1".to_owned(), FileWrite::Rewritten),
+        (pack_file_name(PackId::GENESIS), FileWrite::Appended),
+        (index_file_name(IndexGenerationV1::FIRST), FileWrite::Appended),
+    ]);
+    let requests = Vec::from(RUNTIME_VIEW_REQUESTS.map(|request| RequestWrites {
+        request,
+        resolved_target: true,
+        leases_added: Some(1),
+        writes: BTreeMap::new(),
+    }));
+    let expected = ObligationRecord {
+        checkpoint_writes: publication,
+        requests,
+        accepted_view_obligations: Vec::new(),
+        persisted_view_obligation: None,
+        crash: Ok(CrashRecord {
+            successor_is_fresh: true,
+            intent_while_viewed: IntentRole::Exact,
+            viewed_generation_while_viewed: Presence::Present,
+            leases_after_crash: 0,
+            intent_after_crash: IntentRole::Exact,
+            viewed_generation_after_crash: Presence::Present,
+            successor_selected_after_recovery: true,
+            intent_after_recovery: IntentRole::Absent,
+            viewed_generation_after_recovery: Presence::Absent,
+            leases_after_recovery: 1,
+            leases_with_successor_view: 2,
+        }),
+    };
+    assert_eq!(
+        run_obligation_trial(),
+        Ok(expected),
+        "GC-09 and GC-11: only the checkpoint may write durable bytes, every replay, reset, \
+         rollback, clear and spawn view must write none and hold one process lease, the \
+         reclamation intent must accept and persist no obligation over a generation the views \
+         read, and a crash must leave no lease, so that recovery reclaims the viewed generation \
+         before the first new lease"
     );
 }

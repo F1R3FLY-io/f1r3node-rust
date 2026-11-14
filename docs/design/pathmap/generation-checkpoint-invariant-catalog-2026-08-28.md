@@ -8430,6 +8430,8 @@ old generation is the one that the catalog selects when a trial begins.
 | `oldPins`, `newPins` | The `GenerationLeaseV1` tokens that the trial holds. A lease on the old generation's packs and index, at the old epoch or, as an alias, at another one, is an old pin; a lease on exactly the successor's key is a new pin; any other key is outside the type. |
 | `phase = "crashed"` | From a simulated process crash, which drops the writer, every lease and the process's registry handle, until the next recovery returns. |
 | Reader, export and import pins | Rows of kinds `Reader`, `Export` and `Import` in `RetainedRootRegistryV1`, each with a generation lease on the exact admitted generation. |
+| `durable`, `oldDurable` | `durable` is `{"current", "retained"}` and `oldDurable` is empty in every observed state. The catalog slot appoints the current state and its retention manifest lists the retained states; no file of the store records a replay or rollback registration, so no implementation step refines `RegisterDurable` or `ReleaseDurable` (GC-09). |
+| `copied` | The objects that the successor's live packs and its index hold, observed only while the catalog selects the successor: every admission and recovery then reads the current state and every retained state through those packs alone (GC-10). |
 
 **Trial engine.** GC-01 to GC-04 evaluate their invariants over one shared,
 deterministic sample of 76 trials. Each trial runs in its own thread, because
@@ -8481,6 +8483,50 @@ in fresh directories: once with no operation, the control, and three times
 with the roles rotated, so that every operation takes each of the three roles
 once.
 
+**The obligation trial.** GC-09 and GC-11 share one deterministic trial on the
+store of a durable RSpace owner, `DurableRSpaceAuthorityV1`, in its own
+directory. The *durable writes* of a step are the differences between the
+files of the directory before and after it, `writer.lock.v1` excluded, each
+classified as a file created, removed, appended to (its old bytes are a prefix
+of its new bytes) or rewritten. The trial:
+
+1. opens the owner at the store genesis, records its generation key and its
+   current root, the *pre-state*, and publishes one batch of changes through
+   the owner's checkpoint. That checkpoint is an incremental publication: it
+   keeps the pack range and the index of its generation and advances the
+   catalog epoch. The key after it is the *viewed generation*;
+2. takes a durable history repository, `DurableHistoryRepositoryV1`, at the
+   owner's published core and resets it once for each request of the rows R1
+   and R3 of the
+   [runtime request mapping](gc-protection-matrix-2026-10-01.md#runtime-request-mapping)
+   of the GC protection matrix, keeping every view: a replay and a rollback to
+   the pre-state, a reset and a spawn to the current state, and `clear` to the
+   store genesis, which in this fixture is also the pre-state. Above the
+   durable layer these requests are not connected yet, so the trial makes the
+   call that each of them reaches there;
+3. closes the owner, takes the writer lock and asks the constructor of the
+   reclamation intent, `ReclamationCandidateV1::new`, for each ordered pair of
+   the two keys that the views can read: the owner's key before its checkpoint
+   and the viewed generation. It writes the first accepted pair, if there is
+   one, with `write_reclamation_candidate` and reads `reclaim.v1` back;
+4. with every view alive, admits the store and publishes a generation
+   checkpoint, whose successor starts a fresh pack range, and then crashes: it
+   drops the writer, the owner, its hot store, the repository and the views,
+   reads the lease registry and drops its registry handle;
+5. recovers a read authority and takes one view on it.
+
+GC-09 requires the durable writes of the checkpoint to be exactly `catalog.v1`
+rewritten and the pack and the index of the generation appended to; each view
+to resolve its target, make no durable write and add exactly one generation
+lease; and the constructor to accept no pair, so that `reclaim.v1` stays
+absent. GC-11 requires `reclaim.v1` to name exactly the viewed generation and
+the successor while the views live, with the viewed generation present; the
+crash to leave no lease and to change neither the intent nor the viewed
+generation; and the recovery to select the successor, reclaim the viewed
+generation and remove the intent, after which the authority holds one lease
+and its view a second. A refused step halts the trial, and the test then
+fails.
+
 **The GC rows.** GC is the garbage-collection protection family.
 
 | ID | Required property | Test |
@@ -8490,6 +8536,9 @@ once.
 | GC-03 | Exact old pins protect (`ExactOldPinsProtected`). In every observed state, if a lease on the old generation, exact or alias, is held, the old generation is wholly present. Observed: an old pin held while the catalog selects the successor and the intent is pending; a reclamation request deferred by a pin; old pins taken only at `AfterCatalogSlotWrite` or `AfterCatalogFileSyncBeforeDirectorySync` keeping the old generation through the publication's own reclamation step (seen at `AfterCatalogDirectorySync`); and a pin on the reclaimed generation refused with `Retired`. | `exact_old_generation_pins_defer_reclamation_until_released` |
 | GC-04 | Crash keeps retry authority (`CrashRetryAuthority`). In every state observed from a process crash, at any of the 18 publication points or after a completed publication, until the recovery that follows returns, if the catalog selects the old generation, the old generation is wholly present. Observed: crashes with the catalog on the old generation before and after the intent is written, a crash after the catalog swap, and a second crash after a recovery of the old generation's authority. Every crashed trial then recovers, publishes again if the catalog still selects the old generation, and settles. | `crash_before_publication_keeps_the_old_generation_for_retry` |
 | GC-05 | Operation roots share one protection (`OperationRootRoleQuotient`). Reader, export and import roots, each registered in `RetainedRootRegistryV1` with a generation lease on the exact admitted generation, yield the same closure seeds, registry revisions, root and lease identities, snapshot currency, release results, old-generation presence and final store bytes under the three rotations of the roles, while the registry's rows record the roles. The seeds are the retention manifest's roots plus the roots of the operations not yet released; registration writes no durable byte; publication keeps the old generation exactly while an operation still holds it, the first restart keeps it exactly while an operation to be released after that restart holds it, and the second restart finds it reclaimed; the final directory and catalog slot equal the control's. Observed: a root registered twice, an operation root that the manifest already seeds, every release point, and an old generation kept across publication. | `reader_export_and_import_roots_share_one_protection_quotient` |
+| GC-09 | No durable replay or rollback obligation (`DurableExactGenerationProtected`). In the obligation trial only the owner's checkpoint makes durable writes, and they are exactly its publication: `catalog.v1` is rewritten and the pack and the index of the generation are appended to. A replay, a reset, a rollback, a `clear` and a spawn view each resolve their target, make no durable write and add exactly one generation lease. `ReclamationCandidateV1::new` accepts no ordered pair of the keys that the views read, so `reclaim.v1` stays absent: the only durable record of the store that names an old generation names it as reclaimable, never as protected. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
+| GC-10 | The successor holds the published closure (`PublishedClosureProtected`). In every trial of the shared sample in which the catalog selects the successor, every admission, re-admission and recovery that follows succeeds. Each of them reads the current state and every retained state through the successor's live packs and its index alone, and a refused one halts the trial, which fails the test. Observed: the recovery after a crash after the catalog swap, and the settling re-admission of every trial, after which no old file remains. | `crash_before_publication_keeps_the_old_generation_for_retry` |
+| GC-11 | Crash-phase quiescence (`CrashPhaseQuiescence`). In the obligation trial, a crash with live views on the old generation, after the publication of the successor, leaves no lease in the registry and changes neither `reclaim.v1` nor the old generation. The recovery that follows selects the successor, reclaims the old generation and removes the intent before the first lease is taken; the authority then holds one lease and its view a second. This is the order of the model's witness: `Crash`, `Recover`, `Reclaim`, then `AcquireNewPin`. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
 
 ### Durable state transfer export (2026-11-11)
 
@@ -12768,6 +12817,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-03 | `ExactOldPinsProtected` | `EXEC_ONLY` | P | Partially entailed (task 12437): `AcquireOldPin` requires `oldPresent`, and `Reclaim` requires `oldPins = {}`. The executable refinement obligation is that publication, startup and an explicit request all reclaim through `reclaim_reclamation_candidate`, which retires the old pack range only while no lease overlaps it, so that a lease on an older-epoch alias protects the same files, and that `acquire` then refuses a lease on the retired range with `Retired`. |
 | GC-04 | `CrashRetryAuthority` | `EXEC_ONLY` | P | Partially entailed (task 12437): `PublicationBeforeReclamation` implies the invariant, and `Crash` and `Recover` leave `catalog` and `oldPresent` unchanged. The executable refinement obligation is that a process crash at each of the 18 publication points or after publication, a recovery, a second crash and a second recovery never delete an old file while the catalog selects the old generation. The crash is simulated inside the test process: the writer, every lease and the registry handle are dropped, and the process-wide registry of a directory whose packs were retired stays. Loss of unsynchronized writes on power failure is not simulated. |
 | GC-05 | `OperationRootRoleQuotient` | `EXEC_ONLY` | P | Partially entailed (task 12437): the invariant states that the reader, export and import tokens have their roles, are not WAL ids, need the same object closure and the exact generation, and need no WAL bytes. The store realizes each role as a `RetainedRootRegistryV1` row with a generation lease on the exact admitted generation. The executable refinement obligation is that the role changes no closure seed, revision, lease identity, release, reclamation deferral or store byte. Reclamation does not consult the process-local `RetainedRootRegistryV1`, so the generation lease realizes `exactGeneration`; registration writes no durable byte and pins nothing beyond the exact generation, which realizes the false `walBytes`. |
+| GC-09 | `DurableExactGenerationProtected` | `EXEC_ONLY` | P | Partially entailed (task 12441): the invariant keeps the old generation present while `oldDurable`, the set of durable replay or rollback assignments to it, is not empty. Under the ruling of 2026-11-10 on decision GC5/GC7 (option (a)) no runtime request makes a durable assignment, so the refinement mapping realizes `oldDurable` as the empty set and the premise is never true. The executable refinement obligation is that no request can make one: only a checkpoint makes durable writes, exactly its publication; a view makes none; and `reclaim.v1`, the only durable record that names an old generation, holds an old and a successor key, which `ReclamationCandidateV1::new` accepts only when the successor has the larger epoch and starts after the old active pack, and no field for a kind, a root or a WAL position. While the process lives, the generation lease of a view's read handle protects the generation that the view reads (`durable_views_on_an_old_generation_defer_reclamation_until_dropped`); a crash ends the lease, and recovery then reclaims the generation. |
+| GC-10 | `PublishedClosureProtected` | `EXEC_ONLY` | P | Partially entailed (task 12441): with `durable` equal to `{"current", "retained"}` and `oldDurable` empty, `NewDurableRequiredObjects` is the closure of the current and retained states, so the invariant requires the successor to hold that closure once the catalog selects it. The executable refinement obligation is that admission and recovery read objects only through the live packs and the index of the selected slot, so that a successor that lacks an object of that closure is refused, and that no admission or recovery with the successor selected is refused. `copied` is not observed before the catalog swap, and the closure is not compared object by object. |
+| GC-11 | `CrashPhaseQuiescence` | `EXEC_ONLY` | P | Partially entailed (task 12441): the invariant disables every pin acquisition and release, every durable registration and release, and every WAL advance and rotation while the phase is crashed. A crashed process executes nothing, and its leases live only in its memory. The executable refinement obligation is the order of the model's witness: a crash leaves no lease and changes no file, and the recovery, which completes a pending reclamation, precedes the first lease. Enabledness is not observed: inside the crate, `GenerationLeaseRegistryV1::acquire` on a registry handle taken from a newly opened directory succeeds before any recovery. Outside the tests, leases are acquired only by a recovered authority, by the owner that it becomes and by the read handles of their cores, all of which exist only after a recovery. |
 | TX-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14302): the closure, every object once and parent-first, carried by the pages of a pinned export of a retained durable state. `RSpaceDagStateTransfer.tla` states the transfer contract over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents canonical objects, the export order or the page layout. |
 | TX-02 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14303): a refused transfer page changes neither the import session's frontier and in-memory closure nor its staging log, frontier record or staging directory. `RSpaceDagStateTransfer.tla` rejects an out-of-order page over an abstract closure of two objects and is not among this matrix's TLA+ sources, and no cited model represents pages, their decoding, canonical objects or the staging's files. |
 | TX-03 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 14434): the seal of a completely staged state is its full cold admission over the staging log alone, a staged state with a dangling join is refused by it, and neither a seal nor its refusal changes the staging or the store directory outside it. `RSpaceDagStateTransfer.tla` admits an abstract closure of two objects at its complete frontier, `RSpaceAffineImportLifecycle.tla` seals a session whose closure is verified, and neither is among this matrix's TLA+ sources; no cited model represents canonical objects, the staging log or the semantic rules of a state. |
@@ -14056,6 +14108,29 @@ changed, and the proofs were not run again for this slice. Nothing outside
 the tests calls the two trait methods yet. No persisted byte, record kind,
 root, identity or wire message changed, and the crate has no new dependency.
 See the section on DAG transfer pages through the RSpace exporter trait.
+
+The 2026-11-13 GC obligation slice of task 7944 (task 12441) adds GC-09 to
+GC-11, so the catalog/derivation/binding registry now contains **298** IDs. It
+binds `DurableExactGenerationProtected` and `CrashPhaseQuiescence` to the
+obligation trial of the GC protection section and `PublishedClosureProtected`
+to the test of GC-04, and the GC protection matrix records why no durable
+replay or rollback record exists. No file other than this catalog, the GC
+protection matrix, the GC property module of the tests and their list of
+property bindings changes. On an export of the candidate tree, the 7 tests of
+the GC property module and the manifest test passed in debug and in release (8
+passed, none ignored). One control was applied to `reclaim.rs` in the export,
+run against the new test alone in debug and removed: with the guard of
+`ReclamationCandidateV1::new` relaxed to refuse only a successor with a
+smaller epoch, so that the constructor accepts a pair whose successor does not
+strictly supersede its old generation, the new test failed with its message
+`GC-09 and GC-11: only the checkpoint may write durable bytes`. The faulted
+file was restored from the candidate tree, and the export was compared with
+that tree after the runs. Clippy of `rspace_plus_plus` with every target lists
+no finding in the files of this slice, and `rustfmt --check` passes on its
+Rust files. No obligation registry hashes a file of this slice. No Rocq or
+TLA+ file changed, and no proof or model was run for this slice. No persisted
+byte, record kind, root, identity or wire message changed, and the crate has
+no new dependency. See the GC protection section.
 
 ## Caller-authority contract (2026-09-06)
 
