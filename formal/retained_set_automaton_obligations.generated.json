@@ -114,7 +114,42 @@
       "symbol": "retained_bag_product_rejection_proves_no_pool_match"
     }
   ],
-  "proof_boundary": "Rocq theorems are conditional on prefix and residual-query soundness. The generated fresh/resting-Bag property extracts no-false-negative, rejection, and first-order invariants for exact and fallback patterns. Fixed product controls exercise compressed and singleton trie paths; neither establishes universal prefix-terminal refinement for every generated RhoPathQuery arm.",
+  "premise_discharge": {
+    "bound_rows": [
+      {
+        "id": "RSA-PREMISE-01",
+        "kind": "rocq_theorem",
+        "proof_gate": "scripts/check-stack-safe-pda-proofs.sh compiles the theory with its closed-context count pinned and kernel-checks it",
+        "sha256": "0dc16add5f9e86c4103d82a988538c6d743548391a522846e3dc73c4d194fd96",
+        "source": "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v",
+        "symbol": "table_projection_preserves_spatial_success"
+      },
+      {
+        "assertions": [
+          "space_pair(FullScanMatcher)",
+          "space_pair(Matcher)",
+          "assert_eq!(indexed_results, control_results, \"play results\")",
+          "assert_eq!(indexed_point.log, control_point.log, \"play event histories\")",
+          "indexed_point.root, control_point.root",
+          "indexed_replay_results, indexed_results",
+          "indexed_replay_point.root, indexed_point.root",
+          "check_replay_data().await.expect(\"indexed rig exhausted\")"
+        ],
+        "id": "RSA-PREMISE-02",
+        "kind": "executable_witness",
+        "sha256": "ad85296cc9e2dc4b8daf0f92783c1fd62701b9546428f2fce1f9b6ff7b29f32c",
+        "source": "rholang/tests/matcher/retained_path_index_test.rs",
+        "test": "generated_ordered_queries_preserve_play_replay_results_logs_and_roots"
+      }
+    ],
+    "premises": [
+      "successful_match_has_retained_prefix",
+      "successful_match_passes_residual_query",
+      "successful_match_has_product_prefix",
+      "successful_fresh_match_passes_residual"
+    ]
+  },
+  "proof_boundary": "Rocq theorems are conditional on prefix and residual-query soundness, the hypotheses of their sections. The generated fresh/resting-Bag property extracts no-false-negative, rejection, and first-order invariants for exact and fallback patterns, and fixed product controls exercise compressed and singleton trie paths. The premise itself is discharged by citation rather than by instantiating the hypotheses in Rocq: table_projection_preserves_spatial_success in SchemaProjectionCorrespondence.v proves that the table-driven RhoPathQuery of a pattern whose fields all have projection rows accepts every spatial success, and generated_ordered_queries_preserve_play_replay_results_logs_and_roots runs the generated ordered query families through a real RSpace, in play and in replay, with results, event logs and roots equal to a full-scan control. The correspondence between the theory's token model and the automaton's RhoPathV1 key bytes rests on that executable witness, not on a proof.",
   "rocq_sha256": "ebffe192375bc10c146730d3acbde2dcda194b392b2af6f29a8d5304b58ee2cf",
   "rocq_source": "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
   "runtime_sha256": "ab42159aaf70aafc01054f456141fc32bf11cb377d3dfbf9728bd75aa88fe640",

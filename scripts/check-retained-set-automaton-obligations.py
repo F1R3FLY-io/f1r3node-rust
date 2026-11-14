@@ -12,6 +12,10 @@ AUTOMATON = Path("rspace++/src/rspace/retained_set_automaton.rs")
 SPEC = Path("rspace++/tests/retained_set_automaton_spec.rs")
 ALLOCATION = Path("rspace++/tests/retained_set_automaton_allocation_spec.rs")
 OUTPUT = Path("formal/retained_set_automaton_obligations.generated.json")
+PROJECTION_THEORY = Path(
+    "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v"
+)
+PLAY_REPLAY = Path("rholang/tests/matcher/retained_path_index_test.rs")
 
 SECTIONS = {
     "RetainedPathQuery": {
@@ -112,6 +116,20 @@ WITNESS_ASSERTIONS = {
 }
 
 
+PREMISE_THEOREM = "table_projection_preserves_spatial_success"
+PREMISE_WITNESS = "generated_ordered_queries_preserve_play_replay_results_logs_and_roots"
+PREMISE_WITNESS_ASSERTIONS = (
+    "space_pair(FullScanMatcher)",
+    "space_pair(Matcher)",
+    'assert_eq!(indexed_results, control_results, "play results")',
+    'assert_eq!(indexed_point.log, control_point.log, "play event histories")',
+    "indexed_point.root, control_point.root",
+    "indexed_replay_results, indexed_results",
+    "indexed_replay_point.root, indexed_point.root",
+    'check_replay_data().await.expect("indexed rig exhausted")',
+)
+
+
 class RegistryError(ValueError):
     pass
 
@@ -167,6 +185,33 @@ def test_bodies(source, path):
     return bodies
 
 
+def premise_witness_body(source):
+    matches = list(
+        re.finditer(
+            r"(?m)^(?P<attrs>(?:#\[[^\n]+\]\n)+)(?:async )?fn "
+            + re.escape(PREMISE_WITNESS)
+            + r"\(",
+            source,
+        )
+    )
+    require(
+        len(matches) == 1, f"missing or duplicate premise witness: {PREMISE_WITNESS}"
+    )
+    attrs = matches[0].group("attrs")
+    require(
+        "#[tokio::test]" in attrs or "#[test]" in attrs,
+        f"premise witness is not a test: {PREMISE_WITNESS}",
+    )
+    require(
+        "#[ignore" not in attrs and "#[cfg" not in attrs,
+        f"ignored or conditional premise witness: {PREMISE_WITNESS}",
+    )
+    rest = source[matches[0].end() :]
+    following = re.search(r"(?m)^(?:#\[|(?:pub )?(?:async )?fn |proptest! )", rest)
+    end = following.start() if following else len(rest)
+    return re.sub(r"\s+", "", rest[:end])
+
+
 def extract(sources):
     rocq = sources[ROCQ]
     runner = re.sub(r"\\\n", " ", sources[RUNNER])
@@ -175,6 +220,24 @@ def extract(sources):
         and "matcher_count_proofs\n" in runner,
         "retained Rocq source absent from normal proof runner",
     )
+    projection = sources[PROJECTION_THEORY]
+    require(
+        len(symbols(projection, rf"^Theorem {PREMISE_THEOREM}\s*:")) == 1
+        and len(symbols(projection, rf"^Print Assumptions {PREMISE_THEOREM}\.$"))
+        == 1,
+        f"missing cited premise theorem: {PREMISE_THEOREM}",
+    )
+    require(
+        "rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v "
+        in runner,
+        "cited premise theorem absent from the normal proof runner",
+    )
+    premise_body = premise_witness_body(sources[PLAY_REPLAY])
+    for assertion in PREMISE_WITNESS_ASSERTIONS:
+        require(
+            re.sub(r"\s+", "", assertion) in premise_body,
+            f"premise witness assertion changed: {assertion}",
+        )
     require(
         'name = "rspace_plus_plus"' in sources[PACKAGE]
         and not re.search(r"(?m)^autotests\s*=\s*false\b", sources[PACKAGE]),
@@ -277,13 +340,51 @@ def extract(sources):
         "dedicated_tla_configurations": [],
         "dedicated_verus_sources": [],
         "causal_formal_mutants": [],
+        "premise_discharge": {
+            "premises": [
+                hypothesis
+                for definition in SECTIONS.values()
+                for hypothesis in definition["hypotheses"]
+            ],
+            "bound_rows": [
+                {
+                    "id": "RSA-PREMISE-01",
+                    "kind": "rocq_theorem",
+                    "source": str(PROJECTION_THEORY),
+                    "sha256": digest(projection),
+                    "symbol": PREMISE_THEOREM,
+                    "proof_gate": (
+                        "scripts/check-stack-safe-pda-proofs.sh compiles the theory "
+                        "with its closed-context count pinned and kernel-checks it"
+                    ),
+                },
+                {
+                    "id": "RSA-PREMISE-02",
+                    "kind": "executable_witness",
+                    "source": str(PLAY_REPLAY),
+                    "sha256": digest(sources[PLAY_REPLAY]),
+                    "test": PREMISE_WITNESS,
+                    "assertions": list(PREMISE_WITNESS_ASSERTIONS),
+                },
+            ],
+        },
         "proof_boundary": (
-            "Rocq theorems are conditional on prefix and residual-query soundness. "
-            "The generated fresh/resting-Bag property extracts no-false-negative, "
-            "rejection, and first-order invariants for exact and fallback patterns. "
-            "Fixed product controls exercise compressed and singleton trie paths; "
-            "neither establishes universal prefix-terminal refinement for every "
-            "generated RhoPathQuery arm."
+            "Rocq theorems are conditional on prefix and residual-query soundness, "
+            "the hypotheses of their sections. The generated fresh/resting-Bag "
+            "property extracts no-false-negative, rejection, and first-order "
+            "invariants for exact and fallback patterns, and fixed product controls "
+            "exercise compressed and singleton trie paths. The premise itself is "
+            "discharged by citation rather than by instantiating the hypotheses in "
+            "Rocq: table_projection_preserves_spatial_success in "
+            "SchemaProjectionCorrespondence.v proves that the table-driven "
+            "RhoPathQuery of a pattern whose fields all have projection rows accepts "
+            "every spatial success, and "
+            "generated_ordered_queries_preserve_play_replay_results_logs_and_roots "
+            "runs the generated ordered query families through a real RSpace, in "
+            "play and in replay, with results, event logs and roots equal to a "
+            "full-scan control. The correspondence between the theory's token model "
+            "and the automaton's RhoPathV1 key bytes rests on that executable "
+            "witness, not on a proof."
         ),
     }
 
@@ -388,6 +489,33 @@ def self_test(sources):
             )
         )
     )
+    reject(
+        lambda: extract(
+            changed(
+                PROJECTION_THEORY,
+                f"Theorem {PREMISE_THEOREM} :",
+                "Theorem removed_superset :",
+            )
+        )
+    )
+    reject(
+        lambda: extract(
+            changed(
+                PLAY_REPLAY,
+                f"#[tokio::test]\nasync fn {PREMISE_WITNESS}",
+                f"#[ignore]\n#[tokio::test]\nasync fn {PREMISE_WITNESS}",
+            )
+        )
+    )
+    reject(
+        lambda: extract(
+            changed(
+                PLAY_REPLAY,
+                'assert_eq!(indexed_point.log, control_point.log, "play event histories")',
+                "",
+            )
+        )
+    )
 
 
 def check_manifest(expected, current):
@@ -410,7 +538,15 @@ def main():
     )
     sources = {
         path: (ROOT / path).read_text()
-        for path in (ROCQ, RUNNER, PACKAGE, AUTOMATON, *EXPECTED_TESTS)
+        for path in (
+            ROCQ,
+            RUNNER,
+            PACKAGE,
+            AUTOMATON,
+            PROJECTION_THEORY,
+            PLAY_REPLAY,
+            *EXPECTED_TESTS,
+        )
     }
     payload = json.dumps(extract(sources), indent=2, sort_keys=True) + "\n"
     if args.self_test:
