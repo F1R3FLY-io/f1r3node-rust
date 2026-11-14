@@ -1,0 +1,96 @@
+{
+  "schema": "cbc-bounded-policy-checks/v1",
+  "claim": "docs/claims/soak-release-gates.md",
+  "verified_at": "2026-11-14T17:59:11Z",
+  "result": "bounded-safety-pass",
+  "inputs": {
+    "docs/claims/soak-release-gates.md": "ecbec65a1cbb4482e80d8fc7dfa6c0f0e35a71ea7f52bfe4a15c4105c9fe6ff0",
+    ".mergify.yml": "5d8de43abf91b9221b39fcfa8d6f7942714ec7b475dfd032751ca364b1488c27",
+    ".github/CODEOWNERS": "14559efe6af7e3597003dc37d6f79dc8ecb7ae415fc1f5ccebbca4c938e4c860",
+    ".github/scripts/open-backmerge-pr.sh": "54bb8e8fbc6d02f56820e69bd674e053f12b6d6c651ed6baac0704bdb98a75b3",
+    ".github/scripts/tag-ca-release.sh": "f934a70fca8e9339fb6f405f9b39982a5ab898478e2d3bad57491c3c89826e18",
+    ".github/workflows/promote-and-backmerge.yml": "837e47b1ad961c281261aa36e9c3f99d9fadc084c1d2826f89d39f8256b460cd",
+    ".github/workflows/merge-recovery-soak.yml": "d278ec360dba4ceb5c8f0781acbf218aade0918610a840d376991e5ece5fcff7",
+    ".github/scripts/ca-soak-dispatch.sh": "68e8ae11a78955dc58d6079fc6d353e55d9d219e6c4bdbe13b25863ec129f3de",
+    ".github/scripts/report-soak-gate.sh": "129397e58189be8168f95f2e5c0a1ffa566070bb6b2dab6cc5a0fdaea31310a7",
+    ".github/workflows/ca-soak-dispatch.yml": "6d05acdd7ded17690e0d7e1e9f575628a6f8a24106ff01c945582d748362742c",
+    ".github/scripts/test-mergify-config.sh": "b3386590a3637f89e3b6d048d1865f85944250bf7920cee0c46addb17e210a21",
+    ".github/scripts/test-open-backmerge-pr.sh": "6d8f043f1cde5d15dc2e1d2f0fcc4645f366d86e6ae606eae4d4eb4cbe6a3062",
+    ".github/scripts/test-soak-gate.sh": "9b975c2644b28b622033cbc8f683d2afc038a819fb7d5a34a1b3ced026932cb5",
+    ".github/scripts/test-ca-soak-dispatch.sh": "2655ad6f2fc610cbf4682592879dea496363e89bb3477a50e176ceaf1d00c0b2",
+    ".github/scripts/test-soak-schedule-routing.sh": "921150aeb675f749b187c2ab97059c3880d763c8c748344204c4abe1cfbfe462",
+    ".github/scripts/test-tag-ca-release.sh": "2b45eb7c98e7dc2b39223cc082b1cc5cdbcb8ced21c878043b292fc276b32eb8",
+    ".github/scripts/test-release-workflows.sh": "c37856c032f778197d65c8af48c33d959056bbcbdce206ee898d40e40894d8f7",
+    ".github/scripts/check-workflow-invariants.sh": "0afc9495d0237bbfca8790ea8baef297b73822400d16c3b42aab4d4dee7a1e79"
+  },
+  "checks": [
+    {
+      "command": "bash .github/scripts/test-mergify-config.sh",
+      "exit_code": 0,
+      "output_sha256": "035c395d604745ce17765e3cbbc8fd556cc1f858bf2959f999161ac7f5394f3f"
+    },
+    {
+      "command": "bash .github/scripts/test-open-backmerge-pr.sh",
+      "exit_code": 0,
+      "output_sha256": "d0a211cb9bdcce30621169162507343c87a6a33fc0dda0f14d7df6a462b69ae2"
+    },
+    {
+      "command": "bash .github/scripts/test-soak-gate.sh",
+      "exit_code": 0,
+      "output_sha256": "29a84a18e133474f5d7493972c9e936dd4c861a79d9422ad72a64280c4af23e7"
+    },
+    {
+      "command": "bash .github/scripts/test-ca-soak-dispatch.sh",
+      "exit_code": 0,
+      "output_sha256": "a67f43dcfe32925c825808308362f160b0807d13880ab39e86ce294f3d185fcf"
+    },
+    {
+      "command": "bash .github/scripts/test-soak-schedule-routing.sh",
+      "exit_code": 0,
+      "output_sha256": "1955dd886f80818ea810640cf0c8122041c240f071db44e781c71c8735980889"
+    },
+    {
+      "command": "bash .github/scripts/test-tag-ca-release.sh",
+      "exit_code": 0,
+      "output_sha256": "9265c04f022e3b6046609a11cc53f46f3e21493fb864d528fe8a82a7f456d3e7"
+    },
+    {
+      "command": "bash .github/scripts/test-release-workflows.sh",
+      "exit_code": 0,
+      "output_sha256": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f"
+    },
+    {
+      "command": "bash .github/scripts/check-workflow-invariants.sh",
+      "exit_code": 0,
+      "output_sha256": "d4a4b2b5bbe473b6c19c0ff9672e8ed29fe5a6890f1873194503cd98009568da"
+    },
+    {
+      "command": "reject canary soak requirement",
+      "queue": "ca-item",
+      "condition": "label=ca-soaked",
+      "result": "rejected"
+    },
+    {
+      "command": "reject canary soak requirement",
+      "queue": "ca-item",
+      "condition": "check-success=Soak Gate (22h)",
+      "result": "rejected"
+    },
+    {
+      "command": "reject canary soak requirement",
+      "queue": "ca-daily",
+      "condition": "label=ca-soaked",
+      "result": "rejected"
+    },
+    {
+      "command": "reject canary soak requirement",
+      "queue": "ca-daily",
+      "condition": "check-success=Soak Gate (22h)",
+      "result": "rejected"
+    }
+  ],
+  "limitations": [
+    "Fixture tests do not prove live soak behavior.",
+    "Maintainer review of this refresh remains pending."
+  ]
+}

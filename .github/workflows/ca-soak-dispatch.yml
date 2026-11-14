@@ -4,9 +4,9 @@ name: Release Train Soak Dispatch
 # issue #791). .github/scripts/ca-soak-dispatch.sh does the work.
 #
 #   ca-soak label on a ca/ pull request into ca-canary
-#       starts its 22-hour soak (gate ca-item). A passed soak posts
-#       "Soak Gate (22h)" on the head and adds ca-soaked, which the ca-item
-#       queue of .mergify.yml requires.
+#       starts its optional 22-hour soak (gate ca-item). A passed soak posts
+#       "Soak Gate (22h)" on the head and adds ca-soaked. The ca-item queue
+#       of .mergify.yml does not require the status or the label.
 #   push to that pull request by anyone except Mergify
 #       removes ca-soak and ca-soaked and cancels its running soak.
 #   push to ca-release
