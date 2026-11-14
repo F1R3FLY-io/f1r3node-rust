@@ -1470,6 +1470,141 @@ mod tests {
         });
     }
 
+    const DENSE_SPINE_LEVELS: usize = 16_384;
+    const DENSE_SPINE_VALUE: u64 = 7;
+    const DENSE_SPINE_MODE: &str = "GUARDED_PATHMAP_DENSE_SPINE_MODE";
+
+    static DENSE_SPINE_BARRIERS: AtomicUsize = AtomicUsize::new(0);
+
+    struct DenseSpineBarrier;
+
+    impl TeardownBarrier<u64> for DenseSpineBarrier {
+        fn make_barrier() -> u64 {
+            DENSE_SPINE_BARRIERS.fetch_add(1, Ordering::SeqCst);
+            u64::MAX
+        }
+    }
+
+    impl super::BarrierProvider<u64> for DenseSpineBarrier {
+        fn make_barrier(&self) -> u64 { <Self as TeardownBarrier<u64>>::make_barrier() }
+    }
+
+    fn dense_spine(value: Option<u64>) -> PathMap<u64> {
+        use pathmap::zipper::{ZipperMoving, ZipperWriting};
+
+        let mut map = PathMap::new();
+        {
+            let mut zipper = map.write_zipper();
+            for _ in 0..DENSE_SPINE_LEVELS {
+                for tooth in [1, 2] {
+                    zipper.descend_to_byte(tooth);
+                    assert!(zipper.create_path());
+                    assert!(zipper.ascend_byte());
+                }
+                zipper.descend_to_byte(0);
+            }
+            if let Some(value) = value {
+                assert!(zipper.set_val(value).is_none());
+            }
+        }
+        map
+    }
+
+    fn dense_spine_child(mode: &str) -> shared::rust::test_process::ProbeOutcome {
+        let executable = std::env::current_exe().expect("the test binary has a path");
+        let mut command = std::process::Command::new(executable);
+        command
+            .args([
+                "--ignored",
+                "--exact",
+                "rspace::guarded_pathmap::tests::dense_spine_small_stack_child",
+                "--nocapture",
+            ])
+            .env(DENSE_SPINE_MODE, mode)
+            .env_remove(shared::rust::test_process::ALLOW_EXPECTED_PROBE_CORE);
+        let timeout = std::time::Duration::from_secs(120);
+        shared::rust::test_process::run_child_probe(&mut command, timeout)
+            .expect("the dense spine child runs")
+    }
+
+    #[test]
+    fn dense_spine_retires_on_256k_stack_by_retire_pathmap_and_final_drop() {
+        for mode in ["retire_pathmap", "guarded_drop"] {
+            assert_eq!(
+                dense_spine_child(mode),
+                shared::rust::test_process::ProbeOutcome::Passed,
+                "dense spine {mode} child"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pathmap_destructor_overflows_256k_stack_on_the_dense_spine() {
+        match dense_spine_child("pathmap_drop") {
+            shared::rust::test_process::ProbeOutcome::Failed(failure) => {
+                assert_eq!(
+                    failure.kind,
+                    shared::rust::test_process::ProbeFailureKind::StackExhausted,
+                    "{failure:?}"
+                );
+                assert_eq!(failure.signal, Some(libc::SIGABRT), "{failure:?}");
+                let overflowed = failure.stderr.lines().any(|line| {
+                    line.starts_with("thread 'guarded-pathmap-256k'") &&
+                        line.ends_with("has overflowed its stack")
+                });
+                assert!(overflowed, "{failure:?}");
+            }
+            shared::rust::test_process::ProbeOutcome::Passed => {
+                panic!("PathMap's destructor survived the dense spine on a 256 KiB stack")
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "isolated dense spine small-stack child"]
+    fn dense_spine_small_stack_child() {
+        let Ok(mode) = std::env::var(DENSE_SPINE_MODE) else {
+            return;
+        };
+        assert!(
+            matches!(
+                shared::rust::test_process::prepare_expected_probe_core_dump(),
+                shared::rust::test_process::ExpectedProbeCorePolicy::SuppressionInstalled |
+                    shared::rust::test_process::ExpectedProbeCorePolicy::ExplicitlyAllowed
+            ),
+            "the dense spine child cannot suppress its core dump"
+        );
+        let disposed = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&disposed);
+        let dispose = TestDisposer(move |_: u64| {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        match mode.as_str() {
+            "retire_pathmap" => {
+                let map = dense_spine(Some(DENSE_SPINE_VALUE));
+                let removed =
+                    small_stack(move || super::retire_pathmap(map, &dispose, &DenseSpineBarrier));
+                assert_eq!(removed, 1);
+            }
+            "guarded_drop" => {
+                let spine = dense_spine(None);
+                let mut guarded =
+                    GuardedPathMap::<u64, _, DenseSpineBarrier>::from_map(spine, dispose);
+                assert!(!guarded.set_val_at(vec![0u8; DENSE_SPINE_LEVELS], DENSE_SPINE_VALUE));
+                small_stack(move || drop(guarded));
+            }
+            "pathmap_drop" => {
+                let map = dense_spine(Some(DENSE_SPINE_VALUE));
+                small_stack(move || drop(map));
+                panic!("PathMap's destructor returned on the 256 KiB stack");
+            }
+            other => panic!("unknown {DENSE_SPINE_MODE} {other:?}"),
+        }
+        assert_eq!(disposed.load(Ordering::SeqCst), 1);
+        assert_eq!(DENSE_SPINE_BARRIERS.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn coherent_exact_removal_preserves_same_node_sibling_in_both_clone_drop_orders() {
         for drop_snapshot_first in [false, true] {
