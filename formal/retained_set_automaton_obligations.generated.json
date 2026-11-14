@@ -120,7 +120,7 @@
         "id": "RSA-PREMISE-01",
         "kind": "rocq_theorem",
         "proof_gate": "scripts/check-stack-safe-pda-proofs.sh compiles the theory with its closed-context count pinned and kernel-checks it",
-        "sha256": "2a5c070b1cd1470827841e4d20c163f2014864200ef2dac1d847688265a94333",
+        "sha256": "0615c67404b275c33bd49affa90a6b6a6ae9361877c9188df8700663d7952e0b",
         "source": "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v",
         "symbol": "table_projection_preserves_spatial_success"
       },

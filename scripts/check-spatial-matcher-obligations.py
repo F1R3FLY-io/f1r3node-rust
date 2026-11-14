@@ -134,6 +134,8 @@ ROCQ_CAPSTONES = [
     "feasible_filter_preserves_reference_order_and_uniqueness",
     "partition_scratch_size_depends_only_on_distinct_endpoints",
 ]
+PROJECTED_DYNAMIC_ROOTS = ("Match", "MatchCase", "New")
+PENDING_DYNAMIC_ROOTS = ("Receive", "ReceiveBind")
 PROJECTION_CAPSTONES = [
     "projection_rules_respect_authority",
     "table_projection_preserves_spatial_success",
@@ -487,8 +489,35 @@ def extract(sources):
         r'ProjectionRow "([A-Za-z][A-Za-z0-9]*)" "([a-z][a-z0-9_]*)" ([A-Za-z]+)',
         projection,
     )
+    dynamic_table = re.search(
+        r"Definition dynamic_root_rows : list projection_row := \[(.*?)\]\.",
+        projection,
+        re.S,
+    )
+    require(dynamic_table is not None, "Rocq dynamic-root table absent")
+    dynamic_rows = re.findall(
+        r'DynamicRootRow "([A-Za-z][A-Za-z0-9]*)" "([a-z][a-z0-9_]*)" ([A-Za-z]+)',
+        dynamic_table.group(1),
+    )
+    dynamic_rules = {(owner, field): rule for owner, field, rule in dynamic_rows}
+    dynamic_owners = {owner for owner, _, _ in dynamic_rows}
     require(
-        bool(table_rows) and theory_rows == table_rows,
+        len(dynamic_rules) == len(dynamic_rows)
+        and not set(PROJECTED_DYNAMIC_ROOTS) & set(PENDING_DYNAMIC_ROOTS)
+        and dynamic_owners == set(PROJECTED_DYNAMIC_ROOTS) | set(PENDING_DYNAMIC_ROOTS),
+        "Rocq dynamic-root table does not name exactly the dynamic roots once per field",
+    )
+    require(
+        set(dynamic_rules)
+        == {(owner, field) for owner, field, _ in theory_rows if owner in dynamic_owners},
+        "Rocq dynamic-root table does not cover exactly the dynamic roots' fields",
+    )
+    implemented_rows = [
+        (owner, field, dynamic_rules[owner, field] if owner in PROJECTED_DYNAMIC_ROOTS else rule)
+        for owner, field, rule in theory_rows
+    ]
+    require(
+        bool(table_rows) and implemented_rows == table_rows,
         "Rocq projection table differs from projection_rules.rs",
     )
     projection_prints = re.findall(
@@ -836,6 +865,55 @@ def self_test(sources):
         '("Send", "cost_region", ProjectionRule::Ignored),',
         '("Send", "cost_region", ProjectionRule::Exact),',
         "Rocq projection table differs from projection_rules.rs",
+    )
+    reject(
+        sources,
+        PROJECTION_TABLE,
+        '("New", "uri", ProjectionRule::Ignored),',
+        '("New", "uri", ProjectionRule::Exact),',
+        "Rocq projection table differs from projection_rules.rs",
+    )
+    reject(
+        sources,
+        PROJECTION_THEORY,
+        'DynamicRootRow "New" "uri" Ignored',
+        'DynamicRootRow "New" "uri" Exact',
+        "Rocq projection table differs from projection_rules.rs",
+    )
+    reject(
+        sources,
+        PROJECTION_TABLE,
+        '("Receive", "binds", ProjectionRule::Decline),',
+        '("Receive", "binds", ProjectionRule::UnorderedSeq),',
+        "Rocq projection table differs from projection_rules.rs",
+    )
+    reject(
+        sources,
+        PROJECTION_THEORY,
+        "Definition dynamic_root_rows : list projection_row := [",
+        "Definition dynamic_root_rows : list projection_row := (",
+        "Rocq dynamic-root table absent",
+    )
+    reject(
+        sources,
+        PROJECTION_THEORY,
+        'DynamicRootRow "New" "uri" Ignored',
+        'DynamicRootRow "New" "p" Ignored',
+        "Rocq dynamic-root table does not name exactly the dynamic roots once per field",
+    )
+    reject(
+        sources,
+        PROJECTION_THEORY,
+        'DynamicRootRow "New" "uri" Ignored',
+        'DynamicRootRow "Nova" "uri" Ignored',
+        "Rocq dynamic-root table does not name exactly the dynamic roots once per field",
+    )
+    reject(
+        sources,
+        PROJECTION_THEORY,
+        'DynamicRootRow "New" "uri" Ignored',
+        'DynamicRootRow "New" "url" Ignored',
+        "Rocq dynamic-root table does not cover exactly the dynamic roots' fields",
     )
     reject(
         sources,

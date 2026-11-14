@@ -456,9 +456,6 @@ fn compile_ordered_nested_query(
     //
     // - `Receive.binds` are matched by the unordered list PDA, not in their
     //   encoded sequence order;
-    // - `New` ignores `uri` and `injections` while descending through `p`;
-    // - `MatchCase` ignores `free_count` and `guard` while `Match` descends
-    //   through `target`, `pattern`, and `source`;
     // - `ReceiveBind` ignores `remainder` and `free_count` while comparing
     //   `patterns` and descending through `source`.
     //
@@ -480,6 +477,7 @@ fn compile_ordered_nested_query(
     let mut suppressed_nodes = 0usize;
     let mut ignored_field_depth = 0usize;
     let mut saw_hole = false;
+    let mut entered_par_eq_field = false;
     let mut owners: Vec<&RhoMatchProgram> = Vec::with_capacity(16);
 
     for event in RhoPathCursor::new(root) {
@@ -503,6 +501,21 @@ fn compile_ordered_nested_query(
                 _ => {}
             }
             continue;
+        }
+        if std::mem::take(&mut entered_par_eq_field) {
+            match event {
+                RhoPathEvent::ParBag(_) => {}
+                RhoPathEvent::EnterNode {
+                    cursor: ParCursor::Par(par),
+                    ..
+                } if par_has_safe_exact_expr_path(par) => {}
+                _ => {
+                    flush_exact_query_part(&mut parts, &mut exact);
+                    parts.push(RhoMatchQueryPart::Wildcard);
+                    ignored_field_depth = 1;
+                    continue;
+                }
+            }
         }
 
         match event {
@@ -583,6 +596,17 @@ fn compile_ordered_nested_query(
                 // scalar metadata uses this same field-boundary rule.
                 ignored_field_depth = 1;
             }
+            RhoPathEvent::EnterField(field)
+                if matches!(
+                    owners
+                        .last()
+                        .and_then(|owner| projection_rule(owner.type_name, field.name)),
+                    Some(ProjectionRule::ParEqSeq)
+                ) =>
+            {
+                append_match_path_event(&mut exact, event);
+                entered_par_eq_field = true;
+            }
             RhoPathEvent::LeaveNode => {
                 owners.pop();
                 append_match_path_event(&mut exact, event);
@@ -595,7 +619,11 @@ fn compile_ordered_nested_query(
     // require their own semantic projection before they may prune AC rows.
     if suppressed_nodes != 0
         || ignored_field_depth != 0
-        || (!saw_hole && !matches!(root, ParCursor::Send(_)))
+        || (!saw_hole
+            && !matches!(
+                root,
+                ParCursor::Send(_) | ParCursor::New(_) | ParCursor::Match(_)
+            ))
     {
         return None;
     }

@@ -1039,7 +1039,7 @@ fn every_generated_field_has_exactly_one_projection_rule() {
 }
 
 #[test]
-fn dynamic_direct_match_value_rows_decline_when_new_ignored_fields_differ() {
+fn dynamic_direct_match_value_rows_accept_when_new_ignored_fields_differ() {
     let target = New {
         bind_count: 1,
         p: Some(new_gint_par(7, Vec::new(), false)),
@@ -1070,8 +1070,8 @@ fn dynamic_direct_match_value_rows_decline_when_new_ignored_fields_differ() {
     );
     assert_eq!(
         new_ac_query_acceptance(target, pattern),
-        None,
-        "a dynamic direct MatchValue::New row must fall back to All, never constrain ignored fields"
+        Some(true),
+        "a dynamic direct MatchValue::New row must accept across its ignored fields"
     );
 }
 
@@ -1107,7 +1107,7 @@ fn dynamic_direct_match_value_rows_decline_when_receive_bind_ignored_fields_diff
 }
 
 #[test]
-fn dynamic_direct_match_value_rows_decline_when_match_case_ignored_fields_differ() {
+fn dynamic_direct_match_value_rows_accept_when_match_case_ignored_fields_differ() {
     let target = Match {
         target: Some(new_gint_par(1, Vec::new(), false)),
         cases: vec![MatchCase {
@@ -1140,13 +1140,13 @@ fn dynamic_direct_match_value_rows_decline_when_match_case_ignored_fields_differ
     );
     assert_eq!(
         match_ac_query_acceptance(target, pattern),
-        None,
-        "a dynamic direct MatchValue::Match row must fall back to All, never constrain ignored fields"
+        Some(true),
+        "a dynamic direct MatchValue::Match row must accept across its ignored fields"
     );
 }
 
 #[test]
-fn ground_direct_match_value_rows_decline_unproved_schema_equations() {
+fn ground_direct_match_value_rows_project_new_and_match_and_decline_receive_bind() {
     let new = New {
         bind_count: 1,
         p: Some(new_gint_par(7, Vec::new(), false)),
@@ -1154,7 +1154,7 @@ fn ground_direct_match_value_rows_decline_unproved_schema_equations() {
         injections: BTreeMap::new(),
         locally_free: Vec::new(),
     };
-    assert_eq!(new_ac_query_acceptance(new.clone(), new), None);
+    assert_eq!(new_ac_query_acceptance(new.clone(), new), Some(true));
 
     let bind = ReceiveBind {
         patterns: vec![new_gint_par(3, Vec::new(), false)],
@@ -1177,7 +1177,10 @@ fn ground_direct_match_value_rows_decline_unproved_schema_equations() {
         locally_free: Vec::new(),
         connective_used: false,
     };
-    assert_eq!(match_ac_query_acceptance(matched.clone(), matched), None);
+    assert_eq!(
+        match_ac_query_acceptance(matched.clone(), matched),
+        Some(true)
+    );
 }
 
 #[test]
@@ -3913,6 +3916,10 @@ enum GeneratedField {
     Path(Vec<Vec<u8>>),
     Kind(u32),
     Bytes(Vec<u8>),
+    Uris(Vec<&'static str>),
+    Injections(Vec<(&'static str, i64)>),
+    Count(i32),
+    Guard(Option<bool>),
 }
 
 fn expression(instance: models::rhoapi::expr::ExprInstance) -> Expr {
@@ -3990,6 +3997,17 @@ fn projection_fixtures() -> Vec<ProjectionFixture> {
         }],
         locally_free: Vec::new(),
         connective_used: false,
+    };
+    let dynamic_match = Match {
+        target: Some(int(1)),
+        cases: vec![MatchCase {
+            pattern: Some(int(1)),
+            source: Some(free(0)),
+            free_count: 0,
+            guard: None,
+        }],
+        locally_free: Vec::new(),
+        connective_used: true,
     };
     let conditional_of = |condition, connective_used| If {
         condition: Some(condition),
@@ -4101,7 +4119,13 @@ fn projection_fixtures() -> Vec<ProjectionFixture> {
             families: &["Match"],
             label: "ground Match",
             target: ProjectionRoot::Match(ground_match.clone()),
-            pattern: ProjectionRoot::Match(ground_match),
+            pattern: ProjectionRoot::Match(ground_match.clone()),
+        },
+        ProjectionFixture {
+            families: &["Match", "MatchCase"],
+            label: "dynamic Match",
+            target: ProjectionRoot::Match(ground_match),
+            pattern: ProjectionRoot::Match(dynamic_match),
         },
         ProjectionFixture {
             families: &["If"],
@@ -4413,6 +4437,29 @@ fn generated_field_values(
                 GeneratedField::Bytes(vec![1, 2, 3]),
             ]
         }
+        ("New", "uri") => {
+            vec![
+                GeneratedField::Uris(Vec::new()),
+                GeneratedField::Uris(vec!["rho:io:stdout"]),
+                GeneratedField::Uris(vec!["rho:io:stdout", "rho:registry:lookup"]),
+            ]
+        }
+        ("New", "injections") => {
+            vec![
+                GeneratedField::Injections(Vec::new()),
+                GeneratedField::Injections(vec![("rho:io:stdout", 1)]),
+            ]
+        }
+        ("New", "bind_count") | ("MatchCase", "free_count") => {
+            vec![GeneratedField::Count(1), GeneratedField::Count(2)]
+        }
+        ("MatchCase", "guard") => {
+            vec![
+                GeneratedField::Guard(None),
+                GeneratedField::Guard(Some(true)),
+                GeneratedField::Guard(Some(false)),
+            ]
+        }
         _ => return None,
     })
 }
@@ -4505,6 +4552,26 @@ fn vary_projection_root(
             "TaggedContinuation",
             GeneratedField::Region(region),
         ) => continuation.cost_region = region.clone(),
+        (ProjectionRoot::New(new), "New", GeneratedField::Uris(uris)) => {
+            new.uri = uris.iter().map(|&uri| uri.to_owned()).collect()
+        }
+        (ProjectionRoot::New(new), "New", GeneratedField::Injections(injections)) => {
+            new.injections = injections
+                .iter()
+                .map(|&(name, value)| (name.to_owned(), new_gint_par(value, Vec::new(), false)))
+                .collect()
+        }
+        (ProjectionRoot::New(new), "New", GeneratedField::Count(count)) => new.bind_count = *count,
+        (ProjectionRoot::Match(matched), "MatchCase", GeneratedField::Count(count)) => {
+            for case in &mut matched.cases {
+                case.free_count = *count;
+            }
+        }
+        (ProjectionRoot::Match(matched), "MatchCase", GeneratedField::Guard(guard)) => {
+            for case in &mut matched.cases {
+                case.guard = guard.map(|flag| new_gbool_par(flag, Vec::new(), false));
+            }
+        }
         _ => panic!("{owner}.{field}: no fixture subject takes the generated value {value:?}"),
     }
     varied

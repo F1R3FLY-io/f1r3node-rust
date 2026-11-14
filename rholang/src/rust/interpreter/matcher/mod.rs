@@ -37,3 +37,7 @@ mod ground_new_query_correspondence;
 #[cfg(test)]
 #[path = "../../../../tests/support/dynamic_root_projection_baseline.rs"]
 mod dynamic_root_projection_baseline;
+
+#[cfg(test)]
+#[path = "../../../../tests/support/concrete_new_query_correspondence.rs"]
+mod concrete_new_query_correspondence;

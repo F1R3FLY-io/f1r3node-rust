@@ -7486,7 +7486,7 @@
       "checker": "scripts/check-retained-set-automaton-obligations.py",
       "family": "retained_set_automaton",
       "manifest": "formal/retained_set_automaton_obligations.generated.json",
-      "manifest_sha256": "04e6f34966a8d209de343a4e44a56aef9443d517a7eed1ba7bff2118cd32ebad",
+      "manifest_sha256": "d9fe37b9528396a0d3a687d44e0bb2cb2a35dacc19fe8182974fa767ef2fc801",
       "obligations": {
         "causal_formal_mutants": [],
         "dedicated_tla_configurations": [],
@@ -7609,7 +7609,7 @@
               "id": "RSA-PREMISE-01",
               "kind": "rocq_theorem",
               "proof_gate": "scripts/check-stack-safe-pda-proofs.sh compiles the theory with its closed-context count pinned and kernel-checks it",
-              "sha256": "2a5c070b1cd1470827841e4d20c163f2014864200ef2dac1d847688265a94333",
+              "sha256": "0615c67404b275c33bd49affa90a6b6a6ae9361877c9188df8700663d7952e0b",
               "source": "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v",
               "symbol": "table_projection_preserves_spatial_success"
             },
@@ -8158,7 +8158,7 @@
       "checker": "scripts/check-spatial-matcher-obligations.py",
       "family": "spatial_matcher",
       "manifest": "formal/spatial_matcher_obligations.generated.json",
-      "manifest_sha256": "028b0f848e5642b52232f4db935228735b83cb18f19f863da1eafcbb2f36e070",
+      "manifest_sha256": "c79bb65d8c9b752f779dac8fa9286da6243cdc91657158a43b66110595d6f2fe",
       "obligations": {
         "generated_properties": [
           {
@@ -8504,18 +8504,18 @@
         ],
         "scope_limit": "The canonical Connective owner Verus model constrains validated field-1 ranges by complete canonical source bytes, then proves binding, exact next range, and exhaustion under the audited StableConnectiveBodyOwner premise. The model does not verify the production Rust parser, pointer provenance, or unsafe-trait implementations; the generated debug/release property and concrete source audit bridge those premises. Its five Verus mutants test the proof gate. Finite TLC invariants and abstract Rocq theorems still require their proof engines. The registry checks source and runner wiring, not proof execution.",
         "source_sha256": {
-          "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v": "2a5c070b1cd1470827841e4d20c163f2014864200ef2dac1d847688265a94333",
+          "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v": "0615c67404b275c33bd49affa90a6b6a6ae9361877c9188df8700663d7952e0b",
           "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v": "ebffe192375bc10c146730d3acbde2dcda194b392b2af6f29a8d5304b58ee2cf",
           "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.cfg": "43b98ede952c2fb89fc503c073a9965f609f19646ebcccb96adf65c419660205",
           "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.tla": "33c9d71065829f5ca984ed10d1dde54a36302b3929ec3cdac7d597015ef1fe03",
           "formal/verus/canonical_connective_owner_cursor.rs": "1883e5782f84bf33959ca15e1c3d28f79116a07bb707ae7ea4f751a7fc9ca9c7",
           "models/src/rust/par_bag.rs": "2ec384dcbf4dea2ee9e95b1f2f76da3e543a9274bc0f77cbcf283cefb9238c5a",
           "models/tests/par_bag.rs": "89e5726b89dea6e89c7b633fa814c1dca6995e27d5c5f3e4b318ae87ec805074",
-          "rholang/src/rust/interpreter/matcher/projection_rules.rs": "6d95aac441b29d560c22d801ec14f45e9b8381f28e07d4de383b647c578cfe2f",
+          "rholang/src/rust/interpreter/matcher/projection_rules.rs": "29ce1399929f53fa2d511be2a9377c5ee43beaf284bee3649112a77b79b82959",
           "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "936f98e443cc79c27c77352dfc280fafeb90c256e4199f3f01265236c799b9aa",
           "rholang/tests/matcher/retained_path_index_test.rs": "c819d1067021bdd972c7c429de3ed6c6f5883e20070af0376de0af7268e9da0e",
           "rholang/tests/matcher_connective_isolation.rs": "96c232ae7f41f079f6a072d2c4586dd1ed15b8a95990d0b82f61466066ccb68c",
-          "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "e1023e31177585807bac5567ffc5deb0de31fdbeb27d22ea9c27f0883cb97059",
+          "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "1f3fbb77c49b5527371d15907241d8f8a6c5c41a3a2b1c00495dc4dcf108f015",
           "rspace++/tests/data_index/candidate_product_continuation.rs": "90bb5c2c206e1feecc0f1f4aa8a1d8bedd36b7b3deab836b24f4b9e903e63c97",
           "scripts/generate-canonical-connective-owner-mutant.py": "876cbc6d6edb7a0aa330b1d2f4c141c68e8c4cae535600089182f70b3e29650c"
         },
