@@ -11,6 +11,9 @@ const SAMPLE_WEIGHT: f64 = 0.2;
 /// Intake assumed before the validator has built a block from this queue's
 /// deploys.
 const UNMEASURED_INTAKE_PER_HEIGHT: f64 = 1.0;
+/// The sample at `len / LOWER_QUARTILE` of the sorted samples is their lower
+/// quartile.
+const LOWER_QUARTILE: usize = 4;
 
 /// One of the validator's own blocks. `could_take` is set only for a block
 /// built while this queue had deploys in the validator's pool: one built from
@@ -191,22 +194,24 @@ impl Health {
         self.own_blocks.is_empty() && watched_a_span
     }
 
-    /// Fresh deploys the validator takes per height: what its blocks built
-    /// from this queue's deploys could take, on average, times how often it
-    /// creates a block.
+    /// Fresh deploys the validator takes per height: the lower quartile of
+    /// what its blocks built from this queue's deploys could take, times how
+    /// often it creates a block. A deploy admitted now waits for many blocks,
+    /// and the node swings its cap with finality, so admission counts on the
+    /// lower caps it has seen rather than their average.
     pub fn intake_per_height(&self) -> f64 {
         if self.validator_idle() {
             return 0.0;
         }
-        let samples: Vec<usize> = self
+        let mut samples: Vec<usize> = self
             .own_blocks
             .iter()
             .filter_map(|b| b.could_take)
             .collect();
-        match (samples.is_empty(), self.observed()) {
-            (false, Some(observed)) => {
-                let per_block = samples.iter().sum::<usize>() as f64 / samples.len() as f64;
-                per_block * self.own_blocks.len() as f64 / observed as f64
+        samples.sort_unstable();
+        match (samples.get(samples.len() / LOWER_QUARTILE), self.observed()) {
+            (Some(per_block), Some(observed)) => {
+                *per_block as f64 * self.own_blocks.len() as f64 / observed as f64
             }
             _ => UNMEASURED_INTAKE_PER_HEIGHT,
         }
@@ -366,6 +371,19 @@ mod tests {
             health.on_own_block(number, "v1", admission(16, false), 4, 26, start);
         }
         assert_eq!(health.intake_per_height(), 4.0 * 10.0 / 10.0);
+    }
+
+    #[test]
+    fn intake_counts_on_the_lower_caps_the_node_swings_to() {
+        let start = Instant::now();
+        let mut health = Health::new(20);
+        // Backpressure swings the cap between 16 and 4: a third of the
+        // blocks take 4. Their average, 12, over-promises a long wait.
+        for number in 1..=21 {
+            let cap = if number % 3 == 0 { 4 } else { 16 };
+            health.on_own_block(number, "v1", admission(cap, false), cap, 10, start);
+        }
+        assert_eq!(health.intake_per_height(), 4.0 * 20.0 / 20.0);
     }
 
     #[test]

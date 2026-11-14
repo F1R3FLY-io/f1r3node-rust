@@ -11,6 +11,7 @@ use common::{deploy, eventually, finalized_verdict, FakeNode, Queue};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
+use deploy_queue::engine::FinalityHold;
 use deploy_queue::error::{Congestion, IntakeError};
 use deploy_queue::http::accept;
 use deploy_queue::record::QueueState;
@@ -275,6 +276,79 @@ async fn a_refusal_names_the_validator_or_the_shard() {
     queue.stop();
 }
 
+fn refused_for_the_shard(result: &Result<Vec<u8>, IntakeError>) -> bool {
+    matches!(
+        result,
+        Err(IntakeError::QueueFull {
+            cause: Congestion::Shard,
+            ..
+        })
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn finality_past_the_citable_depth_holds_release_and_intake_until_it_catches_up() {
+    let node = FakeNode::new(10, 9);
+    node.status.lock().unwrap()["deployLifespan"] = json!(300);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+    for number in 0..3 {
+        accept(&queue.handle, numbered_deploy(10, number))
+            .await
+            .unwrap();
+    }
+    eventually("one deploy goes out until a cap is known", || async {
+        node.received().len() == 1
+    })
+    .await;
+
+    // Peers carry the tip 27 heights past the last finalized block, and the
+    // validator's next block takes the pooled deploy under a cap of four.
+    for tip in 11..=36 {
+        node.emit(block_added(tip, PEER, &[]));
+    }
+    let first = received_sigs(&node);
+    own_block(&node, 37, 4, false, &[&first[0]]);
+    reaches_tip(&queue, 37).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(distinct_received(&node).len(), 1, "release is held");
+    let snapshot = queue.handle.snapshot().await.unwrap();
+    assert_eq!(snapshot.finality_hold, Some(FinalityHold { lag: 28 }));
+    assert!(!snapshot.release_open);
+    assert_eq!(snapshot.ready, 2);
+    let refusal = accept(&queue.handle, numbered_deploy(37, 3)).await;
+    assert!(refused_for_the_shard(&refusal), "{:?}", refusal);
+
+    // Finality comes back within the depth: release and intake resume.
+    node.emit(block_finalised(20));
+    eventually("the held deploys go out", || async {
+        distinct_received(&node).len() == 3
+    })
+    .await;
+    assert_eq!(queue.handle.snapshot().await.unwrap().finality_hold, None);
+    accept(&queue.handle, numbered_deploy(37, 4)).await.unwrap();
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_burst_of_heights_at_start_with_finality_within_the_depth_does_not_hold_intake() {
+    let node = FakeNode::new(1, 0);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+    // A new shard's first heights come in milliseconds while its first
+    // finalized block has yet to move; time passing is not a stall.
+    for tip in 2..=10 {
+        node.emit(block_added(tip, PEER, &[]));
+    }
+    reaches_tip(&queue, 10).await;
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    accept(&queue.handle, numbered_deploy(10, 0)).await.unwrap();
+    assert_eq!(queue.handle.snapshot().await.unwrap().finality_hold, None);
+    queue.stop();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn refusals_follow_the_node_rules() {
     let node = FakeNode::new(100, 99);
@@ -400,6 +474,7 @@ async fn a_deploy_without_time_to_reach_the_validators_next_block_is_not_release
         } else {
             node.emit(block_added(tip, PEER, &[]));
         }
+        node.emit(block_finalised(tip - 1));
     }
     // No block carries the pooled four past the citable depth, so they are
     // also sent again; only distinct deploys count.

@@ -8,8 +8,8 @@ pub enum Congestion {
     /// The validator takes fewer deploys than arrive, or has stopped
     /// creating blocks while the shard moves on.
     Validator,
-    /// The node holds its validator back because the shard's finality
-    /// trails the tip or has stalled.
+    /// The shard's finality trails the tip or has stalled: the node holds its
+    /// validator back, or the queue holds release.
     Shard,
 }
 

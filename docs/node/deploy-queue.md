@@ -37,7 +37,8 @@ Read `latestBlockNumber`, `deployLifespan` and `maxParentDepth` from
 
 A refused deploy is not held. The message of `deploy_queue_full` names its cause: the validator (it takes fewer
 deploys than arrive, or it has stopped creating blocks while the shard moves on) or the shard (the node is holding
-its validator back because finality trails the tip).
+its validator back because finality trails the tip, or finality trails the tip by more than `maxParentDepth` and the
+queue holds every deploy until it catches up).
 
 ## Deploy status
 
@@ -82,5 +83,6 @@ the same transitions and ends when every named deploy is terminal.
 
 `GET /queue/status` answers the queue's counts per state, what it measures of its validator (own blocks, share
 of the shard's blocks, intake per height, pool target, latest cap and its source) and of the shard (seconds per
-height, backpressure, finality lag). `GET /queue/metrics` answers Prometheus metrics. `GET /ws/events` relays the node's
+height, backpressure, finality lag), and `finality_hold` with the lag while the queue holds release for finality.
+`GET /queue/metrics` answers Prometheus metrics. `GET /ws/events` relays the node's
 [event stream](websocket-events.md).

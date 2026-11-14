@@ -10,7 +10,7 @@ use models::rust::deploy_window::{
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::error::{EngineStopped, IntakeError};
+use crate::error::{Congestion, EngineStopped, IntakeError};
 use crate::events::{NodeEvent, VerdictState};
 use crate::health::{Health, ShardView, ValidatorView};
 use crate::node::{
@@ -59,6 +59,7 @@ pub struct QueueSnapshot {
     pub tip: Option<i64>,
     pub last_finalized: Option<i64>,
     pub release_open: bool,
+    pub finality_hold: Option<FinalityHold>,
     pub ready: usize,
     pub waiting: usize,
     pub closed: usize,
@@ -67,6 +68,18 @@ pub struct QueueSnapshot {
     pub held: usize,
     pub validator: Option<ValidatorView>,
     pub shard: Option<ShardView>,
+}
+
+/// The queue holds release and refuses intake while finality trails the tip
+/// by more than the citable depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct FinalityHold {
+    pub lag: i64,
+}
+
+impl FinalityHold {
+    /// Heights finality must advance before the hold clears.
+    fn heights_to_clear(&self, depth: i64) -> i64 { (self.lag - depth).max(1) }
 }
 
 pub enum Command {
@@ -218,6 +231,7 @@ pub struct Engine {
     chain: Option<ChainSnapshot>,
     connected: bool,
     health: Option<Health>,
+    held_for_finality: bool,
     next_sequence: u64,
     retry_at: Option<Instant>,
     retry_delay: Duration,
@@ -279,6 +293,7 @@ impl Engine {
             chain: None,
             connected: false,
             health: None,
+            held_for_finality: false,
             next_sequence,
             retry_at: None,
             retry_delay: RETRY_FLOOR,
@@ -464,11 +479,22 @@ impl Engine {
             ))));
         }
 
+        let depth = citable_depth(shard);
+        self.note_finality_hold();
+        let health = self.health.as_ref().expect("a connected engine has health");
+        if let Some(hold) = self.finality_hold() {
+            let retry_after_secs = health
+                .seconds_for(hold.heights_to_clear(depth))
+                .unwrap_or(UNTIMED_RETRY_SECS);
+            return Ok(Err(IntakeError::QueueFull {
+                retry_after_secs,
+                cause: Congestion::Shard,
+            }));
+        }
+
         // The rate is what the validator takes into its blocks. The depth
         // covers an intake that falls after a deploy was accepted.
-        let health = self.health.as_ref().expect("a connected engine has health");
         let rate = health.intake_per_height();
-        let depth = citable_depth(shard);
         let fresh_span = last_includable(chain.tip, shard.deploy_lifespan) - chain.tip;
 
         let deployer = deploy.pk.bytes.to_vec();
@@ -835,6 +861,7 @@ impl Engine {
         else {
             return Ok(());
         };
+        self.note_finality_hold();
         if !self.release_open() {
             return Ok(());
         }
@@ -861,6 +888,46 @@ impl Engine {
         self.chain.is_some()
             && self.connected
             && self.retry_at.is_none_or(|at| at <= Instant::now())
+            && self.finality_hold().is_none()
+    }
+
+    /// Deploys released while finality cannot keep up only deepen the
+    /// unfinalized work every validator must merge, so the queue holds them
+    /// until finality catches up.
+    fn finality_hold(&self) -> Option<FinalityHold> {
+        let chain = self.chain.as_ref()?;
+        let lag = chain.tip - chain.lfb;
+        (lag > citable_depth(&chain.shard)).then_some(FinalityHold { lag })
+    }
+
+    fn note_finality_hold(&mut self) {
+        let hold = self.finality_hold();
+        if hold.is_some() == self.held_for_finality {
+            return;
+        }
+        self.held_for_finality = hold.is_some();
+        let (tip, lfb) = self
+            .chain
+            .as_ref()
+            .map(|chain| (chain.tip, chain.lfb))
+            .expect("a finality hold needs a known chain");
+        match hold {
+            Some(_) => {
+                metrics::counter!("deploy_queue.finality_holds").increment(1);
+                tracing::warn!(
+                    target: "deploy_queue::engine",
+                    tip,
+                    lfb,
+                    "finality trails the tip past the citable depth; release paused and intake refused"
+                );
+            }
+            None => tracing::info!(
+                target: "deploy_queue::engine",
+                tip,
+                lfb,
+                "finality caught up; release resumed"
+            ),
+        }
     }
 
     fn submit(&mut self, sig: &Sig, tip: i64) -> Result<(), StoreError> {
@@ -1232,6 +1299,7 @@ impl Engine {
             tip: self.chain.as_ref().map(|chain| chain.tip),
             last_finalized: self.chain.as_ref().map(|chain| chain.lfb),
             release_open: self.release_open(),
+            finality_hold: self.finality_hold(),
             ready: self.ready.len(),
             waiting: self.waiting.len(),
             closed: self.closed.len(),
