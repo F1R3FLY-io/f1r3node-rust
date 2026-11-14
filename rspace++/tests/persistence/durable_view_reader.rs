@@ -3,7 +3,6 @@ use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::num::NonZeroU64;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -631,14 +630,6 @@ fn corrupt_in_live_packs(root: &Path, view: &View, canonical: &[u8]) -> Vec<u8> 
     corrupted
 }
 
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
-    match (payload.downcast_ref::<String>(), payload.downcast_ref::<&'static str>()) {
-        (Some(message), _) => message.as_str(),
-        (None, Some(message)) => message,
-        (None, None) => "",
-    }
-}
-
 #[test]
 fn a_corrupted_continuation_source_panics_with_its_typed_error_where_the_closed_reader_is_empty() {
     let names: &[&str] = &["a", "b"];
@@ -680,11 +671,12 @@ fn a_corrupted_continuation_source_panics_with_its_typed_error_where_the_closed_
         "{refusal:?}"
     );
     let reader = reader_at(&view, roots);
-    let panic = catch_unwind(AssertUnwindSafe(|| reader.get_continuations_canonical(&key)))
+    let failure = reader
+        .try_get_continuations_canonical(&key)
         .expect_err("the reader fails closed on the corrupted continuation source");
-    let message = panic_message(&*panic);
+    let message = format!("{failure:?}");
     assert!(
-        message.contains(&format!("{refusal:?}")),
+        message == format!("{refusal:?}"),
         "the reader's panic must carry the typed error {refusal:?}, found {message:?}"
     );
 }
@@ -794,6 +786,21 @@ fn reader_read(reader: &Reader, read: KeyedRead) -> ReadResult {
     }
 }
 
+fn try_reader_read(reader: &Reader, read: KeyedRead) -> Result<ReadResult, String> {
+    let result = match read {
+        KeyedRead::Data => reader
+            .try_get_data_canonical(&channel("a"))
+            .map(ReadResult::Data),
+        KeyedRead::Continuations => reader
+            .try_get_continuations_canonical(&group(&["a", "b"]))
+            .map(ReadResult::Continuations),
+        KeyedRead::Joins => reader
+            .try_get_joins_canonical(&channel("a"))
+            .map(ReadResult::Joins),
+    };
+    result.map_err(|error| format!("{error:?}"))
+}
+
 fn requirement(view: &View, read: KeyedRead, limit: ReaderLimit) -> u64 {
     let (mut low, mut high) = (0_u64, u64::MAX);
     while low < high {
@@ -833,12 +840,10 @@ fn every_reader_limit_binds_its_read_and_panics_with_the_typed_error() {
         );
         let refusal = view_read(&view, read, bounded(limit, below))
             .expect_err("one below the requirement is refused");
-        let panic =
-            catch_unwind(AssertUnwindSafe(|| reader_read(&reader(bounded(limit, below)), read)))
-                .expect_err("the reader fails closed one below the requirement");
-        let message = panic_message(&*panic);
+        let message = try_reader_read(&reader(bounded(limit, below)), read)
+            .expect_err("the reader fails closed one below the requirement");
         assert!(
-            message.contains(&refusal),
+            message == refusal,
             "{read:?} under {limit:?} {below}: the panic must carry {refusal}, found {message:?}"
         );
     }
@@ -892,11 +897,12 @@ fn a_multiplicity_total_past_u64_max_is_a_typed_limit_error_in_either_visit_orde
             "channel {name} with multiplicities {multiplicities:?}: expected {expected:?}, found \
              {refusal:?}"
         );
-        let panic = catch_unwind(AssertUnwindSafe(|| reader.get_data_canonical(&channel(name))))
+        let failure = reader
+            .try_get_data_canonical(&channel(name))
             .expect_err("the reader fails closed on the channel's multiplicities");
-        let message = panic_message(&*panic);
+        let message = format!("{failure:?}");
         assert!(
-            message.contains(&format!("{refusal:?}")),
+            message == format!("{refusal:?}"),
             "channel {name}: the reader's panic must carry the typed error {refusal:?}, found \
              {message:?}"
         );
