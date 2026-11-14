@@ -159,9 +159,14 @@ where
             } => {
                 let rows = store.retry_page(cursor.as_deref(), page)?;
                 for (hash, _) in rows.rows {
-                    if pass.dag.contains(&hash)?
-                        && super::reaches_ancestor_check(&pass.dag, &hash, &pass.floor, &pass.conf)?
-                    {
+                    if !pass.dag.contains(&hash)? || !pass.dag.is_finalized(&hash)? {
+                        if store.drop_unfinalized(&hash)? {
+                            metrics::counter!("mergeable_channels_gc_dropped_unfinalized")
+                                .increment(1);
+                        }
+                        continue;
+                    }
+                    if super::reaches_ancestor_check(&pass.dag, &hash, &pass.floor, &pass.conf)? {
                         let height = pass.dag.block_number_unsafe(&hash)?;
                         minimum = Some(minimum.map_or(height, |lowest| lowest.min(height)));
                     }
@@ -499,6 +504,122 @@ mod tests {
         assert!(!expected.contains(&id(10, 9)), "the orphan never finalizes");
 
         assert_eq!(run_to_completion(&storage, &blocks, &conf, 3), expected);
+    }
+
+    fn queued(storage: &BlockDagKeyValueStorage) -> HashSet<BlockHash> {
+        storage
+            .gc_store()
+            .retry_page(None, GC_PAGE_SIZE)
+            .unwrap()
+            .rows
+            .into_iter()
+            .map(|(hash, _)| hash)
+            .collect()
+    }
+
+    fn side(n: u8) -> BlockHash { vec![100 + n; 32].into() }
+
+    fn put(
+        storage: &BlockDagKeyValueStorage,
+        blocks: &KeyValueBlockStore,
+        hash: BlockHash,
+        height: i64,
+        parents: Vec<BlockHash>,
+    ) {
+        let mut block = template();
+        block.block_hash = hash;
+        block.body.state.block_number = height;
+        block.seq_num = height as i32;
+        block.header.parents_hash_list = parents;
+        blocks.put(block.block_hash.clone(), &block).unwrap();
+        let mode = if height == 0 {
+            InsertMode::Approved
+        } else {
+            InsertMode::Normal
+        };
+        drop(storage.insert(&block, mode).unwrap());
+    }
+
+    async fn finalize_with_floor(storage: &BlockDagKeyValueStorage, tip: u8) {
+        storage
+            .record_directly_finalized(hash(tip), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        storage
+            .get_representation()
+            .unwrap()
+            .put_cached_floor(hash(tip), hash(tip))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn gc_drops_never_finalized_orphans_from_the_retry_queue() {
+        let (storage, blocks) = open().await;
+        for n in 0..=20u8 {
+            let parents = if n == 0 { vec![] } else { vec![hash(n - 1)] };
+            put(&storage, &blocks, hash(n), i64::from(n), parents);
+            if (1..=15).contains(&n) {
+                put(&storage, &blocks, side(n), i64::from(n), vec![hash(n - 1)]);
+            }
+        }
+        finalize_with_floor(&storage, 20).await;
+        let conf = super::super::tests::conf();
+
+        let deleted = run_to_completion(&storage, &blocks, &conf, 3);
+
+        let orphans: HashSet<_> = (1..=15).map(side).collect();
+        assert!(deleted.is_disjoint(&orphans), "an orphan's data is kept");
+        assert!(deleted.contains(&hash(10)));
+        let queued = queued(&storage);
+        assert!(
+            queued.is_disjoint(&orphans),
+            "a never-finalized orphan leaves the retry queue"
+        );
+        let dag = storage.get_representation().unwrap();
+        for hash in &queued {
+            assert!(
+                dag.is_finalized(hash).unwrap(),
+                "only finalized candidates stay"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_orphan_finalized_after_it_left_the_queue_is_queued_again_and_collected() {
+        let (storage, blocks) = open().await;
+        for n in 0..=20u8 {
+            let parents = if n == 0 { vec![] } else { vec![hash(n - 1)] };
+            put(&storage, &blocks, hash(n), i64::from(n), parents);
+            if n == 5 {
+                put(&storage, &blocks, side(5), 5, vec![hash(4)]);
+                put(&storage, &blocks, side(6), 6, vec![side(5)]);
+            }
+        }
+        finalize_with_floor(&storage, 20).await;
+        let conf = super::super::tests::conf();
+
+        let first = run_to_completion(&storage, &blocks, &conf, 3);
+        assert!(!first.contains(&side(5)) && !first.contains(&side(6)));
+        assert!(!queued(&storage).contains(&side(5)));
+        assert!(!queued(&storage).contains(&side(6)));
+
+        put(&storage, &blocks, hash(21), 21, vec![hash(20), side(6)]);
+        for n in 22..=30u8 {
+            put(&storage, &blocks, hash(n), i64::from(n), vec![hash(n - 1)]);
+        }
+        finalize_with_floor(&storage, 30).await;
+        let queued = queued(&storage);
+        assert!(
+            queued.contains(&side(5)) && queued.contains(&side(6)),
+            "finalization queues a dropped candidate again"
+        );
+        assert!(
+            !storage.gc_store().drop_unfinalized(&side(5)).unwrap(),
+            "a finalized candidate is never dropped"
+        );
+
+        let second = run_to_completion(&storage, &blocks, &conf, 3);
+        assert!(second.contains(&side(5)) && second.contains(&side(6)));
     }
 
     #[tokio::test]
