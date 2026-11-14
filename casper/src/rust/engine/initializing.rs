@@ -31,7 +31,6 @@ use models::rust::casper::protocol::casper_message::{
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -961,14 +960,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 .next_back()
                 .copied()
                 .unwrap_or(anchor_height);
-            self.populate_dag(
-                approved_block.candidate.block.clone(),
-                st.lower_bound,
-                st.height_map,
-                st.slash_evidence,
-                st.slash_targets,
-            )
-            .await?;
+            self.populate_dag(st.lower_bound, st.height_map).await?;
             // After the blocks are in, never before: the caches are keyed by
             // hash, and a floor entry pointing at a block the DAG does not hold
             // reads back as a missing block rather than as a floor.
@@ -1311,67 +1303,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
     async fn populate_dag(
         &self,
-        start_block: BlockMessage,
         min_height: i64,
         height_map: BTreeMap<i64, HashSet<BlockHash>>,
-        slash_evidence: HashSet<BlockHash>,
-        slash_targets: HashSet<BlockHash>,
     ) -> Result<(), CasperError> {
-        async fn add_block_to_dag<T: TransportLayer + Send + Sync + Clone>(
-            initializing: &Initializing<T>,
-            block: &BlockMessage,
-            is_invalid: bool,
-        ) -> Result<(), CasperError> {
-            tracing::info!(
-                "Adding {}, invalid = {}.",
-                PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                is_invalid
-            );
-
-            // Scala equivalent: `BlockDagStorage[F].insert(block, invalid = isInvalid)`
-            initializing.block_dag_storage.insert(
-                block,
-                if is_invalid {
-                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid
-                } else {
-                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal
-                },
-            )?;
-
-            Ok(())
-        }
-
         tracing::info!("Adding blocks for approved state to DAG.");
-
-        let slashed_validators: Vec<ByteString> = start_block
-            .body
-            .state
-            .bonds
-            .iter()
-            .filter(|bond| bond.stake.is_zero())
-            .map(|bond| bond.validator.to_vec())
-            .collect();
-
-        let mut invalid_blocks: HashSet<ByteString> = start_block
-            .justifications
-            .iter()
-            .filter(|justification| slashed_validators.contains(&justification.validator.to_vec()))
-            .map(|justification| justification.latest_block_hash.to_vec())
-            .collect();
-        invalid_blocks.extend(slash_targets.into_iter().map(|hash| hash.to_vec()));
-
-        for hash in slash_evidence {
-            let block = self.block_store.get(&hash)?.ok_or_else(|| {
-                CasperError::RuntimeError(format!(
-                    "Slash evidence {} missing from block store during DAG population",
-                    PrettyPrinter::build_string_bytes(&hash)
-                ))
-            })?;
-            self.block_dag_storage.insert(
-                &block,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SlashEvidence,
-            )?;
-        }
 
         let mut inserted = 0usize;
 
@@ -1380,9 +1315,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // NOTE: This is not in original Scala code. Added because we changed block_store
             // to Option<KeyValueBlockStore> to support moving it in create_casper_and_transition_to_running
             let block = self.block_store.get_unsafe(&hash);
-            // If sender has stake 0 in approved block, this means that sender has been slashed and block is invalid
-            let is_invalid = invalid_blocks.contains(&block.block_hash.to_vec());
-            add_block_to_dag(self, &block, is_invalid).await?;
+            tracing::info!(
+                "Adding {}.",
+                PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
+            );
+            self.block_dag_storage.insert(
+                &block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )?;
             inserted += 1;
         }
 
@@ -1588,8 +1528,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
         let is_genesis = parents.is_empty();
 
-        let dag = self.block_dag_storage.get_representation()?;
-        let invalid_blocks_map = proto_util::block_slash_invalid_blocks(&dag, block)?;
+        let invalid_blocks_map =
+            proto_util::slash_evidence_senders(proto_util::slash_evidence(block));
 
         tracing::debug!(
             "Replaying block #{} ({}) with {} deploys, {} parents",
@@ -1991,7 +1931,7 @@ fn blocks_for_mergeable_replay(
     let mut blocks = Vec::new();
     for hash in dag.topo_sort(min_block_number, None)?.into_iter().flatten() {
         let metadata = dag.lookup_unsafe(&hash)?;
-        if !metadata.invalid {
+        if !metadata.is_invalid() {
             blocks.push(hash);
         }
     }
@@ -2049,7 +1989,6 @@ mod tests {
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: prost::bytes::Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(
@@ -2128,7 +2067,6 @@ mod tests {
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: prost::bytes::Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(

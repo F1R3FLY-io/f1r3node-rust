@@ -59,7 +59,7 @@ The functions in this module:
   — floor-division with explicit `DomainError` routing
   (`InvalidEpochLength` for `epoch_length ≤ 0`,
   `NegativeBlockNumber` for `block_number < 0`). Returns the typed
-  [`Epoch`](../../../../../../casper/src/rust/epoch.rs) newtype.
+  [`Epoch`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/504963ab546be84e50650ad81bb5df11965954ca/casper/src/rust/epoch.rs) newtype.
 - `slash_target_epoch_is_current(…)` and
   `slash_evidence_epoch_matches_target(…)` — return
   `Result<bool, DomainError>`. Propagate the `DomainError` from

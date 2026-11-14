@@ -225,8 +225,6 @@ pub const BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC: &str =
     "block.validation.step.checkpoint.time";
 pub const BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC: &str =
     "block.validation.step.bonds-cache.time";
-pub const BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC: &str =
-    "block.validation.step.neglected-invalid-block.time";
 pub const BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC: &str =
     "block.validation.step.neglected-equivocation.time";
 pub const BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC: &str =
@@ -256,8 +254,6 @@ pub const COMPUTE_PARENTS_POST_STATE_BUFFER_ADMITS_TIME_METRIC: &str =
 // `Validate::block_summary` sub-step breakdown.
 pub const BLOCK_VALIDATION_BLOCK_HASH_TIME_METRIC: &str = "block.validation.block-hash.time";
 pub const BLOCK_VALIDATION_TIMESTAMP_TIME_METRIC: &str = "block.validation.timestamp.time";
-pub const BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC: &str =
-    "block.validation.shard-identifier.time";
 pub const BLOCK_VALIDATION_DEPLOYS_SHARD_IDENTIFIER_TIME_METRIC: &str =
     "block.validation.deploys-shard-identifier.time";
 pub const BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC: &str = "block.validation.repeat-deploy.time";

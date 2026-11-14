@@ -78,8 +78,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.promotion-token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
+          BACKMERGE_SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '0' }}
+          BACKMERGE_TRIGGERED_BY: ${{ github.event_name == 'workflow_dispatch' && github.triggering_actor || '' }}
         shell: bash -euo pipefail {0}
         run: |
-          BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_SCHEDULED=1 \
+          BACKMERGE_REPOSITORY="$REPOSITORY" \
             BACKMERGE_SOURCE=ca-release BACKMERGE_TARGET=ca-canary \
             bash .github/scripts/open-backmerge-pr.sh

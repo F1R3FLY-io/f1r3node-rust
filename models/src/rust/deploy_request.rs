@@ -29,9 +29,7 @@ pub enum DeployRequestError {
     SignatureHex(String),
     #[error("Signature algorithm not supported: {0}")]
     UnsupportedAlgorithm(String),
-    #[error("Invalid signature: {0}")]
-    Malformed(String),
-    #[error("Invalid signature")]
+    #[error("Invalid signature: the signature does not verify for this deployer and deploy data")]
     Unverified,
 }
 
@@ -64,7 +62,6 @@ impl DeployRequest {
             sig_bytes.into(),
             sig_algorithm,
         )
-        .map_err(DeployRequestError::Malformed)?
         .ok_or(DeployRequestError::Unverified)
     }
 }
