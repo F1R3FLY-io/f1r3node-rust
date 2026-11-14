@@ -31,6 +31,11 @@ accepted-match-transition-instrumentation = ["accepted-match-transition-experime
 # Measurement-only ACT admission/source-access accounting. The ordinary codec
 # omits per-byte counters and counter storage from its production hot path.
 act-codec-instrumentation = []
+# Measurement-only generated flat-dispatch transition index of the retained
+# set automaton, the treatment arm compared with its PathMap index. A matcher
+# opts in per compilation; ordinary builds compile neither the opt-in nor the
+# tables.
+retained-flat-dispatch-experiment = []
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

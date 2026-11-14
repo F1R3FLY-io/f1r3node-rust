@@ -68,6 +68,8 @@ pub struct RetainedSetAutomaton {
     terminals: Vec<Terminal>,
     candidate_count: usize,
     stats: RetainedSetAutomatonStats,
+    #[cfg(feature = "retained-flat-dispatch-experiment")]
+    flat: Option<flat_dispatch_experiment::FlatDispatch>,
 }
 
 impl RetainedSetAutomaton {
@@ -80,9 +82,20 @@ impl RetainedSetAutomaton {
             .map(|candidate| candidate.patterns.len())
             .max()
             .unwrap_or(0);
+        #[cfg(feature = "retained-flat-dispatch-experiment")]
+        let mut flat_facts = matcher.retained_flat_dispatch_experiment().then(|| {
+            flat_dispatch_experiment::FlatFacts::for_candidates(candidates, segment_count)
+        });
+        #[cfg(feature = "retained-flat-dispatch-experiment")]
+        let (segment_count, bind_position_count) = match flat_facts {
+            Some(_) => (0, segment_count),
+            None => (segment_count, segment_count),
+        };
         let mut segments = (0..segment_count)
             .map(|_| PathMap::new())
             .collect::<Vec<_>>();
+        #[cfg(feature = "retained-flat-dispatch-experiment")]
+        let segment_count = bind_position_count;
         let mut terminal_depths = vec![Vec::new(); segment_count];
         let mut terminals = Vec::new();
         let mut indexed_candidate_count = 0usize;
@@ -126,6 +139,11 @@ impl RetainedSetAutomaton {
                 }
                 maximum_terminal_depth = maximum_terminal_depth.max(path.len());
                 terminal_depths[segment].push(path.len());
+                #[cfg(feature = "retained-flat-dispatch-experiment")]
+                if let Some(facts) = flat_facts.as_mut() {
+                    facts.push(segment, path, &mut terminals, candidate_id, query);
+                    continue;
+                }
                 insert_terminal(&mut segments[segment], &mut terminals, &path, candidate_id, query);
             }
             indexed_candidate_count += usize::from(candidate_is_indexed);
@@ -134,8 +152,14 @@ impl RetainedSetAutomaton {
             depths.sort_unstable();
             depths.dedup();
         }
+        #[cfg(feature = "retained-flat-dispatch-experiment")]
+        let flat = flat_facts.map(|facts| facts.build(&mut terminals));
         let distinct_terminal_path_count =
             segments.iter().map(|segment| segment.iter().count()).sum();
+        #[cfg(feature = "retained-flat-dispatch-experiment")]
+        let distinct_terminal_path_count = flat
+            .as_ref()
+            .map_or(distinct_terminal_path_count, |tables| tables.terminal_state_count());
         let terminal_count = terminals.len();
         let stats = RetainedSetAutomatonStats {
             candidate_count: candidates.len(),
@@ -156,6 +180,8 @@ impl RetainedSetAutomaton {
             terminals,
             candidate_count: candidates.len(),
             stats,
+            #[cfg(feature = "retained-flat-dispatch-experiment")]
+            flat,
         }
     }
 
@@ -179,6 +205,15 @@ impl RetainedSetAutomaton {
         bind_positions: &[usize],
         resting: Option<&Bag>,
     ) -> Vec<bool> {
+        #[cfg(feature = "retained-flat-dispatch-experiment")]
+        if let Some(flat) = &self.flat {
+            return flat.matching_candidates_with_resting(
+                self,
+                datum_path,
+                bind_positions,
+                resting,
+            );
+        }
         let mut selected = vec![false; self.candidate_count];
         for position in bind_positions {
             let Some(segment) = self.segments.get(*position) else {
@@ -366,3 +401,8 @@ fn mark(
         terminal = node.previous;
     }
 }
+
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+#[doc(hidden)]
+#[path = "../../tests/retained_set_automaton/flat_dispatch_experiment.rs"]
+pub mod flat_dispatch_experiment;

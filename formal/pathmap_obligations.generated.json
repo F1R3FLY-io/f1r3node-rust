@@ -447,7 +447,7 @@
       "checker": "scripts/check-bag-obligations.py",
       "family": "bag",
       "manifest": "formal/bag_obligations.generated.json",
-      "manifest_sha256": "ae896c16daed75dd4f1f4c24026b05fa6433a232df5e1905a1b4513088b9378c",
+      "manifest_sha256": "bcfab640f9df80854f8678b482db9739f7d7029ac1328ef030fbfef1be7b691e",
       "obligations": {
         "boundary": "Concrete witnesses exercise Bag behavior; they do not prove Rocq/Verus refinement or arbitrary inputs.",
         "delegated_tla": {
@@ -871,7 +871,7 @@
           "formal/rocq/stack_safe_pda/theories/Bag.v": "0bd05b2b21e0f9ca97e1b92eed61c486eadc21933eb93fd12d0e5e1d89b6e874",
           "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
           "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",
-          "rspace++/Cargo.toml": "d9a89c282bc6be737745d2bc0debec6058b64a0f4038e7ad3e65375c31fc9c54",
+          "rspace++/Cargo.toml": "7a72d841637de991fa99384e01c46e8cbd7ff857ec3cff9923f915c187d57daf",
           "rspace++/tests/bag_spec.rs": "72c2be48caa4486a9cec488d5467d39f377f71568ce7383e35f4e08bba49a493"
         },
         "verus_obligations": [
@@ -7486,7 +7486,7 @@
       "checker": "scripts/check-retained-set-automaton-obligations.py",
       "family": "retained_set_automaton",
       "manifest": "formal/retained_set_automaton_obligations.generated.json",
-      "manifest_sha256": "3fd378c051f1b64423c5cc24c652d9089a22d1c25fc037b00fc6dd331ffdc8a6",
+      "manifest_sha256": "c4510f0cf76f571c7924dea08273ec74b441b51861bc52e4985298c43e32771e",
       "obligations": {
         "causal_formal_mutants": [],
         "dedicated_tla_configurations": [],
@@ -7606,7 +7606,7 @@
         "proof_boundary": "Rocq theorems are conditional on prefix and residual-query soundness. The generated fresh/resting-Bag property extracts no-false-negative, rejection, and first-order invariants for exact and fallback patterns. Fixed product controls exercise compressed and singleton trie paths; neither establishes universal prefix-terminal refinement for every generated RhoPathQuery arm.",
         "rocq_sha256": "ebffe192375bc10c146730d3acbde2dcda194b392b2af6f29a8d5304b58ee2cf",
         "rocq_source": "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
-        "runtime_sha256": "58729b8da4f3416f0c5628e2748ef7c32e7483b8924a4b4a839b8fd47b810cc0",
+        "runtime_sha256": "ab42159aaf70aafc01054f456141fc32bf11cb377d3dfbf9728bd75aa88fe640",
         "runtime_source": "rspace++/src/rspace/retained_set_automaton.rs",
         "scope": "retained RSpace set automaton and authoritative resting-Bag product"
       }
@@ -7615,7 +7615,7 @@
       "checker": "scripts/check-rho-path-v2-obligations.py",
       "family": "rho_path_v2",
       "manifest": "formal/rho_path_v2_obligations.generated.json",
-      "manifest_sha256": "bfdf80c8f72d5b2a09c908d3ba3c2f99403b9847fa853129ad5944186aaf9616",
+      "manifest_sha256": "670fd6e01c054550a169888991192877504839dfef5dd14d1481d8e4a4ea02d8",
       "obligations": {
         "boundary": "Rust witnesses exercise selected outer codec behaviors, not the abstract lifecycle, RCI2/RMP2 payload validity, or a formal Rust refinement proof.",
         "excluded_families": [
@@ -7759,7 +7759,7 @@
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.tla": "b2efa3f2d3b184600399f369bbd3d2120e70d3198c69014a64cdbb56a8a74e31",
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.cfg": "233a78a56eb2972e46742bdf983cef96cc92bb580a0cc763833a7a4781dc4766",
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.tla": "678019bff3b23322cde42c7cde8482aaecb59188b1af8e338cafd1056455c12a",
-          "rspace++/Cargo.toml": "d9a89c282bc6be737745d2bc0debec6058b64a0f4038e7ad3e65375c31fc9c54",
+          "rspace++/Cargo.toml": "7a72d841637de991fa99384e01c46e8cbd7ff857ec3cff9923f915c187d57daf",
           "rspace++/tests/rho_path_spec.rs": "25d6ed6736474d4bbcd7e678038c459756e53f334f6fa9f53611eff25f2d7eae"
         },
         "tlc": {

@@ -46,6 +46,9 @@ pub trait Match<P, A, K>: Send + Sync {
     /// would hide an enabled COMM, so the conservative default is `false`.
     fn supports_rho_path_candidate_pruning(&self) -> bool { false }
 
+    #[cfg(feature = "retained-flat-dispatch-experiment")]
+    fn retained_flat_dispatch_experiment(&self) -> bool { false }
+
     /// Called once per candidate consume after every spatial bind has
     /// matched and the continuation is about to commit. Default is
     /// always-true (no guard, no veto). Returning `false` rolls the

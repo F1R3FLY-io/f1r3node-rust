@@ -117,7 +117,7 @@
   "proof_boundary": "Rocq theorems are conditional on prefix and residual-query soundness. The generated fresh/resting-Bag property extracts no-false-negative, rejection, and first-order invariants for exact and fallback patterns. Fixed product controls exercise compressed and singleton trie paths; neither establishes universal prefix-terminal refinement for every generated RhoPathQuery arm.",
   "rocq_sha256": "ebffe192375bc10c146730d3acbde2dcda194b392b2af6f29a8d5304b58ee2cf",
   "rocq_source": "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v",
-  "runtime_sha256": "58729b8da4f3416f0c5628e2748ef7c32e7483b8924a4b4a839b8fd47b810cc0",
+  "runtime_sha256": "ab42159aaf70aafc01054f456141fc32bf11cb377d3dfbf9728bd75aa88fe640",
   "runtime_source": "rspace++/src/rspace/retained_set_automaton.rs",
   "scope": "retained RSpace set automaton and authoritative resting-Bag product"
 }
