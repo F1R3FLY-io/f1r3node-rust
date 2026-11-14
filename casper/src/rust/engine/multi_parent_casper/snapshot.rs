@@ -20,6 +20,7 @@ use shared::rust::blocking::in_blocking;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::types::MultiParentCasperImpl;
+use super::validation_dispatcher::{judge_twin, TwinJudgement};
 use crate::rust::casper::{CasperSnapshot, OnChainCasperState};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -416,10 +417,10 @@ pub(crate) async fn compute_snapshot(
         // can reach nodes in a different order. LMM advances on
         // `seq_num >= sequence_number`, so the block that arrives second
         // wins, and two nodes can hold different blocks in the
-        // equivocator's slot. This is safe: `justification_follows` checks
-        // the set of validators, fork choice uses only valid latest
-        // messages, and slashing checks only that the latest message is
-        // invalid, not which invalid block it is.
+        // equivocator's slot. `justification_follows` checks the set of
+        // validators and fork choice uses only valid latest messages, so
+        // either block may be cited, provided its contents are valid:
+        // `cite_only_valid_twins` replaces a twin that is not.
         latest_msgs_hashes
             .iter()
             .filter(|(validator, _)| bonded_validators.contains_key(*validator))
@@ -573,7 +574,7 @@ pub(crate) async fn compute_snapshot(
         )
     })?;
 
-    Ok(CasperSnapshot {
+    let mut snapshot = CasperSnapshot {
         chain_id,
         dag,
         last_finalized_block,
@@ -585,7 +586,70 @@ pub(crate) async fn compute_snapshot(
         max_block_num,
         max_seq_nums,
         on_chain_state,
-    })
+    };
+    cite_only_valid_twins(this, &mut snapshot).await?;
+    Ok(snapshot)
+}
+
+/// A node that received an invalid twin first refused it and can never hold
+/// it, so a block citing one is one that node can never add. A twin in an
+/// equivocator's slot is cited only once its contents are judged valid;
+/// otherwise the slot cites the sender's block at the same sequence number
+/// that is no twin.
+async fn cite_only_valid_twins(
+    this: &MultiParentCasperImpl,
+    snapshot: &mut CasperSnapshot,
+) -> Result<(), CasperError> {
+    let local_validator: Option<Validator> = this
+        .validator_id
+        .as_ref()
+        .map(|id| Bytes::copy_from_slice(&id.public_key.bytes));
+    let cited_twins: Vec<Justification> = snapshot
+        .justifications
+        .iter()
+        .filter(|justification| {
+            snapshot
+                .invalid_blocks
+                .contains_key(&justification.latest_block_hash)
+        })
+        .cloned()
+        .collect();
+    for twin in cited_twins {
+        if let TwinJudgement::Valid = judge_twin(
+            this,
+            &twin.latest_block_hash,
+            snapshot,
+            local_validator.as_ref(),
+        )
+        .await?
+        {
+            continue;
+        }
+        let twin_meta = snapshot.dag.lookup_unsafe(&twin.latest_block_hash)?;
+        let mut untwinned = Vec::new();
+        for hash in snapshot
+            .dag
+            .blocks_at(&twin_meta.sender, twin_meta.sequence_number)?
+        {
+            if !snapshot.dag.lookup_unsafe(&hash)?.is_invalid() {
+                untwinned.push(hash);
+            }
+        }
+        let honest = untwinned.into_iter().min().ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "equivocation {} is held without a block of its sender at its sequence \
+                 number that is no equivocation",
+                PrettyPrinter::build_string_bytes(&twin.latest_block_hash)
+            ))
+        })?;
+        snapshot.invalid_blocks.remove(&twin.latest_block_hash);
+        snapshot.justifications.remove(&twin);
+        snapshot.justifications.insert(Justification {
+            validator: twin.validator,
+            latest_block_hash: honest,
+        });
+    }
+    Ok(())
 }
 
 pub(crate) async fn estimator(
