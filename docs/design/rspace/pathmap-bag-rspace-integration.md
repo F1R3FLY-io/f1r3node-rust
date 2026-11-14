@@ -4436,6 +4436,292 @@ Generated flat dispatch may be promoted only if an end-to-end preregistered comp
 a principled advantage while preserving trie-to-trie product pruning, prefix sharing, deterministic
 ordering, and bounded native-stack use.
 
+### Generated flat-dispatch treatment of the retained set automaton
+
+The representation rule that closes [Audit closure rule](#audit-closure-rule) lets generated flat dispatch become the default transition index of the retained set automaton only if an end-to-end preregistered comparison demonstrates a principled advantage. This subsection defines that treatment and its comparison in seven decisions, D1 to D7. The labels are local to this subsection; the decisions D1 to D7 of [Production receive accelerator (task 8011)](#production-receive-accelerator-task-8011) answer other questions. Each decision names the alternatives it rejects and why.
+
+Line numbers refer to [`retained_set_automaton.rs`](../../../rspace++/src/rspace/retained_set_automaton.rs) unless another file is named. The decisions use these terms:
+
+- A *bind position* $`j`$ is the index of one pattern within a waiting receive. The automaton keeps one transition index per bind position (`segments`, line 66).
+- A *framed path* is the retained byte path of a pattern after `RhoPathV1::relative_datum_structure_prefix` (line 119) has placed it in the byte domain of the Bag's keys. An empty framed path makes the pattern a root fallback (lines 121–122).
+- A *fact* $`(j, p, t)`$ records one pattern: its bind position $`j`$, its framed path $`p`$ and the terminal $`t`$ appended for it. The compile loop produces the facts in candidate order and, within a candidate, in bind-position order (lines 93–132), and hands each one to `insert_terminal` (line 129).
+- The *terminal arena* holds one `Terminal { candidate, previous, query }` per fact (lines 34–39). A `TerminalId` is the one-based index of its terminal in the arena (lines 19–32), and `previous` chains the terminals of one bind position that share a framed path, newest first.
+- The *transition index* of a bind position maps each distinct framed path to the newest terminal stored at that path. Production builds it as a `PathMap<TerminalId>` with `insert_terminal` (lines 206–220). The treatment replaces this index and the three walks that read it:
+  - W1, the fresh walk `collect_prefix_terminals` (lines 222–236), marks the terminals at every prefix of the fresh datum's framed bytes and checks their residual queries;
+  - W2, the exact lookup of the singleton schedule (line 298), reads the terminal at one path when the Bag holds one distinct key and exactly one non-root terminal depth can prefix it;
+  - W3, the product walk (lines 278–279 and 305–324), intersects the index with the Bag's read cursor and marks every terminal at a path that both hold.
+- The *control arm* `pathmap` is the production representation; the *treatment arm* `flat_dispatch` is the representation that D1 and D2 define.
+
+#### D1. Meaning and layout
+
+**Decision D1.** *Generated* means built by `RetainedSetAutomaton::compile` at run time from the same facts that the control consumes. *Flat* means contiguous vectors addressed by dense indices, the form of the retained FLT matcher of [SS-G49](../stack-safety/stack-safety-report-2026-07-29.md#526-retained-flt-candidate-matcher-integration-ss-g49), whose interner assigns dense state identifiers and whose executor keeps one continuation vector and one flat slot arena. *Dispatch* means selecting the child of a state for one byte in constant time. Each bind position owns three vectors, `states: Vec<FlatState>`, `masks: Vec<ByteMask>` and `labels: Vec<u8>`, where `ByteMask` is `pathmap::utils::ByteMask`, a set of bytes held in four `u64` words:
+
+```rust
+struct FlatState {
+    terminal: Option<TerminalId>,
+    label_end: usize,
+    first_child: usize,
+    mask: Option<std::num::NonZeroUsize>,
+}
+```
+
+State 0 is the root, at the empty path. Every other state is entered from its parent by one *dispatch byte*. A state then consumes its *label* $`\lambda(s)`$, a run of bytes whose nodes before the last have exactly one child and hold no terminal. The node where the label ends is the state's *end node*; it holds the state's `terminal`, if any, and its children. A label therefore stops at the first node that holds a terminal or has other than one child, so the root's label is empty whenever a root fallback exists. Writing $`e_s`$ for `states[s].label_end` and $`e_{-1} = 0`$, the label of state $`s`$ is the run of `labels` from index $`e_{s-1}`$ up to, but not including, $`e_s`$: labels are stored in state order, so a state needs only the end of its own. A state with children stores the one-based index of its child set in `mask`. Writing $`M_s`$ for that set, `masks[mask - 1]`, and $`f_s`$ for `first_child`, its children are the states $`f_s`$ to $`f_s + |M_s| - 1`$ in ascending order of their dispatch bytes, so the child for a byte $`b \in M_s`$ is
+
+```math
+\operatorname{child}(s, b) = f_s + \operatorname{rank}_{M_s}(b), \qquad \operatorname{rank}_{M}(b) = \bigl|\{\, b' \in M : b' < b \,\}\bigr| .
+```
+
+Membership is `BitMask::test_bit`, and $`\operatorname{rank}`$ is `ByteMask::index_of` (PathMap 0.3.4, `src/utils/mod.rs`, line 163), which counts the set bits below the byte with at most four population counts. A *leaf* has no children: its `mask` is `None` and its `first_child` is 0. A label stores a whole run of single-child nodes without terminals in one contiguous slice of `labels`; PathMap's line-list node, by comparison, holds at most 42 key bytes (`KEY_BYTES_CNT`, PathMap 0.3.4, `src/line_list_node.rs`).
+
+The example below holds four terminals in one bind position: T1 at the empty path, a root fallback, T2 at `ab`, T3 at `abcx` and T4 at `abd`. Its upper part draws the trie that the three vectors encode.
+
+```text
+                        s3, T4   abd ●────────┐
+                                     ▲        │
+                                     │ d      │
+                                     │        │
+           ● ─── a ───▶ ○ ─── b ───▶ ● ─── c ─┆─▶ ○ ─── x ───▶ ●
+           ε            a            ab       │   abc          abcx
+           s0, T1       in s1        s1, T2   │   in s2        s2, T3
+           │                         │        │                │
+           │                         │        └────────────────┄───────────────────────┐
+           ▼                         ▼                         ▼                       ▼
+         ┌─────────────────────┬─────────────────────┬─────────────────────┬─────────────────────┐
+         │ s0                  │ s1                  │ s2                  │ s3                  │
+         │ terminal T1         │ terminal T2         │ terminal T3         │ terminal T4         │
+states   │ label_end 0         │ label_end 1         │ label_end 2         │ label_end 2         │
+         │ first_child 1       │ first_child 2       │ first_child 0       │ first_child 0       │
+         │ mask 1              │ mask 2              │ mask None           │ mask None           │
+         └─────────────────────┴─────────────────────┴─────────────────────┴─────────────────────┘
+
+         ┌───────────┬───────────┐                   ┌──────┬──────┐
+masks    │ 1: {a}    │ 2: {c, d} │           labels  │ 0: b │ 1: x │
+         └───────────┴───────────┘                   └──────┴──────┘
+```
+
+Legend: bytes are written as letters. On the trie, ● is the end node of a state, ○ is a node inside a label, and each arrow is one byte; under each node are its path and its state. A vertical arrow joins a state's end node to its entry in `states`. Siblings are numbered in ascending order of their dispatch bytes (D2 fixes the order), so the state of `abcx` precedes the state of `abd` although its label ends deeper; the line from the state of `abd` is dotted (┆, ┄) where it crosses another line. Masks are one-based. The labels are empty for states 0 and 3, `b` for state 1 (from index 0 to 1) and `x` for state 2 (from 1 to 2). Dispatching the byte `d` at state 1 selects state $`f_1 + \operatorname{rank}_{M_1}(\mathtt{d}) = 2 + 1 = 3`$.
+
+Indices are `usize`, so the layout imposes no capacity bound below the address space, like the fixed-width identifiers of [Current implementation checkpoint](#current-implementation-checkpoint) and as the invariant "There is no artificial term-depth, receive-arity, expression-width, or traversal-depth limit" of [Consensus and compatibility invariants](#consensus-and-compatibility-invariants) requires. The zero niches of `TerminalId` and `NonZeroUsize` make a `FlatState` 32 bytes on a 64-bit target. For a bind position with $`n \ge 1`$ distinct framed paths $`k_0, \dots, k_{n-1}`$, every state holds a terminal or has at least two children, every leaf holds a terminal, and a rooted tree has fewer nodes with two or more children than leaves, so
+
+```math
+|\mathtt{states}| \le 2n - 1, \qquad |\mathtt{masks}| \le |\mathtt{states}| - 1, \qquad |\mathtt{labels}| \le \sum_{i=0}^{n-1} |k_i| .
+```
+
+The decision rejects four alternatives:
+
+- *Dense rows*, one 256-entry child row per state: a row of 256 `usize` entries costs 2 KiB on a 64-bit target for every state with children, where a `ByteMask` costs 32 bytes and the children are contiguous.
+- *`HashMap`, `BTreeMap` or expanded-`Vec` edges*: the representation rule above names these scientific controls that are not eligible default implementations, so the treatment, which must be eligible, cannot be one of them.
+- *Hash-consing* equal subtrees into shared states: vacuous. Every fact appends a fresh terminal (lines 213–218) at one framed path of one bind position, so two distinct nodes with equal subtrees would hold the same terminal at the same relative path and would be the same node; and no subtree is empty, because every node lies on a stored path. There is nothing to share.
+- *Code generated at build time* from a schema: the retained set is run-time data, the receives waiting on a channel group when the automaton is compiled (`compile` takes the live `candidates`, line 76), so no build step can know it.
+
+#### D2. Construction
+
+**Decision D2.** The treatment builds its tables directly from the facts and builds no PathMap, so its compile time does not contain the control's. Its compile loop appends each terminal to the arena at the same index as the control does, with `previous` unset, and keeps the facts of each bind position instead of calling `insert_terminal`. Algorithm FD1 then, for each bind position, sorts the facts stably by path, links the terminals of equal paths exactly as `insert_terminal` links them, so that the two arms' terminal arenas are identical, and partitions the sorted key ranges iteratively. The partition takes its pending ranges from a first-in, first-out queue rather than from an explicit stack; the reason follows the algorithm.
+
+**Algorithm FD1 (Flat table construction).** The input is the terminal arena and the facts $`F_j = \langle (p_0, t_0), \dots, (p_{m-1}, t_{m-1}) \rangle`$ of one bind position $`j`$ in the order that the compile loop produced them, in which the terminals increase. The output is the three vectors of $`j`$ and the `previous` links of its terminals.
+
+```pseudocode
+BUILD_FLAT(F_j, terminals):
+    ⟨1 sort the facts stably by path⟩
+    ⟨2 link equal paths and keep the newest terminal of each⟩
+    ⟨3 lay out the states in index order⟩
+```
+
+⟨1⟩ The order is lexicographic on bytes, in which a path precedes its extensions. A stable sort, such as Rust's `sort_by`, keeps facts with equal paths in insertion order, which is the order of their terminals.
+
+```pseudocode
+⟨1 sort the facts stably by path⟩ ≡
+    F := F_j sorted stably by path
+```
+
+⟨2⟩ In a maximal run of equal paths, each terminal's predecessor is the terminal before it in the run, the first has none, and the key keeps the last and newest terminal. These are the links that `insert_terminal` sets: it reads the terminal stored at the path, which is the one inserted there most recently, as `previous`, and then stores the new terminal in its place (lines 213–219).
+
+```pseudocode
+⟨2 link equal paths and keep the newest terminal of each⟩ ≡
+    K := []                                  -- the keys k_0 < k_1 < ... < k_(n-1), each with a terminal
+    for each maximal run (p, u_1), ..., (p, u_r) of equal paths in F:
+        for i from 2 to r:
+            terminals[u_i].previous := u_(i-1)
+        append (p, u_r) to K
+```
+
+⟨3⟩ A pending state carries the half-open range $`[\ell, h)`$ of the keys below it and the depth $`d`$ of its entry node, and every key in the range shares its first $`d`$ bytes. Because the keys are sorted, two comparisons decide each label byte: a key that ends at depth $`d`$ can only be $`k_\ell`$, and all the keys agree on byte $`d`$ exactly when $`k_\ell[d] = k_{h-1}[d]`$. Byte $`d`$ does not decrease along the range, so a binary search (`partition_point`) finds where the keys of each child byte end. An empty state has no terminal and no mask.
+
+```pseudocode
+⟨3 lay out the states in index order⟩ ≡
+    states := [an empty state]; masks := []; labels := []
+    queue := [(0, 0, n, 0)]                  -- (state, ℓ, h, d), first in, first out
+    while queue is not empty:
+        (s, ℓ, h, d) := remove the front of queue
+        while ℓ < h and |k_ℓ| > d and k_ℓ[d] = k_(h-1)[d]:
+            append k_ℓ[d] to labels          -- one child and no terminal: the label grows
+            d := d + 1
+        states[s].label_end := |labels|
+        if ℓ < h and |k_ℓ| = d:
+            states[s].terminal := the terminal of k_ℓ
+            ℓ := ℓ + 1
+        if ℓ = h:
+            states[s].first_child := 0; states[s].mask := None
+        else:
+            states[s].first_child := |states|; M := {}
+            while ℓ < h:
+                b := k_ℓ[d]
+                e := the first index in [ℓ, h) whose key has a byte greater than b at depth d, or h if none has
+                add b to M
+                append an empty state to states
+                append (|states| - 1, ℓ, e, d + 1) to the back of queue
+                ℓ := e
+            append M to masks
+            states[s].mask := |masks|        -- one-based
+```
+
+The queue returns states in the order they were appended, so ⟨3⟩ completes them in index order and appends each label directly after the previous state's; that is what lets a state store only `label_end`. With a last-in, first-out stack the children of a state would still be appended together, but states would be completed out of index order, and a label's start could no longer be read from the previous state. Both forms are iterative, use no native recursion, and complete each state once. The vectors satisfy D1: a label stops exactly where a key ends or the keys disagree, children are appended together in ascending byte order, and $`\operatorname{child}(s, b) = f_s + \operatorname{rank}_{M_s}(b)`$ because the runs appended before the run of $`b`$ are those of the bytes of $`M_s`$ below $`b`$. ⟨1⟩ performs $`O(m \log m)`$ path comparisons, ⟨2⟩ performs $`m - 1`$, and ⟨3⟩ performs $`O(|\mathtt{labels}| + |\mathtt{states}| \log n)`$ byte comparisons. The facts of a bind position are reserved to the number of candidates with a pattern at that position, which a pass over the candidates gives before the loop; the final lengths of the three vectors are known only when ⟨3⟩ ends, and they are shrunk to their lengths then.
+
+#### D3. Held equal
+
+**Decision D3.** Everything except the transition index and the three walks is held equal between the arms:
+
+- the compile loop (lines 93–132): candidate order, pattern projection (lines 100–113), framing (line 119), root fallbacks (lines 121–122) and the terminal arena with its residual queries, whose `previous` links D2 reproduces;
+- `terminal_depths` (lines 128 and 133–136) and the singleton schedule (lines 281–303), whose decision logic is unchanged and whose one exact lookup, W2, reads the flat table;
+- `RetainedSetAutomatonStats` (lines 49–62 and 137–152). Every field comes from the shared loop except `distinct_terminal_path_count` (lines 137–138), which the treatment computes as the number of states that hold a terminal. Both values are the number of distinct framed paths that hold a terminal, because PathMap's `iter` yields the root's value first and every other value after it (PathMap 0.3.4, `src/trie_map.rs`, line 309, and `src/zipper.rs`, lines 3025–3043);
+- the `Vec<bool>` result in candidate order (lines 182 and 198), the empty-Bag return (lines 254–256) and the marking functions `mark` and `mark_without_residual` (lines 327–368);
+- the RSpace cache and versioning in [`rspace.rs`](../../../rspace++/src/rspace/rspace.rs): `CachedRetainedSetAutomaton` (lines 87–90), the `retained_set_automata` map (line 114), `retained_candidate_selection` (lines 1173–1230) and `compile_retained_set_automaton` (lines 1232–1263).
+
+The treatment's walks are Algorithms FD2 and FD3. To relate them to W1, W2 and W3, call a pair $`(s, i)`$ with $`0 \le i \le |\lambda(s)|`$ a *position*: the node reached from the entry node of state $`s`$ by the first $`i`$ bytes of its label. Position $`(s, i)`$ holds `states[s].terminal` when $`i = |\lambda(s)|`$ and no terminal otherwise; its child bytes are $`\{\lambda(s)_i\}`$ when $`i < |\lambda(s)|`$, $`M_s`$ at the end node of a state with children, and none at the end node of a leaf. By D1, sending each position to its framed path is a bijection onto the paths that exist in the control's `PathMap` segment, which are the prefixes of the bind position's framed paths, and at every position the terminal and the child bytes equal the segment's value and `child_mask` at that path. FD2 and FD3 therefore mark exactly the terminals that W1, W2 and W3 mark, with the same marking functions, so the selection vectors are equal. FD2 marks at the end node of every state it completes; FD3 compares a whole label with the cursor at once, which skips no terminal, because the positions inside a label hold none and have one child.
+
+**Algorithm FD2 (Flat fresh walk and exact lookup).** `FRESH_WALK` replaces W1 and `LOOKUP` replaces the `segment.get` of W2. $`\beta`$ is the framed byte stream of the fresh datum, which W1 reads from `RhoPathV1::relative_datum_structure_prefix_bytes` (line 230).
+
+```pseudocode
+FRESH_WALK(table, raw, selected):            -- W1
+    β := the framed bytes of raw
+    s := 0
+    loop:
+        for each byte c of λ(s):
+            if β is exhausted or the next byte of β is not c: return
+        mark(states[s].terminal, raw, selected)   -- checks residual queries (lines 345-368)
+        if β is exhausted or states[s].mask is None: return
+        b := the next byte of β
+        if b is not in M_s: return
+        s := f_s + rank(M_s, b)
+
+LOOKUP(table, p):                            -- W2: the terminal stored at exactly p
+    s := 0; i := 0
+    loop:
+        if p[i..] does not begin with λ(s): return None
+        i := i + |λ(s)|
+        if i = |p|: return states[s].terminal
+        if states[s].mask is None or p[i] is not in M_s: return None
+        s := f_s + rank(M_s, p[i]); i := i + 1
+```
+
+**Algorithm FD3 (Flat product walk).** `PRODUCT_WALK` replaces W3, including its root mark, and keeps the singleton schedule with `LOOKUP` in place of `segment.get`. A frame of its explicit stack holds a state, the number of bytes the cursor descended to reach that state's end node, and an iterator over the child bytes that the table and the Bag both hold there. The cursor enters a child only through its dispatch byte and its whole label; when the Bag diverges inside a label, the cursor climbs back the bytes it took. `CHILDREN(s)` is $`M_s`$ for a state with children and the empty set for a leaf, and the cursor methods are those of `BagReadCursor` (`bag.rs`, line 252; `guarded_pathmap.rs`, lines 669–683).
+
+```pseudocode
+PRODUCT_WALK(table, terminal_depths, resting, data, selected):   -- W3
+    if λ(0) is empty: mark_without_residual(states[0].terminal, selected)
+    ⟨the singleton schedule of lines 289-303, with LOOKUP(table, key prefix) for segment.get⟩
+    k := data.descend_to_existing(λ(0))
+    if k < |λ(0)|: return                    -- no Bag key passes through the root's label
+    if λ(0) is not empty: mark_without_residual(states[0].terminal, selected)
+    stack := [(0, k, an iterator over CHILDREN(0) ∩ data.child_mask())]
+    while stack is not empty:
+        (s, descended, bytes) := the top frame of stack
+        if bytes yields a byte b:
+            c := f_s + rank(M_s, b)
+            data.descend_to_byte(b)
+            k := data.descend_to_existing(λ(c))
+            if k < |λ(c)|:
+                call data.ascend_byte() k + 1 times     -- the Bag diverges inside the label
+            else:
+                mark_without_residual(states[c].terminal, selected)
+                push (c, k + 1, an iterator over CHILDREN(c) ∩ data.child_mask()) onto stack
+        else:
+            pop stack
+            if stack is not empty: call data.ascend_byte() descended times
+```
+
+The treatment keeps the four properties that the representation rule requires. Trie-to-trie product pruning: FD3 enters a child only when the Bag holds its dispatch byte and its whole label. Prefix sharing: each distinct prefix is one position of one table. Deterministic ordering: the tables depend only on the keys and their terminals (D2), the walks visit children in ascending byte order, and the result is indexed by candidate. Bounded native-stack use: FD1's queue and FD3's stack are heap vectors, FD2 keeps no stack, and each table is three vectors of plain values whose drop does not recurse.
+
+#### D4. Seam
+
+**Decision D4.** The treatment is reached through a feature and a matcher opt-in; RSpace is unchanged. The feature `retained-flat-dispatch-experiment` sits beside the other measurement-only features of [`rspace++/Cargo.toml`](../../../rspace++/Cargo.toml) (`[features]`, lines 13–33). The treatment's code lives in `rspace++/tests/retained_set_automaton/flat_dispatch_experiment.rs`, a child module of `retained_set_automaton.rs` declared the way [`record_index.rs`](../../../rspace++/src/rspace/record_index.rs) declares the record-order index experiment (lines 2006–2009):
+
+```rust
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+#[doc(hidden)]
+#[path = "../../tests/retained_set_automaton/flat_dispatch_experiment.rs"]
+pub mod flat_dispatch_experiment;
+```
+
+`Match` in [`match.rs`](../../../rspace++/src/rspace/match.rs) gains a default method after `supports_rho_path_candidate_pruning` (line 47), present only with the feature, which `compile` consults once per compilation:
+
+```rust
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+fn retained_flat_dispatch_experiment(&self) -> bool { false }
+```
+
+The method is needed because RSpace compiles every automaton through `RetainedSetAutomaton::compile(&**self.matcher, candidates)` (`rspace.rs`, line 1237): the matcher is the only per-space input to that call, and no existing seam reaches the representation. A matcher opts in by overriding the method. RSpace is unchanged, and the default build compiles exactly the current code.
+
+```text
+rspace.rs (unchanged)
+  compile_retained_set_automaton, lines 1232–1263
+    │  RetainedSetAutomaton::compile(&**self.matcher, candidates), line 1237
+    ▼
+retained_set_automaton.rs
+  compile, lines 74–160: candidate order, projection, framing, terminal arena,
+  terminal_depths and statistics, held equal (D3)
+    │  one fact (j, p, t) per pattern
+    ├──── opt-in false, or feature off ────▶ insert_terminal ──▶ PathMap segment of j
+    └──── opt-in true ─────────────────────▶ Algorithm FD1 ────▶ flat table of j
+
+rspace.rs (unchanged)
+  retained_candidate_selection, lines 1173–1230
+    │  matching_candidates_with_resting, lines 176–199
+    ▼
+retained_set_automaton.rs
+  for each bind position of the receive
+    ├──── PathMap segment ─────────────────▶ W1, W2, W3
+    └──── flat table ──────────────────────▶ FD2 (FRESH_WALK, LOOKUP), FD3 (PRODUCT_WALK)
+  result: one Vec<bool> selection in candidate order, whichever index was built
+```
+
+Legend: each block names a file and the functions involved, in call order from top to bottom; `│` and `▼` lead to the next call, labelled with the call itself; at `├` and `└` the matcher's opt-in chooses one branch per compilation, and each selection runs the walks of the index that its compilation built.
+
+#### D5. Obligations
+
+**Decision D5.** Before any sample is taken, the treatment meets five obligations:
+
+1. On generated inputs, its selection vectors and statistics equal the control's bit for bit. The generator covers several bind positions, structural queries, root fallbacks, shared prefixes, escape bytes, and Bags with zero, one and several distinct keys.
+2. Deep and wide inputs compile, select and drop on a 128 KiB stack, as `deep_and_wide_automata_compile_select_and_drop_on_a_tiny_stack` checks for the control ([`retained_set_automaton_spec.rs`](../../../rspace++/tests/retained_set_automaton_spec.rs), lines 417–442).
+3. Its tables are deterministic: two compilations of one input give equal tables.
+4. The RSpace differentials of [`candidate_path_pruning_spec.rs`](../../../rspace++/tests/candidate_path_pruning_spec.rs) at line 535 (256 waiting receives filtered datum first) and line 609 (a COMM that only resting data enables) give equal results, spatial-matcher call counts, event logs and `to_map()` with a matcher of each arm.
+5. Every benchmark fixture checks equal selections before it is timed.
+
+#### D6. Measurement and decision rule
+
+**Decision D6.** The comparison is the preregistered protocol below, whose two experiments, P and G, are opened in pgmcp before the first sample. Write $`\bar t_c^{T}`$ and $`\bar t_c^{C}`$ for the mean time per iteration of the treatment `flat_dispatch` and the control `pathmap` in cell $`c`$, and $`r_c = \bar t_c^{T} / \bar t_c^{C}`$ for their ratio.
+
+- Arms: one feature build serves both, and they share fixtures, candidate order, terminal arena, residual queries, RSpace cache, CPU and Criterion configuration. The no-index `control` arms of the two harnesses run alongside and are reported as context only.
+- End-to-end cells: the groups `waiting_receive_diverse_prefix` and `waiting_receive_shared_prefix` of [`rspace_comm.rs`](../../../rspace++/benches/rspace_comm.rs) at 16, 256 and 4,096 waiting persistent receives, with 51 samples per arm. After the first produce, every timed produce hits the cached automaton with an empty Bag, so these cells time W1 inside a complete produce.
+- Selector-level cells: the groups `retained_bag_product_{diverse,shared}_prefix`, `retained_bag_product_multikey_{diverse,shared}_prefix` and `retained_automaton_compile_{diverse,shared}_prefix` of [`rspace_retained_bag_product.rs`](../../../rspace++/benches/rspace_retained_bag_product.rs) at 16, 256 and 4,096 candidates, with 82 samples per arm. The Bag of a multikey group holds 16 distinct keys, so W3 runs its explicit stack instead of the singleton schedule.
+- Space cells: the deterministic benchmark `rspace_retained_automaton_space`, run twice with identical output, reports the bytes live after compile for each corpus, size and arm.
+- Statistics: for each timed cell, the analyzer `scripts/bench/analyze-rspace-retained-flat-dispatch.py`, written and self-tested before the experiments are opened and recorded in both by its SHA-256, computes $`r_c`$ and its one-sided 99% upper bound $`U_c`$ from an unpaired bootstrap with 10,000 resamples per arm and seed `0x41315648`, and the same bound for an A/A split of the control's samples into even and odd sample indices. In a space cell, $`r_c`$ is the ratio of live bytes; it is deterministic, so the guardrail uses the ratio itself.
+- Experiment P, the primary: in `waiting_receive_shared_prefix` at 4,096, the treatment lowers the mean produce latency (`produce_latency_ns`) by at least 5% against the control. Writing $`c`$ for that cell and $`\mu^{T}`$ and $`\mu^{C}`$ for the arms' true mean latencies in it, P accepts when a one-sided Welch t-test of $`H_1 : \mu^{T} < \mu^{C}`$ rejects $`H_0 : \mu^{T} = \mu^{C}`$ at $`\alpha = 0.01`$ with Cohen's $`d \ge 0.5`$, and $`\bar t_c^{T} \le 0.95\,\bar t_c^{C}`$.
+- Experiment G, the guardrail: no other cell regresses. Its treatment samples are the bounds of the five other end-to-end cells, the twelve product cells, the six compile cells and the six space cells; its control arm holds the A/A bounds of the 24 timed cells as the noise floor.
+
+```math
+\text{G accepts} \iff \max_{c \in \mathcal{C}_G} U_c \le 1.05, \qquad |\mathcal{C}_G| = 5 + 12 + 6 + 6 = 29 .
+```
+
+- Validity: every fixture's preflight passes before timing, with equal selections and, in the end-to-end cells, equal results, event logs and `to_map()`; a failed preflight voids the run. The analyzer's self-test shows that a synthetic treatment equal to the control times 1.10 has a bound above 1.05 and that an A/A split is not accepted by P's rule. If any A/A bound in a timed cell exceeds 1.05, the run is void and is repeated once on a quiet host; a second void run is reported as a blocker and not decided. The runs take place in a quiet window on one pinned core, with the host's frequency state and the cleanliness of the measured sources recorded before and after.
+- A seam check runs the control of the primary cell in the default build, without the feature, and reports its mean beside the feature build's control mean; it is reported and not decided.
+
+These thresholds are the campaign's, stated in [Scientific evaluation](#scientific-evaluation): an improvement of at least five percent at ninety-nine-percent confidence, and no critical latency or memory metric regressing by more than five percent.
+
+#### D7. Consequence
+
+**Decision D7.** Flat dispatch becomes eligible for a promotion proposal only if both P and G accept, and promotion itself remains a separate decision of the project owner, which this document does not make. A result in PathMap's favor is recorded as PathMap's measured advantage. Whatever the verdict, the treatment stays behind its feature as a reproducible control, as the benchmark keeps the rejected experiment-241 arena for reproducibility ([Current implementation checkpoint](#current-implementation-checkpoint)).
+
 ## Consensus and compatibility invariants
 
 - Candidate order is a function of the state: within one state, the order of every read, and with it a selector's choice, the results and the cost, is determined by that state (the read-order condition of [Correctness criterion: the Rho calculus](#correctness-criterion-the-rho-calculus)). No particular order is required; the order may differ from the existing canonical candidate order and from LMDB mode as long as the criterion holds.
