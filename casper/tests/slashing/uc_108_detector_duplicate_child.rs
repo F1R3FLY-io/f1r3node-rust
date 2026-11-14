@@ -14,7 +14,7 @@ use super::detector_totality_helpers::{assert_valid, block, justification, Detec
 #[tokio::test]
 async fn uc_108_duplicate_child_paths_do_not_create_two_child_evidence() {
     let fixture = DetectorFixture::new().await;
-    fixture.add_record(0, 0, &[]);
+    fixture.add_equivocation(0, 0);
 
     let child = block(
         10,

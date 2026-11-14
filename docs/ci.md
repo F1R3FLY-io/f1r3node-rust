@@ -31,6 +31,7 @@ Trusted execution keeps separate revision rules:
 | --- | --- | --- |
 | Protected Head Guard and CI Heavy Label | Trusted base branch under `pull_request_target` | Pull request changes cannot supply scripts to their write tokens. |
 | Fork integration validation | Trusted workflow, approved fork source, and candidate harness pin | Existing launch approval and credential isolation remain required. |
+| Commit Policy Team | `master` under `workflow_run` | Reads organization membership without exposing its App credential to PR CI. |
 | Promote and Back-merge and Release Train Daily Back-merge | `master` only | The protected `release-credentials` environment holds the promotion app credentials. |
 | Deployment Train exact-merge CI | Trusted default-branch workflow, separate candidate `target_sha` | Release evidence binds the control revision separately from the candidate revision. |
 
@@ -139,6 +140,12 @@ The job verifies commit identities in pull requests. It reads the pull request h
 
 Ordinary pull requests use the base commit's checker and denied identities list. Before these files reach the base branch, the step uses the copies in the pull request. Approved workflow transfers can use verified source policy as described below.
 
+The policy base is the first parent of GitHub's proposed merge commit, pinned by `github.sha`.
+The job requires two parents and verifies that the second matches the event's PR head.
+PR payload metadata can retain an older base SHA after the target branch advances.
+The original payload base SHA serves only transfer metadata checks.
+The resolved merge target selects trusted policy, ratified history, and the checked commit range.
+
 `.github/scripts/commit-policy-exemptions.sh` lists the exempt commits: the commits of a human pull request author, and the contributor commits of an imported fork pull request. The step runs the base copy of that script.
 
 Approved branch transfers can also use source history to ratify identities. This prevents a target branch from rejecting authors already accepted on the source.
@@ -165,12 +172,69 @@ Targets with the source validator retain their existing policy. Other PRs into t
 
 After this fix reaches `dev`, the normal promotion workflow can transfer its policy into `ca-canary`. No separate policy-only PR or force push is required. An existing sync needs the updated CI workflow in its head before it can use this behavior.
 
+#### Maintainer author identities
+
+Active members of `@F1R3FLY-io/ci-maintainers` can author PR commits without a separate identity registry.
+GitHub must attribute each exempt commit to that member's human account.
+The check uses the commit's author account, not its committer, display name, or an email domain.
+This association does not verify a cryptographic commit signature.
+
+The existing history and contributor exemptions run first.
+If the checker still rejects an unknown author, CI loads `commit-policy-team.sh` from the accepted policy revision.
+Approved transfers can use the verified source policy revision described above.
+A PR-only script cannot supply its own team exemptions.
+The helper skips authors already accepted through history or the existing contributor exemptions.
+
+[Commit Policy Team](../.github/workflows/commit-policy-team.yml) runs when ordinary PR CI enters `in_progress`, including reruns.
+The `workflow_run` event uses trusted `master` code.
+The helper checks out only that trusted revision and reads active team members with a separate App token.
+The protected `release-credentials` environment and an explicit branch guard restrict this credential to `master`.
+The helper never checks out or executes PR code.
+
+The helper publishes a temporary membership artifact for the originating CI run ID and attempt.
+Ordinary CI has read-only API permissions and receives no App credential.
+It checks the artifact publisher's repository, workflow path, event, branch, and successful completion.
+It also checks the snapshot's repository, team, run ID, and attempt.
+A snapshot from another run, an earlier attempt, or a branch-controlled publisher cannot grant an exemption.
+Artifacts expire after one day and are not committed to the repository.
+
+CI matches the team snapshot against GitHub's author attribution for each candidate commit SHA.
+For commits missing from the PR API's 250-commit listing, it reads the individual commit endpoint.
+Unmapped accounts, bots, and nonmembers receive no team exemption.
+A failed API request or unavailable trusted snapshot cannot grant an exemption.
+CI waits up to five minutes for a successful publisher before reporting that the team snapshot is unavailable.
+Known authors do not acquire this dependency when the existing check passes.
+
+The [denied identities](../.github/denied-identities.txt) still take precedence, including domain denials.
+Co-author identities still need accepted history, and forbidden session trailers still fail.
+The local commit hook retains its history-based behavior and makes no team API request.
+
+Removing someone from the team removes this additional author exemption on later CI runs.
+It does not revoke identities already accepted through history or other existing exemptions.
+Use the denied list when an identity must be blocked regardless of its history or membership.
+Existing reviews, required check names, Mergify conditions, and release policies remain unchanged.
+
+Rollout requires these maintainer steps:
+
+1. Install a dedicated identity-reader GitHub App in `F1R3FLY-io` with organization **Members: read** permission and no repository write permissions.
+2. Configure `IDENTITY_APP_ID` and `IDENTITY_APP_PRIVATE_KEY` in the existing `release-credentials` environment as a variable and secret, respectively.
+3. Retain that environment's `master`-only deployment rule and existing approval controls.
+4. Merge the reviewed change into `dev`, then promote it to `master` so the trusted helper can run.
+5. Run `just ca-sync` to transfer the accepted policy to `ca-canary` through its workflow-created PR and Mergify.
+6. Refresh affected PR merge revisions and run fresh CI. Check the corresponding **Commit Policy Team** run if membership lookup fails.
+
+Until the helper reaches `master` and its App is configured, new team exemptions cannot take effect.
+Existing history and contributor exemptions still work.
+Membership is captured for each CI attempt. A rerun reads a new snapshot.
+GitHub documents the [team API permissions](https://docs.github.com/en/rest/teams/members#list-team-members) and [workflow run events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run).
+
 ### Script Tests
 
 The job runs these script tests:
 
 - Commit trailer check
 - Commit Policy exemptions
+- Commit Policy team membership
 - Commit Policy source history
 - Commit Policy bootstrap
 - Workflow revision selection
@@ -346,7 +410,7 @@ The commands run the same scripts as `just promote` and `just backmerge`. The op
 CI treats the two branches like `dev` and `master`:
 
 - A push to `ca-canary` or `ca-release` runs the heavy pipeline. The merge group reuse applies to `dev` only, so every push runs the OCI integration tests.
-- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to every pull request when it opens. Its head must not be a protected branch.
+- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label when the pull request opens. Into `ca-canary`, Mergify labels only a `ca/` head. The head must not be a protected branch.
 - An accepted `ca-release` commit gets a tag of the form `ca-v<version>`, for example `ca-v0.5.0-rc.1`. The tag runs the heavy pipeline. It does not match `v*`, so the GitHub release job does not run for it.
 
 Image publication:
@@ -365,6 +429,14 @@ Only `dev` and `master` publish without reviewer approval, through `protected-br
 ### Dev sync
 
 `dev` reaches the release train only through an occasional sync. A maintainer runs `just ca-sync`. The command opens a pull request from `dev` into `ca-canary` with the `ci-heavy` label. Its `ca/` head puts it in the `ca-item` queue, which uses the existing CI and review requirements. A merge into `ca-canary` does not require a soak. `ca-release` gets `dev` code only through a promotion from `ca-canary`.
+
+### Release train items
+
+A release train item is a pull request from a `ca/<type>-<topic>` head into `ca-canary`. Examples are `ca/feature-seal-limits` and `ca/fix-refund-payer`. The `ca-sync` operation owns the `ca/sync-dev-` prefix.
+
+An item branch starts from `ca-canary`. It must not merge `dev`, because `dev` code reaches `ca-canary` only through the sync. If an item needs `dev` changes, a maintainer runs `ca-sync` first. The item then merges `ca-canary`.
+
+The `ca-item` queue accepts only a `ca/` head into `ca-canary`. Mergify does not add `ci-heavy` to a `ca-canary` pull request with another head. That pull request matches no queue, and the Mergify comment shows that it waits for queue conditions. GitHub cannot change the head of an open pull request. To recover, push the head commit to a `ca/` branch and open a new pull request.
 
 ### Daily back-merge
 

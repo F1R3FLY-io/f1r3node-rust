@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
@@ -67,7 +66,6 @@ impl ReportingCasper for NoopReportingCasper {
 /// Real implementation using RhoReporter
 pub struct RhoReporterCasper {
     rspace_store: RSpaceStore,
-    block_dag_storage: BlockDagKeyValueStorage,
     replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 }
@@ -97,18 +95,10 @@ impl ReportingCasper for RhoReporterCasper {
         .await
         .map_err(|e| format!("Failed to create reporting runtime: {}", e))?;
 
-        let dag = self
-            .block_dag_storage
-            .get_representation()
-            .map_err(|e| format!("Failed to get DAG representation: {}", e))?;
-
         let pre_state_hash_bytes = proto_util::pre_state_hash(block);
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(&pre_state_hash_bytes);
 
         let block_data = BlockData::from_block(block);
-
-        let seen_invalid_blocks = proto_util::block_slash_invalid_blocks(&dag, block)
-            .map_err(|e| format!("Failed to read slash evidence: {}", e))?;
 
         Self::replay_deploys(
             &mut reporting_runtime,
@@ -117,7 +107,7 @@ impl ReportingCasper for RhoReporterCasper {
             &block.body.system_deploys,
             with_cost_accounting(&block.header.parents_hash_list),
             &block_data,
-            seen_invalid_blocks,
+            proto_util::slash_evidence_senders(proto_util::slash_evidence(block)),
         )
         .await
     }
@@ -262,13 +252,11 @@ pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
 /// Factory function to create rho reporter with real reporting capability
 pub fn rho_reporter(
     rspace_store: &RSpaceStore,
-    block_dag_storage: &BlockDagKeyValueStorage,
     replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 ) -> Arc<dyn ReportingCasper> {
     Arc::new(RhoReporterCasper {
         rspace_store: rspace_store.clone(),
-        block_dag_storage: block_dag_storage.clone(),
         replay_lock,
         external_services,
     })

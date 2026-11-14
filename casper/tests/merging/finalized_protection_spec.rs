@@ -176,7 +176,6 @@ fn dag_with_finalized_sibling(
         block_number_map,
         main_parent_map,
         self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: finalized_sibling.clone(),
         finalized_blocks_set,
         block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(metadata_store))),

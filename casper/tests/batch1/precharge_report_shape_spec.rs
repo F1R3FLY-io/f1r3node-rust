@@ -237,7 +237,6 @@ new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh in {{
     let store = store_manager.r_space_stores().await.unwrap();
     let reporter = reporting_casper::rho_reporter(
         &store,
-        &node.block_dag_storage,
         node.runtime_manager.replay_lock(),
         ExternalServices::noop(),
     );
@@ -316,7 +315,6 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
 
     let reporter = reporting_casper::rho_reporter(
         &rspace_store,
-        &node.block_dag_storage,
         node.runtime_manager.replay_lock(),
         ExternalServices::noop(),
     );
@@ -458,7 +456,6 @@ async fn genesis_report_carries_only_user_markers() {
 
     let reporter = reporting_casper::rho_reporter(
         &rspace_store,
-        &node.block_dag_storage,
         node.runtime_manager.replay_lock(),
         ExternalServices::noop(),
     );

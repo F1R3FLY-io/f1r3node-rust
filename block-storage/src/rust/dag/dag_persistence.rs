@@ -14,9 +14,10 @@ use super::{decode, encode};
 
 pub(crate) const METADATA: usize = 0;
 const LATEST: usize = 1;
-const INVALID: usize = 2;
+const EQUIVOCATIONS: usize = 2;
 const GENESIS: usize = 3;
 const STATE: usize = 7;
+const SEQUENCES: usize = 9;
 const PROGRESS: &[u8] = b"dag.progress";
 const GC_SLOTS: DagGcSlots = DagGcSlots {
     metadata: METADATA,
@@ -81,6 +82,8 @@ impl DagPersistence {
                 membership: 4,
                 heights: 5,
                 children: 6,
+                sequences: SEQUENCES,
+                equivocations: EQUIVOCATIONS,
             })),
             gc: Arc::new(DagGcStore::new(group.clone(), GC_SLOTS)),
             group,
@@ -137,6 +140,7 @@ impl DagPersistence {
             (METADATA, "block-metadata"),
             (4, "dag-membership-v1"),
             (5, "dag-height-v1"),
+            (SEQUENCES, "dag-sequence-v1"),
         ] {
             if self.group.len(slot)? != progress.total {
                 return Err(KvStoreError::InvalidArgument(format!(
@@ -167,7 +171,7 @@ impl DagPersistence {
                 })?;
             if member.height != *height
                 || !member.matches(hash, &metadata)
-                || metadata.invalid
+                || metadata.is_invalid()
                 || !metadata.directly_finalized
             {
                 return Err(KvStoreError::InvalidArgument(
@@ -205,7 +209,7 @@ impl DagPersistence {
                     ));
                 }
             }
-            if approved && metadata.invalid {
+            if approved && metadata.is_invalid() {
                 return Err(KvStoreError::InvalidArgument(
                     "cannot approve previously published invalid metadata".into(),
                 ));
@@ -241,14 +245,11 @@ impl DagPersistence {
                     KvStoreError::InvalidArgument("DAG block count overflow".into())
                 })?;
                 self.history.index_block(tx, &metadata, progress.sequence)?;
-                if !metadata.invalid {
+                if !metadata.is_invalid() {
                     progress.max_height =
                         Some(progress.max_height.map_or(metadata.block_number, |height| {
                             height.max(metadata.block_number)
                         }));
-                }
-                if metadata.invalid {
-                    tx.put(INVALID, key.clone(), encode(&metadata)?)?;
                 }
                 for (validator, hash) in latest {
                     tx.put(
