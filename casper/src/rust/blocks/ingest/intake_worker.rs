@@ -217,7 +217,7 @@ impl Intake {
             return Ok(SenderAuthorization::Unknown);
         };
         Ok(match self.dag.lookup(main_parent)? {
-            Some(parent) if !parent.invalid => match parent.weight_map.get(&block.sender) {
+            Some(parent) if !parent.is_invalid() => match parent.weight_map.get(&block.sender) {
                 Some(stake) if !stake.is_zero() => SenderAuthorization::Authorized,
                 _ => SenderAuthorization::Unauthorized,
             },

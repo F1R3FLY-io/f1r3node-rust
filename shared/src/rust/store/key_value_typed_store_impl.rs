@@ -252,20 +252,36 @@ mod tests {
     use super::*;
     use crate::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 
-    fn new_store() -> KeyValueTypedStoreImpl<String, i64> {
+    // Owns the TempDir together with the typed store so that when the test
+    // binding drops, the LMDB Env is closed before the directory is removed.
+    // Leaking the TempDir (as the pre-#1014 helper did) kept the Env alive
+    // until process exit and, on macOS, leaked one SysV semaphore set per test.
+    struct TestStore {
+        store: KeyValueTypedStoreImpl<String, i64>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for TestStore {
+        type Target = KeyValueTypedStoreImpl<String, i64>;
+        fn deref(&self) -> &Self::Target { &self.store }
+    }
+
+    fn new_store() -> TestStore {
         let dir = tempfile::tempdir().unwrap();
-        let path = Box::leak(Box::new(dir)).path();
         let mut builder = EnvOpenOptions::new();
         builder.map_size(10 * 1024 * 1024);
         builder.max_dbs(1);
-        let env = Arc::new(unsafe { builder.open(path).unwrap() });
+        let env = Arc::new(unsafe { builder.open(dir.path()).unwrap() });
         let mut wtxn = env.write_txn().unwrap();
         let db = env.create_database(&mut wtxn, None).unwrap();
         wtxn.commit().unwrap();
-        KeyValueTypedStoreImpl::new(Arc::new(LmdbKeyValueStore::new(env, db)))
+        TestStore {
+            store: KeyValueTypedStoreImpl::new(Arc::new(LmdbKeyValueStore::new(env, db))),
+            _dir: dir,
+        }
     }
 
-    fn seeded_store() -> KeyValueTypedStoreImpl<String, i64> {
+    fn seeded_store() -> TestStore {
         let store = new_store();
         store
             .put(vec![

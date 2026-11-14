@@ -87,8 +87,12 @@ pub struct ApiErrorResponse {
     /// **405 Method Not Allowed:**
     /// `method_not_allowed`
     ///
+    /// **415 Unsupported Media Type:**
+    /// `invalid_request_body`
+    ///
     /// **422 Unprocessable Entity:**
-    /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
+    /// `invalid_request_body`, `out_of_phlogistons`, `user_abort`,
+    /// `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
     /// `no_new_deploys`
@@ -501,9 +505,10 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, phlo price below minimum, or expired deploy.", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value, including deploy parameter names and values (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
     ),
@@ -528,7 +533,8 @@ pub async fn deploy_handler(
     responses(
         (status = 200, description = "Exploratory deploy executed; returns channel data", body = RhoDataResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `readonly_node_required`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
         (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
@@ -559,7 +565,8 @@ pub async fn explore_deploy_handler(
         (status = 200, description = "Exploratory deploy executed against the specified block; returns channel data", body = RhoDataResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
         (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
@@ -1092,7 +1099,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert!(bad.status().is_client_error());
+            assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
             let json = body_json(bad).await;
             assert_eq!(json["error"], "invalid_request_body");
             assert!(json["message"].as_str().is_some());

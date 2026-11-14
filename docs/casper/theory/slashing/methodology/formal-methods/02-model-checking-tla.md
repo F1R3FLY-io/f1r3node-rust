@@ -277,7 +277,7 @@ Step 4: Thread_B writes tracker[v] = {h_B}    (* lost: h_A *)
 ```
 
 This trace is the **direct cause** of the Rust regression test
-[`casper/tests/slashing/loom_t_9_2_atomic_record.rs`](../../../../../../casper/tests/slashing/loom_t_9_2_atomic_record.rs)
+[`casper/tests/slashing/loom_t_9_2_atomic_record.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/504963ab546be84e50650ad81bb5df11965954ca/casper/tests/slashing/loom_t_9_2_atomic_record.rs)
 which reproduces the same race in actual Rust under Loom; see
 [`../randomized-search/04-concurrency-interleaving-loom.md`](../randomized-search/04-concurrency-interleaving-loom.md)
 for the Loom side of the story.
