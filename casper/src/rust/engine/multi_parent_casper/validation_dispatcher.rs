@@ -83,73 +83,106 @@ async fn derive_floor_context(
     .await
 }
 
-/// What `block`'s parents held as equivocations say about `block`. A twin is
-/// stored without its contents judged, so a block built on one is judged
-/// only once the twin is: an invalid twin makes the block invalid, and a twin
-/// that cannot be judged yet defers it for the same reason. A valid twin's
-/// judgement replays it, so its post-state is held for the block's replay,
-/// and records its deploys in the deploy history.
-/// A final verdict is remembered, so a twin is judged once however many
-/// blocks build on it.
-async fn equivocating_parents_verdict(
+/// The judgement of a twin's contents.
+enum TwinJudgement {
+    Valid,
+    Invalid(InvalidBlock),
+    /// The contents cannot be judged yet, for this reason.
+    Deferred(BlockError),
+}
+
+/// Judges the contents of `twin_hash`, a block stored as an equivocation
+/// without its contents judged. A valid twin's judgement replays it, so its
+/// post-state is held for the replay of a block built on it, and records its
+/// deploys in the deploy history. A final verdict is remembered, so a twin is
+/// judged once however many blocks depend on it.
+async fn judge_twin(
+    this: &MultiParentCasperImpl,
+    twin_hash: &BlockHash,
+    snapshot: &mut CasperSnapshot,
+    local_validator: Option<&models::rust::validator::Validator>,
+) -> Result<TwinJudgement, CasperError> {
+    let verdict = match this.judged_twins.get(twin_hash) {
+        Some(verdict) => verdict.as_ref().clone(),
+        None => {
+            let twin = this.block_store.get(twin_hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "equivocation {} is held without its body",
+                    PrettyPrinter::build_string_bytes(twin_hash)
+                ))
+            })?;
+            let verdict = match Box::pin(validate_contents(
+                this,
+                &twin,
+                snapshot,
+                false,
+                local_validator,
+                "stored equivocation",
+            ))
+            .await?
+            {
+                Either::Right(_) => {
+                    this.block_dag_storage.record_deploy_events(&twin)?;
+                    update_mergeable_cache_after_validation(this, &twin, "stored equivocation")
+                        .await;
+                    Ok(())
+                }
+                Either::Left(BlockError::Invalid(reason)) => Err(reason),
+                Either::Left(deferred) => return Ok(TwinJudgement::Deferred(deferred)),
+            };
+            this.judged_twins
+                .insert(twin_hash.clone(), Arc::new(verdict.clone()));
+            verdict
+        }
+    };
+    Ok(match verdict {
+        Ok(()) => TwinJudgement::Valid,
+        Err(reason) => TwinJudgement::Invalid(reason),
+    })
+}
+
+/// What the equivocations `block` builds on or cites say about `block`. A
+/// node that received an invalid twin first refused it and can never hold it,
+/// so a block that depends on one is invalid wherever the twin is held, and a
+/// twin that cannot be judged yet defers the block.
+async fn equivocating_dependencies_verdict(
     this: &MultiParentCasperImpl,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
     local_validator: Option<&models::rust::validator::Validator>,
 ) -> Result<Option<BlockError>, CasperError> {
-    for parent_hash in &block.header.parents_hash_list {
+    let parents = block
+        .header
+        .parents_hash_list
+        .iter()
+        .map(|hash| (hash, InvalidBlock::InvalidParents));
+    let justifications = block.justifications.iter().map(|justification| {
+        (
+            &justification.latest_block_hash,
+            InvalidBlock::InvalidJustifications,
+        )
+    });
+    for (dependency, invalid_as) in parents.chain(justifications) {
         let held_as_equivocation = snapshot
             .dag
-            .lookup(parent_hash)?
-            .is_some_and(|metadata| metadata.equivocates.is_some());
+            .lookup(dependency)?
+            .is_some_and(|metadata| metadata.is_invalid());
         if !held_as_equivocation {
             continue;
         }
-        let verdict = match this.judged_twins.get(parent_hash) {
-            Some(verdict) => verdict.as_ref().clone(),
-            None => {
-                let parent = this.block_store.get(parent_hash)?.ok_or_else(|| {
-                    CasperError::RuntimeError(format!(
-                        "equivocation {} is held without its body",
-                        PrettyPrinter::build_string_bytes(parent_hash)
-                    ))
-                })?;
-                let verdict = match Box::pin(validate_contents(
-                    this,
-                    &parent,
-                    snapshot,
-                    false,
-                    local_validator,
-                    "stored equivocation",
-                ))
-                .await?
-                {
-                    Either::Right(_) => {
-                        this.block_dag_storage.record_deploy_events(&parent)?;
-                        update_mergeable_cache_after_validation(
-                            this,
-                            &parent,
-                            "stored equivocation",
-                        )
-                        .await;
-                        Ok(())
-                    }
-                    Either::Left(BlockError::Invalid(reason)) => Err(reason),
-                    Either::Left(deferred) => return Ok(Some(deferred)),
-                };
-                this.judged_twins
-                    .insert(parent_hash.clone(), Arc::new(verdict.clone()));
-                verdict
+        match judge_twin(this, dependency, snapshot, local_validator).await? {
+            TwinJudgement::Valid => {}
+            TwinJudgement::Invalid(reason) => {
+                tracing::warn!(
+                    block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                    equivocation = %PrettyPrinter::build_string_bytes(dependency),
+                    ?reason,
+                    ?invalid_as,
+                    "block depends on an equivocation whose contents are invalid"
+                );
+                return Ok(Some(BlockError::Invalid(invalid_as)));
             }
-        };
-        if let Err(reason) = verdict {
-            tracing::warn!(
-                block = %PrettyPrinter::build_string_bytes(&block.block_hash),
-                parent = %PrettyPrinter::build_string_bytes(parent_hash),
-                ?reason,
-                "block built on an equivocation whose contents are invalid"
-            );
-            return Ok(Some(BlockError::Invalid(InvalidBlock::InvalidParents)));
+            TwinJudgement::Deferred(deferred) => return Ok(Some(deferred)),
         }
     }
     Ok(None)
@@ -236,10 +269,10 @@ async fn run_validation_steps(
     .await
 }
 
-/// Judges everything about `block` but whether it equivocates: its parents
-/// held as equivocations, its summary, its replay, its bonds, the
-/// equivocations it neglects and its phlo price. `equivocation_time` is the
-/// timing of the equivocation step, for the breakdown log.
+/// Judges everything about `block` but whether it equivocates: the
+/// equivocations it builds on or cites, its summary, its replay, its bonds,
+/// the equivocations it neglects and its phlo price. `equivocation_time` is
+/// the timing of the equivocation step, for the breakdown log.
 async fn validate_contents(
     this: &MultiParentCasperImpl,
     block: &BlockMessage,
@@ -249,7 +282,7 @@ async fn validate_contents(
     equivocation_time: &str,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
     if let Some(block_error) =
-        equivocating_parents_verdict(this, block, snapshot, local_validator).await?
+        equivocating_dependencies_verdict(this, block, snapshot, local_validator).await?
     {
         return Ok(Either::Left(block_error));
     }
