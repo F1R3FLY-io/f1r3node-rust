@@ -188,6 +188,43 @@ const CATCH_UNWIND_ALLOWLIST: &[Allowed] = &[
          separate assertion that the pinned upstream four-operation history panics \
          runs in an isolated child process.",
     ),
+    (
+        "rspace++/tests/persistence/owner_cross_base_checkpoint.rs",
+        2,
+        "TEST HARNESS, not a panic expectation. The import and `interruption_of` stop the \
+         owner task at each journal owner hook point for \
+         `a_crash_at_every_owner_hook_point_recovers_the_old_state_or_the_successor`: the \
+         closure the test arms through the `#[cfg(test)]` hook seam copies the store files \
+         and raises `panic!(INTERRUPTION)`, the test's own crash model at a point where \
+         production code never panics. What the test asserts is recovery from that crash: \
+         the copied files recover the previous current state byte for byte or the exact \
+         successor one generation later, reconciliation completes the record without \
+         writing and releases the view gate, and the store settles on the successor. \
+         `interruption_of` returns the panic text, or `completed with` the value when the \
+         point is not reached, so its comparison with INTERRUPTION only proves that the \
+         crash happened where it was armed. The module belongs to rspace_plus_plus's \
+         `#[cfg(test)]` unit tests, which run under this workspace's LLVM-backed dev and \
+         release profiles with the default unwind strategy, and the panic is raised and \
+         intercepted on the test's own thread through Rust frames only.",
+    ),
+    (
+        "rspace++/tests/persistence/transfer_export_binding.rs",
+        2,
+        "TEST HARNESS, not a panic expectation. The import and one call interrupt a \
+         transfer request in \
+         `a_position_no_session_has_served_is_reached_and_sessions_stay_bounded`: the \
+         closure the test arms through the `#[cfg(test)]` journal owner hook seam panics \
+         at AfterPublishedCoreLoad while `get_transfer_page` opens a session, the test's \
+         own crash model at a point where production code never panics. What the test \
+         asserts is what the exporter leaves behind that unwind: the live sessions and \
+         generation leases are those from before the request, and the same request then \
+         opens its session and is served. The recorded `panicked` flag only shows that the \
+         request was interrupted at the armed point. The module belongs to \
+         rspace_plus_plus's `#[cfg(test)]` unit tests, which run under this workspace's \
+         LLVM-backed dev and release profiles with the default unwind strategy, and the \
+         panic is raised and intercepted on the test's own thread through Rust frames \
+         only.",
+    ),
     // ── the token, but not the construct ─────────────────────────────────────
     (
         "rspace++/libs/rspace_rhotypes/tests/ffi_absent_required_child.rs",
