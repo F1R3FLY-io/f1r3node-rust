@@ -38,7 +38,10 @@ PathMap prefix compression, CoW roots, and zipper mutation.
 The algorithm below is the dated single-trie implementation proved and measured by this packet.
 It is retained as a semantic reference, not as a description of current production topology. The
 current two-level implementation prepares a private relative Bag and replaces exactly one outer
-endpoint; multi-channel deltas prepare every touched Bag before publishing one new outer root.
+endpoint; multi-channel deltas prepare every touched Bag and preflight the final aggregate metadata
+before writing the touched outer endpoints in place; `Arc::make_mut` copies the outer header once,
+and only when another version shares it (2026-11-14,
+[stack-safety report §5.60.8](../stack-safety/stack-safety-report-2026-07-29.md#5608-in-place-outer-delta-batches)).
 
 ```text
 ⟨Prepare one channel-relative replacement⟩ ≡

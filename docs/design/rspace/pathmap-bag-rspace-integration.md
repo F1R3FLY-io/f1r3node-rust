@@ -505,10 +505,12 @@ The outer value stores `Bag` directly rather than `Arc<Bag>`: `Bag` already owns
 copy-on-write PathMap root. Candidate catalogs clone that inner `Bag` in O(1) and therefore share
 the authoritative root without rebuilding a relative trie. A multi-channel `BagDelta` is split at
 validated `RhoPathV1` channel boundaries, applied to private channel-relative Bag candidates,
-preflighted against final aggregate metadata, and published as one new outer root. Only touched
-catalog entries are staged; untouched catalog `Arc` identities and untouched inner Bag roots remain
-identical. Canonical egress visits exact outer endpoints and then traverses each inner Bag directly;
-it does not flatten RSpace into `Vec<Par>` or sort a projection.
+preflighted against final aggregate metadata, and written into the live outer authority in place;
+`Arc::make_mut` copies the outer header once, and only when another version shares it (2026-11-14,
+[stack-safety report §5.60.8](../stack-safety/stack-safety-report-2026-07-29.md#5608-in-place-outer-delta-batches)).
+Only touched catalog entries are staged; untouched catalog `Arc` identities and untouched inner Bag
+roots remain identical. Canonical egress visits exact outer endpoints and then traverses each inner
+Bag directly; it does not flatten RSpace into `Vec<Par>` or sort a projection.
 
 The in-memory topology is selected. Direct RBA1 checkpoint encoding, streaming, compatibility, and
 restart recovery for this topology remain open production work and are not established merely by
@@ -6071,6 +6073,19 @@ the transition directly to `BagDelta`, whose one private copy-on-write root rema
 publication boundary. It derives catalog transitions from the post-count and delta rather than
 copying marker and relative paths into a second transition vector. This is not an in-place partial
 update: a late underflow, overflow, or malformed path still leaves the authoritative root unchanged.
+
+**Forward note (2026-11-14, bug 14492).** The paragraph above, and the measurement of experiment
+218 below, describe checkpoint `0f9beb5f0`. Since commit `f39ff446c`, `apply_delta` builds no
+private copy of the outer authority: after the path validation, the per-channel `apply_to` and the
+aggregate preflight, it writes the prepared channel Bags into the live outer authority in place,
+and `Arc::make_mut` takes one header clone only when another version shares the outer root. A late
+underflow, overflow or malformed path still leaves the authority unchanged, because every error is
+raised before the first write; a panic after the first write poisons the hot-store write lock and
+stops the process. When no other version shared the outer root, the predecessor's clone, write and
+assignment had made the old outer map's last owner drain the whole map on every nonempty delta. See
+[stack-safety report §5.60.8](../stack-safety/stack-safety-report-2026-07-29.md#5608-in-place-outer-delta-batches)
+and
+[J-260](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-260--2026-11-14-an-rspace-delta-drained-the-whole-outer-channel-map-bug-14492).
 
 Pgmcp experiment 218 compared that implementation with a faithful two-root predecessor in one
 preregistered, CPU-pinned release run. Each arm had 82 raw samples. At one key, the median fell from

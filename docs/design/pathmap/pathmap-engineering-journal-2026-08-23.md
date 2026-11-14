@@ -23264,6 +23264,204 @@ drains of `apply_delta`, which leaf `rspace-outer-delta-in-place` removes. `remo
 `subtract`, `apply_parts` and the final teardown are unchanged, and PathMap is neither patched
 nor forked.
 
+### J-260 — 2026-11-14: an RSpace delta drained the whole outer channel map (bug 14492)
+
+**QUESTION.** J-259's in-place removal took the rebuild and drain out of every exhausting Bag
+removal on an exclusive anchor. A precheck of leaf `bag-exclusive-removal-rhospec-suites` on the
+candidate tree of that removal, `3740d5364be3`, then ran the three RhoSpec genesis tests alone in a
+release build. `system_vault_spec` and `pos_spec` passed, but `tree_hash_map_spec` still exceeded
+its 60 s limit, so prediction P4 of J-259 was refuted for one suite. Where does the remaining time
+go, and what removes it without changing what the suites compute?
+
+**MEASURED.** The precheck ran each suite alone
+(`cargo test --release -p casper --test mod genesis::contracts::<suite>::<suite> -- --exact --test-threads=1`).
+The wall times include genesis; RhoSpec's limit applies to the evaluation that follows it.
+
+| Suite | Outcome | Wall time |
+|---|---|---:|
+| `system_vault_spec` | passed | 64.30 s |
+| `tree_hash_map_spec` | failed: "Timeout of 60s expired while executing test from TreeHashMapTest.rho" | 93.24 s |
+| `pos_spec` | passed | 121.08 s |
+
+With the RhoSpec timeout raised to 900 s on a scratch copy of the same tree, `tree_hash_map_spec`
+passed in 127.33 s: after a genesis of about 33 s, its evaluation needed about 95 s. Two tools then
+looked at that suite.
+
+- *A drain census.* An instrumented scratch build of the same tree logged every guarded drain (its
+  value type, values, byte edges and time) and bracketed every call of
+  `RSpaceDataStore::apply_delta`.
+
+  | Drained value type | Drains | Mean byte edges | Drain time |
+  |---|---:|---:|---:|
+  | `ChannelSlot`, an outer channel map | 1,948 | 298,881.5 | 72.918 s |
+  | `Multiplicity`, a Bag | 4,427,551 | 104.2 | 61.132 s |
+  | `CandidatePosition`, a catalog | 4,839 | 475.1 | 0.304 s |
+
+  Each of the 1,930 calls of `apply_delta` made exactly one `ChannelSlot` drain, and each of these
+  drains released as many values as the store had loaded channels at the call (ratio 1.000), while
+  the loaded channels grew from 30 to 1,847 over the run. In this instrumented run, the
+  `ChannelSlot` drains inside `apply_delta` took 72.763 s over genesis and evaluation. 1,938 of the
+  1,948 `ChannelSlot` drains released values, so only 8 valued ones happened outside
+  `apply_delta`. In the evaluation phase, 1,338 of the drains inside `apply_delta` took 61.2 s.
+- *A stack sampler.* A gdb sampler interrupted an uninstrumented run of the suite about every 0.5 s
+  and recorded every thread's stack. Of its 224 samples, 168 fell in the evaluation and held 216
+  on-CPU stacks.
+
+  | Evaluation stack | Stacks | Share |
+  |---|---:|---:|
+  | inside a `ChannelSlot` drain | 118 | 54.6% |
+  | inside the drain of a value-free donor | 32 | 14.8% |
+  | inside no drain | 27 | 12.5% |
+  | inside a Bag drain after a `Par` drop | 21 | 9.7% |
+  | inside a Bag drain after `remove_prefix` | 15 | 6.9% |
+  | inside another Bag drain | 3 | 1.4% |
+
+The raw census, the samples and their classification are recorded with bug 14492 in pgmcp.
+
+**DERIVED.** Write $`L`$ for the number of loaded channels, $`E`$ for the byte edges of the outer
+channel map and $`D`$ for the number of nonempty deltas of an evaluation. The code of tree
+`3740d5364be3` explains the census in four steps; the figure below draws them.
+
+1. After preparing one private Bag per touched channel, `apply_delta` cloned the index:
+   `GuardedPathMap::clone` is an `Arc::clone`, so the outer anchor gained a second wrapper.
+2. It wrote the clone through `replace_channels_at_markers`, whose first write went through
+   `Arc::make_mut` and took a header clone; the two tries shared every node.
+3. It assigned the written clone over `self.index`.
+4. On a unique store, that assignment dropped the last wrapper of the old anchor, and
+   `AnchorRoot::drop` drained the whole old map: the guarded drain walks it with a write zipper,
+   copies each node that the new map still shares, and releases all $`L`$ slots.
+
+Each nonempty delta therefore cost $`\Theta(L + E)`$ in its drain, and an evaluation cost
+$`\Theta(D \cdot (L + E))`$: quadratic, because the store grows with the evaluation. Every one of
+the 1,930 calls drained, so the store was unique at every call. The drain navigates per byte and
+copies per node, so its cost is the walk itself; copy and allocation frames are rare in the samples,
+as expected.
+
+![Bug 14492: one nonempty RSpace delta before and after the in-place outer batch; before, when no other version shared the old outer anchor, its final drop drained the whole map, as it did in every call of the census](../stack-safety/figures/in-place-outer-delta-batch.svg)
+
+**HYPOTHESIS.** P4 is refuted for `tree_hash_map_spec` at tree `3740d5364be3`, and the census
+attributes most of the remaining evaluation time to the whole-map drains of `apply_delta`. Two
+claims were registered before the fix.
+
+- **P5.** With the outer delta applied in place, the timed evaluation of `tree_hash_map_spec` takes
+  about 33 s, inside $`[27, 46]`$ s, with genesis at about 18 to 20 s and a total wall time of about
+  53 s, inside $`[45, 70]`$ s; `system_vault_spec` and `pos_spec` cannot become slower. P5 is
+  refuted by a timed evaluation above 46 s, or by a drain census that shows any `ChannelSlot` drain
+  inside `apply_delta`; that census is expected to show about 8 valued `ChannelSlot` drains in all,
+  instead of 1,938. P4 alone decides whether the suites pass.
+- **Attribution control.** At the parent of the fix, `tree_hash_map_spec` times out while
+  `system_vault_spec` and `pos_spec` pass, as first observed at `3740d5364be3`.
+
+**DECISIONS.** The coordinator's design of 2026-11-14 splits the fix into four leaves:
+`rspace-outer-delta-in-place-model`, `rspace-outer-delta-in-place`,
+`rspace-outer-delta-in-place-properties` and `rspace-outer-delta-in-place-documents`. Its decisions
+are these.
+
+1. `apply_delta` writes the prepared channel Bags into the live index through
+   `replace_channels_at_markers`, whose aggregate checks all precede its write loop, and stages the
+   catalogs from the prepared Bags. About ten lines change.
+2. `Arc::make_mut` takes a header clone only when another version shares the outer anchor. No
+   provenance flag is used, unlike J-259: the batch only writes values, and `apply_delta` never
+   removes an outer endpoint.
+3. The returned errors, and the order in which they are checked, are unchanged, except that a
+   poisoned catalog lock is now noticed before the aggregate preflight (§5.60.8 states the one
+   case this changes); the logical post-state is identical, so nothing consensus-visible changes.
+4. A panic after the first write is fail-stop: both callers hold the hot-store write lock, which the
+   panic poisons. `set_channel`, `insert` and `remove_path` already write the index in place with
+   the same exposure.
+5. Leaf `bag-exclusive-removal-rhospec-suites` tests P4 at the commit of
+   `rspace-outer-delta-in-place-properties` or later, and gains P5 and the attribution control.
+
+A side finding was examined and closed. `RSpaceDataStore::insert` changes the index before
+`pending_delta.record_addition(..)?` can fail. `BagDelta::record_change` nets additions against
+removals, so the pending net addition of a path is at most its count in the index, which the
+index's own checked increment keeps at most `u64::MAX`. The error path is therefore unreachable
+while the delta invariant holds, and no action is needed.
+
+**IMPLEMENTATION.** Commit `f39ff446c` removes the clone from `apply_delta`. The staging loop reads
+each current count from the prepared Bag of its channel, the availability loop installs the prepared
+Bag itself, and `self.index.replace_channels_at_markers(&replacements)?` replaces the assignment;
+the catalog lock, the pending-delta commit, the catalog commit and the instrumentation call stay
+where they were. The doc comments of `apply_delta` and `replace_channels_at_markers` now describe an
+in-place update instead of a published copy-on-write transition.
+[Stack-safety report §5.60.8](../stack-safety/stack-safety-report-2026-07-29.md#5608-in-place-outer-delta-batches)
+gives the literate algorithm, the identity argument, the contract, the bounds, failure atomicity and
+the alias behaviour.
+
+**FORMAL RESULT.** Leaf `rspace-outer-delta-in-place-model` (commit `7e7115409`) adds the in-place
+outer batch to `TwoLevelRSpaceGuardedOwnership.v`. A refused batch preserves the world; a batch on
+an unshared live root keeps its identity and retires no root; a batch on a root that an alias holds
+gets a fresh identity, leaves the aliases unchanged and releases the store's handle on the old
+root; a batch disposes exactly its replaced slot values and, on a shared root, that one handle; and
+it installs the entries, image and metadata that `publish_world` would install.
+`in_place_outer_batch_is_refusal_atomic_and_publication_equivalent` composes the five theorems, the
+invariant catalog grows from 40 to 45, and five executed mutants are killed by causal witnesses;
+§5.60.8 lists them.
+
+**EVIDENCE.** Commit `f39ff446c` updates the outer-identity assertions of the two-level tests for a
+unique store, adds an alias split test, an anchor-reuse test and a source scan, and adds the
+allocation gate `one_channel_delta_allocates_independently_of_loaded_channel_count`: with 16 and
+with 4,096 loaded channels besides the target, one `apply_delta` makes the same allocation calls and
+bytes, and the unique variants fail at the parent. Commit `aabb32da4` adds one property test per new
+invariant identifier and a poisoned-lock probe. §5.60.8 lists the tests; their counts are
+`--lib rspace::data_index` 72 passed, 0 failed, 1 ignored, with `bag_allocation_spec` 9/0/2, `data_index_spec` 28/0/1 and `accepted_match_transition_spec` 4/0/0 (passed/failed/ignored, debug and release alike) and `--lib rspace::data_index` 78 passed, 0 failed, 1 ignored (debug and release alike), 128 cases per property.
+
+**RESULT.** Prediction P4, tested by leaf `bag-exclusive-removal-rhospec-suites` at commit
+`677adde86`: confirmed (`system_vault_spec` 39.88 s, `tree_hash_map_spec` 44.69 s and `pos_spec` 62.81 s, each passing alone in release). Prediction P5: not refuted (the timed evaluation took 26.35 s, 0.65 s below the predicted interval, a saving about 7 s larger than the census timed for the removed drains; the census found no `ChannelSlot` drain inside `apply_delta` in 1,981 calls and 8 valued `ChannelSlot` drains in all). Attribution control:
+confirmed (at `b504c0116`, `tree_hash_map_spec` timed out at its 60 s limit while `system_vault_spec` passed in 66.08 s and `pos_spec` in 122.01 s).
+
+**REMAINING DONOR COST.** About 15% of the evaluation's on-CPU stacks (32 of 216) are inside the
+drain of a value-free donor. The donors come from the leaf-extension adapter of PMU-006 in the
+[upstream register](#upstream-pathmap-integration-request-register): when a write extends a path
+below a leaf, `materialize_missing_suffix` in `pathmap_mutation.rs` builds a value-free donor trie
+for the missing suffix, grafts it borrowed, and drops it. P4 does not need this cost removed, and
+P5's prediction already includes it. Two options are recorded here, and neither is implemented.
+
+- **D1.** Remove the adapter. PathMap 0.3.4 fixes PMU-006 upstream, but removing the adapter is a
+  user decision.
+- **D4.** Skip the donor when the root is fresh and empty. This narrows the adapter, and it needs a
+  formal leaf and a ruling first.
+
+A third option, consuming the donor instead of borrowing it, is rejected: a PathMap panic inside the
+graft would then recursively drop a long, uniquely owned chain, which the invariant
+`BorrowedGraftRetainsDonor` of `PathMapLeafExtension.v` rules out.
+
+**PATHMAP LEARNING.**
+
+- Assigning a written clone over the live owner of a copy-on-write root is cheap to set up, but it
+  turns the old version's final drop into a walk of the whole structure. Writing through
+  `Arc::make_mut` takes a header clone only when another version exists, and never drains the live
+  version.
+- A guarded drain costs its walk: it navigates per byte, so a map of $`E`$ byte edges costs
+  $`\Theta(E)`$ to drain even when nearly all of its nodes are shared.
+- A census that attributes every drain to the call that caused it identifies a cause that sampled
+  stacks only suggest.
+
+**VERIFICATION BOUNDARY.** Each leaf was gated on an export of its candidate tree.
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| the in-place outer batch model | `7e7115409` | Rocq section B: 356 closed-context reports, 7 kernel checks | `14500-gate-20261114T155929Z.log` | `ac432621f45a29d9c24b83d16f273460e078e4da5067f39f83721c25f6b0f97c` |
+| the in-place outer delta | `f39ff446c` | `--lib rspace::data_index` 72 passed, 0 failed, 1 ignored, with `bag_allocation_spec` 9/0/2, `data_index_spec` 28/0/1 and `accepted_match_transition_spec` 4/0/0 (passed/failed/ignored, debug and release alike) | `14501-gate-20261114T161723Z.log` | `b529f60f4038669eda9e26b4a20028178f75ca067518a90014a5b6237f2d46f2` |
+| the outer batch properties | `aabb32da4` | `--lib rspace::data_index` 78 passed, 0 failed, 1 ignored (debug and release alike), 128 cases per property | `14502-gate-20261114T163144Z.log` | `57d7d2aa386583b48a3ca599fc7a646eec81deefd53661d617b13410fc5d83e9` |
+| the RhoSpec suites (P4, P5, attribution control) | `677adde86` | confirmed (`system_vault_spec` 39.88 s, `tree_hash_map_spec` 44.69 s and `pos_spec` 62.81 s, each passing alone in release), not refuted (the timed evaluation took 26.35 s, 0.65 s below the predicted interval, a saving about 7 s larger than the census timed for the removed drains; the census found no `ChannelSlot` drain inside `apply_delta` in 1,981 calls and 8 valued `ChannelSlot` drains in all), confirmed (at `b504c0116`, `tree_hash_map_spec` timed out at its 60 s limit while `system_vault_spec` passed in 66.08 s and `pos_spec` in 122.01 s) | `14497-pre-landing-system_vault_spec-20261114T170223Z.log`, `14497-pre-landing-tree_hash_map_spec-20261114T170223Z.log`, `14497-pre-landing-pos_spec-20261114T170223Z.log`, `14497-landing-timed-tree_hash_map_spec-20261114T170629Z.log`, `14497-landing-census-tree_hash_map_spec-20261114T170714Z.log`, `14497-pre-attribution-system_vault_spec-20261114T171143Z.log`, `14497-pre-attribution-tree_hash_map_spec-20261114T171143Z.log` and `14497-pre-attribution-pos_spec-20261114T171143Z.log` | `4ddc60335efcfa041f1e68e5f03f2407487e425cd36f8b6ea4241ec8018d2220`, `2757adffa0af0a96b9c7f406407534ee3f666b3b476959fce8eb0742238dfd2d`, `3429b4c2f7481409ea00d90a8a4892ebe2e25d41976a88a9c36e3c415761e64a`, `4f5f2e0bfb27a2b18e5ab5e30df5b4dbc1d7b3fcc36146a345e1b6675064d7a9`, `8c94d112521609999027ff385ac26a2b75d097928ece6a512febf7120aa2bd3a`, `1b93662d82dfcb98127f07f68e23c1d83d50be2ea522502c9f4664dc7281ab13`, `c8d6e7cac2287523b654738d89361874767057fba718d1a9db0fcdf2992b6809` and `d025a275b688200f9b2f647ebdc85e03a5f054afa09c2e792b44cf0fb44a3767` |
+
+These are agent-run results; independent review and the approved pgmcp verification recipe remain
+required.
+
+**BOUNDARY.** No persisted byte, wire message, physical format or consensus identity changes: the
+in-place batch and the predecessor install the same logical outer authority, and only time,
+allocation and the outer anchor's identity differ (the
+[CBR-053 continuation note](../../consensus/consensus-change-register.md)). The fix does not touch
+the other drain triggers of the profile, the value-free donors and the Bag drains after `Par` drops
+and `remove_prefix`. `set_channel`, `remove_prefix`, `subtract`, `apply_parts` and the final
+teardown are unchanged, and PathMap is neither patched nor forked.
+
+Cited works: J. R. Driscoll, N. Sarnak, D. D. Sleator and R. E. Tarjan, "Making data structures
+persistent", *Journal of Computer and System Sciences* 38(1):86–124, 1989,
+[doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000%2889%2990034-2), for the path
+copying that a write through a shared copy-on-write root performs.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

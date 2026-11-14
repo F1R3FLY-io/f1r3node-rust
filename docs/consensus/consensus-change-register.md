@@ -2618,6 +2618,27 @@ checkpoints strengthen physical-traversal and failure-atomicity evidence; they d
 generated-query superset law or every complete RSpace schedule/post-state, so CBR-053 remains
 `UNVERIFIED`.
 
+**CBR-053 accepted-match commit continuation (2026-11-14, bug 14492).** Commit `f39ff446c` changes
+how `RSpaceDataStore::apply_delta`, the accepted-match datum commit of the paragraphs above,
+installs a validated delta in the two-level authority. It no longer clones the outer channel index,
+writes the clone and assigns it over the live index, a sequence whose final step, when no other
+version shared the index, made the old index's last owner drain the whole previous outer map on
+every nonempty delta. It writes the prepared channel Bags into the live outer authority in place,
+after the path validation, the per-channel `apply_to` and the aggregate preflight, which raise every
+error before the first write; when another version shares the outer root, `Arc::make_mut` takes one
+header clone and that version keeps the old root. The logical outer map, the staged counts, the
+catalog transitions, the pending delta and the root-publication instrumentation are the
+predecessor's, and a panic after the first write poisons the hot-store write lock and stops the
+process. The change is therefore not consensus-visible: no resident value, datum or channel
+identity, multiplicity, candidate order, match, binding, COMM, protobuf/bincode/EPM1/RMP2 byte,
+hash, PathMap algebra, compute or storage charge, accepted program or parallel order moves. It adds
+no consensus change, and CBR-053's status and retirement gate are unchanged. Evidence: commits
+`7e7115409` (formal model), `f39ff446c` (implementation and allocation gate) and `aabb32da4`
+(property tests), and the RhoSpec predictions P4, confirmed (`system_vault_spec` 39.88 s, `tree_hash_map_spec` 44.69 s and `pos_spec` 62.81 s, each passing alone in release), and P5, not refuted (the timed evaluation took 26.35 s, 0.65 s below the predicted interval, a saving about 7 s larger than the census timed for the removed drains; the census found no `ChannelSlot` drain inside `apply_delta` in 1,981 calls and 8 valued `ChannelSlot` drains in all). See
+[stack-safety report §5.60.8](../design/stack-safety/stack-safety-report-2026-07-29.md#5608-in-place-outer-delta-batches)
+and
+[J-260](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-260--2026-11-14-an-rspace-delta-drained-the-whole-outer-channel-map-bug-14492).
+
 Checkpoints `514659e2b` and `27557c374` record and reject a physical traversal alternative for the
 receive-first Bag/candidate-index product. The measured treatment replaced each synchronized mutable
 read-zipper position with borrowed `TrieRef` focuses and reconstructed a child focus for every

@@ -332,7 +332,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C30** | this checkpoint; campaign-root-4131 | f1r3node | record-sized kind-1 PREPARE recovery buffer $`\rightarrow`$ formally refined phase-split streaming PDA with one reusable 64 KiB scratch region and source-authenticated replay | native stack $`O(1)`$ in record/key/object depth; fixed scratch plus boxed constant state; two WAL scans for index repair rather than three | **yes for dormant physical recovery**; 89/89 invariant bindings, 53 generated properties, fixed 128/256 KiB stack matrix, 452/452 library and 877/877 package tests | [5.57](#557-formally-refined-kind-1-prepare-streaming-and-fixed-native-stack-envelope-ss-c30) |
 | **SS-C31** | this checkpoint; campaign-root-4131 | f1r3node | target-root equality and FFI response success mistaken for authority $`\rightarrow`$ generation-scoped replay reactivation plus affine capability publication and failure closure | native stack remains $`O(1)`$; no recursive traversal, stack-growth shim, or depth cap; exhaustive six-operation by three-fault-phase matrix | **no production consensus change**; 26/26 formal bindings, 7 rejected safety/liveness controls, one two-publication witness, 78/78 boundary tests, and exact release workspace 5,122/5,122 | [5.58](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31) |
 | **SS-C32** | this checkpoint; pgmcp `rspace-set-channel-prefix-local-transaction` | f1r3node | whole-store clone/mutate/publish for each newly loaded channel $`\rightarrow`$ private relative Bag plus prefix-rooted insertion into one unique guarded trie | measured new-channel construction exponent **1.99273 $`\rightarrow`$ 1.00258** through 16,000 channels; exact 20,000-bind release gate **7.52 s / 151,408 KiB / zero swap** | **yes for new-channel construction**; 27 Rocq invariants, 20 rejected mutants, frozen-success differential, and exact state metrics | [5.59](#559-prefix-local-rspace-channel-publication-ss-c32) |
-| **SS-C33** | `c3d48beb1`, `68534b6fc`, `a5c08c87c`, `e94735461`, `9ab98a331`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded replacement slope **0.99925**; four final-teardown slopes **0.95785–0.98911** | **yes for ownership/stack/time-scaling closure**; final topology remained allocation-heavy pending PMU-005 until the barrier-free cut of [5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown) (2026-11-13) removed the barrier writes behind its key splits (re-measurement pending); absolute concurrent-load latency is provisional; an exhausting single-key Bag removal on an exclusive anchor prunes in place instead of rebuilding ([5.60.7](#5607-in-place-exclusive-single-key-bag-removal), 2026-11-14) | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
+| **SS-C33** | `c3d48beb1`, `68534b6fc`, `a5c08c87c`, `e94735461`, `9ab98a331`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded replacement slope **0.99925**; four final-teardown slopes **0.95785–0.98911** | **yes for ownership/stack/time-scaling closure**; final topology remained allocation-heavy pending PMU-005 until the barrier-free cut of [5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown) (2026-11-13) removed the barrier writes behind its key splits (re-measurement pending); absolute concurrent-load latency is provisional; an exhausting single-key Bag removal on an exclusive anchor prunes in place instead of rebuilding ([5.60.7](#5607-in-place-exclusive-single-key-bag-removal), 2026-11-14); an RSpace delta writes the outer channel authority in place instead of cloning it and draining the replaced map ([5.60.8](#5608-in-place-outer-delta-batches), 2026-11-14) | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
 | **SS-C36** | `941ff07d` (measured), `9ba5bc24d` (data); pgmcp experiment 446 | f1r3node | per-commit cost of a trusted commit against the current state and the retained history; a scaling measurement, no traversal converted | no stack figure: thread CPU exponents U **0.1964** [0.1881, 0.2086] and R **0.1363** [0.1333, 0.1395]; allocated bytes fail G4 at U **0.4130** and R **0.3186** | **no** (no stack claim) | [5.63](#563-fixed-delta-trusted-commit-scaling-ss-c36) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -15310,6 +15310,297 @@ the time, the allocations and the anchor's identity differ. No Rholang value, da
 multiplicity, candidate order, matcher result, binding, protobuf/bincode/EPM1/RMP2 byte, hash,
 COMM schedule, compute/storage charge, PathMap algebra, accepted program or parallel execution
 order changes; the continuation note of CBR-075 in the
+[consensus-change register](../../consensus/consensus-change-register.md) records the
+classification.
+
+#### 5.60.8 In-place outer delta batches
+
+**2026-11-14 runtime change, bug 14492.** `RSpaceDataStore::apply_delta` now applies each validated
+RSpace delta to the outer channel authority in place. Until this change it cloned the outer index,
+wrote the clone and assigned the clone over the live index; when no other version shared the index,
+that assignment made the final drop of the replaced anchor drain the whole previous outer map on
+every nonempty delta. Every check that can fail still runs before the first write, a successful
+delta leaves the same logical state as before, and the drain is gone. The prefix-local channel
+publication of
+[5.59](#559-prefix-local-rspace-channel-publication-ss-c32), the structural rebuild and teardown of
+[5.60.2](#5602-streaming-structural-rebuild) to
+[5.60.6](#5606-barrier-free-phase-b-of-the-final-teardown) and the in-place removal of
+[5.60.7](#5607-in-place-exclusive-single-key-bag-removal) are unchanged, and PathMap is neither
+patched nor forked.
+
+**Terms.** The rest of this subsection uses the wrapper, anchor and header clone of
+[5.60.7](#5607-in-place-exclusive-single-key-bag-removal), and these terms.
+
+- The *outer authority* is the guarded `PathMap<ChannelSlot>` of `RSpaceDataIndex`, keyed by exact
+  channel markers; each real slot owns its channel's Bag
+  ([5.59](#559-prefix-local-rspace-channel-publication-ss-c32)). A channel whose Bag empties stays
+  loaded-empty, so `apply_delta` never removes an outer endpoint.
+- A *prepared Bag* is the private Bag that `apply_delta` builds for one touched channel: a wrapper
+  clone of the live Bag, or an empty Bag for a new channel, to which the channel's part of the delta
+  is applied copy-on-write. The *replacements* map sends each touched marker to its prepared Bag.
+- The store is *unique* when its index holds the only wrapper of the outer anchor, and *shared* when
+  another version, a live `RSpaceDataStore::clone`, holds a wrapper too.
+- Write $`L`$ for the number of loaded channels, $`E`$ for the number of byte edges of the outer
+  map, $`t`$ for the number of channels that a delta touches, $`m_j`$ for the length of the marker
+  of the $`j`$-th touched channel, and $`D`$ for the number of nonempty deltas that an evaluation
+  applies.
+
+**Why.** Before this change, `apply_delta` validated and partitioned the delta, prepared the
+replacements, and then ran four steps.
+
+1. `let mut candidate_index = self.index.clone();` added a second wrapper to the outer anchor.
+2. `candidate_index.replace_channels_at_markers(&replacements)?` wrote the clone. Its first write,
+   through `Arc::make_mut`, took a header clone, so the two tries shared every node.
+3. After the catalogs had been staged from the clone, `self.index = candidate_index;` installed it.
+4. On a unique store that assignment dropped the last wrapper of the old anchor, and
+   `AnchorRoot::drop` drained the whole old map with the guarded drain of
+   [5.60.3](#5603-final-owner-teardown-and-bounded-payload-retention): it walks the map with a
+   write zipper, copies each node that the new map still shares, and releases every slot.
+
+The drain visits all $`L`$ slots and $`E`$ edges, so each nonempty delta on a unique store paid
+$`\Theta(L + E)`$ beyond its own work, and an evaluation paid $`\Theta(D \cdot (L + E))`$ in
+drains, which is quadratic when the store grows with the evaluation.
+[PathMap journal J-260](../pathmap/pathmap-engineering-journal-2026-08-23.md#j-260--2026-11-14-an-rspace-delta-drained-the-whole-outer-channel-map-bug-14492)
+records the diagnosis. After the in-place removal of 5.60.7, `tree_hash_map_spec` still exceeded
+its 60 s evaluation limit in a release run of the candidate tree `3740d5364be3`. A census of every
+guarded drain in that suite found one whole-map `ChannelSlot` drain in each of the 1,930 calls of
+`apply_delta`, each releasing as many slots as the store had loaded channels, with a mean of
+298,881.5 byte edges. In the evaluation phase, which takes about 95 s, 1,338 such drains took
+61.2 s, and a stack sampler found one in 118 of the phase's 216 on-CPU stacks (54.6%).
+
+**The algorithm.** The change is confined to `RSpaceDataStore::apply_delta` in
+[`data_index.rs`](../../../rspace++/src/rspace/data_index.rs). Its only write to the outer
+authority is `RSpaceDataIndex::replace_channels_at_markers`, and it is that function's only caller.
+The algorithm is in the literate style of 5.60.7 [[Knuth 1984](#ref-knuth1984)]: each named chunk,
+written `⟨name⟩`, is defined once and then used by its name; the variable `store` is the
+`RSpaceDataStore` being changed, and a comment that starts with `was:` names what the predecessor
+did at that point. The figure after the walk-through draws both versions.
+
+**Algorithm 5.60.8 (IN-PLACE-OUTER-DELTA).** *Apply a nonempty `BagDelta` to the store: every check
+first, then one in-place write per touched channel.*
+
+```pseudocode
+⟨Apply delta to store⟩ ≡                                    ── RSpaceDataStore::apply_delta
+    if delta is empty then return Ok
+    ⟨Step 1: partition the delta at exact channel markers⟩
+    ⟨Step 2: prepare one private Bag per touched channel⟩
+    ⟨Step 3: take the candidate catalog lock⟩
+    ⟨Step 4: stage the catalog transitions from the prepared Bags⟩
+    ⟨Step 5: write the prepared Bags into the live outer authority⟩
+    ⟨Step 6: commit the pending delta and the staged catalogs⟩
+    return Ok
+
+⟨Step 1: partition the delta at exact channel markers⟩ ≡    ── may return Err
+    for each (path, amount) of delta's additions, then of its removals
+        view ← RhoPathV1::parse_datum(path)              or return Err
+        (marker, relative) ← path split at view's channel prefix
+        record ±amount at relative in parts[marker]       or return Err
+
+⟨Step 2: prepare one private Bag per touched channel⟩ ≡     ── may return Err
+    for each (marker, part) of parts
+        prepared ← a wrapper clone of the live Bag at marker, or an empty Bag
+        part.apply_to(prepared)                           or return Err
+        replacements[marker] ← prepared                   ── the live Bag is untouched
+    ── was: then candidate ← store.index.clone(), and step 5 on the candidate
+
+⟨Step 3: take the candidate catalog lock⟩ ≡
+    catalogs ← store.candidate_catalogs.get_mut()        or panic   ── a poisoned lock
+
+⟨Step 4: stage the catalog transitions from the prepared Bags⟩ ≡   ── private clones; cannot fail
+    staged[marker] ← a clone of catalogs[marker], for each touched marker
+    for each (path, amount) of delta's additions, then of its removals
+        current ← replacements[marker].count(relative)   ── was: candidate.count_path(path)
+        previous ← current ∓ amount
+        record (previous, current) in staged[marker], or set it to None
+    for each touched marker whose staged catalog is present
+        staged[marker].availability ← replacements[marker]   ── was: the candidate's Bag
+
+⟨Step 5: write the prepared Bags into the live outer authority⟩ ≡   ── replace_channels_at_markers
+    ⟨Step 5a: preflight the final aggregate metadata⟩     ── may return Err; writes nothing
+    for each (marker, prepared) of replacements           ── cannot fail
+        store.index.channels.set_val_at(marker, Real(prepared))
+            ── Arc::make_mut: a header clone only on a shared store;
+            ── the replaced slot value goes to the disposal policy
+    store's loaded-channel count, distinct length, exact cardinality ← the preflighted values
+    ── was: store.index ← candidate, whose old anchor's final drop drained the whole map
+
+⟨Step 5a: preflight the final aggregate metadata⟩ ≡        ── reads only
+    for each touched marker
+        if it is loaded then remove its Bag's metrics from the totals
+        else count one more loaded channel
+    add each prepared Bag's metrics to the totals          or return Err   ── overflow
+    the new loaded-channel count                           or return Err   ── overflow
+
+⟨Step 6: commit the pending delta and the staged catalogs⟩ ≡    ── cannot fail
+    record the delta in store.pending_delta
+    install every present staged catalog in catalogs; remove the others
+    record one root publication                           ── instrumentation feature only
+```
+
+*Steps 1 and 2* are unchanged. Step 1 validates every path and splits it at its exact channel
+marker. Step 2 applies each channel's part to a wrapper clone of the live Bag, so the first write
+takes a header clone of the inner anchor and the live Bag never changes. All the errors of parsing,
+recording and `apply_to` are returned there, before anything is written. *Step 3* takes the
+candidate catalog lock, as before; it now precedes the aggregate preflight, as it precedes the first
+write in `set_channel`. *Step 4* stages the catalog transitions on private clones of the touched
+catalogs. It reads each current count, and each new availability, from the prepared Bags instead of
+from a written clone of the index; the next paragraph shows that the two are equal. *Step 5* is
+`replace_channels_at_markers`, now called on the live index. Its preflight computes the final
+loaded-channel count, distinct length and exact cardinality, and returns the overflow errors before
+its first write. Its write loop cannot fail: each `set_val_at` goes through `Arc::make_mut`, which
+clones nothing on a unique store and takes one header clone, at the first write, on a shared one,
+and each replaced slot value goes to the guard's disposal policy. *Step 6* commits the pending delta
+and the staged catalogs and, under the `accepted-match-transition-instrumentation` feature, records
+the one root publication, all unchanged.
+
+**Why the result is identical.** After the write loop, the outer slot of each touched marker holds
+`ChannelSlot::Real(prepared)`, a wrapper clone of the prepared Bag, and `count_path` answers with
+that Bag's count at the relative path. Every count that step 4 reads from `replacements` is
+therefore the count that the predecessor read from its written clone, and the availability that
+step 4 installs is the Bag that the slot holds. The logical outer map, the three aggregate metrics,
+the staged catalog transitions, the pending delta and the instrumentation record equal the
+predecessor's; only the outer anchor's identity, the time and the allocations differ.
+
+![One nonempty RSpace delta: before, the outer index was cloned, written and assigned over the live index, and when no other version shared the old outer anchor, its final drop drained the whole old map; after, the prepared Bags are written in place, with one header clone only when an alias shares the outer root](figures/in-place-outer-delta-batch.svg)
+
+**Contract.** The table compares what one successful nonempty delta leaves behind on a store of
+$`L`$ loaded channels.
+
+| Quantity | Before: clone, write, replace | In place, unique store | In place, shared store |
+|---|---|---|---|
+| logical outer map, metrics, catalogs and pending delta | as the delta defines them | the same | the same |
+| outer anchor of the store | a fresh header clone | unchanged | a fresh header clone, taken by the first write, which releases the store's handle on the old anchor |
+| outer anchor of the other version | unchanged | none exists | unchanged: it keeps the old map |
+| outer slots released during the call | all $`L`$ on a unique store, by the drain; only the replaced ones on a shared store | only the replaced ones | only the replaced ones |
+| whole-map drain during the call | one on a unique store, $`\Theta(L + E)`$ | none | none; the old map is drained once, when the other version's last wrapper drops |
+| work beyond steps 1 to 4 and 6 | $`O(\sum_j m_j)`$, plus $`\Theta(L + E)`$ on a unique store | $`O(\sum_j m_j)`$ | $`O(\sum_j m_j)`$ and one header clone |
+
+**Example.** A unique store holds the loaded channels $`a`$, $`b`$ and $`c`$ on the outer anchor
+$`A_0`$, and a delta adds one datum to $`b`$. Before this change, the old step 2 took a header clone
+$`A_1`$ of $`A_0`$ and wrote the slot of $`b`$ in $`A_1`$. The assignment then dropped the last
+wrapper of $`A_0`$, whose drain walked the paths of $`a`$, $`b`$ and $`c`$ and released three slots.
+Now step 5 writes the slot of $`b`$ in $`A_0`$ itself: there is no header clone and no outer drain,
+and the one released value is the slot's old Bag wrapper, whose release drains the old Bag of $`b`$
+only if nothing else holds it. If a store clone $`S`$ holds $`A_0`$ during the call, the first write
+takes a header clone $`A_1`$ for the store, $`S`$ keeps $`A_0`$ with the old Bag of $`b`$, and
+$`A_0`$ is drained once, when $`S`$ drops it, not once per delta.
+
+**Why the bounds hold.** Write $`W_{\mathrm{prep}}`$ for the work of steps 1 to 4 and 6, which the
+two versions share: the parsing, the per-channel `apply_to` and the catalog staging, which grow with
+the delta and the touched Bags, not with $`L`$. The write loop descends $`m_j`$ bytes for the
+$`j`$-th touched channel, and when another version shares those nodes it copies each of them once,
+the path copying of persistent data structures (J. R. Driscoll, N. Sarnak, D. D. Sleator and
+R. E. Tarjan, "Making data structures persistent", *Journal of Computer and System Sciences*
+38(1):86–124, 1989, [doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000%2889%2990034-2)).
+
+```math
+W_{\mathrm{before}} = W_{\mathrm{prep}} + O\Bigl(\sum_{j=1}^{t} m_j\Bigr) + \Theta(L + E),
+\qquad
+W_{\mathrm{after}} = W_{\mathrm{prep}} + O\Bigl(\sum_{j=1}^{t} m_j\Bigr).
+```
+
+The term $`\Theta(L + E)`$ is the drain, which the predecessor paid on every nonempty delta of a
+unique store; every call of the census was such a call. Neither version uses native stack in
+proportion to the data: the write loop and the guarded drain are loops over heap-backed zipper
+state, and replaced values go to the disposal policy, which is stack-safe by the guard's contract.
+On a unique store the in-place write allocates only for the paths and values that it adds, which
+does not depend on $`L`$; the allocation gate below checks this.
+
+**Failure atomicity.** Every error that `apply_delta` returns is raised before the first write to a
+live structure: the parsing and recording of step 1, `apply_to` on the private prepared Bags in
+step 2, and the preflight of step 5a. Step 4 changes only private clones, because `Arc::make_mut` on
+a staged catalog that the live map also holds copies it first. An error therefore leaves the index,
+its metrics, the catalogs and `pending_delta` unchanged, whether the store is unique or shared. The
+returned errors, and the order in which they are checked, are the predecessor's. Only a poisoned
+catalog lock is noticed earlier: for a delta that also fails the preflight, the predecessor returned
+the overflow error, while step 3 now panics first; both leave every live structure unchanged. The
+write loop and the metric assignments of step 5 cannot fail. A panic inside the write loop would
+leave the channels written so far in place. Both production callers hold the hot-store write lock,
+so such a panic poisons it, every later access `expect`s the lock, and the process stops. This is
+the fail-stop rule that the model below states, and `set_channel`, `insert` and `remove_path`,
+which also write the index in place, already follow it.
+
+**Aliases.** On a unique store `Arc::make_mut` clones nothing, and PathMap's write zipper copies only
+the nodes that an older version still shares. On a shared store the first `set_val_at` of step 5
+takes one header clone: the store's wrapper moves to the copy, the other version keeps the old
+anchor and everything reachable from it, and the remaining writes of the batch go to the copy. No
+provenance flag is needed, unlike 5.60.7: step 5 only writes values and never prunes, and a value
+write under copy-on-write never mutates a node that another version can reach.
+
+**Formal evidence.** Leaf `rspace-outer-delta-in-place-model` (commit `7e7115409`, gate log
+`14500-gate-20261114T155929Z.log`, counts Rocq section B: 356 closed-context reports, 7 kernel checks) extends
+[`TwoLevelRSpaceGuardedOwnership.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceGuardedOwnership.v)
+with a section on in-place outer batches over the transaction world of
+`PathMapCanonicalStreamPublication.v`. Write $`w`$ for a world, $`u`$ for the updated root authority,
+$`r`$ for the list of replaced slot-value identities, and $`\iota_w`$ for the identity of the live
+root of $`w`$. `in_place_outer_batch` installs the entries, image and metadata of $`u`$ as the live
+authority, under the identity
+
+```math
+\iota' =
+\begin{cases}
+\operatorname{fresh}(w) & \text{if } \iota_w \text{ is an alias root identity of } w, \\
+\iota_w & \text{otherwise,}
+\end{cases}
+```
+
+where $`\operatorname{fresh}(w)`$ is `allocate_fresh_candidate_identity`, an identity outside the
+live root and the complete alias footprint. The batch keeps the aliases, the staged candidate and
+the disposed nodes, and puts $`r`$ in front of the disposed values. When an alias holds the live
+root, the batch also puts $`\iota_w`$ in front of the disposed root handles: the header clone
+releases the store's handle on the old root, and `publish_world` records such a release the same
+way. `outer_batch_released_root_handles` is that list, $`[\iota_w]`$ on a shared root and empty on
+an unshared one. `apply_outer_batch` leaves the world unchanged when the batch is refused. Five
+theorems state the invariants, each bound to a new identifier of the invariant catalog, which grows
+from 40 to 45.
+
+| Invariant | Theorem | Statement |
+|---|---|---|
+| `GuardInvOuterBatchRefusalPreservesWorld` | `refused_outer_batch_preserves_the_world` | a refused batch leaves the world unchanged |
+| `GuardInvOuterBatchUniqueInPlace` | `unique_outer_batch_keeps_its_identity_and_retires_no_root` | when no alias holds the live root, its identity and the disposed root handles are unchanged |
+| `GuardInvOuterBatchSharedForkPreservesAliases` | `shared_outer_batch_forks_a_fresh_identity_and_preserves_aliases` | when an alias holds the live root, the aliases are unchanged and still hold the old identity, the new identity is fresh, and the old identity joins the disposed root handles |
+| `GuardInvOuterBatchDisposesOnlyReplacedSlots` | `outer_batch_disposes_only_the_replaced_slot_values` | the disposed values gain exactly $`r`$ and the disposed nodes are unchanged; the disposed root handles gain exactly `outer_batch_released_root_handles`, the old identity on a shared root and nothing on an unshared one |
+| `GuardInvOuterBatchMatchesPublication` | `outer_batch_installs_the_published_entries` | the live entries, image and metadata, and the aliases, equal those that `publish_world` installs |
+
+`in_place_outer_batch_is_refusal_atomic_and_publication_equivalent` composes the five, and its
+`Print Assumptions` reports that it is closed under the global context. Five executed mutants in
+`TwoLevelRSpaceGuardedOwnershipMutants.v`, one per identifier, are killed by that file's causal
+witness theorem: a refused batch that writes anyway, the predecessor's `publish_world` on an
+unshared root, a batch that ignores the alias and keeps the identity of the root that the alias
+holds, a batch that also disposes an untouched slot, and a batch that keeps the old entries. The
+publish and abort invariants of the same theory, `GuardInvPublishSwapsAndRetiresOnce`,
+`GuardInvAbortPreservesAuthorityAliases` and `GuardInvAbortCannotDisposeBorrowed`, describe staged
+publication, which `apply_delta` no longer uses; the scope note of
+[TLRS-PROP-07](../pathmap/two-level-rspace-authority-invariant-catalog-2026-09-02.md#tlrs-prop-07--copy-on-write-and-guarded-lifecycle)
+records the division. As in 5.60.7, the model is not a refinement proof of the Rust function.
+
+**Test evidence.** The tests ran on exports of the committed trees; the table gives their commits,
+gate logs and counts.
+
+| Leaf | Commit | Tests | What they establish | Gate log | Counts |
+|---|---|---|---|---|---|
+| `rspace-outer-delta-in-place` | `f39ff446c` | `apply_delta_reuses_the_unique_outer_authority_anchor` and `apply_delta_source_has_no_whole_index_clone_transaction` in `data_index.rs`; `cloned_store_delta_splits_only_the_mutated_outer_and_inner_authorities` and the updated `multichannel_delta_publishes_all_touched_channels_and_preserves_untouched_anchor` and `delta_publication_identity_distinguishes_success_empty_refusal_and_underflow` in `rspace++/tests/data_index/two_level_channel_authority.rs`; `one_channel_delta_allocates_independently_of_loaded_channel_count` in `rspace++/tests/bag_allocation_spec.rs` | a unique store keeps its outer anchor; the source of `apply_delta` holds no whole-index clone and no assignment of the index; with an alias held, only the mutated outer and inner authorities split, in both drop orders; with 16 and with 4,096 loaded channels besides the target, one `apply_delta` makes equal allocation calls and bytes for a new datum, a complete removal and a value-only change, on a unique store and with an alias held (the unique variants fail at the parent) | `14501-gate-20261114T161723Z.log` | `--lib rspace::data_index` 72 passed, 0 failed, 1 ignored, with `bag_allocation_spec` 9/0/2, `data_index_spec` 28/0/1 and `accepted_match_transition_spec` 4/0/0 (passed/failed/ignored, debug and release alike) |
+| `rspace-outer-delta-in-place-properties` | `aabb32da4` | five property tests in `two_level_channel_authority.rs`, one per invariant identifier above (`guard_inv_outer_batch_refusal_preserves_world`, `guard_inv_outer_batch_unique_in_place`, `guard_inv_outer_batch_shared_fork_preserves_aliases`, `guard_inv_outer_batch_disposes_only_replaced_slots` and `guard_inv_outer_batch_matches_publication`); the `poison-delta` child probe in `channel_prefix_replacement_properties.rs` | over generated channels related by prefix, datum labels and amounts, invalid deltas (underflow, a malformed path, `u64` overflow), unique stores, aliases dropped before or after the store, and absent, warm or held catalogs, each invariant holds on the implementation; a poisoned catalog lock panics with the store unchanged | `14502-gate-20261114T163144Z.log` | `--lib rspace::data_index` 78 passed, 0 failed, 1 ignored (debug and release alike), 128 cases per property |
+
+**RhoSpec evidence (predictions P4 and P5).** Leaf `bag-exclusive-removal-rhospec-suites` tests both
+predictions at commit `677adde86`, the commit of `rspace-outer-delta-in-place-properties` or a
+later one. P4 predicts that `system_vault_spec`, `tree_hash_map_spec` and `pos_spec` pass alone in
+release inside their limits of 60 s, 60 s and 400 s with unchanged outcomes; result confirmed (`system_vault_spec` 39.88 s, `tree_hash_map_spec` 44.69 s and `pos_spec` 62.81 s, each passing alone in release). P5
+predicts that the timed evaluation of `tree_hash_map_spec`, from its "Starting tests from" line to
+its result line, takes about 33 s, inside $`[27, 46]`$ s, and that a drain census shows no
+`ChannelSlot` drain inside `apply_delta` and about 8 valued `ChannelSlot` drains in all, instead of
+1,938; result not refuted (the timed evaluation took 26.35 s, 0.65 s below the predicted interval, a saving about 7 s larger than the census timed for the removed drains; the census found no `ChannelSlot` drain inside `apply_delta` in 1,981 calls and 8 valued `ChannelSlot` drains in all). An attribution control at the parent of `rspace-outer-delta-in-place`
+requires `tree_hash_map_spec` to time out while the other two suites pass; result
+confirmed (at `b504c0116`, `tree_hash_map_spec` timed out at its 60 s limit while `system_vault_spec` passed in 66.08 s and `pos_spec` in 122.01 s). Logs `14497-pre-landing-system_vault_spec-20261114T170223Z.log`, `14497-pre-landing-tree_hash_map_spec-20261114T170223Z.log`, `14497-pre-landing-pos_spec-20261114T170223Z.log`, `14497-landing-timed-tree_hash_map_spec-20261114T170629Z.log`, `14497-landing-census-tree_hash_map_spec-20261114T170714Z.log`, `14497-pre-attribution-system_vault_spec-20261114T171143Z.log`, `14497-pre-attribution-tree_hash_map_spec-20261114T171143Z.log` and `14497-pre-attribution-pos_spec-20261114T171143Z.log`.
+
+The other guarded drains of the profile are unchanged: the value-free donors of the PMU-006
+leaf-extension adapter, in about 15% of the evaluation's stacks, and the Bag drains that follow
+`Par` drops and `remove_prefix`. J-260 records two options for the donors; neither is implemented.
+
+The change is confined to how a validated delta reaches the same outer authority. No Rholang value,
+datum or channel identity, multiplicity, candidate order, matcher result, binding,
+protobuf/bincode/EPM1/RMP2 byte, hash, COMM schedule, compute/storage charge, PathMap algebra,
+accepted program or parallel execution order changes; the CBR-053 continuation note of the
 [consensus-change register](../../consensus/consensus-change-register.md) records the
 classification.
 

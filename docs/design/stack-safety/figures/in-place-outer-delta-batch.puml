@@ -1,0 +1,89 @@
+@startuml in-place-outer-delta-batch
+' ============================================================================
+' One nonempty RSpace delta before and after bug 14492's fix: Algorithm 5.60.8
+' of the stack-safety report, section 5.60.8, and PathMap journal J-260.
+'   BLUE   #1565C0  the caller and the steps both versions share (1 to 4 and 6)
+'   RED    #C62828  the predecessor's clone, write, replace and whole-map drain
+'   GREEN  #2E7D32  the in-place write on a unique store (step 5)
+'   PURPLE #6A1B9A  copy-on-share on a shared store: one header clone (step 5)
+'   GREY   #616161  the old anchor's one drain when the alias's last wrapper drops
+' A0 is the outer anchor at the call, A1 a header clone of it and S a store
+' clone that holds A0. L is the number of loaded channels, E the byte edges of
+' the outer map, D the number of nonempty deltas of an evaluation and m_j the
+' marker length of the j-th touched channel.
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam ArrowThickness 1.4
+skinparam sequence {
+  LifeLineBorderColor #455A64
+  ParticipantBorderColor #455A64
+  GroupBorderColor #455A64
+  DividerBackgroundColor #ECEFF1
+}
+
+title <b>One nonempty RSpace delta, before and after bug 14492's fix</b>\nthe outer index was cloned, written and assigned; on a unique store, the old anchor's final drop drained the whole map;\nnow the prepared Bags are written in place, with one header clone only when an alias shares the outer root
+
+participant "hot-store caller\n(write lock held)" as Caller #BBDEFB
+participant "RSpaceDataStore::\napply_delta" as Apply #BBDEFB
+participant "self.index\n(the store's outer wrapper)" as Index #C8E6C9
+participant "candidate_index\n(predecessor only)" as Candidate #FFCDD2
+participant "outer anchor\nat the call" as Old #ECEFF1
+participant "header clone" as Copy #E1BEE7
+participant "store clone S\n(when one exists)" as Alias #E1BEE7
+participant "AnchorRoot::drop\n(guarded drain)" as Drain #FFCDD2
+
+Caller -[#1565C0]> Apply : ""apply_delta(&delta)""
+Apply -[#1565C0]> Apply : steps 1 and 2: partition at exact channel markers;\nprepare one private Bag per touched channel (""apply_to"")
+note right of Apply #E3F2FD
+  every error of parsing, recording and
+  ""apply_to"" is returned here, before any write
+end note
+
+== before the fix: clone, write, replace (tree 3740d5364be3) ==
+Apply -[#C62828]> Candidate : ""let mut candidate_index = self.index.clone();""\n""Arc::clone"": <latex>A_0</latex> gains a second wrapper
+Apply -[#C62828]> Candidate : ""candidate_index.replace_channels_at_markers(&replacements)?""
+Candidate -[#C62828]> Copy : the first write's ""Arc::make_mut"" takes a header clone <latex>A_1</latex>;\nthe two tries share every node
+Apply -[#1565C0]> Apply : steps 3 and 4: catalog lock; stage the catalogs from the written clone
+Apply -[#C62828]> Index : ""self.index = candidate_index;""
+Index -[#C62828]> Drain : on a unique store, the last wrapper of <latex>A_0</latex> drops
+Drain -[#C62828]> Old : walk the whole old map with a write zipper, copy each node\nthat <latex>A_1</latex> still shares, and release all <latex>L</latex> slots
+note over Old, Drain #FFEBEE
+  <latex>\Theta(L + E)</latex> per nonempty delta and <latex>\Theta(D \cdot (L + E))</latex> per evaluation.
+  The census found one whole-map ""ChannelSlot"" drain in each of the
+  1,930 calls; in the evaluation phase, 1,338 of them took 61.2 s.
+end note
+Apply -[#1565C0]> Apply : step 6: commit the pending delta and the staged catalogs
+
+== after the fix: in place (stack-safety report 5.60.8) ==
+Apply -[#1565C0]> Apply : steps 3 and 4: catalog lock; stage the catalogs from the prepared Bags
+Apply -[#2E7D32]> Index : step 5: ""self.index.replace_channels_at_markers(&replacements)?""
+Index -[#2E7D32]> Index : step 5a: preflight the final aggregate metadata\n(overflow errors are returned here; nothing is written yet)
+alt unique store: the index holds the only wrapper of the outer anchor
+  Index -[#2E7D32]> Old : one ""set_val_at"" per touched marker: ""Arc::make_mut"" clones nothing;\nthe replaced slot values go to the disposal policy
+  note right of Old #E8F5E9
+    no header clone and no outer drain:
+    <latex>O(\sum_j m_j)</latex> beyond the shared steps
+  end note
+else shared store: a store clone S also holds the outer anchor
+  Index -[#6A1B9A]> Copy : the first ""set_val_at"" takes one header clone <latex>A_1</latex>,\nwhich releases the store's handle on <latex>A_0</latex>
+  Index -[#6A1B9A]> Copy : the remaining writes of the batch go to <latex>A_1</latex>
+  Alias -[#6A1B9A]> Old : S keeps <latex>A_0</latex> and the old Bags
+  ... later, outside the call ...
+  Alias -[#616161]> Drain : the last wrapper of S drops
+  Drain -[#616161]> Old : <latex>A_0</latex> is drained once, not once per delta
+end
+Apply -[#1565C0]> Apply : step 6: commit the pending delta and the staged catalogs;\nrecord one root publication (instrumentation feature only)
+Apply --[#1565C0]> Caller : ""Ok(())""
+
+legend bottom
+  |= arrow colour |= meaning |
+  |<#1565C0>| the caller and the steps that both versions share (1 to 4 and 6) |
+  |<#C62828>| the predecessor's clone, write, assignment and whole-map drain |
+  |<#2E7D32>| the in-place write on a unique store (step 5) |
+  |<#6A1B9A>| copy-on-share on a shared store: one header clone (step 5) |
+  |<#616161>| the old anchor's one drain when the store clone's last wrapper drops |
+endlegend
+@enduml

@@ -26,13 +26,13 @@ The constructor counts below are taken from the `*_invariant_id` inductives in t
 | `TwoLevelRSpaceOperations.v` | `two_level_operation_invariant_catalog` | 22 |
 | `TwoLevelRSpaceRepresentation.v` | `two_level_representation_invariant_catalog` | 13 |
 | `TwoLevelRSpaceDelta.v` | `two_level_delta_invariant_catalog` | 13 |
-| `TwoLevelRSpaceGuardedOwnership.v` | `guarded_ownership_invariant_catalog` | 40 |
+| `TwoLevelRSpaceGuardedOwnership.v` | `guarded_ownership_invariant_catalog` | 45 |
 | `TwoLevelRSpaceMatchTransaction.v` | `match_transaction_invariant_catalog` | 14 |
 | `TwoLevelRSpaceCheckpointCodec.v` | `rba1_codec_invariant_catalog` | 13 |
 | `TwoLevelRSpaceCheckpointStreaming.v` | `rba1_streaming_invariant_catalog` | 14 |
 | `TwoLevelRSpaceCheckpointCompatibility.v` | `rba1_compatibility_invariant_catalog` | 13 |
 | `TwoLevelRSpaceCheckpointRecovery.v` | `rba1_recovery_invariant_catalog` | 6 |
-| **Total** |  | **171** |
+| **Total** |  | **176** |
 
 The corresponding mutant companions provide formal causal witnesses. They do not by themselves prove that a Rust mutation is detected. A mutant is executable evidence only when a concrete Rust red control changes production behavior and the owning property fails for the intended reason.
 
@@ -109,11 +109,11 @@ Formal owner set:
 - Operations: unique batch targets, canonicality, untouched channels, failure atomicity, deterministic transition, exactly one accepted publication, and one generation advance.
 - Delta: all 13 delta invariants, including canonical preparation, exact channel partition, applicability, untouched preservation, failure atomicity, catalog effects, and exactly one root publication.
 
-Production surface: `replace_channels_at_markers` and `RSpaceDataStore::apply_delta`, which stage channel-local Bags and catalogs before assigning the candidate index.
+Production surface: `replace_channels_at_markers` and `RSpaceDataStore::apply_delta`, which stage channel-local Bags and catalogs and then, since 2026-11-14, preflight the final aggregate metadata and write the prepared Bags into the live outer authority in place instead of assigning a candidate index; `Arc::make_mut` copies the outer header once, and only when another version shares it ([stack-safety report §5.60.8](../stack-safety/stack-safety-report-2026-07-29.md#5608-in-place-outer-delta-batches)).
 
-Current executable evidence: multi-channel success and failure tests, empty-delta identity preservation, malformed-path rejection, iterator-panic rollback, repeated/distinct atomic delta, and underflow rollback. `delta_publication_identity_distinguishes_success_empty_refusal_and_underflow` proves a successful nonempty delta installs a new outer root and that empty, cancelled, malformed, and underflowing deltas preserve outer and inner root identities. `catalog_lock_poison_precedes_clear_publication` proves `clear` cannot publish a half-cleared authority when derived-catalog access fails.
+Current executable evidence: multi-channel success and failure tests, empty-delta identity preservation, malformed-path rejection, iterator-panic rollback, repeated/distinct atomic delta, and underflow rollback. `delta_publication_identity_distinguishes_success_empty_refusal_and_underflow` proves that a successful nonempty delta keeps the outer root of a unique store and gives the touched channel a new inner root while the untouched channel keeps its own, that with an alias held the store's outer authority is copied while the alias keeps the old outer root and the old target Bag, and that empty, cancelled, malformed, and underflowing deltas preserve outer and inner root identities (updated 2026-11-14 by commit `f39ff446c`, which also adds `cloned_store_delta_splits_only_the_mutated_outer_and_inner_authorities`, `apply_delta_reuses_the_unique_outer_authority_anchor` and `apply_delta_source_has_no_whole_index_clone_transaction`). `catalog_lock_poison_precedes_clear_publication` proves `clear` cannot publish a half-cleared authority when derived-catalog access fails.
 
-Open executable obligation: with existing publication instrumentation, prove successful nonempty operations publish exactly once and empty, malformed, underflowing, panicking, or otherwise refused operations publish zero times while authority bytes, metrics, catalogs, and issued snapshots remain unchanged. If the authoritative assignment cannot be observed, exactly-one publication is an implementation-observability gap.
+Open executable obligation: with existing publication instrumentation, prove successful nonempty operations publish exactly once and empty, malformed, underflowing, panicking, or otherwise refused operations publish zero times while authority bytes, metrics, catalogs, and issued snapshots remain unchanged. Since 2026-11-14, `RSpaceDataStore::apply_delta` publishes by the in-place write of `replace_channels_at_markers`, followed by the pending-delta and catalog commits and, under the `accepted-match-transition-instrumentation` feature, by the `record_pathmap_root_publication` call ([stack-safety report §5.60.8](../stack-safety/stack-safety-report-2026-07-29.md#5608-in-place-outer-delta-batches)); if that write cannot be observed, exactly-one publication is an implementation-observability gap.
 
 ### TLRS-PROP-05 — Catalog authority, freshness, and issued snapshots
 
@@ -167,7 +167,7 @@ Open implementation and executable obligation: bind the actual hot-store accepte
 
 Status: **PARTIAL**
 
-Formal owner set: all 40 GuardedOwnership invariants, including outer and inner clone/drop isolation, registered fresh anchors, structural preflight/disjointness, exact real-slot handoff, barrier separation, two-phase teardown, canonical-empty fast drop, generated PDA progress, constant control stack, zipper identity, lease/publication rules, and fail-stop atomicity.
+Formal owner set: all 45 GuardedOwnership invariants, including outer and inner clone/drop isolation, registered fresh anchors, structural preflight/disjointness, exact real-slot handoff, barrier separation, two-phase teardown, canonical-empty fast drop, generated PDA progress, constant control stack, zipper identity, lease/publication rules, fail-stop atomicity, and the in-place outer delta batch (2026-11-14).
 
 Production surface: `GuardedPathMap<ChannelSlot, ChannelSlotDisposer, ChannelSlotBarrier>`, independently guarded inner Bags, copy-on-write clones, and generated iterative teardown.
 
@@ -198,6 +198,23 @@ commit `81db4de5a`) and the live-prune theorems of
 (`exclusive_provenance_licenses_live_removal`; commit `4d7532fe6`). The in-place path adds no
 invariant to the guarded-ownership model and changes none, so it leaves this family's status and
 open obligations unchanged.
+
+Scope note (2026-11-14, bug 14492, outer delta batches): since commit `f39ff446c`,
+`RSpaceDataStore::apply_delta` writes a validated delta into the live outer authority in place
+([stack-safety report §5.60.8](../stack-safety/stack-safety-report-2026-07-29.md#5608-in-place-outer-delta-batches)).
+The publish and abort invariants `GuardInvPublishSwapsAndRetiresOnce`,
+`GuardInvAbortPreservesAuthorityAliases` and `GuardInvAbortCannotDisposeBorrowed` describe staged
+publication, in which a candidate root is built beside the live one and then published or
+aborted; `apply_delta` no longer stages a candidate root. The five invariants that commit
+`7e7115409` adds describe the in-place batch and grow the guarded-ownership catalog from 40 to 45:
+`GuardInvOuterBatchRefusalPreservesWorld`, `GuardInvOuterBatchUniqueInPlace`,
+`GuardInvOuterBatchSharedForkPreservesAliases`, `GuardInvOuterBatchDisposesOnlyReplacedSlots` and
+`GuardInvOuterBatchMatchesPublication`, composed by
+`in_place_outer_batch_is_refusal_atomic_and_publication_equivalent` in
+[`TwoLevelRSpaceGuardedOwnership.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceGuardedOwnership.v).
+Commit `aabb32da4` binds each of the five to a property test in `two_level_channel_authority.rs`.
+They join this family's owner set; its status stays **PARTIAL**, and the open obligations below are
+unchanged.
 
 Open executable obligations:
 
@@ -771,7 +788,7 @@ The in-memory production checkpoint requires all of the following additions:
 1. TLRS-PROP-01 generated prefix-relation and loaded-empty exact-channel property — **implemented**;
 2. TLRS-PROP-02 aggregate-metadata oracle, including exact `u128` and saturated `u64` boundary evidence — **implemented for current operation generators**;
 3. TLRS-PROP-03 combined canonical candidate-order/identity property — **implemented**, with combined lazy-decode instrumentation still open;
-4. TLRS-PROP-04 publication-count and strong-failure-atomicity property — **root-identity and failure behavior implemented; exact transient publication-event counting remains open**;
+4. TLRS-PROP-04 publication-count and strong-failure-atomicity property — **root-identity and failure behavior implemented; exact transient publication-event counting remains open** (since 2026-11-14 a successful delta writes the outer authority in place and keeps a unique store's outer root, [stack-safety report §5.60.8](../stack-safety/stack-safety-report-2026-07-29.md#5608-in-place-outer-delta-batches));
 5. TLRS-PROP-05 exact selected-authority freshness model, positive same-channel interference control, exhausted-selection refusal control, and immutable issued-pool evidence — **implemented**;
 6. TLRS-PROP-06 end-to-end accepted/refused authoritative match property;
 7. TLRS-PROP-07 lifecycle ledger and bounded-stack fault-injection properties.
