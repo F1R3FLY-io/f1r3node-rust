@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use models::rust::block_hash::BlockHash;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_metadata::BlockMetadata;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::atomic_store::{AtomicStoreGroup, AtomicTransaction};
 use shared::rust::store::key_value_store::KvStoreError;
@@ -15,6 +16,7 @@ const RETRY_CURSOR_KEY: &[u8] = b"gc.retry-cursor";
 
 #[derive(Clone, Copy)]
 pub struct DagGcSlots {
+    pub metadata: usize,
     pub state: usize,
     pub retry: usize,
 }
@@ -158,6 +160,21 @@ impl DagGcStore {
         self.group.transaction(|tx| {
             tx.delete(self.slots.retry, hash)?;
             Ok(())
+        })
+    }
+
+    pub fn drop_unfinalized(&self, hash: &BlockHash) -> Result<bool, KvStoreError> {
+        self.group.transaction(|tx| {
+            let finalized = tx
+                .get(self.slots.metadata, &encode(&BlockHashSerde(hash.clone()))?)?
+                .map(|bytes| decode::<BlockMetadata>(&bytes))
+                .transpose()?
+                .is_some_and(|metadata| metadata.finalized);
+            if finalized {
+                return Ok(false);
+            }
+            tx.delete(self.slots.retry, hash)?;
+            Ok(true)
         })
     }
 }
