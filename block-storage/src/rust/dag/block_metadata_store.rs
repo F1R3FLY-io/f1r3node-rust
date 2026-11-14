@@ -192,16 +192,18 @@ impl BlockMetadataStore {
             ));
         }
         let progress = persistence.recover()?;
-        let window_cutoff = progress
+        let cutoff = progress
             .lfb
             .as_ref()
             .map_or(0, |(_, height)| height.saturating_sub(hot_window).max(0));
-        // Persisted anchor floors the cutoff so a restart does not re-load
-        // metadata that GC evicted on the previous run — that would
-        // silently reopen the walk-descends-past-anchor bug this guard
-        // closes.
+        // Persist-aware pruning anchor; informational only right now since
+        // lookup/contains/scan_height_range don't gate on it. Stored on
+        // `state.pruning_cutoff` so a future walk-termination change can
+        // read it, but it MUST NOT inflate `state.cutoff` — that field is
+        // the hot-window residency floor, and widening it drops blocks
+        // the proposer still needs from the in-memory set (observed as
+        // `MissingBlock` during propose in CI).
         let pruning_cutoff = persistence.gc.effective_anchor()?.unwrap_or(0).max(0);
-        let cutoff = window_cutoff.max(pruning_cutoff);
         let mut state = DagState::new();
         state.last_finalized_block = progress.lfb.clone();
         state.sequence = progress.sequence;
