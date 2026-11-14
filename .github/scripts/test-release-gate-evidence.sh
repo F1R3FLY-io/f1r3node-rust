@@ -59,7 +59,7 @@ INDEX_DIGEST="sha256:$(printf 'index' | sha256sum | awk '{print $1}')"
 	"sha256:$(printf 'amd64' | sha256sum | awk '{print $1}')" "sha256:$(printf 'arm64' | sha256sum | awk '{print $1}')" "$INDEX_DIGEST"
 cp "$TMP/ci-run.json" "$TMP/ci-jobs.json" "$GATES/"
 run_doc .github/workflows/slashing-tests.yml 555 1 "$SOURCE_SHA" >"$GATES/slashing-run.json"
-jq -n '{jobs: ([{name: "Example-based UC tests"}, {name: "Property-based theorem tests"}, {name: "Loom exhaustive interleaving (T-9.2)"},
+jq -n '{jobs: ([{name: "Example-based UC tests"}, {name: "Property-based theorem tests"},
 	{name: "Pre-fix regression backstops (1)"}] | map(. + {status: "completed", conclusion: "success"}))}' >"$GATES/slashing-jobs.json"
 
 expect_failure() {

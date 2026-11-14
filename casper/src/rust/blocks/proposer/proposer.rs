@@ -301,7 +301,6 @@ where
                                 | BlockError::Invalid(InvalidBlock::JustificationRegression)
                                 | BlockError::Invalid(InvalidBlock::InvalidBondsCache)
                                 | BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)
-                                | BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
                                 | BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy)
                         ) {
                             let recoverable_reason = match &invalid_reason {
@@ -319,9 +318,6 @@ where
                                 }
                                 BlockError::Invalid(InvalidBlock::JustificationRegression) => {
                                     "justification_regression"
-                                }
-                                BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock) => {
-                                    "neglected_invalid_block"
                                 }
                                 BlockError::Invalid(InvalidBlock::ContainsExpiredDeploy) => {
                                     "contains_expired_deploy"

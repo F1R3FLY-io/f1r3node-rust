@@ -39,7 +39,7 @@ pub fn view_holding(blocks: &[&BlockMessage]) -> CasperSnapshot {
             .dag
             .block_metadata_index
             .write()
-            .add(BlockMetadata::from_block(block, false, None, None))
+            .add(BlockMetadata::from_block(block, None, None, None))
             .expect("seed block metadata");
     }
     snapshot

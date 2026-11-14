@@ -157,7 +157,7 @@ async fn merged_siblings_must_not_score_equal() {
         let fork_choice = Estimator::apply()
             .tips_with_latest_messages(
                 &mut dag,
-                &BlockMetadata::from_block(&genesis, false, None, None),
+                &BlockMetadata::from_block(&genesis, None, None, None),
                 latest,
                 i32::MAX,
                 None,

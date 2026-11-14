@@ -15,7 +15,7 @@ use super::detector_totality_helpers::{assert_valid, block, justification, Detec
 #[tokio::test]
 async fn uc_107_validator_set_churn_missing_pointer_is_deterministic() {
     let fixture = DetectorFixture::new().await;
-    fixture.add_record(0, 0, &[]);
+    fixture.add_equivocation(0, 0);
 
     let historical_without_offender = block(
         10,

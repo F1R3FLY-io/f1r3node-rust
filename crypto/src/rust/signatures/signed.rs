@@ -82,18 +82,14 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Signed<A> {
         pk: PublicKey,
         sig: prost::bytes::Bytes,
         sig_algorithm: Box<dyn SignaturesAlg>,
-    ) -> Result<Option<Self>, String> {
+    ) -> Option<Self> {
         let signed = Self {
             data,
             pk,
             sig,
             sig_algorithm,
         };
-        if signed.verify() {
-            Ok(Some(signed))
-        } else {
-            Ok(None)
-        }
+        signed.verify().then_some(signed)
     }
 
     pub fn verify(&self) -> bool {
@@ -217,8 +213,7 @@ mod tests {
             signed.pk.clone(),
             signed.sig.clone(),
             alg(),
-        )
-        .unwrap();
+        );
         assert_eq!(verified, Some(signed));
     }
 
@@ -234,8 +229,7 @@ mod tests {
             signed.pk.clone(),
             prost::bytes::Bytes::from(tampered_sig),
             alg(),
-        )
-        .unwrap();
+        );
         assert_eq!(result, None);
 
         let result = Signed::from_signed_data(
@@ -243,8 +237,7 @@ mod tests {
             signed.pk.clone(),
             signed.sig.clone(),
             alg(),
-        )
-        .unwrap();
+        );
         assert_eq!(result, None);
     }
 
@@ -269,8 +262,7 @@ mod tests {
             unbound.pk.clone(),
             unbound.sig.clone(),
             alg(),
-        )
-        .unwrap();
+        );
         assert_eq!(verified, None);
     }
 

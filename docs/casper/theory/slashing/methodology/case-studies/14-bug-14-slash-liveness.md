@@ -30,7 +30,7 @@ cargo test -p casper --test mod -- slashing::integration_t_neglected_invalid_blo
 ```
 
 The fixture
-[`casper/tests/slashing/integration_t_neglected_invalid_block.rs`](../../../../../../casper/tests/slashing/integration_t_neglected_invalid_block.rs)
+[`casper/tests/slashing/integration_t_neglected_invalid_block.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/504963ab546be84e50650ad81bb5df11965954ca/casper/tests/slashing/integration_t_neglected_invalid_block.rs)
 encodes the canonical scenario where an invalid proposer slot
 would otherwise stall the slash decision.
 

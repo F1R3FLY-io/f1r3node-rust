@@ -27,7 +27,7 @@ use super::detector_totality_helpers::{
 #[tokio::test]
 async fn pre_fix_bug_11_missing_pointer_is_non_contributing() {
     let fixture = DetectorFixture::new().await;
-    fixture.add_record(0, 0, &[]);
+    fixture.add_equivocation(0, 0);
 
     let current = block(
         20,
@@ -43,7 +43,7 @@ async fn pre_fix_bug_11_missing_pointer_is_non_contributing() {
 #[tokio::test]
 async fn pre_fix_bug_11_duplicate_child_does_not_count_twice() {
     let fixture = DetectorFixture::new().await;
-    fixture.add_record(0, 0, &[]);
+    fixture.add_equivocation(0, 0);
 
     let child = block(
         10,
@@ -71,7 +71,7 @@ async fn pre_fix_bug_11_duplicate_child_does_not_count_twice() {
 #[tokio::test]
 async fn pre_fix_bug_11_two_distinct_children_are_decisive() {
     let fixture = DetectorFixture::new().await;
-    fixture.add_record(0, 0, &[]);
+    fixture.add_equivocation(0, 0);
 
     let child_a = block(
         11,
