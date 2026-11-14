@@ -173,7 +173,6 @@ pub enum IngestInput {
     },
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     Fetch(FetchAction),
