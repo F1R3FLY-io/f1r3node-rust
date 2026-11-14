@@ -1,0 +1,287 @@
+current-epoch window: leaf 14266, mode real, attempt 1; commit bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c); date 2026-11-14; baseline epoch-bf826516c
+== lane held from 2026-11-14T19:16:28Z
+exported b42c3d305af591f38a0cd5b9656823e3ae134e8c to target/scratch/idx2
+export equals tree b42c3d305af591f38a0cd5b9656823e3ae134e8c: 3958 tracked files checked, 0 problems, 1 untracked files
+== sources before the runs (2026-11-14T19:16:29Z)
+$ git status --porcelain --untracked-files=all -- rholang rspace++ models crypto rho-pure-eval shared formal/verified_score_store Cargo.toml Cargo.lock .cargo rust-toolchain.toml   (in the export, with a temporary index of tree b42c3d305af591f38a0cd5b9656823e3ae134e8c; HEAD bf826516ca4ef0a6a8de3c03e9272d88a91af15f)
+(no output)
+== build 1 (epathmap_ac_exact): cargo bench -p rholang --bench epathmap_ac_exact --no-run (2026-11-14T19:16:29Z)
+build 1 exit 0; 275 crates compiled; Finished `bench` profile [optimized] target(s) in 1m 09s
+== host state before (2026-11-14T19:17:38Z)
+cpu8 scaling_governor: performance
+cpu8 energy_performance_preference: performance
+cpu8 scaling_driver: amd-pstate-epp
+cpu8 scaling_cur_freq (kHz): 3923318
+cpu8 cpuinfo_max_freq (kHz): 4561833
+cpu8 scaling_max_freq (kHz): 4561833
+cpufreq boost: 1
+cpu8 thread siblings: 8
+possible CPUs: 0-31
+online CPUs: 0-31
+smt active: 0
+smt control: notsupported
+cpu40: absent (the leaves' 'CPU 40 idle' names no CPU of this host)
+loadavg: 14.70 9.43 6.31 8/5188 2828538
+RUSTFLAGS: <unset>
+CARGO_ENCODED_RUSTFLAGS: <unset>
+rustflags entries of .cargo/config.toml in the export, with their tables:
+  [build] rustflags = ["-C", "target-cpu=native"]
+  [target.x86_64-unknown-linux-gnu] rustflags = ["-C", "target-feature=+aes,+sse2"]
+rustc -vV (in the export, so rust-toolchain.toml applies):
+  rustc 1.95.0-nightly (6efa357bf 2026-02-08)
+  binary: rustc
+  commit-hash: 6efa357bff60d192688e02de0c78cae24a7f3a55
+  commit-date: 2026-02-08
+  host: x86_64-unknown-linux-gnu
+  release: 1.95.0-nightly
+  LLVM version: 22.1.0
+cargo -V (in the export): cargo 1.95.0-nightly (fe2f314ae 2026-01-30)
+commit: bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c)
+path dependency rholang-rs-cost-accounting-transpiler commit: 02cef80d32214ecdac3ee7d3b91c3786a34174d5
+path dependency rholang-rs-cost-accounting-transpiler changed or untracked paths: 0
+mpstat -P ALL 1 1 (host name replaced):
+  Linux 7.2.15-arch1-1 (<host>) 	11/14/26 	_x86_64_	(32 CPU)
+  
+  14:17:38     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  14:17:39     all   10.52    0.62    9.03    0.09    0.34    0.28    0.00    0.00    0.00   79.12
+  14:17:39       0    0.00    0.00    0.97    0.00    0.00    2.91    0.00    0.00    0.00   96.12
+  14:17:39       1    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  14:17:39       2    3.92    0.00    1.96    0.00    0.00    0.98    0.00    0.00    0.00   93.14
+  14:17:39       3    1.96    0.00    0.00    0.00    0.98    0.00    0.00    0.00    0.00   97.06
+  14:17:39       4    0.00    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+  14:17:39       5    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  14:17:39       6    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:17:39       7   36.36    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   63.64
+  14:17:39       8    1.98    0.99    1.98    0.00    0.00    0.00    0.00    0.00    0.00   95.05
+  14:17:39       9    1.00    0.00    1.00    0.00    1.00    0.00    0.00    0.00    0.00   97.00
+  14:17:39      10    5.05    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   94.95
+  14:17:39      11    1.98    0.00    1.98    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  14:17:39      12    2.00    0.00    2.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+  14:17:39      13    2.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   97.00
+  14:17:39      14    1.00    0.00    2.00    0.00    0.00    1.00    0.00    0.00    0.00   96.00
+  14:17:39      15    0.99    0.00    0.99    0.99    0.00    0.00    0.00    0.00    0.00   97.03
+  14:17:39      16   19.00    0.00   21.00    0.00    1.00    0.00    0.00    0.00    0.00   59.00
+  14:17:39      17    9.90    0.99   11.88    0.00    0.99    0.00    0.00    0.00    0.00   76.24
+  14:17:39      18   51.52    1.01   45.45    0.00    1.01    0.00    0.00    0.00    0.00    1.01
+  14:17:39      19   36.36    9.09   40.40    0.00    0.00    0.00    0.00    0.00    0.00   14.14
+  14:17:39      20   26.53    0.00   24.49    0.00    0.00    0.00    0.00    0.00    0.00   48.98
+  14:17:39      21   12.00    0.00   17.00    0.00    0.00    0.00    0.00    0.00    0.00   71.00
+  14:17:39      22   45.00    5.00   43.00    0.00    2.00    1.00    0.00    0.00    0.00    4.00
+  14:17:39      23   32.67    2.97   31.68    0.00    0.00    0.00    0.00    0.00    0.00   32.67
+  14:17:39      24    4.90    0.00    4.90    0.98    0.98    0.00    0.00    0.00    0.00   88.24
+  14:17:39      25    3.96    0.00    3.96    0.00    0.99    0.99    0.00    0.00    0.00   90.10
+  14:17:39      26    3.00    0.00    4.00    0.00    1.00    0.00    0.00    0.00    0.00   92.00
+  14:17:39      27    1.98    0.00    1.98    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  14:17:39      28    1.00    0.00    2.00    0.00    0.00    0.00    0.00    0.00    0.00   97.00
+  14:17:39      29    9.71    0.00    8.74    0.97    0.97    0.97    0.00    0.00    0.00   78.64
+  14:17:39      30   16.00    0.00   11.00    0.00    0.00    0.00    0.00    0.00    0.00   73.00
+  14:17:39      31    4.90    0.00    2.94    0.00    0.00    0.98    0.00    0.00    0.00   91.18
+  
+  Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  Average:     all   10.52    0.62    9.03    0.09    0.34    0.28    0.00    0.00    0.00   79.12
+  Average:       0    0.00    0.00    0.97    0.00    0.00    2.91    0.00    0.00    0.00   96.12
+  Average:       1    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  Average:       2    3.92    0.00    1.96    0.00    0.00    0.98    0.00    0.00    0.00   93.14
+  Average:       3    1.96    0.00    0.00    0.00    0.98    0.00    0.00    0.00    0.00   97.06
+  Average:       4    0.00    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+  Average:       5    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:       6    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       7   36.36    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   63.64
+  Average:       8    1.98    0.99    1.98    0.00    0.00    0.00    0.00    0.00    0.00   95.05
+  Average:       9    1.00    0.00    1.00    0.00    1.00    0.00    0.00    0.00    0.00   97.00
+  Average:      10    5.05    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   94.95
+  Average:      11    1.98    0.00    1.98    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  Average:      12    2.00    0.00    2.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+  Average:      13    2.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   97.00
+  Average:      14    1.00    0.00    2.00    0.00    0.00    1.00    0.00    0.00    0.00   96.00
+  Average:      15    0.99    0.00    0.99    0.99    0.00    0.00    0.00    0.00    0.00   97.03
+  Average:      16   19.00    0.00   21.00    0.00    1.00    0.00    0.00    0.00    0.00   59.00
+  Average:      17    9.90    0.99   11.88    0.00    0.99    0.00    0.00    0.00    0.00   76.24
+  Average:      18   51.52    1.01   45.45    0.00    1.01    0.00    0.00    0.00    0.00    1.01
+  Average:      19   36.36    9.09   40.40    0.00    0.00    0.00    0.00    0.00    0.00   14.14
+  Average:      20   26.53    0.00   24.49    0.00    0.00    0.00    0.00    0.00    0.00   48.98
+  Average:      21   12.00    0.00   17.00    0.00    0.00    0.00    0.00    0.00    0.00   71.00
+  Average:      22   45.00    5.00   43.00    0.00    2.00    1.00    0.00    0.00    0.00    4.00
+  Average:      23   32.67    2.97   31.68    0.00    0.00    0.00    0.00    0.00    0.00   32.67
+  Average:      24    4.90    0.00    4.90    0.98    0.98    0.00    0.00    0.00    0.00   88.24
+  Average:      25    3.96    0.00    3.96    0.00    0.99    0.99    0.00    0.00    0.00   90.10
+  Average:      26    3.00    0.00    4.00    0.00    1.00    0.00    0.00    0.00    0.00   92.00
+  Average:      27    1.98    0.00    1.98    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  Average:      28    1.00    0.00    2.00    0.00    0.00    0.00    0.00    0.00    0.00   97.00
+  Average:      29    9.71    0.00    8.74    0.97    0.97    0.97    0.00    0.00    0.00   78.64
+  Average:      30   16.00    0.00   11.00    0.00    0.00    0.00    0.00    0.00    0.00   73.00
+  Average:      31    4.90    0.00    2.94    0.00    0.00    0.98    0.00    0.00    0.00   91.18
+== pgrep -a 'cargo|rustc' before the runs
+pgrep -a 'cargo|rustc': no process (2026-11-14T19:17:39Z)
+== cpu_snapshot(8) before the runs
+cpu_snapshot(8) attempt 1 at 2026-11-14T19:17:40Z: admitted True; idle of CPU 8 93.1%; cores more than 50% idle: 28; idle % per CPU: 0:92.2 1:99.0 2:97.0 3:97.0 4:94.1 5:97.0 6:88.0 7:62.0 8:93.1 9:98.0 10:99.0 11:95.2 12:94.0 13:89.1 14:92.1 15:92.0 16:64.0 17:78.6 18:2.0 19:30.7 20:51.5 21:73.3 22:8.0 23:48.5 24:84.0 25:86.1 26:90.0 27:94.0 28:93.1 29:77.0 30:68.3 31:90.1
+== run 1 (epathmap_ac_exact) (2026-11-14T19:17:40Z)
+$ systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 8 cargo bench -p rholang --bench epathmap_ac_exact -- --sample-size 33 --save-baseline epoch-bf826516c --noplot 2>&1 | tee -a <stem>.log
+Running as unit: run-p2828894-i120213517.scope; invocation ID: ab07d128c1d44ae8a62a394210184205
+    Finished `bench` profile [optimized] target(s) in 0.26s
+     Running benches/epathmap_ac_exact.rs (target/scratch/idx-target/release/deps/epathmap_ac_exact-f1e1361477dbd3eb)
+Benchmarking epathmap_ac_exact_set/production/16
+Benchmarking epathmap_ac_exact_set/production/16: Warming up for 2.0000 s
+Benchmarking epathmap_ac_exact_set/production/16: Collecting 33 samples in estimated 5.0050 s (217k iterations)
+Benchmarking epathmap_ac_exact_set/production/16: Analyzing
+epathmap_ac_exact_set/production/16
+                        time:   [23.197 µs 23.206 µs 23.218 µs]
+                        thrpt:  [689.13 Kelem/s 689.48 Kelem/s 689.73 Kelem/s]
+Found 4 outliers among 33 measurements (12.12%)
+  1 (3.03%) low severe
+  3 (9.09%) high mild
+Benchmarking epathmap_ac_exact_set/production/256
+Benchmarking epathmap_ac_exact_set/production/256: Warming up for 2.0000 s
+Benchmarking epathmap_ac_exact_set/production/256: Collecting 33 samples in estimated 5.0200 s (15k iterations)
+Benchmarking epathmap_ac_exact_set/production/256: Analyzing
+epathmap_ac_exact_set/production/256
+                        time:   [344.22 µs 345.58 µs 347.87 µs]
+                        thrpt:  [735.91 Kelem/s 740.79 Kelem/s 743.72 Kelem/s]
+Benchmarking epathmap_ac_exact_set/production/4096
+Benchmarking epathmap_ac_exact_set/production/4096: Warming up for 2.0000 s
+Benchmarking epathmap_ac_exact_set/production/4096: Collecting 33 samples in estimated 7.2528 s (1683 iterations)
+Benchmarking epathmap_ac_exact_set/production/4096: Analyzing
+epathmap_ac_exact_set/production/4096
+                        time:   [4.3231 ms 4.3286 ms 4.3325 ms]
+                        thrpt:  [945.41 Kelem/s 946.26 Kelem/s 947.46 Kelem/s]
+
+Benchmarking epathmap_ac_exact_map/production/16
+Benchmarking epathmap_ac_exact_map/production/16: Warming up for 2.0000 s
+Benchmarking epathmap_ac_exact_map/production/16: Collecting 33 samples in estimated 5.0517 s (8415 iterations)
+Benchmarking epathmap_ac_exact_map/production/16: Analyzing
+epathmap_ac_exact_map/production/16
+                        time:   [599.91 µs 600.27 µs 600.60 µs]
+                        thrpt:  [26.640 Kelem/s 26.655 Kelem/s 26.671 Kelem/s]
+Benchmarking epathmap_ac_exact_map/production/256
+Benchmarking epathmap_ac_exact_map/production/256: Warming up for 2.0000 s
+
+Warning: Unable to complete 33 samples in 5.0s. You may wish to increase target time to 5.1s, enable flat sampling, or reduce sample count to 20.
+Benchmarking epathmap_ac_exact_map/production/256: Collecting 33 samples in estimated 5.1143 s (561 iterations)
+Benchmarking epathmap_ac_exact_map/production/256: Analyzing
+epathmap_ac_exact_map/production/256
+                        time:   [9.1121 ms 9.1155 ms 9.1188 ms]
+                        thrpt:  [28.074 Kelem/s 28.084 Kelem/s 28.095 Kelem/s]
+Found 1 outliers among 33 measurements (3.03%)
+  1 (3.03%) high mild
+Benchmarking epathmap_ac_exact_map/production/4096
+Benchmarking epathmap_ac_exact_map/production/4096: Warming up for 2.0000 s
+Benchmarking epathmap_ac_exact_map/production/4096: Collecting 33 samples in estimated 9.7237 s (66 iterations)
+Benchmarking epathmap_ac_exact_map/production/4096: Analyzing
+epathmap_ac_exact_map/production/4096
+                        time:   [145.73 ms 146.04 ms 146.34 ms]
+                        thrpt:  [27.990 Kelem/s 28.048 Kelem/s 28.106 Kelem/s]
+
+== run 1 exit 0 (2026-11-14T19:18:34Z)
+== host state after (2026-11-14T19:18:34Z)
+cpu8 scaling_governor: performance
+cpu8 energy_performance_preference: performance
+cpu8 scaling_driver: amd-pstate-epp
+cpu8 scaling_cur_freq (kHz): 3427997
+cpu8 cpuinfo_max_freq (kHz): 4561833
+cpu8 scaling_max_freq (kHz): 4561833
+cpufreq boost: 1
+cpu8 thread siblings: 8
+possible CPUs: 0-31
+online CPUs: 0-31
+smt active: 0
+smt control: notsupported
+cpu40: absent (the leaves' 'CPU 40 idle' names no CPU of this host)
+loadavg: 9.98 9.09 6.39 5/5083 2844216
+RUSTFLAGS: <unset>
+CARGO_ENCODED_RUSTFLAGS: <unset>
+rustflags entries of .cargo/config.toml in the export, with their tables:
+  [build] rustflags = ["-C", "target-cpu=native"]
+  [target.x86_64-unknown-linux-gnu] rustflags = ["-C", "target-feature=+aes,+sse2"]
+rustc -vV (in the export, so rust-toolchain.toml applies):
+  rustc 1.95.0-nightly (6efa357bf 2026-02-08)
+  binary: rustc
+  commit-hash: 6efa357bff60d192688e02de0c78cae24a7f3a55
+  commit-date: 2026-02-08
+  host: x86_64-unknown-linux-gnu
+  release: 1.95.0-nightly
+  LLVM version: 22.1.0
+cargo -V (in the export): cargo 1.95.0-nightly (fe2f314ae 2026-01-30)
+commit: bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c)
+path dependency rholang-rs-cost-accounting-transpiler commit: 02cef80d32214ecdac3ee7d3b91c3786a34174d5
+path dependency rholang-rs-cost-accounting-transpiler changed or untracked paths: 0
+mpstat -P ALL 1 1 (host name replaced):
+  Linux 7.2.15-arch1-1 (<host>) 	11/14/26 	_x86_64_	(32 CPU)
+  
+  14:18:34     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  14:18:35     all    7.57    0.03    8.12    0.19    0.40    0.31    0.00    0.00    0.00   83.38
+  14:18:35       0    1.98    0.00    3.96    0.00    0.00    0.00    0.00    0.00    0.00   94.06
+  14:18:35       1    0.98    0.00    1.96    0.00    0.98    0.98    0.00    0.00    0.00   95.10
+  14:18:35       2    0.98    0.00    0.98    0.98    0.98    0.00    0.00    0.00    0.00   96.08
+  14:18:35       3    1.00    0.00    3.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+  14:18:35       4    0.99    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  14:18:35       5    0.99    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  14:18:35       6    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  14:18:35       7    0.00    0.00    2.97    0.00    0.99    0.00    0.00    0.00    0.00   96.04
+  14:18:35       8    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:18:35       9    0.00    0.00    0.99    0.99    0.00    0.00    0.00    0.00    0.00   98.02
+  14:18:35      10   35.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   64.00
+  14:18:35      11    0.98    0.00    2.94    0.00    0.00    0.00    0.00    0.00    0.00   96.08
+  14:18:35      12    0.98    0.00    1.96    0.00    0.00    0.00    0.00    0.00    0.00   97.06
+  14:18:35      13    1.94    0.00    0.97    0.00    0.97    0.00    0.00    0.00    0.00   96.12
+  14:18:35      14    0.00    0.00    0.99    0.00    0.00    0.99    0.00    0.00    0.00   98.02
+  14:18:35      15    0.00    0.00    0.98    0.00    0.98    0.98    0.00    0.00    0.00   97.06
+  14:18:35      16    9.09    0.00    8.08    1.01    0.00    1.01    0.00    0.00    0.00   80.81
+  14:18:35      17    4.95    0.00    4.95    0.00    0.99    0.00    0.00    0.00    0.00   89.11
+  14:18:35      18   15.00    0.00   79.00    0.00    0.00    1.00    0.00    0.00    0.00    5.00
+  14:18:35      19   48.00    0.00   22.00    0.00    1.00    1.00    0.00    0.00    0.00   28.00
+  14:18:35      20   17.17    0.00   10.10    1.01    0.00    1.01    0.00    0.00    0.00   70.71
+  14:18:35      21    5.10    0.00    4.08    0.00    1.02    0.00    0.00    0.00    0.00   89.80
+  14:18:35      22   51.00    0.00   47.00    0.00    2.00    0.00    0.00    0.00    0.00    0.00
+  14:18:35      23   20.00    0.00   24.00    1.00    0.00    0.00    0.00    0.00    0.00   55.00
+  14:18:35      24    4.00    0.00    4.00    0.00    0.00    0.00    0.00    0.00    0.00   92.00
+  14:18:35      25    1.96    0.00    5.88    0.98    0.00    0.98    0.00    0.00    0.00   90.20
+  14:18:35      26    1.94    0.97    3.88    0.00    0.97    0.00    0.00    0.00    0.00   92.23
+  14:18:35      27    0.98    0.00    1.96    0.00    0.00    0.00    0.00    0.00    0.00   97.06
+  14:18:35      28    1.96    0.00    1.96    0.00    0.98    0.00    0.00    0.00    0.00   95.10
+  14:18:35      29    4.00    0.00    7.00    0.00    1.00    0.00    0.00    0.00    0.00   88.00
+  14:18:35      30   11.11    0.00    6.06    0.00    0.00    1.01    0.00    0.00    0.00   81.82
+  14:18:35      31    0.99    0.00    1.98    0.00    0.00    0.99    0.00    0.00    0.00   96.04
+  
+  Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  Average:     all    7.57    0.03    8.12    0.19    0.40    0.31    0.00    0.00    0.00   83.38
+  Average:       0    1.98    0.00    3.96    0.00    0.00    0.00    0.00    0.00    0.00   94.06
+  Average:       1    0.98    0.00    1.96    0.00    0.98    0.98    0.00    0.00    0.00   95.10
+  Average:       2    0.98    0.00    0.98    0.98    0.98    0.00    0.00    0.00    0.00   96.08
+  Average:       3    1.00    0.00    3.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+  Average:       4    0.99    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  Average:       5    0.99    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  Average:       6    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  Average:       7    0.00    0.00    2.97    0.00    0.99    0.00    0.00    0.00    0.00   96.04
+  Average:       8    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       9    0.00    0.00    0.99    0.99    0.00    0.00    0.00    0.00    0.00   98.02
+  Average:      10   35.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   64.00
+  Average:      11    0.98    0.00    2.94    0.00    0.00    0.00    0.00    0.00    0.00   96.08
+  Average:      12    0.98    0.00    1.96    0.00    0.00    0.00    0.00    0.00    0.00   97.06
+  Average:      13    1.94    0.00    0.97    0.00    0.97    0.00    0.00    0.00    0.00   96.12
+  Average:      14    0.00    0.00    0.99    0.00    0.00    0.99    0.00    0.00    0.00   98.02
+  Average:      15    0.00    0.00    0.98    0.00    0.98    0.98    0.00    0.00    0.00   97.06
+  Average:      16    9.09    0.00    8.08    1.01    0.00    1.01    0.00    0.00    0.00   80.81
+  Average:      17    4.95    0.00    4.95    0.00    0.99    0.00    0.00    0.00    0.00   89.11
+  Average:      18   15.00    0.00   79.00    0.00    0.00    1.00    0.00    0.00    0.00    5.00
+  Average:      19   48.00    0.00   22.00    0.00    1.00    1.00    0.00    0.00    0.00   28.00
+  Average:      20   17.17    0.00   10.10    1.01    0.00    1.01    0.00    0.00    0.00   70.71
+  Average:      21    5.10    0.00    4.08    0.00    1.02    0.00    0.00    0.00    0.00   89.80
+  Average:      22   51.00    0.00   47.00    0.00    2.00    0.00    0.00    0.00    0.00    0.00
+  Average:      23   20.00    0.00   24.00    1.00    0.00    0.00    0.00    0.00    0.00   55.00
+  Average:      24    4.00    0.00    4.00    0.00    0.00    0.00    0.00    0.00    0.00   92.00
+  Average:      25    1.96    0.00    5.88    0.98    0.00    0.98    0.00    0.00    0.00   90.20
+  Average:      26    1.94    0.97    3.88    0.00    0.97    0.00    0.00    0.00    0.00   92.23
+  Average:      27    0.98    0.00    1.96    0.00    0.00    0.00    0.00    0.00    0.00   97.06
+  Average:      28    1.96    0.00    1.96    0.00    0.98    0.00    0.00    0.00    0.00   95.10
+  Average:      29    4.00    0.00    7.00    0.00    1.00    0.00    0.00    0.00    0.00   88.00
+  Average:      30   11.11    0.00    6.06    0.00    0.00    1.01    0.00    0.00    0.00   81.82
+  Average:      31    0.99    0.00    1.98    0.00    0.00    0.99    0.00    0.00    0.00   96.04
+== pgrep -a 'cargo|rustc' after the runs (2026-11-14T19:18:35Z)
+pgrep -a 'cargo|rustc': no process
+== cpu_snapshot(8) after the runs
+cpu_snapshot(8) attempt 1 at 2026-11-14T19:18:36Z: admitted True; idle of CPU 8 96.1%; cores more than 50% idle: 29; idle % per CPU: 0:93.1 1:95.0 2:92.2 3:87.1 4:88.1 5:95.0 6:94.0 7:94.1 8:96.1 9:95.1 10:75.5 11:81.0 12:96.1 13:90.0 14:96.0 15:96.0 16:91.9 17:92.2 18:2.9 19:49.5 20:84.8 21:92.0 22:0.0 23:80.2 24:84.0 25:91.0 26:90.9 27:91.2 28:93.9 29:72.0 30:54.0 31:93.0
+== sources after the runs (2026-11-14T19:18:36Z)
+$ git status --porcelain --untracked-files=all -- rholang rspace++ models crypto rho-pure-eval shared formal/verified_score_store Cargo.toml Cargo.lock .cargo rust-toolchain.toml   (in the export, with a temporary index of tree b42c3d305af591f38a0cd5b9656823e3ae134e8c; HEAD bf826516ca4ef0a6a8de3c03e9272d88a91af15f)
+(no output)
+export equals tree b42c3d305af591f38a0cd5b9656823e3ae134e8c: 3958 tracked files checked, 0 problems, 1 untracked files
+== lane released 2026-11-14T19:18:37Z
