@@ -321,18 +321,6 @@ impl KeyValueDagRepresentation {
         after: Option<&[u8]>,
         limit: usize,
     ) -> Result<HistoryPage<BlockHash>, KvStoreError> {
-        // Below the pruning cutoff the metadata is evicted and `lookup`
-        // returns None; returning those hashes would surface pruned blocks
-        // to callers (e.g. `topo_sort`'s `block_number_unsafe` walk,
-        // `block_api`'s fallback deploy scan), which then fail. Clamp the
-        // scan start to the cutoff so pruned heights are quietly skipped.
-        let start = start.max(self.pruning_cutoff);
-        if start > end {
-            return Ok(HistoryPage {
-                rows: Vec::new(),
-                next: None,
-            });
-        }
         if let Some(history) = &self.history {
             return history.scan_height_range(
                 start,
@@ -397,15 +385,6 @@ impl KeyValueDagRepresentation {
             }
             None
         };
-        // Pruning floor: walks terminate here. Below the cutoff, block-store
-        // GC has deleted the body and the metadata no longer reads as held,
-        // so returning `Some` would promote a `BlockNotHeld` deferral we
-        // cannot satisfy — the peers that did hold it have pruned too.
-        if let Some((height, _)) = expected {
-            if height < self.pruning_cutoff {
-                return Ok(None);
-            }
-        }
         let metadata = self
             .block_metadata_index
             .read()
@@ -443,7 +422,6 @@ impl KeyValueDagRepresentation {
         match &self.history {
             Some(history) => Ok(history
                 .membership(block_hash, self.view_sequence)?
-                .filter(|member| member.height >= self.pruning_cutoff)
                 .is_some()),
             None => Ok(false),
         }
