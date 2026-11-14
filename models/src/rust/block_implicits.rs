@@ -75,6 +75,8 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
                 shard_id,
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             Box::new(secp256k1),
             sec,
@@ -199,6 +201,7 @@ pub fn block_element_gen(
                         timestamp,
                         version,
                         extra_bytes: prost::bytes::Bytes::new(),
+                        chain_id: prost::bytes::Bytes::new(),
                     },
                     body: Body {
                         state: F1r3flyState {
@@ -213,6 +216,7 @@ pub fn block_element_gen(
                         extra_bytes: prost::bytes::Bytes::new(),
                         applied_from_scope: Vec::new(),
                         merge_base: prost::bytes::Bytes::new(),
+                        v6: None,
                     },
                     justifications,
                     sender: validator.into(),

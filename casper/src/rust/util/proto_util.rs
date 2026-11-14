@@ -13,8 +13,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
+    BlockCommitment, BlockMessage, Body, Bond, DeployData, EquivocationEvidence, Header,
+    Justification, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
@@ -490,6 +490,7 @@ pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64
         timestamp,
         version,
         extra_bytes: prost::bytes::Bytes::new(),
+        chain_id: prost::bytes::Bytes::new(),
     }
 }
 
@@ -595,6 +596,7 @@ const TOP_DOMAIN: u8 = 0x02;
 const LEAF_PROCESSED_DEPLOY: u8 = 0x10;
 const LEAF_PROCESSED_SYSTEM_DEPLOY: u8 = 0x11;
 const LEAF_HEADER: u8 = 0x12;
+const V6_BODY_MARKER: u8 = 0x16;
 const LEAF_REJECTED_DEPLOY: u8 = 0x13;
 const LEAF_APPLIED_FROM_SCOPE_SIG: u8 = 0x14;
 const LEAF_BOND: u8 = 0x15;
@@ -750,59 +752,27 @@ fn justifications_root(justifications: &[Justification]) -> [u8; 32] {
 
 /// Build the header-side preimage.  Any change here is a hard fork —
 /// pinned by the `hash_block` golden-hex tests.
-fn header_preimage(block: &BlockMessage) -> Vec<u8> {
+fn header_preimage(commitment: &BlockCommitment) -> Vec<u8> {
     use prost::Message;
-    let BlockMessage {
-        block_hash: _,
-        header,
-        body,
-        justifications,
-        sender,
-        seq_num,
-        sig: _,
-        sig_algorithm,
-        shard_id,
-        extra_bytes,
-    } = block;
-    let Body {
-        state,
-        deploys: _,
-        rejected_deploys: _,
-        system_deploys: _,
-        extra_bytes: body_extra_bytes,
-        applied_from_scope: _,
-        merge_base,
-    } = body;
-    let F1r3flyState {
-        pre_state_hash,
-        post_state_hash,
-        bonds,
-        block_number,
-    } = state;
-
-    let header_bytes = header.to_proto().encode_to_vec();
-    let r_root = rejected_root(block);
-    let afs_root = applied_from_scope_root(block);
-    let b_root = bonds_root(bonds);
-    let j_root = justifications_root(justifications);
+    let header_bytes = commitment.header.to_proto().encode_to_vec();
 
     let mut buf = Vec::with_capacity(
         1 + 9 * 4 // length prefixes
             + header_bytes.len()
-            + pre_state_hash.len()
-            + post_state_hash.len()
+            + commitment.pre_state_hash.len()
+            + commitment.post_state_hash.len()
             + 32  // bonds_root
             + 32  // justifications_root
             + 8   // block_number
             + 32  // rejected_root
             + 32  // applied_from_scope_root
-            + merge_base.len()
-            + body_extra_bytes.len()
-            + sender.len()
-            + sig_algorithm.len()
+            + commitment.merge_base.len()
+            + commitment.body_extra_bytes.len()
+            + commitment.sender.len()
+            + commitment.sig_algorithm.len()
             + 4   // seq_num
-            + shard_id.len()
-            + extra_bytes.len(),
+            + commitment.shard_id.len()
+            + commitment.extra_bytes.len(),
     );
     // Every variable-length field carries its length, so no byte can move
     // from one field to its neighbour without changing the preimage.
@@ -812,20 +782,26 @@ fn header_preimage(block: &BlockMessage) -> Vec<u8> {
     };
     buf.push(BLOCK_HASH_SCHEME_VERSION);
     push_field(&mut buf, &header_bytes);
-    push_field(&mut buf, pre_state_hash.as_ref());
-    push_field(&mut buf, post_state_hash.as_ref());
-    buf.extend_from_slice(&b_root);
-    buf.extend_from_slice(&j_root);
-    buf.extend_from_slice(&block_number.to_le_bytes());
-    buf.extend_from_slice(&r_root);
-    buf.extend_from_slice(&afs_root);
-    push_field(&mut buf, merge_base.as_ref());
-    push_field(&mut buf, body_extra_bytes.as_ref());
-    push_field(&mut buf, sender.as_ref());
-    push_field(&mut buf, sig_algorithm.as_bytes());
-    buf.extend_from_slice(&seq_num.to_le_bytes());
-    push_field(&mut buf, shard_id.as_bytes());
-    push_field(&mut buf, extra_bytes.as_ref());
+    push_field(&mut buf, commitment.pre_state_hash.as_ref());
+    push_field(&mut buf, commitment.post_state_hash.as_ref());
+    buf.extend_from_slice(&commitment.bonds_root);
+    buf.extend_from_slice(&commitment.justifications_root);
+    buf.extend_from_slice(&commitment.block_number.to_le_bytes());
+    buf.extend_from_slice(&commitment.rejected_root);
+    buf.extend_from_slice(&commitment.applied_from_scope_root);
+    push_field(&mut buf, commitment.merge_base.as_ref());
+    push_field(&mut buf, commitment.body_extra_bytes.as_ref());
+    if let Some(v6) = &commitment.v6 {
+        let v6_bytes = v6.to_proto().encode_to_vec();
+        buf.push(V6_BODY_MARKER);
+        buf.extend_from_slice(&(v6_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&v6_bytes);
+    }
+    push_field(&mut buf, commitment.sender.as_ref());
+    push_field(&mut buf, commitment.sig_algorithm.as_bytes());
+    buf.extend_from_slice(&commitment.seq_num.to_le_bytes());
+    push_field(&mut buf, commitment.shard_id.as_bytes());
+    push_field(&mut buf, commitment.extra_bytes.as_ref());
     buf
 }
 
@@ -840,6 +816,48 @@ fn hash_top(h_header: &[u8; 32], deploys_root: &[u8; 32]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&h);
     out
+}
+
+/// The commitment of `block`, given its deploy leaves in commit order (all
+/// user-deploy leaves, then all system-deploy leaves).
+pub fn block_commitment_with_leaves(
+    block: &BlockMessage,
+    deploys_leaves: &[[u8; 32]],
+) -> BlockCommitment {
+    let state = &block.body.state;
+    BlockCommitment {
+        header: block.header.clone(),
+        pre_state_hash: state.pre_state_hash.clone(),
+        post_state_hash: state.post_state_hash.clone(),
+        bonds_root: bonds_root(&state.bonds),
+        justifications_root: justifications_root(&block.justifications),
+        block_number: state.block_number,
+        rejected_root: rejected_root(block),
+        applied_from_scope_root: applied_from_scope_root(block),
+        merge_base: block.body.merge_base.clone(),
+        body_extra_bytes: block.body.extra_bytes.clone(),
+        v6: block.body.v6.clone(),
+        sender: block.sender.clone(),
+        sig_algorithm: block.sig_algorithm.clone(),
+        seq_num: block.seq_num,
+        shard_id: block.shard_id.clone(),
+        extra_bytes: block.extra_bytes.clone(),
+        deploys_root: crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, deploys_leaves),
+        sig: block.sig.clone(),
+    }
+}
+
+pub fn block_commitment(block: &BlockMessage) -> BlockCommitment {
+    block_commitment_with_leaves(block, &deploys_root_leaves(block))
+}
+
+/// The block hash `commitment` commits to.
+pub fn commitment_hash(commitment: &BlockCommitment) -> BlockHash {
+    let h_header =
+        crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage(commitment));
+    hash_top(&h_header, &commitment.deploys_root)
+        .to_vec()
+        .into()
 }
 
 /// Compute the block hash from a `BlockMessage` alone — recomputes
@@ -860,11 +878,7 @@ pub fn hash_block(block: &BlockMessage) -> BlockHash {
 /// wrong leaves produces a wrong hash (mismatch surfaces at
 /// `Validate::block_hash` on another node).
 pub fn hash_block_with_leaves(block: &BlockMessage, deploys_leaves: &[[u8; 32]]) -> BlockHash {
-    let d_root = crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, deploys_leaves);
-    let h_header =
-        crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage(block));
-    let top = hash_top(&h_header, &d_root);
-    top.to_vec().into()
+    commitment_hash(&block_commitment_with_leaves(block, deploys_leaves))
 }
 
 pub fn hash_string(b: &BlockMessage) -> BlockHash {
@@ -907,51 +921,37 @@ pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
         .collect()
 }
 
-/// Deterministic invalid-blocks map (block_hash -> sender) for the PoS slash
-/// system deploys in a block: exactly the blocks this block slashes, each keyed
-/// to its immutable sender. Derived from the block's own recorded slash targets
-/// (NOT the node's DAG invalid-set view, which is node-view-dependent and so
-/// differs between the proposer and a validator), so block creation and replay
-/// produce a byte-identical map. That makes the slash deploy's
-/// `rho:casper:invalidBlocks` produce reproduce at replay (no slash
-/// ConsumeFailed). The slash contract only looks up its own target via
-/// `invalidBlocks.getOrElse(blockHash, ..)`, so this is exactly what it needs —
-/// and it makes the slash hit the block's true sender instead of falling back.
-pub fn slashed_block_senders(
-    dag: &KeyValueDagRepresentation,
-    slashed_hashes: &[BlockHash],
-) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
-    let mut map = std::collections::HashMap::with_capacity(slashed_hashes.len());
-    for h in slashed_hashes {
-        let meta = dag.lookup_unsafe(h)?;
-        map.insert(h.clone(), meta.sender.clone());
-    }
-    Ok(map)
+/// The invalid-blocks map (cited block hash -> offender) the PoS slash deploys
+/// of a set of slashes read through `rho:casper:invalidBlocks`. Taken from the
+/// slashes' own evidence, so creation and replay on any node produce the same
+/// map without consulting a DAG.
+pub fn slash_evidence_senders<'a>(
+    evidence: impl IntoIterator<Item = &'a EquivocationEvidence>,
+) -> std::collections::HashMap<BlockHash, Validator> {
+    evidence
+        .into_iter()
+        .map(|evidence| {
+            (
+                commitment_hash(&evidence.first),
+                evidence.first.sender.clone(),
+            )
+        })
+        .collect()
 }
 
-pub fn block_slash_invalid_blocks(
-    dag: &KeyValueDagRepresentation,
-    block: &BlockMessage,
-) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
-    slashed_block_senders(dag, &block_slash_targets(block))
-}
-
-pub fn block_slash_targets(block: &BlockMessage) -> Vec<BlockHash> {
+/// The evidence of every slash `block` carries.
+pub fn slash_evidence(block: &BlockMessage) -> impl Iterator<Item = &EquivocationEvidence> {
     block
         .body
         .system_deploys
         .iter()
-        .filter_map(|psd| match psd {
+        .filter_map(|deploy| match deploy {
             ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash, ..
-                    },
+                system_deploy: SystemDeployData::Slash { evidence, .. },
                 ..
-            } => Some(invalid_block_hash.clone()),
+            } => Some(evidence.as_ref()),
             _ => None,
         })
-        .collect()
 }
 
 pub fn justification_to_justification_info(justification: &Justification) -> JustificationInfo {
@@ -982,7 +982,6 @@ mod fork_choice_b1_repro_tests {
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
     use parking_lot::RwLock as PlRwLock;
-    use proptest::prelude::*;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -1002,7 +1001,7 @@ mod fork_choice_b1_repro_tests {
             weight_map: wm,
             block_number: num,
             sequence_number: num as i32,
-            invalid: false,
+            equivocates: None,
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
@@ -1037,7 +1036,6 @@ mod fork_choice_b1_repro_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -1191,123 +1189,6 @@ mod fork_choice_b1_repro_tests {
             "unheld traversed block must be MissingBlock naming it, got {result:?}"
         );
     }
-
-    // G1 (CRITICAL) — slash-replay determinism. `slashed_block_senders` builds the slash
-    // system-deploy's invalid_blocks map from the block's OWN recorded slash targets and
-    // each target's IMMUTABLE sender — NOT the node's `dag.invalid_blocks` view (which
-    // diverges proposer-vs-validator and previously caused a `ConsumeFailed` at replay →
-    // block rejection + finalization stall). This test pins that VIEW-INDEPENDENCE: two
-    // DAGs with identical block metadata but DIFFERENT invalid-block sets produce a
-    // byte-identical map, so the PLAY map (block creation) ≡ the REPLAY map (validation).
-    fn dag_with_invalid(
-        blocks: Vec<BlockMetadata>,
-        invalid: Vec<BlockMetadata>,
-    ) -> KeyValueDagRepresentation {
-        let mut dag = dag_with(blocks);
-        let mut inv = imbl::HashSet::new();
-        for b in invalid {
-            inv.insert(b);
-        }
-        *dag.fixture_mut().invalid_blocks_set = inv;
-        dag
-    }
-
-    #[test]
-    fn slashed_block_senders_is_view_independent_g1() {
-        let (va, vb, vc) = (h(50), h(51), h(52));
-        let (b1, b2, b3) = (h(1), h(2), h(3));
-        let blocks = vec![
-            md(b1.clone(), vec![], 1, &va),
-            md(b2.clone(), vec![b1.clone()], 2, &vb),
-            md(b3.clone(), vec![b2.clone()], 3, &vc),
-        ];
-        // The block slashes b1 and b3 (its own recorded targets).
-        let slashed = vec![b1.clone(), b3.clone()];
-        // Two nodes with DIVERGENT invalid-block views over identical block metadata
-        // (the proposer sees none invalid; the validator's view flags b2 and b3).
-        let dag_proposer = dag_with_invalid(blocks.clone(), vec![]);
-        let dag_validator = dag_with_invalid(blocks.clone(), vec![
-            md(b2.clone(), vec![b1.clone()], 2, &vb),
-            md(b3.clone(), vec![b2.clone()], 3, &vc),
-        ]);
-
-        let map_play = slashed_block_senders(&dag_proposer, &slashed).expect("play map");
-        let map_replay = slashed_block_senders(&dag_validator, &slashed).expect("replay map");
-
-        // Byte-identical map regardless of the invalid-block view (PLAY ≡ REPLAY) ...
-        assert_eq!(
-            map_play, map_replay,
-            "slash map must be node-view-independent (PLAY ≡ REPLAY)"
-        );
-        // ... and it keys each slashed block to its immutable sender.
-        let mut expected = std::collections::HashMap::new();
-        expected.insert(b1.clone(), va.clone());
-        expected.insert(b3.clone(), vc.clone());
-        assert_eq!(
-            map_play, expected,
-            "slash map must key each slashed block to its sender"
-        );
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(200))]
-        // G1 (∀-views property) — the standalone view-independence "lemma" for
-        // `slashed_block_senders`, mechanized as the modality that can actually catch
-        // the regression (a Rocq abstraction of the function would model it as
-        // content-only BY CONSTRUCTION and could never witness the defect). Over
-        // arbitrary block sets, arbitrary on-chain slash records, and TWO independently
-        // random — hence divergent — `invalid_blocks_set` node views, the map is
-        // (a) identical across the two views (PLAY ≡ REPLAY) and (b) equal to the
-        // content-derived ground truth (each slashed hash ↦ its immutable sender). Were
-        // the function to read `dag.invalid_blocks_set`, (a) would fail on the first
-        // view pair that disagrees on a slashed block.
-        #[test]
-        fn slashed_block_senders_is_view_independent_prop_g1(
-            senders in prop::collection::vec(0u8..5, 1..10),
-            slashed_flags in prop::collection::vec(any::<bool>(), 1..10),
-            view_a in prop::collection::vec(any::<bool>(), 1..10),
-            view_b in prop::collection::vec(any::<bool>(), 1..10),
-        ) {
-            let n = senders.len();
-            // n distinct blocks h(1..=n) in a chain; block i's immutable sender = h(100+vid).
-            let blocks: Vec<BlockMetadata> = (0..n)
-                .map(|i| {
-                    let hash = h((i + 1) as u8);
-                    let parents = if i == 0 { vec![] } else { vec![h(i as u8)] };
-                    let sender = h(100 + senders[i]);
-                    md(hash, parents, (i + 1) as i64, &sender)
-                })
-                .collect();
-            // On-chain slash record = the flagged subset (by index, within range).
-            let slashed: Vec<Bytes> = (0..n)
-                .filter(|&i| *slashed_flags.get(i).unwrap_or(&false))
-                .map(|i| h((i + 1) as u8))
-                .collect();
-            // Two nodes: identical block metadata, INDEPENDENTLY random invalid-block sets.
-            let inv_a: Vec<BlockMetadata> = (0..n)
-                .filter(|&i| *view_a.get(i).unwrap_or(&false))
-                .map(|i| blocks[i].clone())
-                .collect();
-            let inv_b: Vec<BlockMetadata> = (0..n)
-                .filter(|&i| *view_b.get(i).unwrap_or(&false))
-                .map(|i| blocks[i].clone())
-                .collect();
-            let dag_a = dag_with_invalid(blocks.clone(), inv_a);
-            let dag_b = dag_with_invalid(blocks.clone(), inv_b);
-
-            let map_a = slashed_block_senders(&dag_a, &slashed).expect("map a");
-            let map_b = slashed_block_senders(&dag_b, &slashed).expect("map b");
-            prop_assert_eq!(&map_a, &map_b);
-
-            let mut expected = std::collections::HashMap::new();
-            for i in 0..n {
-                if *slashed_flags.get(i).unwrap_or(&false) {
-                    expected.insert(h((i + 1) as u8), h(100 + senders[i]));
-                }
-            }
-            prop_assert_eq!(&map_a, &expected);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1343,6 +1224,8 @@ mod merkle_block_hash_tests {
             shard_id: "test-shard".to_string(),
             expiration_timestamp: None,
             parameters: vec![],
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         };
         let signed = Signed::create(data, Secp256k1.box_clone(), sk).expect("sign deploy");
         ProcessedDeploy {
@@ -1361,14 +1244,26 @@ mod merkle_block_hash_tests {
         }
     }
 
+    fn slash_evidence_pair(seed: u8) -> EquivocationEvidence {
+        let commitment = |nonce: u8| {
+            let mut b = empty_block();
+            b.seq_num = i32::from(seed);
+            b.extra_bytes = Bytes::from(vec![nonce]);
+            block_commitment(&b)
+        };
+        EquivocationEvidence {
+            first: commitment(0),
+            second: commitment(1),
+        }
+    }
+
     fn processed_system_deploy_slash(seed: u8) -> ProcessedSystemDeploy {
         ProcessedSystemDeploy::Succeeded {
             event_list: vec![],
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: Bytes::from(vec![seed; 32]),
-                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[seed; 33]),
-                target_activation_epoch: seed as i64 + 100,
-            },
+            system_deploy: SystemDeployData::create_slash(
+                slash_evidence_pair(seed),
+                crypto::rust::public_key::PublicKey::from_bytes(&[seed; 33]),
+            ),
         }
     }
 
@@ -1387,6 +1282,7 @@ mod merkle_block_hash_tests {
                 timestamp: 1_700_000_000_000,
                 version: 1,
                 extra_bytes: Bytes::new(),
+                chain_id: Bytes::new(),
             },
             body: Body {
                 state: F1r3flyState {
@@ -1401,6 +1297,7 @@ mod merkle_block_hash_tests {
                 extra_bytes: Bytes::new(),
                 applied_from_scope: vec![],
                 merge_base: Bytes::new(),
+                v6: None,
             },
             justifications: vec![],
             sender: Bytes::from(vec![0u8; 33]),
@@ -1443,6 +1340,68 @@ mod merkle_block_hash_tests {
         let h_fast = hash_block_with_leaves(&b, &leaves);
         let h_slow = hash_block(&b);
         assert_eq!(h_fast, h_slow);
+    }
+
+    #[test]
+    fn a_commitment_off_the_wire_hashes_to_its_block() {
+        use prost::Message;
+        let mut b = empty_block();
+        b.body.deploys = vec![processed_deploy(1), processed_deploy(2)];
+        b.body.system_deploys = vec![processed_system_deploy_close()];
+        b.sender = Bytes::from(vec![0x04; 65]);
+        b.sig_algorithm = "secp256k1".to_string();
+        b.sig = Bytes::from(vec![0x30; 70]);
+        b.seq_num = 7;
+        let commitment = block_commitment(&b);
+
+        let wire = commitment.to_proto().encode_to_vec();
+        let decoded = BlockCommitment::from_proto(
+            models::casper::BlockCommitmentProto::decode(wire.as_slice()).expect("decode"),
+        )
+        .expect("from_proto");
+
+        assert_eq!(decoded, commitment);
+        assert_eq!(commitment_hash(&decoded), hash_block(&b));
+        assert_eq!(
+            (decoded.sender, decoded.seq_num, decoded.sig),
+            (b.sender, 7, b.sig)
+        );
+    }
+
+    #[test]
+    fn a_slash_cites_its_first_commitment_and_its_sender() {
+        let mut a = empty_block();
+        a.sender = Bytes::from(vec![0x04; 65]);
+        a.seq_num = 3;
+        let mut b = a.clone();
+        b.body.deploys = vec![processed_deploy(1)];
+        let evidence = models::rust::casper::protocol::casper_message::EquivocationEvidence {
+            first: block_commitment(&a),
+            second: block_commitment(&b),
+        };
+
+        let senders = slash_evidence_senders([&evidence]);
+
+        assert_eq!(
+            senders,
+            std::collections::HashMap::from([(hash_block(&a), a.sender.clone())])
+        );
+    }
+
+    #[test]
+    fn a_commitment_binds_its_sender_and_sequence_number() {
+        let mut b = empty_block();
+        b.sender = Bytes::from(vec![0x04; 65]);
+        b.seq_num = 7;
+        let commitment = block_commitment(&b);
+        let hash = commitment_hash(&commitment);
+
+        let mut other_seq = commitment.clone();
+        other_seq.seq_num = 8;
+        let mut other_sender = commitment.clone();
+        other_sender.sender = Bytes::from(vec![0x05; 65]);
+        assert_ne!(commitment_hash(&other_seq), hash);
+        assert_ne!(commitment_hash(&other_sender), hash);
     }
 
     #[test]
@@ -1692,7 +1651,7 @@ mod merkle_block_hash_tests {
         );
 
         // Top-level: combine recomputed d_root with recomputed h_header.
-        let header_preimage_bytes = header_preimage(&b);
+        let header_preimage_bytes = header_preimage(&block_commitment(&b));
         let h_header = merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage_bytes);
         let recomputed_top = hash_top(&h_header, &d_root);
         assert_eq!(
@@ -1911,21 +1870,17 @@ mod merkle_block_hash_tests {
             "Slash with different seed must produce different hash"
         );
 
-        // Build a Slash with modified target_activation_epoch only.
+        let mut evidence = slash_evidence_pair(0x01);
+        evidence.second.sig = Bytes::from(vec![0x55; 70]);
         let mut b3 = empty_block();
         b3.body.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
             event_list: vec![],
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: Bytes::from(vec![0x01; 32]),
-                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[0x01; 33]),
-                target_activation_epoch: 999, // vs. seed=0x01 → 0x01+100 = 101
-            },
+            system_deploy: SystemDeployData::create_slash(
+                evidence,
+                crypto::rust::public_key::PublicKey::from_bytes(&[0x01; 33]),
+            ),
         }];
-        assert_ne!(
-            hash_block(&b3),
-            h0,
-            "Slash.target_activation_epoch must affect hash",
-        );
+        assert_ne!(hash_block(&b3), h0, "the slash's evidence must affect hash",);
     }
 
     /// Test 4 — strong determinism guard: no `map<_,_>` field exists
@@ -1963,6 +1918,8 @@ mod merkle_block_hash_tests {
             "RholangNil",
             "SystemDeployDataProto",
             "SlashSystemDeployDataProto",
+            "BlockCommitmentProto",
+            "HeaderProto",
             "CloseBlockSystemDeployDataProto",
             "EventProto",
             "ProduceEventProto",
@@ -2191,6 +2148,79 @@ mod merkle_block_hash_tests {
         // sig_algorithm = "secp256k1".
         const EXPECTED: &str = "602ea568b611a2a16415363ffd358f08afa358a231094bce24b755e8a6f631f2";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
+    }
+
+    #[test]
+    fn the_v6_body_is_part_of_the_block_hash() {
+        use models::rust::casper::protocol::casper_message::{Attestation, V6Body};
+        let legacy = empty_block();
+        let mut empty_v6 = empty_block();
+        empty_v6.body.v6 = Some(V6Body::default());
+        let attested = |records: Vec<Bytes>| {
+            let mut b = empty_block();
+            b.body.v6 = Some(V6Body {
+                attestation: Some(Attestation {
+                    block_hash: Bytes::from_static(b"E"),
+                    root: Bytes::from_static(b"r"),
+                }),
+                records,
+            });
+            b
+        };
+        let one = attested(vec![Bytes::from_static(b"record-1")]);
+        let other = attested(vec![Bytes::from_static(b"record-2")]);
+        assert_ne!(hash_block(&legacy), hash_block(&empty_v6));
+        assert_ne!(hash_block(&empty_v6), hash_block(&one));
+        assert_ne!(hash_block(&one), hash_block(&other));
+        assert_eq!(hash_block(&one), hash_block(&one.clone()));
+        let commitment = block_commitment(&one);
+        let decoded = BlockCommitment::from_proto(commitment.to_proto()).unwrap();
+        assert_eq!(decoded, commitment);
+        assert_eq!(commitment_hash(&decoded), hash_block(&one));
+    }
+
+    /// A block with every field the hash commits to set.
+    fn populated_block() -> BlockMessage {
+        let mut b = empty_block();
+        b.header.parents_hash_list = vec![Bytes::from(vec![1; 32]), Bytes::from(vec![2; 32])];
+        b.header.extra_bytes = Bytes::from(vec![3; 4]);
+        b.header.chain_id = Bytes::from(vec![4; 32]);
+        b.body.state.pre_state_hash = Bytes::from(vec![5; 32]);
+        b.body.state.post_state_hash = Bytes::from(vec![6; 32]);
+        b.body.state.bonds = vec![Bond {
+            validator: Bytes::from(vec![7; 65]),
+            stake: 100.into(),
+        }];
+        b.body.state.block_number = 42;
+        b.body.rejected_deploys = vec![RejectedDeploy {
+            sig: Bytes::from(vec![8; 64]),
+            duplicate: true,
+            carrier: Bytes::from(vec![9; 32]),
+        }];
+        b.body.applied_from_scope = vec![Bytes::from(vec![10; 64])];
+        b.body.merge_base = Bytes::from(vec![11; 32]);
+        b.body.extra_bytes = Bytes::from(vec![12; 4]);
+        b.body.system_deploys = vec![processed_system_deploy_slash(13)];
+        b.sender = Bytes::from(vec![14; 65]);
+        b.seq_num = 7;
+        b.extra_bytes = Bytes::from(vec![15; 4]);
+        b.justifications = vec![Justification {
+            validator: Bytes::from(vec![16; 65]),
+            latest_block_hash: Bytes::from(vec![17; 32]),
+        }];
+        b
+    }
+
+    /// Pins the hash of a block with every committed field set, so a field
+    /// dropped from or reordered in the preimage changes it.
+    #[test]
+    fn hash_block_populated_golden_hex() {
+        const EXPECTED: &str = "32d5b2c9339bb446ea23c20cde55b24873ef5f03866a2545fbd8ad5ac7e38b03";
+        assert_eq!(
+            hex::encode(hash_block(&populated_block())),
+            EXPECTED,
+            "block-hash recipe changed"
+        );
     }
 
     // ---------------------------------------------------------------

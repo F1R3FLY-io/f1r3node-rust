@@ -264,12 +264,14 @@ pub async fn equivocate_block(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,
@@ -400,12 +402,14 @@ pub async fn propose_with_explicit_justifications(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,
@@ -542,12 +546,14 @@ pub async fn propose_with_block_mutation(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let mut unsigned = proto_util::unsigned_block_proto(
         body,
@@ -567,25 +573,10 @@ pub async fn propose_with_block_mutation(
     Ok(signed)
 }
 
-/// Construct an honest "neglecting" block by `producing_node`'s
-/// validator: the block cites the receiver's view (which contains
-/// the equivocator's bad block) in justifications but EXPLICITLY
-/// omits any SlashDeploy. When processed on a node whose tracker
-/// already holds the equivocator's record, the receiver's
-/// `is_neglected_equivocation_detected_with_update` fires and
-/// classifies as `InvalidBlock::NeglectedEquivocation`.
-///
-/// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5
-/// (production-path integration). Plan-agent designed Item 5 of
-/// the principled-resolution session.
-///
-/// Why this helper exists: the production proposer's
-/// `prepare_slashing_deploys` would auto-emit a SlashDeploy for
-/// any validator with an outstanding `EquivocationRecord` in the
-/// proposer's tracker view. To produce a NEGLECTING block — one
-/// that ignores the offence — we bypass `prepare_slashing_deploys`
-/// entirely by going through `compute_deploys_checkpoint` with
-/// `system_deploys = [CloseBlockDeploy]` only.
+/// A block by `producing_node`'s validator that cites its whole view in
+/// justifications and carries no slash. Built through
+/// `compute_deploys_checkpoint` with only `CloseBlockDeploy`, bypassing
+/// `prepare_slashing_deploys`, which would slash every held pair.
 pub async fn propose_neglecting_block(
     producing_node: &mut TestNode,
     alt_deploys: Vec<Signed<DeployData>>,
@@ -609,11 +600,6 @@ pub async fn propose_neglecting_block(
     let next_block_num = snapshot.max_block_num + 1;
     let shard_id = snapshot.on_chain_state.shard_conf.shard_name.clone();
 
-    // Use the snapshot's natural parents and justifications. The
-    // CRITICAL property: producing_node's snapshot must already
-    // contain the equivocator's invalid block in its DAG (so the
-    // receiver's check_neglected_equivocations_with_update
-    // recognises that this block "saw" the equivocation).
     let parents = snapshot.parents.clone();
     let justifications: Vec<_> = snapshot.justifications.iter().cloned().collect();
 
@@ -632,11 +618,6 @@ pub async fn propose_neglecting_block(
         seq_num: next_seq_num,
     };
 
-    // System deploys: ONLY CloseBlock. NO SlashDeploys — this is
-    // the structural difference from production
-    // `prepare_slashing_deploys`. The receiver's
-    // `is_neglected_equivocation_detected_with_update` will see
-    // the missing slash and classify NeglectedEquivocation.
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
             validator_identity.public_key.clone(),
@@ -691,12 +672,14 @@ pub async fn propose_neglecting_block(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,

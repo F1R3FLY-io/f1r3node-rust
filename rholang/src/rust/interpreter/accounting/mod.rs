@@ -5,10 +5,15 @@ use costs::Cost;
 
 use super::errors::InterpreterError;
 
+pub mod comm_ledger;
 pub mod cost_accounting;
 pub mod costs;
+pub mod delta_sigma;
 pub mod has_cost;
+pub mod membrane;
 pub mod noop;
+pub mod rev_stack;
+pub mod storage_rule;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/package.scala
 #[allow(non_camel_case_types)]
@@ -19,6 +24,14 @@ pub struct CostManager {
     state: Arc<Mutex<Cost>>,
     log: Arc<Mutex<VecDeque<Cost>>>,
     max_log_entries: usize,
+    comms: comm_ledger::CommLedger,
+    storage: Arc<Mutex<Option<storage_rule::LeftInSpace>>>,
+}
+
+fn gated_record() -> Option<rev_stack::seal::SealRecord> {
+    let record = rev_stack::seal::current()?;
+    let meter = rev_stack::seal::meter()?;
+    meter.gates(&record).then_some(record)
 }
 
 impl CostManager {
@@ -38,6 +51,8 @@ impl CostManager {
             state: Arc::new(Mutex::new(initial_value)),
             log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
             max_log_entries,
+            comms: comm_ledger::CommLedger::default(),
+            storage: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -51,9 +66,55 @@ impl CostManager {
             return Err(InterpreterError::OutOfPhlogistonsError);
         }
 
+        if let Some(record) = gated_record() {
+            drop(current_cost);
+            return self.charge_gated(&record, amount, 0);
+        }
+
         // Use saturating arithmetic to prevent overflow when credits (negative
         // charges) are applied to balances near i64::MAX (e.g., genesis deploys).
         current_cost.value = current_cost.value.saturating_sub(amount.value);
+        self.comms.on_work(
+            rev_stack::seal::current().map(|record| comm_ledger::Surface::of(&record)),
+            amount.value,
+        );
+        self.push_log(amount);
+
+        if current_cost.value < 0 {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+
+        Ok(())
+    }
+
+    pub fn charge_reserving(&self, amount: Cost, reserve: i64) -> Result<(), InterpreterError> {
+        match gated_record() {
+            Some(record) => self.charge_gated(&record, amount, reserve),
+            None => self.charge(amount),
+        }
+    }
+
+    fn charge_gated(
+        &self,
+        record: &rev_stack::seal::SealRecord,
+        amount: Cost,
+        reserve: i64,
+    ) -> Result<(), InterpreterError> {
+        match membrane::firing() {
+            Some(firing) => firing.charge(record, amount.value, reserve)?,
+            None => {
+                if amount.value > 0 && !membrane::is_settling() {
+                    membrane::count_unbounded();
+                }
+                self.comms
+                    .on_work(Some(comm_ledger::Surface::of(record)), amount.value);
+            }
+        }
+        self.push_log(amount);
+        Ok(())
+    }
+
+    fn push_log(&self, amount: Cost) {
         if self.max_log_entries > 0 {
             let mut log = self.log.lock().unwrap();
             if log.len() >= self.max_log_entries {
@@ -61,12 +122,6 @@ impl CostManager {
             }
             log.push_back(amount);
         }
-
-        if current_cost.value < 0 {
-            return Err(InterpreterError::OutOfPhlogistonsError);
-        }
-
-        Ok(())
     }
 
     pub fn get(&self) -> Cost {
@@ -82,4 +137,58 @@ impl CostManager {
     pub fn get_log(&self) -> Vec<Cost> { self.log.lock().unwrap().iter().cloned().collect() }
 
     pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
+
+    pub fn comm_ledger(&self) -> &comm_ledger::CommLedger { &self.comms }
+
+    pub fn charge_storage_left_in_space(&self) {
+        *self.storage.lock().expect("storage rule lock") =
+            Some(storage_rule::LeftInSpace::default());
+    }
+
+    pub fn storage_left_in_space(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<storage_rule::LeftInSpace>> {
+        self.storage.lock().expect("storage rule lock")
+    }
+}
+
+#[cfg(test)]
+mod own_limit_tests {
+    use super::costs::Cost;
+    use super::rev_stack::seal::{within_now, Origin, SealRecord};
+    use super::rev_stack::WalletOwner;
+    use super::CostManager;
+    use crate::rust::interpreter::errors::InterpreterError;
+
+    fn record(envelope: u8) -> SealRecord {
+        SealRecord::deployment(WalletOwner::Unforgeable(vec![envelope; 32]), Origin {
+            envelope: vec![envelope],
+            signers: Vec::new(),
+            phlo_price: 1,
+            phlo_limit: 0,
+        })
+    }
+
+    fn charge(
+        cost: &CostManager,
+        under: Option<SealRecord>,
+        phlo: i64,
+    ) -> Result<(), InterpreterError> {
+        within_now(under, || {
+            cost.charge(Cost::create(phlo, "test".to_string()))
+        })
+    }
+
+    #[test]
+    fn ungated_work_uses_up_the_clients_limit_whatever_its_origin() {
+        let cost = CostManager::new(Cost::create(0, "init".to_string()));
+        cost.set(Cost::create(100, "limit".to_string()));
+        charge(&cost, Some(record(1)), 60).unwrap();
+        charge(&cost, Some(record(2)), 30).unwrap();
+        assert_eq!(cost.get().value, 10);
+        assert!(matches!(
+            charge(&cost, Some(record(2)), 20),
+            Err(InterpreterError::OutOfPhlogistonsError)
+        ));
+    }
 }

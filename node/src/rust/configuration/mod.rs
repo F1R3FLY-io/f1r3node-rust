@@ -275,6 +275,18 @@ pub mod builder {
                 node_conf.casper.deploy_lifespan,
             ));
         }
+        if node_conf.casper.v6_fallback_distance == 0 {
+            return Err(eyre::eyre!(
+                "casper.v6-fallback-distance must be at least 1: at zero a node would cite \
+                every other validator's record as soon as it is emitted"
+            ));
+        }
+        if node_conf.casper.v6_execution_lag_threshold == 0 {
+            return Err(eyre::eyre!(
+                "casper.v6-execution-lag-threshold must be at least 1: the execution-lag \
+                gate is part of protocol-6 backpressure and cannot be turned off"
+            ));
+        }
         if node_conf.casper.genesis_block_data.epoch_length <= 0 {
             return Err(eyre::eyre!(
                 "casper.genesis-block-data.epoch-length ({}) must be positive: epoch \
@@ -1048,6 +1060,20 @@ mod embedded_defaults_tests {
             "deploy-lifespan 0 must fail startup"
         );
 
+        let mut cfg = base.clone();
+        cfg.casper.v6_execution_lag_threshold = 0;
+        let err = builder::validate_config(&cfg)
+            .expect_err("v6-execution-lag-threshold 0 must fail startup");
+        assert!(err.to_string().contains("v6-execution-lag-threshold"));
+        assert_eq!(base.casper.v6_execution_lag_threshold, 32);
+
+        let mut cfg = base.clone();
+        cfg.casper.v6_fallback_distance = 0;
+        let err =
+            builder::validate_config(&cfg).expect_err("v6-fallback-distance 0 must fail startup");
+        assert!(err.to_string().contains("v6-fallback-distance"));
+        assert_eq!(base.casper.v6_fallback_distance, 8);
+
         let mut cfg = base;
         cfg.casper.genesis_block_data.epoch_length = 0;
         assert!(
@@ -1107,6 +1133,77 @@ mod embedded_defaults_tests {
             cfg.casper.enable_mergeable_channel_gc,
             casper::rust::casper_conf::default_enable_mergeable_channel_gc(),
             "serde fallback must match the shipped default"
+        );
+    }
+
+    #[test]
+    fn finalizer_cache_and_rerun_fallbacks_match_shipped_defaults() {
+        use casper::rust::casper_conf::{
+            default_finalizer_oracle_cache_ancestors,
+            default_finalizer_oracle_cache_justifications,
+            default_finalizer_oracle_cache_self_justifications, default_finalizer_timeout_reruns,
+        };
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        assert_eq!(
+            cfg.casper.finalizer_oracle_cache_justifications,
+            default_finalizer_oracle_cache_justifications()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_oracle_cache_self_justifications,
+            default_finalizer_oracle_cache_self_justifications()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_oracle_cache_ancestors,
+            default_finalizer_oracle_cache_ancestors()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_timeout_reruns,
+            default_finalizer_timeout_reruns()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_derivation_budget,
+            casper::rust::casper_conf::default_finalizer_derivation_budget()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_step_backstop,
+            casper::rust::casper_conf::default_finalizer_step_backstop()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_cursor_max_invalidations,
+            casper::rust::casper_conf::default_finalizer_cursor_max_invalidations()
+        );
+        assert_eq!(
+            cfg.casper.deploy_pool_blocks_of_backlog,
+            casper::rust::casper_conf::default_deploy_pool_blocks_of_backlog()
+        );
+        assert_eq!(
+            cfg.casper.proposal_pacing_floor_distance,
+            casper::rust::casper_conf::default_proposal_pacing_floor_distance()
+        );
+        assert_eq!(cfg.casper.rejection_search_cap_from_height, None);
+        assert_eq!(
+            cfg.casper.rejection_search_group_branch_cap,
+            casper::rust::casper_conf::default_rejection_search_group_branch_cap()
+        );
+        assert_eq!(
+            cfg.casper.v6_retained_records,
+            casper::rust::casper_conf::default_v6_retained_records()
+        );
+        assert_eq!(
+            cfg.casper.v6_conservation_audit_interval,
+            casper::rust::casper_conf::default_v6_conservation_audit_interval()
+        );
+        assert_eq!(
+            cfg.casper.offer_rejection_log_capacity,
+            casper::rust::casper_conf::default_offer_rejection_log_capacity()
+        );
+        assert_eq!(
+            cfg.casper.offer_rejection_reason_bytes,
+            casper::rust::casper_conf::default_offer_rejection_reason_bytes()
         );
     }
 

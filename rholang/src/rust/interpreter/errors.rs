@@ -19,6 +19,7 @@ pub enum InterpreterError {
     UnrecognizedNormalizerError(String),
     OutOfPhlogistonsError,
     HostWorkRejected,
+    FiringExhausted,
     UserAbortError,
     TopLevelWildcardsNotAllowedError(String),
     TopLevelFreeVariablesNotAllowedError(String),
@@ -161,6 +162,10 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::HostWorkRejected => {
                 write!(f, "Host work budget rejected evaluation.")
+            }
+
+            InterpreterError::FiringExhausted => {
+                write!(f, "A firing of stored code passed its declared bound.")
             }
 
             InterpreterError::UserAbortError => {
@@ -363,7 +368,16 @@ impl fmt::Display for InterpreterError {
 }
 
 impl From<RSpaceError> for InterpreterError {
-    fn from(err: RSpaceError) -> InterpreterError { InterpreterError::RSpaceError(err) }
+    fn from(err: RSpaceError) -> InterpreterError {
+        match err {
+            RSpaceError::InterpreterError(msg)
+                if msg == InterpreterError::FiringExhausted.to_string() =>
+            {
+                InterpreterError::FiringExhausted
+            }
+            err => InterpreterError::RSpaceError(err),
+        }
+    }
 }
 
 impl From<InterpreterError> for RSpaceError {
@@ -439,6 +453,10 @@ mod tests {
             (
                 InterpreterError::OutOfPhlogistonsError,
                 "Computation ran out of phlogistons.".to_string(),
+            ),
+            (
+                InterpreterError::FiringExhausted,
+                "A firing of stored code passed its declared bound.".to_string(),
             ),
             (
                 InterpreterError::UserAbortError,
@@ -674,5 +692,14 @@ mod tests {
             illegal_argument_error("nth"),
             InterpreterError::IllegalArgumentError("Incorrect arguments for nth".to_string())
         );
+    }
+
+    #[test]
+    fn a_membrane_stop_keeps_its_kind_through_the_space() {
+        let through: InterpreterError = RSpaceError::from(InterpreterError::FiringExhausted).into();
+        assert_eq!(through, InterpreterError::FiringExhausted);
+        let other: InterpreterError =
+            RSpaceError::from(InterpreterError::ReduceError("r".to_string())).into();
+        assert!(matches!(other, InterpreterError::RSpaceError(_)));
     }
 }

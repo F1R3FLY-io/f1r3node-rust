@@ -30,8 +30,8 @@ use utoipa::ToSchema;
 use crate::rust::api::admin_web_api::AdminWebApi;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
-    DeployRequest, ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode,
-    WebApi,
+    DeployRequest, ExploreDeployRequest, OfferedReceiptResponse, RhoDataResponse,
+    SimpleExploreDeployRequest, ViewMode, WebApi,
 };
 
 #[derive(Clone)]
@@ -87,8 +87,12 @@ pub struct ApiErrorResponse {
     /// **405 Method Not Allowed:**
     /// `method_not_allowed`
     ///
+    /// **415 Unsupported Media Type:**
+    /// `invalid_request_body`
+    ///
     /// **422 Unprocessable Entity:**
-    /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
+    /// `invalid_request_body`, `out_of_phlogistons`, `user_abort`,
+    /// `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
     /// `no_new_deploys`
@@ -102,7 +106,7 @@ pub struct ApiErrorResponse {
     /// `comm_error`, `external_service_error`
     ///
     /// **503 Service Unavailable:**
-    /// `observer_busy` — carries `Retry-After`
+    /// `observer_busy`, `deploy_pool_full` — carry `Retry-After`
     ///
     /// **504 Gateway Timeout:**
     /// `exploratory_timeout`
@@ -110,6 +114,8 @@ pub struct ApiErrorResponse {
     /// Human-readable description of the error.
     pub message: String,
 }
+
+const DEPLOY_POOL_FULL_RETRY_AFTER_SECS: u64 = 5;
 
 pub struct AppError(pub eyre::Error);
 
@@ -149,6 +155,14 @@ impl IntoResponse for AppError {
 /// variant rather than recomputed from the rendered message, so the header and
 /// the body cannot disagree.
 fn retry_after_secs(err: &eyre::Error) -> Option<u64> {
+    if err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<DeployError>(),
+            Some(DeployError::PoolFull { .. })
+        )
+    }) {
+        return Some(DEPLOY_POOL_FULL_RETRY_AFTER_SECS);
+    }
     match ExploratoryDeployRejection::classify(err) {
         Some(ExploratoryDeployRejection::Busy { retry_after_secs }) => Some(retry_after_secs),
         Some(ExploratoryDeployRejection::Timeout { .. }) | None => None,
@@ -254,6 +268,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
             return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
+        }
+        if let Some(DeployError::PoolFull { .. }) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_pool_full",
+                cause.to_string(),
+            );
         }
         if cause.downcast_ref::<DeployNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "deploy_not_found", cause.to_string());
@@ -415,6 +436,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "host_work_rejected",
             ie.to_string(),
         ),
+        FiringExhausted => (S::UNPROCESSABLE_ENTITY, "firing_exhausted", ie.to_string()),
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)
@@ -500,9 +522,10 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 400, description = "Malformed JSON causes `invalid_request_body`. Invalid amounts after decoding, hexadecimal values, public keys, algorithms, and signatures cause `illegal_argument`. An invalid term causes `rholang_bad_term`. Admission failures cause `illegal_argument`: read-only node, unbonded validator, shard ID mismatch, forbidden key, phlo price below minimum, or expired deploy.", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value, including deploy parameter names and values (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
     ),
@@ -520,6 +543,30 @@ pub async fn deploy_handler(
 }
 
 #[utoipa::path(
+    get,
+    path = "/deploy/offered/{deploy_id}/receipt",
+    params(
+        ("deploy_id" = String, Path, description = "Hex-encoded deploy ID (the deploy signature)"),
+    ),
+    responses(
+        (status = 200, description = "Offer status: `unknown`, `pending`, `rejected` (with the reason, pre-state root and block number), `ordered`, `notRetained`, or `executed` (with the receipt from the block record)", body = OfferedReceiptResponse),
+        (status = 400, description = "Deploy ID is empty or not hex (`invalid_hash`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure", body = ApiErrorResponse),
+    ),
+    tag = "Deployment"
+)]
+pub async fn offered_receipt_handler(
+    State(app_state): State<AppState>,
+    AppPath(deploy_id): AppPath<String>,
+) -> Response {
+    let web_api = app_state.web_api.clone();
+    match offload(move || async move { web_api.offered_receipt(deploy_id).await }).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => AppError(e).into_response(),
+    }
+}
+
+#[utoipa::path(
     post,
     path = "/explore-deploy",
     description = "Executes against the last finalized block post-state. Unfinalized DAG-tip state is not visible.",
@@ -527,7 +574,8 @@ pub async fn deploy_handler(
     responses(
         (status = 200, description = "Exploratory deploy executed; returns channel data", body = RhoDataResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `readonly_node_required`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
         (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
@@ -558,7 +606,8 @@ pub async fn explore_deploy_handler(
         (status = 200, description = "Exploratory deploy executed against the specified block; returns channel data", body = RhoDataResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
         (status = 502, description = "External service failure (`external_service_error`)", body = ApiErrorResponse),
         (status = 503, description = "Observer query capacity is occupied (`observer_busy`); carries `Retry-After`", body = ApiErrorResponse),
@@ -701,6 +750,18 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("15")
         );
+    }
+
+    #[test]
+    fn a_full_deploy_pool_is_service_unavailable_with_retry_after() {
+        let error = eyre::Report::new(casper::rust::casper::DeployError::pool_full(8192, 8192));
+        let (status, kind, _) = classify_error(&error);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(kind, "deploy_pool_full");
+
+        let response = AppError(error).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(response.headers().get(header::RETRY_AFTER).is_some());
     }
 
     #[test]
@@ -1091,7 +1152,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert!(bad.status().is_client_error());
+            assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
             let json = body_json(bad).await;
             assert_eq!(json["error"], "invalid_request_body");
             assert!(json["message"].as_str().is_some());

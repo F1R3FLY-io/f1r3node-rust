@@ -5,6 +5,8 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{ListParWithRandom, Par, TaggedContinuation};
 use prost::Message;
 
+use super::accounting::membrane;
+use super::accounting::rev_stack::seal;
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::reduce::DebruijnInterpreter;
@@ -54,6 +56,12 @@ impl RholangAndScalaDispatcher {
         is_replay: bool,
         previous_output: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
+        let record = seal::of_continuation(&continuation)
+            .map_err(|e| InterpreterError::ReduceError(e.to_string()))?;
+        let named = seal::body_owners(&continuation);
+        let own = record
+            .as_ref()
+            .and_then(|r| seal::own_owner(&continuation, r));
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
@@ -69,7 +77,31 @@ impl RholangAndScalaDispatcher {
                     let reducer = self.reducer()?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    reducer.eval(body, &env, merged_rand).await?;
+                    let firing = match (seal::meter(), record.as_ref()) {
+                        (Some(meter), Some(r)) if meter.gates(r) => {
+                            Some(membrane::Firing::bounded_by(r.clone(), &named, own.clone()))
+                        }
+                        _ => None,
+                    };
+                    let evaluation = seal::within(record, reducer.eval(body, &env, merged_rand));
+                    match firing {
+                        Some(firing) => {
+                            let evaluated =
+                                membrane::firing_scope(firing.clone(), evaluation).await;
+                            match firing.finish(reducer.cost.comm_ledger()) {
+                                membrane::Finished::Exhausted => {
+                                    return Err(InterpreterError::FiringExhausted)
+                                }
+                                membrane::Finished::Within(ops) => {
+                                    for op in ops {
+                                        op.await?;
+                                    }
+                                    evaluated?;
+                                }
+                            }
+                        }
+                        None => evaluation.await?,
+                    }
 
                     Ok(DispatchType::DeterministicCall)
                 }

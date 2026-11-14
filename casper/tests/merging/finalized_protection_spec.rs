@@ -176,7 +176,6 @@ fn dag_with_finalized_sibling(
         block_number_map,
         main_parent_map,
         self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: finalized_sibling.clone(),
         finalized_blocks_set,
         block_metadata_index: Arc::new(PlRwLock::new(BlockMetadataStore::new(metadata_store))),
@@ -249,6 +248,7 @@ async fn a_finalized_siblings_deploy_is_never_rejected_by_cost_adjudication() {
         &|sig| Ok(sig[0] == FINALIZED_DEPLOY),
         &HashSet::new(),
         &std::collections::HashMap::new(),
+        casper::rust::merging::conflict_set_merger::RejectionSearch::EXHAUSTIVE,
     )
     .expect("merge");
 
@@ -331,6 +331,7 @@ async fn a_settled_carriers_closed_window_deploy_is_not_window_rejected() {
         &|sig| Ok(sig[0] == SETTLED_DEPLOY),
         &HashSet::new(),
         &std::collections::HashMap::new(),
+        casper::rust::merging::conflict_set_merger::RejectionSearch::EXHAUSTIVE,
     )
     .expect("merge");
 

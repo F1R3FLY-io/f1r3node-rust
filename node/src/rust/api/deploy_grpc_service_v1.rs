@@ -281,14 +281,14 @@ impl DeployService for DeployGrpcServiceV1Impl {
         {
             Ok(result) => Self::create_success_deploy_response(result),
             Err(e) => {
-                let is_duplicate = e.chain().any(|cause| {
+                let is_expected_rejection = e.chain().any(|cause| {
                     matches!(
                         cause.downcast_ref::<DeployError>(),
-                        Some(DeployError::DuplicateDeploy(_))
+                        Some(DeployError::DuplicateDeploy(_) | DeployError::PoolFull { .. })
                     )
                 });
-                if is_duplicate {
-                    tracing::debug!("Duplicate deploy rejected: {}", e);
+                if is_expected_rejection {
+                    tracing::debug!("Deploy rejected: {}", e);
                 } else {
                     error!("Deploy service method error do_deploy: {}", e);
                 }
@@ -1221,6 +1221,8 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         };
         let signed =
             crypto::rust::signatures::signed::Signed::create(deploy_data, Box::new(Secp256k1), sk)
@@ -1280,7 +1282,7 @@ mod tests {
             .write()
             .add(BlockMetadata::from_block(
                 &block,
-                false,
+                None,
                 Some(true),
                 Some(true),
             ))

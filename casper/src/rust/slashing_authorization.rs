@@ -1,77 +1,28 @@
-//! Authorization predicate for `Slash` system deploys.
+//! Authorization of `Slash` system deploys.
 //!
-//! Every `Slash` system deploy carried in a block must reference current-epoch
-//! invalid-block evidence whose offender is positively bonded. This module
-//! provides both halves of that contract:
-//!
-//! * [`authorized_slash_candidates`] — the proposer-side enumeration the block
-//!   creator uses to decide which slashes to mint.
-//! * [`validate_received_slash_deploys`] — the receive-side check that mirrors
-//!   the predicate and rejects unauthorized slashes with
-//!   `InvalidBlock::UnauthorizedSlashDeploy`.
-//!
-//! The conjunctive predicate `received_slash_deploy_authorized` (current epoch
-//! ∧ matching evidence epoch ∧ positive bond ∧ block flagged invalid) is the
-//! precondition proven sufficient by Theorem T-9.13 (see
-//! `formal/rocq/slashing/theories/BugFixSlashAuthorization.v` and
-//! `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14`).
-//!
-//! Boundary helpers (`checked_base_seq`, `checked_next_seq`,
-//! `epoch_for_block_number`) live here because their failure modes feed back
-//! into the same authorization decision; they are also the surface that the
-//! `kani_proofs` module models exhaustively at the bottom of the file.
+//! A slash carries its own evidence: two blocks one sender signed at one
+//! sequence number. The proposer and every receiver apply the same rule to
+//! it, and the rule reads only the evidence and the stake a slash can take
+//! at the block's floor, its bonds and any stake in quarantine, so honest
+//! nodes reach the same verdict whatever order they saw the equivocation in
+//! and whichever of its blocks they hold.
 
-// References below to `formal/{rocq,tlaplus,sage}/slashing/`,
-// `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
-// audit-corpus artifacts preserved on the `analysis/slashing` branch.
-//
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, ProcessedSystemDeploy, SystemDeployData,
+    BlockMessage, EquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
-use models::rust::validator::Validator;
+use models::rust::validator::{self, Validator};
 use num_bigint::BigInt;
 
 use crate::rust::casper::CasperSnapshot;
-use crate::rust::epoch::Epoch;
 use crate::rust::errors::CasperError;
+use crate::rust::util::proto_util;
+use crate::rust::validate::Validate;
 
-/// Phase 9 (C-6): typed domain-level failure reasons for the epoch
-/// arithmetic primitives. Replaces the prior `Option<i64>` /
-/// `Option<bool>` shapes whose `None` arm conflated multiple causes
-/// (invalid `epoch_length`, negative `block_number`). The new
-/// `Result<_, DomainError>` shape lets callers either disambiguate
-/// or, where the API surface is the same, map cleanly into
-/// `SlashAuthError::InvalidEpochLength`.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum DomainError {
-    #[error("invalid epoch length {0} (must be > 0)")]
-    InvalidEpochLength(i32),
-    #[error("negative block number {0} (must be >= 0)")]
-    NegativeBlockNumber(i64),
-}
-
-impl From<DomainError> for SlashAuthError {
-    fn from(err: DomainError) -> Self {
-        match err {
-            DomainError::InvalidEpochLength(n) => SlashAuthError::InvalidEpochLength(n),
-            DomainError::NegativeBlockNumber(n) => SlashAuthError::NegativeBlockNumber(n),
-        }
-    }
-}
-
-/// P4-1: typed authorization-failure reasons surfaced by
-/// [`validate_received_slash_deploys`]. Replaces the eight previously
-/// distinct `CasperError::RuntimeError("...")` messages with named
-/// variants that carry the offending block/validator context. Operators
-/// can now match on the variant instead of grepping log strings, and
-/// the conjunctive predicate from Theorem T-9.13 is preserved one
-/// variant per conjunct.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SlashAuthError {
     #[error("slash deploy issuer does not match block sender (block={block_hash}, issuer={issuer}, sender={sender})")]
@@ -80,79 +31,23 @@ pub enum SlashAuthError {
         issuer: String,
         sender: String,
     },
-    #[error("slash deploy targets non-current epoch (target={target}, current={current})")]
-    EpochMismatch { target: Epoch, current: Epoch },
-    #[error("slash deploy references unknown invalid block {hash}")]
-    ReferencesUnknownBlock { hash: String },
-    #[error("slash deploy references a valid block {hash}")]
-    ReferencesValidBlock { hash: String },
-    #[error("invalid epoch length {0}")]
-    InvalidEpochLength(i32),
-    #[error("negative block number {0}")]
-    NegativeBlockNumber(i64),
-    #[error(
-        "slash deploy epoch ({evidence_epoch}) does not match invalid-block evidence epoch ({target_epoch})"
-    )]
-    EvidenceEpochMismatch {
-        evidence_epoch: Epoch,
-        target_epoch: Epoch,
-    },
-    #[error("slash deploy target {validator} is not currently bonded")]
-    TargetNotBonded { validator: String },
-    #[error(
-        "slash deploy is not authorized by current invalid-block evidence (validator {validator})"
-    )]
-    NotAuthorizedByEvidence { validator: String },
-    #[error("duplicate slash deploy target in block (validator {validator}, epoch {epoch})")]
-    DuplicateTarget { validator: String, epoch: Epoch },
-    #[error("negative block sequence number {seq_num} (block {block_hash})")]
-    NegativeSequenceNumber { block_hash: String, seq_num: i32 },
+    #[error("slash evidence is not an equivocation: {reason}")]
+    NotAnEquivocation { reason: &'static str },
+    #[error("slash deploy target {validator} holds no stake a slash can take")]
+    NothingToSlash { validator: String },
+    #[error("duplicate slash deploy target in block (validator {validator})")]
+    DuplicateTarget { validator: String },
 }
 
-// Phase 9 (R-2): `From<SlashAuthError> for CasperError` now lives in
-// `errors.rs` and routes to the new structured `CasperError::SlashAuth`
-// variant — previous stringification at this boundary defeated the
-// typed-error effort.
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AuthorizedSlashCandidate {
     pub offender: Validator,
-    pub invalid_block_hash: BlockHash,
-    /// Epoch under which the slash takes effect. By construction this equals
-    /// the epoch of the offender's invalid block at commit time — the
-    /// receiver reconstructs it from that evidence (see
-    /// `slash_evidence_epoch_matches_target`), so the proposer cannot move the
-    /// slash to a different epoch.
-    ///
-    /// Phase 10 (C-5): typed [`Epoch`] newtype replaces the raw `i64`;
-    /// conversion at the protobuf boundary uses
-    /// `Epoch::from(slash_deploy.target_activation_epoch)`.
-    pub target_activation_epoch: Epoch,
-}
-
-/// Phase 9 (C-6): returns a typed [`DomainError`] when the input
-/// constraints fail. The two failure modes are now distinguishable:
-/// non-positive `epoch_length` is configuration-derived, while a
-/// negative `block_number` indicates an arithmetic or wire-format bug.
-/// The caller (`authorized_slash_candidates` /
-/// `validate_received_slash_deploys`) maps either into the appropriate
-/// `SlashAuthError` variant; never panic here — shard configuration can
-/// legally hand us `epoch_length == 0` at startup.
-pub fn epoch_for_block_number(block_number: i64, epoch_length: i32) -> Result<Epoch, DomainError> {
-    if epoch_length <= 0 {
-        Err(DomainError::InvalidEpochLength(epoch_length))
-    } else if block_number < 0 {
-        Err(DomainError::NegativeBlockNumber(block_number))
-    } else {
-        Ok(Epoch::new(block_number / i64::from(epoch_length)))
-    }
+    pub evidence: EquivocationEvidence,
 }
 
 /// Predecessor of a sequence number used as the *exclusive* lower bound for
 /// self-justification walks. The boundary is `seq_num <= 0`, not `<= 1`:
-/// sequence 1 is a valid genesis-child and must round-trip to `Some(0)`. See
-/// commit `db0b979` ("Fix slashing sequence base boundary") and the
-/// `kani_proofs::checked_base_seq_*` proofs.
+/// sequence 1 is a valid genesis-child and must round-trip to `Some(0)`.
 pub fn checked_base_seq(seq_num: i32) -> Option<i32> {
     if seq_num <= 0 {
         None
@@ -164,238 +59,138 @@ pub fn checked_base_seq(seq_num: i32) -> Option<i32> {
 /// Successor of a `u64` sequence width, narrowed to the wire-format `i32`.
 /// The double check (`u64::checked_add` then `i32::try_from`) saturates to
 /// `None` on either u64 overflow or i32 truncation — silently wrapping would
-/// let an attacker craft a sequence-number rollover. Modeled exhaustively by
-/// `kani_proofs::checked_next_seq_matches_i32_successor`.
+/// let an attacker craft a sequence-number rollover.
 pub fn checked_next_seq(max_seq: u64) -> Option<i32> {
     max_seq
         .checked_add(1)
         .and_then(|seq| i32::try_from(seq).ok())
 }
 
-pub fn slash_target_epoch_is_current(
-    reference_block_number: i64,
-    target_activation_epoch: Epoch,
-    epoch_length: i32,
-) -> Result<bool, DomainError> {
-    epoch_for_block_number(reference_block_number, epoch_length)
-        .map(|current_epoch| target_activation_epoch == current_epoch)
-}
-
-pub fn slash_evidence_epoch_matches_target(
-    evidence_block_number: i64,
-    target_activation_epoch: Epoch,
-    epoch_length: i32,
-) -> Result<bool, DomainError> {
-    epoch_for_block_number(evidence_block_number, epoch_length)
-        .map(|evidence_epoch| target_activation_epoch == evidence_epoch)
-}
-
-pub fn slash_target_has_positive_bond<T: PartialOrd + From<i32>>(bond: T) -> bool {
-    bond > T::from(0)
-}
-
-pub fn slash_target_key(
-    offender: &Validator,
-    target_activation_epoch: Epoch,
-) -> (Validator, Epoch) {
-    (offender.clone(), target_activation_epoch)
-}
-
-pub fn slash_target_key_collides<T: Eq>(
-    left_offender: &T,
-    left_epoch: Epoch,
-    right_offender: &T,
-    right_epoch: Epoch,
-) -> bool {
-    left_offender == right_offender && left_epoch == right_epoch
-}
-
-/// Core authorization predicate: a `Slash` system deploy is admissible iff
-/// all four conditions hold simultaneously —
-/// 1. the deploy's `target_activation_epoch` equals the *current* epoch
-///    (computed from `reference_block_number`),
-/// 2. the *evidence* block's epoch equals the same `target_activation_epoch`
-///    (so the proposer cannot reuse stale evidence under a fresh epoch label),
-/// 3. the offender carries a positive bond, and
-/// 4. the referenced block is flagged invalid in the DAG.
-///
-/// Returns `None` only when the domain conditions of `epoch_for_block_number`
-/// fail (non-positive `epoch_length` or negative block number). The
-/// conjunction is the precondition proven sufficient by Theorem T-9.13
-/// (`formal/rocq/slashing/theories/BugFixSlashAuthorization.v`) and modeled
-/// in `kani_proofs::received_slash_deploy_authorized_*`.
-pub fn received_slash_deploy_authorized<T: PartialOrd + From<i32>>(
-    reference_block_number: i64,
-    evidence_block_number: i64,
-    target_activation_epoch: Epoch,
-    epoch_length: i32,
-    bond: T,
-    invalid: bool,
-) -> Result<bool, DomainError> {
-    let current = slash_target_epoch_is_current(
-        reference_block_number,
-        target_activation_epoch,
-        epoch_length,
-    )?;
-    let evidence = slash_evidence_epoch_matches_target(
-        evidence_block_number,
-        target_activation_epoch,
-        epoch_length,
-    )?;
-    Ok(current && evidence && slash_target_has_positive_bond(bond) && invalid)
-}
-
-fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, DomainError> {
-    epoch_for_block_number(metadata.block_number, epoch_length)
-}
-
-/// The evidence a block at `block_number` may slash on: invalid blocks in
-/// that block's epoch whose senders hold stake in `committee`, the bonds
-/// received slashes are authorized against.
-pub fn slashable_evidence(
-    invalid_blocks: impl IntoIterator<Item = BlockMetadata>,
-    block_number: i64,
-    epoch_length: i32,
-    committee: &HashMap<Validator, BigInt>,
-) -> Result<Vec<BlockMetadata>, DomainError> {
-    let epoch = epoch_for_block_number(block_number, epoch_length)?;
-    let mut evidence = Vec::new();
-    for metadata in invalid_blocks {
-        if metadata.invalid
-            && committee
-                .get(&metadata.sender)
-                .is_some_and(|stake| *stake > BigInt::from(0))
-            && evidence_epoch(&metadata, epoch_length)? == epoch
-        {
-            evidence.push(metadata);
-        }
+/// The validator `evidence` proves equivocated on the chain `chain_id` of
+/// shard `shard_id`: both commitments hash to blocks their common sender
+/// signed for that chain, at one sequence number, and the two hashes differ
+/// and are in order.
+pub fn equivocator_proven_by(
+    evidence: &EquivocationEvidence,
+    shard_id: &str,
+    chain_id: &[u8],
+) -> Result<Validator, SlashAuthError> {
+    let reject = |reason| Err(SlashAuthError::NotAnEquivocation { reason });
+    let (first, second) = (&evidence.first, &evidence.second);
+    if [first, second]
+        .iter()
+        .any(|block| block.shard_id != shard_id || block.header.chain_id != chain_id)
+    {
+        return reject("a block belongs to another shard or chain");
     }
-    Ok(evidence)
+    if first.sender != second.sender {
+        return reject("the blocks have different senders");
+    }
+    if first.sender.len() != validator::LENGTH {
+        return reject("the sender is not a validator key");
+    }
+    if first.seq_num != second.seq_num {
+        return reject("the blocks have different sequence numbers");
+    }
+    let first_hash = proto_util::commitment_hash(first);
+    let second_hash = proto_util::commitment_hash(second);
+    if first_hash == second_hash {
+        return reject("the two blocks are one block");
+    }
+    if first_hash > second_hash {
+        return reject("the blocks are not ordered by hash");
+    }
+    if !Validate::commitment_signature(first, &first_hash)
+        || !Validate::commitment_signature(second, &second_hash)
+    {
+        return reject("a block is not signed by its sender");
+    }
+    Ok(first.sender.clone())
 }
 
-/// Proposer-side enumeration of slash candidates for the block being built.
-///
-/// At most one candidate per offender is emitted, even when the DAG contains
-/// multiple invalid blocks from the same validator in the current epoch — the
-/// receiver is required to enforce that uniqueness, so the proposer must
-/// mirror it. When two evidence blocks tie, we keep the one with the
-/// lexicographically smallest `invalid_block_hash`; this tie-break is
-/// load-bearing for cross-node replay determinism (every node must select the
-/// same candidate set from the same snapshot).
-///
-/// `max_block_num + 1` is the block number of the block we are *about to
-/// propose*, not the latest existing block — so `current_epoch` is the epoch
-/// the new block will land in. Slashing decisions belong to that epoch.
-pub fn authorized_slash_candidates(
-    snapshot: &CasperSnapshot,
-) -> Result<Vec<AuthorizedSlashCandidate>, CasperError> {
-    let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
-    // P2-9: surface overflow on `max_block_num + 1` as a typed error.
-    let proposed_block_num = snapshot.max_block_num.checked_add(1).ok_or_else(|| {
+/// The evidence for the equivocation `invalid` is stored with: the block and
+/// its sibling, ordered by hash.
+fn evidence_for(
+    invalid: &BlockMetadata,
+    block_store: &KeyValueBlockStore,
+) -> Result<EquivocationEvidence, CasperError> {
+    let sibling = invalid.equivocates.as_ref().ok_or_else(|| {
         CasperError::RuntimeError(format!(
-            "max_block_num overflow: {} + 1 wraps i64",
-            snapshot.max_block_num
+            "invalid block {} is stored without its pair",
+            hex::encode(&invalid.block_hash)
         ))
     })?;
-    let current_epoch =
-        epoch_for_block_number(proposed_block_num, epoch_length).map_err(SlashAuthError::from)?;
-    let evidence = slashable_evidence(
-        snapshot.dag.invalid_blocks(),
-        proposed_block_num,
-        epoch_length,
-        &snapshot.on_chain_state.bonds_map,
-    )
-    .map_err(SlashAuthError::from)?;
-
-    // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
-    // the resulting Vec is what feeds the block body.
-    let mut by_offender: BTreeMap<Validator, AuthorizedSlashCandidate> = BTreeMap::new();
-    for metadata in evidence {
-        let candidate = AuthorizedSlashCandidate {
-            offender: metadata.sender.clone(),
-            invalid_block_hash: metadata.block_hash,
-            target_activation_epoch: current_epoch,
-        };
-        match by_offender.entry(metadata.sender.clone()) {
-            Entry::Vacant(entry) => {
-                entry.insert(candidate);
-            }
-            Entry::Occupied(mut entry) => {
-                // Deterministic tie-break: keep the lex-smallest hash so every
-                // node selects the same evidence block for this offender.
-                if candidate.invalid_block_hash < entry.get().invalid_block_hash {
-                    entry.insert(candidate);
-                }
-            }
-        }
-    }
-
-    Ok(by_offender.into_values().collect())
+    let commitment = |hash: &BlockHash| {
+        block_store
+            .get(hash)?
+            .map(|block| proto_util::block_commitment(&block))
+            .ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "block {} of a recorded equivocation is not in the block store",
+                    hex::encode(hash)
+                ))
+            })
+    };
+    let (low, high) = if invalid.block_hash < *sibling {
+        (&invalid.block_hash, sibling)
+    } else {
+        (sibling, &invalid.block_hash)
+    };
+    Ok(EquivocationEvidence {
+        first: commitment(low)?,
+        second: commitment(high)?,
+    })
 }
 
-/// Receive-side mirror of [`authorized_slash_candidates`]. Every successful
-/// `Slash` system deploy in `block` must satisfy seven rules; any violation
-/// returns `Err` and the caller (`Validate::slash_deploy_authorization`)
-/// collapses that into `InvalidBlock::UnauthorizedSlashDeploy`:
-///
-/// 1. The deploy issuer must equal the block sender.
-/// 2. `target_activation_epoch` must equal the *current* epoch of the
-///    receiving block (so a slash cannot reference a different epoch's rules).
-/// 3. `invalid_block_hash` must resolve to a known block in the DAG.
-/// 4. That block must be flagged `invalid`.
-/// 5. The evidence block's own epoch must equal `target_activation_epoch`.
-/// 6. The offender must currently carry a positive bond.
-/// 7. No two slashes in the same block may share `(offender, target_epoch)`.
-///
-/// See `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14` and
-/// the Rocq proof in `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`.
+/// The slashes the block being built issues: one per offender this node
+/// holds an equivocation of and `slashable` holds stake for. Where an
+/// offender has several, the one recorded on the lowest block hash is used,
+/// so every node holding the same equivocations issues the same slashes.
+pub fn authorized_slash_candidates(
+    snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    slashable: &HashMap<Validator, BigInt>,
+) -> Result<Vec<AuthorizedSlashCandidate>, CasperError> {
+    let mut by_offender: BTreeMap<Validator, BlockMetadata> = BTreeMap::new();
+    for offender in slashable.keys() {
+        let lowest = snapshot
+            .dag
+            .equivocations_of(offender)?
+            .into_iter()
+            .min_by(|left, right| left.block_hash.cmp(&right.block_hash));
+        if let Some(invalid) = lowest {
+            by_offender.insert(offender.clone(), invalid);
+        }
+    }
+    by_offender
+        .into_iter()
+        .map(|(offender, invalid)| {
+            Ok(AuthorizedSlashCandidate {
+                offender,
+                evidence: evidence_for(&invalid, block_store)?,
+            })
+        })
+        .collect()
+}
+
+/// Every succeeded `Slash` system deploy in `block` must be issued by the
+/// block's sender, carry evidence that proves an equivocation on the chain
+/// `chain_id` of shard `shard_id`, target a validator `slashable` holds stake
+/// for, and be the block's only slash of that validator. Any violation
+/// rejects the block as `InvalidBlock::UnauthorizedSlashDeploy`.
 pub fn validate_received_slash_deploys(
     block: &BlockMessage,
-    snapshot: &CasperSnapshot,
+    slashable: &HashMap<Validator, BigInt>,
+    shard_id: &str,
+    chain_id: &[u8],
 ) -> Result<(), CasperError> {
-    let has_slash_deploy = block.body.system_deploys.iter().any(|system_deploy| {
-        matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
-            system_deploy: SystemDeployData::Slash { .. },
-            ..
-        })
-    });
-    // Fast path: most blocks contain no slash deploys; avoid the per-deploy
-    // loop and the epoch division (which can fail on an invalid epoch_length).
-    if !has_slash_deploy {
-        return Ok(());
-    }
-
-    let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
-    let current_epoch = epoch_for_block_number(block.body.state.block_number, epoch_length)
-        .map_err(SlashAuthError::from)?;
-    // BTreeMap gives deterministic iteration order for the error path; the
-    // key `(offender, target_epoch)` is the uniqueness rule from item (7).
-    // Phase 10 (C-5): typed `Epoch` key replaces raw `i64`.
-    let mut seen = BTreeMap::<(Validator, Epoch), BlockHash>::new();
-
-    // Defensive check — block sequence numbers must be non-negative.
-    // `debug_assert!` would compile out in release; a tampered wire-protocol
-    // block with `seq_num < 0` would then propagate into
-    // `received_slash_deploy_authorized` (whose `epoch_for_block_number`
-    // checks `block_number`, not `seq_num`). Returning a typed error makes
-    // the rejection release-safe — and the `From<SlashAuthError>` impl at
-    // `errors.rs:52` routes it correctly through `slash_deploy_authorization`
-    // so the block is recorded as `UnauthorizedSlashDeploy`.
-    if block.seq_num < 0 {
-        return Err(SlashAuthError::NegativeSequenceNumber {
-            block_hash: hex::encode(&block.block_hash),
-            seq_num: block.seq_num,
-        }
-        .into());
-    }
-
+    let mut slashed = HashSet::new();
     for system_deploy in &block.body.system_deploys {
         let ProcessedSystemDeploy::Succeeded {
             system_deploy:
                 SystemDeployData::Slash {
-                    invalid_block_hash,
+                    evidence,
                     issuer_public_key,
-                    target_activation_epoch,
                 },
             ..
         } = system_deploy
@@ -403,20 +198,7 @@ pub fn validate_received_slash_deploys(
             continue;
         };
 
-        // P4-9: issuer public key must be present and well-formed before
-        // we even consider matching it against the sender. A zero-length
-        // key would silently match a malformed `block.sender` of the same
-        // shape; the check below catches the (uncommon) case.
-        if issuer_public_key.bytes.is_empty() {
-            return Err(SlashAuthError::IssuerMismatch {
-                block_hash: hex::encode(&block.block_hash),
-                issuer: "<empty>".to_string(),
-                sender: hex::encode(&block.sender),
-            }
-            .into());
-        }
-
-        if issuer_public_key.bytes != block.sender {
+        if issuer_public_key.bytes.is_empty() || issuer_public_key.bytes != block.sender {
             return Err(SlashAuthError::IssuerMismatch {
                 block_hash: hex::encode(&block.block_hash),
                 issuer: hex::encode(&issuer_public_key.bytes),
@@ -424,86 +206,174 @@ pub fn validate_received_slash_deploys(
             }
             .into());
         }
-        // Phase 10 (C-5): convert the protobuf-side raw `i64` to `Epoch`
-        // at the boundary; downstream arithmetic and comparisons are typed.
-        let target_activation_epoch = Epoch::from(*target_activation_epoch);
-        if target_activation_epoch != current_epoch {
-            return Err(SlashAuthError::EpochMismatch {
-                target: target_activation_epoch,
-                current: current_epoch,
+        let offender = equivocator_proven_by(evidence, shard_id, chain_id)?;
+        if !slashable
+            .get(&offender)
+            .is_some_and(|stake| *stake > BigInt::from(0))
+        {
+            return Err(SlashAuthError::NothingToSlash {
+                validator: hex::encode(&offender),
             }
             .into());
         }
-
-        let metadata = snapshot
-            .dag
-            .lookup(invalid_block_hash)
-            .map_err(CasperError::from)?
-            .ok_or_else(|| SlashAuthError::ReferencesUnknownBlock {
-                hash: hex::encode(invalid_block_hash),
-            })?;
-
-        if !metadata.invalid {
-            return Err(SlashAuthError::ReferencesValidBlock {
-                hash: hex::encode(invalid_block_hash),
-            }
-            .into());
-        }
-
-        let evidence_epoch =
-            evidence_epoch(&metadata, epoch_length).map_err(SlashAuthError::from)?;
-        if evidence_epoch != target_activation_epoch {
-            return Err(SlashAuthError::EvidenceEpochMismatch {
-                evidence_epoch,
-                target_epoch: target_activation_epoch,
-            }
-            .into());
-        }
-
-        let bond = snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&metadata.sender)
-            .cloned()
-            .unwrap_or_default();
-        if bond <= BigInt::from(0) {
-            return Err(SlashAuthError::TargetNotBonded {
-                validator: hex::encode(&metadata.sender),
-            }
-            .into());
-        }
-        let authorized = received_slash_deploy_authorized(
-            block.body.state.block_number,
-            metadata.block_number,
-            target_activation_epoch,
-            epoch_length,
-            bond,
-            metadata.invalid,
-        )
-        .map_err(SlashAuthError::from)?;
-        if !authorized {
-            return Err(SlashAuthError::NotAuthorizedByEvidence {
-                validator: hex::encode(&metadata.sender),
-            }
-            .into());
-        }
-
-        let key = slash_target_key(&metadata.sender, target_activation_epoch);
-        if seen.insert(key, invalid_block_hash.clone()).is_some() {
+        if !slashed.insert(offender.clone()) {
             return Err(SlashAuthError::DuplicateTarget {
-                validator: hex::encode(&metadata.sender),
-                epoch: target_activation_epoch,
+                validator: hex::encode(&offender),
             }
             .into());
         }
     }
-
     Ok(())
 }
 
-// Kani proofs — symbolic-model-check the boundary helpers against the
-// post-Phase-9 typed API. Production functions now return
-// `Result<_, DomainError>` (where applicable) and use the `Epoch` newtype.
+#[cfg(test)]
+mod tests {
+    use crypto::rust::private_key::PrivateKey;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rust::block_implicits::get_random_block_default;
+    use models::rust::casper::protocol::casper_message::BlockCommitment;
+
+    use super::*;
+
+    const SHARD: &str = "root";
+    const CHAIN: [u8; 32] = [0xC1; 32];
+
+    /// A block of `shard` and `chain` at `seq_num` signed by the key
+    /// `secret`, distinguished by `nonce`.
+    fn signed_for(
+        secret: &PrivateKey,
+        seq_num: i32,
+        nonce: u8,
+        shard: &str,
+        chain: &[u8],
+    ) -> BlockCommitment {
+        let secp = Secp256k1;
+        let mut block = get_random_block_default();
+        block.sender = secp.to_public(secret).bytes.into();
+        block.sig_algorithm = Secp256k1::name();
+        block.seq_num = seq_num;
+        block.extra_bytes = vec![nonce].into();
+        block.shard_id = shard.to_string();
+        block.header.chain_id = chain.to_vec().into();
+        let hash = proto_util::hash_block(&block);
+        block.sig = secp.sign(&hash, &secret.bytes).into();
+        proto_util::block_commitment(&block)
+    }
+
+    fn signed_commitment(secret: &PrivateKey, seq_num: i32, nonce: u8) -> BlockCommitment {
+        signed_for(secret, seq_num, nonce, SHARD, &CHAIN)
+    }
+
+    fn ordered(a: BlockCommitment, b: BlockCommitment) -> EquivocationEvidence {
+        if proto_util::commitment_hash(&a) < proto_util::commitment_hash(&b) {
+            EquivocationEvidence {
+                first: a,
+                second: b,
+            }
+        } else {
+            EquivocationEvidence {
+                first: b,
+                second: a,
+            }
+        }
+    }
+
+    fn key(byte: u8) -> PrivateKey { PrivateKey::from_bytes(&[byte; 32]) }
+
+    #[test]
+    fn two_signed_blocks_at_one_sequence_number_prove_their_sender() {
+        let secret = key(0x11);
+        let evidence = ordered(
+            signed_commitment(&secret, 4, 1),
+            signed_commitment(&secret, 4, 2),
+        );
+        assert_eq!(
+            equivocator_proven_by(&evidence, SHARD, &CHAIN),
+            Ok(evidence.first.sender.clone())
+        );
+    }
+
+    #[test]
+    fn evidence_that_is_not_an_equivocation_is_rejected() {
+        let secret = key(0x11);
+        let a = signed_commitment(&secret, 4, 1);
+        let b = signed_commitment(&secret, 4, 2);
+        let pair = ordered(a.clone(), b.clone());
+
+        let same_block = EquivocationEvidence {
+            first: a.clone(),
+            second: a.clone(),
+        };
+        let different_seq = ordered(a.clone(), signed_commitment(&secret, 5, 2));
+        let different_sender = ordered(a.clone(), signed_commitment(&key(0x22), 4, 2));
+        let unordered = EquivocationEvidence {
+            first: pair.second.clone(),
+            second: pair.first.clone(),
+        };
+        let mut forged = pair.clone();
+        forged.second.sig = signed_commitment(&key(0x22), 4, 2).sig;
+        let mut altered_block = b.clone();
+        altered_block.post_state_hash = vec![0xAB; 32].into();
+        let altered = ordered(a.clone(), altered_block);
+        let short_sender = {
+            let (mut a, mut b) = (a.clone(), b.clone());
+            a.sender = vec![0x04; 33].into();
+            b.sender = a.sender.clone();
+            ordered(a, b)
+        };
+        let other_shard = ordered(a.clone(), signed_for(&secret, 4, 2, "other", &CHAIN));
+        let other_chain = ordered(a.clone(), signed_for(&secret, 4, 2, SHARD, &[0xC2; 32]));
+
+        for (name, evidence, reason) in [
+            (
+                "a sender that is not a validator key",
+                short_sender,
+                "the sender is not a validator key",
+            ),
+            (
+                "a block of another shard",
+                other_shard,
+                "a block belongs to another shard or chain",
+            ),
+            (
+                "a block of another chain",
+                other_chain,
+                "a block belongs to another shard or chain",
+            ),
+            ("same block", same_block, "the two blocks are one block"),
+            (
+                "different sequence numbers",
+                different_seq,
+                "the blocks have different sequence numbers",
+            ),
+            (
+                "different senders",
+                different_sender,
+                "the blocks have different senders",
+            ),
+            ("unordered", unordered, "the blocks are not ordered by hash"),
+            (
+                "forged signature",
+                forged,
+                "a block is not signed by its sender",
+            ),
+            (
+                "content altered after signing",
+                altered,
+                "a block is not signed by its sender",
+            ),
+        ] {
+            assert_eq!(
+                equivocator_proven_by(&evidence, SHARD, &CHAIN),
+                Err(SlashAuthError::NotAnEquivocation { reason }),
+                "{name}"
+            );
+        }
+    }
+}
+
+// Kani proofs — symbolic-model-check the sequence-number helpers.
 // CI does not currently run kani; run locally with `cargo kani -p casper`.
 #[cfg(kani)]
 mod kani_proofs {
@@ -513,7 +383,6 @@ mod kani_proofs {
     fn checked_base_seq_rejects_nonpositive() {
         let seq: i32 = kani::any();
         kani::assume(seq <= 0);
-        // Still `Option`-typed in production — i32 invariants live here.
         assert_eq!(checked_base_seq(seq), None);
     }
 
@@ -529,322 +398,5 @@ mod kani_proofs {
         let seq: u64 = kani::any();
         let expected = seq.checked_add(1).and_then(|next| i32::try_from(next).ok());
         assert_eq!(checked_next_seq(seq), expected);
-    }
-
-    #[kani::proof]
-    fn epoch_for_block_number_rejects_invalid_domain() {
-        let block_number: i64 = kani::any();
-        let epoch_length: i32 = kani::any();
-        kani::assume(block_number < 0 || epoch_length <= 0);
-        let result = epoch_for_block_number(block_number, epoch_length);
-        assert!(result.is_err());
-        // Phase 9 (C-6) typed DomainError variants — assert specific routing.
-        if epoch_length <= 0 {
-            assert!(matches!(result, Err(DomainError::InvalidEpochLength(_))));
-        } else {
-            assert!(matches!(result, Err(DomainError::NegativeBlockNumber(_))));
-        }
-    }
-
-    #[kani::proof]
-    fn epoch_for_block_number_matches_bounded_floor_division() {
-        let block_number: u16 = kani::any();
-        let epoch_length: u8 = kani::any();
-        kani::assume(epoch_length > 0);
-        let block_number = i64::from(block_number);
-        let epoch_length = i32::from(epoch_length);
-        assert_eq!(
-            epoch_for_block_number(block_number, epoch_length),
-            Ok(Epoch::new(block_number / i64::from(epoch_length)))
-        );
-    }
-
-    #[kani::proof]
-    fn slash_target_epoch_is_current_matches_epoch_projection() {
-        let reference_block_number: u16 = kani::any();
-        let target_activation_epoch: i16 = kani::any();
-        let epoch_length: u8 = kani::any();
-        kani::assume(epoch_length > 0);
-        let reference_block_number = i64::from(reference_block_number);
-        let target_activation_epoch_raw = i64::from(target_activation_epoch);
-        let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
-        let epoch_length = i32::from(epoch_length);
-        let expected =
-            target_activation_epoch_raw == reference_block_number / i64::from(epoch_length);
-        assert_eq!(
-            slash_target_epoch_is_current(
-                reference_block_number,
-                target_activation_epoch,
-                epoch_length
-            ),
-            Ok(expected)
-        );
-    }
-
-    #[kani::proof]
-    fn slash_evidence_epoch_matches_target_matches_epoch_projection() {
-        let evidence_block_number: u16 = kani::any();
-        let target_activation_epoch: i16 = kani::any();
-        let epoch_length: u8 = kani::any();
-        kani::assume(epoch_length > 0);
-        let evidence_block_number = i64::from(evidence_block_number);
-        let target_activation_epoch_raw = i64::from(target_activation_epoch);
-        let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
-        let epoch_length = i32::from(epoch_length);
-        let expected =
-            target_activation_epoch_raw == evidence_block_number / i64::from(epoch_length);
-        assert_eq!(
-            slash_evidence_epoch_matches_target(
-                evidence_block_number,
-                target_activation_epoch,
-                epoch_length
-            ),
-            Ok(expected)
-        );
-    }
-
-    #[kani::proof]
-    fn received_slash_deploy_authorized_rejects_invalid_domain() {
-        let reference_block_number: i64 = kani::any();
-        let evidence_block_number: i64 = kani::any();
-        let target_activation_epoch: i64 = kani::any();
-        let epoch_length: i32 = kani::any();
-        let bond: i64 = kani::any();
-        let invalid: bool = kani::any();
-        kani::assume(reference_block_number < 0 || evidence_block_number < 0 || epoch_length <= 0);
-        assert!(received_slash_deploy_authorized(
-            reference_block_number,
-            evidence_block_number,
-            Epoch::new(target_activation_epoch),
-            epoch_length,
-            bond,
-            invalid
-        )
-        .is_err());
-    }
-
-    #[kani::proof]
-    fn received_slash_deploy_authorized_is_conjunction_on_bounded_domain() {
-        let reference_block_number: u16 = kani::any();
-        let evidence_block_number: u16 = kani::any();
-        let target_activation_epoch: i16 = kani::any();
-        let epoch_length: u8 = kani::any();
-        let bond: i16 = kani::any();
-        let invalid: bool = kani::any();
-        kani::assume(epoch_length > 0);
-        let reference_block_number = i64::from(reference_block_number);
-        let evidence_block_number = i64::from(evidence_block_number);
-        let target_activation_epoch_raw = i64::from(target_activation_epoch);
-        let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
-        let epoch_length = i32::from(epoch_length);
-        let bond = i64::from(bond);
-        let expected = target_activation_epoch_raw
-            == reference_block_number / i64::from(epoch_length)
-            && target_activation_epoch_raw == evidence_block_number / i64::from(epoch_length)
-            && bond > 0
-            && invalid;
-        assert_eq!(
-            received_slash_deploy_authorized(
-                reference_block_number,
-                evidence_block_number,
-                target_activation_epoch,
-                epoch_length,
-                bond,
-                invalid
-            ),
-            Ok(expected)
-        );
-    }
-
-    #[kani::proof]
-    fn slash_target_has_positive_bond_matches_positive() {
-        let bond: i64 = kani::any();
-        assert_eq!(slash_target_has_positive_bond(bond), bond > 0);
-    }
-
-    #[kani::proof]
-    fn received_authorization_requires_positive_bond_on_bounded_domain() {
-        let reference_block_number: u16 = kani::any();
-        let evidence_block_number: u16 = kani::any();
-        let epoch_length: u8 = kani::any();
-        let bond: i16 = kani::any();
-        kani::assume(epoch_length > 0);
-        kani::assume(bond <= 0);
-        let reference_block_number = i64::from(reference_block_number);
-        let evidence_block_number = i64::from(evidence_block_number);
-        let epoch_length = i32::from(epoch_length);
-        let target_epoch_raw = reference_block_number / i64::from(epoch_length);
-        kani::assume(target_epoch_raw == evidence_block_number / i64::from(epoch_length));
-        assert_eq!(
-            received_slash_deploy_authorized(
-                reference_block_number,
-                evidence_block_number,
-                Epoch::new(target_epoch_raw),
-                epoch_length,
-                i64::from(bond),
-                true
-            ),
-            Ok(false)
-        );
-    }
-
-    #[kani::proof]
-    fn received_authorization_requires_invalid_evidence_on_bounded_domain() {
-        let reference_block_number: u16 = kani::any();
-        let evidence_block_number: u16 = kani::any();
-        let epoch_length: u8 = kani::any();
-        let bond: u16 = kani::any();
-        kani::assume(epoch_length > 0);
-        kani::assume(bond > 0);
-        let reference_block_number = i64::from(reference_block_number);
-        let evidence_block_number = i64::from(evidence_block_number);
-        let epoch_length = i32::from(epoch_length);
-        let target_epoch_raw = reference_block_number / i64::from(epoch_length);
-        kani::assume(target_epoch_raw == evidence_block_number / i64::from(epoch_length));
-        assert_eq!(
-            received_slash_deploy_authorized(
-                reference_block_number,
-                evidence_block_number,
-                Epoch::new(target_epoch_raw),
-                epoch_length,
-                i64::from(bond),
-                false
-            ),
-            Ok(false)
-        );
-    }
-
-    #[kani::proof]
-    fn received_authorization_requires_current_epoch_on_bounded_domain() {
-        let reference_block_number: u16 = kani::any();
-        let evidence_block_number: u16 = kani::any();
-        let target_activation_epoch: i16 = kani::any();
-        let epoch_length: u8 = kani::any();
-        let bond: u16 = kani::any();
-        kani::assume(epoch_length > 0);
-        kani::assume(bond > 0);
-        let reference_block_number = i64::from(reference_block_number);
-        let evidence_block_number = i64::from(evidence_block_number);
-        let target_epoch_raw = i64::from(target_activation_epoch);
-        let epoch_length = i32::from(epoch_length);
-        kani::assume(target_epoch_raw != reference_block_number / i64::from(epoch_length));
-        assert_eq!(
-            received_slash_deploy_authorized(
-                reference_block_number,
-                evidence_block_number,
-                Epoch::new(target_epoch_raw),
-                epoch_length,
-                i64::from(bond),
-                true
-            ),
-            Ok(false)
-        );
-    }
-
-    #[kani::proof]
-    fn received_authorization_requires_evidence_epoch_on_bounded_domain() {
-        let reference_block_number: u16 = kani::any();
-        let evidence_block_number: u16 = kani::any();
-        let epoch_length: u8 = kani::any();
-        let bond: u16 = kani::any();
-        kani::assume(epoch_length > 0);
-        kani::assume(bond > 0);
-        let reference_block_number = i64::from(reference_block_number);
-        let evidence_block_number = i64::from(evidence_block_number);
-        let epoch_length = i32::from(epoch_length);
-        let target_epoch_raw = reference_block_number / i64::from(epoch_length);
-        kani::assume(target_epoch_raw != evidence_block_number / i64::from(epoch_length));
-        assert_eq!(
-            received_slash_deploy_authorized(
-                reference_block_number,
-                evidence_block_number,
-                Epoch::new(target_epoch_raw),
-                epoch_length,
-                i64::from(bond),
-                true
-            ),
-            Ok(false)
-        );
-    }
-
-    #[kani::proof]
-    fn slash_target_key_collides_matches_pair_equality() {
-        let left_offender: u8 = kani::any();
-        let right_offender: u8 = kani::any();
-        let left_epoch: i16 = kani::any();
-        let right_epoch: i16 = kani::any();
-        assert_eq!(
-            slash_target_key_collides(
-                &left_offender,
-                Epoch::new(i64::from(left_epoch)),
-                &right_offender,
-                Epoch::new(i64::from(right_epoch))
-            ),
-            left_offender == right_offender && left_epoch == right_epoch
-        );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::{BTreeMap, HashMap};
-
-    use models::rust::block_metadata::BlockMetadata;
-    use models::rust::validator::Validator;
-    use num_bigint::BigInt;
-    use prost::bytes::Bytes;
-
-    use super::slashable_evidence;
-
-    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
-
-    fn evidence(sender: u8, block_number: i64) -> BlockMetadata {
-        BlockMetadata {
-            block_hash: Bytes::from(vec![sender; 32]),
-            parents: Vec::new(),
-            sender: validator(sender),
-            justifications: Vec::new(),
-            weight_map: BTreeMap::new(),
-            block_number,
-            sequence_number: block_number as i32,
-            invalid: true,
-            directly_finalized: false,
-            finalized: false,
-            fault_tolerance_value: 0.0,
-            merge_base: Bytes::new(),
-        }
-    }
-
-    #[test]
-    fn only_invalid_committee_evidence_in_the_block_epoch_is_slashable() {
-        let committee: HashMap<Validator, BigInt> = [
-            (validator(1), BigInt::from(100)),
-            (validator(2), BigInt::from(0)),
-            (validator(4), BigInt::from(100)),
-            (validator(5), BigInt::from(100)),
-        ]
-        .into_iter()
-        .collect();
-        let valid = BlockMetadata {
-            invalid: false,
-            ..evidence(5, 94)
-        };
-
-        let slashable = slashable_evidence(
-            vec![
-                evidence(1, 94),
-                evidence(2, 94),
-                evidence(3, 94),
-                evidence(4, 84),
-                valid,
-            ],
-            95,
-            10,
-            &committee,
-        )
-        .expect("valid epoch length and block numbers");
-
-        let senders: Vec<Validator> = slashable.into_iter().map(|m| m.sender).collect();
-        assert_eq!(senders, vec![validator(1)]);
     }
 }

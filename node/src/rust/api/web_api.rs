@@ -6,10 +6,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use casper::rust::api::block_api::{
-    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::v6::receipt::OfferedStatus;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -22,6 +23,8 @@ use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_parameters::{DeployParameter, RholangValue};
 use num_bigint::BigInt;
+use rholang::rust::interpreter::accounting::rev_stack::native;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use serde::{Deserialize, Serialize};
 use shared::rust::token_amount::TokenAmount;
 use tokio::time::sleep;
@@ -111,6 +114,10 @@ pub trait WebApi {
 
     /// Find a deploy by ID with the specified view.
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse>;
+
+    async fn offered_receipt(&self, _deploy_id: String) -> Result<OfferedReceiptResponse> {
+        Err(eyre!("offer status is not available on this node"))
+    }
 
     /// Perform exploratory deploy against the requested block or the LFB post-state.
     async fn exploratory_deploy(
@@ -271,6 +278,56 @@ pub struct WebApiImpl {
     epoch_length: i32,
     quarantine_length: i32,
     is_ready: Arc<AtomicBool>,
+    wallet_path: WalletPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WalletPath {
+    #[default]
+    Legacy,
+    Native,
+}
+
+fn balance_query_term(
+    wallet_path: WalletPath,
+    address: &str,
+) -> Result<(String, Vec<DeployParameter>)> {
+    if !VaultAddress::is_valid(address) {
+        return Err(eyre!("Invalid REV address {}", address));
+    }
+    match wallet_path {
+        WalletPath::Native => Ok((
+            native::balance_term(address).map_err(|e| eyre!(e))?,
+            Vec::new(),
+        )),
+        WalletPath::Legacy => Ok((BALANCE_RHOLANG_TEMPLATE.to_string(), vec![
+            DeployParameter {
+                name: "address".to_string(),
+                value: RholangValue::String(address.to_string()),
+            },
+        ])),
+    }
+}
+
+fn balance_from_result(wallet_path: WalletPath, address: &str, pars: Vec<Par>) -> Result<String> {
+    match wallet_path {
+        WalletPath::Native => {
+            let first = pars
+                .first()
+                .ok_or_else(|| eyre!("No balance result for address {}", address))?;
+            native::parse_balance(first)
+                .map(|balance| balance.to_string())
+                .map_err(|e| eyre!("Balance lookup for address {} failed: {}", address, e))
+        }
+        WalletPath::Legacy => {
+            let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+            match exprs.first() {
+                Some(RhoExpr::ExprBigInt { data }) => Ok(data.clone()),
+                Some(RhoExpr::ExprInt { data }) => Ok(data.to_string()),
+                _ => Err(eyre!("Unexpected balance result for address {}", address)),
+            }
+        }
+    }
 }
 
 impl WebApiImpl {
@@ -317,7 +374,13 @@ impl WebApiImpl {
             epoch_length,
             quarantine_length,
             is_ready,
+            wallet_path: WalletPath::default(),
         }
+    }
+
+    pub fn with_wallet_path(mut self, wallet_path: WalletPath) -> Self {
+        self.wallet_path = wallet_path;
+        self
     }
     /// Resolve a block hash to query against. If provided, use it; otherwise use LFB.
     /// Returns (block_hash, block_number).
@@ -600,6 +663,15 @@ impl WebApi for WebApiImpl {
         }
     }
 
+    async fn offered_receipt(&self, deploy_id: String) -> Result<OfferedReceiptResponse> {
+        let id = parse_offered_id(&deploy_id)?;
+        let status = BlockAPI::offered_status(&self.engine_cell, &id).await?;
+        Ok(OfferedReceiptResponse::from_status(
+            hex::encode(&id),
+            status,
+        ))
+    }
+
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse> {
         let deploy_id_bytes = hex::decode(&deploy_id).map_err(|_| {
             eyre::Report::new(InvalidHashError(format!(
@@ -853,12 +925,7 @@ impl WebApi for WebApiImpl {
         address: String,
         block_hash: Option<String>,
     ) -> Result<BalanceResponse> {
-        let term = BALANCE_RHOLANG_TEMPLATE.to_string();
-
-        let parameters = vec![DeployParameter {
-            name: "address".to_string(),
-            value: RholangValue::String(address.clone()),
-        }];
+        let (term, parameters) = balance_query_term(self.wallet_path, &address)?;
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -873,12 +940,7 @@ impl WebApi for WebApiImpl {
         )
         .await?;
 
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
-        let balance = match exprs.first() {
-            Some(RhoExpr::ExprBigInt { data }) => data.clone(),
-            Some(RhoExpr::ExprInt { data }) => data.to_string(),
-            _ => return Err(eyre!("Unexpected balance result for address {}", address)),
-        };
+        let balance = balance_from_result(self.wallet_path, &address, pars)?;
 
         Ok(BalanceResponse {
             address,
@@ -1515,6 +1577,87 @@ pub struct VersionInfo {
     pub node: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedRejectionJson {
+    pub reason: String,
+    pub pre_state_root: Option<String>,
+    pub block_number: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedReceiptJson {
+    pub outcome: String,
+    pub comm_phlo: u64,
+    pub compute_phlo: u64,
+    pub event_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedReceiptResponse {
+    pub deploy_id: String,
+    pub status: String,
+    pub block_hash: Option<String>,
+    pub rejection: Option<OfferedRejectionJson>,
+    pub receipt: Option<OfferedReceiptJson>,
+}
+
+pub fn parse_offered_id(deploy_id: &str) -> Result<Vec<u8>> {
+    match hex::decode(deploy_id.trim_start_matches("0x")) {
+        Ok(id) if !id.is_empty() => Ok(id),
+        _ => Err(eyre::Report::new(InvalidHashError(format!(
+            "'{}' is not a hex deploy id",
+            deploy_id
+        )))),
+    }
+}
+
+impl OfferedReceiptResponse {
+    pub fn from_status(deploy_id: String, status: OfferedStatus) -> Self {
+        let mut response = OfferedReceiptResponse {
+            deploy_id,
+            status: String::new(),
+            block_hash: None,
+            rejection: None,
+            receipt: None,
+        };
+        response.status = match status {
+            OfferedStatus::Unknown => "unknown",
+            OfferedStatus::Pending => "pending",
+            OfferedStatus::Rejected(rejection) => {
+                response.rejection = Some(OfferedRejectionJson {
+                    reason: rejection.reason,
+                    pre_state_root: rejection.pre_state_root.map(hex::encode),
+                    block_number: rejection.block_number,
+                });
+                "rejected"
+            }
+            OfferedStatus::Ordered { block_hash } => {
+                response.block_hash = Some(hex::encode(block_hash));
+                "ordered"
+            }
+            OfferedStatus::NotRetained { block_hash } => {
+                response.block_hash = Some(hex::encode(block_hash));
+                "notRetained"
+            }
+            OfferedStatus::Executed(receipt) => {
+                response.block_hash = Some(hex::encode(&receipt.block_hash));
+                response.receipt = Some(OfferedReceiptJson {
+                    outcome: format!("{:?}", receipt.outcome),
+                    comm_phlo: receipt.comm_phlo,
+                    compute_phlo: receipt.compute_phlo,
+                    event_count: receipt.event_count,
+                });
+                "executed"
+            }
+        }
+        .to_string();
+        response
+    }
+}
+
 /// Unified deploy response. Default (full) includes all fields.
 /// Summary view (`?view=summary`) omits Optional fields for lightweight polling.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1742,34 +1885,54 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
     request
         .data
         .validate_amounts()
-        .map_err(|error| eyre!("Invalid deploy amount: {error}"))?;
-    models::rust::deploy_parameters::validate_parameters(&request.data.parameters)
-        .map_err(|error| eyre!("Invalid deploy parameters: {}", error))?;
+        .map_err(|error| DeployValidationError {
+            message: format!("Invalid deploy amount: {error}"),
+        })?;
+    models::rust::deploy_parameters::validate_parameters(&request.data.parameters).map_err(
+        |error| DeployValidationError {
+            message: format!("Invalid deploy parameters: {error}"),
+        },
+    )?;
     // Decode hex strings
-    let pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
+    let pk_bytes = hex::decode(&request.deployer).map_err(|e| DeployValidationError {
+        message: format!("Public key is not valid base16 format: {e}"),
+    })?;
 
-    let sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
+    let sig_bytes = hex::decode(&request.signature).map_err(|e| DeployValidationError {
+        message: format!("Signature is not valid base16 format: {e}"),
+    })?;
 
     // Create public key
     let pk = PublicKey::from_bytes(&pk_bytes);
 
     // Look up signature algorithm by name
     let sig_alg = SignaturesAlgFactory::apply(&request.sig_algorithm).ok_or_else(|| {
-        eyre!(
-            "Signature algorithm not supported: {}",
-            request.sig_algorithm
-        )
+        DeployValidationError {
+            message: format!(
+                "Signature algorithm not supported: {}",
+                request.sig_algorithm
+            ),
+        }
     })?;
 
     // Create DeployData (use the data from request)
     let deploy_data = request.data.clone();
 
     // Create signed deploy
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
+    let signed =
+        Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg).ok_or_else(|| {
+            DeployValidationError {
+            message:
+                "Invalid signature: the signature does not verify for this deployer and deploy data"
+                    .to_string(),
+        }
+        })?;
+    DeployData::with_complete_cosignatures(signed).map_err(|error| {
+        DeployValidationError {
+            message: format!("Invalid cosignatures: {error}"),
+        }
+        .into()
+    })
 }
 
 // Conversion functions for protobuf generated types
@@ -2178,6 +2341,138 @@ mod tests {
 
     use super::*;
 
+    fn tuple(flag: bool, value: Par) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::GBool(flag)),
+                    }]),
+                    value,
+                ],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }])
+    }
+
+    fn int(n: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(n)),
+        }])
+    }
+
+    const ADDRESS: &str = "1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5";
+
+    #[test]
+    fn balance_query_uses_the_selected_wallet_path() {
+        let (native, native_params) = balance_query_term(WalletPath::Native, ADDRESS).unwrap();
+        assert!(native.contains("rho:rev:wallet"));
+        assert!(!native.contains("findOrCreate"));
+        assert!(native_params.is_empty());
+        let (legacy, legacy_params) = balance_query_term(WalletPath::Legacy, ADDRESS).unwrap();
+        assert!(legacy.contains("findOrCreate"));
+        assert!(!legacy.contains(ADDRESS));
+        assert_eq!(legacy_params.len(), 1);
+        assert_eq!(WalletPath::default(), WalletPath::Legacy);
+    }
+
+    #[test]
+    fn balance_query_rejects_addresses_that_are_not_valid() {
+        let injected = format!("{ADDRESS}\", *vaultCh) | @\"x\"!(\"y");
+        for path in [WalletPath::Native, WalletPath::Legacy] {
+            for bad in ["", "lala", injected.as_str()] {
+                assert!(balance_query_term(path, bad).is_err(), "{path:?} {bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_balance_results_parse() {
+        let ok = balance_from_result(WalletPath::Native, ADDRESS, vec![tuple(true, int(42))]);
+        assert_eq!(ok.unwrap(), "42");
+        let failed = balance_from_result(WalletPath::Native, ADDRESS, vec![tuple(false, int(0))]);
+        assert!(failed.is_err());
+        assert!(balance_from_result(WalletPath::Native, ADDRESS, vec![]).is_err());
+        let legacy = balance_from_result(WalletPath::Legacy, ADDRESS, vec![int(7)]);
+        assert_eq!(legacy.unwrap(), "7");
+    }
+
+    #[test]
+    fn offered_ids_are_non_empty_hex() {
+        let id = "ab".repeat(70);
+        assert_eq!(parse_offered_id(&id).unwrap(), vec![0xab; 70]);
+        assert_eq!(parse_offered_id(&format!("0x{id}")).unwrap(), vec![
+            0xab;
+            70
+        ]);
+        for bad in ["zz", "abc", "", "0x"] {
+            assert!(parse_offered_id(bad)
+                .unwrap_err()
+                .downcast_ref::<InvalidHashError>()
+                .is_some());
+        }
+    }
+
+    #[test]
+    fn offered_statuses_serialize_with_their_details() {
+        use block_storage::rust::deploy::offer_rejection::OfferRejection;
+        use casper::rust::v6::block_record::EnvelopeOutcome;
+        use casper::rust::v6::receipt::OfferedReceipt;
+
+        let unknown = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Unknown,
+        ))
+        .unwrap();
+        assert_eq!(unknown["status"], "unknown");
+        assert!(unknown["receipt"].is_null());
+
+        let rejected = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Rejected(OfferRejection {
+                deploy_id: vec![7; 70],
+                pre_state_root: Some(vec![1, 2]),
+                block_number: 9,
+                reason: "unfunded".into(),
+            }),
+        ))
+        .unwrap();
+        assert_eq!(rejected["status"], "rejected");
+        assert_eq!(rejected["rejection"]["reason"], "unfunded");
+        assert_eq!(rejected["rejection"]["preStateRoot"], "0102");
+        assert_eq!(rejected["rejection"]["blockNumber"], 9);
+
+        let not_retained = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::NotRetained {
+                block_hash: vec![0xcd].into(),
+            },
+        ))
+        .unwrap();
+        assert_eq!(not_retained["status"], "notRetained");
+        assert_eq!(not_retained["blockHash"], "cd");
+
+        let executed = serde_json::to_value(OfferedReceiptResponse::from_status(
+            "aa".into(),
+            OfferedStatus::Executed(OfferedReceipt {
+                block_hash: vec![0xef].into(),
+                outcome: EnvelopeOutcome::Completed,
+                comm_phlo: 2,
+                compute_phlo: 40,
+                event_count: 5,
+            }),
+        ))
+        .unwrap();
+        assert_eq!(executed["status"], "executed");
+        assert_eq!(executed["blockHash"], "ef");
+        let receipt = &executed["receipt"];
+        assert_eq!(receipt["outcome"], "Completed");
+        assert_eq!(receipt["commPhlo"], 2);
+        assert_eq!(receipt["computePhlo"], 40);
+        assert_eq!(receipt["eventCount"], 5);
+    }
+
     fn param_env(name: &str, value: RholangValue) -> HashMap<String, Par> {
         let mut env = HashMap::new();
         env.insert(format!("rho:deploy:param:{}", name), value.to_par());
@@ -2312,6 +2607,8 @@ mod tests {
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
             crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]),
@@ -2581,6 +2878,8 @@ mod tests {
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
@@ -3494,6 +3793,8 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         }
     }
 

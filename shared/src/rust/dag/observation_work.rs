@@ -64,6 +64,7 @@ pub trait WorkMeter: Sync {
     fn reject(&self, reason: &str) -> KvStoreError { limit_error(reason) }
     fn metadata_bytes(&self) -> u64 { 0 }
     fn body_bytes(&self) -> u64 { 0 }
+    fn oracle_cache(&self) -> Option<&(dyn std::any::Any + Send + Sync)> { None }
 
     fn step(&self, kind: WorkKind) -> Result<(), KvStoreError> { self.charge(kind, 1, 0) }
 

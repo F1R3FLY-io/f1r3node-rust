@@ -1030,6 +1030,7 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
     let dag1 = nodes[1].casper.block_dag().await.unwrap();
     let invalid_hashes: Vec<_> = dag1
         .invalid_blocks()
+        .expect("invalid blocks")
         .iter()
         .map(|m| m.block_hash.clone())
         .collect();
@@ -1292,7 +1293,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
     // the is_slashable narrowing): the block is dropped without entering
     // the DAG or minting slash evidence.
     let dag = nodes[1].casper.block_dag().await.unwrap();
-    let invalid_blocks = dag.invalid_blocks();
+    let invalid_blocks = dag.invalid_blocks().expect("invalid blocks");
 
     let is_recorded = invalid_blocks
         .iter()
@@ -1605,6 +1606,7 @@ async fn build_block_with_invalid_justification(
         timestamp: 0,
         version: 0,
         extra_bytes: Bytes::new(),
+        chain_id: signed_invalid_block.header.chain_id.clone(),
     };
 
     let block_hash = {
@@ -1622,6 +1624,7 @@ async fn build_block_with_invalid_justification(
         extra_bytes: Bytes::new(),
         applied_from_scope: vec![],
         merge_base: Bytes::new(),
+        v6: None,
     };
 
     let serialized_justifications = vec![Justification {
@@ -1659,4 +1662,55 @@ async fn build_block_with_invalid_justification(
 
     let validator_id = nodes[1].validator_id_opt.as_ref().unwrap();
     validator_id.sign_block(&block_that_points_to_invalid_block)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proposal_and_peer_validation_run_off_the_async_workers() {
+    let ctx = TestContext::new().await;
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+
+    let deploy_a =
+        construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone())).unwrap();
+    let block_a = TestNode::publish_block_at_index(&mut nodes, 0, &[deploy_a])
+        .await
+        .unwrap();
+    let deploy_b =
+        construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone())).unwrap();
+    let block_b = TestNode::publish_block_at_index(&mut nodes, 1, &[deploy_b])
+        .await
+        .unwrap();
+    {
+        let (left, right) = nodes.split_at_mut(1);
+        right[0].sync_with_one(&mut left[0]).await.unwrap();
+        left[0].sync_with_one(&mut right[0]).await.unwrap();
+    }
+
+    for node in &nodes {
+        let dag = node.casper.block_dag().await.unwrap();
+        assert!(dag.contains(&block_a.block_hash).unwrap());
+        assert!(dag.contains(&block_b.block_hash).unwrap());
+    }
+}
+
+#[tokio::test]
+async fn a_legacy_shard_refuses_a_block_that_carries_a_v6_body() {
+    let ctx = TestContext::new().await;
+    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let block = node.create_block_unsafe(&[deploy]).await.unwrap();
+    let validator = node.validator_id_opt.clone().expect("a validator identity");
+
+    let mut carrying = block.clone();
+    carrying.body.v6 = Some(models::rust::casper::protocol::casper_message::V6Body::default());
+    let carrying = validator.sign_block(&carrying);
+    assert_ne!(carrying.block_hash, block.block_hash);
+    assert_eq!(
+        node.process_block(carrying).await.unwrap(),
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidFormat))
+    );
+
+    let status = node.process_block(block).await.unwrap();
+    assert!(matches!(status, Either::Right(_)), "{status:?}");
 }

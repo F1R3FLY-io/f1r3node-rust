@@ -19,6 +19,7 @@ use rspace_plus_plus::rspace::merger::channel_change::ChannelChange;
 use rspace_plus_plus::rspace::merger::merging_logic::{
     apply_mergeable_value, mergeable_value_diff, MergeType,
 };
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::serializers::serializers;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
@@ -161,6 +162,45 @@ impl RholangMergingLogic {
         ))
     }
 
+    pub fn check_single_value_cell_not_overfilled(
+        channel_hash: &Blake2b256Hash,
+        base_data: &[Datum<ListParWithRandom>],
+        base_binary: &[Vec<u8>],
+        changes: &ChannelChange<Vec<u8>>,
+    ) -> Result<(), HistoryError> {
+        // Only a produce (`added`) can grow the cell beyond its base cardinality.
+        if changes.added.is_empty() {
+            return Ok(());
+        }
+        let base_is_single_number =
+            base_data.len() == 1 && Self::try_get_number_with_rnd(&base_data[0].a).is_some();
+        let added_are_numbers = changes
+            .added
+            .iter()
+            .all(|bytes| Self::encoded_datum_is_number(bytes));
+        if !base_is_single_number && !(base_data.is_empty() && added_are_numbers) {
+            return Ok(());
+        }
+        let kept = StateChange::multiset_diff(base_binary, &changes.removed);
+        let result_len = kept.len() + changes.added.len();
+        if result_len > 1 {
+            return Err(HistoryError::MergeError(format!(
+                "single-value cell {} would hold {} values after merge; concurrent \
+                 writes to a single-value (number) channel conflict",
+                hex::encode(channel_hash.clone().bytes()),
+                result_len,
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn encoded_datum_is_number(bytes: &[u8]) -> bool {
+        bincode::deserialize::<Datum<ListParWithRandom>>(bytes)
+            .ok()
+            .and_then(|datum| Self::try_get_number_with_rnd(&datum.a))
+            .is_some()
+    }
+
     fn decode_rnd(par_with_rnd_encoded: Vec<u8>) -> Blake2b512Random {
         let datum: Datum<ListParWithRandom> = serializers::decode_datum(&par_with_rnd_encoded);
 
@@ -230,6 +270,7 @@ impl RholangMergingLogic {
         let par_with_rnd = ListParWithRandom {
             pars: vec![num_par],
             random_state: rnd.to_bytes(),
+            seal: None,
         };
 
         // Create hash of the data
@@ -313,6 +354,110 @@ mod tests {
 
     use super::*;
 
+    fn num_datum(n: i64) -> Datum<ListParWithRandom> {
+        let lpwr = ListParWithRandom {
+            pars: vec![RhoNumber::create_par(n)],
+            random_state: vec![0u8; 32],
+            seal: None,
+        };
+        Datum::create(&"chan".to_string(), lpwr, false)
+    }
+
+    fn non_numeric_datum() -> Datum<ListParWithRandom> {
+        // Two Pars -> not a single-Par integer -> models a registry/Map leaf.
+        let lpwr = ListParWithRandom {
+            pars: vec![RhoNumber::create_par(1), RhoNumber::create_par(2)],
+            random_state: vec![0u8; 32],
+            seal: None,
+        };
+        Datum::create(&"chan".to_string(), lpwr, false)
+    }
+
+    fn change(added: Vec<Vec<u8>>, removed: Vec<Vec<u8>>) -> ChannelChange<Vec<u8>> {
+        ChannelChange { added, removed }
+    }
+
+    // The halt scenario: a single-value number cell (base [0]) receives a
+    // produce that does NOT consume the base -> would hold [0, 5e9] -> reject.
+    #[test]
+    fn single_value_cell_produce_only_is_rejected() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let base = vec![num_datum(0)];
+        let base_bin = vec![vec![0x00u8]];
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &base,
+            &base_bin,
+            &change(vec![vec![0x5eu8]], vec![]),
+        );
+        assert!(
+            res.is_err(),
+            "produce-only onto single-value number cell must be rejected"
+        );
+    }
+
+    // A proper read-modify-write consumes the base and produces one replacement
+    // -> stays single-valued -> allowed.
+    #[test]
+    fn single_value_cell_read_modify_write_is_allowed() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let base = vec![num_datum(0)];
+        let base_bin = vec![vec![0x00u8]];
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &base,
+            &base_bin,
+            &change(vec![vec![0x5eu8]], vec![vec![0x00u8]]),
+        );
+        assert!(res.is_ok(), "RMW that consumes the base must be allowed");
+    }
+
+    #[test]
+    fn empty_numeric_cell_multiple_produces_are_rejected() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let added_a = serializers::encode_datum(&num_datum(0));
+        let added_b = serializers::encode_datum(&num_datum(0));
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &[],
+            &[],
+            &change(vec![added_a, added_b], vec![]),
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn empty_numeric_cell_single_produce_is_allowed() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let added = serializers::encode_datum(&num_datum(0));
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &[],
+            &[],
+            &change(vec![added], vec![]),
+        );
+        assert!(res.is_ok());
+    }
+
+    // A non-numeric base (registry / TreeHashMap leaf) is a multi-key structure,
+    // not a single-value cell -> concurrent produces merge freely.
+    #[test]
+    fn non_numeric_base_registry_merges_freely() {
+        let ch = Blake2b256Hash::from_bytes(vec![0x0d; 32]);
+        let base = vec![non_numeric_datum()];
+        let base_bin = vec![vec![0x00u8]];
+        let res = RholangMergingLogic::check_single_value_cell_not_overfilled(
+            &ch,
+            &base,
+            &base_bin,
+            &change(vec![vec![0xaau8]], vec![]),
+        );
+        assert!(
+            res.is_ok(),
+            "registry/non-numeric channel must merge, not conflict"
+        );
+    }
+
     #[test]
     fn a_single_map_par_is_not_a_number() {
         use models::rhoapi::expr::ExprInstance;
@@ -330,6 +475,7 @@ mod tests {
         let value = ListParWithRandom {
             pars: vec![leaf],
             random_state: vec![0u8; 32],
+            seal: None,
         };
         assert!(RholangMergingLogic::try_get_number_with_rnd(&value).is_none());
     }
@@ -610,10 +756,12 @@ mod tests {
         let int_value = ListParWithRandom {
             pars: vec![RhoNumber::create_par(7)],
             random_state: vec![],
+            seal: None,
         };
         let bigint_value = ListParWithRandom {
             pars: vec![RhoBigInt::create_par(&BigInt::from(7))],
             random_state: vec![],
+            seal: None,
         };
         assert_eq!(
             RholangMergingLogic::number_merge_type(&int_value, MergeType::IntegerAdd),

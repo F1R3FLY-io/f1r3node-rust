@@ -21,7 +21,7 @@ invariant passes.
 **Corroborating**:
 
 - **Loom** tests
-  [`casper/tests/slashing/loom_t_9_2_atomic_record.rs`](../../../../../../casper/tests/slashing/loom_t_9_2_atomic_record.rs)
+  [`casper/tests/slashing/loom_t_9_2_atomic_record.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/504963ab546be84e50650ad81bb5df11965954ca/casper/tests/slashing/loom_t_9_2_atomic_record.rs)
   reproduce the same race in actual Rust under the C11 memory
   model; pre-fix the test fails on a specific schedule, post-fix
   all schedules pass.
@@ -74,7 +74,7 @@ action             = Keep pre_fix_bug_2.rs + loom_t_9_2_*.rs
 | Loom test        | `loom_t_9_2_atomic_record.rs`, `loom_t_9_2_n_threads_3.rs`, `loom_t_9_2_n_threads_4.rs`                                                                                                |
 | Sage witness     | `tracker_race_model.sage` output JSON                                                                                                                                                  |
 | Rust regression  | `pre_fix_bug_2.rs`                                                                                                                                                                     |
-| Storage contract | [`block-storage/src/rust/dag/equivocations_access.rs`](../../../../../../block-storage/src/rust/dag/equivocations_access.rs) defines `EquivocationsAccess` trait with atomic-RMW contract |
+| Storage contract | [`block-storage/src/rust/dag/equivocations_access.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/504963ab546be84e50650ad81bb5df11965954ca/block-storage/src/rust/dag/equivocations_access.rs) defines `EquivocationsAccess` trait with atomic-RMW contract |
 | Bug-fix manifest | [`../../design/09-bug-fixes-and-rationale.md §9.3`](../../design/09-bug-fixes-and-rationale.md)                                                                                        |
 | Diagram          | [Diagram 09 — Tracker race & locking fix](../../diagrams/09-seq-tracker-race-and-fix.svg)                                                                                              |
 

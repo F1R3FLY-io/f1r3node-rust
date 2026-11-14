@@ -32,6 +32,10 @@ impl ProofOfStake {
     //       when this must be done during genesis, under the authority of the genesisPk, which calls the
     //       linear receive in PoS.rho - OLD
     pub fn initial_bonds(validators: &[Validator]) -> String {
+        Self::initial_bonds_with_suffix(validators, "n")
+    }
+
+    pub(crate) fn initial_bonds_with_suffix(validators: &[Validator], suffix: &str) -> String {
         let mut sorted_validators = validators.to_vec();
         sorted_validators.sort_by(|a, b| a.pk.bytes.cmp(&b.pk.bytes));
 
@@ -39,7 +43,10 @@ impl ProofOfStake {
             .iter()
             .map(|validator| {
                 let pk_string = hex::encode(validator.pk.bytes.clone());
-                format!(" \"{}\".hexToBytes() : {}n", pk_string, validator.stake)
+                format!(
+                    " \"{}\".hexToBytes() : {}{}",
+                    pk_string, validator.stake, suffix
+                )
             })
             .collect::<Vec<String>>()
             .join(", ");

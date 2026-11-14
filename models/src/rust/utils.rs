@@ -57,6 +57,8 @@ impl Par {
             bundles,
             connectives,
             conditionals,
+            cost_signed_terms,
+            cost_stacks,
             locally_free,
             connective_used,
         } = self;
@@ -70,6 +72,8 @@ impl Par {
             bundles: bundles.clone(),
             connectives: connectives.clone(),
             conditionals: conditionals.clone(),
+            cost_signed_terms: cost_signed_terms.clone(),
+            cost_stacks: cost_stacks.clone(),
             locally_free: locally_free.clone(),
             connective_used: *connective_used,
         }
@@ -218,6 +222,8 @@ impl Par {
             bundles: [self.bundles.clone(), other.bundles].concat(),
             connectives: [self.connectives.clone(), other.connectives].concat(),
             conditionals: [self.conditionals.clone(), other.conditionals].concat(),
+            cost_signed_terms: [self.cost_signed_terms.clone(), other.cost_signed_terms].concat(),
+            cost_stacks: [self.cost_stacks.clone(), other.cost_stacks].concat(),
             locally_free: union(self.locally_free.clone(), other.locally_free),
             connective_used: self.connective_used || other.connective_used,
         }

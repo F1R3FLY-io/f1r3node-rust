@@ -203,6 +203,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
+            rejection_search_cap_from_height: conf.rejection_search_cap_from_height,
+            rejection_search_group_branch_cap: conf.rejection_search_group_branch_cap,
+            v6_order_then_execute: false,
+            v6_retained_records: conf.v6_retained_records,
+            v6_conservation_audit_interval: conf.v6_conservation_audit_interval,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
             synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,
@@ -211,11 +216,24 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             synchrony_finalized_baseline_max_distance: conf
                 .synchrony_finalized_baseline_max_distance,
             max_user_deploys_per_block: conf.max_user_deploys_per_block,
+            v6_execution_lag_threshold: conf.v6_execution_lag_threshold,
+            v6_fallback_distance: conf.v6_fallback_distance,
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
             active_validators_cache_max_entries:
                 crate::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
+            finalizer_oracle_cache_bounds: crate::rust::safety::clique_oracle::OracleCacheBounds {
+                latest_justifications: conf.finalizer_oracle_cache_justifications,
+                self_justification: conf.finalizer_oracle_cache_self_justifications,
+                ancestor: conf.finalizer_oracle_cache_ancestors,
+            },
+            finalizer_timeout_reruns: conf.finalizer_timeout_reruns,
+            finalizer_derivation_budget: conf.finalizer_derivation_budget,
+            finalizer_step_backstop: conf.finalizer_step_backstop,
+            finalizer_cursor_max_invalidations: conf.finalizer_cursor_max_invalidations,
+            deploy_pool_blocks_of_backlog: conf.deploy_pool_blocks_of_backlog,
+            proposal_pacing_floor_distance: conf.proposal_pacing_floor_distance,
         };
 
         Self {
@@ -627,6 +645,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.conf.genesis_block_data.protocol_version,
             self.fs_bundle.clone(),
             &self.runtime_manager,
             self.last_approved_block.clone(),

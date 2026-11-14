@@ -51,6 +51,7 @@ use crate::rust::metrics_constants::{
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::{ConsensusParameters, RuntimeOps};
 use crate::rust::util::bounded_cache::BoundedCache;
+use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::MAX_PARENT_MERGE_SCOPE_BLOCKS;
 use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
@@ -261,6 +262,21 @@ impl Default for ReplayLock {
     fn default() -> Self { Self::new() }
 }
 
+#[derive(Clone, Default)]
+pub struct SystemGate {
+    pub funding: Option<Arc<rholang::rust::interpreter::accounting::membrane::MembraneMeter>>,
+    pub close_phlo: Arc<parking_lot::Mutex<Option<u64>>>,
+}
+
+impl SystemGate {
+    fn apply(&self, runtime_ops: &mut RuntimeOps) {
+        runtime_ops.runtime.set_seal_records(true);
+        runtime_ops.runtime.set_funding(self.funding.clone());
+        runtime_ops.close_phlo = Some(self.close_phlo.clone());
+        runtime_ops.trace_close_failure = true;
+    }
+}
+
 #[derive(Clone)]
 pub struct RuntimeManager {
     pub space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -274,6 +290,7 @@ pub struct RuntimeManager {
     pub block_index_cache: Arc<BoundedCache<BlockHash, BlockIndex>>,
     pub active_validators_cache: Arc<BoundedCache<StateHash, Vec<Validator>>>,
     pub bonds_cache: Arc<BoundedCache<StateHash, Vec<Bond>>>,
+    pub quarantined_cache: Arc<BoundedCache<StateHash, Vec<Bond>>>,
     /// Cache for merged parent post-state computation keyed by parent-set snapshot context.
     pub parents_post_state_cache:
         Arc<BoundedCache<ParentsPostStateCacheKey, ParentsPostStateCacheVal>>,
@@ -494,18 +511,19 @@ impl RuntimeManager {
                     bytes.push(0);
                     match system_deploy {
                         SystemDeployData::Slash {
-                            invalid_block_hash,
+                            evidence,
                             issuer_public_key,
-                            target_activation_epoch,
                         } => {
                             bytes.push(0);
-                            push_len_prefixed(&mut bytes, invalid_block_hash);
+                            push_len_prefixed(
+                                &mut bytes,
+                                &proto_util::commitment_hash(&evidence.first),
+                            );
+                            push_len_prefixed(
+                                &mut bytes,
+                                &proto_util::commitment_hash(&evidence.second),
+                            );
                             push_len_prefixed(&mut bytes, &issuer_public_key.bytes);
-                            // Little-endian is consensus-determined for this
-                            // hash-affecting encoding — every node must agree
-                            // on the bytes fed into the post-state hash. Do
-                            // not switch to big-endian or `to_be_bytes`.
-                            bytes.extend_from_slice(&target_activation_epoch.to_le_bytes());
                         }
                         SystemDeployData::CloseBlockSystemDeployData => {
                             bytes.push(1);
@@ -736,9 +754,32 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        self.compute_state_gated(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            None,
+        )
+        .await
+    }
+
+    pub async fn compute_state_gated(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<Signed<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        gate: Option<SystemGate>,
+    ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
+        if let Some(gate) = &gate {
+            gate.apply(&mut runtime_ops);
+        }
 
         // Block data used for mergeable key
         let sender = block_data.sender.clone();
@@ -998,6 +1039,28 @@ impl RuntimeManager {
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
     ) -> Result<StateHash, CasperError> {
+        self.replay_compute_state_gated(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            is_genesis,
+            None,
+        )
+        .await
+    }
+
+    pub async fn replay_compute_state_gated(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        block_data: &BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        is_genesis: bool,
+        gate: Option<SystemGate>,
+    ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
@@ -1009,7 +1072,7 @@ impl RuntimeManager {
             seq_num as i64,
             replay_payload_hash,
         );
-        if let Some(ref cache) = self.replay_cache {
+        if let (Some(ref cache), None) = (&self.replay_cache, &gate) {
             if let Some(entry) = cache.get(&replay_cache_key) {
                 // A replay that returns Ok must leave the mergeable entry for its
                 // post-state persisted — `ensure_mergeable_entry` exists precisely
@@ -1060,7 +1123,10 @@ impl RuntimeManager {
             .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await?;
-        let runtime_ops = RuntimeOps::new(replay_runtime);
+        let mut runtime_ops = RuntimeOps::new(replay_runtime);
+        if let Some(gate) = &gate {
+            gate.apply(&mut runtime_ops);
+        }
         let mut replay_runtime_ops = ReplayRuntimeOps::new(runtime_ops);
 
         let execute_start = std::time::Instant::now();
@@ -1175,6 +1241,36 @@ impl RuntimeManager {
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.compute_bonds(hash).await?;
         self.bonds_cache
+            .insert(hash.clone(), Arc::new(computed.clone()));
+        Ok(computed)
+    }
+
+    /// The stake a slash can take from each validator at `hash`: its bond
+    /// plus any withdrawn stake still in quarantine. Validators with none
+    /// are left out.
+    pub async fn slashable_stakes(
+        &self,
+        hash: &StateHash,
+    ) -> Result<HashMap<Validator, BigInt>, CasperError> {
+        let bonds = self.compute_bonds(hash).await?;
+        let quarantined = self.quarantined_stakes(hash).await?;
+        let mut stakes: HashMap<Validator, BigInt> = HashMap::new();
+        for bond in bonds.into_iter().chain(quarantined) {
+            *stakes.entry(bond.validator).or_default() += bond.stake.into_bigint();
+        }
+        stakes.retain(|_, stake| *stake > BigInt::from(0));
+        Ok(stakes)
+    }
+
+    /// Every withdrawn validator at `hash` with the stake it still holds in
+    /// quarantine, until it is paid out.
+    pub async fn quarantined_stakes(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
+        if let Some(cached) = self.quarantined_cache.get(hash) {
+            return Ok((*cached).clone());
+        }
+        let runtime = self.spawn_runtime().await?;
+        let computed = RuntimeOps::new(runtime).compute_quarantined(hash).await?;
+        self.quarantined_cache
             .insert(hash.clone(), Arc::new(computed.clone()));
         Ok(computed)
     }
@@ -1657,6 +1753,7 @@ impl RuntimeManager {
                 Self::MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES,
             )),
             bonds_cache: Arc::new(BoundedCache::new(Self::MAX_BONDS_CACHE_ENTRIES)),
+            quarantined_cache: Arc::new(BoundedCache::new(Self::MAX_BONDS_CACHE_ENTRIES)),
             parents_post_state_cache: Arc::new(BoundedCache::new(
                 Self::MAX_PARENTS_POST_STATE_CACHE_ENTRIES,
             )),

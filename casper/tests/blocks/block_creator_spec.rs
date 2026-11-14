@@ -68,6 +68,8 @@ fn create_deploy(
         shard_id: "test-shard".to_string(),
         expiration_timestamp,
         parameters: Vec::new(),
+        cosignatures: Vec::new(),
+        required_cosigners: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
@@ -238,6 +240,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         max_block_num,
         max_seq_nums,
         on_chain_state,
+        chain_id: Bytes::new(),
     }
 }
 

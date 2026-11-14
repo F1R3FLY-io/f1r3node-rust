@@ -75,6 +75,9 @@ impl MemoryKeyValueStore {
 }
 
 impl KeyValueStore for MemoryKeyValueStore {
+    fn entry_count(&self) -> Result<Option<usize>, KvStoreError> {
+        Ok(Some(self.with_rows(|rows| rows.len())))
+    }
     fn as_any(&self) -> &dyn std::any::Any { self }
 
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {

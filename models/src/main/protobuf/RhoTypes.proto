@@ -45,6 +45,41 @@ message Par {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 10;
+  repeated CostSignedTerm cost_signed_terms = 13;
+  repeated CostStack cost_stacks = 14;
+}
+
+message CostSignature {
+  oneof value {
+    bytes ground = 1;
+    sint32 bound_level = 2;
+    Par quote = 3;
+    CostSignatureCompound compound = 4;
+    Par name = 5;
+    bool unit = 6;
+    uint32 signer = 7;
+  }
+}
+
+message CostSignatureCompound {
+  repeated CostSignature elements = 1;
+}
+
+message CostSignedTerm {
+  Par body = 1;
+  CostSignature signature = 2;
+  reserved 3;
+  ElaboratedSeal seal = 4;
+}
+
+message ElaboratedSeal {
+  int32 kind = 1;
+  bytes origin = 2;
+  uint64 phlo_limit = 3;
+}
+
+message CostStack {
+  repeated CostSignature cells = 1;
 }
 
 /**
@@ -61,6 +96,21 @@ message TaggedContinuation {
   // every spatial pattern has matched, so cross-channel guards see every
   // bound variable. Empty Par = no guard. See plan §7.12.
   Par guard = 3;
+  SealRecordProto seal = 4;
+}
+
+message SealOrigin {
+  bytes envelope = 1;
+  repeated bytes signers = 2;
+  uint64 phlo_price = 3;
+  uint64 phlo_limit = 4;
+}
+
+message SealRecordProto {
+  bytes owner = 1;
+  int32 kind = 2;
+  SealOrigin origin = 3;
+  reserved 4;
 }
 
 /**
@@ -84,6 +134,7 @@ message ListParWithRandom {
   repeated Par pars = 1;
   bytes randomState = 2
       [(scalapb.field).type = "coop.rchain.crypto.hash.Blake2b512Random"];
+  SealRecordProto seal = 3;
 }
 
 // While we use vars in both positions, when producing the normalized
@@ -131,6 +182,7 @@ message ReceiveBind {
   Par source = 2 [(scalapb.field).no_box = true];
   Var remainder = 3;
   int32 freeCount = 4;
+  CostSignature cost_signature = 5;
 }
 
 message BindPattern {

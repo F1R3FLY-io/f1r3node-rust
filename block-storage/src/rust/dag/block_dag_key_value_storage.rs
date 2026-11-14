@@ -8,14 +8,11 @@
 //!
 //! ## Slashing-protocol position
 //!
-//! The store is the **canonical home** of the equivocation tracker
-//! (`equivocation_tracker_index`). All RMW on the tracker MUST route
-//! through [`BlockDagKeyValueStorage::access_equivocations_tracker`] to
-//! preserve Bug #2 / T-9.2 atomicity — see
-//! [`crate::rust::dag::equivocations_access::EquivocationsAccess`] for
-//! the trait contract and
-//! `formal/rocq/slashing/theories/BugFixAtomicTracker.v` for the
-//! mechanized proof.
+//! An equivocation is stored as an invalid block whose metadata names its
+//! sibling; that pair is the evidence a slash carries. A block inserted while
+//! its sender's other block at the same sequence number is held is stored as
+//! an equivocation whatever path delivered it, so every node holding a pair
+//! records it.
 //!
 //! ## Lock discipline (P1-3 + P2-12)
 //!
@@ -34,7 +31,7 @@
 //
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -42,22 +39,14 @@ use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-#[cfg(any(test, feature = "test-internals"))]
-use models::rust::equivocation_record::EquivocationRecord;
-use models::rust::equivocation_record::SequenceNumber;
 use models::rust::validator::{self, Validator, ValidatorSerde};
-// Slashing-critical RMW locks are routed through `parking_lot` (P1-3): no
-// poison propagation, faster acquire, and `.lock()` / `.read()` / `.write()`
-// return guards directly without a `Result`. Bug #2 / T-9.2's
-// `access_equivocations_tracker` RMW contract is preserved by holding
-// `global_lock` for the duration of the critical section.
 use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::blocking::in_blocking;
 use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::atomic_store::AtomicStoreGroup;
-use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
@@ -67,11 +56,12 @@ use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
 use super::dag_gc_store::DagGcStore;
 use super::dag_history_index::{DagHistoryIndex, HistoryPage};
-use super::dag_persistence::DagPersistence;
+use super::dag_persistence::{DagPersistence, FINALIZATION_MARKERS, FINALIZATION_POINTER};
 use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
-use super::equivocation_tracker_store::EquivocationTrackerStore;
+
+pub const V6_EXECUTOR_STATE_DB: &str = "v6-executor-state";
 
 pub type DeployId = shared::rust::ByteString;
 
@@ -86,16 +76,16 @@ pub struct DagResidentCounts {
 /// [`BlockDagKeyValueStorage::insert`]. The two booleans are not
 /// independent — an approved block is by definition not invalid — and
 /// the enum encodes that invariant at the type level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InsertMode {
     /// Standard insertion: block is valid and not the approved (genesis)
     /// block. Used for all non-genesis valid blocks accepted into the
     /// DAG.
     Normal,
-    /// Block has failed validation and is being recorded for evidence
-    /// but is not eligible for fork-choice. Used by
-    /// `dispatch_handle_invalid_block`.
-    Invalid,
+    /// The block is an equivocation: `sibling` is the sender's other held
+    /// block at the same sequence number. Stored invalid, with its pair, and
+    /// not eligible for fork choice.
+    Equivocation { sibling: BlockHash },
     /// Genesis / approved-block insertion. Marks the block as the
     /// initial finalization root.
     Approved,
@@ -106,7 +96,6 @@ pub enum InsertMode {
     /// frontier, so it is never anyone's latest message, and letting it
     /// advance one hands fork choice a frontier this node does not hold.
     SettledHistory,
-    SlashEvidence,
 }
 
 // Phase 8 (A-6): `InsertMode::flags()` projection deleted; `insert_internal`
@@ -124,7 +113,6 @@ pub struct KeyValueDagRepresentation {
     pub(crate) block_number_map: imbl::HashMap<BlockHash, i64>,
     pub(crate) main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub(crate) self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
-    pub(crate) invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub(crate) finalized_blocks_set: imbl::HashSet<BlockHash>,
     // P2-14: the metadata index is kept `pub` for cross-crate test
@@ -169,7 +157,6 @@ pub struct DagFixture {
     pub block_number_map: imbl::HashMap<BlockHash, i64>,
     pub main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
-    pub invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub finalized_blocks_set: imbl::HashSet<BlockHash>,
     pub block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
@@ -197,7 +184,6 @@ impl DagFixture {
             block_number_map: self.block_number_map,
             main_parent_map: self.main_parent_map,
             self_justification_map: self.self_justification_map,
-            invalid_blocks_set: self.invalid_blocks_set,
             last_finalized_block_hash: self.last_finalized_block_hash,
             finalized_blocks_set: self.finalized_blocks_set,
             block_metadata_index: self.block_metadata_index,
@@ -218,7 +204,6 @@ pub struct DagFixtureMut<'a> {
     pub block_number_map: &'a mut imbl::HashMap<BlockHash, i64>,
     pub main_parent_map: &'a mut imbl::HashMap<BlockHash, BlockHash>,
     pub self_justification_map: &'a mut imbl::HashMap<BlockHash, BlockHash>,
-    pub invalid_blocks_set: &'a mut imbl::HashSet<BlockMetadata>,
     pub finalized_blocks_set: &'a mut imbl::HashSet<BlockHash>,
 }
 
@@ -235,16 +220,11 @@ impl KeyValueDagRepresentation {
             rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
         );
         let mut metadata = BlockMetadataStore::new(KeyValueTypedStoreImpl::new(raw));
-        let mut invalid_blocks = imbl::HashSet::new();
         let mut after = None;
         loop {
             let page = self.scan_membership_page(after.as_deref(), 1024)?;
             for hash in page.rows {
-                let block = self.lookup_unsafe(&hash)?;
-                if block.invalid {
-                    invalid_blocks.insert(block.clone());
-                }
-                metadata.add(block)?;
+                metadata.add(self.lookup_unsafe(&hash)?)?;
             }
             after = page.next;
             if after.is_none() {
@@ -263,7 +243,6 @@ impl KeyValueDagRepresentation {
             block_number_map: state.block_number_map,
             main_parent_map: state.main_parent_map,
             self_justification_map: state.self_justification_map,
-            invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: self.last_finalized_block_hash.clone(),
             finalized_blocks_set: state.finalized_block_set,
             block_metadata_index: Arc::new(PlRwLock::new(metadata)),
@@ -287,7 +266,6 @@ impl KeyValueDagRepresentation {
             block_number_map: &mut self.block_number_map,
             main_parent_map: &mut self.main_parent_map,
             self_justification_map: &mut self.self_justification_map,
-            invalid_blocks_set: &mut self.invalid_blocks_set,
             finalized_blocks_set: &mut self.finalized_blocks_set,
         }
     }
@@ -358,7 +336,7 @@ impl KeyValueDagRepresentation {
             let metadata = self.lookup_unsafe(hash)?;
             if metadata.block_number < start
                 || metadata.block_number > end
-                || (valid_only && metadata.invalid)
+                || (valid_only && metadata.is_invalid())
             {
                 continue;
             }
@@ -415,7 +393,7 @@ impl KeyValueDagRepresentation {
         if let Some((height, invalid)) = expected {
             if metadata.block_hash != *block_hash
                 || metadata.block_number != height
-                || metadata.invalid != invalid
+                || metadata.is_invalid() != invalid
             {
                 return Err(KvStoreError::InvalidArgument(format!(
                     "published metadata disagrees with DAG membership: {}",
@@ -513,7 +491,57 @@ impl KeyValueDagRepresentation {
             .filter(|metadata| metadata.sender == *validator))
     }
 
-    pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
+    /// Every equivocation the view holds. Reads the whole DAG, so it is for
+    /// tests only.
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn invalid_blocks(&self) -> Result<Vec<BlockMetadata>, KvStoreError> {
+        let mut invalid = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self.scan_membership_page(after.as_deref(), 1024)?;
+            for hash in page.rows {
+                let metadata = self.lookup_unsafe(&hash)?;
+                if metadata.is_invalid() {
+                    invalid.push(metadata);
+                }
+            }
+            after = page.next;
+            if after.is_none() {
+                return Ok(invalid);
+            }
+        }
+    }
+
+    /// Every equivocation the view holds, by hash, with its sender. Tests
+    /// only.
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn invalid_blocks_map(&self) -> Result<HashMap<BlockHash, Validator>, KvStoreError> {
+        Ok(self
+            .invalid_blocks()?
+            .into_iter()
+            .map(|metadata| (metadata.block_hash, metadata.sender))
+            .collect())
+    }
+
+    /// The equivocations `sender` has stored, resident or not, in sequence
+    /// number order.
+    pub fn equivocations_of(&self, sender: &Validator) -> Result<Vec<BlockMetadata>, KvStoreError> {
+        let hashes = match &self.history {
+            Some(history) => history.equivocations_of(sender, self.view_sequence)?,
+            None => {
+                let mut held = Vec::new();
+                for hash in &self.dag_set {
+                    let metadata = self.lookup_unsafe(hash)?;
+                    if metadata.sender == *sender && metadata.is_invalid() {
+                        held.push((metadata.sequence_number, hash.clone()));
+                    }
+                }
+                held.sort();
+                held.into_iter().map(|(_, hash)| hash).collect()
+            }
+        };
+        hashes.iter().map(|hash| self.lookup_unsafe(hash)).collect()
+    }
 
     /// Cached justification-derived floor of a block, if already computed.
     pub fn get_cached_floor(
@@ -882,7 +910,7 @@ impl KeyValueDagRepresentation {
     // Callers no longer need to clone a fully-materialized HashMap
     // (the snapshot path used to do this per snapshot) — the hash
     // values are only cloned for the (small) set of entries that
-    // actually appear in `invalid_blocks`, so the steady-state work
+    // are invalid, so the steady-state work
     // is proportional to |invalid_latest_messages| rather than
     // |latest_message_hashes|.
     pub fn invalid_latest_messages_from_hashes(
@@ -893,7 +921,7 @@ impl KeyValueDagRepresentation {
         for (validator, block_hash) in latest_message_hashes {
             if self
                 .lookup(block_hash)?
-                .map(|metadata| metadata.invalid)
+                .map(|metadata| metadata.is_invalid())
                 .unwrap_or(false)
             {
                 result.insert(validator.clone(), block_hash.clone());
@@ -902,18 +930,24 @@ impl KeyValueDagRepresentation {
         Ok(result)
     }
 
-    #[cfg(any(test, feature = "test-internals"))]
-    pub fn invalid_blocks_map(&self) -> Result<HashMap<BlockHash, Validator>, KvStoreError> {
-        let invalid_blocks = self.invalid_blocks();
-        let mut invalid_block_hashes = HashMap::new();
-        for block in invalid_blocks {
-            if let Some(metadata) = self.lookup(&block.block_hash)? {
-                if metadata.invalid {
-                    invalid_block_hashes.insert(metadata.block_hash, metadata.sender);
-                }
+    /// The blocks held from `sender` at sequence number `seq_num`, resident
+    /// or not.
+    pub fn blocks_at(
+        &self,
+        sender: &Validator,
+        seq_num: i32,
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        if let Some(history) = &self.history {
+            return history.blocks_at_sequence(sender, seq_num, self.view_sequence);
+        }
+        let mut held = Vec::new();
+        for hash in &self.dag_set {
+            let metadata = self.lookup_unsafe(hash)?;
+            if metadata.sender == *sender && metadata.sequence_number == seq_num {
+                held.push(hash.clone());
             }
         }
-        Ok(invalid_block_hashes)
+        Ok(held)
     }
 
     pub fn self_justification(
@@ -1259,9 +1293,7 @@ impl KeyValueDagRepresentation {
 /// through the `#[cfg(any(test, feature = "test-internals"))]`-gated
 /// constructor (`from_parts`) and the matching `metadata_index_for_tests`
 /// accessor — see further down this file.
-/// **Production code MUST NOT touch these fields directly.** All RMW on
-/// the equivocation tracker must route through
-/// `access_equivocations_tracker` (Bug #2 / T-9.2 contract). All
+/// **Production code MUST NOT touch these fields directly.** All
 /// read/write paths on the metadata / deploy / invalid blocks /
 /// latest-messages indices must take `global_lock`.
 ///
@@ -1275,22 +1307,16 @@ pub struct BlockDagKeyValueStorage {
     ///
     /// P2-12: an `RwLock<()>` rather than a `Mutex<()>` so pure-read paths
     /// (`get_representation`) can proceed concurrently with one another while
-    /// mutation paths (`insert`, `record_directly_finalized`,
-    /// `access_equivocations_tracker`) still take exclusive access. The Bug
-    /// #2 / T-9.2 RMW atomicity contract is preserved because every mutator
-    /// takes `.write()` — exclusive — and the `access_equivocations_tracker`
-    /// closure receives the equivocation index under an exclusive guard.
+    /// mutation paths (`insert`, `record_directly_finalized`) still take
+    /// exclusive access.
     pub(crate) global_lock: Arc<PlRwLock<()>>,
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
-    pub(crate) invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
+    pub(crate) store_mirror: Arc<PlRwLock<DagStoreMirror>>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
     /// Memoized per-block finalized frontier (see `KeyValueDagRepresentation::frontier_index`).
     pub(crate) frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
-    /// Equivocation tracker — RMW MUST route through
-    /// `access_equivocations_tracker` (Bug #2 / T-9.2).
-    pub(crate) equivocation_tracker_index: EquivocationTrackerStore,
     /// Deploy-lifecycle tables (see `KeyValueDagRepresentation::lifecycle`).
     pub(crate) lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
     /// Repeat-deploy carrier index (see `KeyValueDagRepresentation::carrier_index`).
@@ -1320,9 +1346,35 @@ pub struct BlockDagKeyValueStorage {
     /// LEARN it — hash only, never the block — during restore. Consumers
     /// that need a network-uniform genesis sentinel read this register.
     pub(crate) genesis_hash_index: KeyValueTypedStoreImpl<String, BlockHashSerde>,
+    pub(crate) commit_marker_index: KeyValueTypedStoreImpl<
+        Vec<u8>,
+        crate::rust::dag::finalization_commit::FinalizationCommitMarker,
+    >,
+    pub(crate) lfb_pointer_index:
+        KeyValueTypedStoreImpl<String, crate::rust::dag::finalization_commit::LfbPointer>,
+    pub(crate) v6_executor_state: Arc<dyn KeyValueStore>,
     /// Receives the hash of every block this storage inserts, in every mode,
     /// once the block is visible in the DAG.
     insert_observer: Arc<OnceLock<mpsc::UnboundedSender<BlockHash>>>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct DagStoreMirror {
+    latest: imbl::HashMap<Validator, BlockHash>,
+}
+
+impl DagStoreMirror {
+    fn load(
+        latest_messages_index: &KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
+    ) -> Result<Self, KvStoreError> {
+        Ok(Self {
+            latest: latest_messages_index
+                .to_map()?
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+        })
+    }
 }
 
 impl BlockDagKeyValueStorage {
@@ -1347,17 +1399,13 @@ impl BlockDagKeyValueStorage {
         }
     }
 
-    /// A block that depends on `hash` need not wait for it: the block is in
-    /// the DAG, or it was detected as an equivocation.
+    /// A block that depends on `hash` need not wait for it once it is in the
+    /// DAG; equivocations are stored there too.
     pub fn is_dependency_satisfied(&self, hash: &BlockHash) -> Result<bool, KvStoreError> {
-        Ok(self
-            .unsatisfied_dependencies(std::slice::from_ref(hash))?
-            .is_empty())
+        self.contains(hash)
     }
 
-    /// The hashes in `hashes` that a dependent block must still wait for:
-    /// neither in the DAG nor detected as an equivocation. The equivocation
-    /// records are read once for the whole list.
+    /// The hashes in `hashes` that a dependent block must still wait for.
     pub fn unsatisfied_dependencies(
         &self,
         hashes: &[BlockHash],
@@ -1368,20 +1416,7 @@ impl BlockDagKeyValueStorage {
                 absent.push(hash.clone());
             }
         }
-        if absent.is_empty() {
-            return Ok(absent);
-        }
-        self.access_equivocations_tracker(|tracker| {
-            let records = tracker.data()?;
-            Ok(absent
-                .into_iter()
-                .filter(|hash| {
-                    !records
-                        .iter()
-                        .any(|record| record.equivocation_detected_block_hashes.contains(hash))
-                })
-                .collect())
-        })
+        Ok(absent)
     }
 
     pub fn lookup(&self, hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
@@ -1490,23 +1525,13 @@ impl BlockDagKeyValueStorage {
         hot_window: i64,
     ) -> Result<Self, KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
-        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
+        let equivocations_kv_store = kvm.store("dag-equivocations-v1".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(block_metadata_kv_store.clone());
-
-        let equivocation_tracker_kv_store = kvm.store("equivocation-tracker".to_string()).await?;
-        let equivocation_tracker_db: KeyValueTypedStoreImpl<
-            (ValidatorSerde, SequenceNumber),
-            BTreeSet<BlockHashSerde>,
-        > = KeyValueTypedStoreImpl::new(equivocation_tracker_kv_store);
-        let equivocation_tracker_store = EquivocationTrackerStore::new(equivocation_tracker_db);
 
         let latest_messages_kv_store = kvm.store("latest-messages".to_string()).await?;
         let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(latest_messages_kv_store.clone());
-
-        let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
-            KeyValueTypedStoreImpl::new(invalid_blocks_kv_store.clone());
 
         let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
         let floor_index_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> =
@@ -1524,14 +1549,17 @@ impl BlockDagKeyValueStorage {
         let lifecycle_tables =
             DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
 
+        let v6_executor_state = kvm.store(V6_EXECUTOR_STATE_DB.to_string()).await?;
         let genesis_hash_kv_store = kvm.store("genesis-hash".to_string()).await?;
         let genesis_hash_db: KeyValueTypedStoreImpl<String, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(genesis_hash_kv_store.clone());
 
+        let commit_marker_kv_store = kvm.store("finalization-commit-marker".to_string()).await?;
+        let lfb_pointer_kv_store = kvm.store("lfb-pointer".to_string()).await?;
         let mut atomic_stores = vec![
             block_metadata_kv_store,
             latest_messages_kv_store,
-            invalid_blocks_kv_store,
+            equivocations_kv_store,
             genesis_hash_kv_store,
         ];
         for name in [
@@ -1540,9 +1568,12 @@ impl BlockDagKeyValueStorage {
             "dag-children-v1",
             "dag-history-state-v1",
             "dag-gc-retry-v1",
+            "dag-sequence-v1",
         ] {
             atomic_stores.push(kvm.store(name.to_string()).await?);
         }
+        atomic_stores.push(commit_marker_kv_store.clone());
+        atomic_stores.push(lfb_pointer_kv_store.clone());
         let membership_store = atomic_stores[4].clone();
         let persistence = Arc::new(DagPersistence::new(
             Arc::new(AtomicStoreGroup::new(atomic_stores)?),
@@ -1551,22 +1582,29 @@ impl BlockDagKeyValueStorage {
         let block_metadata_store =
             BlockMetadataStore::open_windowed(block_metadata_db, persistence.clone(), hot_window)?;
 
+        let store_mirror = DagStoreMirror::load(&latest_messages_db)?;
         Ok(Self {
             persistence: Some(persistence),
             global_lock: Arc::new(PlRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
-            invalid_blocks_index: invalid_blocks_db,
+            store_mirror: Arc::new(PlRwLock::new(store_mirror)),
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
-            equivocation_tracker_index: equivocation_tracker_store,
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
             carrier_index: Arc::new(PlRwLock::new(carrier_index_tables)),
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             genesis_hash_index: genesis_hash_db,
+            commit_marker_index: KeyValueTypedStoreImpl::new(commit_marker_kv_store),
+            lfb_pointer_index: KeyValueTypedStoreImpl::new(lfb_pointer_kv_store),
+            v6_executor_state,
             insert_observer: Arc::new(OnceLock::new()),
         })
+    }
+
+    pub fn v6_executor_state(&self) -> Arc<dyn KeyValueStore> {
+        Arc::clone(&self.v6_executor_state)
     }
 
     const GENESIS_HASH_KEY: &'static str = "genesis";
@@ -1640,29 +1678,6 @@ impl BlockDagKeyValueStorage {
             .and_then(|blocks| blocks.iter().min().cloned()))
     }
 
-    // P2-16: the following two methods bypass `global_lock` — production
-    // code MUST route through `access_equivocations_tracker` to honor the
-    // Bug #2 / T-9.2 atomicity contract (see
-    // `docs/casper/theory/slashing/slashing-verification.md` §9.2 and
-    // `formal/rocq/slashing/theories/BugFixAtomicTracker.v`). They are
-    // gated behind `#[cfg(any(test, feature = "test-internals"))]` so the
-    // compiler hard-fails on any production caller — the prior
-    // `#[deprecated]` annotation was warning-only and could be silenced.
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn equivocation_records(&self) -> Result<HashSet<EquivocationRecord>, KvStoreError> {
-        self.equivocation_tracker_index.data()
-    }
-
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn insert_equivocation_record(
-        &self,
-        record: EquivocationRecord,
-    ) -> Result<(), KvStoreError> {
-        self.equivocation_tracker_index.add(record)
-    }
-
     /// Phase 11 (visibility hardening): test fixtures used to build a
     /// `BlockDagKeyValueStorage` via struct-literal syntax against the
     /// `#[doc(hidden)] pub` indices. Now the indices are `pub(crate)`;
@@ -1676,21 +1691,20 @@ impl BlockDagKeyValueStorage {
         global_lock: Arc<PlRwLock<()>>,
         latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
         block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
-        invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
         floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
         frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
-        equivocation_tracker_index: EquivocationTrackerStore,
         dag_generation: Arc<AtomicU64>,
     ) -> Self {
+        let store_mirror = DagStoreMirror::load(&latest_messages_index)
+            .expect("load the latest-message and invalid-block stores");
         Self {
             persistence: None,
             global_lock,
+            store_mirror: Arc::new(PlRwLock::new(store_mirror)),
             latest_messages_index,
             block_metadata_index,
-            invalid_blocks_index,
             floor_index,
             frontier_index,
-            equivocation_tracker_index,
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
             carrier_index: Arc::new(PlRwLock::new(CarrierIndex::in_memory())),
             dag_generation,
@@ -1698,6 +1712,15 @@ impl BlockDagKeyValueStorage {
             genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),
+            commit_marker_index: KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
+            lfb_pointer_index: KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
+            v6_executor_state: Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            ),
             insert_observer: Arc::new(OnceLock::new()),
         }
     }
@@ -1767,6 +1790,19 @@ impl BlockDagKeyValueStorage {
         self.get_representation_internal()
     }
 
+    /// Runs `f` on a representation with the global lock held shared, so no
+    /// block is inserted before `f` returns.
+    pub fn with_representation<R, E>(
+        &self,
+        f: impl FnOnce(&KeyValueDagRepresentation) -> Result<R, E>,
+    ) -> Result<R, E>
+    where
+        E: From<KvStoreError>,
+    {
+        let _lock_guard = self.global_lock.read();
+        f(&self.get_representation_internal()?)
+    }
+
     /// Internal method to get representation without acquiring lock.
     /// Used when lock is already held by the caller.
     /// Public to allow IndexedBlockDagStorage to use it.
@@ -1778,15 +1814,7 @@ impl BlockDagKeyValueStorage {
         &self,
         allow_uninitialized: bool,
     ) -> Result<KeyValueDagRepresentation, KvStoreError> {
-        let latest_messages: imbl::HashMap<Validator, BlockHash> = self
-            .latest_messages_index
-            .to_map()?
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect();
-
-        let invalid_blocks: imbl::HashSet<BlockMetadata> =
-            self.invalid_blocks_index.to_map()?.into_values().collect();
+        let latest_messages = self.store_mirror.read().latest.clone();
 
         self.block_metadata_index.write().refresh_window()?;
 
@@ -1833,7 +1861,6 @@ impl BlockDagKeyValueStorage {
             block_number_map,
             main_parent_map,
             self_justification_map,
-            invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: last_finalized_block,
             finalized_blocks_set: finalized_blocks,
             block_metadata_index: self.block_metadata_index.clone(),
@@ -1862,6 +1889,71 @@ impl BlockDagKeyValueStorage {
         result
     }
 
+    /// The sender's other held block at `block`'s sequence number, the one
+    /// with the lowest hash.
+    fn held_sibling(&self, block: &BlockMessage) -> Result<Option<BlockHash>, KvStoreError> {
+        if block.sender.is_empty() {
+            return Ok(None);
+        }
+        let held = match &self.persistence {
+            Some(persistence) => {
+                persistence
+                    .history
+                    .blocks_at_sequence(&block.sender, block.seq_num, u64::MAX)?
+            }
+            None => {
+                let guard = self.block_metadata_index.read();
+                let dag_set = guard.dag_state().read().dag_set.clone();
+                let mut held = Vec::new();
+                for hash in dag_set {
+                    if let Some(metadata) = guard.get(&hash)? {
+                        if metadata.sender == block.sender
+                            && metadata.sequence_number == block.seq_num
+                        {
+                            held.push(hash);
+                        }
+                    }
+                }
+                held
+            }
+        };
+        Ok(held
+            .into_iter()
+            .filter(|hash| *hash != block.block_hash)
+            .min())
+    }
+
+    /// Projects `block`'s executions and rejection records into the per-sig
+    /// lifecycle rows. Each append is deduplicated per block and kind, so a
+    /// repeat writes nothing.
+    pub fn record_deploy_events(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
+        let block_number = block.body.state.block_number;
+        let lifecycle_guard = self.lifecycle.write();
+        for pd in &block.body.deploys {
+            lifecycle_guard.append_event_once(
+                &pd.deploy.sig,
+                Some(pd.deploy.data.valid_after_block_number),
+                LifecycleEvent {
+                    height: block_number,
+                    block_hash: block.block_hash.to_vec(),
+                    kind: LifecycleEventKind::Included {
+                        is_failed: pd.is_failed,
+                    },
+                },
+            )?;
+        }
+        for rd in &block.body.rejected_deploys {
+            lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+                height: block_number,
+                block_hash: block.block_hash.to_vec(),
+                kind: LifecycleEventKind::Rejected {
+                    duplicate: rd.duplicate,
+                },
+            })?;
+        }
+        Ok(())
+    }
+
     /// Internal method to insert without acquiring lock.
     /// Used when lock is already held by the caller.
     /// Public to allow IndexedBlockDagStorage to use it.
@@ -1873,10 +1965,14 @@ impl BlockDagKeyValueStorage {
         // Phase 8 (A-6): derive the per-branch booleans directly from the
         // enum via `matches!`. The previous `mode.flags()` projection
         // shim survived a Phase-4 transition; it is no longer needed.
-        let invalid = matches!(mode, InsertMode::Invalid | InsertMode::SlashEvidence);
+        let equivocates = match &mode {
+            InsertMode::Equivocation { sibling } => Some(sibling.clone()),
+            InsertMode::Approved => None,
+            InsertMode::Normal | InsertMode::SettledHistory => self.held_sibling(block)?,
+        };
+        let invalid = equivocates.is_some();
         let approved = matches!(mode, InsertMode::Approved);
-        let settled_history =
-            matches!(mode, InsertMode::SettledHistory | InsertMode::SlashEvidence);
+        let settled_history = matches!(mode, InsertMode::SettledHistory);
         let sender_is_empty = block.sender.is_empty();
         let sender_has_invalid_format =
             !sender_is_empty && (block.sender.len() != validator::LENGTH);
@@ -1904,11 +2000,9 @@ impl BlockDagKeyValueStorage {
         //     therefore cannot become parents, cannot enter the ancestor chain of
         //     any parent, and cannot influence the Estimator's fork-choice scoring
         //     or finalization depth.
-        //   - Slashing requires invalid blocks to BE in the LMM. The equivocation
-        //     detector reads `invalid_latest_messages` and feeds it to
-        //     `prepare_slashing_deploys`. Gating the LMM on `invalid` would leave
-        //     the slashing pipeline with nothing to act on — no slashes issued,
-        //     equivocators never punished.
+        //   - Blocks cite a stored equivocation through the LMM, which is how a
+        //     block's justifications come to show both blocks of a pair — the
+        //     condition under which it owes the slash.
         //   - `justification_follows` validation requires every bonded validator
         //     to appear in a new block's justifications. Without the LMM advancing
         //     on invalid blocks, validators whose latest is invalid would be
@@ -1939,15 +2033,16 @@ impl BlockDagKeyValueStorage {
                 .map(|justification| &justification.validator)
                 .collect();
 
-            let mut newly_bonded_unseen = Vec::new();
-            for validator in newly_bonded_set.difference(&justification_validators) {
-                if !self
-                    .latest_messages_index
-                    .contains_key(ValidatorSerde((*validator).clone()))?
-                {
-                    newly_bonded_unseen.push((*validator).clone());
-                }
-            }
+            let newly_bonded_unseen: Vec<Validator> = newly_bonded_set
+                .difference(&justification_validators)
+                .filter_map(|validator| {
+                    if self.store_mirror.read().latest.contains_key(*validator) {
+                        None
+                    } else {
+                        Some((*validator).clone())
+                    }
+                })
+                .collect();
 
             let mut result = HashMap::new();
             if !newly_bonded_unseen.is_empty() {
@@ -2063,46 +2158,16 @@ impl BlockDagKeyValueStorage {
                 }
             }
 
-            // Lifecycle event ingest: one body pass projects inclusion and
-            // rejection events into the per-sig lifecycle rows. Invalid
-            // blocks contribute nothing — their bodies are not canonical
-            // history (the carrier index above covers the repeat-deploy
-            // scan's view of them). Appends go through `append_event_once`:
-            // after a crash inside this ingest-first window the block is
-            // not yet DAG-visible, so its redelivery re-runs this pass —
-            // the per-(block, kind) dedup makes that retry write nothing
-            // twice.
-            {
-                let block_number = block.body.state.block_number;
-                let lifecycle_guard = self.lifecycle.write();
-                if !invalid {
-                    for pd in &block.body.deploys {
-                        lifecycle_guard.append_event_once(
-                            &pd.deploy.sig,
-                            Some(pd.deploy.data.valid_after_block_number),
-                            LifecycleEvent {
-                                height: block_number,
-                                block_hash: block.block_hash.to_vec(),
-                                kind: LifecycleEventKind::Included {
-                                    is_failed: pd.is_failed,
-                                },
-                            },
-                        )?;
-                    }
-                    for rd in &block.body.rejected_deploys {
-                        lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
-                            height: block_number,
-                            block_hash: block.block_hash.to_vec(),
-                            kind: LifecycleEventKind::Rejected {
-                                duplicate: rd.duplicate,
-                            },
-                        })?;
-                    }
-                }
-                drop(lifecycle_guard);
+            // Lifecycle event ingest, before the block is DAG-visible: a
+            // crash here leaves the block undelivered, and its redelivery
+            // re-runs this pass. An equivocation stored by validation has
+            // contents nobody has judged, so its events wait for
+            // `record_deploy_events` after a judgement finds them valid.
+            if !matches!(mode, InsertMode::Equivocation { .. }) {
+                self.record_deploy_events(block)?;
             }
 
-            let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
+            let block_metadata = BlockMetadata::from_block(block, equivocates, None, None);
             let mut latest_to_publish = HashMap::new();
 
             // Settled-history blocks never touch latest messages: neither the
@@ -2129,7 +2194,7 @@ impl BlockDagKeyValueStorage {
                                         })?;
                                         if row.block_hash != latest_hash
                                             || row.block_number != member.height
-                                            || row.invalid != member.invalid
+                                            || row.is_invalid() != member.invalid
                                         {
                                             return Err(KvStoreError::InvalidArgument(
                                                 "latest message metadata disagrees with membership"
@@ -2176,16 +2241,18 @@ impl BlockDagKeyValueStorage {
                 self.block_metadata_index
                     .write()
                     .add(block_metadata.clone())?;
-                if invalid {
-                    self.invalid_blocks_index
-                        .put_one(block_hash.clone().into(), block_metadata)?;
-                }
                 self.latest_messages_index.put(
                     latest_to_publish
-                        .into_iter()
-                        .map(|(k, v)| (k.into(), v.into()))
+                        .iter()
+                        .map(|(k, v)| (k.clone().into(), v.clone().into()))
                         .collect(),
                 )?;
+            }
+            {
+                let mut mirror = self.store_mirror.write();
+                for (validator, hash) in latest_to_publish {
+                    mirror.latest.insert(validator, hash);
+                }
             }
             if self.persistence.is_none() {
                 self.dag_generation.fetch_add(1, Ordering::Relaxed);
@@ -2209,29 +2276,11 @@ impl BlockDagKeyValueStorage {
         self.capture_representation(true)
     }
 
-    pub fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        // Exclusive access only, not a transaction: no concurrent reader or
-        // writer interleaves with the closure, but writes it makes before
-        // returning `Err` persist.
-        //
-        // SAFETY/CONTRACT (P2-13): non-reentrant. The closure `f` MUST NOT
-        // recursively call `access_equivocations_tracker`, nor any
-        // operation that acquires `global_lock` (e.g. `insert`,
-        // `record_directly_finalized`, `propagate_ft_to_finalized_blocks`,
-        // `get_representation`). Doing so deadlocks the
-        // `parking_lot::RwLock<()>` based implementation.
-        //
-        // The bound is `FnOnce` (more permissive than `Fn`, accepts
-        // strictly more closures); this aligns with the
-        // `EquivocationsAccess` trait at
-        // `crate::rust::dag::equivocations_access`. The trait impl for
-        // this type delegates to this method, so both surfaces
-        // (inherent + trait) share one implementation.
-        let _lock_guard = self.global_lock.write();
-        f(&self.equivocation_tracker_index)
+    pub fn contains_block(&self, hash: &BlockHash) -> bool {
+        let _lock_guard = self.global_lock.read();
+        let metadata = self.block_metadata_index.read();
+        let dag_state = metadata.dag_state().read();
+        dag_state.last_finalized_block.is_some() && dag_state.dag_set.contains(hash)
     }
 
     /** Record that some hash is directly finalized (detected by finalizer and becomes LFB). */
@@ -2245,118 +2294,254 @@ impl BlockDagKeyValueStorage {
         F: FnMut(&HashSet<BlockHash>) -> Fut,
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
-        // P5 (slashing audit): bound chosen because typical reconciliation
-        // converges in 1–4 loops under realistic block-insert load. A
-        // 128-loop ceiling prevents the (TOCTOU-driven) pathological case
-        // from spinning indefinitely while leaving generous headroom for
-        // catastrophic concurrency. The cap is observable: hitting it
-        // emits an `IoError(...)` so operators can detect the condition.
-        const MAX_FINALIZATION_RECONCILE_LOOPS: usize = 128;
+        use crate::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
+        match self.commit_lfb(directly_finalized_hash.clone(), ft_value, |_| Ok(()))? {
+            CommitOutcome::Committed(marker) => {
+                let finalized: HashSet<BlockHash> =
+                    marker.finalized_in_order().into_iter().collect();
+                finalization_effect(&finalized).await?;
+                self.mark_events_published(marker.commit_epoch)
+            }
+            CommitOutcome::Refused(CommitRefusal::NotInDag) => {
+                Err(KvStoreError::InvalidArgument(format!(
+                    "Attempting to finalize nonexistent hash {}",
+                    PrettyPrinter::build_string_bytes(&directly_finalized_hash)
+                )))
+            }
+            CommitOutcome::Refused(_) => Ok(()),
+        }
+    }
 
-        // Close TOCTOU race by repeatedly applying effects for newly observed finalized
-        // hashes until the lock-protected snapshot is stable. Keep metadata persistence
-        // aligned with already-applied effects when exiting due to errors or retry cap.
-        let persist_effect_applied =
-            |force_direct: bool, effect_applied: &HashSet<BlockHash>| -> Result<(), KvStoreError> {
-                if !force_direct && effect_applied.is_empty() {
-                    return Ok(());
-                }
-
-                let indirectly_finalized: HashSet<BlockHash> = effect_applied
-                    .iter()
-                    .filter(|hash| *hash != &directly_finalized_hash)
-                    .cloned()
-                    .collect();
-
-                // P2-12: record_finalized mutates block metadata; exclusive lock.
-                let _lock_guard = self.global_lock.write();
-
-                // These blocks enter at `ft_value`, possibly below what earlier
-                // rounds propagated — the bound has to follow them down. Lowered
-                // BEFORE the fallible write, not after: `record_finalized` adds to
-                // `finalized_block_set` before it persists, so an error on the way
-                // out would leave those blocks in the set with the bound still
-                // high, and every later propagate at or under it would skip the
-                // scan that raises them. Lowering early can only cost one
-                // unnecessary scan.
-                let _ = self.ft_lower_bound.fetch_update(
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                    |bits| (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits()),
-                );
-
-                let mut block_metadata_index_guard = self.block_metadata_index.write();
-                block_metadata_index_guard.record_finalized(
-                    directly_finalized_hash.clone(),
-                    indirectly_finalized,
-                    ft_value,
-                )?;
-                drop(block_metadata_index_guard);
-                Ok(())
-            };
-
-        let mut effect_applied: HashSet<BlockHash> = HashSet::new();
-        for _attempt in 0..MAX_FINALIZATION_RECONCILE_LOOPS {
-            let pending_effect: HashSet<BlockHash> = {
-                // P2-12: snapshot read; shared lock allows concurrent readers.
-                let _lock_guard = self.global_lock.read();
-
-                let dag = self.get_representation_internal()?;
-                if !dag.contains(&directly_finalized_hash)? {
-                    return Err(KvStoreError::InvalidArgument(format!(
-                        "Attempting to finalize nonexistent hash {}",
-                        PrettyPrinter::build_string_bytes(&directly_finalized_hash)
+    pub fn commit_lfb<V>(
+        &self,
+        directly: BlockHash,
+        ft_value: f32,
+        validate: V,
+    ) -> Result<crate::rust::dag::finalization_commit::CommitOutcome, KvStoreError>
+    where
+        V: FnOnce(
+            &KeyValueDagRepresentation,
+        ) -> Result<(), crate::rust::dag::finalization_commit::CommitRefusal>,
+    {
+        use crate::rust::dag::finalization_commit::{
+            commit_epoch_key, CommitOutcome, CommitRefusal, FinalizationCommitMarker, LfbPointer,
+            LFB_POINTER_KEY,
+        };
+        let marker = {
+            let _lock_guard = self.global_lock.write();
+            let dag = self.get_representation_internal()?;
+            if !dag.contains(&directly)? {
+                return Ok(CommitOutcome::Refused(CommitRefusal::NotInDag));
+            }
+            let directly_number = dag.block_number_unsafe(&directly)?;
+            if let Some(order) = self
+                .lfb_pointer_index
+                .get_one(&crate::rust::dag::finalization_commit::ORDER_POINTER_KEY.to_string())?
+            {
+                if directly_number > order.height {
+                    return Ok(CommitOutcome::Refused(CommitRefusal::StateChanged(
+                        format!(
+                            "the candidate at {directly_number} is above the order floor at {}",
+                            order.height
+                        ),
                     )));
                 }
+            }
+            if let Err(refusal) = validate(&dag) {
+                return Ok(CommitOutcome::Refused(refusal));
+            }
 
-                // Held, unfinalized ancestry only. A parent edge can reach
-                // BELOW a restored node's truncation horizon — referenced but
-                // not held — and such an ancestor is settled by the restore
-                // contract (everything under the shipped window is finalized
-                // ancestry). Descending into it errored the whole finalizer
-                // run on the first sub-horizon parent, permanently: the same
-                // ancestry re-walks every run, so a restored node's LFB froze
-                // at its restore-era floor while the shard finalized on.
-                let indirectly_finalized = dag
-                    .held_ancestors(directly_finalized_hash.clone(), |hash| {
-                        Ok(!dag.is_finalized(hash)?)
-                    })?;
+            let mut indirectly = dag.held_ancestors(directly.clone(), |hash| {
+                dag.is_finalized(hash).map(|value| !value)
+            })?;
+            indirectly.remove(&directly);
+            let mut indirect_sorted: Vec<(i64, BlockHash)> = indirectly
+                .iter()
+                .map(|hash| Ok((dag.block_number_unsafe(hash)?, hash.clone())))
+                .collect::<Result<_, KvStoreError>>()?;
+            indirect_sorted.sort();
 
-                let mut all_finalized = indirectly_finalized.clone();
-                all_finalized.insert(directly_finalized_hash.clone());
-
-                let pending: HashSet<BlockHash> =
-                    all_finalized.difference(&effect_applied).cloned().collect();
-
-                pending
+            let previous_pointer = self
+                .lfb_pointer_index
+                .get_one(&LFB_POINTER_KEY.to_string())?;
+            let commit_epoch = previous_pointer
+                .as_ref()
+                .map_or(1, |pointer| pointer.commit_epoch + 1);
+            let marker = FinalizationCommitMarker {
+                directly: BlockHashSerde(directly.clone()),
+                height: directly_number,
+                indirect_sorted: indirect_sorted
+                    .into_iter()
+                    .map(|(_, hash)| BlockHashSerde(hash))
+                    .collect(),
+                ft_value,
+                commit_epoch,
+            };
+            let pointer = match previous_pointer {
+                Some(previous) if previous.height > directly_number => LfbPointer {
+                    commit_epoch,
+                    ..previous
+                },
+                _ => LfbPointer {
+                    hash: BlockHashSerde(directly.clone()),
+                    height: directly_number,
+                    commit_epoch,
+                },
             };
 
-            if pending_effect.is_empty() {
-                persist_effect_applied(true, &effect_applied)?;
+            let _ =
+                self.ft_lower_bound
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                        (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits())
+                    });
 
-                // Propagate FT to all finalized blocks whose cached value is lower.
-                // This ensures FT converges toward 1.0 as later finalization
-                // rounds produce higher agreement. Covers orphaned branches
-                // not reachable via the new LFB's ancestor chain.
-                self.propagate_ft_to_finalized_blocks(ft_value)?;
-
-                return Ok(());
+            let mut metadata_guard = self.block_metadata_index.write();
+            let marker_rows = vec![(
+                self.commit_marker_index
+                    .encode_key(&commit_epoch_key(commit_epoch))?,
+                self.commit_marker_index.encode_value(&marker)?,
+            )];
+            let pointer_rows = vec![(
+                self.lfb_pointer_index
+                    .encode_key(&LFB_POINTER_KEY.to_string())?,
+                self.lfb_pointer_index.encode_value(&pointer)?,
+            )];
+            if let Some(persistence) = &self.persistence {
+                let progress =
+                    persistence.finalize_with(&directly, &indirectly, ft_value, |tx| {
+                        for (key, value) in marker_rows {
+                            tx.put(FINALIZATION_MARKERS, key, value)?;
+                        }
+                        for (key, value) in pointer_rows {
+                            tx.put(FINALIZATION_POINTER, key, value)?;
+                        }
+                        Ok(())
+                    })?;
+                let metadata = metadata_guard.get_unsafe(&directly)?;
+                metadata_guard.publish_committed(&metadata, &progress)?;
+            } else {
+                let (metadata_rows, _) =
+                    metadata_guard.prepare_finalized_rows(&directly, &indirectly, ft_value)?;
+                shared::rust::store::lmdb_key_value_store::batched_put(vec![
+                    (metadata_guard.raw_store().as_ref(), metadata_rows),
+                    (self.commit_marker_index.raw_store().as_ref(), marker_rows),
+                    (self.lfb_pointer_index.raw_store().as_ref(), pointer_rows),
+                ])?;
             }
+            metadata_guard.apply_finalized_in_memory(directly.clone(), directly_number, indirectly);
+            drop(metadata_guard);
+            marker
+        };
+        self.propagate_ft_to_finalized_blocks(ft_value)?;
+        Ok(CommitOutcome::Committed(marker))
+    }
 
-            // Execute async effect without holding lock.
-            if let Err(err) = finalization_effect(&pending_effect).await {
-                persist_effect_applied(false, &effect_applied)?;
-                return Err(err);
-            }
-            effect_applied.extend(pending_effect);
+    pub fn mark_events_published(&self, commit_epoch: u64) -> Result<(), KvStoreError> {
+        let key = crate::rust::dag::finalization_commit::commit_epoch_key(commit_epoch);
+        self.commit_marker_index.delete(vec![key])?;
+        Ok(())
+    }
+
+    pub fn pending_finalization_events(
+        &self,
+    ) -> Result<Vec<crate::rust::dag::finalization_commit::FinalizationCommitMarker>, KvStoreError>
+    {
+        if !self.commit_marker_index.raw_store().non_empty()? {
+            return Ok(Vec::new());
         }
+        let mut markers: Vec<crate::rust::dag::finalization_commit::FinalizationCommitMarker> =
+            self.commit_marker_index.to_map()?.into_values().collect();
+        markers.sort_by_key(|marker| marker.commit_epoch);
+        Ok(markers)
+    }
 
-        persist_effect_applied(false, &effect_applied)?;
-        Err(KvStoreError::IoError(format!(
-            "record_directly_finalized exceeded {} reconcile loops for {}",
-            MAX_FINALIZATION_RECONCILE_LOOPS,
-            PrettyPrinter::build_string_bytes(&directly_finalized_hash)
-        )))
+    pub fn lfb_pointer(
+        &self,
+    ) -> Result<Option<crate::rust::dag::finalization_commit::LfbPointer>, KvStoreError> {
+        self.lfb_pointer_index
+            .get_one(&crate::rust::dag::finalization_commit::LFB_POINTER_KEY.to_string())
+    }
+
+    pub fn order_pointer(
+        &self,
+    ) -> Result<Option<crate::rust::dag::finalization_commit::LfbPointer>, KvStoreError> {
+        self.lfb_pointer_index
+            .get_one(&crate::rust::dag::finalization_commit::ORDER_POINTER_KEY.to_string())
+    }
+
+    pub fn order_floor(&self) -> Result<BlockHash, KvStoreError> {
+        match self.order_pointer()? {
+            Some(pointer) => Ok(pointer.hash.0),
+            None => Ok(self.get_representation()?.last_finalized_block()),
+        }
+    }
+
+    pub fn commit_order<V>(
+        &self,
+        candidate: BlockHash,
+        validate: V,
+    ) -> Result<crate::rust::dag::finalization_commit::OrderOutcome, KvStoreError>
+    where
+        V: FnOnce(
+            &KeyValueDagRepresentation,
+            &BlockHash,
+        ) -> Result<(), crate::rust::dag::finalization_commit::CommitRefusal>,
+    {
+        use crate::rust::dag::finalization_commit::{
+            CommitRefusal, LfbPointer, OrderOutcome, ORDER_POINTER_KEY,
+        };
+        let _lock_guard = self.global_lock.write();
+        let dag = self.get_representation_internal()?;
+        if !dag.contains(&candidate)? {
+            return Ok(OrderOutcome::Refused(CommitRefusal::NotInDag));
+        }
+        let height = dag.block_number_unsafe(&candidate)?;
+        let previous = self
+            .lfb_pointer_index
+            .get_one(&ORDER_POINTER_KEY.to_string())?;
+        let order_now = previous.as_ref().map_or_else(
+            || dag.last_finalized_block(),
+            |pointer| pointer.hash.0.clone(),
+        );
+        let order_height = dag.block_number_unsafe(&order_now)?;
+        if order_now == candidate || order_height >= height {
+            return Ok(OrderOutcome::Refused(CommitRefusal::NotHigher {
+                lfb_height: order_height,
+            }));
+        }
+        if let Err(refusal) = validate(&dag, &order_now) {
+            return Ok(OrderOutcome::Refused(refusal));
+        }
+        let pointer = LfbPointer {
+            hash: BlockHashSerde(candidate),
+            height,
+            commit_epoch: previous.map_or(1, |pointer| pointer.commit_epoch + 1),
+        };
+        self.lfb_pointer_index
+            .put_one(ORDER_POINTER_KEY.to_string(), pointer.clone())?;
+        Ok(OrderOutcome::Committed(pointer))
+    }
+
+    pub fn check_floor_order(&self) -> Result<(), KvStoreError> {
+        let (Some(order), Some(lfb)) = (self.order_pointer()?, self.lfb_pointer()?) else {
+            return Ok(());
+        };
+        if order.height < lfb.height {
+            return Err(KvStoreError::InvalidArgument(format!(
+                "the order floor at {} is below the LFB at {}",
+                order.height, lfb.height
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn commit_lfb_is_transactional(&self) -> bool {
+        let metadata = self.block_metadata_index.read();
+        shared::rust::store::lmdb_key_value_store::shares_one_lmdb_env(&[
+            metadata.raw_store().as_ref(),
+            self.commit_marker_index.raw_store().as_ref(),
+            self.lfb_pointer_index.raw_store().as_ref(),
+        ])
     }
 
     fn propagate_ft_to_finalized_blocks(&self, ft_value: f32) -> Result<(), KvStoreError> {
@@ -2417,12 +2602,6 @@ impl SoakCaptureAccess<'_> {
         &self.storage.latest_messages_index
     }
 
-    pub(crate) fn invalid_blocks_index(
-        &self,
-    ) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> {
-        &self.storage.invalid_blocks_index
-    }
-
     pub(crate) fn floor_index(&self) -> &KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde> {
         &self.storage.floor_index
     }
@@ -2431,25 +2610,7 @@ impl SoakCaptureAccess<'_> {
         &self.storage.frontier_index
     }
 
-    pub(crate) fn equivocations_index(&self) -> &EquivocationTrackerStore {
-        &self.storage.equivocation_tracker_index
-    }
-
     pub(crate) fn generation(&self) -> u64 { self.storage.current_generation() }
-}
-
-// EquivocationsAccess trait impl — delegates to the inherent method.
-// The inherent method remains the canonical implementation; the trait
-// gives callers a type-level dispatch contract for atomic-RMW access
-// to the equivocation tracker. See `equivocations_access.rs` for the
-// full design rationale (T-9.2 anchor, atomic-RMW contract).
-impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorage {
-    fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        BlockDagKeyValueStorage::access_equivocations_tracker(self, f)
-    }
 }
 
 /// A block the DAG does not hold, named so a caller can request it.
@@ -2488,23 +2649,26 @@ mod tests {
 
     use super::*;
 
-    const DAG_STORES: [&str; 16] = [
+    const DAG_STORES: [&str; 19] = [
         "block-metadata",
-        "equivocation-tracker",
         "latest-messages",
-        "invalid-blocks",
+        "dag-equivocations-v1",
         "floor-index",
         "frontier-index",
         "deploy-lifecycle-events",
         "deploy-lifecycle-terminal",
         "carrier-index",
         "carrier-index-meta",
+        "v6-executor-state",
+        "finalization-commit-marker",
+        "lfb-pointer",
         "genesis-hash",
         "dag-membership-v1",
         "dag-height-v1",
         "dag-children-v1",
         "dag-history-state-v1",
         "dag-gc-retry-v1",
+        "dag-sequence-v1",
     ];
 
     #[test]
@@ -2531,7 +2695,7 @@ mod tests {
                 .await
                 .unwrap();
             let mut parent: Option<BlockHash> = None;
-            for height in 0..20_000i64 {
+            for height in 0..15_000i64 {
                 let block = models::rust::block_implicits::get_random_block(
                     Some(height),
                     None,
@@ -2677,6 +2841,37 @@ mod tests {
                 assert!(!metadata.finalized && !metadata.directly_finalized);
             }
         };
+        unchanged(&storage);
+        let key = b"rollback-check".to_vec();
+        assert!(storage
+            .persistence
+            .as_ref()
+            .unwrap()
+            .finalize_with(
+                &chain[9].block_hash,
+                &HashSet::from([chain[7].block_hash.clone()]),
+                0.9,
+                |tx| {
+                    tx.put(9, key.clone(), vec![1])?;
+                    tx.put(10, key.clone(), vec![1])?;
+                    Err(KvStoreError::InvalidArgument(
+                        "injected commit failure".into(),
+                    ))
+                },
+            )
+            .is_err());
+        assert!(storage
+            .commit_marker_index
+            .raw_store()
+            .get_one(&key)
+            .unwrap()
+            .is_none());
+        assert!(storage
+            .lfb_pointer_index
+            .raw_store()
+            .get_one(&key)
+            .unwrap()
+            .is_none());
         unchanged(&storage);
         drop(storage);
         unchanged(&open());

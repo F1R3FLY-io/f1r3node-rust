@@ -96,6 +96,7 @@ pub const DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC: &str = "dag.merge.apply-trie
 pub const DAG_MERGE_BRANCHES_TIME_METRIC: &str = "dag.merge.branches.time";
 pub const DAG_MERGE_CONFLICTS_MAP_TIME_METRIC: &str = "dag.merge.conflicts-map.time";
 pub const DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC: &str = "dag.merge.rejection-options.time";
+pub const DAG_MERGE_REJECTION_GREEDY_GROUPS_METRIC: &str = "dag.merge.rejection-greedy-groups";
 pub const DAG_MERGE_REJECTION_SELECTION_TIME_METRIC: &str = "dag.merge.rejection-selection.time";
 pub const DAG_MERGE_RELATION_ITEMS_METRIC: &str = "dag.merge.relation.items";
 pub const DAG_MERGE_RELATION_BRANCHES_METRIC: &str = "dag.merge.relation.branches";
@@ -225,8 +226,6 @@ pub const BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC: &str =
     "block.validation.step.checkpoint.time";
 pub const BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC: &str =
     "block.validation.step.bonds-cache.time";
-pub const BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC: &str =
-    "block.validation.step.neglected-invalid-block.time";
 pub const BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC: &str =
     "block.validation.step.neglected-equivocation.time";
 pub const BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC: &str =
@@ -256,8 +255,6 @@ pub const COMPUTE_PARENTS_POST_STATE_BUFFER_ADMITS_TIME_METRIC: &str =
 // `Validate::block_summary` sub-step breakdown.
 pub const BLOCK_VALIDATION_BLOCK_HASH_TIME_METRIC: &str = "block.validation.block-hash.time";
 pub const BLOCK_VALIDATION_TIMESTAMP_TIME_METRIC: &str = "block.validation.timestamp.time";
-pub const BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC: &str =
-    "block.validation.shard-identifier.time";
 pub const BLOCK_VALIDATION_DEPLOYS_SHARD_IDENTIFIER_TIME_METRIC: &str =
     "block.validation.deploys-shard-identifier.time";
 pub const BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC: &str = "block.validation.repeat-deploy.time";
@@ -416,6 +413,7 @@ pub const MERGE_SCOPE_BACKSTOP_ERROR_METRIC: &str =
 // backstop keys on and the ratchet driver we bound; watching its distribution
 // is how an operator sees finality lag before it approaches the backstop.
 pub const FLOOR_DISTANCE_METRIC: &str = "compute-parents-post-state.floor-distance";
+pub const FLOOR_PACING_ENGAGED_METRIC: &str = "block-creator.floor-pacing-engaged";
 
 // Histogram of the merge scope size (|visible_blocks| in the unfinalized band).
 // Demoted from a reject condition to an observability metric: unlike the floor
@@ -461,6 +459,15 @@ pub const FINALIZER_RUN_TIME_METRIC: &str = "finalizer.run.time";
 pub const FINALIZER_RUN_FAILURES_METRIC: &str = "finalizer.run.failures";
 // Counter: cycles abandoned by the finalizer's backstop compute timeout.
 pub const FINALIZER_RUN_TIMEOUTS_METRIC: &str = "finalizer.run.timeouts";
+pub const FINALIZER_CURSOR_YIELDS_METRIC: &str = "finalizer.cursor.yields";
+pub const FINALIZER_CURSOR_RESUMES_METRIC: &str = "finalizer.cursor.resumes";
+pub const FINALIZER_CURSOR_INVALIDATIONS_METRIC: &str = "finalizer.cursor.invalidations";
+pub const FINALIZER_CURSOR_FREEZES_METRIC: &str = "finalizer.cursor.freezes";
+pub const COMMIT_LFB_REFUSALS_METRIC: &str = "finalizer.commit.refusals";
+pub const COMMIT_LFB_ALIN_VIOLATIONS_METRIC: &str = "finalizer.commit.alin-violations";
+pub const V6_VOID_BLOCKS_METRIC: &str = "v6.void-blocks";
+pub const V6_LINEARIZER_ALIN_HOLDS_METRIC: &str = "v6.linearizer.alin-holds";
+pub const FINALIZATION_EVENTS_REPLAYED_METRIC: &str = "finalizer.events.replayed";
 // Counter: cycles that ended with a trigger pending, so another cycle follows.
 pub const FINALIZER_RUN_RERUNS_METRIC: &str = "finalizer.run.reruns";
 // Counter: triggers that arrived while a finalizer run was in progress.

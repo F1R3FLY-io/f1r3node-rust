@@ -58,6 +58,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
                 Some(ListParWithRandom {
                     pars: bound_pars,
                     random_state: data.random_state.clone(),
+                    seal: data.seal.clone(),
                 })
             }
             None => None,
@@ -73,18 +74,23 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     /// `GBool(true)`. Anything else (false, non-bool, error) means
     /// guard-fail and the consume stays uncommitted. See plan §7.12.
     fn check_commit(&self, k: &TaggedContinuation, matched: &[ListParWithRandom]) -> bool {
-        let Some(guard) = k.guard.as_ref() else {
-            return true;
-        };
-        if is_empty_par(guard) {
-            return true;
-        }
-        let mut combined: Vec<Par> = Vec::new();
-        for m in matched {
-            combined.extend_from_slice(&m.pars);
-        }
-        guard_passes(guard, &combined)
+        guard_holds(k, matched)
+            && crate::rust::interpreter::accounting::rev_stack::seal::admits_comm(k, matched)
     }
+}
+
+fn guard_holds(k: &TaggedContinuation, matched: &[ListParWithRandom]) -> bool {
+    let Some(guard) = k.guard.as_ref() else {
+        return true;
+    };
+    if is_empty_par(guard) {
+        return true;
+    }
+    let mut combined: Vec<Par> = Vec::new();
+    for m in matched {
+        combined.extend_from_slice(&m.pars);
+    }
+    guard_passes(guard, &combined)
 }
 
 fn is_empty_par(par: &Par) -> bool { par == &Par::default() }
@@ -112,6 +118,8 @@ fn extract_bool(par: &Par) -> Option<bool> {
         || !par.unforgeables.is_empty()
         || !par.connectives.is_empty()
         || !par.conditionals.is_empty()
+        || !par.cost_signed_terms.is_empty()
+        || !par.cost_stacks.is_empty()
         || par.exprs.len() != 1
     {
         return None;

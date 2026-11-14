@@ -228,6 +228,7 @@ mod tests {
                     source: Some(Par::default()),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,

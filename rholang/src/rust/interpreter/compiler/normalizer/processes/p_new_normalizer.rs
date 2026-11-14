@@ -17,6 +17,12 @@ use crate::rust::interpreter::registry::versioned_urn::is_wildcard_urn;
 use crate::rust::interpreter::system_processes::FixedChannels;
 use crate::rust::interpreter::util::{filter_and_adjust_bitset, prepend_new};
 
+fn bound_injections(env: &HashMap<String, Par>, uris: &[String]) -> BTreeMap<String, Par> {
+    uris.iter()
+        .filter_map(|uri| env.get(uri).map(|value| (uri.clone(), value.clone())))
+        .collect()
+}
+
 pub fn normalize_p_new<'ast>(
     decls: &[NameDecl<'ast>],
     proc: &'ast AnnProc<'ast>,
@@ -104,9 +110,7 @@ fn normalize_static_only<'ast>(
         parser,
     )?;
 
-    // TODO: we should build btree_map with real values, not a copied references from env: ref &HashMap
-    let btree_map: BTreeMap<String, Par> =
-        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let btree_map = bound_injections(env, &uris);
 
     let result_new = New {
         bind_count: new_count as i32,
@@ -349,6 +353,7 @@ fn normalize_with_wildcards<'ast>(
                 source: Some(new_boundvar_par(source_depth, source_bitset.clone(), false)),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             }],
             body: Some(match_par),
             persistent: false,
@@ -386,8 +391,7 @@ fn normalize_with_wildcards<'ast>(
     }
 
     // Finally wrap in the outer New.
-    let btree_map: BTreeMap<String, Par> =
-        env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let btree_map = bound_injections(env, &static_uris);
     let outer_locally_free = filter_and_adjust_bitset(outer_body.locally_free.clone(), outer_count);
     let result_new = New {
         bind_count: outer_count as i32,

@@ -59,6 +59,7 @@ mod tests {
                 native_token_name: "F1R3CAP".to_string(),
                 native_token_symbol: "F1R3".to_string(),
                 native_token_decimals: 8,
+                protocol_version: casper::rust::casper_conf::default_protocol_version(),
             },
             genesis_ceremony: GenesisCeremony {
                 required_signatures: 0,
@@ -79,12 +80,41 @@ mod tests {
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
             mergeable_channels_gc_depth_buffer: 10,
+            rejection_search_cap_from_height: None,
+            rejection_search_group_branch_cap:
+                casper::rust::casper_conf::default_rejection_search_group_branch_cap(),
+            v6_retained_records: casper::rust::casper_conf::default_v6_retained_records(),
+            v6_conservation_audit_interval:
+                casper::rust::casper_conf::default_v6_conservation_audit_interval(),
+            offer_rejection_log_capacity:
+                casper::rust::casper_conf::default_offer_rejection_log_capacity(),
+            offer_rejection_reason_bytes:
+                casper::rust::casper_conf::default_offer_rejection_reason_bytes(),
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
+            finalizer_oracle_cache_justifications:
+                casper::rust::casper_conf::default_finalizer_oracle_cache_justifications(),
+            finalizer_oracle_cache_self_justifications:
+                casper::rust::casper_conf::default_finalizer_oracle_cache_self_justifications(),
+            finalizer_oracle_cache_ancestors:
+                casper::rust::casper_conf::default_finalizer_oracle_cache_ancestors(),
+            finalizer_timeout_reruns: casper::rust::casper_conf::default_finalizer_timeout_reruns(),
+            finalizer_derivation_budget:
+                casper::rust::casper_conf::default_finalizer_derivation_budget(),
+            finalizer_step_backstop: casper::rust::casper_conf::default_finalizer_step_backstop(),
+            finalizer_cursor_max_invalidations:
+                casper::rust::casper_conf::default_finalizer_cursor_max_invalidations(),
+            deploy_pool_blocks_of_backlog:
+                casper::rust::casper_conf::default_deploy_pool_blocks_of_backlog(),
+            proposal_pacing_floor_distance:
+                casper::rust::casper_conf::default_proposal_pacing_floor_distance(),
+            v6_execution_lag_threshold:
+                casper::rust::casper_conf::default_v6_execution_lag_threshold(),
+            v6_fallback_distance: casper::rust::casper_conf::default_v6_fallback_distance(),
         }
     }
 

@@ -399,6 +399,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 
         let deploy_storage = KeyValueDeployStorage::new(&mut rnode_store_manager).await?;
+        deploy_storage.set_rejection_log_bounds(
+            conf.casper.offer_rejection_log_capacity,
+            conf.casper.offer_rejection_reason_bytes,
+        );
         let deploy_storage_arc = Arc::new(deploy_storage.clone());
         (deploy_storage, deploy_storage_arc)
     };
@@ -537,7 +541,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
             reporting_casper::rho_reporter(
                 &rspace_stores,
-                &block_dag_storage,
                 runtime_manager.replay_lock(),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )

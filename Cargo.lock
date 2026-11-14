@@ -805,7 +805,6 @@ dependencies = [
  "itertools 0.14.0",
  "k256",
  "lazy_static",
- "loom 0.7.2",
  "lz4_flex",
  "metrics 0.23.1",
  "metrics-util 0.17.0",
@@ -3544,6 +3543,7 @@ dependencies = [
 name = "models"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "crypto",
  "hex",
  "itertools 0.14.0",
@@ -5190,7 +5190,7 @@ dependencies = [
 [[package]]
 name = "rholang-parser"
 version = "0.1.0"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd#ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd"
 dependencies = [
  "bitvec",
  "nonempty-collections",
@@ -5205,7 +5205,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd#ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -5214,7 +5214,7 @@ dependencies = [
 [[package]]
 name = "rholang-tree-sitter-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=4e22339eca493c5ce3d14386c2af67af74bfffa2#4e22339eca493c5ce3d14386c2af67af74bfffa2"
+source = "git+https://github.com/F1R3FLY-io/rholang-rs?rev=ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd#ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd"
 dependencies = [
  "anyhow",
  "quote",

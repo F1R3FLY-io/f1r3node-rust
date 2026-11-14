@@ -17,6 +17,7 @@ use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::safety_oracle::CliqueOracleImpl;
+use casper::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::validator_identity::ValidatorIdentity;
@@ -39,6 +40,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::helper::inline_ingest::InlineIngest;
@@ -68,6 +70,92 @@ pub struct ShardOverrides {
     pub with_read_only_size: Option<usize>,
     pub deploy_lifespan: Option<i64>,
     pub finalization_rate: Option<i32>,
+    pub v6: Option<V6TestConfig>,
+    /// Each node keeps its own RSpace, seeded with the genesis state, so it
+    /// holds only the state roots it computed itself. Otherwise the nodes
+    /// share one RSpace.
+    pub own_rspace: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct V6TestConfig {
+    pub start_engine: bool,
+    pub max_user_deploys_per_block: Option<u32>,
+    pub retained_records: usize,
+    pub lag_threshold: Option<u64>,
+    pub audit_interval: Option<u64>,
+}
+
+impl Default for V6TestConfig {
+    fn default() -> Self {
+        V6TestConfig {
+            start_engine: true,
+            max_user_deploys_per_block: None,
+            retained_records: casper::rust::casper::V6_RETAINED_RECORDS_DEFAULT,
+            lag_threshold: None,
+            audit_interval: None,
+        }
+    }
+}
+
+fn v6_engine_for_test(
+    config: &V6TestConfig,
+    genesis: &BlockMessage,
+    runtime_manager: Arc<RuntimeManager>,
+    block_store: KeyValueBlockStore,
+    block_dag_storage: BlockDagKeyValueStorage,
+    deploy_storage: Arc<KeyValueDeployStorage>,
+) -> Arc<casper::rust::v6::V6Engine> {
+    let engine = casper::rust::v6::V6Engine::new(
+        genesis,
+        runtime_manager,
+        block_store,
+        block_dag_storage,
+        deploy_storage,
+        config
+            .lag_threshold
+            .unwrap_or_else(casper::rust::casper_conf::default_v6_execution_lag_threshold),
+        casper::rust::casper_conf::default_v6_fallback_distance(),
+        casper::rust::v6::resource_policy::ShardResourcePolicy::default(),
+        config.retained_records,
+        config
+            .audit_interval
+            .unwrap_or(casper::rust::v6::conservation::CONSERVATION_AUDIT_INTERVAL_DEFAULT),
+        casper::rust::casper::DEPLOY_LIFESPAN_DEFAULT,
+    )
+    .expect("the v6 engine opens its executor state");
+    if config.start_engine {
+        engine.start();
+    }
+    engine
+}
+
+/// Copies every RSpace store of `from_scope` into `to_scope`.
+async fn seed_rspace(from_scope: &str, to_scope: &str) {
+    let mut from = resources::mk_test_rnode_store_manager_with_dual_scope(
+        resources::generate_scope_id(),
+        from_scope.to_string(),
+    );
+    let mut to = resources::mk_test_rnode_store_manager_with_dual_scope(
+        resources::generate_scope_id(),
+        to_scope.to_string(),
+    );
+    for (db, _) in rnode_db_mapping(None) {
+        if !db.id().starts_with("rspace-") {
+            continue;
+        }
+        let entries = from
+            .store(db.id().to_string())
+            .await
+            .expect("genesis RSpace store")
+            .to_map()
+            .expect("genesis RSpace entries");
+        to.store(db.id().to_string())
+            .await
+            .expect("node RSpace store")
+            .put(entries.into_iter().collect())
+            .expect("seed node RSpace");
+    }
 }
 
 pub struct TestNode {
@@ -708,6 +796,50 @@ impl TestNode {
         Ok(nodes.into_iter().next().unwrap())
     }
 
+    pub async fn create_v6_network(
+        genesis: GenesisContext,
+        network_size: usize,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_v6_network_with(genesis, network_size, V6TestConfig::default()).await
+    }
+
+    pub async fn create_v6_network_with_block_deploys(
+        genesis: GenesisContext,
+        network_size: usize,
+        max_user_deploys_per_block: u32,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_v6_network_with(genesis, network_size, V6TestConfig {
+            max_user_deploys_per_block: Some(max_user_deploys_per_block),
+            ..V6TestConfig::default()
+        })
+        .await
+    }
+
+    pub async fn create_v6_network_driven(
+        genesis: GenesisContext,
+        network_size: usize,
+        lag_threshold: Option<u64>,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_v6_network_with(genesis, network_size, V6TestConfig {
+            start_engine: false,
+            lag_threshold,
+            ..V6TestConfig::default()
+        })
+        .await
+    }
+
+    pub async fn create_v6_network_with(
+        genesis: GenesisContext,
+        network_size: usize,
+        config: V6TestConfig,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_network_with_overrides(genesis, network_size, ShardOverrides {
+            v6: Some(config),
+            ..Default::default()
+        })
+        .await
+    }
+
     /// Creates a network of TestNodes
     pub async fn create_network(
         genesis: GenesisContext,
@@ -912,6 +1044,7 @@ impl TestNode {
         let max_parent_depth = overrides.max_parent_depth;
         let deploy_lifespan = overrides.deploy_lifespan;
         let finalization_rate = overrides.finalization_rate;
+        let v6_config = overrides.v6.clone();
 
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -920,12 +1053,18 @@ impl TestNode {
         // With shared LMDB, we don't need to copy storage directories.
         // Use the shared LMDB path for data_dir (for logging/debugging purposes only).
         let _new_storage_dir = resources::get_shared_lmdb_path();
-        // Use mk_test_rnode_store_manager_with_shared_rspace to get a new scope with genesis data copied
-        // This ensures test isolation for blocks/DAG (each TestNode has its own scope)
-        // while sharing RSpace scope so all nodes in this test can see each other's state
+        // Each TestNode has its own block and DAG scope. The RSpace scope is
+        // the genesis one, shared by every node, unless the node keeps its own.
+        let rspace_scope = if overrides.own_rspace {
+            let scope = resources::generate_scope_id();
+            seed_rspace(&genesis_context.rspace_scope_id, &scope).await;
+            scope
+        } else {
+            genesis_context.rspace_scope_id.clone()
+        };
         let mut kvm = resources::mk_test_rnode_store_manager_with_shared_rspace(
             genesis_context,
-            &genesis_context.rspace_scope_id,
+            &rspace_scope,
         )
         .await
         .expect("Failed to create store manager with shared RSpace");
@@ -1063,8 +1202,23 @@ impl TestNode {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
             mergeable_channels_gc_depth_buffer: 10,
+            v6_order_then_execute: v6_config.is_some(),
+            max_user_deploys_per_block: v6_config
+                .as_ref()
+                .and_then(|config| config.max_user_deploys_per_block)
+                .unwrap_or(CasperShardConf::new().max_user_deploys_per_block),
             ..CasperShardConf::new()
         };
+        let v6_engine = v6_config.as_ref().map(|config| {
+            v6_engine_for_test(
+                config,
+                &genesis,
+                Arc::new(runtime_manager.clone()),
+                block_store.clone(),
+                block_dag_storage.clone(),
+                deploy_storage.clone(),
+            )
+        });
 
         let finalized_bond_cache =
             casper::rust::engine::multi_parent_casper::FinalizedBondCache::from_storage(
@@ -1084,6 +1238,7 @@ impl TestNode {
             ),
             deploy_storage: deploy_storage.clone(),
             shard_conf,
+            v6: v6_engine.clone(),
         };
         let casper_impl = MultiParentCasperImpl {
             observer: finalization.observer.clone(),
@@ -1106,6 +1261,12 @@ impl TestNode {
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            v6: v6_engine,
+            judged_twins: std::sync::Arc::new(
+                casper::rust::util::bounded_cache::BoundedCache::new(
+                    MultiParentCasperImpl::MAX_JUDGED_TWINS,
+                ),
+            ),
         };
 
         let casper = Arc::new(casper_impl);

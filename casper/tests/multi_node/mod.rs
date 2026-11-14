@@ -10,3 +10,8 @@ mod integer_channel_resend_merge;
 mod registry_key_merge;
 mod foreign_genesis_rejection;
 mod store_items_flood_resilience;
+mod v6_order_then_execute;
+mod v6_engine_state;
+mod v6_inclusion_checks;
+mod v6_lag_gate;
+mod twin_arrival_order_spec;

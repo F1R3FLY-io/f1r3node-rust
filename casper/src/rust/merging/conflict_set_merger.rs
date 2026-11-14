@@ -143,6 +143,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     // parent, so its chains never enter the conflict set to begin with. This
     // is exercised only by unit tests.
     pinned: &HashSet<R>,
+    rejection_search: RejectionSearch,
 ) -> Result<ResolvedConflicts<R>, HistoryError> {
     tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.ENTER",
         n_actual = actual_seq.len(), n_late = late_seq.len());
@@ -272,6 +273,7 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         cost,
         prior_losses,
         pinned,
+        rejection_search,
     );
     metrics::histogram!(
         crate::rust::metrics_constants::DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC,
@@ -789,6 +791,7 @@ pub fn merge<
         // passes an empty set too, for its own reason: its base IS the main
         // parent, so that parent's chains are never candidates for rejection.
         &HashSet::new(),
+        RejectionSearch::EXHAUSTIVE,
     )?;
     let new_state = compute_merged_state(
         &resolved,
@@ -916,6 +919,70 @@ fn union_roots(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RejectionSearch {
+    pub group_branch_cap: Option<usize>,
+}
+
+impl RejectionSearch {
+    pub const EXHAUSTIVE: Self = Self {
+        group_branch_cap: None,
+    };
+    pub const DEFAULT_GROUP_BRANCH_CAP: usize =
+        crate::rust::casper::REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT;
+
+    pub fn for_block(
+        block_number: i64,
+        capped_from_height: Option<i64>,
+        group_branch_cap: usize,
+    ) -> Self {
+        match capped_from_height {
+            Some(height) if block_number >= height => Self {
+                group_branch_cap: Some(group_branch_cap),
+            },
+            _ => Self::EXHAUSTIVE,
+        }
+    }
+}
+
+fn greedy_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
+    group_branches: &[&Branch<R>],
+    conflict_map: &HashMap<Branch<R>, HashableSet<Branch<R>>>,
+    cost: &impl Fn(&R) -> u64,
+    prior_losses: &impl Fn(&R) -> u64,
+) -> HashableSet<Branch<R>> {
+    let mut order: Vec<(LossProfile, u64, &Branch<R>)> = group_branches
+        .iter()
+        .map(|branch| {
+            let losses = branch_losses(branch, prior_losses);
+            let branch_cost: u64 = branch.0.iter().map(|item| cost(item)).sum();
+            (losses, branch_cost, *branch)
+        })
+        .collect();
+    order.sort_by(|a, b| {
+        b.0.max
+            .cmp(&a.0.max)
+            .then_with(|| b.0.sum.cmp(&a.0.sum))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| compare_branches(a.2, b.2))
+    });
+    let conflicts = |a: &Branch<R>, b: &Branch<R>| {
+        conflict_map.get(a).is_some_and(|set| set.0.contains(b))
+            || conflict_map.get(b).is_some_and(|set| set.0.contains(a))
+    };
+    let mut kept: Vec<&Branch<R>> = Vec::new();
+    let mut rejected = HashSet::new();
+    for (_, _, branch) in order {
+        if kept.iter().any(|keeper| conflicts(keeper, branch)) {
+            rejected.insert(branch.clone());
+        } else {
+            kept.push(branch);
+        }
+    }
+    HashableSet(rejected)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn select_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     branches: &HashableSet<Branch<R>>,
     conflict_map: &HashMap<Branch<R>, HashableSet<Branch<R>>>,
@@ -924,6 +991,7 @@ fn select_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
     cost: &impl Fn(&R) -> u64,
     prior_losses: &impl Fn(&R) -> u64,
     pinned: &HashSet<R>,
+    rejection_search: RejectionSearch,
 ) -> (HashableSet<Branch<R>>, usize, Duration) {
     if !pinned.is_empty() {
         return select_rejection_exhaustive(
@@ -985,8 +1053,28 @@ fn select_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
                     .map(|c| (nodes[i].clone(), c.clone()))
             })
             .collect();
-        let (options, n, time) =
-            rejection_candidates(&group_branches, &group_map, base, mergeable_channels);
+        let capped = rejection_search
+            .group_branch_cap
+            .is_some_and(|cap| members.len() > cap);
+        let (options, n, time) = if capped {
+            metrics::counter!(
+                crate::rust::metrics_constants::DAG_MERGE_REJECTION_GREEDY_GROUPS_METRIC,
+                "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+            )
+            .increment(1);
+            let started = Instant::now();
+            let members_branches: Vec<&Branch<R>> = members.iter().map(|&i| nodes[i]).collect();
+            let greedy = greedy_rejection(&members_branches, &group_map, cost, prior_losses);
+            let options = get_merged_result_rejection(
+                &group_branches,
+                &HashableSet(HashSet::from([greedy])),
+                base.clone(),
+                mergeable_channels,
+            );
+            (options, 1, started.elapsed())
+        } else {
+            rejection_candidates(&group_branches, &group_map, base, mergeable_channels)
+        };
         n_options += n;
         enumeration_time += time;
         group_options.push(options);
@@ -1974,6 +2062,7 @@ mod component_selection_tests {
             .0;
             let actual = select_rejection(
                 &all, &conflict_map, &base, &mergeable_channels, &cost, &prior_losses, &pinned,
+                RejectionSearch::EXHAUSTIVE,
             )
             .0;
             prop_assert_eq!(actual, expected);
@@ -2004,10 +2093,184 @@ mod component_selection_tests {
             &|_: &i32| 1,
             &|_: &i32| 0,
             &HashSet::new(),
+            RejectionSearch::EXHAUSTIVE,
         );
 
         assert_eq!(rejected.0.len(), 21);
         assert_eq!(n_options, 42);
+    }
+
+    fn random_conflicts(
+        n: i32,
+        edges_per_branch: u32,
+        seed: u64,
+    ) -> (
+        HashableSet<Branch<i32>>,
+        HashMap<Branch<i32>, HashableSet<Branch<i32>>>,
+    ) {
+        let mut lcg = seed;
+        let mut rand = move |modulo: u32| -> u32 {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((lcg >> 33) as u32) % modulo
+        };
+        let branches: Vec<Branch<i32>> = (0..n)
+            .map(|i| Arc::new(HashableSet(HashSet::from([i]))))
+            .collect();
+        let mut conflict_map: HashMap<Branch<i32>, HashableSet<Branch<i32>>> = branches
+            .iter()
+            .map(|b| (b.clone(), HashableSet(HashSet::new())))
+            .collect();
+        for (i, a) in branches.iter().enumerate() {
+            for _ in 0..edges_per_branch {
+                let j = rand(n as u32) as usize;
+                if j != i {
+                    let b = &branches[j];
+                    conflict_map.get_mut(a).unwrap().0.insert(b.clone());
+                    conflict_map.get_mut(b).unwrap().0.insert(a.clone());
+                }
+            }
+        }
+        (HashableSet(branches.into_iter().collect()), conflict_map)
+    }
+
+    fn no_conflicting_survivors(
+        all: &HashableSet<Branch<i32>>,
+        rejected: &HashableSet<Branch<i32>>,
+        conflict_map: &HashMap<Branch<i32>, HashableSet<Branch<i32>>>,
+    ) -> bool {
+        let survivors: Vec<&Branch<i32>> =
+            all.0.iter().filter(|b| !rejected.0.contains(*b)).collect();
+        survivors.iter().all(|a| {
+            survivors
+                .iter()
+                .all(|b| !conflict_map.get(*a).is_some_and(|set| set.0.contains(*b)))
+        })
+    }
+
+    #[test]
+    fn the_capped_search_activates_only_from_its_height() {
+        assert_eq!(
+            RejectionSearch::for_block(10, None, RejectionSearch::DEFAULT_GROUP_BRANCH_CAP),
+            RejectionSearch::EXHAUSTIVE
+        );
+        assert_eq!(
+            RejectionSearch::for_block(9, Some(10), RejectionSearch::DEFAULT_GROUP_BRANCH_CAP),
+            RejectionSearch::EXHAUSTIVE
+        );
+        assert_eq!(
+            RejectionSearch::for_block(10, Some(10), RejectionSearch::DEFAULT_GROUP_BRANCH_CAP)
+                .group_branch_cap,
+            Some(RejectionSearch::DEFAULT_GROUP_BRANCH_CAP)
+        );
+        assert_eq!(
+            RejectionSearch::for_block(10, Some(10), 4).group_branch_cap,
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn below_the_cap_the_capped_search_equals_the_exhaustive_search() {
+        for seed in 0..40u64 {
+            let (all, conflict_map) = random_conflicts(12, 2, 0xabc0 + seed);
+            let run = |search| {
+                select_rejection(
+                    &all,
+                    &conflict_map,
+                    &HashMap::new(),
+                    &|_: &i32| NumberChannelsDiff::new(),
+                    &|item: &i32| (*item as u64 * 7) % 5,
+                    &|item: &i32| (*item as u64) % 3,
+                    &HashSet::new(),
+                    search,
+                )
+            };
+            let capped = run(RejectionSearch {
+                group_branch_cap: Some(12),
+            });
+            assert_eq!(capped.0, run(RejectionSearch::EXHAUSTIVE).0, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn a_dense_large_group_resolves_greedily_without_conflicting_survivors() {
+        for seed in 0..10u64 {
+            let (all, conflict_map) = random_conflicts(200, 6, 0x5eed + seed);
+            let started = std::time::Instant::now();
+            let (rejected, n_options, _) = select_rejection(
+                &all,
+                &conflict_map,
+                &HashMap::new(),
+                &|_: &i32| NumberChannelsDiff::new(),
+                &|item: &i32| *item as u64,
+                &|_: &i32| 0,
+                &HashSet::new(),
+                RejectionSearch::for_block(1, Some(0), RejectionSearch::DEFAULT_GROUP_BRANCH_CAP),
+            );
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            assert_eq!(n_options, 1, "one greedy option for the one large group");
+            assert!(!rejected.0.is_empty());
+            assert!(no_conflicting_survivors(&all, &rejected, &conflict_map));
+
+            let shuffled: HashMap<Branch<i32>, HashableSet<Branch<i32>>> = {
+                let mut entries: Vec<_> = conflict_map.clone().into_iter().collect();
+                entries.reverse();
+                entries.into_iter().collect()
+            };
+            let (again, _, _) = select_rejection(
+                &HashableSet({
+                    let mut reversed: Vec<Branch<i32>> = all.0.iter().cloned().collect();
+                    reversed.reverse();
+                    reversed.into_iter().collect()
+                }),
+                &shuffled,
+                &HashMap::new(),
+                &|_: &i32| NumberChannelsDiff::new(),
+                &|item: &i32| *item as u64,
+                &|_: &i32| 0,
+                &HashSet::new(),
+                RejectionSearch::for_block(1, Some(0), RejectionSearch::DEFAULT_GROUP_BRANCH_CAP),
+            );
+            assert_eq!(
+                again, rejected,
+                "the greedy selection must be deterministic"
+            );
+        }
+    }
+
+    #[test]
+    fn the_greedy_fallback_still_refuses_an_overdrawn_channel() {
+        let ch = Blake2b256Hash::from_bytes(vec![7u8; 32]);
+        let branches: Vec<Branch<i32>> = (0..20)
+            .map(|i| Arc::new(HashableSet(HashSet::from([i]))))
+            .collect();
+        let conflict_map: HashMap<Branch<i32>, HashableSet<Branch<i32>>> = branches
+            .iter()
+            .map(|b| (b.clone(), HashableSet(HashSet::new())))
+            .collect();
+        let all = HashableSet(branches.iter().cloned().collect());
+        let withdraw = |_: &i32| {
+            let mut d = NumberChannelsDiff::new();
+            d.insert(ch.clone(), (BigInt::from(-6), MergeType::IntegerAdd));
+            d
+        };
+        let base = HashMap::from([(ch.clone(), BigInt::from(30))]);
+        let (rejected, _, _) = select_rejection(
+            &all,
+            &conflict_map,
+            &base,
+            &withdraw,
+            &|_: &i32| 1,
+            &|_: &i32| 0,
+            &HashSet::new(),
+            RejectionSearch::for_block(1, Some(0), RejectionSearch::DEFAULT_GROUP_BRANCH_CAP),
+        );
+        assert_eq!(
+            rejected.0.len(),
+            15,
+            "only five withdrawals of six fit in thirty"
+        );
     }
 
     #[test]
@@ -2054,6 +2317,7 @@ mod component_selection_tests {
             &no_cost,
             &losses,
             &pinned,
+            RejectionSearch::EXHAUSTIVE,
         )
         .0;
 

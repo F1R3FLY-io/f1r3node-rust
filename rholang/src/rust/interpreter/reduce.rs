@@ -13,7 +13,8 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
+    cost_signature, BindPattern, Bundle, CostSignature, CostSignatureCompound, CostSignedTerm,
+    CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
     EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
     EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, New, Par,
     ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
@@ -38,7 +39,6 @@ use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
 use tokio::task::{JoinError, JoinHandle};
 
-use super::accounting::_cost;
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
@@ -49,6 +49,18 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
+use super::accounting::rev_stack::journal::{
+    journal_open, journaled_transfers, record, JournalEntry,
+};
+use super::accounting::rev_stack::kind::{is_stack_body, stack_kind, KindStack, TokenKind};
+use super::accounting::rev_stack::process::{hash_seal_admissible, split_hash_seals};
+use super::accounting::rev_stack::region::{
+    admissible, names_a_signer, signature_owner, signature_owner_among,
+};
+use super::accounting::rev_stack::reserve::reservation;
+use super::accounting::rev_stack::seal::{self, Origin, SealKind, SealRecord};
+use super::accounting::rev_stack::{RevAmount, RevStackError, RevStacks, WalletOwner};
+use super::accounting::{_cost, membrane};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -61,7 +73,9 @@ use super::metrics_constants::{
 };
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
-use super::substitute::Substitute;
+use super::storage::charging_rspace::{consume_issue, produce_issue};
+use super::substitute::{Substitute, SubstituteTrait};
+use super::system_processes::DeployData;
 use super::util::GeneratedMessage;
 use super::{unwrap_option_ref, unwrap_option_safe};
 use crate::rust::interpreter::accounting::costs::{
@@ -204,10 +218,46 @@ where
     F: Future + std::marker::Send + 'static,
     F::Output: std::marker::Send + 'static,
 {
+    let future = seal::inherit(future);
     AbortOnDrop(match DEFERRED_DISPATCHES.try_with(Arc::clone) {
         Ok(scope) => tokio::spawn(DEFERRED_DISPATCHES.scope(scope, future)),
         Err(_) => tokio::spawn(future),
     })
+}
+
+fn restore_scope<F: Future>(_random_state: &[u8], future: F) -> impl Future<Output = F::Output> {
+    membrane::settled(future)
+}
+
+fn split_kind(
+    signature: &CostSignature,
+) -> Result<Option<(KindStack, Option<CostSignature>)>, InterpreterError> {
+    let elements = match &signature.value {
+        Some(cost_signature::Value::Compound(compound)) => compound.elements.clone(),
+        _ => vec![signature.clone()],
+    };
+    let (kinds, payers): (Vec<_>, Vec<_>) = elements
+        .into_iter()
+        .partition(|element| stack_kind(element).is_some());
+    let stack = match kinds.as_slice() {
+        [] => return Ok(None),
+        [kind] => stack_kind(kind).expect("a kind element"),
+        _ => {
+            return Err(InterpreterError::ReduceError(
+                "a token stack may name only one kind".to_string(),
+            ))
+        }
+    };
+    let payer = match payers.len() {
+        0 => None,
+        1 => payers.into_iter().next(),
+        _ => Some(CostSignature {
+            value: Some(cost_signature::Value::Compound(CostSignatureCompound {
+                elements: payers,
+            })),
+        }),
+    };
+    Ok(Some((stack, payer)))
 }
 
 fn join_error(err: JoinError) -> InterpreterError {
@@ -324,6 +374,11 @@ pub struct DebruijnInterpreter {
     /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
     /// system-process closures that clone the reducer.
     pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
+    pub genesis_phase: Arc<std::sync::atomic::AtomicBool>,
+    pub deploy_data: Arc<RwLock<DeployData>>,
+    pub seal_records: Arc<std::sync::atomic::AtomicBool>,
+    pub elaborate_next: Arc<std::sync::atomic::AtomicBool>,
+    pub funding: Arc<std::sync::Mutex<Option<Arc<seal::MembraneMeter>>>>,
 }
 
 type Application = Option<(
@@ -382,6 +437,9 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        for stack in &par.cost_stacks {
+            self.eval_cost_stack(stack, env).await?;
+        }
         let terms: Vec<GeneratedMessage> = vec![
             par.sends
                 .into_iter()
@@ -403,6 +461,10 @@ impl DebruijnInterpreter {
             par.bundles
                 .into_iter()
                 .map(GeneratedMessage::Bundle)
+                .collect(),
+            par.cost_signed_terms
+                .into_iter()
+                .map(GeneratedMessage::CostSignedTerm)
                 .collect(),
             par.exprs
                 .into_iter()
@@ -532,9 +594,14 @@ impl DebruijnInterpreter {
         let _close_on_drop = CloseOnDrop(scope.clone());
         let env = Env::new();
 
+        let record = self.deployment_record().await;
+        let funding = self.funding.lock().map(|f| f.clone()).unwrap_or(None);
         let mut errors: Vec<InterpreterError> = Vec::new();
         if let Err(err) = DEFERRED_DISPATCHES
-            .scope(scope.clone(), self.eval(par, &env, rand))
+            .scope(
+                scope.clone(),
+                seal::funded_by(funding, seal::within(record, self.eval(par, &env, rand))),
+            )
             .await
         {
             errors.push(err);
@@ -566,11 +633,11 @@ impl DebruijnInterpreter {
         let reducer = self.clone();
         let handle = AbortOnDrop(tokio::spawn(DEFERRED_DISPATCHES.scope(
             scope.clone(),
-            async move {
+            seal::keep_funding(async move {
                 reducer
                     .dispatch(continuation, data_list, is_replay, previous_output)
                     .await
-            },
+            }),
         )));
         scope.push(handle);
     }
@@ -653,6 +720,30 @@ impl DebruijnInterpreter {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<DispatchType, InterpreterError> {
+        if let Some(firing) = membrane::firing() {
+            let (storage, reserve) = produce_issue(&chan, &data, persistent);
+            self.cost.charge_reserving(storage, reserve)?;
+            let reducer = self.clone();
+            firing.defer(Box::pin(seal::within(
+                seal::current(),
+                membrane::precharged(async move {
+                    reducer
+                        .produce_now(chan, data, persistent)
+                        .await
+                        .map(|_| ())
+                }),
+            )));
+            return Ok(DispatchType::Skip);
+        }
+        self.produce_now(chan, data, persistent).await
+    }
+
+    async fn produce_now(
+        &self,
+        chan: Par,
+        data: ListParWithRandom,
+        persistent: bool,
+    ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
         let retry = persistent.then(|| (chan.clone(), data.clone()));
         let produce_result = self.space.produce(chan, data, persistent).await?;
@@ -727,6 +818,38 @@ impl DebruijnInterpreter {
         peek: bool,
         guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
+        if let Some(firing) = membrane::firing() {
+            let continuation = TaggedContinuation {
+                tagged_cont: Some(TaggedCont::ParBody(body.clone())),
+                guard: guard.clone(),
+                seal: self.continuation_seal(&body)?,
+            };
+            let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.iter().cloned().unzip();
+            let (storage, reserve) = consume_issue(&sources, &patterns, &continuation, persistent);
+            self.cost.charge_reserving(storage, reserve)?;
+            let reducer = self.clone();
+            firing.defer(Box::pin(seal::within(
+                seal::current(),
+                membrane::precharged(async move {
+                    reducer
+                        .consume_now(binds, body, persistent, peek, guard)
+                        .await
+                        .map(|_| ())
+                }),
+            )));
+            return Ok(DispatchType::Skip);
+        }
+        self.consume_now(binds, body, persistent, peek, guard).await
+    }
+
+    async fn consume_now(
+        &self,
+        binds: Vec<(BindPattern, Par)>,
+        body: ParWithRandom,
+        persistent: bool,
+        peek: bool,
+        guard: Option<Par>,
+    ) -> Result<DispatchType, InterpreterError> {
         let retry = persistent.then(|| (binds.clone(), body.clone(), guard.clone()));
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.into_iter().unzip();
 
@@ -746,6 +869,7 @@ impl DebruijnInterpreter {
                 sources,
                 patterns,
                 TaggedContinuation {
+                    seal: self.continuation_seal(&body)?,
                     tagged_cont: Some(TaggedCont::ParBody(body)),
                     guard,
                 },
@@ -805,9 +929,10 @@ impl DebruijnInterpreter {
                         .into_iter()
                         .collect();
                     let reducer = self.clone();
-                    futures.push(Box::pin(
-                        async move { reducer.produce(chan, data, true).await },
-                    ));
+                    let restored = data.random_state.clone();
+                    futures.push(Box::pin(restore_scope(&restored, async move {
+                        reducer.produce(chan, data, true).await
+                    })));
                     futures.extend(peeks);
                     join_comm_tasks(futures).await
                 } else if peek {
@@ -857,9 +982,10 @@ impl DebruijnInterpreter {
                         .into_iter()
                         .collect();
                     let reducer = self.clone();
-                    futures.push(Box::pin(async move {
+                    let restored = body.random_state.clone();
+                    futures.push(Box::pin(restore_scope(&restored, async move {
                         reducer.consume(binds, body, true, peek, guard).await
-                    }));
+                    })));
                     join_comm_tasks(futures).await
                 } else if _peek {
                     let peeks = self.produce_peeks(data_list.clone());
@@ -926,9 +1052,17 @@ impl DebruijnInterpreter {
             .into_iter()
             .filter(|(_, _, _, persist)| !persist)
             .map(|(chan, _, removed_data, _)| {
-                let reducer = self.clone();
-                Box::pin(async move { reducer.produce(chan, removed_data, false).await })
-                    as DispatchFuture
+                let self_clone = self.clone();
+                let restored = removed_data.random_state.clone();
+                Box::pin(restore_scope(&restored, async move {
+                    self_clone.produce(chan, removed_data, false).await
+                }))
+                    as Pin<
+                        Box<
+                            dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
+                                + std::marker::Send,
+                        >,
+                    >
             })
             .collect()
     }
@@ -1017,6 +1151,15 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        self.generated_message_step(term, env, rand).await
+    }
+
+    async fn generated_message_step(
+        &self,
+        term: GeneratedMessage,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
         match term {
             GeneratedMessage::Send(term) => {
                 metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
@@ -1056,6 +1199,9 @@ impl DebruijnInterpreter {
             }
             GeneratedMessage::If(term) => self.eval_if(term, env, rand).await,
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
+            GeneratedMessage::CostSignedTerm(term) => {
+                self.eval_cost_signed_term(term, env, rand).await
+            }
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
@@ -1127,6 +1273,7 @@ impl DebruijnInterpreter {
             ListParWithRandom {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
+                seal: self.stored_seal(),
             },
             send.persistent,
         )
@@ -1141,6 +1288,14 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.cost.charge(receive_eval_cost())?;
+
+        for signature in receive
+            .binds
+            .iter()
+            .filter_map(|b| b.cost_signature.clone())
+        {
+            self.check_region_signature(signature, None, env).await?;
+        }
 
         // Optional `where`-clause guard. Substituted at depth=1 so any
         // variables in scope at the receive site (but not pattern-bound)
@@ -1357,20 +1512,22 @@ impl DebruijnInterpreter {
         // Genesis composition toggles the flag off (yet-to-land
         // runtime slice) so FsGenesis can bind `fsRead`/`fsWrite`/...
         // directly in its outer new-scope.
-        if self
+        let fs_native_filtered = self
             .filter_fs_native_urns
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            for urn in &new.uri {
-                if urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
-                    return Err(InterpreterError::ReduceError(format!(
-                        "urn `{urn}` is not resolvable in this phase; \
-                         rho:io:fs:native:* URNs are reserved for the \
-                         genesis-blessed FsGenesis deploy — user code \
-                         must instead go through the Fs cap published \
-                         at genesis"
-                    )));
-                }
+            .load(std::sync::atomic::Ordering::Acquire);
+        let genesis = self
+            .genesis_phase
+            .load(std::sync::atomic::Ordering::Acquire);
+        let in_process_region = super::system_processes::in_process_region();
+        for urn in &new.uri {
+            if let Some(reason) = super::system_processes::urn_refusal(
+                urn,
+                self.urn_map.get(urn),
+                fs_native_filtered,
+                genesis,
+                in_process_region,
+            ) {
+                return Err(InterpreterError::ReduceError(reason));
             }
         }
 
@@ -1489,6 +1646,328 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.eval(unwrap_option_safe(bundle.body)?, env, rand).await
+    }
+
+    fn seals_recorded(&self) -> bool { self.seal_records.load(Ordering::Relaxed) }
+
+    fn stored_seal(&self) -> Option<models::rhoapi::SealRecordProto> {
+        if self.seals_recorded() {
+            seal::current().map(|record| record.to_proto())
+        } else {
+            None
+        }
+    }
+
+    fn continuation_seal(
+        &self,
+        body: &ParWithRandom,
+    ) -> Result<Option<models::rhoapi::SealRecordProto>, InterpreterError> {
+        let Some(mut stored) = self.stored_seal() else {
+            return Ok(None);
+        };
+        let Some(term_seal) = elaborated_continuation(body.body.as_ref()) else {
+            return Ok(Some(stored));
+        };
+        let Some(origin) = stored.origin.as_mut() else {
+            return Ok(Some(stored));
+        };
+        if seal::origin_digest(origin) != term_seal.origin {
+            return Ok(Some(stored));
+        }
+        origin.phlo_limit = term_seal.phlo_limit;
+        Ok(Some(stored))
+    }
+
+    pub fn request_elaboration(&self) { self.elaborate_next.store(true, Ordering::Relaxed) }
+
+    pub fn take_elaboration(&self) -> bool {
+        self.seals_recorded() && self.elaborate_next.swap(false, Ordering::Relaxed)
+    }
+
+    pub async fn elaboration_origin(&self) -> Option<models::rhoapi::SealOrigin> {
+        self.deployment_record()
+            .await
+            .and_then(|record| record.to_proto().origin)
+    }
+
+    async fn deployment_record(&self) -> Option<SealRecord> {
+        if !self.seals_recorded() {
+            return None;
+        }
+        let data = self.deploy_data.read().await;
+        let signers = std::iter::once(&data.deployer_id)
+            .chain(data.cosigners.iter())
+            .map(WalletOwner::from_public_key)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        Some(SealRecord::deployment(signers.first()?.clone(), Origin {
+            envelope: data.deploy_id.clone(),
+            signers,
+            phlo_price: data.phlo_price,
+            phlo_limit: data.phlo_limit,
+        }))
+    }
+
+    async fn region_signers(
+        &self,
+        refused: &(dyn Fn(String) -> InterpreterError + Sync),
+    ) -> Result<Vec<WalletOwner>, InterpreterError> {
+        if let Some(record) = seal::current() {
+            return Ok(record.origin.signers);
+        }
+        if self.seals_recorded() {
+            return Err(refused("the code runs outside every seal".to_string()));
+        }
+        let data = self.deploy_data.read().await;
+        std::iter::once(&data.deployer_id)
+            .chain(data.cosigners.iter())
+            .map(WalletOwner::from_public_key)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| refused(e.to_string()))
+    }
+
+    async fn stack_writer(
+        &self,
+        refused: &(dyn Fn(String) -> InterpreterError + Sync),
+    ) -> Result<WalletOwner, InterpreterError> {
+        if let Some(record) = seal::current() {
+            return Ok(record.owner);
+        }
+        if self.seals_recorded() {
+            return Err(refused(
+                "a stack outside every seal has no payer".to_string(),
+            ));
+        }
+        WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
+            .map_err(|e| refused(e.to_string()))
+    }
+
+    async fn check_region_signature(
+        &self,
+        signature: CostSignature,
+        body: Option<&Par>,
+        env: &Env<Par>,
+    ) -> Result<(WalletOwner, SealKind), InterpreterError> {
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!(
+                "a signed term may name only the signatures of the deployment's signers: {reason}"
+            ))
+        };
+        let signature = self
+            .substitute
+            .substitute_cost_signature(signature, 0, env)?;
+        let (hashes, others) = split_hash_seals(&signature);
+        if !hashes.is_empty() {
+            let Some(body) = body else {
+                return Err(InterpreterError::ReduceError(
+                    "a signed term may name `# P` only when its body is P".to_string(),
+                ));
+            };
+            let body = self.substitute.substitute(body.clone(), 0, env)?;
+            for process in &hashes {
+                hash_seal_admissible(process, &body).map_err(InterpreterError::ReduceError)?;
+            }
+        }
+        let signers = if others.is_empty() {
+            Vec::new()
+        } else {
+            self.region_signers(&refused).await?
+        };
+        for component in &others {
+            let owner =
+                signature_owner_among(component, &signers).map_err(|e| refused(e.to_string()))?;
+            if !held_or_signed(&owner, &signers) {
+                return Err(refused(format!("{owner:?}")));
+            }
+        }
+        let owner =
+            signature_owner_among(&signature, &signers).map_err(|e| refused(e.to_string()))?;
+        let kind = if others.is_empty() {
+            SealKind::Process
+        } else {
+            SealKind::Signed
+        };
+        Ok((owner, kind))
+    }
+
+    async fn eval_cost_stack(
+        &self,
+        stack: &CostStack,
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        self.pay_stacks_from(TokenKind::rev(), None, std::slice::from_ref(stack), env)
+            .await
+    }
+
+    async fn pay_stacks_from(
+        &self,
+        kind: TokenKind,
+        writer: Option<WalletOwner>,
+        stacks: &[CostStack],
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let what = if kind.is_rev() {
+            "a token stack"
+        } else {
+            "a token stack of a kind"
+        };
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!("{what} cannot be paid: {reason}"))
+        };
+        let writer = match writer {
+            Some(writer) => writer,
+            None => self.stack_writer(&refused).await?,
+        };
+        let payees = self.stack_payees(stacks, env, &refused)?;
+        let store = self
+            .space
+            .hot_store()
+            .ok_or_else(|| refused("the native token layer is unavailable".to_string()))?;
+        let wallets = RevStacks::over_hot_store(store).of_kind(&kind);
+        let held = if kind.is_rev() {
+            reservation(wallets.cells(), &writer)
+                .map_err(|e| refused(e.to_string()))?
+                .held
+        } else {
+            0
+        };
+        let total: RevAmount = payees.iter().map(|(_, units)| units).sum();
+        let balance = wallets
+            .balance(&writer)
+            .map_err(|e| refused(e.to_string()))?;
+        if journal_open(wallets.cells()) {
+            return journaled_transfers(wallets.cells(), balance, held, &kind, &writer, &payees)
+                .map_err(|e| refused(e.to_string()));
+        }
+        if balance < total.saturating_add(held) {
+            return Err(refused(format!(
+                "the writer's wallet holds {balance}, of which {held} is committed, and the stack needs {total}"
+            )));
+        }
+        for (payee, units) in payees {
+            wallets
+                .transfer_keeping(&writer, &payee, units, held)
+                .map_err(|e| refused(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn mint_stacks(
+        &self,
+        kind: TokenKind,
+        stacks: &[CostStack],
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!(
+                "a token stack of a kind cannot be minted: {reason}"
+            ))
+        };
+        if kind.is_rev() {
+            return Err(refused(RevStackError::RevMint.to_string()));
+        }
+        let payees = self.stack_payees(stacks, env, &refused)?;
+        let store = self
+            .space
+            .hot_store()
+            .ok_or_else(|| refused("the native token layer is unavailable".to_string()))?;
+        let wallets = RevStacks::over_hot_store(store).of_kind(&kind);
+        let minted = payees
+            .into_iter()
+            .map(|(payee, units)| JournalEntry::mint(kind.clone(), payee, units))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| refused(e.to_string()))?;
+        let journaled = journal_open(wallets.cells());
+        for entry in minted {
+            if journaled {
+                record(wallets.cells(), &entry)
+            } else {
+                wallets.deposit(&entry.to, entry.amount)
+            }
+            .map_err(|e| refused(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn stack_payees(
+        &self,
+        stacks: &[CostStack],
+        env: &Env<Par>,
+        refused: &dyn Fn(String) -> InterpreterError,
+    ) -> Result<Vec<(WalletOwner, RevAmount)>, InterpreterError> {
+        let mut payees: Vec<(WalletOwner, RevAmount)> = Vec::new();
+        for cell in stacks.iter().flat_map(|stack| &stack.cells) {
+            let signature = self
+                .substitute
+                .substitute_cost_signature(cell.clone(), 0, env)?;
+            let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+            match payees.iter_mut().find(|(payee, _)| *payee == owner) {
+                Some((_, units)) => *units += 1,
+                None => payees.push((owner, 1)),
+            }
+        }
+        Ok(payees)
+    }
+
+    async fn eval_cost_signed_term(
+        &self,
+        term: CostSignedTerm,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        let term_seal = term.seal;
+        let signature = unwrap_option_safe(term.signature)?;
+        let body = unwrap_option_safe(term.body)?;
+        if is_stack_body(&body) {
+            let resolved = self
+                .substitute
+                .substitute_cost_signature(signature.clone(), 0, env)?;
+            if let Some((stack, payer)) = split_kind(&resolved)? {
+                let writer = match payer {
+                    Some(payer) => Some(self.check_region_signature(payer, None, env).await?.0),
+                    None => None,
+                };
+                return if stack.mint {
+                    self.mint_stacks(stack.kind, &body.cost_stacks, env).await
+                } else {
+                    self.pay_stacks_from(stack.kind, writer, &body.cost_stacks, env)
+                        .await
+                };
+            }
+        }
+        let refused = |reason: &str| {
+            InterpreterError::ReduceError(format!("an elaborated seal is refused: {reason}"))
+        };
+        let from_deployment = term_seal.is_some();
+        if from_deployment && self.seals_recorded() && seal::current().is_none() {
+            return Err(refused("a term from a deployment runs outside every seal"));
+        }
+        let own_seal = match (seal::current(), term_seal) {
+            (Some(record), Some(term_seal)) if term_seal.origin == record.origin.digest() => {
+                Some(term_seal)
+            }
+            _ => None,
+        };
+        if own_seal.is_none() && names_a_signer(&signature) {
+            return Err(refused(
+                "it names a signer by index outside the origin that wrote it",
+            ));
+        }
+        let (owner, kind) = self
+            .check_region_signature(signature, Some(&body), env)
+            .await?;
+        match (seal::current(), own_seal) {
+            (Some(record), Some(term_seal)) => {
+                let kind = SealKind::from_tag(term_seal.kind)
+                    .ok_or_else(|| refused("it names no kind"))?;
+                let entered = record.enter(owner, kind).with_limit(term_seal.phlo_limit);
+                seal::within(Some(entered), self.eval(body, env, rand)).await
+            }
+            (Some(record), None) => {
+                seal::within(Some(record.enter(owner, kind)), self.eval(body, env, rand)).await
+            }
+            (None, _) => self.eval(body, env, rand).await,
+        }
     }
 
     // Public here for testing purposes
@@ -7646,6 +8125,11 @@ impl DebruijnInterpreter {
             // Default: reject fs native URNs.  Genesis composition
             // flips the flag off via a yet-to-land runtime slice.
             filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            genesis_phase: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            deploy_data: Arc::new(RwLock::new(DeployData::empty())),
+            seal_records: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            elaborate_next: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            funding: Arc::new(std::sync::Mutex::new(None)),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -8024,6 +8508,8 @@ fn extract_bool(par: &Par) -> Option<bool> {
         || !par.unforgeables.is_empty()
         || !par.connectives.is_empty()
         || !par.conditionals.is_empty()
+        || !par.cost_signed_terms.is_empty()
+        || !par.cost_stacks.is_empty()
         || par.exprs.len() != 1
     {
         return None;
@@ -8070,6 +8556,62 @@ fn describe_par_type(par: &Par) -> String {
     } else {
         "non-boolean process".to_string()
     }
+}
+
+fn held_or_signed(owner: &WalletOwner, signers: &[WalletOwner]) -> bool {
+    match owner {
+        WalletOwner::Unforgeable(_) => true,
+        WalletOwner::Compound(components) => components.iter().all(|c| held_or_signed(c, signers)),
+        single => admissible(single, signers),
+    }
+}
+
+fn solely_term(body: &Par) -> Option<&CostSignedTerm> {
+    let [term] = body.cost_signed_terms.as_slice() else {
+        return None;
+    };
+    let rest_empty = body.sends.is_empty()
+        && body.receives.is_empty()
+        && body.news.is_empty()
+        && body.exprs.is_empty()
+        && body.matches.is_empty()
+        && body.bundles.is_empty()
+        && body.conditionals.is_empty()
+        && body.cost_stacks.is_empty();
+    if !rest_empty {
+        return None;
+    }
+    Some(term)
+}
+
+pub(crate) fn own_seal_owner(body: Option<&Par>, record: &SealRecord) -> Option<WalletOwner> {
+    let term = solely_term(body?)?;
+    let seal = term.seal.as_ref()?;
+    if seal.kind == 3 || seal.origin != record.origin.digest() {
+        return None;
+    }
+    if term.body.as_ref().is_some_and(is_stack_body) {
+        return None;
+    }
+    signature_owner_among(term.signature.as_ref()?, &record.origin.signers).ok()
+}
+
+fn elaborated_continuation(body: Option<&Par>) -> Option<&models::rhoapi::ElaboratedSeal> {
+    let term = solely_term(body?)?;
+    if term.body.as_ref().is_some_and(is_stack_body) {
+        return None;
+    }
+    let seal = term.seal.as_ref()?;
+    if seal.kind == 3 {
+        return None;
+    }
+    Some(seal)
+}
+
+pub fn is_elaborated_deployment(par: &Par, origin: &models::rhoapi::SealOrigin) -> bool {
+    solely_term(par)
+        .and_then(|term| term.seal.as_ref())
+        .is_some_and(|seal| seal.kind == 1 && seal.origin == seal::origin_digest(origin))
 }
 
 #[cfg(test)]

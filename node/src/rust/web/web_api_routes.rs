@@ -43,6 +43,10 @@ impl WebApiRoutes {
             .route("/prepare-deploy", post(prepare_deploy_post_handler))
             .route("/deploy", post(shared_handlers::deploy_handler))
             .route(
+                "/deploy/offered/{deploy_id}/receipt",
+                get(shared_handlers::offered_receipt_handler),
+            )
+            .route(
                 "/explore-deploy",
                 post(shared_handlers::explore_deploy_handler),
             )
@@ -120,6 +124,8 @@ pub async fn prepare_deploy_get_handler(State(app_state): State<AppState>) -> Re
     responses(
         (status = 200, description = "Next deploy sequence number and pre-generated unforgeable names for the given deployer/timestamp", body = PrepareResponse),
         (status = 400, description = "Malformed request body or invalid deployer hex (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
@@ -142,6 +148,8 @@ pub async fn prepare_deploy_post_handler(
     responses(
         (status = 200, description = "Channel data at the given name in the specified block", body = RhoDataResponse),
         (status = 400, description = "Malformed request body or invalid block hash (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
@@ -507,7 +515,8 @@ use crate::rust::api::web_api::{
         (status = 200, description = "Estimated phlogiston (gas) cost for the given Rholang term", body = EstimateCostResponse),
         (status = 400, description = "Malformed request body, invalid Rholang term, invalid deployer key, or invalid block hash (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
-        (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
+        (status = 415, description = "Unsupported content type (`invalid_request_body`)", body = ApiErrorResponse),
+        (status = 422, description = "Invalid JSON field type or value (`invalid_request_body`), or execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`)", body = ApiErrorResponse),
     ),
     tag = "Query"
@@ -710,6 +719,18 @@ mod tests {
         async fn find_deploy(&self, _: String, view: ViewMode) -> eyre::Result<DeployResponse> {
             Ok(sample_deploy_response(view))
         }
+        async fn offered_receipt(
+            &self,
+            deploy_id: String,
+        ) -> eyre::Result<crate::rust::api::web_api::OfferedReceiptResponse> {
+            let id = crate::rust::api::web_api::parse_offered_id(&deploy_id)?;
+            Ok(
+                crate::rust::api::web_api::OfferedReceiptResponse::from_status(
+                    hex::encode(id),
+                    casper::rust::v6::receipt::OfferedStatus::Unknown,
+                ),
+            )
+        }
         async fn exploratory_deploy(
             &self,
             _: String,
@@ -863,6 +884,18 @@ mod tests {
         Router::new()
             .route("/deploy/{deploy_id}", get(test_find_deploy_handler))
             .route(
+                "/deploy/offered/{deploy_id}/receipt",
+                get(
+                    |State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
+                     AppPath(deploy_id): AppPath<String>| async move {
+                        match web_api.offered_receipt(deploy_id).await {
+                            Ok(response) => Json(response).into_response(),
+                            Err(e) => AppError(e).into_response(),
+                        }
+                    },
+                ),
+            )
+            .route(
                 "/pending-deploys",
                 get(
                     move |State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
@@ -877,6 +910,43 @@ mod tests {
     async fn body_to_string(body: Body) -> String {
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn offered_receipt_route_answers_unknown_ids_and_refuses_bad_ones() {
+        let id = "ab".repeat(70);
+        let request = axum::http::Request::builder()
+            .uri(format!("/deploy/offered/{id}/receipt"))
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(response.into_body()).await).unwrap();
+        assert_eq!(body["status"], "unknown");
+        assert_eq!(body["deployId"], id);
+
+        for bad in ["zz", "abc"] {
+            let request = axum::http::Request::builder()
+                .uri(format!("/deploy/offered/{bad}/receipt"))
+                .body(Body::empty())
+                .unwrap();
+            let response = test_router().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_offered_receipt_route_does_not_shadow_find_deploy() {
+        let request = axum::http::Request::builder()
+            .uri("/deploy/offered")
+            .body(Body::empty())
+            .unwrap();
+        let response = test_router().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_str(&body_to_string(response.into_body()).await).unwrap();
+        assert!(body.get("status").is_none());
     }
 
     #[tokio::test]

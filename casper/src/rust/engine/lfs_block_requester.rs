@@ -77,8 +77,6 @@ pub struct ST<Key: Hash + Eq + Clone> {
     pub lower_bound: i64,
     pub height_map: BTreeMap<i64, HashSet<Key>>,
     pub finished: HashSet<Key>,
-    pub slash_evidence: HashSet<Key>,
-    pub slash_targets: HashSet<Key>,
 }
 
 impl<Key: Hash + Eq + Clone> ST<Key> {
@@ -103,24 +101,15 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             lower_bound,
             height_map: BTreeMap::new(),
             finished: HashSet::new(),
-            slash_evidence: HashSet::new(),
-            slash_targets: HashSet::new(),
         }
     }
 
     /// Adds new keys to Init state, ready for processing. Existing keys are skipped.
     /// Returns a new ST instance with the added keys.
     pub fn add(&self, keys: HashSet<Key>) -> Self {
-        let promoted: HashSet<Key> = keys.intersection(&self.slash_evidence).cloned().collect();
-        let mut finished = self.finished.clone();
-        for key in &promoted {
-            finished.remove(key);
-        }
-        let slash_evidence = self.slash_evidence.difference(&keys).cloned().collect();
-
         // Filter keys that are in Done status or in request Map.
         let new_keys: HashSet<Key> = keys
-            .difference(&finished)
+            .difference(&self.finished)
             .filter(|k| !self.d.contains_key(k))
             .cloned()
             .collect();
@@ -137,24 +126,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             latest: self.latest.clone(),
             lower_bound: self.lower_bound,
             height_map: self.height_map.clone(),
-            finished,
-            slash_evidence,
-            slash_targets: self.slash_targets.clone(),
+            finished: self.finished.clone(),
         }
-    }
-
-    pub fn add_slash_evidence(&self, keys: HashSet<Key>) -> Self {
-        let mut next = self.clone();
-        next.slash_targets.extend(keys.iter().cloned());
-        for key in keys {
-            if !next.d.contains_key(&key) && !next.finished.contains(&key) {
-                next.d.insert(key.clone(), ReqStatus::Init);
-                if !next.latest.contains(&key) {
-                    next.slash_evidence.insert(key);
-                }
-            }
-        }
-        next
     }
 
     /// Get next keys not already requested or in case of resend together with Requested.
@@ -206,8 +179,6 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             lower_bound: self.lower_bound,
             height_map: self.height_map.clone(),
             finished: self.finished.clone(),
-            slash_evidence: self.slash_evidence.clone(),
-            slash_targets: self.slash_targets.clone(),
         };
 
         (new_state, request_keys)
@@ -233,14 +204,9 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             let mut adj_latest = self.latest.clone();
             let was_removed = adj_latest.remove(&k);
             let is_latest = was_removed;
-            let mut slash_evidence = self.slash_evidence.clone();
-            if is_latest {
-                slash_evidence.remove(&k);
-            }
 
             // Add replacement message if supplied
             let new_latest = if let Some(replacement) = latest_replacement {
-                slash_evidence.remove(&replacement);
                 adj_latest.insert(replacement);
                 adj_latest
             } else {
@@ -251,10 +217,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
 
             // Save in height map
             let mut new_height_map = self.height_map.clone();
-            if !slash_evidence.contains(&k) {
-                let height_keys = new_height_map.entry(height).or_default();
-                height_keys.insert(k.clone());
-            }
+            let height_keys = new_height_map.entry(height).or_default();
+            height_keys.insert(k.clone());
 
             // Calculate new minimum height if latest message
             // - we need parents of latest message so it's `-1`
@@ -275,8 +239,6 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
                 lower_bound: new_lower_bound,
                 height_map: new_height_map,
                 finished: self.finished.clone(),
-                slash_evidence,
-                slash_targets: self.slash_targets.clone(),
             };
 
             (
@@ -307,8 +269,6 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
                 lower_bound: self.lower_bound,
                 height_map: self.height_map.clone(),
                 finished: new_finished,
-                slash_evidence: self.slash_evidence.clone(),
-                slash_targets: self.slash_targets.clone(),
             }
         } else {
             self.clone()
@@ -468,19 +428,13 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             // - received one of latest messages
             // - requested and block number is greater than minimum
             let block_is_accepted = {
-                let mut state = self.st.lock().map_err(|_| {
+                let state = self.st.lock().map_err(|_| {
                     CasperError::StreamError(
                         "Failed to acquire state lock for acceptance check".to_string(),
                     )
                 })?;
-                let evidence_only = state.slash_evidence.contains(&block.block_hash);
-                let accepted = !evidence_only
-                    && (is_received_latest || (is_received && block_number >= state.lower_bound));
-                if !evidence_only {
-                    *state = state.add_slash_evidence(
-                        proto_util::block_slash_targets(block).into_iter().collect(),
-                    );
-                }
+                let accepted =
+                    is_received_latest || (is_received && block_number >= state.lower_bound);
                 tracing::debug!(
                     "Block {} acceptance check - latest: {}, height_ok: {} ({}>={}), accepted: {}",
                     block_hash_str,

@@ -19,7 +19,7 @@ use crate::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::instances::radix_history::RadixHistory;
-use crate::rspace::hot_store::HotStoreInstances;
+use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
 use crate::rspace::metrics_constants::{
     CHANGES_SPAN, CREATE_CHECKPOINT_SPAN, HISTORY_CHECKPOINT_SPAN, RESET_SPAN,
@@ -104,6 +104,8 @@ where
     }
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
+
+    fn hot_store(&self) -> Option<Arc<Box<dyn HotStore<C, P, A, K>>>> { Some(self.get_store()) }
 
     async fn get_data_at(
         &self,

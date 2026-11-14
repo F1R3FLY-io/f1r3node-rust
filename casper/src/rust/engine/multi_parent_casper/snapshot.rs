@@ -189,16 +189,15 @@ pub(crate) async fn compute_snapshot(
     // The bonded-set ("most-slashed" intersection) parent filter that
     // previously occupied the else-arm below was removed. Committee/bonds
     // are now validated against the finalized floor
-    // (`Validate::bonds_cache_from_floor`) together with
-    // `neglected_invalid_block` — both validator-side and finalization-
-    // anchored. A proposer-side parent filter cannot be a consensus-safety
+    // (`Validate::bonds_cache_from_floor`), validator-side and
+    // finalization-anchored. A proposer-side parent filter cannot be a consensus-safety
     // mechanism (validators replay declared parents, not fork-choice), so it
     // was redundant. See docs/sealed-floor-merge-v2-status.md.
     let fork_choice_floor = crate::rust::finality::floor::fork_choice_floor(
         &dag,
         &this.block_store,
         valid_latest_msgs.values(),
-        BlockMetadata::from_block(&this.approved_block, false, None, None),
+        BlockMetadata::from_block(&this.approved_block, None, None, None),
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
@@ -561,15 +560,21 @@ pub(crate) async fn compute_snapshot(
     let mut invalid_blocks = HashMap::new();
     for justification in &justifications {
         if let Some(metadata) = dag.lookup(&justification.latest_block_hash)? {
-            if metadata.invalid {
+            if metadata.is_invalid() {
                 invalid_blocks.insert(metadata.block_hash, metadata.sender);
             }
         }
     }
     let last_finalized_block = dag.last_finalized_block();
     record_dag_cardinality_metrics(&dag);
+    let chain_id = this.block_dag_storage.genesis_hash()?.ok_or_else(|| {
+        CasperError::RuntimeError(
+            "the genesis hash is unknown, so the node's chain identity is unknown".to_string(),
+        )
+    })?;
 
     Ok(CasperSnapshot {
+        chain_id,
         dag,
         last_finalized_block,
         parents,
@@ -639,10 +644,25 @@ pub(crate) async fn get_on_chain_state(
         });
     }
 
-    let fetched = this
-        .runtime_manager
-        .get_active_validators(&block.body.state.post_state_hash)
-        .await?;
+    let root_held = this.v6.is_none()
+        || this.runtime_manager.has_root(
+            &rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash::from_bytes_prost(
+                &block.body.state.post_state_hash,
+            ),
+        )?;
+    let fetched = if root_held {
+        this.runtime_manager
+            .get_active_validators(&block.body.state.post_state_hash)
+            .await?
+    } else {
+        block
+            .body
+            .state
+            .bonds
+            .iter()
+            .map(|b| b.validator.clone())
+            .collect()
+    };
 
     let av = {
         let mut cache = this.active_validators_cache.lock().await;

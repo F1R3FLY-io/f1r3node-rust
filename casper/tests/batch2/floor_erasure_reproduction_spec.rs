@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
-use casper::rust::finality::floor::{floor_of_view, Floor};
+use casper::rust::finality::floor::Floor;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
@@ -46,6 +46,7 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 
 use crate::helper::test_node::TestNode;
+use crate::util::floor_cursor_check::floor_of_view;
 use crate::util::genesis_builder::GenesisBuilder;
 
 /// v0=3, v1=3, v2=4 of S=10 at ftt 0.1 (witness needs q > 5.5): no single

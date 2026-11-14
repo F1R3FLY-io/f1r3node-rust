@@ -30,12 +30,38 @@ use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::engine::multi_parent_casper::{FinalizedBondCache, MultiParentCasperImpl};
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
+use crate::rust::safety::clique_oracle::OracleCacheBounds;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 /// Default for `CasperShardConf::active_validators_cache_max_entries`.
 /// See the commit centralizing Phase 13 hardcoded defaults.
 pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
+
+pub const FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT: OracleCacheBounds = OracleCacheBounds {
+    latest_justifications: 8192,
+    self_justification: 131_072,
+    ancestor: 131_072,
+};
+
+pub const FINALIZER_TIMEOUT_RERUNS_DEFAULT: u32 = 3;
+
+pub const FINALIZER_DERIVATION_BUDGET_DEFAULT: Duration = Duration::from_secs(15);
+
+pub const FINALIZER_STEP_BACKSTOP_DEFAULT: Duration = Duration::from_secs(60);
+
+pub const DEPLOY_POOL_BLOCKS_OF_BACKLOG_DEFAULT: usize = 64;
+
+pub const PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT: i64 = 128;
+
+pub const REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT: usize = 16;
+
+pub const V6_RETAINED_RECORDS_DEFAULT: usize = 1024;
+
+pub const DEPLOY_LIFESPAN_DEFAULT: i64 = 50;
+
+pub const FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT: u32 =
+    crate::rust::finality::floor_runner::MAX_CONSECUTIVE_INVALIDATIONS;
 
 /// Wire convention for `CasperShardConf::max_number_of_parents`: `-1`
 /// disables the parent-count cap. C15 / Smell-3: hoisted from two
@@ -55,6 +81,7 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    PoolFull { pending: usize, cap: usize },
 }
 
 impl DeployError {
@@ -68,6 +95,8 @@ impl DeployError {
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
     pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
+
+    pub fn pool_full(pending: usize, cap: usize) -> Self { DeployError::PoolFull { pending, cap } }
 }
 
 impl Display for DeployError {
@@ -82,6 +111,11 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::PoolFull { pending, cap } => write!(
+                f,
+                "Deploy pool is full ({} pending, cap {}); retry later",
+                pending, cap
+            ),
         }
     }
 }
@@ -94,6 +128,15 @@ pub trait Casper {
     /// ("naming the missing block lets the caller fetch it and retry").
     /// Defaulted to a no-op so effect mocks need no block ingest.
     async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
+
+    fn v6_engine(&self) -> Option<Arc<crate::rust::v6::V6Engine>> { None }
+
+    fn offered_pool_status(
+        &self,
+        _deploy_id: &[u8],
+    ) -> Result<crate::rust::v6::receipt::PoolStatus, CasperError> {
+        Ok(crate::rust::v6::receipt::PoolStatus::Absent)
+    }
 
     fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError>;
 
@@ -119,8 +162,8 @@ pub trait Casper {
 
     /// Validate a self-created block, skipping the expensive checkpoint replay and bonds_cache
     /// steps since both were already computed during `block_creator::create`.
-    /// All other validation steps (block_summary, neglected_invalid_block, phlo_price,
-    /// equivocation checks, block-index computation) still run.
+    /// All other validation steps (shard and chain identity, equivocation, block_summary,
+    /// neglect, phlo_price, block-index computation) still run.
     async fn validate_self_created(
         &self,
         block: &BlockMessage,
@@ -271,6 +314,15 @@ pub async fn hash_set_casper(
     // using. The ppm remains the sole DECISION input; this f32 is display-only.
     casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
+    if approved_block.header.version == crate::rust::v6::resource_policy::PROTOCOL_V6 {
+        tracing::info!(
+            target: "f1r3fly.v6",
+            "the approved block is protocol 6: this node runs the v6 executor"
+        );
+        casper_shard_conf.v6_order_then_execute = true;
+        casper_shard_conf.casper_version = approved_block.header.version;
+    }
+
     // Same adoption, same reasoning, for the parameters the VALIDITY rules
     // fork on: parent spread (max-parent-depth), expiry and repeat-deploy
     // windows (deploy-lifespan), the phlo floor (min-phlo-price), and the
@@ -355,6 +407,41 @@ pub async fn hash_set_casper(
 
     let finalized_bond_cache =
         FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
+    let deploy_storage = Arc::new(deploy_storage);
+    let v6 = if casper_shard_conf.v6_order_then_execute {
+        let policy = match crate::rust::v6::genesis_policy::read_genesis_policy(
+            &runtime_manager,
+            &approved_block.body.state.post_state_hash,
+        )
+        .await?
+        {
+            Some(policy) => policy,
+            None => {
+                tracing::warn!(
+                    target: "f1r3fly.v6",
+                    "the approved block's state holds no shard resource policy; using the defaults"
+                );
+                crate::rust::v6::resource_policy::ShardResourcePolicy::default()
+            }
+        };
+        let engine = crate::rust::v6::V6Engine::new(
+            &approved_block,
+            runtime_manager.clone(),
+            block_store.clone(),
+            block_dag_storage.clone(),
+            deploy_storage.clone(),
+            casper_shard_conf.v6_execution_lag_threshold,
+            casper_shard_conf.v6_fallback_distance,
+            policy,
+            casper_shard_conf.v6_retained_records,
+            casper_shard_conf.v6_conservation_audit_interval,
+            casper_shard_conf.deploy_lifespan,
+        )?;
+        engine.start();
+        Some(engine)
+    } else {
+        None
+    };
     let finalization = crate::rust::engine::multi_parent_casper::FinalizationContext {
         observer: Arc::new(std::sync::OnceLock::new()),
         finalized_bond_cache: finalized_bond_cache.clone(),
@@ -365,8 +452,9 @@ pub async fn hash_set_casper(
         divergence_monitor: Arc::new(
             crate::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
         ),
-        deploy_storage: Arc::new(deploy_storage),
+        deploy_storage,
         shard_conf: casper_shard_conf,
+        v6: v6.clone(),
     };
     Ok(MultiParentCasperImpl {
         observer: finalization.observer.clone(),
@@ -387,6 +475,10 @@ pub async fn hash_set_casper(
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        v6,
+        judged_twins: Arc::new(crate::rust::util::bounded_cache::BoundedCache::new(
+            MultiParentCasperImpl::MAX_JUDGED_TWINS,
+        )),
     })
 }
 
@@ -421,6 +513,9 @@ pub struct CasperSnapshot {
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
+    /// The genesis block hash: the chain every block of this node's shard
+    /// names in its header.
+    pub chain_id: BlockHash,
 }
 
 impl CasperSnapshot {
@@ -435,8 +530,9 @@ impl CasperSnapshot {
             .is_some_and(|stake| !stake.is_zero()))
     }
 
-    pub fn new(dag: KeyValueDagRepresentation) -> Self {
+    pub fn new(dag: KeyValueDagRepresentation, chain_id: BlockHash) -> Self {
         Self {
+            chain_id,
             dag,
             last_finalized_block: BlockHash::default(),
             parents: vec![],
@@ -526,6 +622,11 @@ pub struct CasperShardConf {
     /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
     /// When disabled (default), mergeable data is retained.
     pub enable_mergeable_channel_gc: bool,
+    pub rejection_search_cap_from_height: Option<i64>,
+    pub rejection_search_group_branch_cap: usize,
+    pub v6_order_then_execute: bool,
+    pub v6_retained_records: usize,
+    pub v6_conservation_audit_interval: u64,
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
@@ -535,6 +636,8 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
+    pub v6_execution_lag_threshold: u64,
+    pub v6_fallback_distance: usize,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -546,6 +649,13 @@ pub struct CasperShardConf {
     /// no conf key feeds it. Distinct from the `runtime_manager`'s own
     /// 256-entry validator-key cache.
     pub active_validators_cache_max_entries: usize,
+    pub finalizer_oracle_cache_bounds: OracleCacheBounds,
+    pub finalizer_timeout_reruns: u32,
+    pub finalizer_derivation_budget: Duration,
+    pub finalizer_step_backstop: Duration,
+    pub finalizer_cursor_max_invalidations: u32,
+    pub deploy_pool_blocks_of_backlog: usize,
+    pub proposal_pacing_floor_distance: i64,
 }
 
 impl CasperShardConf {
@@ -573,6 +683,12 @@ impl CasperShardConf {
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
+            rejection_search_cap_from_height: None,
+            rejection_search_group_branch_cap: REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT,
+            v6_order_then_execute: false,
+            v6_retained_records: V6_RETAINED_RECORDS_DEFAULT,
+            v6_conservation_audit_interval:
+                crate::rust::v6::conservation::CONSERVATION_AUDIT_INTERVAL_DEFAULT,
             mergeable_channels_gc_depth_buffer: 10,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
@@ -580,10 +696,19 @@ impl CasperShardConf {
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
+            v6_execution_lag_threshold: crate::rust::v6::lag::DEFAULT_LAG_THRESHOLD,
+            v6_fallback_distance: crate::rust::v6::core::DEFAULT_FALLBACK_DISTANCE,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
             active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
+            finalizer_oracle_cache_bounds: FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT,
+            finalizer_timeout_reruns: FINALIZER_TIMEOUT_RERUNS_DEFAULT,
+            finalizer_derivation_budget: FINALIZER_DERIVATION_BUDGET_DEFAULT,
+            finalizer_step_backstop: FINALIZER_STEP_BACKSTOP_DEFAULT,
+            finalizer_cursor_max_invalidations: FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT,
+            deploy_pool_blocks_of_backlog: DEPLOY_POOL_BLOCKS_OF_BACKLOG_DEFAULT,
+            proposal_pacing_floor_distance: PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT,
         }
     }
 }
@@ -672,7 +797,6 @@ pub mod test_helpers {
                 block_number_map: imbl::HashMap::new(),
                 main_parent_map: imbl::HashMap::new(),
                 self_justification_map: imbl::HashMap::new(),
-                invalid_blocks_set: imbl::HashSet::new(),
                 last_finalized_block_hash: BlockHash::new(),
                 finalized_blocks_set: imbl::HashSet::new(),
                 block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(
@@ -688,7 +812,7 @@ pub mod test_helpers {
                 )),
             }.build();
 
-            CasperSnapshot::new(dag)
+            CasperSnapshot::new(dag, BlockHash::from(vec![0xC1; 32]))
         }
 
         pub fn bond_validator_in_snapshot(

@@ -35,6 +35,27 @@ use crate::rust::validator_identity::ValidatorIdentity;
 
 #[async_trait]
 impl Casper for MultiParentCasperImpl {
+    fn v6_engine(&self) -> Option<Arc<crate::rust::v6::V6Engine>> { self.v6.clone() }
+
+    fn offered_pool_status(
+        &self,
+        deploy_id: &[u8],
+    ) -> Result<crate::rust::v6::receipt::PoolStatus, CasperError> {
+        use crate::rust::v6::receipt::PoolStatus;
+        if self.deploy_storage.contains_sig(deploy_id)?
+            || self
+                .rejected_deploy_buffer
+                .lock()?
+                .contains_sig(deploy_id)?
+        {
+            return Ok(PoolStatus::Pending);
+        }
+        Ok(match self.deploy_storage.rejection(deploy_id) {
+            Some(rejection) => PoolStatus::Rejected(rejection),
+            None => PoolStatus::Absent,
+        })
+    }
+
     async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
         self.ingest.need(hash).await
     }
@@ -135,18 +156,16 @@ impl MultiParentCasper for MultiParentCasperImpl {
         &self,
         weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
-        let equivocating_weight =
-            self.block_dag_storage
-                .access_equivocations_tracker(|tracker| {
-                    let equivocation_records = tracker.data()?;
-                    let equivocating_weight = initial_fault::equivocating_weight(
-                        &weights,
-                        equivocation_records
-                            .iter()
-                            .map(|record| &record.equivocator),
-                    );
-                    Ok(equivocating_weight)
-                })?;
+        let dag = self.block_dag_storage.get_representation()?;
+        let mut held = Vec::new();
+        for validator in weights.keys() {
+            held.extend(dag.equivocations_of(validator)?);
+        }
+        let equivocations = initial_fault::equivocations(&held);
+        let equivocating_weight = initial_fault::equivocating_weight(
+            &weights,
+            equivocations.iter().map(|(sender, _)| sender),
+        );
 
         let total_weight = initial_fault::total_weight(&weights);
         Ok(initial_fault::normalized_initial_fault(
