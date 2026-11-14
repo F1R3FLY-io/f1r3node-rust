@@ -11,7 +11,7 @@ use models::rust::utils::{
 use proptest::prelude::*;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::internal::Row;
+use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -60,8 +60,20 @@ struct Case {
     arrival: (Par, ListParWithRandom),
     continuation: TaggedContinuation,
     peeks: BTreeSet<i32>,
-    expected_bindings: Vec<Vec<Par>>,
+    outcomes: Vec<Outcome>,
+}
+
+struct Outcome {
+    bindings: Vec<Vec<Par>>,
     remaining: Vec<(Par, Vec<(ListParWithRandom, bool)>)>,
+}
+
+#[derive(Debug, PartialEq)]
+struct CandidateOrder {
+    state: State,
+    data: Vec<Vec<Datum<ListParWithRandom>>>,
+    continuations: Vec<WaitingContinuation<BindPattern, TaggedContinuation>>,
+    joins: Vec<Vec<Vec<Par>>>,
 }
 
 struct Observation {
@@ -88,6 +100,13 @@ fn bind(patterns: Vec<Par>, remainder: Option<Var>, free_count: i32) -> BindPatt
         remainder,
         free_count,
     }
+}
+
+fn one_variable_twice() -> Vec<Par> {
+    vec![
+        new_freevar_par(0, Vec::new()),
+        new_freevar_par(0, Vec::new()),
+    ]
 }
 
 fn guarded_continuation() -> TaggedContinuation {
@@ -120,8 +139,10 @@ fn guard_case(accepted: i64, rejected: i64, accepted_seed: u8, rejected_seed: u8
         arrival: (guard_channel.clone(), guard_arrival),
         continuation: guarded_continuation(),
         peeks: BTreeSet::new(),
-        expected_bindings: vec![vec![integer(accepted)]],
-        remaining: vec![(guard_channel, vec![(guard_decoy, false)])],
+        outcomes: vec![Outcome {
+            bindings: vec![vec![integer(accepted)]],
+            remaining: vec![(guard_channel, vec![(guard_decoy, false)])],
+        }],
     }
 }
 
@@ -165,6 +186,25 @@ fn cases() -> Vec<Case> {
     let repeated_channel = channel("repeated");
     let repeated_witness = datum(vec![integer(7)]);
     let repeated_arrival = datum(vec![integer(11)]);
+    let nonlinear_equal_channel = channel("nonlinear-equal");
+    let nonlinear_equal_decoy = datum(vec![integer(7)]);
+    let nonlinear_conflicting_channel = channel("nonlinear-conflicting");
+    let nonlinear_conflicting_decoy = datum(vec![integer(7)]);
+    let nonlinear_nested_channel = channel("nonlinear-nested");
+    let nonlinear_nested_decoy = datum(vec![integer(8)]);
+    let nonlinear_nested_arrival = datum(vec![new_elist_par(
+        vec![integer(13), integer(14)],
+        Vec::new(),
+        false,
+        None,
+        Vec::new(),
+        false,
+    )]);
+    let choice_left = channel("choice-left");
+    let choice_right = channel("choice-right");
+    let choice_first = datum(vec![integer(21)]);
+    let choice_second = datum(vec![integer(22)]);
+    let repeated_choice_channel = channel("repeated-choice");
     vec![
         Case {
             name: "ordered",
@@ -185,8 +225,10 @@ fn cases() -> Vec<Case> {
             arrival: (ordered_channel.clone(), ordered_arrival),
             continuation: TaggedContinuation::default(),
             peeks: BTreeSet::new(),
-            expected_bindings: vec![vec![integer(11)]],
-            remaining: vec![(ordered_channel, vec![(ordered_decoy, false)])],
+            outcomes: vec![Outcome {
+                bindings: vec![vec![integer(11)]],
+                remaining: vec![(ordered_channel, vec![(ordered_decoy, false)])],
+            }],
         },
         Case {
             name: "ac",
@@ -207,8 +249,10 @@ fn cases() -> Vec<Case> {
             arrival: (ac_channel.clone(), ac_arrival),
             continuation: TaggedContinuation::default(),
             peeks: BTreeSet::new(),
-            expected_bindings: vec![vec![integer(11)]],
-            remaining: vec![(ac_channel, vec![(ac_decoy, false)])],
+            outcomes: vec![Outcome {
+                bindings: vec![vec![integer(11)]],
+                remaining: vec![(ac_channel, vec![(ac_decoy, false)])],
+            }],
         },
         Case {
             name: "remainder",
@@ -222,8 +266,10 @@ fn cases() -> Vec<Case> {
             arrival: (remainder_channel.clone(), remainder_arrival),
             continuation: TaggedContinuation::default(),
             peeks: BTreeSet::new(),
-            expected_bindings: vec![vec![remainder_binding]],
-            remaining: vec![(remainder_channel, Vec::new())],
+            outcomes: vec![Outcome {
+                bindings: vec![vec![remainder_binding]],
+                remaining: vec![(remainder_channel, Vec::new())],
+            }],
         },
         guard_case(42, 55, 0, 0),
         Case {
@@ -237,8 +283,10 @@ fn cases() -> Vec<Case> {
             arrival: (peek_right.clone(), peek_arrival),
             continuation: TaggedContinuation::default(),
             peeks: BTreeSet::from([0]),
-            expected_bindings: vec![vec![integer(30)], Vec::new()],
-            remaining: vec![(peek_left, Vec::new()), (peek_right, Vec::new())],
+            outcomes: vec![Outcome {
+                bindings: vec![vec![integer(30)], Vec::new()],
+                remaining: vec![(peek_left, Vec::new()), (peek_right, Vec::new())],
+            }],
         },
         Case {
             name: "persistent",
@@ -251,11 +299,13 @@ fn cases() -> Vec<Case> {
             arrival: (persist_right.clone(), persist_arrival),
             continuation: TaggedContinuation::default(),
             peeks: BTreeSet::new(),
-            expected_bindings: vec![vec![integer(30)], Vec::new()],
-            remaining: vec![
-                (persist_left, vec![(persist_witness, true)]),
-                (persist_right, Vec::new()),
-            ],
+            outcomes: vec![Outcome {
+                bindings: vec![vec![integer(30)], Vec::new()],
+                remaining: vec![
+                    (persist_left, vec![(persist_witness, true)]),
+                    (persist_right, Vec::new()),
+                ],
+            }],
         },
         Case {
             name: "repeated-channel",
@@ -268,8 +318,147 @@ fn cases() -> Vec<Case> {
             arrival: (repeated_channel.clone(), repeated_arrival),
             continuation: TaggedContinuation::default(),
             peeks: BTreeSet::new(),
-            expected_bindings: vec![vec![integer(7)], Vec::new()],
-            remaining: vec![(repeated_channel, Vec::new())],
+            outcomes: vec![Outcome {
+                bindings: vec![vec![integer(7)], Vec::new()],
+                remaining: vec![(repeated_channel, Vec::new())],
+            }],
+        },
+        Case {
+            name: "nonlinear-equal",
+            channels: vec![nonlinear_equal_channel.clone()],
+            patterns: vec![bind(one_variable_twice(), None, 1)],
+            background: vec![(
+                nonlinear_equal_channel.clone(),
+                nonlinear_equal_decoy.clone(),
+                false,
+            )],
+            arrival: (
+                nonlinear_equal_channel.clone(),
+                datum(vec![integer(11), integer(11)]),
+            ),
+            continuation: TaggedContinuation::default(),
+            peeks: BTreeSet::new(),
+            outcomes: vec![Outcome {
+                bindings: vec![vec![integer(11)]],
+                remaining: vec![(nonlinear_equal_channel, vec![(
+                    nonlinear_equal_decoy,
+                    false,
+                )])],
+            }],
+        },
+        Case {
+            name: "nonlinear-conflicting",
+            channels: vec![nonlinear_conflicting_channel.clone()],
+            patterns: vec![bind(one_variable_twice(), None, 1)],
+            background: vec![(
+                nonlinear_conflicting_channel.clone(),
+                nonlinear_conflicting_decoy.clone(),
+                false,
+            )],
+            arrival: (
+                nonlinear_conflicting_channel.clone(),
+                datum(vec![integer(11), integer(12)]),
+            ),
+            continuation: TaggedContinuation::default(),
+            peeks: BTreeSet::new(),
+            outcomes: vec![Outcome {
+                bindings: vec![vec![integer(12)]],
+                remaining: vec![(nonlinear_conflicting_channel, vec![(
+                    nonlinear_conflicting_decoy,
+                    false,
+                )])],
+            }],
+        },
+        Case {
+            name: "nonlinear-nested",
+            channels: vec![nonlinear_nested_channel.clone()],
+            patterns: vec![bind(
+                vec![new_elist_par(
+                    one_variable_twice(),
+                    Vec::new(),
+                    true,
+                    None,
+                    Vec::new(),
+                    true,
+                )],
+                None,
+                1,
+            )],
+            background: vec![(
+                nonlinear_nested_channel.clone(),
+                nonlinear_nested_decoy.clone(),
+                false,
+            )],
+            arrival: (nonlinear_nested_channel.clone(), nonlinear_nested_arrival),
+            continuation: TaggedContinuation::default(),
+            peeks: BTreeSet::new(),
+            outcomes: vec![Outcome {
+                bindings: vec![vec![integer(14)]],
+                remaining: vec![(nonlinear_nested_channel, vec![(
+                    nonlinear_nested_decoy,
+                    false,
+                )])],
+            }],
+        },
+        Case {
+            name: "join-choice",
+            channels: vec![choice_left.clone(), choice_right.clone()],
+            patterns: vec![
+                bind(vec![new_freevar_par(0, Vec::new())], None, 1),
+                bind(vec![new_freevar_par(0, Vec::new())], None, 1),
+            ],
+            background: vec![
+                (choice_left.clone(), choice_first.clone(), false),
+                (choice_left.clone(), choice_second.clone(), false),
+            ],
+            arrival: (choice_right.clone(), datum(vec![integer(23)])),
+            continuation: TaggedContinuation::default(),
+            peeks: BTreeSet::new(),
+            outcomes: vec![
+                Outcome {
+                    bindings: vec![vec![integer(21)], vec![integer(23)]],
+                    remaining: vec![
+                        (choice_left.clone(), vec![(choice_second.clone(), false)]),
+                        (choice_right.clone(), Vec::new()),
+                    ],
+                },
+                Outcome {
+                    bindings: vec![vec![integer(22)], vec![integer(23)]],
+                    remaining: vec![
+                        (choice_left, vec![(choice_first, false)]),
+                        (choice_right, Vec::new()),
+                    ],
+                },
+            ],
+        },
+        Case {
+            name: "repeated-channel-choice",
+            channels: vec![
+                repeated_choice_channel.clone(),
+                repeated_choice_channel.clone(),
+            ],
+            patterns: vec![
+                bind(vec![new_freevar_par(0, Vec::new())], None, 1),
+                bind(vec![new_freevar_par(0, Vec::new())], None, 1),
+            ],
+            background: vec![(
+                repeated_choice_channel.clone(),
+                datum(vec![integer(31)]),
+                false,
+            )],
+            arrival: (repeated_choice_channel.clone(), datum(vec![integer(32)])),
+            continuation: TaggedContinuation::default(),
+            peeks: BTreeSet::new(),
+            outcomes: vec![
+                Outcome {
+                    bindings: vec![vec![integer(31)], vec![integer(32)]],
+                    remaining: vec![(repeated_choice_channel.clone(), Vec::new())],
+                },
+                Outcome {
+                    bindings: vec![vec![integer(32)], vec![integer(31)]],
+                    remaining: vec![(repeated_choice_channel, Vec::new())],
+                },
+            ],
         },
     ]
 }
@@ -284,7 +473,7 @@ where M: Match<BindPattern, ListParWithRandom, TaggedContinuation> + 'static {
     RSpace::create_with_replay(stores, Arc::new(Box::new(matcher))).expect("play/replay pair")
 }
 
-async fn execute<S>(space: &S, case: &Case, direction: Direction) -> Selection
+async fn execute<S>(space: &S, case: &Case, direction: Direction) -> (Selection, CandidateOrder)
 where S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
     for (channel, datum, persistent) in &case.background {
         assert!(
@@ -308,7 +497,8 @@ where S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
                 "{}: datum must rest before the receive arrives",
                 case.name
             );
-            space
+            let before = read_order_twice(space, case, "before the receive arrives").await;
+            let selection = space
                 .consume(
                     case.channels.clone(),
                     case.patterns.clone(),
@@ -318,7 +508,8 @@ where S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
                 )
                 .await
                 .unwrap_or_else(|error| panic!("{}: consume: {error}", case.name))
-                .unwrap_or_else(|| panic!("{}: consume direction must fire", case.name))
+                .unwrap_or_else(|| panic!("{}: consume direction must fire", case.name));
+            (selection, before)
         }
         Direction::ProduceLast => {
             assert!(
@@ -336,12 +527,13 @@ where S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
                 "{}: receive must wait for arrival",
                 case.name
             );
+            let before = read_order_twice(space, case, "before the datum arrives").await;
             let (continuation, data, _) = space
                 .produce(case.arrival.0.clone(), case.arrival.1.clone(), false)
                 .await
                 .unwrap_or_else(|error| panic!("{}: completing produce: {error}", case.name))
                 .unwrap_or_else(|| panic!("{}: produce direction must fire", case.name));
-            (continuation, data)
+            ((continuation, data), before)
         }
     }
 }
@@ -350,24 +542,29 @@ async fn observe<M>(matcher: M, case: &Case, direction: Direction) -> Observatio
 where M: Match<BindPattern, ListParWithRandom, TaggedContinuation> + 'static {
     let (play, replay) = pair(matcher).await;
     let initial = play.create_checkpoint().await.expect("initial checkpoint");
-    let selection = execute(&play, case, direction).await;
+    let (selection, before) = execute(&play, case, direction).await;
     assert_eq!(
         selection.1.len(),
         case.channels.len(),
         "{}: bind count",
         case.name
     );
-    assert_eq!(
-        selection
-            .1
-            .iter()
-            .map(|result| result.matched_datum.pars.clone())
-            .collect::<Vec<_>>(),
-        case.expected_bindings,
-        "{}: exact FreeMap projection in bind order",
-        case.name
-    );
-    for (channel, expected) in &case.remaining {
+    let bindings = selection
+        .1
+        .iter()
+        .map(|result| result.matched_datum.pars.clone())
+        .collect::<Vec<_>>();
+    let outcome = case
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.bindings == bindings)
+        .unwrap_or_else(|| {
+            panic!(
+                "{}: exact FreeMap projection in bind order: {bindings:?} is none of the enabled COMMs",
+                case.name
+            )
+        });
+    for (channel, expected) in &outcome.remaining {
         let actual = play
             .get_data(channel)
             .await
@@ -376,6 +573,7 @@ where M: Match<BindPattern, ListParWithRandom, TaggedContinuation> + 'static {
             .collect::<Vec<_>>();
         assert_eq!(actual, *expected, "{}: exact remaining data", case.name);
     }
+    let after = read_order_twice(&play, case, "after the COMM").await;
     let state = play.to_map().await;
     let point = play.create_checkpoint().await.expect("play checkpoint");
     let comms = point
@@ -390,10 +588,21 @@ where M: Match<BindPattern, ListParWithRandom, TaggedContinuation> + 'static {
         .rig_and_reset(initial.root, point.log.clone())
         .await
         .expect("rig replay");
-    let replay_selection = execute(&replay, case, direction).await;
+    let (replay_selection, replay_before) = execute(&replay, case, direction).await;
     assert_eq!(
         replay_selection, selection,
         "{}: exact replay binding",
+        case.name
+    );
+    assert_eq!(
+        replay_before, before,
+        "{}: K4: replay reads the play state's candidate order before the COMM",
+        case.name
+    );
+    assert_eq!(
+        read_order_twice(&replay, case, "after the replayed COMM").await,
+        after,
+        "{}: K4: replay reads the play state's candidate order after the COMM",
         case.name
     );
     assert_eq!(
@@ -436,39 +645,111 @@ fn comm_trace(log: &Log) -> Vec<COMM> {
         .collect()
 }
 
+async fn candidate_order<S>(space: &S, case: &Case) -> CandidateOrder
+where S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+    let mut data = Vec::with_capacity(case.channels.len());
+    let mut joins = Vec::with_capacity(case.channels.len());
+    for channel in &case.channels {
+        data.push(space.get_data(channel).await);
+        joins.push(space.get_joins(channel.clone()).await);
+    }
+    CandidateOrder {
+        state: space.to_map().await,
+        data,
+        continuations: space.get_waiting_continuations(case.channels.clone()).await,
+        joins,
+    }
+}
+
+async fn read_order_twice<S>(space: &S, case: &Case, moment: &str) -> CandidateOrder
+where S: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+    let first = candidate_order(space, case).await;
+    let second = candidate_order(space, case).await;
+    assert_eq!(
+        first, second,
+        "{}: K4: {moment}: the same state read twice gives the same candidate order",
+        case.name
+    );
+    first
+}
+
+async fn enabled_comms(case: &Case) -> Vec<Vec<Vec<Par>>> {
+    let (space, _) = pair(Matcher).await;
+    let arrival = (case.arrival.0.clone(), case.arrival.1.clone(), false);
+    for (channel, datum, persistent) in case.background.iter().chain([&arrival]) {
+        assert!(
+            space
+                .produce(channel.clone(), datum.clone(), *persistent)
+                .await
+                .unwrap_or_else(|error| panic!("{}: staged produce: {error}", case.name))
+                .is_none(),
+            "{}: staged data rests while no receive is stored",
+            case.name
+        );
+    }
+    let store = space.get_store();
+    let _ = store.put_continuation(
+        &case.channels,
+        WaitingContinuation::create(
+            &case.channels,
+            &case.patterns,
+            &case.continuation,
+            false,
+            case.peeks.clone(),
+        ),
+    );
+    for channel in &case.channels {
+        store.put_join(channel, &case.channels);
+    }
+    let mut enabled = Vec::new();
+    for rendezvous in space.enabled_rendezvous() {
+        let bindings = rendezvous
+            .data_candidates()
+            .iter()
+            .map(|candidate| candidate.datum.a.pars.clone())
+            .collect::<Vec<_>>();
+        if !enabled.contains(&bindings) {
+            enabled.push(bindings);
+        }
+    }
+    enabled
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn both_matching_directions_preserve_bindings_comm_state_root_and_replay() {
     let cases = cases();
-    assert_eq!(cases.len(), 7);
+    assert_eq!(cases.len(), 12);
     for case in &cases {
         let consume = observe(Matcher, case, Direction::ConsumeLast).await;
         let produce = observe(Matcher, case, Direction::ProduceLast).await;
         let control_consume = observe(FullScanMatcher, case, Direction::ConsumeLast).await;
         let control_produce = observe(FullScanMatcher, case, Direction::ProduceLast).await;
 
-        assert_eq!(
-            consume.selection, produce.selection,
-            "{}: direction bindings",
-            case.name
-        );
-        assert_eq!(
-            consume.state, produce.state,
-            "{}: direction post-state",
-            case.name
-        );
-        assert_eq!(consume.root, produce.root, "{}: direction root", case.name);
-        assert_eq!(
-            comm_trace(&consume.log),
-            comm_trace(&produce.log),
-            "{}: COMM trace",
-            case.name
-        );
-        assert_eq!(
-            io_multiset(&consume.log),
-            io_multiset(&produce.log),
-            "{}: IO events",
-            case.name
-        );
+        if let [_] = case.outcomes.as_slice() {
+            assert_eq!(
+                consume.selection, produce.selection,
+                "{}: direction bindings",
+                case.name
+            );
+            assert_eq!(
+                consume.state, produce.state,
+                "{}: direction post-state",
+                case.name
+            );
+            assert_eq!(consume.root, produce.root, "{}: direction root", case.name);
+            assert_eq!(
+                comm_trace(&consume.log),
+                comm_trace(&produce.log),
+                "{}: COMM trace",
+                case.name
+            );
+            assert_eq!(
+                io_multiset(&consume.log),
+                io_multiset(&produce.log),
+                "{}: IO events",
+                case.name
+            );
+        }
         assert_eq!(
             consume.selection, control_consume.selection,
             "{}: consume oracle",
@@ -502,6 +783,45 @@ async fn both_matching_directions_preserve_bindings_comm_state_root_and_replay()
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn exactly_one_comm_is_enabled_in_each_case_whose_directions_must_agree() {
+    let mut single = Vec::new();
+    for case in &cases() {
+        let enabled = enabled_comms(case).await;
+        let declared = case
+            .outcomes
+            .iter()
+            .map(|outcome| outcome.bindings.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            declared.len() == enabled.len()
+                && declared.iter().all(|bindings| enabled.contains(bindings))
+                && enabled.iter().all(|bindings| declared.contains(bindings)),
+            "{}: the declared outcomes {declared:?} are the enabled COMMs {enabled:?}",
+            case.name
+        );
+        if let [_] = enabled.as_slice() {
+            single.push(case.name);
+        }
+    }
+    assert_eq!(
+        single,
+        [
+            "ordered",
+            "ac",
+            "remainder",
+            "guard",
+            "peek",
+            "persistent",
+            "repeated-channel",
+            "nonlinear-equal",
+            "nonlinear-conflicting",
+            "nonlinear-nested",
+        ],
+        "the cases whose two directions must agree are exactly the cases with one enabled COMM"
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
 
@@ -518,6 +838,7 @@ proptest! {
             .build()
             .expect("bounded property runtime");
         runtime.block_on(async {
+            prop_assert_eq!(enabled_comms(&case).await, vec![vec![vec![integer(accepted)]]]);
             let consume = observe(Matcher, &case, Direction::ConsumeLast).await;
             let produce = observe(Matcher, &case, Direction::ProduceLast).await;
             prop_assert_eq!(&consume.selection, &produce.selection);
@@ -619,8 +940,10 @@ fn receive_case(name: &'static str, process: &Par, arrival: &[Par]) -> Case {
             ..TaggedContinuation::default()
         },
         peeks: BTreeSet::new(),
-        expected_bindings: vec![arrival.to_vec()],
-        remaining: vec![(source, Vec::new())],
+        outcomes: vec![Outcome {
+            bindings: vec![arrival.to_vec()],
+            remaining: vec![(source, Vec::new())],
+        }],
     }
 }
 

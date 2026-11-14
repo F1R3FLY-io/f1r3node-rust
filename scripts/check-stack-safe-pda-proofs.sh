@@ -939,7 +939,7 @@ if [[ "${1:-}" == "--ordered-receive-view" ]]; then
   TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
     rpb3_run_tests 5 --release --locked -j4 --test event_hash_encoder_differential
   rholang_run_tests 4 --test ordered_receive_view_rholang
-  rholang_run_tests 3 --test matching_lifecycle_acceptance
+  rholang_run_tests 4 --test matching_lifecycle_acceptance
   rholang_run_tests 1 --test interpreter_spec \
     interpreter_should_exhaust_budget_when_comm_count_exceeds_token_budget
   rholang_run_tests 13 --test handwritten_recursion_census
@@ -1035,7 +1035,7 @@ if [[ "${1:-}" == "--receive-accelerator" ]]; then
   rholang_run_tests 5 --test receive_accelerator_rholang
   rholang_run_tests 5 --test receive_accelerator_production_rholang
   rholang_run_tests 4 --test ordered_receive_view_rholang
-  rholang_run_tests 3 --test matching_lifecycle_acceptance
+  rholang_run_tests 4 --test matching_lifecycle_acceptance
   popd >/dev/null
   echo "stack-safe-pda: focused receive accelerator proof, model and runtime gates passed"
   exit 0
