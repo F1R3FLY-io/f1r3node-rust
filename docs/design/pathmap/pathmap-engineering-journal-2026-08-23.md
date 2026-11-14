@@ -23140,6 +23140,20 @@ own performance requirements are not deferred by recording a request.
 | PMU-009 | Native lattice join; **shared dangling-edge panic reproduced on PathMap 0.2.2; fixed in released 0.3.4; local zipper union active** | Set and map union share `join_exact_with_grafts`; unit values specialize the existing exact-value merge while topology is tracked independently. | Preserve shared dangling edges in dense `pjoin` and `join_into` even when both optional cofree components are absent; do not conflate an existing edge with an inhabited payload. | J-153: minimized set fixture, saved property seed, source/backtrace, eight unit-union proof reports and 23 passing EPathMap tests. `join_into` shared the failing assumption in 0.2.2; 0.3.4 handles it in both (`src/dense_byte_node.rs:2076-2082`, `:2172`). The raw port in pgmcp experiment 425 does not reproduce the 0.2.2 panic, so removing the local union first needs a diagnostic reproducer. | A released native union passes the same exact-topology, value, count, CoW and original-order tests and measured performance gates; retain the map exact-value contract independently. |
 | PMU-010 | Persistence/performance API; **optional candidate requested 2026-08-26; unmeasured** | Current `rspace++/src/rspace/data_index.rs::DataIndex::pending_delta`/`apply_delta` and `persistence/mutation.rs::record_data_delta`/`record_join_delta` use explicitly recorded `BagDelta` changes. They do not currently derive differences between two roots. | Consider a stable CoW revision-difference cursor over two immutable PathMap roots, skipping shared subtrees and lending changed logical paths with before/after presence and values. It must expose topology-only changes where requested, remain stack-safe, preserve both roots and avoid private-node inspection. | No adoption or speedup evidence is claimed. Before proposing adoption, compare against recorded deltas and an independent finite-map/topology oracle over insertion/removal/replacement, no-op, shared/unshared roots, snapshots and forced equal-value cases; measure fixed-delta cost against increasing unchanged history, allocations and RSS. | Only an approved released API with exact differential/resource evidence may replace the relevant comparison work. It must not replace WAL framing, transaction publication or durability authority; absence of this optional API does not block this documentation task or authorize delaying required persistence. |
 
+**PMU-005 — barrier-free final teardown measured (2026-11-14).** Commit `6642c0d13` replaced
+the synthetic barriers that Phase B of the guard's final teardown installed with the
+barrier-free one-edge cut of the
+[remedy study](../stack-safety/guarded-pathmap-teardown-allocation-remedy-study.md) (remedy
+R2a of bug 6441). The
+[measurement record](../stack-safety/measurements/guarded-pathmap-final-teardown-barrier-free-2026-11-14.md)
+counts 1,866 allocation calls whose call stack contains an `AnchorRoot` drop for the
+realistic shape with 256 endpoints and 505 for the value-free line of 16,384 bytes, against
+184,489 and 32,489 in the
+[record of 2026-11-12](../stack-safety/measurements/guarded-pathmap-final-teardown-pathmap-0.3.4-2026-11-12.md),
+which measured commit `1bbd43283` before the cut. Both counts are within the thresholds
+18,170 and 1,638 that experiment 488 registered, and no `split_0` call remains beneath an
+`AnchorRoot` drop at either coordinate. The PMU-005 row of the table above is unchanged.
+
 **PMU-011 — Optional fallible cross-payload mapping API (2026-09-24).** Against
 released PathMap 0.2.2 and 0.3.4, J-215 supplies a local guarded dual-zipper mapper. A native
 replacement should map each logical value occurrence exactly once in root-first

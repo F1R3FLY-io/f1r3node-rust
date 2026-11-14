@@ -1,0 +1,2320 @@
+===== Wall-time comparison of one final teardown, before and after the cut (55-teardown-comparison.log)
+UTC start: 2026-11-14T08:47:25.086315710Z
+experiment: 498
+rounds: 64
+timing processor: 27
+before executable: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c45/l14365/w/bin/before/rspace_plus_plus-0e4696c61247f2bd
+before executable sha256: 1144226bf1f842644e8c9ece99e3a6ef1627203e2772b208776ed5dbd2052e11
+fixed executable: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/c45/l14365/w/bin/fixed/rspace_plus_plus-0e4696c61247f2bd
+fixed executable sha256: 986f30d3243217e9171c3da1d5f9f149cbd723fdded6450657061ff1da8ee03c
+test: rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement
+scaling governor of CPU 27 at the start: performance
+command: [WORKSPACE_ROOT]/target/scratch/session-401d0c58/scripts/heavy.sh bash <W>[ROOT]/out/scripts/56-comparison-driver.sh 64 27 <before executable> <fixed executable> <test>
+RUN	round=1	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:25.750085458Z	loadavg_before=9.60 6.99 4.95	khz_before=3439069
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55445659
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=1	shape=realistic	size=256	tree=before	exit=0	loadavg_after=9.60 6.99 4.95	khz_after=4292734
+RUN	round=1	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:25.817380773Z	loadavg_before=9.60 6.99 4.95	khz_before=3435272
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25975397
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=1	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=9.60 6.99 4.95	khz_after=4292077
+RUN	round=1	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:25.854624012Z	loadavg_before=9.60 6.99 4.95	khz_before=4252375
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4666467
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=1	shape=line	size=16384	tree=before	exit=0	loadavg_after=9.60 6.99 4.95	khz_after=4082063
+RUN	round=1	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:25.874847383Z	loadavg_before=9.60 6.99 4.95	khz_before=3446949
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2005532
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=1	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=9.60 6.99 4.95	khz_after=4234138
+RUN	round=2	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:25.889424811Z	loadavg_before=9.60 6.99 4.95	khz_before=4292134
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25846923
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=2	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=9.60 6.99 4.95	khz_after=4019540
+RUN	round=2	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:25.927412812Z	loadavg_before=9.60 6.99 4.95	khz_before=4290812
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55175797
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=2	shape=realistic	size=256	tree=before	exit=0	loadavg_after=9.60 6.99 4.95	khz_after=3993330
+RUN	round=2	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:25.994593499Z	loadavg_before=9.60 6.99 4.95	khz_before=3447370
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2002236
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=2	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3797273
+RUN	round=2	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:26.009465425Z	loadavg_before=10.11 7.14 5.01	khz_before=4292295
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4588500
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=2	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4174482
+RUN	round=3	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:26.028758743Z	loadavg_before=10.11 7.14 5.01	khz_before=3510726
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55600683
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=3	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3435881
+RUN	round=3	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:26.096489894Z	loadavg_before=10.11 7.14 5.01	khz_before=3433192
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25974114
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=3	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3776868
+RUN	round=3	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:26.134899344Z	loadavg_before=10.11 7.14 5.01	khz_before=4290551
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4594451
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=3	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4246769
+RUN	round=3	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:26.153828211Z	loadavg_before=10.11 7.14 5.01	khz_before=4292302
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2005542
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=3	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3785938
+RUN	round=4	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:26.167897245Z	loadavg_before=10.11 7.14 5.01	khz_before=4292191
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26757369
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=4	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4282252
+RUN	round=4	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:26.205365260Z	loadavg_before=10.11 7.14 5.01	khz_before=3740353
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=56123815
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=4	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3823822
+RUN	round=4	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:26.273444161Z	loadavg_before=10.11 7.14 5.01	khz_before=4137083
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1988320
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=4	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4032820
+RUN	round=4	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:26.288260831Z	loadavg_before=10.11 7.14 5.01	khz_before=3433032
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4578941
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=4	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4287214
+RUN	round=5	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:26.307689556Z	loadavg_before=10.11 7.14 5.01	khz_before=3432676
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55131914
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=5	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3787959
+RUN	round=5	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:26.375564089Z	loadavg_before=10.11 7.14 5.01	khz_before=3760585
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26829145
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=5	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3432169
+RUN	round=5	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:26.414380481Z	loadavg_before=10.11 7.14 5.01	khz_before=4118840
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4595682
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=5	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3977146
+RUN	round=5	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:26.434064941Z	loadavg_before=10.11 7.14 5.01	khz_before=4292409
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2000002
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=5	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3728100
+RUN	round=6	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:26.448193327Z	loadavg_before=10.11 7.14 5.01	khz_before=3431764
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25908270
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=6	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292194
+RUN	round=6	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:26.485711227Z	loadavg_before=10.11 7.14 5.01	khz_before=3423371
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55456910
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=6	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4267694
+RUN	round=6	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:26.552539656Z	loadavg_before=10.11 7.14 5.01	khz_before=3436931
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1993048
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=6	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3744658
+RUN	round=6	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:26.567164463Z	loadavg_before=10.11 7.14 5.01	khz_before=4167143
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4535038
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=6	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3454202
+RUN	round=7	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:26.585872201Z	loadavg_before=10.11 7.14 5.01	khz_before=3776108
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55213960
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=7	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3750668
+RUN	round=7	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:26.653154221Z	loadavg_before=10.11 7.14 5.01	khz_before=3433861
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=27238761
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=7	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292089
+RUN	round=7	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:26.691624306Z	loadavg_before=10.11 7.14 5.01	khz_before=3431834
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4631150
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=7	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4251392
+RUN	round=7	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:26.711622531Z	loadavg_before=10.11 7.14 5.01	khz_before=3719765
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1995353
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=7	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3728173
+RUN	round=8	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:26.726184579Z	loadavg_before=10.11 7.14 5.01	khz_before=3724469
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25948926
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=8	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292090
+RUN	round=8	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:26.762679890Z	loadavg_before=10.11 7.14 5.01	khz_before=3432262
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55411334
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=8	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4295836
+RUN	round=8	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:26.829620122Z	loadavg_before=10.11 7.14 5.01	khz_before=3433805
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2002587
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=8	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3930402
+RUN	round=8	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:26.843313212Z	loadavg_before=10.11 7.14 5.01	khz_before=3825018
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4552701
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=8	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3806531
+RUN	round=9	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:26.863003373Z	loadavg_before=10.11 7.14 5.01	khz_before=3419463
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55857760
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=9	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3764912
+RUN	round=9	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:26.930643621Z	loadavg_before=10.11 7.14 5.01	khz_before=3430597
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26987605
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=9	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3589723
+RUN	round=9	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:26.969956565Z	loadavg_before=10.11 7.14 5.01	khz_before=3433764
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4563212
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=9	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3683485
+RUN	round=9	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:26.988768069Z	loadavg_before=10.11 7.14 5.01	khz_before=4246371
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2038335
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=9	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4288319
+RUN	round=10	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:27.003504218Z	loadavg_before=10.11 7.14 5.01	khz_before=3430472
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25955869
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=10	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4285419
+RUN	round=10	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:27.040209226Z	loadavg_before=10.11 7.14 5.01	khz_before=3435580
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55131604
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=10	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4276329
+RUN	round=10	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:27.107813337Z	loadavg_before=10.11 7.14 5.01	khz_before=3496039
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2004330
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=10	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292228
+RUN	round=10	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:27.122715780Z	loadavg_before=10.11 7.14 5.01	khz_before=4216472
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4609118
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=10	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3446667
+RUN	round=11	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:27.141788350Z	loadavg_before=10.11 7.14 5.01	khz_before=4288996
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=58571565
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=11	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292476
+RUN	round=11	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:27.210817321Z	loadavg_before=10.11 7.14 5.01	khz_before=4292285
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26020071
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=11	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292173
+RUN	round=11	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:27.247971872Z	loadavg_before=10.11 7.14 5.01	khz_before=3428413
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4595793
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=11	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292086
+RUN	round=11	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:27.266638252Z	loadavg_before=10.11 7.14 5.01	khz_before=3433448
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2000994
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=11	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3751568
+RUN	round=12	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:27.281345144Z	loadavg_before=10.11 7.14 5.01	khz_before=3432953
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=27208184
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=12	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3428705
+RUN	round=12	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:27.320026320Z	loadavg_before=10.11 7.14 5.01	khz_before=4298205
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55132695
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=12	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3436764
+RUN	round=12	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:27.386887782Z	loadavg_before=10.11 7.14 5.01	khz_before=4290584
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2000312
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=12	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3488439
+RUN	round=12	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:27.401459268Z	loadavg_before=10.11 7.14 5.01	khz_before=3439129
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4520470
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=12	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4291546
+RUN	round=13	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:27.420846304Z	loadavg_before=10.11 7.14 5.01	khz_before=3433749
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55922934
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=13	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4287534
+RUN	round=13	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:27.488004058Z	loadavg_before=10.11 7.14 5.01	khz_before=3431044
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26002568
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=13	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3736005
+RUN	round=13	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:27.525659038Z	loadavg_before=10.11 7.14 5.01	khz_before=4291907
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4578420
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=13	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4271413
+RUN	round=13	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:27.544690610Z	loadavg_before=10.11 7.14 5.01	khz_before=4248593
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2018146
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=13	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4293703
+RUN	round=14	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:27.558636540Z	loadavg_before=10.11 7.14 5.01	khz_before=4181613
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25987189
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=14	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4016806
+RUN	round=14	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:27.595951996Z	loadavg_before=10.11 7.14 5.01	khz_before=3431377
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55229108
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=14	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3480016
+RUN	round=14	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:27.663128085Z	loadavg_before=10.11 7.14 5.01	khz_before=4291706
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2007597
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=14	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3495162
+RUN	round=14	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:27.678036930Z	loadavg_before=10.11 7.14 5.01	khz_before=3447517
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4560566
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=14	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292226
+RUN	round=15	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:27.697282568Z	loadavg_before=10.11 7.14 5.01	khz_before=3433404
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55086809
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=15	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4296938
+RUN	round=15	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:27.763796171Z	loadavg_before=10.11 7.14 5.01	khz_before=3427231
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25874686
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=15	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3972972
+RUN	round=15	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:27.800752376Z	loadavg_before=10.11 7.14 5.01	khz_before=4292184
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4593168
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=15	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4298834
+RUN	round=15	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:27.819983696Z	loadavg_before=10.11 7.14 5.01	khz_before=3428027
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1999110
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=15	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3801146
+RUN	round=16	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:27.834432360Z	loadavg_before=10.11 7.14 5.01	khz_before=3493977
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25971859
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=16	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4301665
+RUN	round=16	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:27.871472734Z	loadavg_before=10.11 7.14 5.01	khz_before=3443765
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=56141188
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=16	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3505958
+RUN	round=16	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:27.939156956Z	loadavg_before=10.11 7.14 5.01	khz_before=3817869
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1995302
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=16	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3460978
+RUN	round=16	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:27.954388424Z	loadavg_before=10.11 7.14 5.01	khz_before=4288428
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4557100
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=16	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4015616
+RUN	round=17	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:27.972652901Z	loadavg_before=10.11 7.14 5.01	khz_before=3779536
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55744767
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=17	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3991766
+RUN	round=17	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:28.038873809Z	loadavg_before=10.11 7.14 5.01	khz_before=4290109
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25979854
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=17	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3432949
+RUN	round=17	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:28.076887739Z	loadavg_before=10.11 7.14 5.01	khz_before=4288955
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4542301
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=17	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3437794
+RUN	round=17	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:28.096718807Z	loadavg_before=10.11 7.14 5.01	khz_before=4292446
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2001605
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=17	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292200
+RUN	round=18	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:28.109490591Z	loadavg_before=10.11 7.14 5.01	khz_before=4287707
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26011144
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=18	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3779668
+RUN	round=18	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:28.146594967Z	loadavg_before=10.11 7.14 5.01	khz_before=4210134
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55897826
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=18	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292263
+RUN	round=18	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:28.212982080Z	loadavg_before=10.11 7.14 5.01	khz_before=3768909
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1996725
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=18	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4278064
+RUN	round=18	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:28.225959183Z	loadavg_before=10.11 7.14 5.01	khz_before=3432900
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=5529984
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=18	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4291481
+RUN	round=19	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:28.244936873Z	loadavg_before=10.11 7.14 5.01	khz_before=3433762
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55765175
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=19	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3435389
+RUN	round=19	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:28.312636765Z	loadavg_before=10.11 7.14 5.01	khz_before=3435728
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25993380
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=19	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4271032
+RUN	round=19	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:28.350206182Z	loadavg_before=10.11 7.14 5.01	khz_before=4281037
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4515250
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=19	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4019926
+RUN	round=19	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:28.369208489Z	loadavg_before=10.11 7.14 5.01	khz_before=4303806
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2026793
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=19	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292220
+RUN	round=20	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:28.382252359Z	loadavg_before=10.11 7.14 5.01	khz_before=3522544
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26131052
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=20	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3596457
+RUN	round=20	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:28.419497341Z	loadavg_before=10.11 7.14 5.01	khz_before=3426787
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55972067
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=20	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292329
+RUN	round=20	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:28.486798367Z	loadavg_before=10.11 7.14 5.01	khz_before=3429970
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2012386
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=20	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3824318
+RUN	round=20	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:28.501682085Z	loadavg_before=10.11 7.14 5.01	khz_before=3751305
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4636220
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=20	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4288124
+RUN	round=21	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:28.520903687Z	loadavg_before=10.11 7.14 5.01	khz_before=3436094
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55207628
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=21	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4291922
+RUN	round=21	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:28.586831319Z	loadavg_before=10.11 7.14 5.01	khz_before=3418164
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25813209
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=21	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3967457
+RUN	round=21	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:28.622696616Z	loadavg_before=10.11 7.14 5.01	khz_before=4162113
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4517455
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=21	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4293351
+RUN	round=21	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:28.641907958Z	loadavg_before=10.11 7.14 5.01	khz_before=4247504
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2013517
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=21	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4294717
+RUN	round=22	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:28.655669408Z	loadavg_before=10.11 7.14 5.01	khz_before=4155879
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25899702
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=22	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292329
+RUN	round=22	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:28.692535743Z	loadavg_before=10.11 7.14 5.01	khz_before=4282750
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55277079
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=22	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292270
+RUN	round=22	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:28.759082699Z	loadavg_before=10.11 7.14 5.01	khz_before=3755049
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2003388
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=22	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4284752
+RUN	round=22	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:28.772128933Z	loadavg_before=10.11 7.14 5.01	khz_before=3425602
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4569463
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=22	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292273
+RUN	round=23	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:28.790763392Z	loadavg_before=10.11 7.14 5.01	khz_before=3434067
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=54955420
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=23	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3462997
+RUN	round=23	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:28.856102318Z	loadavg_before=10.11 7.14 5.01	khz_before=3759613
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25937545
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=23	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3444964
+RUN	round=23	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:28.892174157Z	loadavg_before=10.11 7.14 5.01	khz_before=3940135
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4608016
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=23	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4310173
+RUN	round=23	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:28.910371727Z	loadavg_before=10.11 7.14 5.01	khz_before=4292635
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2014559
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=23	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3867937
+RUN	round=24	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:28.924282901Z	loadavg_before=10.11 7.14 5.01	khz_before=3767908
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25913219
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=24	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4291724
+RUN	round=24	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:28.960070701Z	loadavg_before=10.11 7.14 5.01	khz_before=4291988
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55211164
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=24	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3500962
+RUN	round=24	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:29.025437700Z	loadavg_before=10.11 7.14 5.01	khz_before=3679998
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2001876
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=24	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3432002
+RUN	round=24	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:29.038840440Z	loadavg_before=10.11 7.14 5.01	khz_before=3427945
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4605972
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=24	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4285027
+RUN	round=25	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:29.057076624Z	loadavg_before=10.11 7.14 5.01	khz_before=3434624
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55017628
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=25	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4196181
+RUN	round=25	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:29.122662408Z	loadavg_before=10.11 7.14 5.01	khz_before=3439638
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26621511
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=25	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4288078
+RUN	round=25	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:29.159749661Z	loadavg_before=10.11 7.14 5.01	khz_before=4290892
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4547522
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=25	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3861248
+RUN	round=25	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:29.177925982Z	loadavg_before=10.11 7.14 5.01	khz_before=4292181
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2002566
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=25	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4285884
+RUN	round=26	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:29.190411844Z	loadavg_before=10.11 7.14 5.01	khz_before=3434834
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26181226
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=26	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3435799
+RUN	round=26	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:29.226927183Z	loadavg_before=10.11 7.14 5.01	khz_before=3428318
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55658753
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=26	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4078891
+RUN	round=26	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:29.294784173Z	loadavg_before=10.11 7.14 5.01	khz_before=4292344
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2007135
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=26	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3799276
+RUN	round=26	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:29.307847139Z	loadavg_before=10.11 7.14 5.01	khz_before=4296332
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4546149
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=26	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292259
+RUN	round=27	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:29.325822448Z	loadavg_before=10.11 7.14 5.01	khz_before=4292106
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55501876
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=27	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3447799
+RUN	round=27	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:29.392102779Z	loadavg_before=10.11 7.14 5.01	khz_before=3433892
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26007969
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=27	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3745033
+RUN	round=27	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:29.429024588Z	loadavg_before=10.11 7.14 5.01	khz_before=3433864
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4548664
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=27	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3471186
+RUN	round=27	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:29.448455888Z	loadavg_before=10.11 7.14 5.01	khz_before=3432045
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2000233
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=27	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3565212
+RUN	round=28	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:29.463005282Z	loadavg_before=10.11 7.14 5.01	khz_before=3687287
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25952002
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=28	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4297759
+RUN	round=28	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:29.499391316Z	loadavg_before=10.11 7.14 5.01	khz_before=3830450
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55356450
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=28	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292228
+RUN	round=28	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:29.565328456Z	loadavg_before=10.11 7.14 5.01	khz_before=3850719
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2003399
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=28	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3428577
+RUN	round=28	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:29.580259263Z	loadavg_before=10.11 7.14 5.01	khz_before=3480750
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4694791
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=28	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3447487
+RUN	round=29	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:29.602678017Z	loadavg_before=10.11 7.14 5.01	khz_before=4291975
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55182951
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=29	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3984338
+RUN	round=29	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:29.668728131Z	loadavg_before=10.11 7.14 5.01	khz_before=3874362
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25902369
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=29	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4287307
+RUN	round=29	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:29.704856767Z	loadavg_before=10.11 7.14 5.01	khz_before=4292309
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4508918
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=29	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292281
+RUN	round=29	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:29.722665631Z	loadavg_before=10.11 7.14 5.01	khz_before=3433807
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2001124
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=29	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4293728
+RUN	round=30	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:29.735534940Z	loadavg_before=10.11 7.14 5.01	khz_before=4292872
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25941142
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=30	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4291867
+RUN	round=30	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:29.771235063Z	loadavg_before=10.11 7.14 5.01	khz_before=3435175
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55440409
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=30	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3738549
+RUN	round=30	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:29.838419979Z	loadavg_before=10.11 7.14 5.01	khz_before=3426865
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2004941
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=30	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4043001
+RUN	round=30	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:29.852826562Z	loadavg_before=10.11 7.14 5.01	khz_before=3766541
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4593339
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=30	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3931203
+RUN	round=31	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:29.871684355Z	loadavg_before=10.11 7.14 5.01	khz_before=3492788
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55322986
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=31	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292290
+RUN	round=31	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:29.939000689Z	loadavg_before=10.11 7.14 5.01	khz_before=3730100
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25933697
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=31	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3434793
+RUN	round=31	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:29.976248467Z	loadavg_before=10.11 7.14 5.01	khz_before=3435694
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4571637
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=31	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4291643
+RUN	round=31	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:29.995609694Z	loadavg_before=10.11 7.14 5.01	khz_before=3414924
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1999681
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=31	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4237287
+RUN	round=32	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:30.008829407Z	loadavg_before=10.11 7.14 5.01	khz_before=3433763
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25826384
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=32	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4296629
+RUN	round=32	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:30.045358412Z	loadavg_before=10.11 7.14 5.01	khz_before=3717167
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55440079
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=32	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4291650
+RUN	round=32	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:30.111115401Z	loadavg_before=10.11 7.14 5.01	khz_before=3430208
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2009239
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=32	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3433085
+RUN	round=32	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:30.125666378Z	loadavg_before=10.11 7.14 5.01	khz_before=3433878
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4568612
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=32	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3437325
+RUN	round=33	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:30.145565695Z	loadavg_before=10.11 7.14 5.01	khz_before=3441837
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55347322
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=33	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3617850
+RUN	round=33	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:30.212666651Z	loadavg_before=10.11 7.14 5.01	khz_before=3788950
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26100915
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=33	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4296377
+RUN	round=33	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:30.249035282Z	loadavg_before=10.11 7.14 5.01	khz_before=4292648
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4528245
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=33	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292100
+RUN	round=33	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:30.268376521Z	loadavg_before=10.11 7.14 5.01	khz_before=4289846
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2001355
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=33	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3441216
+RUN	round=34	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:30.281990021Z	loadavg_before=10.11 7.14 5.01	khz_before=3433908
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26028538
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=34	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4021793
+RUN	round=34	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:30.318793075Z	loadavg_before=10.11 7.14 5.01	khz_before=4297026
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55627624
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=34	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4292655
+RUN	round=34	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:30.385532767Z	loadavg_before=10.11 7.14 5.01	khz_before=3426577
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2007295
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=34	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3798709
+RUN	round=34	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:30.398693969Z	loadavg_before=10.11 7.14 5.01	khz_before=4208115
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4661407
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=34	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4233991
+RUN	round=35	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:30.418520388Z	loadavg_before=10.11 7.14 5.01	khz_before=3427152
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55390876
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=35	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3555992
+RUN	round=35	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:30.484990058Z	loadavg_before=10.11 7.14 5.01	khz_before=4233724
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26003159
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=35	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3614840
+RUN	round=35	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:30.520861847Z	loadavg_before=10.11 7.14 5.01	khz_before=4030048
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4610160
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=35	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4286873
+RUN	round=35	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:30.539378102Z	loadavg_before=10.11 7.14 5.01	khz_before=3419533
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2005412
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=35	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3444660
+RUN	round=36	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:30.553312530Z	loadavg_before=10.11 7.14 5.01	khz_before=4292185
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=27244472
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=36	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4153377
+RUN	round=36	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:30.591623493Z	loadavg_before=10.11 7.14 5.01	khz_before=4292756
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55296496
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=36	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4286969
+RUN	round=36	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:30.657725466Z	loadavg_before=10.11 7.14 5.01	khz_before=3820179
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2010311
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=36	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3812099
+RUN	round=36	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:30.671549815Z	loadavg_before=10.11 7.14 5.01	khz_before=4287739
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4559144
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=36	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4131718
+RUN	round=37	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:30.689340314Z	loadavg_before=10.11 7.14 5.01	khz_before=4289483
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55932532
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=37	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3435498
+RUN	round=37	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:30.755818009Z	loadavg_before=10.11 7.14 5.01	khz_before=3763953
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26907083
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=37	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3717797
+RUN	round=37	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:30.793843200Z	loadavg_before=10.11 7.14 5.01	khz_before=3436119
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4565976
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=37	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4291356
+RUN	round=37	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:30.812802475Z	loadavg_before=10.11 7.14 5.01	khz_before=4292163
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2003368
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=37	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4098475
+RUN	round=38	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:30.826984082Z	loadavg_before=10.11 7.14 5.01	khz_before=3433954
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25839289
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=38	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4288680
+RUN	round=38	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:30.863948372Z	loadavg_before=10.11 7.14 5.01	khz_before=3434120
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55294723
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=38	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3756235
+RUN	round=38	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:30.930136809Z	loadavg_before=10.11 7.14 5.01	khz_before=3751815
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2006584
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=38	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=4200002
+RUN	round=38	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:30.944703957Z	loadavg_before=10.11 7.14 5.01	khz_before=3507568
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4542672
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=38	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.11 7.14 5.01	khz_after=3940079
+RUN	round=39	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:30.964350033Z	loadavg_before=10.11 7.14 5.01	khz_before=3426382
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55523757
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=39	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4290405
+RUN	round=39	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:31.030384438Z	loadavg_before=10.02 7.18 5.03	khz_before=3431868
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25909291
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=39	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3446558
+RUN	round=39	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:31.067047557Z	loadavg_before=10.02 7.18 5.03	khz_before=3521960
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4551850
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=39	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4291938
+RUN	round=39	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:31.086745242Z	loadavg_before=10.02 7.18 5.03	khz_before=3426336
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2001414
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=39	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3992345
+RUN	round=40	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:31.101410486Z	loadavg_before=10.02 7.18 5.03	khz_before=4285449
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25826224
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=40	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3433379
+RUN	round=40	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:31.138026105Z	loadavg_before=10.02 7.18 5.03	khz_before=4292232
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55393901
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=40	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4288366
+RUN	round=40	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:31.204035782Z	loadavg_before=10.02 7.18 5.03	khz_before=3526665
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2028717
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=40	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4236586
+RUN	round=40	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:31.218375349Z	loadavg_before=10.02 7.18 5.03	khz_before=4292114
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4547201
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=40	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4294722
+RUN	round=41	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:31.236718545Z	loadavg_before=10.02 7.18 5.03	khz_before=3436773
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55289904
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=41	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3800502
+RUN	round=41	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:31.302928693Z	loadavg_before=10.02 7.18 5.03	khz_before=4278335
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25820513
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=41	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3892544
+RUN	round=41	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:31.340144089Z	loadavg_before=10.02 7.18 5.03	khz_before=4278197
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4534517
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=41	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4289308
+RUN	round=41	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:31.358852368Z	loadavg_before=10.02 7.18 5.03	khz_before=3431238
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2004380
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=41	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4294113
+RUN	round=42	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:31.372462832Z	loadavg_before=10.02 7.18 5.03	khz_before=3878417
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25870628
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=42	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4296990
+RUN	round=42	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:31.408131146Z	loadavg_before=10.02 7.18 5.03	khz_before=3432664
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=56049845
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=42	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3719883
+RUN	round=42	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:31.475131411Z	loadavg_before=10.02 7.18 5.03	khz_before=4288198
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2044035
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=42	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3825797
+RUN	round=42	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:31.489087520Z	loadavg_before=10.02 7.18 5.03	khz_before=3532486
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4528165
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=42	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4292196
+RUN	round=43	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:31.508190728Z	loadavg_before=10.02 7.18 5.03	khz_before=3435075
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=57113641
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=43	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4292346
+RUN	round=43	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:31.576401128Z	loadavg_before=10.02 7.18 5.03	khz_before=3434057
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25882350
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=43	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4288622
+RUN	round=43	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:31.613691176Z	loadavg_before=10.02 7.18 5.03	khz_before=3430467
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4647131
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=43	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4225139
+RUN	round=43	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:31.632512048Z	loadavg_before=10.02 7.18 5.03	khz_before=3733410
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1997858
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=43	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3724364
+RUN	round=44	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:31.645837612Z	loadavg_before=10.02 7.18 5.03	khz_before=4005894
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25940029
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=44	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3429801
+RUN	round=44	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:31.683165492Z	loadavg_before=10.02 7.18 5.03	khz_before=3658534
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55235040
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=44	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4278241
+RUN	round=44	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:31.749546754Z	loadavg_before=10.02 7.18 5.03	khz_before=4291652
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2007977
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=44	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4291711
+RUN	round=44	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:31.763170713Z	loadavg_before=10.02 7.18 5.03	khz_before=4291510
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4558823
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=44	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3445803
+RUN	round=45	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:31.781669525Z	loadavg_before=10.02 7.18 5.03	khz_before=4291971
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55891354
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=45	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4281948
+RUN	round=45	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:31.848764350Z	loadavg_before=10.02 7.18 5.03	khz_before=4294563
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25928978
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=45	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3721080
+RUN	round=45	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:31.886920500Z	loadavg_before=10.02 7.18 5.03	khz_before=4298167
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4524589
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=45	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4292473
+RUN	round=45	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:31.906270375Z	loadavg_before=10.02 7.18 5.03	khz_before=3433324
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2010742
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=45	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4282311
+RUN	round=46	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:31.920925570Z	loadavg_before=10.02 7.18 5.03	khz_before=4291763
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25928077
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=46	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4293507
+RUN	round=46	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:31.957482288Z	loadavg_before=10.02 7.18 5.03	khz_before=3433383
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55147635
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=46	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3958337
+RUN	round=46	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:32.023836238Z	loadavg_before=10.02 7.18 5.03	khz_before=3433802
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2015210
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=46	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3742956
+RUN	round=46	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:32.036981229Z	loadavg_before=10.02 7.18 5.03	khz_before=3670952
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4562601
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=46	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3975873
+RUN	round=47	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:32.055595620Z	loadavg_before=10.02 7.18 5.03	khz_before=3428537
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55662230
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=47	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3450198
+RUN	round=47	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:32.122436994Z	loadavg_before=10.02 7.18 5.03	khz_before=4292053
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25959747
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=47	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4300853
+RUN	round=47	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:32.158658456Z	loadavg_before=10.02 7.18 5.03	khz_before=3789078
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4579803
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=47	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3535980
+RUN	round=47	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:32.178412047Z	loadavg_before=10.02 7.18 5.03	khz_before=4289701
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2004741
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=47	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3714229
+RUN	round=48	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:32.191649193Z	loadavg_before=10.02 7.18 5.03	khz_before=3429063
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25941443
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=48	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4291476
+RUN	round=48	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:32.227521483Z	loadavg_before=10.02 7.18 5.03	khz_before=3425741
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55525440
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=48	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3458055
+RUN	round=48	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:32.293704750Z	loadavg_before=10.02 7.18 5.03	khz_before=4175351
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1997948
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=48	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3783960
+RUN	round=48	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:32.306334094Z	loadavg_before=10.02 7.18 5.03	khz_before=3460559
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4625279
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=48	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4202323
+RUN	round=49	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:32.324588001Z	loadavg_before=10.02 7.18 5.03	khz_before=4282948
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55548434
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=49	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4292262
+RUN	round=49	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:32.390490315Z	loadavg_before=10.02 7.18 5.03	khz_before=3430970
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25988341
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=49	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3439992
+RUN	round=49	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:32.426981609Z	loadavg_before=10.02 7.18 5.03	khz_before=4292453
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4544025
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=49	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4019825
+RUN	round=49	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:32.445046027Z	loadavg_before=10.02 7.18 5.03	khz_before=3418561
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2002476
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=49	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3729950
+RUN	round=50	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:32.459190473Z	loadavg_before=10.02 7.18 5.03	khz_before=3438724
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25914291
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=50	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4290858
+RUN	round=50	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:32.495881946Z	loadavg_before=10.02 7.18 5.03	khz_before=3433800
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55552933
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=50	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3494692
+RUN	round=50	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:32.562708352Z	loadavg_before=10.02 7.18 5.03	khz_before=4073923
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1989442
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=50	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4292257
+RUN	round=50	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:32.576454624Z	loadavg_before=10.02 7.18 5.03	khz_before=3503466
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4655456
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=50	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4160348
+RUN	round=51	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:32.595707515Z	loadavg_before=10.02 7.18 5.03	khz_before=4238744
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55384233
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=51	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3426928
+RUN	round=51	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:32.663029962Z	loadavg_before=10.02 7.18 5.03	khz_before=3433886
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25874235
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=51	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3707788
+RUN	round=51	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:32.700847079Z	loadavg_before=10.02 7.18 5.03	khz_before=3427678
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4609299
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=51	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4297066
+RUN	round=51	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:32.719740899Z	loadavg_before=10.02 7.18 5.03	khz_before=3474203
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1994701
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=51	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4008979
+RUN	round=52	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:32.734334568Z	loadavg_before=10.02 7.18 5.03	khz_before=3430992
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25996356
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=52	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4287991
+RUN	round=52	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:32.770661900Z	loadavg_before=10.02 7.18 5.03	khz_before=3491513
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55407036
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=52	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3431504
+RUN	round=52	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:32.837442650Z	loadavg_before=10.02 7.18 5.03	khz_before=4292159
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2004670
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=52	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3652126
+RUN	round=52	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:32.850975376Z	loadavg_before=10.02 7.18 5.03	khz_before=3413440
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4636471
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=52	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4278646
+RUN	round=53	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:32.869771912Z	loadavg_before=10.02 7.18 5.03	khz_before=3437228
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55428416
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=53	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4291370
+RUN	round=53	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:32.935472544Z	loadavg_before=10.02 7.18 5.03	khz_before=3432812
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25823699
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=53	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3750147
+RUN	round=53	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:32.972225664Z	loadavg_before=10.02 7.18 5.03	khz_before=3823411
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4609520
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=53	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3485598
+RUN	round=53	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:32.991398894Z	loadavg_before=10.02 7.18 5.03	khz_before=3433817
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2008488
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=53	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4287758
+RUN	round=54	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:33.004630590Z	loadavg_before=10.02 7.18 5.03	khz_before=4302077
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25932906
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=54	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3440775
+RUN	round=54	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:33.041673049Z	loadavg_before=10.02 7.18 5.03	khz_before=3430994
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55554746
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=54	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3434374
+RUN	round=54	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:33.110226950Z	loadavg_before=10.02 7.18 5.03	khz_before=3433758
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1989692
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=54	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3861976
+RUN	round=54	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:33.124828453Z	loadavg_before=10.02 7.18 5.03	khz_before=3429916
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4566567
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=54	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3580369
+RUN	round=55	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:33.144360674Z	loadavg_before=10.02 7.18 5.03	khz_before=4288659
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55063915
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=55	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3429535
+RUN	round=55	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:33.211157584Z	loadavg_before=10.02 7.18 5.03	khz_before=3427924
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25927296
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=55	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3788743
+RUN	round=55	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:33.248367329Z	loadavg_before=10.02 7.18 5.03	khz_before=4292569
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4611152
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=55	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3780555
+RUN	round=55	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:33.267098772Z	loadavg_before=10.02 7.18 5.03	khz_before=3434213
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2031802
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=55	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4291456
+RUN	round=56	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:33.280649152Z	loadavg_before=10.02 7.18 5.03	khz_before=3426882
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26007968
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=56	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3980181
+RUN	round=56	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:33.317401331Z	loadavg_before=10.02 7.18 5.03	khz_before=3432549
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55000586
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=56	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4156317
+RUN	round=56	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:33.384223478Z	loadavg_before=10.02 7.18 5.03	khz_before=4287632
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2000543
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=56	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4287118
+RUN	round=56	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:33.398532907Z	loadavg_before=10.02 7.18 5.03	khz_before=3568675
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4566999
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=56	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4292295
+RUN	round=57	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:33.417776421Z	loadavg_before=10.02 7.18 5.03	khz_before=4291626
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55324980
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=57	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4286939
+RUN	round=57	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:33.484535860Z	loadavg_before=10.02 7.18 5.03	khz_before=3421758
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25815062
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=57	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3890918
+RUN	round=57	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:33.522055503Z	loadavg_before=10.02 7.18 5.03	khz_before=4284981
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4602085
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=57	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4292190
+RUN	round=57	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:33.540080527Z	loadavg_before=10.02 7.18 5.03	khz_before=3431689
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1993329
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=57	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4175711
+RUN	round=58	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:33.554617738Z	loadavg_before=10.02 7.18 5.03	khz_before=3549065
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26723004
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=58	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4285626
+RUN	round=58	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:33.593501718Z	loadavg_before=10.02 7.18 5.03	khz_before=3493779
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55413007
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=58	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3728114
+RUN	round=58	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:33.661906827Z	loadavg_before=10.02 7.18 5.03	khz_before=3486705
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2000302
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=58	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3484472
+RUN	round=58	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:33.677274392Z	loadavg_before=10.02 7.18 5.03	khz_before=3433685
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4582929
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=58	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4289790
+RUN	round=59	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:33.695521717Z	loadavg_before=10.02 7.18 5.03	khz_before=4291448
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55424078
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=59	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3478323
+RUN	round=59	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:33.762304310Z	loadavg_before=10.02 7.18 5.03	khz_before=3712571
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25985426
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=59	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4063053
+RUN	round=59	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:33.798933505Z	loadavg_before=10.02 7.18 5.03	khz_before=3849449
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4559494
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=59	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4289250
+RUN	round=59	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:33.819157477Z	loadavg_before=10.02 7.18 5.03	khz_before=3496944
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2030320
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=59	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3531831
+RUN	round=60	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:33.834401649Z	loadavg_before=10.02 7.18 5.03	khz_before=3429552
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25812739
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=60	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3990981
+RUN	round=60	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:33.871451702Z	loadavg_before=10.02 7.18 5.03	khz_before=3790781
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55436121
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=60	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3733059
+RUN	round=60	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:33.938595619Z	loadavg_before=10.02 7.18 5.03	khz_before=3431156
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2029237
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=60	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3464686
+RUN	round=60	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:33.952725128Z	loadavg_before=10.02 7.18 5.03	khz_before=4286322
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4536922
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=60	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4292281
+RUN	round=61	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:33.970950190Z	loadavg_before=10.02 7.18 5.03	khz_before=3762036
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55044198
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=61	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3578972
+RUN	round=61	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:34.036799073Z	loadavg_before=10.02 7.18 5.03	khz_before=3746487
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=27098466
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=61	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4291879
+RUN	round=61	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:34.074301183Z	loadavg_before=10.02 7.18 5.03	khz_before=3743183
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4518607
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=61	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4290342
+RUN	round=61	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:34.093025673Z	loadavg_before=10.02 7.18 5.03	khz_before=3429243
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1995934
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=61	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4290419
+RUN	round=62	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:34.107823628Z	loadavg_before=10.02 7.18 5.03	khz_before=4291538
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26051751
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=62	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4199763
+RUN	round=62	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:34.145056888Z	loadavg_before=10.02 7.18 5.03	khz_before=3433110
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55181068
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=62	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3491844
+RUN	round=62	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:34.212154628Z	loadavg_before=10.02 7.18 5.03	khz_before=4290394
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1994301
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=62	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3750159
+RUN	round=62	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:34.226622999Z	loadavg_before=10.02 7.18 5.03	khz_before=4277484
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4572178
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=62	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3602863
+RUN	round=63	shape=realistic	size=256	tree=before	position=1	utc=2026-11-14T08:47:34.245128444Z	loadavg_before=10.02 7.18 5.03	khz_before=3455063
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=55699751
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=63	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3437348
+RUN	round=63	shape=realistic	size=256	tree=fixed	position=2	utc=2026-11-14T08:47:34.313262919Z	loadavg_before=10.02 7.18 5.03	khz_before=3432604
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=25997208
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=63	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3538593
+RUN	round=63	shape=line	size=16384	tree=before	position=1	utc=2026-11-14T08:47:34.350705807Z	loadavg_before=10.02 7.18 5.03	khz_before=3420201
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4587307
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=63	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3790944
+RUN	round=63	shape=line	size=16384	tree=fixed	position=2	utc=2026-11-14T08:47:34.369478668Z	loadavg_before=10.02 7.18 5.03	khz_before=3433256
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=2026241
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=63	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3660556
+RUN	round=64	shape=realistic	size=256	tree=fixed	position=1	utc=2026-11-14T08:47:34.383606914Z	loadavg_before=10.02 7.18 5.03	khz_before=3826168
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=26022335
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.03s
+
+RUN_END	round=64	shape=realistic	size=256	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4240949
+RUN	round=64	shape=realistic	size=256	tree=before	position=2	utc=2026-11-14T08:47:34.419649958Z	loadavg_before=10.02 7.18 5.03	khz_before=3428719
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=realistic	size=256	trial=0	values=256	elapsed_ns=54992741
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.06s
+
+RUN_END	round=64	shape=realistic	size=256	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=3435791
+RUN	round=64	shape=line	size=16384	tree=fixed	position=1	utc=2026-11-14T08:47:34.485187500Z	loadavg_before=10.02 7.18 5.03	khz_before=3554353
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=1993760
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1054 filtered out; finished in 0.00s
+
+RUN_END	round=64	shape=line	size=16384	tree=fixed	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4042878
+RUN	round=64	shape=line	size=16384	tree=before	position=2	utc=2026-11-14T08:47:34.500358092Z	loadavg_before=10.02 7.18 5.03	khz_before=3432197
+
+running 1 test
+test rspace::guarded_pathmap::two_phase_teardown_properties::final_anchor_teardown_measurement ... TEARDOWN_OBS	shape=line	size=16384	trial=0	values=0	elapsed_ns=4521964
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1043 filtered out; finished in 0.01s
+
+RUN_END	round=64	shape=line	size=16384	tree=before	exit=0	loadavg_after=10.02 7.18 5.03	khz_after=4292268
+failed runs: 0
+scaling governor of CPU 27 at the end: performance
+exit status: 0
+UTC end: 2026-11-14T08:47:34.520818934Z
