@@ -1,0 +1,562 @@
+current-epoch window: leaf 14264, mode real, attempt 1; commit bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c); date 2026-11-14; baseline epoch-bf826516c
+== lane held from 2026-11-14T18:50:28Z
+exported b42c3d305af591f38a0cd5b9656823e3ae134e8c to target/scratch/idx2
+export equals tree b42c3d305af591f38a0cd5b9656823e3ae134e8c: 3958 tracked files checked, 0 problems, 1 untracked files
+== sources before the runs (2026-11-14T18:50:29Z)
+$ git status --porcelain --untracked-files=all -- rspace++ shared Cargo.toml Cargo.lock .cargo rust-toolchain.toml   (in the export, with a temporary index of tree b42c3d305af591f38a0cd5b9656823e3ae134e8c; HEAD bf826516ca4ef0a6a8de3c03e9272d88a91af15f)
+(no output)
+== build 1 (rspace_comm): cargo bench -p rspace_plus_plus --bench rspace_comm --no-run (2026-11-14T18:50:29Z)
+build 1 exit 0; 0 crates compiled; Finished `bench` profile [optimized] target(s) in 0.20s
+== host state before (2026-11-14T18:50:29Z)
+cpu8 scaling_governor: performance
+cpu8 energy_performance_preference: performance
+cpu8 scaling_driver: amd-pstate-epp
+cpu8 scaling_cur_freq (kHz): 1429008
+cpu8 cpuinfo_max_freq (kHz): 4561833
+cpu8 scaling_max_freq (kHz): 4561833
+cpufreq boost: 1
+cpu8 thread siblings: 8
+possible CPUs: 0-31
+online CPUs: 0-31
+smt active: 0
+smt control: notsupported
+cpu40: absent (the leaves' 'CPU 40 idle' names no CPU of this host)
+loadavg: 2.18 3.33 4.68 3/5021 2624707
+RUSTFLAGS: <unset>
+CARGO_ENCODED_RUSTFLAGS: <unset>
+rustflags entries of .cargo/config.toml in the export, with their tables:
+  [build] rustflags = ["-C", "target-cpu=native"]
+  [target.x86_64-unknown-linux-gnu] rustflags = ["-C", "target-feature=+aes,+sse2"]
+rustc -vV (in the export, so rust-toolchain.toml applies):
+  rustc 1.95.0-nightly (6efa357bf 2026-02-08)
+  binary: rustc
+  commit-hash: 6efa357bff60d192688e02de0c78cae24a7f3a55
+  commit-date: 2026-02-08
+  host: x86_64-unknown-linux-gnu
+  release: 1.95.0-nightly
+  LLVM version: 22.1.0
+cargo -V (in the export): cargo 1.95.0-nightly (fe2f314ae 2026-01-30)
+commit: bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c)
+path dependency rholang-rs-cost-accounting-transpiler commit: 02cef80d32214ecdac3ee7d3b91c3786a34174d5
+path dependency rholang-rs-cost-accounting-transpiler changed or untracked paths: 0
+mpstat -P ALL 1 1 (host name replaced):
+  Linux 7.2.15-arch1-1 (<host>) 	11/14/26 	_x86_64_	(32 CPU)
+  
+  13:50:29     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  13:50:30     all    3.55    0.03    2.53    0.00    0.16    0.06    0.00    0.00    0.00   93.67
+  13:50:30       0    0.98    0.00    0.98    0.00    0.00    0.98    0.00    0.00    0.00   97.06
+  13:50:30       1    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  13:50:30       2    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  13:50:30       3    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  13:50:30       4    0.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00    0.00   99.00
+  13:50:30       5    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  13:50:30       6    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  13:50:30       7    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  13:50:30       8    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  13:50:30       9    1.01    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+  13:50:30      10    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  13:50:30      11    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  13:50:30      12    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  13:50:30      13    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  13:50:30      14    0.00    0.00    1.01    0.00    0.00    1.01    0.00    0.00    0.00   97.98
+  13:50:30      15    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  13:50:30      16    1.98    0.99    0.99    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  13:50:30      17    0.98    0.00    0.98    0.00    0.98    0.00    0.00    0.00    0.00   97.06
+  13:50:30      18   54.00    0.00   45.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00
+  13:50:30      19   16.16    0.00    4.04    0.00    0.00    0.00    0.00    0.00    0.00   79.80
+  13:50:30      20    3.96    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   93.07
+  13:50:30      21    3.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+  13:50:30      22   16.83    0.00   12.87    0.00    0.99    0.00    0.00    0.00    0.00   69.31
+  13:50:30      23    6.00    0.00    5.00    0.00    0.00    0.00    0.00    0.00    0.00   89.00
+  13:50:30      24    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  13:50:30      25    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  13:50:30      26    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  13:50:30      27    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  13:50:30      28    0.98    0.00    0.98    0.00    0.00    0.00    0.00    0.00    0.00   98.04
+  13:50:30      29    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  13:50:30      30    2.02    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   96.97
+  13:50:30      31    0.99    0.00    0.00    0.00    0.99    0.00    0.00    0.00    0.00   98.02
+  
+  Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  Average:     all    3.55    0.03    2.53    0.00    0.16    0.06    0.00    0.00    0.00   93.67
+  Average:       0    0.98    0.00    0.98    0.00    0.00    0.98    0.00    0.00    0.00   97.06
+  Average:       1    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:       2    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  Average:       3    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       4    0.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00    0.00   99.00
+  Average:       5    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       6    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       7    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       8    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       9    1.01    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+  Average:      10    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      11    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      12    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:      13    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      14    0.00    0.00    1.01    0.00    0.00    1.01    0.00    0.00    0.00   97.98
+  Average:      15    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:      16    1.98    0.99    0.99    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  Average:      17    0.98    0.00    0.98    0.00    0.98    0.00    0.00    0.00    0.00   97.06
+  Average:      18   54.00    0.00   45.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00
+  Average:      19   16.16    0.00    4.04    0.00    0.00    0.00    0.00    0.00    0.00   79.80
+  Average:      20    3.96    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   93.07
+  Average:      21    3.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+  Average:      22   16.83    0.00   12.87    0.00    0.99    0.00    0.00    0.00    0.00   69.31
+  Average:      23    6.00    0.00    5.00    0.00    0.00    0.00    0.00    0.00    0.00   89.00
+  Average:      24    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  Average:      25    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:      26    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:      27    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      28    0.98    0.00    0.98    0.00    0.00    0.00    0.00    0.00    0.00   98.04
+  Average:      29    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  Average:      30    2.02    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   96.97
+  Average:      31    0.99    0.00    0.00    0.00    0.99    0.00    0.00    0.00    0.00   98.02
+== pgrep -a 'cargo|rustc' before the runs
+pgrep -a 'cargo|rustc': no process (2026-11-14T18:50:30Z)
+== cpu_snapshot(8) before the runs
+cpu_snapshot(8) attempt 1 at 2026-11-14T18:50:31Z: admitted True; idle of CPU 8 99.0%; cores more than 50% idle: 31; idle % per CPU: 0:99.0 1:100.0 2:100.0 3:100.0 4:99.0 5:99.0 6:100.0 7:100.0 8:99.0 9:100.0 10:100.0 11:100.0 12:99.0 13:98.0 14:98.0 15:99.0 16:97.0 17:99.0 18:0.0 19:91.0 20:98.0 21:96.0 22:70.7 23:96.0 24:99.0 25:97.1 26:98.0 27:99.0 28:100.0 29:99.0 30:100.0 31:100.0
+== run 1 (rspace_comm) (2026-11-14T18:50:31Z)
+$ systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 8 cargo bench -p rspace_plus_plus --bench rspace_comm -- --save-baseline epoch-bf826516c --noplot 2>&1 | tee -a <stem>.log
+Running as unit: run-p2624808-i119907258.scope; invocation ID: 8f5fe0a0617546bc8fb0fa665a93f041
+    Finished `bench` profile [optimized] target(s) in 0.18s
+     Running benches/rspace_comm.rs (target/scratch/idx-target/release/deps/rspace_comm-c40e4b80e1bb05a2)
+Benchmarking waiting_receive_diverse_prefix/control/16
+Benchmarking waiting_receive_diverse_prefix/control/16: Warming up for 2.0000 s
+Benchmarking waiting_receive_diverse_prefix/control/16: Collecting 51 samples in estimated 5.0061 s (206k iterations)
+Benchmarking waiting_receive_diverse_prefix/control/16: Analyzing
+waiting_receive_diverse_prefix/control/16
+                        time:   [23.915 µs 24.099 µs 24.291 µs]
+                        thrpt:  [41.167 Kelem/s 41.495 Kelem/s 41.814 Kelem/s]
+Benchmarking waiting_receive_diverse_prefix/pathmap/16
+Benchmarking waiting_receive_diverse_prefix/pathmap/16: Warming up for 2.0000 s
+Benchmarking waiting_receive_diverse_prefix/pathmap/16: Collecting 51 samples in estimated 5.0148 s (241k iterations)
+Benchmarking waiting_receive_diverse_prefix/pathmap/16: Analyzing
+waiting_receive_diverse_prefix/pathmap/16
+                        time:   [20.359 µs 20.527 µs 20.702 µs]
+                        thrpt:  [48.305 Kelem/s 48.716 Kelem/s 49.120 Kelem/s]
+Benchmarking waiting_receive_diverse_prefix/control/256
+Benchmarking waiting_receive_diverse_prefix/control/256: Warming up for 2.0000 s
+Benchmarking waiting_receive_diverse_prefix/control/256: Collecting 51 samples in estimated 5.0798 s (17k iterations)
+Benchmarking waiting_receive_diverse_prefix/control/256: Analyzing
+waiting_receive_diverse_prefix/control/256
+                        time:   [291.39 µs 293.59 µs 295.87 µs]
+                        thrpt:  [3.3799 Kelem/s 3.4061 Kelem/s 3.4319 Kelem/s]
+Benchmarking waiting_receive_diverse_prefix/pathmap/256
+Benchmarking waiting_receive_diverse_prefix/pathmap/256: Warming up for 2.0000 s
+Benchmarking waiting_receive_diverse_prefix/pathmap/256: Collecting 51 samples in estimated 5.1440 s (24k iterations)
+Benchmarking waiting_receive_diverse_prefix/pathmap/256: Analyzing
+waiting_receive_diverse_prefix/pathmap/256
+                        time:   [213.44 µs 215.22 µs 216.99 µs]
+                        thrpt:  [4.6086 Kelem/s 4.6464 Kelem/s 4.6852 Kelem/s]
+Benchmarking waiting_receive_diverse_prefix/control/4096
+Benchmarking waiting_receive_diverse_prefix/control/4096: Warming up for 2.0000 s
+
+Warning: Unable to complete 51 samples in 5.0s. You may wish to increase target time to 6.9s, enable flat sampling, or reduce sample count to 30.
+Benchmarking waiting_receive_diverse_prefix/control/4096: Collecting 51 samples in estimated 6.8569 s (1326 iterations)
+Benchmarking waiting_receive_diverse_prefix/control/4096: Analyzing
+waiting_receive_diverse_prefix/control/4096
+                        time:   [4.9236 ms 4.9641 ms 5.0123 ms]
+                        thrpt:  [199.51  elem/s 201.45  elem/s 203.10  elem/s]
+Found 1 outliers among 51 measurements (1.96%)
+  1 (1.96%) high mild
+Benchmarking waiting_receive_diverse_prefix/pathmap/4096
+Benchmarking waiting_receive_diverse_prefix/pathmap/4096: Warming up for 2.0000 s
+
+Warning: Unable to complete 51 samples in 5.0s. You may wish to increase target time to 5.1s, enable flat sampling, or reduce sample count to 30.
+Benchmarking waiting_receive_diverse_prefix/pathmap/4096: Collecting 51 samples in estimated 5.0614 s (1326 iterations)
+Benchmarking waiting_receive_diverse_prefix/pathmap/4096: Analyzing
+waiting_receive_diverse_prefix/pathmap/4096
+                        time:   [3.7427 ms 3.7716 ms 3.8030 ms]
+                        thrpt:  [262.95  elem/s 265.14  elem/s 267.19  elem/s]
+
+Benchmarking waiting_receive_shared_prefix/control/16
+Benchmarking waiting_receive_shared_prefix/control/16: Warming up for 2.0000 s
+Benchmarking waiting_receive_shared_prefix/control/16: Collecting 51 samples in estimated 5.0039 s (213k iterations)
+Benchmarking waiting_receive_shared_prefix/control/16: Analyzing
+waiting_receive_shared_prefix/control/16
+                        time:   [22.805 µs 22.992 µs 23.195 µs]
+                        thrpt:  [43.113 Kelem/s 43.494 Kelem/s 43.849 Kelem/s]
+Benchmarking waiting_receive_shared_prefix/pathmap/16
+Benchmarking waiting_receive_shared_prefix/pathmap/16: Warming up for 2.0000 s
+Benchmarking waiting_receive_shared_prefix/pathmap/16: Collecting 51 samples in estimated 5.0136 s (252k iterations)
+Benchmarking waiting_receive_shared_prefix/pathmap/16: Analyzing
+waiting_receive_shared_prefix/pathmap/16
+                        time:   [19.084 µs 19.206 µs 19.357 µs]
+                        thrpt:  [51.660 Kelem/s 52.067 Kelem/s 52.401 Kelem/s]
+Found 3 outliers among 51 measurements (5.88%)
+  3 (5.88%) high mild
+Benchmarking waiting_receive_shared_prefix/control/256
+Benchmarking waiting_receive_shared_prefix/control/256: Warming up for 2.0000 s
+Benchmarking waiting_receive_shared_prefix/control/256: Collecting 51 samples in estimated 5.1434 s (19k iterations)
+Benchmarking waiting_receive_shared_prefix/control/256: Analyzing
+waiting_receive_shared_prefix/control/256
+                        time:   [275.14 µs 277.40 µs 279.96 µs]
+                        thrpt:  [3.5719 Kelem/s 3.6049 Kelem/s 3.6344 Kelem/s]
+Benchmarking waiting_receive_shared_prefix/pathmap/256
+Benchmarking waiting_receive_shared_prefix/pathmap/256: Warming up for 2.0000 s
+Benchmarking waiting_receive_shared_prefix/pathmap/256: Collecting 51 samples in estimated 5.1762 s (25k iterations)
+Benchmarking waiting_receive_shared_prefix/pathmap/256: Analyzing
+waiting_receive_shared_prefix/pathmap/256
+                        time:   [201.07 µs 202.54 µs 204.21 µs]
+                        thrpt:  [4.8970 Kelem/s 4.9372 Kelem/s 4.9734 Kelem/s]
+Found 3 outliers among 51 measurements (5.88%)
+  3 (5.88%) high mild
+Benchmarking waiting_receive_shared_prefix/control/4096
+Benchmarking waiting_receive_shared_prefix/control/4096: Warming up for 2.0000 s
+
+Warning: Unable to complete 51 samples in 5.0s. You may wish to increase target time to 6.4s, enable flat sampling, or reduce sample count to 30.
+Benchmarking waiting_receive_shared_prefix/control/4096: Collecting 51 samples in estimated 6.4140 s (1326 iterations)
+Benchmarking waiting_receive_shared_prefix/control/4096: Analyzing
+waiting_receive_shared_prefix/control/4096
+                        time:   [4.8278 ms 4.8690 ms 4.9131 ms]
+                        thrpt:  [203.54  elem/s 205.38  elem/s 207.13  elem/s]
+Benchmarking waiting_receive_shared_prefix/pathmap/4096
+Benchmarking waiting_receive_shared_prefix/pathmap/4096: Warming up for 2.0000 s
+Benchmarking waiting_receive_shared_prefix/pathmap/4096: Collecting 51 samples in estimated 9.4137 s (2652 iterations)
+Benchmarking waiting_receive_shared_prefix/pathmap/4096: Analyzing
+waiting_receive_shared_prefix/pathmap/4096
+                        time:   [3.5399 ms 3.5646 ms 3.5882 ms]
+                        thrpt:  [278.69  elem/s 280.54  elem/s 282.49  elem/s]
+
+Benchmarking distinct_diverse_prefix/control/1
+Benchmarking distinct_diverse_prefix/control/1: Warming up for 2.0000 s
+Benchmarking distinct_diverse_prefix/control/1: Collecting 51 samples in estimated 5.0008 s (1.3M iterations)
+Benchmarking distinct_diverse_prefix/control/1: Analyzing
+distinct_diverse_prefix/control/1
+                        time:   [3.3442 µs 3.3665 µs 3.3915 µs]
+                        thrpt:  [294.86 Kelem/s 297.05 Kelem/s 299.02 Kelem/s]
+Benchmarking distinct_diverse_prefix/pathmap/1
+Benchmarking distinct_diverse_prefix/pathmap/1: Warming up for 2.0000 s
+Benchmarking distinct_diverse_prefix/pathmap/1: Collecting 51 samples in estimated 5.0048 s (1.3M iterations)
+Benchmarking distinct_diverse_prefix/pathmap/1: Analyzing
+distinct_diverse_prefix/pathmap/1
+                        time:   [3.4044 µs 3.4359 µs 3.4630 µs]
+                        thrpt:  [288.77 Kelem/s 291.05 Kelem/s 293.74 Kelem/s]
+Benchmarking distinct_diverse_prefix/control/16
+Benchmarking distinct_diverse_prefix/control/16: Warming up for 2.0000 s
+Benchmarking distinct_diverse_prefix/control/16: Collecting 51 samples in estimated 5.0065 s (754k iterations)
+Benchmarking distinct_diverse_prefix/control/16: Analyzing
+distinct_diverse_prefix/control/16
+                        time:   [6.0405 µs 6.0959 µs 6.1639 µs]
+                        thrpt:  [162.24 Kelem/s 164.04 Kelem/s 165.55 Kelem/s]
+Benchmarking distinct_diverse_prefix/pathmap/16
+Benchmarking distinct_diverse_prefix/pathmap/16: Warming up for 2.0000 s
+Benchmarking distinct_diverse_prefix/pathmap/16: Collecting 51 samples in estimated 5.0004 s (1.2M iterations)
+Benchmarking distinct_diverse_prefix/pathmap/16: Analyzing
+distinct_diverse_prefix/pathmap/16
+                        time:   [3.6859 µs 3.7124 µs 3.7432 µs]
+                        thrpt:  [267.15 Kelem/s 269.36 Kelem/s 271.30 Kelem/s]
+Benchmarking distinct_diverse_prefix/control/256
+Benchmarking distinct_diverse_prefix/control/256: Warming up for 2.0000 s
+Benchmarking distinct_diverse_prefix/control/256: Collecting 51 samples in estimated 5.0354 s (89k iterations)
+Benchmarking distinct_diverse_prefix/control/256: Analyzing
+distinct_diverse_prefix/control/256
+                        time:   [55.893 µs 56.400 µs 56.971 µs]
+                        thrpt:  [17.553 Kelem/s 17.730 Kelem/s 17.891 Kelem/s]
+Benchmarking distinct_diverse_prefix/pathmap/256
+Benchmarking distinct_diverse_prefix/pathmap/256: Warming up for 2.0000 s
+Benchmarking distinct_diverse_prefix/pathmap/256: Collecting 51 samples in estimated 5.0055 s (1.2M iterations)
+Benchmarking distinct_diverse_prefix/pathmap/256: Analyzing
+distinct_diverse_prefix/pathmap/256
+                        time:   [3.8038 µs 3.8323 µs 3.8626 µs]
+                        thrpt:  [258.89 Kelem/s 260.94 Kelem/s 262.89 Kelem/s]
+Benchmarking distinct_diverse_prefix/control/4096
+Benchmarking distinct_diverse_prefix/control/4096: Warming up for 2.0000 s
+Benchmarking distinct_diverse_prefix/control/4096: Collecting 51 samples in estimated 6.5203 s (5304 iterations)
+Benchmarking distinct_diverse_prefix/control/4096: Analyzing
+distinct_diverse_prefix/control/4096
+                        time:   [1.2126 ms 1.2213 ms 1.2309 ms]
+                        thrpt:  [812.44  elem/s 818.82  elem/s 824.69  elem/s]
+Benchmarking distinct_diverse_prefix/pathmap/4096
+Benchmarking distinct_diverse_prefix/pathmap/4096: Warming up for 2.0000 s
+Benchmarking distinct_diverse_prefix/pathmap/4096: Collecting 51 samples in estimated 5.0065 s (992k iterations)
+Benchmarking distinct_diverse_prefix/pathmap/4096: Analyzing
+distinct_diverse_prefix/pathmap/4096
+                        time:   [4.5458 µs 4.5557 µs 4.5636 µs]
+                        thrpt:  [219.13 Kelem/s 219.51 Kelem/s 219.98 Kelem/s]
+Found 7 outliers among 51 measurements (13.73%)
+  1 (1.96%) low severe
+  5 (9.80%) low mild
+  1 (1.96%) high severe
+
+Benchmarking distinct_shared_prefix/control/1
+Benchmarking distinct_shared_prefix/control/1: Warming up for 2.0000 s
+Benchmarking distinct_shared_prefix/control/1: Collecting 51 samples in estimated 5.0028 s (1.2M iterations)
+Benchmarking distinct_shared_prefix/control/1: Analyzing
+distinct_shared_prefix/control/1
+                        time:   [3.5768 µs 3.5798 µs 3.5843 µs]
+                        thrpt:  [278.99 Kelem/s 279.34 Kelem/s 279.58 Kelem/s]
+Found 1 outliers among 51 measurements (1.96%)
+  1 (1.96%) low severe
+Benchmarking distinct_shared_prefix/pathmap/1
+Benchmarking distinct_shared_prefix/pathmap/1: Warming up for 2.0000 s
+Benchmarking distinct_shared_prefix/pathmap/1: Collecting 51 samples in estimated 5.0039 s (1.3M iterations)
+Benchmarking distinct_shared_prefix/pathmap/1: Analyzing
+distinct_shared_prefix/pathmap/1
+                        time:   [3.4918 µs 3.5096 µs 3.5249 µs]
+                        thrpt:  [283.69 Kelem/s 284.94 Kelem/s 286.39 Kelem/s]
+Found 4 outliers among 51 measurements (7.84%)
+  1 (1.96%) low severe
+  3 (5.88%) low mild
+Benchmarking distinct_shared_prefix/control/16
+Benchmarking distinct_shared_prefix/control/16: Warming up for 2.0000 s
+Benchmarking distinct_shared_prefix/control/16: Collecting 51 samples in estimated 5.0016 s (712k iterations)
+Benchmarking distinct_shared_prefix/control/16: Analyzing
+distinct_shared_prefix/control/16
+                        time:   [6.6149 µs 6.6298 µs 6.6413 µs]
+                        thrpt:  [150.57 Kelem/s 150.83 Kelem/s 151.17 Kelem/s]
+Found 4 outliers among 51 measurements (7.84%)
+  4 (7.84%) low mild
+Benchmarking distinct_shared_prefix/pathmap/16
+Benchmarking distinct_shared_prefix/pathmap/16: Warming up for 2.0000 s
+Benchmarking distinct_shared_prefix/pathmap/16: Collecting 51 samples in estimated 5.0019 s (1.2M iterations)
+Benchmarking distinct_shared_prefix/pathmap/16: Analyzing
+distinct_shared_prefix/pathmap/16
+                        time:   [3.9211 µs 3.9350 µs 3.9460 µs]
+                        thrpt:  [253.42 Kelem/s 254.13 Kelem/s 255.03 Kelem/s]
+Found 2 outliers among 51 measurements (3.92%)
+  2 (3.92%) low mild
+Benchmarking distinct_shared_prefix/control/256
+Benchmarking distinct_shared_prefix/control/256: Warming up for 2.0000 s
+Benchmarking distinct_shared_prefix/control/256: Collecting 51 samples in estimated 5.0073 s (78k iterations)
+Benchmarking distinct_shared_prefix/control/256: Analyzing
+distinct_shared_prefix/control/256
+                        time:   [63.093 µs 63.281 µs 63.439 µs]
+                        thrpt:  [15.763 Kelem/s 15.802 Kelem/s 15.850 Kelem/s]
+Found 3 outliers among 51 measurements (5.88%)
+  2 (3.92%) low mild
+  1 (1.96%) high severe
+Benchmarking distinct_shared_prefix/pathmap/256
+Benchmarking distinct_shared_prefix/pathmap/256: Warming up for 2.0000 s
+Benchmarking distinct_shared_prefix/pathmap/256: Collecting 51 samples in estimated 5.0037 s (1.1M iterations)
+Benchmarking distinct_shared_prefix/pathmap/256: Analyzing
+distinct_shared_prefix/pathmap/256
+                        time:   [4.1843 µs 4.1994 µs 4.2112 µs]
+                        thrpt:  [237.46 Kelem/s 238.13 Kelem/s 238.99 Kelem/s]
+Found 3 outliers among 51 measurements (5.88%)
+  3 (5.88%) low mild
+Benchmarking distinct_shared_prefix/control/4096
+Benchmarking distinct_shared_prefix/control/4096: Warming up for 2.0000 s
+Benchmarking distinct_shared_prefix/control/4096: Collecting 51 samples in estimated 6.2485 s (5304 iterations)
+Benchmarking distinct_shared_prefix/control/4096: Analyzing
+distinct_shared_prefix/control/4096
+                        time:   [1.1706 ms 1.1749 ms 1.1785 ms]
+                        thrpt:  [848.57  elem/s 851.17  elem/s 854.30  elem/s]
+Found 4 outliers among 51 measurements (7.84%)
+  1 (1.96%) low severe
+  2 (3.92%) low mild
+  1 (1.96%) high mild
+Benchmarking distinct_shared_prefix/pathmap/4096
+Benchmarking distinct_shared_prefix/pathmap/4096: Warming up for 2.0000 s
+Benchmarking distinct_shared_prefix/pathmap/4096: Collecting 51 samples in estimated 5.0005 s (1.0M iterations)
+Benchmarking distinct_shared_prefix/pathmap/4096: Analyzing
+distinct_shared_prefix/pathmap/4096
+                        time:   [4.4982 µs 4.5026 µs 4.5061 µs]
+                        thrpt:  [221.92 Kelem/s 222.09 Kelem/s 222.31 Kelem/s]
+Found 7 outliers among 51 measurements (13.73%)
+  1 (1.96%) low severe
+  2 (3.92%) low mild
+  2 (3.92%) high mild
+  2 (3.92%) high severe
+
+Benchmarking duplicate_multiplicity/1
+Benchmarking duplicate_multiplicity/1: Warming up for 2.0000 s
+Benchmarking duplicate_multiplicity/1: Collecting 51 samples in estimated 5.0049 s (1.3M iterations)
+Benchmarking duplicate_multiplicity/1: Analyzing
+duplicate_multiplicity/1
+                        time:   [3.4539 µs 3.4617 µs 3.4680 µs]
+                        thrpt:  [288.35 Kelem/s 288.88 Kelem/s 289.53 Kelem/s]
+Found 2 outliers among 51 measurements (3.92%)
+  1 (1.96%) low severe
+  1 (1.96%) low mild
+Benchmarking duplicate_multiplicity/16
+Benchmarking duplicate_multiplicity/16: Warming up for 2.0000 s
+Benchmarking duplicate_multiplicity/16: Collecting 51 samples in estimated 5.0051 s (1.3M iterations)
+Benchmarking duplicate_multiplicity/16: Analyzing
+duplicate_multiplicity/16
+                        time:   [3.4264 µs 3.4364 µs 3.4441 µs]
+                        thrpt:  [290.35 Kelem/s 291.00 Kelem/s 291.86 Kelem/s]
+Found 3 outliers among 51 measurements (5.88%)
+  1 (1.96%) low severe
+  2 (3.92%) low mild
+Benchmarking duplicate_multiplicity/256
+Benchmarking duplicate_multiplicity/256: Warming up for 2.0000 s
+Benchmarking duplicate_multiplicity/256: Collecting 51 samples in estimated 5.0015 s (1.3M iterations)
+Benchmarking duplicate_multiplicity/256: Analyzing
+duplicate_multiplicity/256
+                        time:   [3.4234 µs 3.4338 µs 3.4415 µs]
+                        thrpt:  [290.57 Kelem/s 291.22 Kelem/s 292.10 Kelem/s]
+Found 5 outliers among 51 measurements (9.80%)
+  2 (3.92%) low severe
+  1 (1.96%) low mild
+  2 (3.92%) high mild
+Benchmarking duplicate_multiplicity/4096
+Benchmarking duplicate_multiplicity/4096: Warming up for 2.0000 s
+Benchmarking duplicate_multiplicity/4096: Collecting 51 samples in estimated 5.0006 s (1.3M iterations)
+Benchmarking duplicate_multiplicity/4096: Analyzing
+duplicate_multiplicity/4096
+                        time:   [3.4517 µs 3.4589 µs 3.4662 µs]
+                        thrpt:  [288.50 Kelem/s 289.11 Kelem/s 289.72 Kelem/s]
+Found 3 outliers among 51 measurements (5.88%)
+  2 (3.92%) low severe
+  1 (1.96%) low mild
+
+Benchmarking join_arity/1
+Benchmarking join_arity/1: Warming up for 2.0000 s
+Benchmarking join_arity/1: Collecting 51 samples in estimated 5.0024 s (1.3M iterations)
+Benchmarking join_arity/1: Analyzing
+join_arity/1            time:   [3.4401 µs 3.4448 µs 3.4493 µs]
+                        thrpt:  [289.92 Kelem/s 290.29 Kelem/s 290.69 Kelem/s]
+Found 3 outliers among 51 measurements (5.88%)
+  3 (5.88%) low mild
+Benchmarking join_arity/2
+Benchmarking join_arity/2: Warming up for 2.0000 s
+Benchmarking join_arity/2: Collecting 51 samples in estimated 5.0026 s (854k iterations)
+Benchmarking join_arity/2: Analyzing
+join_arity/2            time:   [5.2530 µs 5.2584 µs 5.2632 µs]
+                        thrpt:  [190.00 Kelem/s 190.17 Kelem/s 190.37 Kelem/s]
+Found 4 outliers among 51 measurements (7.84%)
+  2 (3.92%) low severe
+  1 (1.96%) low mild
+  1 (1.96%) high mild
+Benchmarking join_arity/4
+Benchmarking join_arity/4: Warming up for 2.0000 s
+Benchmarking join_arity/4: Collecting 51 samples in estimated 5.0113 s (489k iterations)
+Benchmarking join_arity/4: Analyzing
+join_arity/4            time:   [9.2512 µs 9.2595 µs 9.2656 µs]
+                        thrpt:  [107.93 Kelem/s 108.00 Kelem/s 108.09 Kelem/s]
+Found 3 outliers among 51 measurements (5.88%)
+  3 (5.88%) low mild
+Benchmarking join_arity/8
+Benchmarking join_arity/8: Warming up for 2.0000 s
+Benchmarking join_arity/8: Collecting 51 samples in estimated 5.0168 s (264k iterations)
+Benchmarking join_arity/8: Analyzing
+join_arity/8            time:   [17.464 µs 17.473 µs 17.479 µs]
+                        thrpt:  [57.210 Kelem/s 57.232 Kelem/s 57.259 Kelem/s]
+Found 3 outliers among 51 measurements (5.88%)
+  3 (5.88%) low mild
+Benchmarking join_arity/16
+Benchmarking join_arity/16: Warming up for 2.0000 s
+Benchmarking join_arity/16: Collecting 51 samples in estimated 5.0255 s (135k iterations)
+Benchmarking join_arity/16: Analyzing
+join_arity/16           time:   [34.433 µs 34.474 µs 34.510 µs]
+                        thrpt:  [28.977 Kelem/s 29.007 Kelem/s 29.042 Kelem/s]
+Found 6 outliers among 51 measurements (11.76%)
+  1 (1.96%) low severe
+  4 (7.84%) low mild
+  1 (1.96%) high severe
+
+== run 1 exit 0 (2026-11-14T19:04:31Z)
+== host state after (2026-11-14T19:04:31Z)
+cpu8 scaling_governor: performance
+cpu8 energy_performance_preference: performance
+cpu8 scaling_driver: amd-pstate-epp
+cpu8 scaling_cur_freq (kHz): 3567527
+cpu8 cpuinfo_max_freq (kHz): 4561833
+cpu8 scaling_max_freq (kHz): 4561833
+cpufreq boost: 1
+cpu8 thread siblings: 8
+possible CPUs: 0-31
+online CPUs: 0-31
+smt active: 0
+smt control: notsupported
+cpu40: absent (the leaves' 'CPU 40 idle' names no CPU of this host)
+loadavg: 2.50 2.79 3.53 2/5044 2631764
+RUSTFLAGS: <unset>
+CARGO_ENCODED_RUSTFLAGS: <unset>
+rustflags entries of .cargo/config.toml in the export, with their tables:
+  [build] rustflags = ["-C", "target-cpu=native"]
+  [target.x86_64-unknown-linux-gnu] rustflags = ["-C", "target-feature=+aes,+sse2"]
+rustc -vV (in the export, so rust-toolchain.toml applies):
+  rustc 1.95.0-nightly (6efa357bf 2026-02-08)
+  binary: rustc
+  commit-hash: 6efa357bff60d192688e02de0c78cae24a7f3a55
+  commit-date: 2026-02-08
+  host: x86_64-unknown-linux-gnu
+  release: 1.95.0-nightly
+  LLVM version: 22.1.0
+cargo -V (in the export): cargo 1.95.0-nightly (fe2f314ae 2026-01-30)
+commit: bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c)
+path dependency rholang-rs-cost-accounting-transpiler commit: 02cef80d32214ecdac3ee7d3b91c3786a34174d5
+path dependency rholang-rs-cost-accounting-transpiler changed or untracked paths: 0
+mpstat -P ALL 1 1 (host name replaced):
+  Linux 7.2.15-arch1-1 (<host>) 	11/14/26 	_x86_64_	(32 CPU)
+  
+  14:04:31     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  14:04:32     all    3.89    0.06    2.65    0.03    0.22    0.06    0.00    0.00    0.00   93.09
+  14:04:32       0    0.00    0.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00   99.00
+  14:04:32       1    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:04:32       2    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:04:32       3    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:04:32       4    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:04:32       5    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:04:32       6    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:04:32       7    0.00    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+  14:04:32       8    8.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   92.00
+  14:04:32       9    2.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  14:04:32      10    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  14:04:32      11    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:04:32      12    2.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  14:04:32      13    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:04:32      14    0.00    0.00    0.00    0.00    1.00    1.00    0.00    0.00    0.00   98.00
+  14:04:32      15    5.88    0.00    0.98    0.00    0.98    0.00    0.00    0.00    0.00   92.16
+  14:04:32      16    0.99    0.00    0.99    0.00    0.00    0.00    0.00    0.00    0.00   98.02
+  14:04:32      17    0.99    0.00    0.99    0.00    0.99    0.00    0.00    0.00    0.00   97.03
+  14:04:32      18   51.49    0.00   47.52    0.00    0.99    0.00    0.00    0.00    0.00    0.00
+  14:04:32      19   18.00    1.00    4.00    0.00    0.00    0.00    0.00    0.00    0.00   77.00
+  14:04:32      20    3.88    0.00    1.94    0.00    0.97    0.00    0.00    0.00    0.00   93.20
+  14:04:32      21    1.00    0.00    1.00    1.00    0.00    0.00    0.00    0.00    0.00   97.00
+  14:04:32      22   22.22    0.00   18.18    0.00    1.01    0.00    0.00    0.00    0.00   58.59
+  14:04:32      23    1.98    0.00    1.98    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  14:04:32      24    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  14:04:32      25    0.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00    0.00   99.00
+  14:04:32      26    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:04:32      27    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  14:04:32      28    0.00    0.00    0.99    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  14:04:32      29    0.98    0.00    1.96    0.00    0.00    0.00    0.00    0.00    0.00   97.06
+  14:04:32      30    1.98    0.99    0.99    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  14:04:32      31    0.98    0.00    0.98    0.00    0.00    0.00    0.00    0.00    0.00   98.04
+  
+  Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  Average:     all    3.89    0.06    2.65    0.03    0.22    0.06    0.00    0.00    0.00   93.09
+  Average:       0    0.00    0.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00   99.00
+  Average:       1    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       2    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       3    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       4    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       5    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       6    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       7    0.00    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   98.99
+  Average:       8    8.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   92.00
+  Average:       9    2.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  Average:      10    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:      11    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      12    2.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  Average:      13    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      14    0.00    0.00    0.00    0.00    1.00    1.00    0.00    0.00    0.00   98.00
+  Average:      15    5.88    0.00    0.98    0.00    0.98    0.00    0.00    0.00    0.00   92.16
+  Average:      16    0.99    0.00    0.99    0.00    0.00    0.00    0.00    0.00    0.00   98.02
+  Average:      17    0.99    0.00    0.99    0.00    0.99    0.00    0.00    0.00    0.00   97.03
+  Average:      18   51.49    0.00   47.52    0.00    0.99    0.00    0.00    0.00    0.00    0.00
+  Average:      19   18.00    1.00    4.00    0.00    0.00    0.00    0.00    0.00    0.00   77.00
+  Average:      20    3.88    0.00    1.94    0.00    0.97    0.00    0.00    0.00    0.00   93.20
+  Average:      21    1.00    0.00    1.00    1.00    0.00    0.00    0.00    0.00    0.00   97.00
+  Average:      22   22.22    0.00   18.18    0.00    1.01    0.00    0.00    0.00    0.00   58.59
+  Average:      23    1.98    0.00    1.98    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  Average:      24    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:      25    0.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00    0.00   99.00
+  Average:      26    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      27    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  Average:      28    0.00    0.00    0.99    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  Average:      29    0.98    0.00    1.96    0.00    0.00    0.00    0.00    0.00    0.00   97.06
+  Average:      30    1.98    0.99    0.99    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  Average:      31    0.98    0.00    0.98    0.00    0.00    0.00    0.00    0.00    0.00   98.04
+== pgrep -a 'cargo|rustc' after the runs (2026-11-14T19:04:32Z)
+pgrep -a 'cargo|rustc': no process
+== cpu_snapshot(8) after the runs
+cpu_snapshot(8) attempt 1 at 2026-11-14T19:04:33Z: admitted True; idle of CPU 8 93.1%; cores more than 50% idle: 31; idle % per CPU: 0:99.0 1:100.0 2:99.0 3:100.0 4:100.0 5:100.0 6:100.0 7:100.0 8:93.1 9:97.0 10:100.0 11:98.0 12:100.0 13:100.0 14:99.0 15:96.0 16:97.0 17:99.0 18:0.0 19:97.0 20:96.1 21:97.0 22:77.8 23:95.0 24:100.0 25:99.0 26:100.0 27:100.0 28:98.0 29:100.0 30:98.0 31:99.0
+== sources after the runs (2026-11-14T19:04:33Z)
+$ git status --porcelain --untracked-files=all -- rspace++ shared Cargo.toml Cargo.lock .cargo rust-toolchain.toml   (in the export, with a temporary index of tree b42c3d305af591f38a0cd5b9656823e3ae134e8c; HEAD bf826516ca4ef0a6a8de3c03e9272d88a91af15f)
+(no output)
+export equals tree b42c3d305af591f38a0cd5b9656823e3ae134e8c: 3958 tracked files checked, 0 problems, 1 untracked files
+== lane released 2026-11-14T19:04:34Z
