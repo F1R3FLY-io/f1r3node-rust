@@ -668,7 +668,7 @@ pathmap_leaf_extension_proofs() {
 pathmap_leaf_extension_prerequisites() {
   local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/PathMapPhysicalOwnership.v theories/PathMapReversePruneTeardown.v
-  rocq_compile_with_closed_count theories/PathMapPhysicalOwnership.v 12 \
+  rocq_compile_with_closed_count theories/PathMapPhysicalOwnership.v 16 \
     "PathMap leaf-extension physical-ownership prerequisite"
   rocq_compile_with_closed_count theories/PathMapReversePruneTeardown.v 165 \
     "PathMap leaf-extension disposal prerequisite"
@@ -1165,11 +1165,11 @@ rocq_check_modules "canonical PathMap stream publication" \
   StackSafePDA.PathMapCanonicalStreamPublication \
   StackSafePDA.PathMapCanonicalStreamPublicationMutants
 rocq_compile_with_closed_count \
-  theories/PathMapPhysicalOwnership.v 12 \
-  "the eleven-invariant PathMap ownership authority and four live-write capstones"
+  theories/PathMapPhysicalOwnership.v 16 \
+  "the twelve-invariant PathMap ownership authority, four exclusive-provenance capstones and four live-write capstones"
 rocq_compile_with_closed_count \
-  theories/PathMapPhysicalOwnershipMutants.v 3 \
-  "the eleven-mutant PathMap ownership controls and live-write negative controls"
+  theories/PathMapPhysicalOwnershipMutants.v 6 \
+  "the fourteen-mutant PathMap ownership controls, three exclusive-provenance kills and live-write negative controls"
 rocq_check_modules "PathMap physical ownership" \
   StackSafePDA.PathMapPhysicalOwnership \
   StackSafePDA.PathMapPhysicalOwnershipMutants

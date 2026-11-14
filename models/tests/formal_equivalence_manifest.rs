@@ -3042,8 +3042,8 @@ fn pathmap_live_write_gateway_contract_is_bound_to_executable_witnesses() {
     }
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     for marker in [
-        "theories/PathMapPhysicalOwnership.v 12",
-        "theories/PathMapPhysicalOwnershipMutants.v 3",
+        "theories/PathMapPhysicalOwnership.v 16",
+        "theories/PathMapPhysicalOwnershipMutants.v 6",
         "-p rspace_plus_plus --lib live_write_",
         "expected exactly three executed live-write gateway witnesses",
     ] {
