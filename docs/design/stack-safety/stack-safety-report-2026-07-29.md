@@ -71,8 +71,9 @@ closure and SS-C14 records the dormant canonical `ParBag` successor in this repo
 **Verified living status.** The node gate contains **37 converted depth subjects + 8
 converted width subjects and zero production tripwire subjects**; the independent SS-B5 lifecycle
 gate adds one non-`Par` recursive error forest at depth 20,000. The strengthened hand-written
-recursion census finds **566** recursive components, **41** term-family components across **24** files,
-**18** mutual components, and zero `Unmeasured` dispositions; MeTTaIL's generated traversal table likewise
+recursion census, measured at `e79ba64d57` (§5.64.4), finds **1,039** recursive components,
+**117** term-family components across **57** files, **38** mutual components, all exactly
+dispositioned, and zero `Unmeasured` dispositions; MeTTaIL's generated traversal table likewise
 has no unmeasured traversal. The hardened lifecycle gate at `mettail-rust@a58d0925` scans **549**
 production Rust files, indexes **2,279** type definitions, derives a trait-specific maximum of **84**
 recursively owned types in **80** components, and reports zero recursive derive or implicit-`Drop`
@@ -300,6 +301,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-B3** | `9843e4b6` | f1r3node | `StackGrowingFuture` + `stacker` **deleted** | — | dependency removed | [5.2.2](#522--the-tokio-fire-and-forget-driver--establishing-the-mechanism-not-assuming-it) |
 | **SS-B4** | `d1086fdc` | f1r3node | native-method second-pass operand replay $`\rightarrow`$ typed continuations on `eval_drive`; per-call 55-method table construction deleted | recursive control overflows at depth 16; production depth 4,096 succeeds on 256 KiB in **0.49 s / 118,276 KiB RSS / zero swap** | **yes** | [5.2.1](#521-the-expression-evaluator-trampoline-a929a2d6) |
 | **SS-B5** | `d03939cc`, `382c53d0` | f1r3node | recursive `InterpreterError` forest: `Clone`, `PartialEq`, compact/pretty `Debug`, `Display`, `root_cause`, and `Drop` $`\rightarrow`$ explicit work stacks | host stack $`\Theta(d) \rightarrow O(1)`$; **20,000** mixed levels and **20,000** `Located` wrappers on **256 KiB**; runtime-only **0.03 s / 24,056 KiB RSS / zero swap** | **yes**; bounded recursive oracle preserves values and bytes | [5.2.1a](#521a-interpretererror-lifecycle-closure-ss-b5) |
+| **SS-B6** | `0e336cc9af`; evidence `e79ba64d57`; pgmcp #5972 | f1r3node | reducer NaN-presence scan for `==` and `!=` $`\rightarrow`$ one shared iterative predicate over protobuf regions | recursive, $`\Theta(d)`$ native frames $`\rightarrow`$ 4,096 collection levels on a 256 KiB thread, debug and release | **yes** | [5.64](#564-shared-iterative-nan-presence-predicate-for-rholang-equality-ss-b6) |
 | **SS-C1** | `9a5521a2` | f1r3node | cold-store **decoder** (`bincode_decoder`) | 12,894 $`\rightarrow`$ **0** | **yes** | [5.3.3](#533-the-cold-store-decoder--an-obligation-stack-with-eighteen-value-stacks-9a5521a2) |
 | **SS-C2** | `c28f4cf6`, `a169cc61` | f1r3node | cold-store **encoder** (`bincode_encoder`) | ~224 $`\rightarrow`$ **0** | **yes** | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
 | **SS-C3** | `7c74260d` | f1r3node | schema-code generator (one walk, four outputs) | — | enabling | [5.3.2](#532-the-cold-store-encoder--a-single-walk-trampolined-serializer-c28f4cf6-a169cc61) |
@@ -575,6 +577,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.57 Formally refined kind-1 PREPARE streaming and fixed native-stack envelope [SS-C30]](#557-formally-refined-kind-1-prepare-streaming-and-fixed-native-stack-envelope-ss-c30)
   - [5.58 Formally verified replay authority and affine FFI failure closure [SS-C31]](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31)
   - [5.63 Fixed-delta trusted commit scaling [SS-C36]](#563-fixed-delta-trusted-commit-scaling-ss-c36)
+  - [5.64 Shared iterative NaN-presence predicate for Rholang equality [SS-B6]](#564-shared-iterative-nan-presence-predicate-for-rholang-equality-ss-b6)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -15736,6 +15739,258 @@ The measurement does not claim the following.
 
 Two pre-existing gaps are noted and not fixed here: the register of section 0 has no SS-C34 or
 SS-C35 rows, and the table of contents has no entries for 5.59 to 5.62.
+
+### 5.64 Shared iterative NaN-presence predicate for Rholang equality [SS-B6]
+
+SS-B6 records the conversion of the full reducer's NaN-presence scan, with the evidence and the
+classification that its commit did not record (pgmcp task 5972). Commit `0e336cc9af` deleted the
+reducer's recursive scan and the pure evaluator's private copy, and made both evaluators call one
+iterative predicate, `rho_pure_eval::par_contains_nan_double` (`rho-pure-eval/src/nan.rs:34`).
+Commit `e79ba64d57` adds the generated-term oracle check of §5.64.4. Neither evidence commit
+changes production code.
+
+**Terms used in this section.**
+
+| Term | Meaning |
+|---|---|
+| **IEEE 754** | the IEEE Standard for Floating-Point Arithmetic ([doi:10.1109/IEEESTD.2019.8766229](https://doi.org/10.1109/IEEESTD.2019.8766229)); a Rholang `GDouble` stores one of its 64-bit values as raw bits |
+| **NaN** | *not a number*: an IEEE 754 value whose exponent bits are all ones and whose fraction is nonzero. There are $`2^{53} - 2`$ such 64-bit patterns, and IEEE 754 equality treats each of them as unequal to every value, itself included |
+| **NaN-presence predicate** | the function that answers whether a value holds a NaN anywhere in its collection structure. Rholang `==` answers `false`, and `!=` answers `true`, when it holds for either operand |
+| **collection level** | one `EList`, `ETuple`, `ESet` or `EMap` expression; its child `Par`s hold the next level |
+| **collection depth** $`d`$ | the length of a value's longest chain of nested collection levels |
+| **distinct endpoint** | one stored key of a `Par`'s PathMap-backed `Expr` family |
+| **multiplicity** $`m`$ | the number of logical occurrences that one distinct endpoint stands for |
+| **protobuf region** | a constant-size handle into canonical protobuf bytes: a shared backing buffer plus a byte range |
+| **shell** | what remains of an `Expr`'s encoding when every field that holds a `Par` is cut out |
+
+#### 5.64.1 The defect
+
+**What recursed.** In the parent of `0e336cc9af`, the reducer's equality arms called a private
+`par_contains_nan_double` (`rholang/src/rust/interpreter/reduce.rs:9584` at that parent). It called
+itself once per collection level: on each element of `list.ps`, `tuple.ps` and `set.ps`, and on each
+map key and value. **DERIVED** (source).
+
+**Why it was unbounded.** Rholang places no bound on collection depth, so the scan used
+$`\Theta(d)`$ native stack frames. A program needs no deep source text to reach it: a recursive
+contract that wraps a value in a one-element list $`n`$ times builds depth $`n`$ at run time.
+**DERIVED**.
+
+**Two further costs.** Each level called `decode_occurrences::<Expr>()`, which decodes one owned
+`Expr` per logical occurrence, so an endpoint of multiplicity $`m`$ was decoded $`m`$ times. And
+decoding one level's `Expr` processes its whole protobuf encoding, which contains every deeper
+level, so a chain of depth $`d`$ costs
+
+```math
+\sum_{k=1}^{d} (d - k + 1) = \frac{d(d+1)}{2} = \Theta(d^2)
+```
+
+level decodes' worth of bytes. **DERIVED**.
+
+**A second copy.** The pure evaluator (`rho-pure-eval/src/eval.rs:413` at the same parent) kept its
+own iterative copy over four homogeneous work stacks. It did not recurse, but two copies of one
+equality rule could drift apart. **DERIVED**.
+
+**User input that reached it.** Any deploy that evaluates `==` or `!=` with an operand of large
+collection depth. **DERIVED**. The depth at which the deleted scan overflowed is **NOT MEASURED**:
+`0e336cc9af` deleted it, and the frozen copy that the tests keep as their oracle runs only on terms
+of depth at most two.
+
+#### 5.64.2 The architecture of the repair, and why THIS shape
+
+**Shape: worklist.** One LIFO `Vec` of constant-size work items replaces the recursion. An item is
+`Work::Par(region)` or `Work::Expr(region)` (`nan.rs:19-22`), and every region points into one
+shared, immutable backing buffer.
+
+```pseudocode
+⟨NaN presence of a Par p⟩ ≡
+    ⟨Copy p's distinct Expr endpoints into one backing buffer, once⟩
+    work ← one Expr item per distinct endpoint
+    while work is not empty:
+        item ← pop(work)
+        case item of
+          Par(r)  → push one Expr item per Expr of the nested Par r
+          Expr(r) → ⟨Cut r at its Par fields and decode only the shell⟩
+                    case shell of
+                      GDouble(bits), bits a NaN     → return true
+                      EList, ETuple, ESet or EMap   → push one Par item per cut
+                      any other constructor         → drop its cuts unread
+    return false
+
+⟨Copy p's distinct Expr endpoints into one backing buffer, once⟩ ≡
+    visit each distinct endpoint once (visit_encoded) and append its payload;
+    multiplicity is never expanded, because the predicate is existential:
+    m copies of an endpoint hold a NaN exactly when one copy does
+
+⟨Cut r at its Par fields and decode only the shell⟩ ≡
+    cut_at_par(r, EXPR_RHO_MATCH_PROGRAM) splits r at every field that the
+    generated schema program marks as a Par; each cut is a region over the
+    same buffer, so decoding the shell costs time in the shell's size and
+    never in the depth below it
+```
+
+**The alternatives, and why each was rejected.**
+
+| Alternative | Why it was rejected |
+|---|---|
+| a continuation driver on `eval_drive`, the SS-B1 shape | the predicate combines nothing on return: the first NaN ends the search, and otherwise every child is visited. A continuation frame would carry a result that no frame resumes |
+| promote the pure evaluator's four-stack copy unchanged | it holds owned `Par`s decoded from each level, so a chain of depth $`d`$ still costs $`\Theta(d^2)`$ decoding (§5.64.1) |
+| expand multiplicity, as the deleted scan did | the answer cannot change, so $`m`$ decodes of one endpoint are waste; at the maximum multiplicity, $`2^{64} - 1`$, the expansion cannot complete |
+| list the `Par`-holding field numbers by hand | the list could drift from the schema; the generated `EXPR_RHO_MATCH_PROGRAM` is derived from it |
+| descend into every constructor that holds a `Par` | it would change verdicts. The historical rule descends only through `EList`, `ETuple`, `ESet` and `EMap`, and treats every other constructor (operators with `Par` operands, `EPathMap`, the process families) as opaque |
+
+**What a work item carries, and why not more.** A region: a reference-counted handle to the
+backing buffer and a byte range. It carries no owned `Par` or `Expr`, and no link to a parent,
+because nothing returns to a parent.
+
+**Visit order.** Cuts are pushed in protobuf order and popped last first. The order is
+unobservable: the predicate is pure, charges nothing, and only its boolean leaves it.
+
+**Invariant that keeps the stacks in step.** n/a — there is one stack. Every region in it lies
+inside the one backing buffer, which nothing mutates while the predicate runs.
+
+```text
+                     ┌─────────────────────────────┐
+  root Par ────────► │ backing buffer (immutable)  │ ◄── every region is a byte range of it
+  visit_encoded      └─────────────────────────────┘
+        │
+        ▼
+  ┌──────────────┐    cut_at_par     ┌──────────────┐
+  │ Expr(region) │ ────────────────► │ shell + cuts │
+  └──────────────┘                   └──────────────┘
+        ▲                                   │
+        │               ┌───────────────────┼────────────────────┐
+        │               ▼                   ▼                    ▼
+        │         GDouble NaN:        EList, ETuple,       any other
+        │         return true         ESet or EMap:        constructor:
+        │                             one Par(cut)         drop its cuts
+        │                             per cut
+        │                                   │
+        │                                   ▼
+        │   one Expr item per        ┌──────────────┐
+        └─── Expr of the nested ──── │ Par(region)  │
+             Par                     └──────────────┘
+```
+
+Legend: a box is a work item or the backing buffer. An arrow labelled with a function is the step
+that produces its target from its source. `Expr(region)` and `Par(region)` are the two kinds of work
+item, and the three branches under the shell are the three arms of the `case` in the pseudocode.
+
+#### 5.64.3 How the fix was made
+
+Before, **VERBATIM** from the parent of `0e336cc9af`
+(`rholang/src/rust/interpreter/reduce.rs:9584-9598`):
+
+```rust
+fn par_contains_nan_double(par: &Par) -> bool {
+    par.decode_occurrences::<Expr>()
+        .iter()
+        .any(|e| match &e.expr_instance {
+            Some(ExprInstance::GDouble(bits)) => f64::from_bits(*bits).is_nan(),
+            Some(ExprInstance::EListBody(list)) => list.ps.iter().any(par_contains_nan_double),
+            Some(ExprInstance::ETupleBody(tuple)) => tuple.ps.iter().any(par_contains_nan_double),
+            Some(ExprInstance::ESetBody(set)) => set.ps.iter().any(par_contains_nan_double),
+            Some(ExprInstance::EMapBody(map)) => map.kvs.iter().any(|kv| {
+                kv.key.as_ref().is_some_and(par_contains_nan_double)
+                    || kv.value.as_ref().is_some_and(par_contains_nan_double)
+            }),
+            _ => false,
+        })
+}
+```
+
+After: the pseudocode of §5.64.2 is the whole algorithm of `rho-pure-eval/src/nan.rs:34-105`, and
+its loop is `:61-104`. Both evaluators call it: the reducer's `combine_eq` and `combine_neq`
+(`rholang/src/rust/interpreter/reduce.rs:4748`, `:4765`) and the pure evaluator
+(`rho-pure-eval/src/eval.rs:405`, `:973`). `0e336cc9af` deleted the reducer's copy (16 lines) and
+the pure evaluator's (92 lines).
+
+#### 5.64.4 Results
+
+The post-gate runs at commit `e79ba64d57` measured the predicate on a 256 KiB thread
+(`fixed_stack_probe`, `rho-pure-eval/tests/nan_predicate.rs:224`). Each time is one run, so it
+shows that the traversal completes and its order of magnitude; it is not a timing comparison.
+
+| metric | before | after | provenance |
+|---|---|---|---|
+| B/level, release | NOT MEASURED — deleted before any measurement | NOT MEASURED — the probe asserts completion on a fixed stack instead of bisecting a stack size; a worklist adds no native frame per level (**DERIVED**) | — |
+| B/level, debug | NOT MEASURED — as above | NOT MEASURED — as above | — |
+| depth on a 256 KiB thread | NOT MEASURED | 4,096 levels, in debug and in release, for a terminal NaN, a finite value traversed in full, and an early return with a deep sibling pending | **(q)** the two logs below |
+| wall clock, depth 4,096, debug | — | NaN found in 55.884327ms; finite value exhausted in 55.4423ms; early return in 491.092µs | **(q)** `target/perf/logs/phase4/5972-post-p1-nan-predicate-debug-20261114T221140Z.log` |
+| wall clock, depth 4,096, release | — | NaN found in 5.929323ms; finite value exhausted in 5.916199ms; early return in 89.49µs | **(q)** `target/perf/logs/phase4/5972-post-p1-nan-predicate-release-20261114T221140Z.log` |
+| heap: peak / blocks | n/a — not a serializer or deserializer | n/a | — |
+| where the allocations moved | one owned `Expr` per occurrence per level | one backing buffer for the root endpoints, the worklist, and one shell decode per visited `Expr` (**DERIVED**) | source |
+
+Further results, all **MEASURED (q)** at `e79ba64d57` in debug and in release:
+
+- **Generated terms.** `every_generated_shallow_term_agrees_with_the_recursive_oracle` checks
+  4,278 terms of depth at most two. They are built from six leaves: empty, finite, two NaN bit
+  patterns, infinity, and a NaN under `not`. The set holds the leaves; every one- and two-child
+  collection of leaves (180 terms); every one-child collection of those 186 terms (1,116); and
+  every two-child collection that pairs one of the 186 with `finite` or with `nan`, in either order
+  (2,976). The predicate agrees with the frozen recursive scan on every term, and 2,898 of the terms
+  hold a NaN.
+- **Collection positions and endpoints.** `direct_and_collection_semantics_match_the_historical_equation`
+  checks the predicate against the frozen recursive scan with a NaN at the root and nested in each
+  of the `EList`, `ETuple`, `ESet`, `EMap` key and `EMap` value positions. Its nested cases exercise
+  both endpoint kinds of the region design: root endpoints copied from the root `Par`'s PathMap, and
+  nested endpoints read as regions of decoded shells.
+- **`==` and `!=` results.** Both evaluators compute `==` and `!=` from the predicate by the formula
+  that `0e336cc9af` left unchanged (`reduce.rs:4748`, `:4765`; `eval.rs:405`, `:973`), so their
+  results agree wherever the two predicates agree. **DERIVED** (source).
+- **Multiplicity.** `compressed_multiplicity_is_never_expanded` stores one endpoint at multiplicity
+  $`2^{64} - 1`$ and gets the verdict of multiplicity one, for a NaN and for a finite value.
+- **The reducer.** `rholang_numeric_eval_spec` (filter `float_nan`, 3 tests) and
+  `numeric_types_spec` (filter `float_nan`, 2 tests) pass, including `[nan] == [nan]` through the
+  full reducer.
+- **The census.** `handwritten_recursion_census` passes its 13 tests and reports
+  **1,039** recursive components, **117** of them over the term family (**38** mutual) across **57** files, all **117** exactly dispositioned.
+  None of the listed components has a member in `nan.rs` or in the equality arms.
+
+| log | SHA-256 |
+|---|---|
+| `target/perf/logs/phase4/5972-post-p1-nan-predicate-debug-20261114T221140Z.log` | `cc089aa7fe1b7281deaae64b0d6a4852b4a21c5236cc3502558087df7f93b9f4` |
+| `target/perf/logs/phase4/5972-post-p1-nan-predicate-release-20261114T221140Z.log` | `dccf5f5a4147df0d7a840ad8738f695589d0cba68347fd3949cb8d6b12cccbae` |
+| `target/perf/logs/phase4/5972-post-p2-recursion-census-debug-20261114T221140Z.log` | `223c133a1b6fdf8b53dd2b758244255e2a0da7f12e2eb1b34374f71135a13934` |
+| `target/perf/logs/phase4/5972-post-p2-recursion-census-release-20261114T221140Z.log` | `876789bbd6c165c9832e070422c085c80846660750fef2cd2b59d58eb8db55f8` |
+
+#### 5.64.5 What it cost
+
+- **Throughput.** NOT MEASURED against the deleted scan: no paired benchmark was taken before
+  `0e336cc9af`. The absolute times are in §5.64.4.
+- **Allocation.** Per call: one buffer holding the root endpoints' payloads, a worklist whose
+  capacity starts at the number of distinct root endpoints, and one shell decode per visited `Expr`.
+  **DERIVED**.
+- **Complexity.** One 105-line module replaces two copies of 16 and 92 lines.
+- **Intercept.** NOT MEASURED — the probe does not bisect a stack size.
+
+#### 5.64.6 What is still recursive
+
+Nothing in the predicate: it holds no native frame per level (**DERIVED**, source), and the census
+of §5.64.4 lists no component in `nan.rs`. This section measures only the predicate. The reducer's
+equality arms do more work on the same operands: substitution (`substitute_and_charge`), the charge
+(`equality_check_cost`) and the comparison `sv1 == sv2`. Those are separate subjects of this
+register and of the census, so §5.64 makes no claim about the depth at which a whole `==`
+evaluation completes.
+
+#### 5.64.7 Anti-vacuity
+
+The Rust gate of commit `e79ba64d57` ran red control R1. R1 replaces the NaN test at `nan.rs:86`
+with a comparison against the one canonical NaN pattern, `bits == f64::NAN.to_bits()`, so the
+predicate misses every other NaN pattern. Exactly two tests failed, as these lines of
+`target/perf/logs/phase4/5972-gate-20261114T221022Z.log` record:
+
+```text
+red 0: rc 101, failed tests ['direct_and_collection_semantics_match_the_historical_equation', 'every_generated_shallow_term_agrees_with_the_recursive_oracle']
+PASS red 0: exactly the named tests fail with the named text (rc=101)
+```
+
+Legend: two lines quoted verbatim from the gate log. The first names the tests that failed; the
+second is the gate's verdict that exactly those tests failed and printed the assertion messages that
+the gate configuration, recorded in the same log, requires.
+
+The required messages are "iterative parity for alternate NaN payload", from the hand-written
+alternate-payload case of the direct test, and "iterative parity for alternate-nan", from the
+generated-term test of §5.64.4, whose leaves include the NaN pattern `0x7ff8_0000_dead_beef`.
 
 ---
 
