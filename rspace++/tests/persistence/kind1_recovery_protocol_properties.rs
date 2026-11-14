@@ -1894,8 +1894,8 @@ fn kind1_streaming_recovery_is_a_complete_structured_differential_of_contiguous_
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct AllocationMeasurement {
-    pub(super) count: u64,
+pub(crate) struct AllocationMeasurement {
+    pub(crate) count: u64,
     pub(super) total_bytes: u64,
     pub(super) max_single_bytes: u64,
     pub(super) peak_live_bytes: u64,
@@ -1910,7 +1910,7 @@ fn reset_allocation_measurement() {
     ALLOCATION_PEAK_LIVE_BYTES.with(|bytes| bytes.set(0));
 }
 
-pub(super) fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, AllocationMeasurement) {
+pub(crate) fn measure_allocations<T>(operation: impl FnOnce() -> T) -> (T, AllocationMeasurement) {
     reset_allocation_measurement();
     COUNT_ALLOCATIONS.with(|enabled| enabled.set(true));
     let result = operation();

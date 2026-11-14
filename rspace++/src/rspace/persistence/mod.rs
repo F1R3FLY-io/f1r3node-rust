@@ -139,3 +139,5 @@ pub(crate) use wal::{LogPackObjectHeaderV1, OBJECT_RECORD_HEADER_LEN_V1};
 #[cfg(test)]
 #[path = "../../../tests/persistence/mod.rs"]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::kind1_recovery_protocol_properties::measure_allocations;

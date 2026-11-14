@@ -13,6 +13,7 @@ use pathmap::zipper::{
 use proptest::prelude::*;
 
 use super::{DisposeValue, DrainObserver, GuardedPathMap, TeardownBarrier, drain_pathmap_observed};
+use crate::rspace::persistence::measure_allocations;
 
 fn navigation_topology(map: &PathMap<usize>) -> Vec<(usize, Option<u8>, Option<usize>)> {
     let mut cursor = map.read_zipper();
@@ -454,6 +455,85 @@ fn final_anchor_teardown_measurement() {
             shape, size, trial, expected_values, elapsed_ns
         );
     }
+}
+
+const FINAL_TEARDOWN_ALLOCATION_GATES: [(&str, usize, u64); 2] =
+    [("realistic", 256, 18_170), ("line", 16_384, 1_638)];
+
+fn barrier_installing_drain(map: &mut PathMap<u64>, dispose: &MeasurementDisposer) {
+    let mut cursor = map.write_zipper();
+    loop {
+        if cursor.is_val() {
+            let value = super::remove_value_preserving_path(&mut cursor)
+                .expect("a focused measurement endpoint holds its value");
+            dispose.dispose(value);
+        }
+        if !super::advance_to_next_value(&mut cursor) {
+            break;
+        }
+    }
+    cursor.reset();
+    let mut suffix = Vec::new();
+    loop {
+        super::descend_to_rightmost_leaf(&mut cursor, &mut suffix);
+        if cursor.at_root() && !cursor.is_val() && cursor.child_count() == 0 {
+            break;
+        }
+        let barrier = <MeasurementBarrier as TeardownBarrier<u64>>::make_barrier();
+        assert!(cursor.set_val(barrier).is_none());
+        let step = super::remove_valued_leaf_and_bubble::<_, MeasurementBarrier, _>(
+            &mut cursor,
+            super::ValuedLeafOrigin::Synthetic,
+            None,
+            dispose,
+        );
+        assert_eq!(step.real_values, 0);
+    }
+    cursor.reset();
+}
+
+#[test]
+fn final_teardown_allocation_calls_stay_within_the_registered_gate() {
+    let mut exceeded = Vec::with_capacity(FINAL_TEARDOWN_ALLOCATION_GATES.len());
+    for (shape, size, threshold) in FINAL_TEARDOWN_ALLOCATION_GATES {
+        let (guarded, expected_values, disposed) = measurement_map(shape, size);
+        let ((), allocations) = measure_allocations(|| drop(black_box(guarded)));
+        assert_eq!(disposed.load(Ordering::Relaxed), expected_values);
+        let calls = allocations.count;
+        println!("ALLOCATION_GATE\tshape={shape}\tcalls={calls}\tthreshold={threshold}");
+        if calls > threshold {
+            exceeded.push(shape);
+        }
+    }
+    assert_eq!(exceeded, Vec::<&str>::new());
+}
+
+#[test]
+fn barrier_installing_drain_exceeds_the_final_teardown_allocation_gate() {
+    let mut within = Vec::with_capacity(FINAL_TEARDOWN_ALLOCATION_GATES.len());
+    for (shape, size, threshold) in FINAL_TEARDOWN_ALLOCATION_GATES {
+        let (mut guarded, expected_values, disposed) = measurement_map(shape, size);
+        let mut map = guarded
+            .fresh_map_mut()
+            .map
+            .take()
+            .expect("a live guarded anchor holds its map");
+        drop(guarded);
+        let dispose = MeasurementDisposer {
+            disposed: Arc::clone(&disposed),
+        };
+        let ((), allocations) = measure_allocations(|| {
+            barrier_installing_drain(&mut map, &dispose);
+            drop(black_box(map));
+        });
+        assert_eq!(disposed.load(Ordering::Relaxed), expected_values);
+        let calls = allocations.count;
+        println!("BARRIER_CONTROL\tshape={shape}\tcalls={calls}\tthreshold={threshold}");
+        if calls <= threshold {
+            within.push(shape);
+        }
+    }
+    assert_eq!(within, Vec::<&str>::new());
 }
 
 #[test]
