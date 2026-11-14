@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::connective::ConnectiveInstance::{
     ConnAndBody, ConnBool, ConnByteArray, ConnInt, ConnNotBody, ConnOrBody, ConnString, ConnUri,
     VarRefBody,
@@ -40,6 +41,7 @@ use super::free_map_transaction::{
     FreeMapTransaction, UnwindRollbackWitness,
 };
 use super::match_pars::{match_pars, try_match_pars, MatchParsDomainError};
+use super::projection_rules::{projection_rule, PROJECTION_RULES};
 use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
 use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
@@ -645,7 +647,10 @@ fn cover_generated_query_root(
     compiled: &mut usize,
     declined: &mut usize,
     pending_bag_components: &mut Vec<OwnedGeneratedQueryRoot>,
+    golden: &mut BTreeMap<String, CompiledQueryGroup>,
 ) {
+    let (compiled_before, declined_before) = (*compiled, *declined);
+    let mut records = String::new();
     for event in RhoPathCursor::new(root) {
         match event {
             RhoPathEvent::EnterNode { cursor, program } => {
@@ -654,6 +659,7 @@ fn cover_generated_query_root(
                 let structure = encode_structural_sequence([encoded.as_slice()]);
                 let mut captures = PathMap::new();
                 if let Some(atom) = rho_path_query_cursor_atom(cursor, true, &mut captures) {
+                    records.push_str(&format!("{}\t{atom:?}\n", program.type_name));
                     let query = RhoPathQuery::structural_sequence([atom], false);
                     assert!(
                         query.matches_structure(&structure),
@@ -662,6 +668,7 @@ fn cover_generated_query_root(
                     );
                     *compiled += 1;
                 } else {
+                    records.push_str(&format!("{}\tdeclined\n", program.type_name));
                     assert!(
                         captures.is_empty(),
                         "{case}/{}: declined cursor query published speculative captures",
@@ -676,6 +683,65 @@ fn cover_generated_query_root(
             _ => {}
         }
     }
+    record_compiled_queries(
+        golden,
+        case,
+        *compiled - compiled_before,
+        *declined - declined_before,
+        records,
+    );
+}
+
+#[derive(Default)]
+struct CompiledQueryGroup {
+    roots: usize,
+    compiled: usize,
+    declined: usize,
+    digests: Vec<u8>,
+}
+
+fn record_compiled_queries(
+    golden: &mut BTreeMap<String, CompiledQueryGroup>,
+    case: &str,
+    compiled: usize,
+    declined: usize,
+    records: String,
+) {
+    let group = golden.entry(case.to_owned()).or_default();
+    group.roots += 1;
+    group.compiled += compiled;
+    group.declined += declined;
+    group
+        .digests
+        .extend_from_slice(&Blake2b256::hash(records.into_bytes()));
+}
+
+fn assert_compiled_query_golden(golden: &BTreeMap<String, CompiledQueryGroup>) {
+    let mut actual = String::from(
+        "# Compiled RhoPath queries v1: case\troots\tcompiled\tdeclined\tblake2b-256\n",
+    );
+    for (case, group) in golden {
+        actual.push_str(&format!(
+            "{case}\t{}\t{}\t{}\t{}\n",
+            group.roots,
+            group.compiled,
+            group.declined,
+            hex::encode(Blake2b256::hash(group.digests.clone()))
+        ));
+    }
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/goldens");
+    let path = directory.join("compiled-rho-path-queries-v1.tsv");
+    if std::env::var_os("UPDATE_COMPILED_QUERY_GOLDEN").is_some() {
+        std::fs::create_dir_all(&directory).expect("create the compiled-query golden directory");
+        std::fs::write(&path, actual).expect("write the reviewed compiled-query golden");
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).expect("read the compiled-query golden");
+    assert_eq!(
+        actual, expected,
+        "compiled RhoPath queries drifted from the golden; review the compiler change and bless \
+         again only when the query bytes are meant to change"
+    );
 }
 
 /// Owned roots decoded one endpoint at a time from an opaque ParBag event.
@@ -747,6 +813,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
     let mut compiled = 0usize;
     let mut declined = 0usize;
     let mut pending_bag_components = Vec::new();
+    let mut golden = BTreeMap::new();
 
     for (case, par) in par_corpus::par_corpus() {
         cover_generated_query_root(
@@ -756,6 +823,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             &mut compiled,
             &mut declined,
             &mut pending_bag_components,
+            &mut golden,
         );
     }
     for (case, root) in par_corpus::list_par_with_random_corpus() {
@@ -766,6 +834,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             &mut compiled,
             &mut declined,
             &mut pending_bag_components,
+            &mut golden,
         );
     }
     for (case, root) in par_corpus::bind_pattern_corpus() {
@@ -776,6 +845,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             &mut compiled,
             &mut declined,
             &mut pending_bag_components,
+            &mut golden,
         );
     }
     for (case, root) in par_corpus::tagged_continuation_corpus() {
@@ -786,6 +856,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             &mut compiled,
             &mut declined,
             &mut pending_bag_components,
+            &mut golden,
         );
     }
     for (case, root) in par_corpus::par_with_random_corpus() {
@@ -796,6 +867,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             &mut compiled,
             &mut declined,
             &mut pending_bag_components,
+            &mut golden,
         );
     }
     for (case, root) in par_corpus::list_bind_patterns_corpus() {
@@ -806,6 +878,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             &mut compiled,
             &mut declined,
             &mut pending_bag_components,
+            &mut golden,
         );
     }
 
@@ -817,6 +890,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         &mut compiled,
         &mut declined,
         &mut pending_bag_components,
+        &mut golden,
     );
     let deploy_id = DeployId::default();
     cover_generated_query_root(
@@ -826,6 +900,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         &mut compiled,
         &mut declined,
         &mut pending_bag_components,
+        &mut golden,
     );
     let deployer_id = DeployerId::default();
     cover_generated_query_root(
@@ -835,6 +910,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         &mut compiled,
         &mut declined,
         &mut pending_bag_components,
+        &mut golden,
     );
 
     // These generated roots are not all reachable from the older Par corpus.
@@ -849,6 +925,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
                 &mut compiled,
                 &mut declined,
                 &mut pending_bag_components,
+                &mut golden,
             );
         }};
     }
@@ -868,6 +945,7 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
             &mut compiled,
             &mut declined,
             &mut pending_bag_components,
+            &mut golden,
         );
     }
 
@@ -884,23 +962,74 @@ fn compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success() {
         "the corpus must exercise conservative full-domain query fallback"
     );
 
-    compare(
-        "formal bridge: ordered nested capture",
-        list(vec![new_gint_par(11, Vec::new(), false)], false),
-        list(vec![new_freevar_par(0, Vec::new())], true),
-    );
-    compare(
-        "formal bridge: generated Send capture",
-        send(
-            new_gint_par(7, Vec::new(), false),
-            vec![new_gint_par(11, Vec::new(), false)],
-            false,
+    let bridges = [
+        (
+            "formal bridge: ordered nested capture",
+            list(vec![new_gint_par(11, Vec::new(), false)], false),
+            list(vec![new_freevar_par(0, Vec::new())], true),
         ),
-        send(
-            new_freevar_par(0, Vec::new()),
-            vec![new_freevar_par(1, Vec::new())],
-            true,
+        (
+            "formal bridge: generated Send capture",
+            send(
+                new_gint_par(7, Vec::new(), false),
+                vec![new_gint_par(11, Vec::new(), false)],
+                false,
+            ),
+            send(
+                new_freevar_par(0, Vec::new()),
+                vec![new_freevar_par(1, Vec::new())],
+                true,
+            ),
         ),
+    ];
+    for (label, _, pattern) in &bridges {
+        match rho_path_query_atom(pattern, &mut PathMap::new()) {
+            Some(atom) => {
+                record_compiled_queries(&mut golden, label, 1, 0, format!("Par\t{atom:?}\n"))
+            }
+            None => record_compiled_queries(&mut golden, label, 0, 1, "Par\tdeclined\n".to_owned()),
+        }
+    }
+    assert_compiled_query_golden(&golden);
+
+    for (label, target, pattern) in bridges {
+        compare(label, target, pattern);
+    }
+}
+
+#[test]
+fn every_generated_field_has_exactly_one_projection_rule() {
+    let mut fields = BTreeSet::new();
+    for (_, program) in RHO_MATCH_REGISTRY {
+        for field in program.fields {
+            fields.insert((program.type_name, field.name));
+            let rules = PROJECTION_RULES
+                .iter()
+                .filter(|&&(owner, name, _)| owner == program.type_name && name == field.name)
+                .count();
+            assert_eq!(
+                rules, 1,
+                "{}.{} has {rules} projection rules",
+                program.type_name, field.name
+            );
+        }
+    }
+    for &(owner, name, rule) in PROJECTION_RULES {
+        assert!(
+            fields.contains(&(owner, name)),
+            "the projection rule {owner}.{name} names no generated field"
+        );
+        assert_eq!(
+            projection_rule(owner, name),
+            Some(rule),
+            "the lookup misses the projection rule {owner}.{name}"
+        );
+    }
+    assert!(
+        PROJECTION_RULES
+            .windows(2)
+            .all(|pair| (pair[0].0, pair[0].1) < (pair[1].0, pair[1].1)),
+        "projection rules must be strictly sorted by type and field"
     );
 }
 

@@ -8,6 +8,7 @@ pub mod r#match;
 pub mod match_pars;
 pub mod maximum_bipartite_match;
 pub mod par_count;
+pub mod projection_rules;
 pub mod spatial_matcher;
 mod spatial_matcher_pda;
 pub mod sub_pars;

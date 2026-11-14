@@ -12,7 +12,7 @@ use models::rust::rholang::match_region_path::{
     AdmittedExprRegion, AdmittedExprRegionClass, AdmittedParRegionClass,
     CanonicalRhoPathRegionCursor, CanonicalRhoPathRegionEvent,
 };
-use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
+use models::rust::rholang::match_schema::{RhoMatchProgram, RhoPathCursor, RhoPathEvent};
 use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::utils::{new_elist_expr, to_vec};
 use pathmap::PathMap;
@@ -25,6 +25,7 @@ use rspace_plus_plus::rspace::rho_path::{
 
 use super::exports::*;
 use super::fold_match::FoldMatch;
+use super::projection_rules::{declines, projection_rule, ProjectionRule};
 use super::spatial_matcher::SpatialMatcherContext;
 
 #[derive(Clone, Default)]
@@ -465,10 +466,7 @@ fn compile_ordered_nested_query(
     // Encoding the ignored fields as exact query bytes would reject values
     // which the authoritative PDA accepts. Decline this query; the caller
     // falls back to spatial matching when compilation cannot prove safety.
-    if matches!(
-        root,
-        ParCursor::Receive(_) | ParCursor::New(_) | ParCursor::Match(_) | ParCursor::ReceiveBind(_)
-    ) {
+    if declines(root.program().type_name) {
         return None;
     }
 
@@ -482,6 +480,7 @@ fn compile_ordered_nested_query(
     let mut suppressed_nodes = 0usize;
     let mut ignored_field_depth = 0usize;
     let mut saw_hole = false;
+    let mut owners: Vec<&RhoMatchProgram> = Vec::with_capacity(16);
 
     for event in RhoPathCursor::new(root) {
         if ignored_field_depth != 0 {
@@ -507,7 +506,7 @@ fn compile_ordered_nested_query(
         }
 
         match event {
-            RhoPathEvent::EnterNode { cursor, .. } => {
+            RhoPathEvent::EnterNode { cursor, program } => {
                 if let ParCursor::Par(par) = cursor {
                     if let Some(hole) = rho_match_hole(par) {
                         if !record_linear_capture(captures, &hole) {
@@ -558,25 +557,22 @@ fn compile_ordered_nested_query(
                         continue;
                     }
                 }
-                match cursor {
-                    ParCursor::EList(list) if list.remainder.is_some() => return None,
+                if declines(program.type_name) {
                     // These carriers have associative-commutative matching
                     // semantics. Their dynamic children belong to the AC
                     // query machine, not this ordered cursor program. Decline
                     // the ordered query even for ground instances.
-                    ParCursor::ESet(_)
-                    | ParCursor::EMap(_)
-                    | ParCursor::EPathMap(_)
-                    | ParCursor::Connective(_)
-                    | ParCursor::Var(_) => return None,
-                    _ => {}
+                    return None;
                 }
+                owners.push(program);
                 append_match_path_event(&mut exact, event);
             }
             RhoPathEvent::EnterField(field)
                 if matches!(
-                    field.name,
-                    "locally_free" | "connective_used" | "cost_region"
+                    owners
+                        .last()
+                        .and_then(|owner| projection_rule(owner.type_name, field.name)),
+                    Some(ProjectionRule::Ignored)
                 ) =>
             {
                 append_match_path_event(&mut exact, event);
@@ -586,6 +582,10 @@ fn compile_ordered_nested_query(
                 // optional-message value, whether absent or deeply nested;
                 // scalar metadata uses this same field-boundary rule.
                 ignored_field_depth = 1;
+            }
+            RhoPathEvent::LeaveNode => {
+                owners.pop();
+                append_match_path_event(&mut exact, event);
             }
             _ => append_match_path_event(&mut exact, event),
         }
