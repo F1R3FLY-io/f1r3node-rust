@@ -954,3 +954,706 @@ proptest! {
         prop_assert_eq!(&left, &right);
     }
 }
+
+const BATCH_CHANNEL_IDS: [u8; 3] = [0, 1, 2];
+const BATCH_LABELS: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+const BATCH_FILL_LABEL: u8 = 5;
+const BATCH_UNDERFLOW_LABEL: u8 = 6;
+const BATCH_OVERFLOW_LABEL: u8 = 7;
+
+type BatchOracle = [Option<BTreeMap<u8, u64>>; 3];
+
+#[derive(Clone, Copy, Debug)]
+enum BatchOwnership {
+    Unique,
+    AliasDroppedBeforeStore,
+    AliasDroppedAfterStore,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BatchCatalogs {
+    Cold,
+    Warm,
+    HeldPool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BatchFault {
+    Underflow,
+    MalformedPath,
+    CountOverflow,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BatchChange {
+    channel: u8,
+    label: u8,
+    amount: u8,
+    addition: bool,
+}
+
+#[derive(Clone, Debug)]
+struct BatchScenario {
+    initial: [Option<Vec<u8>>; 3],
+    changes: Vec<BatchChange>,
+    catalogs: BatchCatalogs,
+}
+
+#[derive(Debug, PartialEq)]
+struct BatchChannelView {
+    data: Option<Vec<Datum<String>>>,
+    anchor: Option<usize>,
+    catalog: Option<usize>,
+}
+
+#[derive(Debug, PartialEq)]
+struct BatchWorld {
+    outer: usize,
+    loaded: usize,
+    distinct: usize,
+    cardinality: u64,
+    pending: BagDelta,
+    channels: Vec<BatchChannelView>,
+}
+
+struct BatchPlan {
+    delta: BagDelta,
+    expected: BatchOracle,
+    touched: [bool; 3],
+}
+
+fn batch_ownership_strategy() -> impl Strategy<Value = BatchOwnership> {
+    prop_oneof![
+        Just(BatchOwnership::Unique),
+        Just(BatchOwnership::AliasDroppedBeforeStore),
+        Just(BatchOwnership::AliasDroppedAfterStore),
+    ]
+}
+
+fn batch_shared_ownership_strategy() -> impl Strategy<Value = BatchOwnership> {
+    prop_oneof![
+        Just(BatchOwnership::AliasDroppedBeforeStore),
+        Just(BatchOwnership::AliasDroppedAfterStore),
+    ]
+}
+
+fn batch_fault_strategy() -> impl Strategy<Value = BatchFault> {
+    prop_oneof![
+        Just(BatchFault::Underflow),
+        Just(BatchFault::MalformedPath),
+        Just(BatchFault::CountOverflow),
+    ]
+}
+
+fn batch_scenario_strategy() -> impl Strategy<Value = BatchScenario> {
+    (
+        prop::array::uniform3(prop::option::weighted(0.8, vec(0u8..4, 1..8))),
+        vec(
+            (0u8..3, 0u8..4, 1u8..4, any::<bool>()).prop_map(
+                |(channel, label, amount, addition)| BatchChange {
+                    channel,
+                    label,
+                    amount,
+                    addition,
+                },
+            ),
+            1..5,
+        ),
+        prop_oneof![
+            Just(BatchCatalogs::Cold),
+            Just(BatchCatalogs::Warm),
+            Just(BatchCatalogs::HeldPool),
+        ],
+    )
+        .prop_map(|(initial, changes, catalogs)| BatchScenario {
+            initial,
+            changes,
+            catalogs,
+        })
+}
+
+fn batch_counts(labels: &[u8]) -> BTreeMap<u8, u64> {
+    let mut counts = BTreeMap::new();
+    for label in labels {
+        *counts.entry(*label).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn batch_oracle(initial: &[Option<Vec<u8>>; 3]) -> BatchOracle {
+    initial
+        .each_ref()
+        .map(|labels| labels.as_deref().map(batch_counts))
+}
+
+fn batch_count(oracle: &BatchOracle, channel: u8, label: u8) -> u64 {
+    oracle[usize::from(channel)]
+        .as_ref()
+        .and_then(|counts| counts.get(&label))
+        .copied()
+        .unwrap_or(0)
+}
+
+fn batch_store(initial: &[Option<Vec<u8>>; 3]) -> RSpaceDataStore<String, String> {
+    let mut store = RSpaceDataStore::new();
+    for (id, labels) in BATCH_CHANNEL_IDS.into_iter().zip(initial) {
+        if let Some(labels) = labels {
+            store
+                .set_channel(model_channel(id), labels.iter().copied().map(datum))
+                .expect("a model channel loads");
+        }
+    }
+    store
+}
+
+fn warm_batch_catalogs(
+    store: &RSpaceDataStore<String, String>,
+) -> Vec<(u8, CandidatePool<String>)> {
+    let mut pools = Vec::with_capacity(BATCH_CHANNEL_IDS.len());
+    for id in BATCH_CHANNEL_IDS {
+        if let Some(pool) = store
+            .channel_pool(&model_channel(id))
+            .expect("a model channel catalog builds")
+        {
+            pools.push((id, pool));
+        }
+    }
+    pools
+}
+
+fn prepare_batch_catalogs(
+    store: &RSpaceDataStore<String, String>,
+    catalogs: BatchCatalogs,
+) -> Vec<(u8, CandidatePool<String>)> {
+    match catalogs {
+        BatchCatalogs::Cold => Vec::new(),
+        BatchCatalogs::Warm => {
+            drop(warm_batch_catalogs(store));
+            Vec::new()
+        }
+        BatchCatalogs::HeldPool => warm_batch_catalogs(store),
+    }
+}
+
+fn batch_alias(
+    store: &RSpaceDataStore<String, String>,
+    ownership: BatchOwnership,
+) -> Option<RSpaceDataStore<String, String>> {
+    match ownership {
+        BatchOwnership::Unique => None,
+        BatchOwnership::AliasDroppedBeforeStore | BatchOwnership::AliasDroppedAfterStore => {
+            Some(store.clone())
+        }
+    }
+}
+
+fn observe_batch_world(store: &RSpaceDataStore<String, String>) -> BatchWorld {
+    let catalogs = store
+        .candidate_catalogs
+        .read()
+        .expect("the candidate catalog lock is not poisoned");
+    BatchWorld {
+        outer: store.index().outer_anchor_identity(),
+        loaded: store.loaded_channel_count(),
+        distinct: store.distinct_len(),
+        cardinality: store.cardinality(),
+        pending: store.pending_delta().clone(),
+        channels: BATCH_CHANNEL_IDS
+            .into_iter()
+            .map(|id| {
+                let channel = model_channel(id);
+                let channel_marker = marker(&channel);
+                BatchChannelView {
+                    data: store
+                        .channel_data(&channel)
+                        .expect("a model channel decodes"),
+                    anchor: inner_anchor(store, &channel_marker),
+                    catalog: catalogs
+                        .get(&channel_marker)
+                        .map(|catalog| Arc::as_ptr(catalog) as usize),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn net_batch_changes(oracle: &BatchOracle, changes: &[BatchChange]) -> BTreeMap<(u8, u8), i128> {
+    let mut nets = BTreeMap::new();
+    for change in changes {
+        let amount = i128::from(change.amount);
+        let signed = match change.addition {
+            true => amount,
+            false => -amount,
+        };
+        *nets.entry((change.channel, change.label)).or_insert(0) += signed;
+    }
+    for (&(channel, label), net) in nets.iter_mut() {
+        *net = (*net).max(-i128::from(batch_count(oracle, channel, label)));
+    }
+    nets.retain(|_, net| *net != 0);
+    if nets.is_empty() {
+        let first = changes
+            .first()
+            .expect("a scenario holds at least one change");
+        nets.insert((first.channel, first.label), 1);
+    }
+    nets
+}
+
+fn record_batch(nets: &BTreeMap<(u8, u8), i128>) -> BagDelta {
+    let mut delta = BagDelta::new();
+    for (&(channel, label), &net) in nets {
+        let path = RSpaceDataIndex::datum_path(&model_channel(channel), &datum(label));
+        let amount = Multiplicity::new(
+            u64::try_from(net.unsigned_abs()).expect("a batch amount fits in u64"),
+        )
+        .expect("a batch amount is positive");
+        let recorded = match net.is_positive() {
+            true => delta.record_addition(&path, amount),
+            false => delta.record_removal(&path, amount),
+        };
+        recorded.expect("a planned batch change records");
+    }
+    delta
+}
+
+fn publish_batch(oracle: &BatchOracle, nets: &BTreeMap<(u8, u8), i128>) -> BatchOracle {
+    let mut expected = oracle.clone();
+    for (&(channel, label), &net) in nets {
+        let counts = expected[usize::from(channel)].get_or_insert_with(BTreeMap::new);
+        let resident = i128::from(counts.get(&label).copied().unwrap_or(0));
+        match u64::try_from(resident + net).expect("a planned count is a valid u64") {
+            0 => {
+                counts.remove(&label);
+            }
+            count => {
+                counts.insert(label, count);
+            }
+        }
+    }
+    expected
+}
+
+fn plan_batch(scenario: &BatchScenario) -> BatchPlan {
+    let oracle = batch_oracle(&scenario.initial);
+    let nets = net_batch_changes(&oracle, &scenario.changes);
+    let mut touched = [false; 3];
+    for &(channel, _) in nets.keys() {
+        touched[usize::from(channel)] = true;
+    }
+    BatchPlan {
+        delta: record_batch(&nets),
+        expected: publish_batch(&oracle, &nets),
+        touched,
+    }
+}
+
+fn refused_batch(
+    oracle: &BatchOracle,
+    changes: &[BatchChange],
+    fault: BatchFault,
+    fault_channel: u8,
+) -> BagDelta {
+    let mut nets = net_batch_changes(oracle, changes);
+    for channel in BATCH_CHANNEL_IDS {
+        *nets.entry((channel, BATCH_FILL_LABEL)).or_insert(0) += 1;
+    }
+    let mut delta = record_batch(&nets);
+    let fault_path =
+        |label: u8| RSpaceDataIndex::datum_path(&model_channel(fault_channel), &datum(label));
+    let recorded = match fault {
+        BatchFault::Underflow => {
+            delta.record_removal(&fault_path(BATCH_UNDERFLOW_LABEL), Multiplicity::ONE)
+        }
+        BatchFault::MalformedPath => delta.record_addition(b"not-a-rhopath", Multiplicity::ONE),
+        BatchFault::CountOverflow => delta.record_addition(
+            &fault_path(BATCH_OVERFLOW_LABEL),
+            Multiplicity::new(u64::MAX).expect("u64::MAX is a multiplicity"),
+        ),
+    };
+    recorded.expect("the fault records in the batch");
+    delta
+}
+
+fn publish_reference_store(expected: &BatchOracle) -> RSpaceDataStore<String, String> {
+    let mut store = RSpaceDataStore::new();
+    for (id, counts) in BATCH_CHANNEL_IDS.into_iter().zip(expected) {
+        if let Some(counts) = counts {
+            store
+                .set_channel(
+                    model_channel(id),
+                    counts.iter().flat_map(|(&label, &count)| {
+                        std::iter::repeat_n(
+                            datum(label),
+                            usize::try_from(count).expect("a model count fits in usize"),
+                        )
+                    }),
+                )
+                .expect("a reference channel loads");
+        }
+    }
+    store
+}
+
+fn assert_held_pools(
+    held: &[(u8, CandidatePool<String>)],
+    oracle: &BatchOracle,
+    invariant: &str,
+) -> Result<(), TestCaseError> {
+    for (id, pool) in held {
+        for label in BATCH_LABELS {
+            prop_assert_eq!(
+                pool.stored_availability()
+                    .count(&RSpaceDataIndex::relative_datum_path(&datum(label))),
+                batch_count(oracle, *id, label),
+                "{}: a held candidate pool keeps the version it was built from",
+                invariant
+            );
+        }
+    }
+    Ok(())
+}
+
+fn assert_batch_publication(
+    store: &RSpaceDataStore<String, String>,
+    reference: &RSpaceDataStore<String, String>,
+    plan: &BatchPlan,
+) -> Result<(), TestCaseError> {
+    prop_assert_eq!(
+        store,
+        reference,
+        "GuardInvOuterBatchMatchesPublication: the batch publishes the reference entries"
+    );
+    prop_assert_eq!(
+        (store.loaded_channel_count(), store.distinct_len(), store.cardinality()),
+        (reference.loaded_channel_count(), reference.distinct_len(), reference.cardinality()),
+        "GuardInvOuterBatchMatchesPublication: the aggregate metrics are the reference's"
+    );
+    prop_assert_eq!(
+        store.pending_delta(),
+        &plan.delta,
+        "GuardInvOuterBatchMatchesPublication: the pending delta records the batch"
+    );
+    let catalogs = store
+        .candidate_catalogs
+        .read()
+        .expect("the candidate catalog lock is not poisoned");
+    for id in BATCH_CHANNEL_IDS {
+        let channel = model_channel(id);
+        let channel_marker = marker(&channel);
+        prop_assert_eq!(
+            store
+                .channel_data(&channel)
+                .expect("a model channel decodes"),
+            reference
+                .channel_data(&channel)
+                .expect("a reference channel decodes"),
+            "GuardInvOuterBatchMatchesPublication: channel {} holds the reference entries",
+            id
+        );
+        for label in BATCH_LABELS {
+            prop_assert_eq!(
+                store.index().count(&channel, &datum(label)),
+                batch_count(&plan.expected, id, label),
+                "GuardInvOuterBatchMatchesPublication: channel {} label {} count",
+                id,
+                label
+            );
+        }
+        if let Some(catalog) = catalogs.get(&channel_marker) {
+            prop_assert_eq!(
+                Some(catalog.availability.anchor_identity()),
+                inner_anchor(store, &channel_marker),
+                "GuardInvOuterBatchMatchesPublication: the committed catalog of channel {} shares \
+                 the published channel authority",
+                id
+            );
+            for label in BATCH_LABELS {
+                prop_assert_eq!(
+                    catalog
+                        .availability
+                        .count(&RSpaceDataIndex::relative_datum_path(&datum(label))),
+                    batch_count(&plan.expected, id, label),
+                    "GuardInvOuterBatchMatchesPublication: the committed catalog of channel {} \
+                     counts label {} as published",
+                    id,
+                    label
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn guard_inv_outer_batch_refusal_preserves_world(
+        scenario in batch_scenario_strategy(),
+        ownership in batch_ownership_strategy(),
+        fault in batch_fault_strategy(),
+        fault_channel in 0u8..3,
+    ) {
+        let mut initial = scenario.initial.clone();
+        if let BatchFault::CountOverflow = fault {
+            initial[usize::from(fault_channel)]
+                .get_or_insert_with(Vec::new)
+                .push(BATCH_OVERFLOW_LABEL);
+        }
+        let mut store = batch_store(&initial);
+        let oracle = batch_oracle(&initial);
+        let held = prepare_batch_catalogs(&store, scenario.catalogs);
+        let delta = refused_batch(&oracle, &scenario.changes, fault, fault_channel);
+        let alias = batch_alias(&store, ownership);
+        let before = observe_batch_world(&store);
+
+        prop_assert!(
+            store.apply_delta(&delta).is_err(),
+            "GuardInvOuterBatchRefusalPreservesWorld: the {:?} batch is refused",
+            fault
+        );
+
+        prop_assert_eq!(
+            &observe_batch_world(&store),
+            &before,
+            "GuardInvOuterBatchRefusalPreservesWorld: a refused batch leaves the store unchanged"
+        );
+        match (ownership, alias) {
+            (BatchOwnership::AliasDroppedAfterStore, Some(alias)) => {
+                prop_assert_eq!(
+                    &observe_batch_world(&alias),
+                    &before,
+                    "GuardInvOuterBatchRefusalPreservesWorld: a refused batch leaves the alias \
+                     unchanged"
+                );
+                drop(store);
+                prop_assert_eq!(
+                    &observe_batch_world(&alias),
+                    &before,
+                    "GuardInvOuterBatchRefusalPreservesWorld: the alias outlives the store unchanged"
+                );
+            }
+            (_, alias) => {
+                if let Some(alias) = &alias {
+                    prop_assert_eq!(
+                        &observe_batch_world(alias),
+                        &before,
+                        "GuardInvOuterBatchRefusalPreservesWorld: a refused batch leaves the alias \
+                         unchanged"
+                    );
+                }
+                drop(alias);
+                prop_assert_eq!(
+                    &observe_batch_world(&store),
+                    &before,
+                    "GuardInvOuterBatchRefusalPreservesWorld: the store outlives the alias unchanged"
+                );
+            }
+        }
+        assert_held_pools(&held, &oracle, "GuardInvOuterBatchRefusalPreservesWorld")?;
+    }
+
+    #[test]
+    fn guard_inv_outer_batch_unique_in_place(scenario in batch_scenario_strategy()) {
+        let mut store = batch_store(&scenario.initial);
+        let oracle = batch_oracle(&scenario.initial);
+        let held = prepare_batch_catalogs(&store, scenario.catalogs);
+        let plan = plan_batch(&scenario);
+        let before_outer = store.index().outer_anchor_identity();
+
+        prop_assert_eq!(store.apply_delta(&plan.delta), Ok(()));
+
+        prop_assert_eq!(
+            store.index().outer_anchor_identity(),
+            before_outer,
+            "GuardInvOuterBatchUniqueInPlace: a batch on a unique outer authority keeps its \
+             identity and retires no root"
+        );
+        prop_assert_eq!(
+            &store,
+            &publish_reference_store(&plan.expected),
+            "GuardInvOuterBatchUniqueInPlace: the batch is applied in place"
+        );
+        assert_held_pools(&held, &oracle, "GuardInvOuterBatchUniqueInPlace")?;
+    }
+
+    #[test]
+    fn guard_inv_outer_batch_shared_fork_preserves_aliases(
+        scenario in batch_scenario_strategy(),
+        ownership in batch_shared_ownership_strategy(),
+    ) {
+        let mut store = batch_store(&scenario.initial);
+        let oracle = batch_oracle(&scenario.initial);
+        let held = prepare_batch_catalogs(&store, scenario.catalogs);
+        let plan = plan_batch(&scenario);
+        let alias = store.clone();
+        let alias_before = observe_batch_world(&alias);
+
+        prop_assert_eq!(store.apply_delta(&plan.delta), Ok(()));
+
+        prop_assert_ne!(
+            store.index().outer_anchor_identity(),
+            alias_before.outer,
+            "GuardInvOuterBatchSharedForkPreservesAliases: the batch releases the live store's \
+             handle on the old outer anchor, so the store holds a fresh outer identity"
+        );
+        prop_assert_eq!(
+            &observe_batch_world(&alias),
+            &alias_before,
+            "GuardInvOuterBatchSharedForkPreservesAliases: the alias still reads the old version"
+        );
+        assert_held_pools(&held, &oracle, "GuardInvOuterBatchSharedForkPreservesAliases")?;
+        match ownership {
+            BatchOwnership::AliasDroppedAfterStore => {
+                drop(store);
+                prop_assert_eq!(
+                    &observe_batch_world(&alias),
+                    &alias_before,
+                    "GuardInvOuterBatchSharedForkPreservesAliases: the alias outlives the store \
+                     with the old version"
+                );
+            }
+            BatchOwnership::Unique | BatchOwnership::AliasDroppedBeforeStore => {
+                drop(alias);
+                prop_assert_eq!(
+                    &store,
+                    &publish_reference_store(&plan.expected),
+                    "GuardInvOuterBatchSharedForkPreservesAliases: the store outlives the alias with \
+                     the batch applied"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn guard_inv_outer_batch_disposes_only_replaced_slots(
+        scenario in batch_scenario_strategy(),
+        ownership in batch_ownership_strategy(),
+    ) {
+        let mut store = batch_store(&scenario.initial);
+        let oracle = batch_oracle(&scenario.initial);
+        let held = prepare_batch_catalogs(&store, scenario.catalogs);
+        let plan = plan_batch(&scenario);
+        let alias = batch_alias(&store, ownership);
+        let before = observe_batch_world(&store);
+
+        prop_assert_eq!(store.apply_delta(&plan.delta), Ok(()));
+
+        let after = observe_batch_world(&store);
+        match &alias {
+            Some(alias) => {
+                prop_assert_ne!(
+                    after.outer,
+                    before.outer,
+                    "GuardInvOuterBatchDisposesOnlyReplacedSlots: the batch releases the live store's \
+                     handle on the old outer anchor"
+                );
+                prop_assert_eq!(
+                    &observe_batch_world(alias),
+                    &before,
+                    "GuardInvOuterBatchDisposesOnlyReplacedSlots: the alias still reads the old version"
+                );
+            }
+            None => {
+                prop_assert_eq!(
+                    after.outer,
+                    before.outer,
+                    "GuardInvOuterBatchDisposesOnlyReplacedSlots: a batch on a unique outer authority \
+                     releases no root handle, so the store keeps its outer identity"
+                );
+            }
+        }
+        for (id, ((touched, old), new)) in BATCH_CHANNEL_IDS
+            .into_iter()
+            .zip(plan.touched.iter().zip(&before.channels).zip(&after.channels))
+        {
+            match *touched {
+                true => {
+                    prop_assert_ne!(
+                        new.anchor,
+                        old.anchor,
+                        "GuardInvOuterBatchDisposesOnlyReplacedSlots: the replaced slot of \
+                         channel {} holds a new channel authority",
+                        id
+                    );
+                    prop_assert!(
+                        new.catalog.is_none() || new.catalog != old.catalog,
+                        "GuardInvOuterBatchDisposesOnlyReplacedSlots: the replaced slot of \
+                         channel {} restages or drops its catalog",
+                        id
+                    );
+                }
+                false => {
+                    prop_assert_eq!(
+                        new.anchor,
+                        old.anchor,
+                        "GuardInvOuterBatchDisposesOnlyReplacedSlots: the untouched slot of \
+                         channel {} keeps its channel authority",
+                        id
+                    );
+                    prop_assert_eq!(
+                        new.catalog,
+                        old.catalog,
+                        "GuardInvOuterBatchDisposesOnlyReplacedSlots: the untouched slot of \
+                         channel {} keeps its catalog",
+                        id
+                    );
+                }
+            }
+        }
+        assert_held_pools(&held, &oracle, "GuardInvOuterBatchDisposesOnlyReplacedSlots")?;
+        match (ownership, alias) {
+            (BatchOwnership::AliasDroppedAfterStore, Some(alias)) => {
+                drop(store);
+                prop_assert_eq!(
+                    &observe_batch_world(&alias),
+                    &before,
+                    "GuardInvOuterBatchDisposesOnlyReplacedSlots: dropping the store disposes \
+                     none of the alias's slots"
+                );
+            }
+            (_, alias) => {
+                drop(alias);
+                prop_assert_eq!(
+                    &observe_batch_world(&store),
+                    &after,
+                    "GuardInvOuterBatchDisposesOnlyReplacedSlots: dropping the alias disposes \
+                     none of the store's slots"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn guard_inv_outer_batch_matches_publication(
+        scenario in batch_scenario_strategy(),
+        ownership in batch_ownership_strategy(),
+    ) {
+        let mut store = batch_store(&scenario.initial);
+        let oracle = batch_oracle(&scenario.initial);
+        let held = prepare_batch_catalogs(&store, scenario.catalogs);
+        let plan = plan_batch(&scenario);
+        let alias = batch_alias(&store, ownership);
+
+        prop_assert_eq!(store.apply_delta(&plan.delta), Ok(()));
+
+        let reference = publish_reference_store(&plan.expected);
+        assert_batch_publication(&store, &reference, &plan)?;
+        assert_held_pools(&held, &oracle, "GuardInvOuterBatchMatchesPublication")?;
+        match (ownership, alias) {
+            (BatchOwnership::AliasDroppedAfterStore, Some(alias)) => {
+                drop(store);
+                prop_assert_eq!(
+                    &alias,
+                    &publish_reference_store(&oracle),
+                    "GuardInvOuterBatchMatchesPublication: the alias keeps the pre-batch entries"
+                );
+            }
+            (_, alias) => {
+                drop(alias);
+                assert_batch_publication(&store, &reference, &plan)?;
+            }
+        }
+    }
+}

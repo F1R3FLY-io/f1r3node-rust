@@ -6,7 +6,7 @@ use proptest::prelude::*;
 use serde::Serialize;
 
 use super::{DataIndexError, RSpaceDataIndex, RSpaceDataStore};
-use crate::rspace::bag::{Bag, Multiplicity};
+use crate::rspace::bag::{Bag, BagDelta, Multiplicity};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::internal::Datum;
@@ -423,6 +423,11 @@ fn catalog_lock_poison_precedes_clear_publication() {
     assert_channel_failure_child("poison-clear", "candidate catalog write lock");
 }
 
+#[test]
+fn catalog_lock_poison_precedes_delta_publication() {
+    assert_channel_failure_child("poison-delta", "candidate catalog write lock");
+}
+
 fn assert_channel_failure_child(case: &str, expected_diagnostic: &str) {
     let scratch = shared::rust::test_scratch::acquire("channel-replacement-failure-");
     let marker = scratch.path().join("preserved");
@@ -472,6 +477,7 @@ fn channel_failure_child() {
         }
         "poison-publication" => run_poison_publication_child(case, marker),
         "poison-clear" => run_poison_clear_child(case, marker),
+        "poison-delta" => run_poison_delta_child(case, marker),
         _ => panic!("unknown channel replacement failure case: {case}"),
     }
 }
@@ -591,6 +597,50 @@ fn run_poison_clear_child(case: &str, marker: std::ffi::OsString) {
     };
     poison_catalog_lock(&verify.store);
     verify.store.clear();
+}
+
+fn run_poison_delta_child(case: &str, marker: std::ffi::OsString) {
+    assert!(
+        matches!(
+            shared::rust::test_process::prepare_expected_probe_core_dump(),
+            shared::rust::test_process::ExpectedProbeCorePolicy::SuppressionInstalled |
+                shared::rust::test_process::ExpectedProbeCorePolicy::ExplicitlyAllowed
+        ),
+        "the poison-delta child cannot suppress its core dump"
+    );
+    let target = "target".to_owned();
+    let sibling = "sibling".to_owned();
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(target.clone(), [datum(1, false)])
+        .expect("the target channel loads");
+    store
+        .set_channel(sibling.clone(), [datum(2, true)])
+        .expect("the sibling channel loads");
+    let _ = store
+        .channel_pool(&target)
+        .expect("the target catalog builds")
+        .expect("the target channel is loaded");
+    let _ = store
+        .channel_pool(&sibling)
+        .expect("the sibling catalog builds")
+        .expect("the sibling channel is loaded");
+    let mut delta = BagDelta::new();
+    delta
+        .record_addition(&RSpaceDataIndex::datum_path(&target, &datum(3, false)), Multiplicity::ONE)
+        .expect("the delta records one addition");
+    delta
+        .record_removal(&RSpaceDataIndex::datum_path(&sibling, &datum(2, true)), Multiplicity::ONE)
+        .expect("the delta records one removal");
+    let mut verify = VerifyPoisonedStoreOnDrop {
+        before: store.clone(),
+        store,
+        channels: vec![target, sibling],
+        case: case.to_owned(),
+        marker: marker.into(),
+    };
+    poison_catalog_lock(&verify.store);
+    let _ = verify.store.apply_delta(&delta);
 }
 
 #[test]
