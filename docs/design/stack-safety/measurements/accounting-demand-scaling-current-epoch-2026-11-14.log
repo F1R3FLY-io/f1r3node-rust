@@ -1,0 +1,478 @@
+current-epoch window: leaf 14281, mode real, attempt 1; commit bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c); date 2026-11-14; baseline epoch-bf826516c
+== lane held from 2026-11-14T19:21:54Z
+exported b42c3d305af591f38a0cd5b9656823e3ae134e8c to target/scratch/idx2
+export equals tree b42c3d305af591f38a0cd5b9656823e3ae134e8c: 3958 tracked files checked, 0 problems, 1 untracked files
+== sources before the runs (2026-11-14T19:21:55Z)
+$ git status --porcelain --untracked-files=all -- rholang rspace++ models crypto rho-pure-eval shared formal/verified_score_store Cargo.toml Cargo.lock .cargo rust-toolchain.toml   (in the export, with a temporary index of tree b42c3d305af591f38a0cd5b9656823e3ae134e8c; HEAD bf826516ca4ef0a6a8de3c03e9272d88a91af15f)
+(no output)
+== build 1 (accounting_demand): cargo bench -p rholang --bench accounting_demand --no-run (2026-11-14T19:21:55Z)
+build 1 exit 0; 0 crates compiled; Finished `bench` profile [optimized] target(s) in 0.25s
+== build 2 (stack_depth_gate): cargo test -p rholang --test stack_depth_gate --no-run (2026-11-14T19:21:56Z)
+build 2 exit 0; 0 crates compiled; Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+== standing test run 1 (stack_depth_gate): HEAVY_MEMORY_MAX=8G heavy.sh cargo test -p rholang --test stack_depth_gate -- --exact accounting_demand_and_decomposition_are_stack_safe accounting_demand_allocations_are_linear_in_encoded_depth --test-threads 1 (2026-11-14T19:21:56Z)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+     Running tests/stack_depth_gate.rs (target/scratch/idx-target/debug/deps/stack_depth_gate-6adab87dbc970974)
+
+running 2 tests
+test accounting_demand_allocations_are_linear_in_encoded_depth ... ok
+test accounting_demand_and_decomposition_are_stack_safe ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 15.69s
+
+== standing test run 1 exit 0 (2026-11-14T19:22:12Z)
+== host state before (2026-11-14T19:22:12Z)
+cpu8 scaling_governor: performance
+cpu8 energy_performance_preference: performance
+cpu8 scaling_driver: amd-pstate-epp
+cpu8 scaling_cur_freq (kHz): 3432826
+cpu8 cpuinfo_max_freq (kHz): 4561833
+cpu8 scaling_max_freq (kHz): 4561833
+cpufreq boost: 1
+cpu8 thread siblings: 8
+possible CPUs: 0-31
+online CPUs: 0-31
+smt active: 0
+smt control: notsupported
+cpu40: absent (the leaves' 'CPU 40 idle' names no CPU of this host)
+loadavg: 5.69 7.84 6.50 4/5161 2937095
+RUSTFLAGS: <unset>
+CARGO_ENCODED_RUSTFLAGS: <unset>
+rustflags entries of .cargo/config.toml in the export, with their tables:
+  [build] rustflags = ["-C", "target-cpu=native"]
+  [target.x86_64-unknown-linux-gnu] rustflags = ["-C", "target-feature=+aes,+sse2"]
+rustc -vV (in the export, so rust-toolchain.toml applies):
+  rustc 1.95.0-nightly (6efa357bf 2026-02-08)
+  binary: rustc
+  commit-hash: 6efa357bff60d192688e02de0c78cae24a7f3a55
+  commit-date: 2026-02-08
+  host: x86_64-unknown-linux-gnu
+  release: 1.95.0-nightly
+  LLVM version: 22.1.0
+cargo -V (in the export): cargo 1.95.0-nightly (fe2f314ae 2026-01-30)
+commit: bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c)
+path dependency rholang-rs-cost-accounting-transpiler commit: 02cef80d32214ecdac3ee7d3b91c3786a34174d5
+path dependency rholang-rs-cost-accounting-transpiler changed or untracked paths: 0
+mpstat -P ALL 1 1 (host name replaced):
+  Linux 7.2.15-arch1-1 (<host>) 	11/14/26 	_x86_64_	(32 CPU)
+  
+  14:22:12     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  14:22:13     all    7.90    0.03    6.84    0.12    0.31    0.37    0.00    0.00    0.00   84.43
+  14:22:13       0    1.01    0.00    6.06    0.00    0.00    0.00    0.00    0.00    0.00   92.93
+  14:22:13       1    1.98    0.00    4.95    0.00    0.00    0.99    0.00    0.00    0.00   92.08
+  14:22:13       2    0.98    0.00    2.94    0.00    0.98    0.98    0.00    0.00    0.00   94.12
+  14:22:13       3    0.98    0.00    1.96    0.00    0.00    0.98    0.00    0.00    0.00   96.08
+  14:22:13       4    1.00    0.00    3.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+  14:22:13       5    0.99    0.00    4.95    0.00    0.00    0.99    0.00    0.00    0.00   93.07
+  14:22:13       6    1.00    0.00    6.00    0.00    0.00    1.00    0.00    0.00    0.00   92.00
+  14:22:13       7    2.00    0.00    7.00    0.00    0.00    0.00    0.00    0.00    0.00   91.00
+  14:22:13       8    1.00    0.00    4.00    0.00    0.00    0.00    0.00    0.00    0.00   95.00
+  14:22:13       9    1.98    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   95.05
+  14:22:13      10    2.94    0.00    3.92    0.98    0.00    0.00    0.00    0.00    0.00   92.16
+  14:22:13      11    1.98    0.00    4.95    0.00    0.00    0.00    0.00    0.00    0.00   93.07
+  14:22:13      12    1.98    0.00    4.95    0.00    0.00    0.00    0.00    0.00    0.00   93.07
+  14:22:13      13    0.98    0.00    2.94    0.00    0.00    0.98    0.00    0.00    0.00   95.10
+  14:22:13      14    1.01    0.00    3.03    0.00    1.01    1.01    0.00    0.00    0.00   93.94
+  14:22:13      15    2.91    0.00    4.85    0.00    0.97    0.00    0.00    0.00    0.00   91.26
+  14:22:13      16   14.14    0.00    6.06    0.00    0.00    1.01    0.00    0.00    0.00   78.79
+  14:22:13      17    4.95    0.00    3.96    0.00    0.99    0.00    0.00    0.00    0.00   90.10
+  14:22:13      18   28.00    0.00   19.00    0.00    0.00    0.00    0.00    0.00    0.00   53.00
+  14:22:13      19   24.75    0.00    9.90    0.00    0.99    0.00    0.00    0.00    0.00   64.36
+  14:22:13      20   13.13    0.00    4.04    0.00    0.00    0.00    0.00    0.00    0.00   82.83
+  14:22:13      21    9.90    0.00    2.97    0.99    0.99    0.00    0.00    0.00    0.00   85.15
+  14:22:13      22   56.57    0.00   42.42    0.00    1.01    0.00    0.00    0.00    0.00    0.00
+  14:22:13      23   16.00    0.00    7.00    0.00    1.00    0.00    0.00    0.00    0.00   76.00
+  14:22:13      24   10.00    0.00    8.00    0.00    1.00    0.00    0.00    0.00    0.00   81.00
+  14:22:13      25    6.00    0.00    7.00    0.00    0.00    0.00    0.00    0.00    0.00   87.00
+  14:22:13      26    5.00    0.00    6.00    0.00    0.00    1.00    0.00    0.00    0.00   88.00
+  14:22:13      27    2.94    0.00    5.88    0.98    0.98    0.98    0.00    0.00    0.00   88.24
+  14:22:13      28    4.04    0.00    4.04    0.00    0.00    0.00    0.00    0.00    0.00   91.92
+  14:22:13      29   12.00    1.00    7.00    0.00    0.00    0.00    0.00    0.00    0.00   80.00
+  14:22:13      30   17.82    0.00   11.88    0.00    0.00    0.99    0.00    0.00    0.00   69.31
+  14:22:13      31    3.96    0.00    5.94    0.99    0.00    0.99    0.00    0.00    0.00   88.12
+  
+  Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  Average:     all    7.90    0.03    6.84    0.12    0.31    0.37    0.00    0.00    0.00   84.43
+  Average:       0    1.01    0.00    6.06    0.00    0.00    0.00    0.00    0.00    0.00   92.93
+  Average:       1    1.98    0.00    4.95    0.00    0.00    0.99    0.00    0.00    0.00   92.08
+  Average:       2    0.98    0.00    2.94    0.00    0.98    0.98    0.00    0.00    0.00   94.12
+  Average:       3    0.98    0.00    1.96    0.00    0.00    0.98    0.00    0.00    0.00   96.08
+  Average:       4    1.00    0.00    3.00    0.00    0.00    0.00    0.00    0.00    0.00   96.00
+  Average:       5    0.99    0.00    4.95    0.00    0.00    0.99    0.00    0.00    0.00   93.07
+  Average:       6    1.00    0.00    6.00    0.00    0.00    1.00    0.00    0.00    0.00   92.00
+  Average:       7    2.00    0.00    7.00    0.00    0.00    0.00    0.00    0.00    0.00   91.00
+  Average:       8    1.00    0.00    4.00    0.00    0.00    0.00    0.00    0.00    0.00   95.00
+  Average:       9    1.98    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   95.05
+  Average:      10    2.94    0.00    3.92    0.98    0.00    0.00    0.00    0.00    0.00   92.16
+  Average:      11    1.98    0.00    4.95    0.00    0.00    0.00    0.00    0.00    0.00   93.07
+  Average:      12    1.98    0.00    4.95    0.00    0.00    0.00    0.00    0.00    0.00   93.07
+  Average:      13    0.98    0.00    2.94    0.00    0.00    0.98    0.00    0.00    0.00   95.10
+  Average:      14    1.01    0.00    3.03    0.00    1.01    1.01    0.00    0.00    0.00   93.94
+  Average:      15    2.91    0.00    4.85    0.00    0.97    0.00    0.00    0.00    0.00   91.26
+  Average:      16   14.14    0.00    6.06    0.00    0.00    1.01    0.00    0.00    0.00   78.79
+  Average:      17    4.95    0.00    3.96    0.00    0.99    0.00    0.00    0.00    0.00   90.10
+  Average:      18   28.00    0.00   19.00    0.00    0.00    0.00    0.00    0.00    0.00   53.00
+  Average:      19   24.75    0.00    9.90    0.00    0.99    0.00    0.00    0.00    0.00   64.36
+  Average:      20   13.13    0.00    4.04    0.00    0.00    0.00    0.00    0.00    0.00   82.83
+  Average:      21    9.90    0.00    2.97    0.99    0.99    0.00    0.00    0.00    0.00   85.15
+  Average:      22   56.57    0.00   42.42    0.00    1.01    0.00    0.00    0.00    0.00    0.00
+  Average:      23   16.00    0.00    7.00    0.00    1.00    0.00    0.00    0.00    0.00   76.00
+  Average:      24   10.00    0.00    8.00    0.00    1.00    0.00    0.00    0.00    0.00   81.00
+  Average:      25    6.00    0.00    7.00    0.00    0.00    0.00    0.00    0.00    0.00   87.00
+  Average:      26    5.00    0.00    6.00    0.00    0.00    1.00    0.00    0.00    0.00   88.00
+  Average:      27    2.94    0.00    5.88    0.98    0.98    0.98    0.00    0.00    0.00   88.24
+  Average:      28    4.04    0.00    4.04    0.00    0.00    0.00    0.00    0.00    0.00   91.92
+  Average:      29   12.00    1.00    7.00    0.00    0.00    0.00    0.00    0.00    0.00   80.00
+  Average:      30   17.82    0.00   11.88    0.00    0.00    0.99    0.00    0.00    0.00   69.31
+  Average:      31    3.96    0.00    5.94    0.99    0.00    0.99    0.00    0.00    0.00   88.12
+== pgrep -a 'cargo|rustc' before the runs
+pgrep -a 'cargo|rustc': no process (2026-11-14T19:22:13Z)
+== cpu_snapshot(8) before the runs
+cpu_snapshot(8) attempt 1 at 2026-11-14T19:22:14Z: admitted True; idle of CPU 8 92.2%; cores more than 50% idle: 30; idle % per CPU: 0:95.0 1:94.1 2:96.0 3:93.1 4:93.0 5:92.1 6:94.1 7:91.2 8:92.2 9:91.3 10:93.0 11:95.0 12:95.1 13:92.2 14:95.0 15:95.1 16:85.0 17:88.3 18:45.5 19:63.0 20:78.2 21:87.0 22:0.0 23:71.0 24:84.8 25:89.0 26:91.2 27:94.0 28:93.1 29:82.3 30:78.2 31:92.0
+== run 1 (accounting_demand) (2026-11-14T19:22:14Z)
+$ systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 8 cargo bench -p rholang --bench accounting_demand -- --save-baseline epoch-bf826516c --noplot 2>&1 | tee -a <stem>.log
+Running as unit: run-p2938611-i120272152.scope; invocation ID: 42272433135142a59acea9b6fee90047
+    Finished `bench` profile [optimized] target(s) in 0.23s
+     Running benches/accounting_demand.rs (target/scratch/idx-target/release/deps/accounting_demand-0467dd0076f05da2)
+Benchmarking accounting_demand/byte_pda/128
+Benchmarking accounting_demand/byte_pda/128: Warming up for 1.0000 s
+Benchmarking accounting_demand/byte_pda/128: Collecting 30 samples in estimated 4.0031 s (369k iterations)
+Benchmarking accounting_demand/byte_pda/128: Analyzing
+accounting_demand/byte_pda/128
+                        time:   [10.924 µs 10.996 µs 11.049 µs]
+                        thrpt:  [11.585 Melem/s 11.641 Melem/s 11.717 Melem/s]
+Found 7 outliers among 30 measurements (23.33%)
+  7 (23.33%) high severe
+Benchmarking accounting_demand/byte_pda/512
+Benchmarking accounting_demand/byte_pda/512: Warming up for 1.0000 s
+Benchmarking accounting_demand/byte_pda/512: Collecting 30 samples in estimated 4.0058 s (94k iterations)
+Benchmarking accounting_demand/byte_pda/512: Analyzing
+accounting_demand/byte_pda/512
+                        time:   [42.705 µs 42.709 µs 42.713 µs]
+                        thrpt:  [11.987 Melem/s 11.988 Melem/s 11.989 Melem/s]
+Benchmarking accounting_demand/byte_pda/2048
+Benchmarking accounting_demand/byte_pda/2048: Warming up for 1.0000 s
+Benchmarking accounting_demand/byte_pda/2048: Collecting 30 samples in estimated 4.0392 s (24k iterations)
+Benchmarking accounting_demand/byte_pda/2048: Analyzing
+accounting_demand/byte_pda/2048
+                        time:   [171.54 µs 171.58 µs 171.62 µs]
+                        thrpt:  [11.934 Melem/s 11.936 Melem/s 11.939 Melem/s]
+Benchmarking accounting_demand/byte_pda/8192
+Benchmarking accounting_demand/byte_pda/8192: Warming up for 1.0000 s
+Benchmarking accounting_demand/byte_pda/8192: Collecting 30 samples in estimated 4.2085 s (6045 iterations)
+Benchmarking accounting_demand/byte_pda/8192: Analyzing
+accounting_demand/byte_pda/8192
+                        time:   [697.11 µs 697.46 µs 697.87 µs]
+                        thrpt:  [11.739 Melem/s 11.745 Melem/s 11.751 Melem/s]
+Benchmarking accounting_demand/byte_pda/20000
+Benchmarking accounting_demand/byte_pda/20000: Warming up for 1.0000 s
+Benchmarking accounting_demand/byte_pda/20000: Collecting 30 samples in estimated 4.7374 s (2790 iterations)
+Benchmarking accounting_demand/byte_pda/20000: Analyzing
+accounting_demand/byte_pda/20000
+                        time:   [1.7037 ms 1.7051 ms 1.7070 ms]
+                        thrpt:  [11.716 Melem/s 11.730 Melem/s 11.739 Melem/s]
+Found 3 outliers among 30 measurements (10.00%)
+  2 (6.67%) low mild
+  1 (3.33%) high severe
+
+Benchmarking accounting_demand/suffix_control/64
+Benchmarking accounting_demand/suffix_control/64: Warming up for 1.0000 s
+Benchmarking accounting_demand/suffix_control/64: Collecting 30 samples in estimated 4.5551 s (120 iterations)
+Benchmarking accounting_demand/suffix_control/64: Analyzing
+accounting_demand/suffix_control/64
+                        time:   [38.461 ms 38.542 ms 38.629 ms]
+                        thrpt:  [1.6568 Kelem/s 1.6605 Kelem/s 1.6640 Kelem/s]
+Found 1 outliers among 30 measurements (3.33%)
+  1 (3.33%) high mild
+Benchmarking accounting_demand/suffix_control/128
+Benchmarking accounting_demand/suffix_control/128: Warming up for 1.0000 s
+
+Warning: Unable to complete 30 samples in 4.0s. You may wish to increase target time to 4.5s, or reduce sample count to 20.
+Benchmarking accounting_demand/suffix_control/128: Collecting 30 samples in estimated 4.4861 s (30 iterations)
+Benchmarking accounting_demand/suffix_control/128: Analyzing
+accounting_demand/suffix_control/128
+                        time:   [152.12 ms 152.48 ms 152.82 ms]
+                        thrpt:  [837.59  elem/s 839.48  elem/s 841.42  elem/s]
+Found 9 outliers among 30 measurements (30.00%)
+  2 (6.67%) low severe
+  1 (3.33%) low mild
+  6 (20.00%) high severe
+Benchmarking accounting_demand/suffix_control/256
+Benchmarking accounting_demand/suffix_control/256: Warming up for 1.0000 s
+
+Warning: Unable to complete 30 samples in 4.0s. You may wish to increase target time to 17.8s, or reduce sample count to 10.
+Benchmarking accounting_demand/suffix_control/256: Collecting 30 samples in estimated 17.818 s (30 iterations)
+Benchmarking accounting_demand/suffix_control/256: Analyzing
+accounting_demand/suffix_control/256
+                        time:   [596.10 ms 596.48 ms 596.86 ms]
+                        thrpt:  [428.91  elem/s 429.18  elem/s 429.46  elem/s]
+Benchmarking accounting_demand/suffix_control/512
+Benchmarking accounting_demand/suffix_control/512: Warming up for 1.0000 s
+
+Warning: Unable to complete 30 samples in 4.0s. You may wish to increase target time to 71.0s, or reduce sample count to 10.
+Benchmarking accounting_demand/suffix_control/512: Collecting 30 samples in estimated 70.988 s (30 iterations)
+Benchmarking accounting_demand/suffix_control/512: Analyzing
+accounting_demand/suffix_control/512
+                        time:   [2.3951 s 2.4021 s 2.4091 s]
+                        thrpt:  [212.52  elem/s 213.15  elem/s 213.77  elem/s]
+
+Benchmarking accounting_demand/wide_scalar/16
+Benchmarking accounting_demand/wide_scalar/16: Warming up for 1.0000 s
+Benchmarking accounting_demand/wide_scalar/16: Collecting 30 samples in estimated 4.0104 s (127k iterations)
+Benchmarking accounting_demand/wide_scalar/16: Analyzing
+accounting_demand/wide_scalar/16
+                        time:   [31.466 µs 31.488 µs 31.511 µs]
+                        thrpt:  [507.75 Kelem/s 508.12 Kelem/s 508.49 Kelem/s]
+Found 1 outliers among 30 measurements (3.33%)
+  1 (3.33%) high mild
+Benchmarking accounting_demand/wide_scalar/64
+Benchmarking accounting_demand/wide_scalar/64: Warming up for 1.0000 s
+Benchmarking accounting_demand/wide_scalar/64: Collecting 30 samples in estimated 4.0305 s (33k iterations)
+Benchmarking accounting_demand/wide_scalar/64: Analyzing
+accounting_demand/wide_scalar/64
+                        time:   [123.65 µs 123.75 µs 123.86 µs]
+                        thrpt:  [516.71 Kelem/s 517.18 Kelem/s 517.60 Kelem/s]
+Found 1 outliers among 30 measurements (3.33%)
+  1 (3.33%) low mild
+Benchmarking accounting_demand/wide_scalar/256
+Benchmarking accounting_demand/wide_scalar/256: Warming up for 1.0000 s
+Benchmarking accounting_demand/wide_scalar/256: Collecting 30 samples in estimated 4.0836 s (8370 iterations)
+Benchmarking accounting_demand/wide_scalar/256: Analyzing
+accounting_demand/wide_scalar/256
+                        time:   [486.62 µs 486.95 µs 487.27 µs]
+                        thrpt:  [525.37 Kelem/s 525.72 Kelem/s 526.07 Kelem/s]
+
+Benchmarking accounting_demand/lane_byte_native/16
+Benchmarking accounting_demand/lane_byte_native/16: Warming up for 1.0000 s
+Benchmarking accounting_demand/lane_byte_native/16: Collecting 30 samples in estimated 4.0125 s (123k iterations)
+Benchmarking accounting_demand/lane_byte_native/16: Analyzing
+accounting_demand/lane_byte_native/16
+                        time:   [32.456 µs 32.465 µs 32.474 µs]
+                        thrpt:  [492.70 Kelem/s 492.84 Kelem/s 492.97 Kelem/s]
+Found 2 outliers among 30 measurements (6.67%)
+  2 (6.67%) high mild
+Benchmarking accounting_demand/lane_byte_native/64
+Benchmarking accounting_demand/lane_byte_native/64: Warming up for 1.0000 s
+Benchmarking accounting_demand/lane_byte_native/64: Collecting 30 samples in estimated 4.0406 s (32k iterations)
+Benchmarking accounting_demand/lane_byte_native/64: Analyzing
+accounting_demand/lane_byte_native/64
+                        time:   [125.94 µs 125.99 µs 126.02 µs]
+                        thrpt:  [507.86 Kelem/s 507.99 Kelem/s 508.16 Kelem/s]
+Found 4 outliers among 30 measurements (13.33%)
+  1 (3.33%) low mild
+  2 (6.67%) high mild
+  1 (3.33%) high severe
+
+Benchmarking accounting_demand/lane_par_adapter/16
+Benchmarking accounting_demand/lane_par_adapter/16: Warming up for 1.0000 s
+Benchmarking accounting_demand/lane_par_adapter/16: Collecting 30 samples in estimated 4.5981 s (150 iterations)
+Benchmarking accounting_demand/lane_par_adapter/16: Analyzing
+accounting_demand/lane_par_adapter/16
+                        time:   [30.607 ms 30.619 ms 30.628 ms]
+                        thrpt:  [522.40  elem/s 522.56  elem/s 522.76  elem/s]
+Found 1 outliers among 30 measurements (3.33%)
+  1 (3.33%) low severe
+Benchmarking accounting_demand/lane_par_adapter/64
+Benchmarking accounting_demand/lane_par_adapter/64: Warming up for 1.0000 s
+Benchmarking accounting_demand/lane_par_adapter/64: Collecting 30 samples in estimated 7.3400 s (60 iterations)
+Benchmarking accounting_demand/lane_par_adapter/64: Analyzing
+accounting_demand/lane_par_adapter/64
+                        time:   [122.32 ms 122.35 ms 122.38 ms]
+                        thrpt:  [522.97  elem/s 523.09  elem/s 523.22  elem/s]
+Found 3 outliers among 30 measurements (10.00%)
+  1 (3.33%) low severe
+  2 (6.67%) high mild
+
+Benchmarking accounting_demand/compressed_scalar/1
+Benchmarking accounting_demand/compressed_scalar/1: Warming up for 1.0000 s
+Benchmarking accounting_demand/compressed_scalar/1: Collecting 30 samples in estimated 4.0002 s (6.3M iterations)
+Benchmarking accounting_demand/compressed_scalar/1: Analyzing
+accounting_demand/compressed_scalar/1
+                        time:   [632.10 ns 632.60 ns 632.94 ns]
+Found 2 outliers among 30 measurements (6.67%)
+  1 (3.33%) low severe
+  1 (3.33%) low mild
+Benchmarking accounting_demand/compressed_scalar/1024
+Benchmarking accounting_demand/compressed_scalar/1024: Warming up for 1.0000 s
+Benchmarking accounting_demand/compressed_scalar/1024: Collecting 30 samples in estimated 4.0001 s (6.3M iterations)
+Benchmarking accounting_demand/compressed_scalar/1024: Analyzing
+accounting_demand/compressed_scalar/1024
+                        time:   [635.77 ns 636.15 ns 636.42 ns]
+Found 1 outliers among 30 measurements (3.33%)
+  1 (3.33%) low severe
+Benchmarking accounting_demand/compressed_scalar/4294967295
+Benchmarking accounting_demand/compressed_scalar/4294967295: Warming up for 1.0000 s
+Benchmarking accounting_demand/compressed_scalar/4294967295: Collecting 30 samples in estimated 4.0003 s (6.2M iterations)
+Benchmarking accounting_demand/compressed_scalar/4294967295: Analyzing
+accounting_demand/compressed_scalar/4294967295
+                        time:   [642.42 ns 643.28 ns 643.90 ns]
+Found 2 outliers among 30 measurements (6.67%)
+  1 (3.33%) low severe
+  1 (3.33%) low mild
+
+Benchmarking accounting_demand/compressed_lane_replay/1
+Benchmarking accounting_demand/compressed_lane_replay/1: Warming up for 1.0000 s
+Benchmarking accounting_demand/compressed_lane_replay/1: Collecting 30 samples in estimated 4.0001 s (5.6M iterations)
+Benchmarking accounting_demand/compressed_lane_replay/1: Analyzing
+accounting_demand/compressed_lane_replay/1
+                        time:   [724.19 ns 724.48 ns 724.71 ns]
+                        thrpt:  [4.1396 Melem/s 4.1409 Melem/s 4.1426 Melem/s]
+Found 1 outliers among 30 measurements (3.33%)
+  1 (3.33%) high mild
+Benchmarking accounting_demand/compressed_lane_replay/64
+Benchmarking accounting_demand/compressed_lane_replay/64: Warming up for 1.0000 s
+Benchmarking accounting_demand/compressed_lane_replay/64: Collecting 30 samples in estimated 4.0009 s (1.7M iterations)
+Benchmarking accounting_demand/compressed_lane_replay/64: Analyzing
+accounting_demand/compressed_lane_replay/64
+                        time:   [2.3925 µs 2.3928 µs 2.3932 µs]
+                        thrpt:  [80.226 Melem/s 80.239 Melem/s 80.252 Melem/s]
+Benchmarking accounting_demand/compressed_lane_replay/1024
+Benchmarking accounting_demand/compressed_lane_replay/1024: Warming up for 1.0000 s
+Benchmarking accounting_demand/compressed_lane_replay/1024: Collecting 30 samples in estimated 4.0121 s (144k iterations)
+Benchmarking accounting_demand/compressed_lane_replay/1024: Analyzing
+accounting_demand/compressed_lane_replay/1024
+                        time:   [27.829 µs 27.842 µs 27.849 µs]
+                        thrpt:  [110.31 Melem/s 110.34 Melem/s 110.39 Melem/s]
+Found 4 outliers among 30 measurements (13.33%)
+  2 (6.67%) low severe
+  1 (3.33%) high mild
+  1 (3.33%) high severe
+
+Benchmarking accounting_demand/unknown_scan/16
+Benchmarking accounting_demand/unknown_scan/16: Warming up for 1.0000 s
+Benchmarking accounting_demand/unknown_scan/16: Collecting 30 samples in estimated 4.0002 s (3.2M iterations)
+Benchmarking accounting_demand/unknown_scan/16: Analyzing
+accounting_demand/unknown_scan/16
+                        time:   [1.2482 µs 1.2485 µs 1.2487 µs]
+                        thrpt:  [12.813 Melem/s 12.816 Melem/s 12.818 Melem/s]
+Found 2 outliers among 30 measurements (6.67%)
+  1 (3.33%) low mild
+  1 (3.33%) high mild
+Benchmarking accounting_demand/unknown_scan/64
+Benchmarking accounting_demand/unknown_scan/64: Warming up for 1.0000 s
+Benchmarking accounting_demand/unknown_scan/64: Collecting 30 samples in estimated 4.0020 s (922k iterations)
+Benchmarking accounting_demand/unknown_scan/64: Analyzing
+accounting_demand/unknown_scan/64
+                        time:   [4.3369 µs 4.3375 µs 4.3381 µs]
+                        thrpt:  [14.753 Melem/s 14.755 Melem/s 14.757 Melem/s]
+Benchmarking accounting_demand/unknown_scan/256
+Benchmarking accounting_demand/unknown_scan/256: Warming up for 1.0000 s
+Benchmarking accounting_demand/unknown_scan/256: Collecting 30 samples in estimated 4.0012 s (239k iterations)
+Benchmarking accounting_demand/unknown_scan/256: Analyzing
+accounting_demand/unknown_scan/256
+                        time:   [16.732 µs 16.735 µs 16.737 µs]
+                        thrpt:  [15.295 Melem/s 15.297 Melem/s 15.300 Melem/s]
+
+== run 1 exit 0 (2026-11-14T19:26:07Z)
+== host state after (2026-11-14T19:26:07Z)
+cpu8 scaling_governor: performance
+cpu8 energy_performance_preference: performance
+cpu8 scaling_driver: amd-pstate-epp
+cpu8 scaling_cur_freq (kHz): 3417883
+cpu8 cpuinfo_max_freq (kHz): 4561833
+cpu8 scaling_max_freq (kHz): 4561833
+cpufreq boost: 1
+cpu8 thread siblings: 8
+possible CPUs: 0-31
+online CPUs: 0-31
+smt active: 0
+smt control: notsupported
+cpu40: absent (the leaves' 'CPU 40 idle' names no CPU of this host)
+loadavg: 5.90 6.71 6.32 5/4970 3030839
+RUSTFLAGS: <unset>
+CARGO_ENCODED_RUSTFLAGS: <unset>
+rustflags entries of .cargo/config.toml in the export, with their tables:
+  [build] rustflags = ["-C", "target-cpu=native"]
+  [target.x86_64-unknown-linux-gnu] rustflags = ["-C", "target-feature=+aes,+sse2"]
+rustc -vV (in the export, so rust-toolchain.toml applies):
+  rustc 1.95.0-nightly (6efa357bf 2026-02-08)
+  binary: rustc
+  commit-hash: 6efa357bff60d192688e02de0c78cae24a7f3a55
+  commit-date: 2026-02-08
+  host: x86_64-unknown-linux-gnu
+  release: 1.95.0-nightly
+  LLVM version: 22.1.0
+cargo -V (in the export): cargo 1.95.0-nightly (fe2f314ae 2026-01-30)
+commit: bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c)
+path dependency rholang-rs-cost-accounting-transpiler commit: 02cef80d32214ecdac3ee7d3b91c3786a34174d5
+path dependency rholang-rs-cost-accounting-transpiler changed or untracked paths: 0
+mpstat -P ALL 1 1 (host name replaced):
+  Linux 7.2.15-arch1-1 (<host>) 	11/14/26 	_x86_64_	(32 CPU)
+  
+  14:26:07     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  14:26:08     all    4.21    0.03    6.24    0.06    0.25    0.16    0.00    0.00    0.00   89.05
+  14:26:08       0    0.00    0.00    1.01    0.00    0.00    1.01    0.00    0.00    0.00   97.98
+  14:26:08       1    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  14:26:08       2    0.99    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  14:26:08       3    0.00    0.00    3.00    0.00    0.00    0.00    0.00    0.00    0.00   97.00
+  14:26:08       4    0.00    0.00    0.98    0.00    0.98    0.00    0.00    0.00    0.00   98.04
+  14:26:08       5    0.99    0.00    0.99    0.00    0.00    0.00    0.00    0.00    0.00   98.02
+  14:26:08       6    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  14:26:08       7    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  14:26:08       8    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:26:08       9    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:26:08      10    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  14:26:08      11    1.00    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00   98.00
+  14:26:08      12    2.00    0.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00   97.00
+  14:26:08      13   22.77    0.00    0.00    0.00    0.99    0.00    0.00    0.00    0.00   76.24
+  14:26:08      14    1.01    0.00    1.01    0.00    0.00    1.01    0.00    0.00    0.00   96.97
+  14:26:08      15    0.99    0.00    0.99    0.00    0.00    0.00    0.00    0.00    0.00   98.02
+  14:26:08      16    3.03    0.00    3.03    0.00    0.00    0.00    0.00    0.00    0.00   93.94
+  14:26:08      17    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  14:26:08      18   54.00    0.00   46.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00
+  14:26:08      19   10.00    0.00   40.00    0.00    0.00    1.00    0.00    0.00    0.00   49.00
+  14:26:08      20    1.98    0.99   12.87    0.00    0.99    0.00    0.00    0.00    0.00   83.17
+  14:26:08      21    1.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00    0.00   98.00
+  14:26:08      22   14.14    0.00   66.67    0.00    1.01    1.01    0.00    0.00    0.00   17.17
+  14:26:08      23   13.00    0.00   12.00    0.00    0.00    0.00    0.00    0.00    0.00   75.00
+  14:26:08      24    1.01    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   97.98
+  14:26:08      25    0.98    0.00    0.98    0.00    0.98    0.00    0.00    0.00    0.00   97.06
+  14:26:08      26    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  14:26:08      27    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:26:08      28    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  14:26:08      29    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  14:26:08      30    0.00    0.00    1.98    0.99    0.99    0.00    0.00    0.00    0.00   96.04
+  14:26:08      31    0.99    0.00    0.00    0.00    0.99    0.00    0.00    0.00    0.00   98.02
+  
+  Average:     CPU    %usr   %nice    %sys %iowait    %irq   %soft  %steal  %guest  %gnice   %idle
+  Average:     all    4.21    0.03    6.24    0.06    0.25    0.16    0.00    0.00    0.00   89.05
+  Average:       0    0.00    0.00    1.01    0.00    0.00    1.01    0.00    0.00    0.00   97.98
+  Average:       1    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:       2    0.99    0.00    2.97    0.00    0.00    0.00    0.00    0.00    0.00   96.04
+  Average:       3    0.00    0.00    3.00    0.00    0.00    0.00    0.00    0.00    0.00   97.00
+  Average:       4    0.00    0.00    0.98    0.00    0.98    0.00    0.00    0.00    0.00   98.04
+  Average:       5    0.99    0.00    0.99    0.00    0.00    0.00    0.00    0.00    0.00   98.02
+  Average:       6    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:       7    1.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.00
+  Average:       8    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:       9    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      10    0.99    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00   99.01
+  Average:      11    1.00    0.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00   98.00
+  Average:      12    2.00    0.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00   97.00
+  Average:      13   22.77    0.00    0.00    0.00    0.99    0.00    0.00    0.00    0.00   76.24
+  Average:      14    1.01    0.00    1.01    0.00    0.00    1.01    0.00    0.00    0.00   96.97
+  Average:      15    0.99    0.00    0.99    0.00    0.00    0.00    0.00    0.00    0.00   98.02
+  Average:      16    3.03    0.00    3.03    0.00    0.00    0.00    0.00    0.00    0.00   93.94
+  Average:      17    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  Average:      18   54.00    0.00   46.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00
+  Average:      19   10.00    0.00   40.00    0.00    0.00    1.00    0.00    0.00    0.00   49.00
+  Average:      20    1.98    0.99   12.87    0.00    0.99    0.00    0.00    0.00    0.00   83.17
+  Average:      21    1.00    0.00    0.00    0.00    1.00    0.00    0.00    0.00    0.00   98.00
+  Average:      22   14.14    0.00   66.67    0.00    1.01    1.01    0.00    0.00    0.00   17.17
+  Average:      23   13.00    0.00   12.00    0.00    0.00    0.00    0.00    0.00    0.00   75.00
+  Average:      24    1.01    0.00    1.01    0.00    0.00    0.00    0.00    0.00    0.00   97.98
+  Average:      25    0.98    0.00    0.98    0.00    0.98    0.00    0.00    0.00    0.00   97.06
+  Average:      26    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  Average:      27    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      28    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00    0.00  100.00
+  Average:      29    1.00    0.00    1.00    0.00    0.00    0.00    0.00    0.00    0.00   98.00
+  Average:      30    0.00    0.00    1.98    0.99    0.99    0.00    0.00    0.00    0.00   96.04
+  Average:      31    0.99    0.00    0.00    0.00    0.99    0.00    0.00    0.00    0.00   98.02
+== pgrep -a 'cargo|rustc' after the runs (2026-11-14T19:26:08Z)
+pgrep -a 'cargo|rustc': no process
+== cpu_snapshot(8) after the runs
+cpu_snapshot(8) attempt 1 at 2026-11-14T19:26:09Z: admitted True; idle of CPU 8 100.0%; cores more than 50% idle: 29; idle % per CPU: 0:98.0 1:97.0 2:96.1 3:100.0 4:99.0 5:100.0 6:100.0 7:100.0 8:100.0 9:99.0 10:100.0 11:99.0 12:79.2 13:94.0 14:97.0 15:99.0 16:90.1 17:96.0 18:19.0 19:47.0 20:91.8 21:94.1 22:0.0 23:76.0 24:98.0 25:99.0 26:99.0 27:98.0 28:100.0 29:98.0 30:94.0 31:100.0
+== sources after the runs (2026-11-14T19:26:09Z)
+$ git status --porcelain --untracked-files=all -- rholang rspace++ models crypto rho-pure-eval shared formal/verified_score_store Cargo.toml Cargo.lock .cargo rust-toolchain.toml   (in the export, with a temporary index of tree b42c3d305af591f38a0cd5b9656823e3ae134e8c; HEAD bf826516ca4ef0a6a8de3c03e9272d88a91af15f)
+(no output)
+export equals tree b42c3d305af591f38a0cd5b9656823e3ae134e8c: 3958 tracked files checked, 0 problems, 1 untracked files
+== lane released 2026-11-14T19:26:09Z

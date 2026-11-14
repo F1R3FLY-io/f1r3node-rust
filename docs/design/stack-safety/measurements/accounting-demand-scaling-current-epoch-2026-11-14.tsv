@@ -1,0 +1,41 @@
+# Accounting demand scaling, current epoch: the successor of pgmcp hypothesis 303 (task 14281).
+# Schema accounting-demand-scaling-current-epoch-v1; analyzer sha256:a558a1b0894865ae449bd7e9050545453d266816cb95425afe9870cbbde3b6f9; Criterion baseline epoch-bf826516c.
+# Measured commit bf826516ca4ef0a6a8de3c03e9272d88a91af15f (tree b42c3d305af591f38a0cd5b9656823e3ae134e8c); window 2026-11-14, mode real, attempt 1; Criterion baseline epoch-bf826516c. The pgmcp experiments are accounting-demand-scaling-current-epoch-2026-11-14 (P), opened before the first sample.
+# Host: AMD Ryzen Threadripper PRO 5975WX, 32 physical cores, SMT off; every timed run pinned to CPU 8 (taskset -c 8) in a systemd user scope with MemoryMax=8G and MemorySwapMax=0. CPU 8 before the runs: governor performance, EPP performance, driver amd-pstate-epp, scaling_cur_freq 3432826 kHz, cpuinfo_max_freq 4561833 kHz, boost 1, loadavg 5.69 7.84 6.50 4/5161 2937095, mpstat all-CPU idle 84.43%; after: governor performance, EPP performance, scaling_cur_freq 3417883 kHz, boost 1, loadavg 5.90 6.71 6.32 5/4970 3030839, mpstat all-CPU idle 89.05%.
+# CPU 40: the leaf's condition 'CPU 40 idle' names a CPU this host does not have (absent (the leaves' 'CPU 40 idle' names no CPU of this host); possible CPUs 0-31, smt active 0, smt control notsupported; CPU 8 thread siblings 8). Recorded as a finding, not weakened; cpu_snapshot(8) required CPU 8 itself to be at least 90% idle.
+# Quiet window: the campaign's cargo lane was held from the first build to the last run; pgrep -a 'cargo|rustc' showed no process before the runs and no process after them; cpu_snapshot(8) admitted the host before the runs (attempt 1) and admitted it after them. The mpstat tables before and after are in the log.
+# Toolchain: rustc 1.95.0-nightly (6efa357bf 2026-02-08), host x86_64-unknown-linux-gnu, LLVM 22.1.0; cargo 1.95.0-nightly (fe2f314ae 2026-01-30); RUSTFLAGS <unset>; CARGO_ENCODED_RUSTFLAGS <unset>; rustflags in .cargo/config.toml: [build] rustflags = ["-C", "target-cpu=native"]; [target.x86_64-unknown-linux-gnu] rustflags = ["-C", "target-feature=+aes,+sse2"] (Cargo uses the first source that is set: CARGO_ENCODED_RUSTFLAGS, RUSTFLAGS, then the target tables, then [build]); Criterion 0.5.1; the path dependency rholang-rs-cost-accounting-transpiler at 02cef80d32214ecdac3ee7d3b91c3786a34174d5 with 0 changed or untracked paths.
+# Sources: git status --porcelain --untracked-files=all -- rholang rspace++ models crypto rho-pure-eval shared formal/verified_score_store Cargo.toml Cargo.lock .cargo rust-toolchain.toml (run in the export with a temporary index of the measured tree) printed nothing before the runs and nothing after them; export check before: export equals tree b42c3d305af591f38a0cd5b9656823e3ae134e8c: 3958 tracked files checked, 0 problems, 1 untracked files; after: export equals tree b42c3d305af591f38a0cd5b9656823e3ae134e8c: 3958 tracked files checked, 0 problems, 1 untracked files.
+# Commands: builds first, on CPUs 16-31: HEAVY_MEMORY_MAX=8G heavy.sh cargo bench -p rholang --bench accounting_demand --no-run; HEAVY_MEMORY_MAX=8G heavy.sh cargo test -p rholang --test stack_depth_gate --no-run. Standing tests, on CPUs 16-31: HEAVY_MEMORY_MAX=8G heavy.sh cargo test -p rholang --test stack_depth_gate -- --exact accounting_demand_and_decomposition_are_stack_safe accounting_demand_allocations_are_linear_in_encoded_depth --test-threads 1. Then each once, on CPU 8: systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 taskset -c 8 cargo bench -p rholang --bench accounting_demand -- --save-baseline epoch-bf826516c --noplot.
+# Log: accounting-demand-scaling-current-epoch-2026-11-14.log holds the teed output of the runs and the host, source and pgrep records; absolute paths are made relative (repository root removed, home directory written ~); raw log sha256:71c6ba998840fa8ee0530b864031592d4767c45d72f8b6194c02531bbfb9ce26.
+# Statistics: one observation is one Criterion sample, time_per_iteration_ns = time_ns / iters (one demand computation per iteration); P: the 95% upper bound (97.5th percentile of a stratified bootstrap, 10000 replicates, seed 0x41315636) of the OLS slope of log(median time) on log(depth) of byte_pda over 128, 512, 2048, 8192, 20000 is at most 1.2, 30 samples per cell.
+# Software: Python 3.14.10, NumPy 2.5.4, SciPy 1.18.1.
+# Validity: all 25 benchmarks hold 30 samples, reach Analyzing in the log and no panic occurs; both standing gates passed before the timed run (accounting_demand_and_decomposition_are_stack_safe and accounting_demand_allocations_are_linear_in_encoded_depth: test result ok, 2 passed); red control (the same fit on suffix_control over 64, 128, 256, 512): suffix_control exponent 1.9858, 95% interval [1.9846, 1.9879], one-sided 95th percentile 1.9874: above 1.5 and rejected, upper95 1.9879 > 1.2.
+# Analyzer view of the decision (P): ACCEPTED; byte_pda exponent 1.0023, 95% interval [1.0022, 1.0024], one-sided 95th percentile 1.0024; upper95 1.0024 against 1.2.
+# SHA-256: accounting-demand-scaling-current-epoch-2026-11-14.log 33fb614aca7fd84bad3d119c4390660a4938725b0868bd2d58419e231e4b6a20; accounting-demand-scaling-current-epoch-2026-11-14.samples.csv 3cc0f9efec9a74660ebbe7de3994ab095577d0d402155145987b5f92e8dba3a1; accounting-demand-scaling-current-epoch-2026-11-14.exponents.csv b2b34ce825bcf110b7d87049c7eb6bcc0412194664b15e6cd7f746ddf4c25192; analyze-accounting-demand-scaling-baseline.py a558a1b0894865ae449bd7e9050545453d266816cb95425afe9870cbbde3b6f9.
+cell	group	parameter	role	n	median_ns	mean_ns	standard_deviation_ns	sampling_mode
+accounting_demand/byte_pda/128	byte_pda	128	decided	30	10850.040	10911.695	115.833	Linear
+accounting_demand/byte_pda/512	byte_pda	512	decided	30	42713.389	42714.468	16.989	Linear
+accounting_demand/byte_pda/2048	byte_pda	2048	decided	30	171540.485	171497.534	156.688	Linear
+accounting_demand/byte_pda/8192	byte_pda	8192	decided	30	697669.267	697954.027	1154.033	Linear
+accounting_demand/byte_pda/20000	byte_pda	20000	decided	30	1703587.980	1704075.903	2452.639	Linear
+accounting_demand/suffix_control/64	suffix_control	64	red_control	30	38453040.375	38541631.233	237633.057	Flat
+accounting_demand/suffix_control/128	suffix_control	128	red_control	30	152346229.000	152476033.033	986581.733	Flat
+accounting_demand/suffix_control/256	suffix_control	256	red_control	30	596261502.500	596480701.833	1080819.248	Flat
+accounting_demand/suffix_control/512	suffix_control	512	red_control	30	2399030410.500	2402116192.600	19935855.648	Flat
+accounting_demand/wide_scalar/16	wide_scalar	16	context	30	31482.213	31489.519	62.928	Linear
+accounting_demand/wide_scalar/64	wide_scalar	64	context	30	123834.715	123838.239	214.937	Linear
+accounting_demand/wide_scalar/256	wide_scalar	256	context	30	487303.938	487328.902	990.130	Linear
+accounting_demand/lane_byte_native/16	lane_byte_native	16	context	30	32466.873	32468.240	40.987	Linear
+accounting_demand/lane_byte_native/64	lane_byte_native	64	context	30	126007.672	126030.615	228.090	Linear
+accounting_demand/lane_par_adapter/16	lane_par_adapter	16	context	30	30618553.000	30618603.633	29974.617	Flat
+accounting_demand/lane_par_adapter/64	lane_par_adapter	64	context	30	122347656.000	122349484.200	81960.399	Flat
+accounting_demand/compressed_scalar/1	compressed_scalar	1	context	30	632.855	632.331	1.345	Linear
+accounting_demand/compressed_scalar/1024	compressed_scalar	1024	context	30	636.252	636.142	0.896	Linear
+accounting_demand/compressed_scalar/4294967295	compressed_scalar	4294967295	context	30	644.014	643.829	0.992	Linear
+accounting_demand/compressed_lane_replay/1	compressed_lane_replay	1	context	30	724.390	724.394	0.910	Linear
+accounting_demand/compressed_lane_replay/64	compressed_lane_replay	64	context	30	2392.927	2393.252	0.975	Linear
+accounting_demand/compressed_lane_replay/1024	compressed_lane_replay	1024	context	30	27845.217	27843.564	27.407	Linear
+accounting_demand/unknown_scan/16	unknown_scan	16	context	30	1248.625	1248.574	0.622	Linear
+accounting_demand/unknown_scan/64	unknown_scan	64	context	30	4337.453	4337.556	2.100	Linear
+accounting_demand/unknown_scan/256	unknown_scan	256	context	30	16731.126	16729.920	11.645	Linear
