@@ -386,7 +386,14 @@ env:
   #   once #175 takes system-integration main. Verified: 516 unit tests pass;
   #   test_load passed on both ucc legs of two CI runs of this branch (runs
   #   43085072701 and 43111212784, before the rebase onto dev a8058fbc1).
-  SYSTEM_INTEGRATION_REF: 03f3fe8af0b151b921ddcb5af17f8f1de2576329
+  # 2026-11-14: 03f3fe8 -> 7673d5e (system-integration PR #175 head). Runs the
+  #   soak's stock load through the queues, gives each deployer key strictly
+  #   increasing deploy timestamps, waits out queue refusals in workload setup,
+  #   reads the tip once for all submitters, and merges system-integration dev
+  #   (105 s finalization timeout). Verified: descends from 03f3fe8; 610 unit
+  #   tests pass; test_capacity passed twice on a soak-shaped VM against this
+  #   branch's node.
+  SYSTEM_INTEGRATION_REF: 7673d5e2f8d34d8705879289eb5af191ea429856
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
