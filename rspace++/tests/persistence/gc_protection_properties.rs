@@ -26,19 +26,23 @@ use crate::rspace::history::durable_history_repository::DurableHistoryRepository
 use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::persistence::durable::{
     DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError, DurablePublishedCoreV1,
-    DurableStateRootV1, DurableViewReadHandleV1,
+    DurableStateRootV1, DurableViewReadHandleV1, GenerationCheckpointPublicationErrorV1,
     GenerationCheckpointPublicationHookPointV1 as PublicationPoint, ReclamationCandidateV1,
     SemanticallyAdmittedDurableWriterV1, arm_generation_checkpoint_publication_failpoint,
     arm_generation_checkpoint_publication_hook, index_file_name, pack_file_name,
     recover_read_authority,
 };
+use crate::rspace::persistence::retention::v2_format::{RetentionAnchorV2, RetentionFormat};
+use crate::rspace::persistence::retention::v2_reader::admit_retention_history_v2;
 use crate::rspace::persistence::retention::{
-    RetainedRootKind, RetainedRootRegistryV1, RetainedRootV1, RetentionRegistryError, RootLeaseV1,
+    KnownRootLeaseError, KnownRootLeaseV1, RetainedRootKind, RetainedRootRegistryV1,
+    RetainedRootV1, RetentionRegistryError, RootLeaseV1,
 };
 use crate::rspace::persistence::{
     CATALOG_IMAGE_LEN, CatalogSelectionV1, CatalogSlotV1, GenerationLeaseError,
     GenerationLeaseKeyV1, GenerationLeaseRegistryV1, GenerationLeaseV1, IndexGenerationV1,
-    LogPackDecodeLimits, ObjectRefV1, PackId, RetentionManifestV1, RetentionManifestView,
+    LogPackDecodeLimits, ObjectDigest, ObjectRefV1, PackId, RetentionManifestV1,
+    RetentionManifestView, verify_structural_closure,
 };
 
 type GcWriter = SemanticallyAdmittedDurableWriterV1<TestSemanticProfile>;
@@ -1651,5 +1655,1860 @@ fn only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_cras
          reclamation intent must accept and persist no obligation over a generation the views \
          read, and a crash must leave no lease, so that recovery reclaims the viewed generation \
          before the first new lease"
+    );
+}
+
+fn successor_generation(old: GenerationLeaseKeyV1) -> GenerationLeaseKeyV1 {
+    GenerationLeaseKeyV1::new(
+        old.epoch() + 1,
+        old.active_pack() + 1,
+        old.active_pack() + 1,
+        old.index_generation() + 1,
+    )
+}
+
+fn generation_role(
+    key: GenerationLeaseKeyV1,
+    old: GenerationLeaseKeyV1,
+    successor: GenerationLeaseKeyV1,
+) -> CatalogRole {
+    match (key == old, key == successor) {
+        (true, _) => CatalogRole::Old,
+        (false, true) => CatalogRole::New,
+        (false, false) => CatalogRole::Other,
+    }
+}
+
+fn selected_generation_role(
+    root: &Path,
+    old: GenerationLeaseKeyV1,
+    successor: GenerationLeaseKeyV1,
+) -> CatalogRole {
+    match selected_slot(root) {
+        Ok(slot) => generation_role(GenerationLeaseKeyV1::from_catalog(slot), old, successor),
+        Err(_) => CatalogRole::Other,
+    }
+}
+
+fn request_reclamation(root: &Path) -> Result<ProbeOutcome, String> {
+    let mut lease = DurableDirectoryV1::open(root)
+        .and_then(DurableDirectoryV1::try_acquire_writer)
+        .map_err(|error| {
+            format!("the reclamation request cannot take the writer lock: {error:?}")
+        })?;
+    let candidate = lease
+        .read_reclamation_candidate()
+        .map_err(|error| format!("the reclamation request cannot read the intent: {error:?}"))?;
+    match candidate {
+        None => Ok(ProbeOutcome::NoIntent),
+        Some(candidate) => {
+            match lease.reclaim_reclamation_candidate(candidate, selected_slot(root)?) {
+                Ok(reclaimed) if reclaimed.deferred_for_reader => Ok(ProbeOutcome::Deferred),
+                Ok(_) => Ok(ProbeOutcome::Reclaimed),
+                Err(DurableIoError::CatalogAuthorityChanged { .. }) => Ok(ProbeOutcome::Refused),
+                Err(error) => Err(format!("the reclamation request failed: {error:?}")),
+            }
+        }
+    }
+}
+
+fn admit_with_retention_writer(
+    root: &Path,
+    retention_writer: RetentionFormat,
+) -> Result<GcWriter, String> {
+    DurableDirectoryV1::open(root)
+        .map_err(|error| format!("the store directory does not open: {error:?}"))?
+        .with_retention_writer_for_test(retention_writer)
+        .recover_and_admit_v1::<TestSemanticProfile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .map_err(|error| format!("admission was refused: {error:?}"))
+}
+
+enum CompactionOutcome {
+    Published(GcWriter),
+    RootNotCarried(RetainedRootV1),
+    Refused(String),
+}
+
+fn compact(writer: GcWriter) -> CompactionOutcome {
+    match writer.compact_generation_v1(
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+    ) {
+        Ok(successor) => CompactionOutcome::Published(successor),
+        Err(GenerationCheckpointPublicationErrorV1::RetainedRootNotCarried { root }) => {
+            CompactionOutcome::RootNotCarried(root)
+        }
+        Err(error) => CompactionOutcome::Refused(format!("{error:?}")),
+    }
+}
+
+fn on_trial_thread<T: Send + 'static>(
+    name: &str,
+    trial: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(trial)
+        .expect("spawn a GC protection trial thread")
+        .join()
+        .unwrap_or_else(|panic| Err(panic_message(panic.as_ref())))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KnownRootChoice {
+    CurrentState,
+    HistoricalState,
+    AppointedRetention,
+    SupersededRetention,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct KnownStoreSpec {
+    retained_union_objects: usize,
+    earlier_publications: usize,
+    retention_writer: RetentionFormat,
+    data_successors: usize,
+    root: KnownRootChoice,
+}
+
+const fn known_store(
+    retained_union_objects: usize,
+    earlier_publications: usize,
+    retention_writer: RetentionFormat,
+    data_successors: usize,
+    root: KnownRootChoice,
+) -> KnownStoreSpec {
+    KnownStoreSpec {
+        retained_union_objects,
+        earlier_publications,
+        retention_writer,
+        data_successors,
+        root,
+    }
+}
+
+struct KnownStore {
+    writer: GcWriter,
+    old: GenerationLeaseKeyV1,
+    successor: GenerationLeaseKeyV1,
+    old_files: Vec<(PathBuf, Vec<u8>)>,
+    known_root: ObjectRefV1,
+    reader_root: ObjectRefV1,
+    superseded_retention: Option<ObjectRefV1>,
+}
+
+fn open_known_store(spec: KnownStoreSpec, root: &Path) -> Result<KnownStore, String> {
+    install_checkpoint_image(
+        root,
+        &checkpoint_image_from_source(fixture_with_retained_union_cardinality(
+            spec.retained_union_objects,
+        )),
+    );
+    let mut writer = admit_with_retention_writer(root, spec.retention_writer)?;
+    let historical_state = RetentionManifestView::parse(writer.retention_manifest_bytes())
+        .map_err(|error| format!("the installed retention manifest does not parse: {error:?}"))?
+        .historical()
+        .next()
+        .and_then(Result::ok)
+        .map(|retained| retained.state().manifest());
+    for _ in 0..spec.earlier_publications {
+        writer = publish_checkpoint(writer)?;
+    }
+    let mut superseded_retention = None;
+    for successor in 0..spec.data_successors {
+        superseded_retention = Some(writer.catalog().pack().retention_manifest());
+        writer = publish_data_successor(writer, &format!("gc-known-root-{successor}"));
+    }
+    let known_root = match spec.root {
+        KnownRootChoice::CurrentState => Some(writer.catalog().state().manifest()),
+        KnownRootChoice::HistoricalState => historical_state,
+        KnownRootChoice::AppointedRetention => Some(writer.catalog().pack().retention_manifest()),
+        KnownRootChoice::SupersededRetention => superseded_retention,
+    }
+    .ok_or_else(|| format!("the store of {spec:?} holds no such root"))?;
+    let old = GenerationLeaseKeyV1::from_catalog(writer.catalog());
+    Ok(KnownStore {
+        old,
+        successor: successor_generation(old),
+        old_files: generation_files(root, old)?,
+        known_root,
+        reader_root: writer.catalog().state().manifest(),
+        superseded_retention,
+        writer,
+    })
+}
+
+fn holds_known_closure(writer: &GcWriter, root: ObjectRefV1) -> bool {
+    let store = writer.verified_state().object_store();
+    let bytes = match writer.get_object_bounded(&root.digest(), root.encoded_len()) {
+        Ok(Some(bytes)) if bytes.len() as u64 == root.encoded_len() => bytes,
+        Ok(_) | Err(_) => return false,
+    };
+    let states: Vec<ObjectRefV1> =
+        match (RetentionManifestView::parse(&bytes), RetentionAnchorV2::parse(&bytes)) {
+            (Ok(manifest), _) => {
+                match std::iter::once(Ok(manifest.current()))
+                    .chain(manifest.historical())
+                    .map(|retained| retained.map(|retained| retained.state().manifest()))
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(states) => states,
+                    Err(_) => return false,
+                }
+            }
+            (Err(_), Ok(anchor)) => match admit_retention_history_v2(store, anchor) {
+                Ok(history) => std::iter::once(anchor.current())
+                    .chain(history.entries().iter().copied())
+                    .map(|retained| retained.state().manifest())
+                    .collect(),
+                Err(_) => return false,
+            },
+            (Err(_), Err(_)) => vec![root],
+        };
+    states
+        .into_iter()
+        .all(|manifest| verify_structural_closure(store, manifest).is_ok())
+}
+
+#[derive(Debug)]
+struct KnownPublicationRefusal {
+    names_the_lease: bool,
+    wrote_nothing: bool,
+    published_after_release: bool,
+    root_absent_from_successor: bool,
+}
+
+#[derive(Debug)]
+struct KnownPublicationRecord {
+    published: bool,
+    catalog: CatalogRole,
+    successor_holds_closure: bool,
+    refusal: Option<KnownPublicationRefusal>,
+}
+
+const KNOWN_PUBLICATION_SPECS: [KnownStoreSpec; 9] = [
+    known_store(2, 0, RetentionFormat::V2, 0, KnownRootChoice::CurrentState),
+    known_store(4, 1, RetentionFormat::V2, 0, KnownRootChoice::HistoricalState),
+    known_store(3, 0, RetentionFormat::V2, 0, KnownRootChoice::AppointedRetention),
+    known_store(3, 1, RetentionFormat::V2, 1, KnownRootChoice::AppointedRetention),
+    known_store(4, 0, RetentionFormat::V2, 2, KnownRootChoice::HistoricalState),
+    known_store(3, 0, RetentionFormat::V1, 1, KnownRootChoice::AppointedRetention),
+    known_store(3, 0, RetentionFormat::V2, 1, KnownRootChoice::SupersededRetention),
+    known_store(4, 1, RetentionFormat::V2, 2, KnownRootChoice::SupersededRetention),
+    known_store(3, 0, RetentionFormat::V1, 1, KnownRootChoice::SupersededRetention),
+];
+
+fn republish_after_release(
+    root: &Path,
+    retention_writer: RetentionFormat,
+    known_root: ObjectRefV1,
+) -> Result<(bool, bool), String> {
+    Ok(match compact(admit_with_retention_writer(root, retention_writer)?) {
+        CompactionOutcome::Published(published) => (
+            true,
+            matches!(
+                published.get_object_bounded(&known_root.digest(), known_root.encoded_len()),
+                Ok(None)
+            ),
+        ),
+        CompactionOutcome::RootNotCarried(_) | CompactionOutcome::Refused(_) => (false, false),
+    })
+}
+
+fn run_known_publication(spec: KnownStoreSpec) -> Result<KnownPublicationRecord, String> {
+    let scratch = trial_scratch("gc-known-publication-");
+    let root = scratch.path();
+    let KnownStore {
+        writer,
+        old,
+        successor,
+        known_root,
+        ..
+    } = open_known_store(spec, root)?;
+    let mut known = writer.register_known_root_v1(known_root).map_err(|error| {
+        format!("the writer refused a Known lease on an object of its generation: {error}")
+    })?;
+    let before = directory_snapshot(root);
+    let outcome = compact(writer);
+    let catalog = selected_generation_role(root, old, successor);
+    let (published, successor_holds_closure, refused) = match outcome {
+        CompactionOutcome::Published(published) => {
+            (true, holds_known_closure(&published, known_root), None)
+        }
+        CompactionOutcome::RootNotCarried(row) => (
+            false,
+            false,
+            Some((
+                (row.root(), row.lease_id()) == (known_root, known.lease_id()),
+                directory_snapshot(root) == before,
+            )),
+        ),
+        CompactionOutcome::Refused(reason) => {
+            return Err(format!("the compaction was refused for another reason: {reason}"));
+        }
+    };
+    known
+        .release()
+        .map_err(|error| format!("the Known lease was not released: {error}"))?;
+    let refusal = refused
+        .map(|(names_the_lease, wrote_nothing)| {
+            republish_after_release(root, spec.retention_writer, known_root).map(
+                |(published_after_release, root_absent_from_successor)| KnownPublicationRefusal {
+                    names_the_lease,
+                    wrote_nothing,
+                    published_after_release,
+                    root_absent_from_successor,
+                },
+            )
+        })
+        .transpose()?;
+    Ok(KnownPublicationRecord {
+        published,
+        catalog,
+        successor_holds_closure,
+        refusal,
+    })
+}
+
+#[test]
+fn a_known_lease_active_at_publication_is_carried_by_the_successor_or_refuses_the_compaction() {
+    let outcomes = KNOWN_PUBLICATION_SPECS.map(|spec| (spec, run_known_publication(spec)));
+    for (spec, record) in outcomes
+        .iter()
+        .filter_map(|(spec, outcome)| outcome.as_ref().ok().map(|record| (spec, record)))
+    {
+        let known_at_publish = record.published || record.catalog == CatalogRole::New;
+        assert!(
+            !known_at_publish ||
+                (record.catalog == CatalogRole::New && record.successor_holds_closure),
+            "KnownPublicationClosureProtected is violated in trial {spec:?}: {record:?}",
+        );
+    }
+    for (spec, outcome) in &outcomes {
+        let record = match outcome {
+            Ok(record) => record,
+            Err(reason) => panic!("trial {spec:?} halted: {reason}"),
+        };
+        match (spec.root, &record.refusal) {
+            (KnownRootChoice::SupersededRetention, Some(refusal)) => assert!(
+                record.catalog == CatalogRole::Old &&
+                    refusal.names_the_lease &&
+                    refusal.wrote_nothing &&
+                    refusal.published_after_release &&
+                    refusal.root_absent_from_successor,
+                "trial {spec:?} did not refuse an uncarried Known root cleanly: {record:?}",
+            ),
+            (KnownRootChoice::SupersededRetention, None) => {
+                panic!("trial {spec:?} carried a superseded retention object: {record:?}")
+            }
+            (_, None) => assert!(
+                record.published,
+                "trial {spec:?} did not publish under a carried Known root: {record:?}",
+            ),
+            (_, Some(_)) => {
+                panic!(
+                    "trial {spec:?} refused a Known root that its checkpoint carries: {record:?}"
+                )
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KnownMoment {
+    Registered,
+    Hook(PublicationPoint),
+    Published,
+    Probed(ProbeOutcome),
+    Readmitted,
+    Released,
+    RegisteredOnReclaimed,
+    RegisteredOnSuccessor,
+    RegisteredAbsentRoot,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct KnownGenerationObservation {
+    moment: KnownMoment,
+    known: Option<CatalogRole>,
+    catalog: CatalogRole,
+    old_generation: Presence,
+    known_closure_in_successor: bool,
+}
+
+struct KnownGenerationRecorder {
+    root: PathBuf,
+    old: GenerationLeaseKeyV1,
+    successor: GenerationLeaseKeyV1,
+    old_files: Vec<(PathBuf, Vec<u8>)>,
+    known: Option<CatalogRole>,
+    observations: Vec<KnownGenerationObservation>,
+}
+
+impl KnownGenerationRecorder {
+    fn hold(&mut self, generation: GenerationLeaseKeyV1) {
+        self.known = Some(generation_role(generation, self.old, self.successor));
+    }
+
+    fn observe(&mut self, moment: KnownMoment, known_closure_in_successor: bool) {
+        let observation = KnownGenerationObservation {
+            moment,
+            known: self.known,
+            catalog: selected_generation_role(&self.root, self.old, self.successor),
+            old_generation: generation_presence(&self.old_files),
+            known_closure_in_successor,
+        };
+        self.observations.push(observation);
+    }
+}
+
+struct KnownGenerationTrace {
+    spec: KnownStoreSpec,
+    observations: Vec<KnownGenerationObservation>,
+    halt: Option<String>,
+}
+
+const KNOWN_GENERATION_SPECS: [KnownStoreSpec; 4] = [
+    known_store(3, 0, RetentionFormat::V2, 0, KnownRootChoice::AppointedRetention),
+    known_store(2, 1, RetentionFormat::V2, 0, KnownRootChoice::CurrentState),
+    known_store(4, 0, RetentionFormat::V2, 1, KnownRootChoice::AppointedRetention),
+    known_store(3, 1, RetentionFormat::V1, 1, KnownRootChoice::HistoricalState),
+];
+
+fn arm_known_generation_chain(recorder: Rc<RefCell<KnownGenerationRecorder>>, index: usize) {
+    let point = FORMAL_PUBLICATION_PHASE_ORDER[index];
+    arm_generation_checkpoint_publication_hook(point, move || {
+        recorder
+            .borrow_mut()
+            .observe(KnownMoment::Hook(point), false);
+        if index + 1 < FORMAL_PUBLICATION_PHASE_ORDER.len() {
+            arm_known_generation_chain(recorder, index + 1);
+        }
+    });
+}
+
+fn drive_known_generation(
+    retention_writer: RetentionFormat,
+    store: KnownStore,
+    recorder: &Rc<RefCell<KnownGenerationRecorder>>,
+) -> Result<(), String> {
+    let KnownStore {
+        writer,
+        old,
+        successor,
+        known_root,
+        superseded_retention,
+        ..
+    } = store;
+    let root = recorder.borrow().root.clone();
+    let generations = writer.generation_leases();
+    let mut known = writer.register_known_root_v1(known_root).map_err(|error| {
+        format!("the writer refused a Known lease on an object of its generation: {error}")
+    })?;
+    {
+        let mut state = recorder.borrow_mut();
+        state.hold(known.generation());
+        state.observe(KnownMoment::Registered, false);
+    }
+    arm_known_generation_chain(Rc::clone(recorder), 0);
+    let published = match compact(writer) {
+        CompactionOutcome::Published(published) => published,
+        CompactionOutcome::RootNotCarried(row) => {
+            return Err(format!("the compaction refused the carried Known root {row:?}"));
+        }
+        CompactionOutcome::Refused(reason) => {
+            return Err(format!("the compaction was refused: {reason}"));
+        }
+    };
+    let carried = holds_known_closure(&published, known_root);
+    recorder
+        .borrow_mut()
+        .observe(KnownMoment::Published, carried);
+    drop(published);
+    let deferred = request_reclamation(&root)?;
+    recorder
+        .borrow_mut()
+        .observe(KnownMoment::Probed(deferred), false);
+    drop(admit_with_retention_writer(&root, retention_writer)?);
+    recorder
+        .borrow_mut()
+        .observe(KnownMoment::Readmitted, false);
+    known
+        .release()
+        .map_err(|error| format!("the Known lease was not released: {error}"))?;
+    {
+        let mut state = recorder.borrow_mut();
+        state.known = None;
+        state.observe(KnownMoment::Released, false);
+    }
+    let reclaimed = request_reclamation(&root)?;
+    recorder
+        .borrow_mut()
+        .observe(KnownMoment::Probed(reclaimed), false);
+    match generations.register_known_root(known_root, old) {
+        Ok(lease) => {
+            let mut state = recorder.borrow_mut();
+            state.hold(lease.generation());
+            state.observe(KnownMoment::RegisteredOnReclaimed, false);
+            state.known = None;
+        }
+        Err(KnownRootLeaseError::Generation(GenerationLeaseError::Retired(retired)))
+            if retired == old =>
+        {
+            recorder
+                .borrow_mut()
+                .observe(KnownMoment::RegisteredOnReclaimed, false);
+        }
+        Err(error) => {
+            return Err(format!("a Known lease on the reclaimed generation failed: {error}"));
+        }
+    }
+    let writer = admit_with_retention_writer(&root, retention_writer)?;
+    let fabricated =
+        ObjectRefV1::new(ObjectDigest::from_array([0xA5; 32]), known_root.encoded_len())
+            .map_err(|error| format!("the fabricated reference is refused: {error:?}"))?;
+    let candidates = [
+        Some((known_root, KnownMoment::RegisteredOnSuccessor)),
+        Some((fabricated, KnownMoment::RegisteredAbsentRoot)),
+        superseded_retention.map(|superseded| (superseded, KnownMoment::RegisteredAbsentRoot)),
+    ];
+    for (candidate, moment) in candidates.into_iter().flatten() {
+        match writer.register_known_root_v1(candidate) {
+            Ok(lease) => {
+                let closed = holds_known_closure(&writer, candidate);
+                let mut state = recorder.borrow_mut();
+                state.hold(lease.generation());
+                state.observe(moment, closed);
+                state.known = None;
+            }
+            Err(KnownRootLeaseError::Absent {
+                root: refused,
+                generation,
+            }) if (refused, generation) == (candidate, successor) => {
+                recorder.borrow_mut().observe(moment, false);
+            }
+            Err(error) => {
+                return Err(format!("a Known lease on the successor failed: {error}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_known_generation(spec: KnownStoreSpec) -> KnownGenerationTrace {
+    let scratch = trial_scratch("gc-known-generation-");
+    let mut store = match open_known_store(spec, scratch.path()) {
+        Ok(store) => store,
+        Err(reason) => {
+            return KnownGenerationTrace {
+                spec,
+                observations: Vec::new(),
+                halt: Some(reason),
+            };
+        }
+    };
+    let recorder = Rc::new(RefCell::new(KnownGenerationRecorder {
+        root: scratch.path().to_path_buf(),
+        old: store.old,
+        successor: store.successor,
+        old_files: std::mem::take(&mut store.old_files),
+        known: None,
+        observations: Vec::with_capacity(FORMAL_PUBLICATION_PHASE_ORDER.len() + 12),
+    }));
+    let halt = drive_known_generation(spec.retention_writer, store, &recorder).err();
+    let observations = std::mem::take(&mut recorder.borrow_mut().observations);
+    KnownGenerationTrace {
+        spec,
+        observations,
+        halt,
+    }
+}
+
+fn known_generation_protected(observation: &KnownGenerationObservation) -> bool {
+    match observation.known {
+        None => true,
+        Some(CatalogRole::Old) => observation.old_generation == Presence::Present,
+        Some(CatalogRole::New) => observation.known_closure_in_successor,
+        Some(CatalogRole::Other) => false,
+    }
+}
+
+fn count_known_moments(
+    trace: &KnownGenerationTrace,
+    moment: KnownMoment,
+    known: Option<CatalogRole>,
+) -> usize {
+    trace
+        .observations
+        .iter()
+        .filter(|observation| (observation.moment, observation.known) == (moment, known))
+        .count()
+}
+
+#[test]
+fn a_known_lease_keeps_its_exact_generation_and_is_refused_for_roots_outside_it() {
+    let traces = KNOWN_GENERATION_SPECS.map(|spec| {
+        on_trial_thread("gc-known-generation-trial", move || Ok(run_known_generation(spec)))
+            .unwrap_or_else(|reason| KnownGenerationTrace {
+                spec,
+                observations: Vec::new(),
+                halt: Some(reason),
+            })
+    });
+    for trace in &traces {
+        if let Some(violation) = trace
+            .observations
+            .iter()
+            .find(|observation| !known_generation_protected(observation))
+        {
+            panic!(
+                "KnownExactGenerationProtected is violated in trial {:?}: {violation:?}",
+                trace.spec
+            );
+        }
+    }
+    for trace in &traces {
+        if let Some(reason) = &trace.halt {
+            panic!("trial {:?} halted: {reason}", trace.spec);
+        }
+    }
+    for trace in &traces {
+        let counts = (
+            count_known_moments(
+                trace,
+                KnownMoment::Probed(ProbeOutcome::Deferred),
+                Some(CatalogRole::Old),
+            ),
+            count_known_moments(trace, KnownMoment::Probed(ProbeOutcome::Reclaimed), None),
+            count_known_moments(trace, KnownMoment::RegisteredOnReclaimed, None),
+            count_known_moments(trace, KnownMoment::RegisteredOnSuccessor, Some(CatalogRole::New)),
+            count_known_moments(trace, KnownMoment::RegisteredAbsentRoot, None),
+        );
+        assert_eq!(
+            counts,
+            (1, 1, 1, 1, 1 + usize::from(trace.spec.data_successors > 0)),
+            "trial {:?} did not defer the reclamation under its Known lease, reclaim after the \
+             release, refuse the reclaimed generation, grant the carried root on the successor \
+             and refuse the roots outside it",
+            trace.spec
+        );
+        let hooks = trace
+            .observations
+            .iter()
+            .filter(|observation| {
+                matches!(observation.moment, KnownMoment::Hook(_)) &&
+                    observation.known == Some(CatalogRole::Old)
+            })
+            .count();
+        assert_eq!(
+            hooks,
+            FORMAL_PUBLICATION_PHASE_ORDER.len(),
+            "trial {:?} did not hold its Known lease at every publication point",
+            trace.spec
+        );
+        assert!(
+            trace.observations.iter().any(|observation| {
+                (observation.known, observation.catalog, observation.old_generation) ==
+                    (Some(CatalogRole::Old), CatalogRole::New, Presence::Present)
+            }),
+            "trial {:?} never held its Known lease on the old generation under the successor \
+             catalog",
+            trace.spec
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverlapToken {
+    Known0,
+    Reader0,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverlapAction {
+    AcquireOldPin(OverlapToken),
+    AcquireNewPin(OverlapToken),
+    ReleaseOldPin(OverlapToken),
+    ReleaseNewPin(OverlapToken),
+    Publish,
+    Reclaim,
+    Crash,
+    Recover,
+}
+
+const PIN_OLD_KNOWN: OverlapAction = OverlapAction::AcquireOldPin(OverlapToken::Known0);
+const PIN_OLD_READER: OverlapAction = OverlapAction::AcquireOldPin(OverlapToken::Reader0);
+const PIN_NEW_KNOWN: OverlapAction = OverlapAction::AcquireNewPin(OverlapToken::Known0);
+const PIN_NEW_READER: OverlapAction = OverlapAction::AcquireNewPin(OverlapToken::Reader0);
+const DROP_OLD_KNOWN: OverlapAction = OverlapAction::ReleaseOldPin(OverlapToken::Known0);
+const DROP_OLD_READER: OverlapAction = OverlapAction::ReleaseOldPin(OverlapToken::Reader0);
+const DROP_NEW_KNOWN: OverlapAction = OverlapAction::ReleaseNewPin(OverlapToken::Known0);
+const DROP_NEW_READER: OverlapAction = OverlapAction::ReleaseNewPin(OverlapToken::Reader0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OverlapModelState {
+    crashed: bool,
+    catalog: CatalogRole,
+    old_generation: Presence,
+    reclaim_intent: bool,
+    known: Option<CatalogRole>,
+    reader: Option<CatalogRole>,
+    known_at_publish: bool,
+    overlap_at_publish: bool,
+    crashed_after_overlap: bool,
+    known_after_reclaim: bool,
+}
+
+impl OverlapModelState {
+    const INITIAL: Self = Self {
+        crashed: false,
+        catalog: CatalogRole::Old,
+        old_generation: Presence::Present,
+        reclaim_intent: false,
+        known: None,
+        reader: None,
+        known_at_publish: false,
+        overlap_at_publish: false,
+        crashed_after_overlap: false,
+        known_after_reclaim: false,
+    };
+
+    fn pin(self, token: OverlapToken) -> Option<CatalogRole> {
+        match token {
+            OverlapToken::Known0 => self.known,
+            OverlapToken::Reader0 => self.reader,
+        }
+    }
+
+    fn with_pin(self, token: OverlapToken, pin: Option<CatalogRole>) -> Self {
+        match token {
+            OverlapToken::Known0 => Self { known: pin, ..self },
+            OverlapToken::Reader0 => Self {
+                reader: pin,
+                ..self
+            },
+        }
+    }
+
+    fn holds_old_pin(self) -> bool { [self.known, self.reader].contains(&Some(CatalogRole::Old)) }
+
+    fn step(self, action: OverlapAction) -> Option<Self> {
+        let old_present = self.old_generation == Presence::Present;
+        match (action, self.crashed) {
+            (OverlapAction::Recover, true) => Some(Self {
+                crashed: false,
+                ..self
+            }),
+            (OverlapAction::Recover, false) | (_, true) => None,
+            (OverlapAction::Crash, false) => Some(Self {
+                crashed: true,
+                known: None,
+                reader: None,
+                crashed_after_overlap: self.crashed_after_overlap ||
+                    (self.overlap_at_publish && old_present),
+                ..self
+            }),
+            (OverlapAction::AcquireOldPin(token), false) => match (old_present, self.pin(token)) {
+                (true, None) => Some(self.with_pin(token, Some(CatalogRole::Old))),
+                (true, Some(_)) | (false, _) => None,
+            },
+            (OverlapAction::AcquireNewPin(token), false) => match (self.catalog, self.pin(token)) {
+                (CatalogRole::New, None) => Some(Self {
+                    known_after_reclaim: self.known_after_reclaim ||
+                        (token == OverlapToken::Known0 &&
+                            self.crashed_after_overlap &&
+                            !old_present),
+                    ..self.with_pin(token, Some(CatalogRole::New))
+                }),
+                (CatalogRole::New, Some(_)) | (CatalogRole::Old | CatalogRole::Other, _) => None,
+            },
+            (OverlapAction::ReleaseOldPin(token), false) => match self.pin(token) {
+                Some(CatalogRole::Old) => Some(self.with_pin(token, None)),
+                Some(CatalogRole::New | CatalogRole::Other) | None => None,
+            },
+            (OverlapAction::ReleaseNewPin(token), false) => match self.pin(token) {
+                Some(CatalogRole::New) => Some(self.with_pin(token, None)),
+                Some(CatalogRole::Old | CatalogRole::Other) | None => None,
+            },
+            (OverlapAction::Publish, false) => match self.catalog {
+                CatalogRole::Old => Some(Self {
+                    catalog: CatalogRole::New,
+                    reclaim_intent: true,
+                    known_at_publish: self.known.is_some(),
+                    overlap_at_publish: self.known.is_some() && self.reader.is_some(),
+                    ..self
+                }),
+                CatalogRole::New | CatalogRole::Other => None,
+            },
+            (OverlapAction::Reclaim, false) => {
+                match (self.catalog, self.reclaim_intent, self.holds_old_pin()) {
+                    (CatalogRole::New, true, false) => Some(Self {
+                        old_generation: Presence::Absent,
+                        reclaim_intent: false,
+                        ..self
+                    }),
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    fn witness_history_sound(self) -> bool {
+        (!self.overlap_at_publish || (self.known_at_publish && self.catalog == CatalogRole::New)) &&
+            (!self.crashed_after_overlap || self.overlap_at_publish) &&
+            (!self.known_after_reclaim ||
+                (self.crashed_after_overlap &&
+                    self.old_generation == Presence::Absent &&
+                    self.catalog == CatalogRole::New))
+    }
+}
+
+struct OverlapWorld {
+    root: PathBuf,
+    old: GenerationLeaseKeyV1,
+    successor: GenerationLeaseKeyV1,
+    old_files: Vec<(PathBuf, Vec<u8>)>,
+    known_root: ObjectRefV1,
+    reader_root: ObjectRefV1,
+    writer: Option<GcWriter>,
+    generations: Option<GenerationLeaseRegistryV1>,
+    known: Option<KnownRootLeaseV1>,
+    reader: Option<(RootLeaseV1, GenerationLeaseV1)>,
+    known_at_publish: bool,
+    overlap_at_publish: bool,
+    crashed_after_overlap: bool,
+    known_after_reclaim: bool,
+}
+
+impl OverlapWorld {
+    fn start(spec: KnownStoreSpec, root: &Path) -> Result<Self, String> {
+        let KnownStore {
+            writer,
+            old,
+            successor,
+            old_files,
+            known_root,
+            reader_root,
+            ..
+        } = open_known_store(spec, root)?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            old,
+            successor,
+            old_files,
+            known_root,
+            reader_root,
+            generations: Some(writer.generation_leases()),
+            writer: Some(writer),
+            known: None,
+            reader: None,
+            known_at_publish: false,
+            overlap_at_publish: false,
+            crashed_after_overlap: false,
+            known_after_reclaim: false,
+        })
+    }
+
+    fn observed_pin(
+        &self,
+        generations: &GenerationLeaseRegistryV1,
+        rows: &[RetainedRootV1],
+        pin: Option<(GenerationLeaseKeyV1, u64)>,
+    ) -> Result<Option<CatalogRole>, String> {
+        match pin {
+            None => Ok(None),
+            Some((generation, lease_id)) => {
+                let registered = rows.iter().any(|row| row.lease_id() == lease_id);
+                match (generations.has_active(generation), registered) {
+                    (Ok(true), true) => {
+                        Ok(Some(generation_role(generation, self.old, self.successor)))
+                    }
+                    (leased, registered) => Err(format!(
+                        "a lease on {generation:?} is not registered: generation lease \
+                         {leased:?}, root row {registered}"
+                    )),
+                }
+            }
+        }
+    }
+
+    fn observe(&self) -> Result<OverlapModelState, String> {
+        let catalog = selected_generation_role(&self.root, self.old, self.successor);
+        let intent = reclamation_intent_role(&self.root, self.old, self.successor);
+        let reclaim_intent = match (intent, catalog) {
+            (IntentRole::Exact, CatalogRole::New) => true,
+            (IntentRole::Absent, _) | (IntentRole::Exact, CatalogRole::Old) => false,
+            (IntentRole::Exact | IntentRole::Other, _) => {
+                return Err(format!(
+                    "the reclamation intent is {intent:?} under catalog {catalog:?}"
+                ));
+            }
+        };
+        let known = self
+            .known
+            .as_ref()
+            .map(|lease| (lease.generation(), lease.lease_id()));
+        let reader = self
+            .reader
+            .as_ref()
+            .map(|(row, pin)| (pin.key(), row.lease_id()));
+        let held = usize::from(known.is_some()) + usize::from(reader.is_some());
+        let (known, reader) = match (&self.generations, held) {
+            (None, 0) => (None, None),
+            (None, _) => return Err(format!("{held} leases outlived the crash")),
+            (Some(generations), _) => {
+                let snapshot = generations
+                    .retained_roots()
+                    .and_then(|roots| roots.snapshot())
+                    .map_err(|error| format!("the root registry cannot be read: {error}"))?;
+                let leases = generations.active_lease_count_for_test();
+                let rows = snapshot.roots();
+                if (leases, rows.len()) != (held, held) {
+                    return Err(format!(
+                        "the registries hold {leases} generation leases and {} root rows for \
+                         {held} leases of the schedule",
+                        rows.len()
+                    ));
+                }
+                (
+                    self.observed_pin(generations, rows, known)?,
+                    self.observed_pin(generations, rows, reader)?,
+                )
+            }
+        };
+        Ok(OverlapModelState {
+            crashed: self.generations.is_none(),
+            catalog,
+            old_generation: generation_presence(&self.old_files),
+            reclaim_intent,
+            known,
+            reader,
+            known_at_publish: self.known_at_publish,
+            overlap_at_publish: self.overlap_at_publish,
+            crashed_after_overlap: self.crashed_after_overlap,
+            known_after_reclaim: self.known_after_reclaim,
+        })
+    }
+
+    fn admitted(&mut self) -> Result<&GcWriter, String> {
+        let generations = self
+            .generations
+            .clone()
+            .ok_or_else(|| "the crashed store admits no writer".to_owned())?;
+        let writer = match self.writer.take() {
+            Some(writer) => writer,
+            None => {
+                let state = self.observe()?;
+                match (state.reclaim_intent, state.holds_old_pin()) {
+                    (true, false) => {
+                        return Err(
+                            "an admission here would take the model's Reclaim step".to_owned()
+                        );
+                    }
+                    (false, _) | (true, true) => admit_checkpoint(&self.root)?,
+                }
+            }
+        };
+        if !generations.shares_registry(&writer.generation_leases()) {
+            return Err("the admitted writer does not share the registry of the leases".to_owned());
+        }
+        Ok(&*self.writer.insert(writer))
+    }
+
+    fn acquire_old(
+        &mut self,
+        token: OverlapToken,
+        generations: &GenerationLeaseRegistryV1,
+    ) -> Result<bool, String> {
+        let (old, known_root, reader_root) = (self.old, self.known_root, self.reader_root);
+        match (token, self.known.is_some(), self.reader.is_some()) {
+            (OverlapToken::Known0, true, _) | (OverlapToken::Reader0, _, true) => {
+                Err(format!("the schedule leases {token:?} twice"))
+            }
+            (OverlapToken::Known0, false, _) => {
+                let granted = match selected_generation_role(&self.root, old, self.successor) {
+                    CatalogRole::Old => self.admitted()?.register_known_root_v1(known_root),
+                    CatalogRole::New | CatalogRole::Other => {
+                        generations.register_known_root(known_root, old)
+                    }
+                };
+                match granted {
+                    Ok(lease) => {
+                        self.known = Some(lease);
+                        Ok(true)
+                    }
+                    Err(KnownRootLeaseError::Generation(GenerationLeaseError::Retired(
+                        retired,
+                    ))) if retired == old => Ok(false),
+                    Err(error) => {
+                        Err(format!("a Known lease on the old generation failed: {error}"))
+                    }
+                }
+            }
+            (OverlapToken::Reader0, _, false) => match generations.acquire(old) {
+                Ok(pin) => {
+                    let row = generations
+                        .retained_roots()
+                        .and_then(|roots| roots.register(reader_root, RetainedRootKind::Reader))
+                        .map_err(|error| format!("the reader root was not registered: {error}"))?;
+                    self.reader = Some((row, pin));
+                    Ok(true)
+                }
+                Err(GenerationLeaseError::Retired(retired)) if retired == old => Ok(false),
+                Err(error) => Err(format!("a reader lease on the old generation failed: {error}")),
+            },
+        }
+    }
+
+    fn acquire_new(
+        &mut self,
+        token: OverlapToken,
+        generations: &GenerationLeaseRegistryV1,
+    ) -> Result<bool, String> {
+        let (successor, known_root, reader_root) =
+            (self.successor, self.known_root, self.reader_root);
+        let catalog = selected_generation_role(&self.root, self.old, successor);
+        match (catalog, token, self.known.is_some(), self.reader.is_some()) {
+            (CatalogRole::Old | CatalogRole::Other, _, _, _) => Ok(false),
+            (CatalogRole::New, OverlapToken::Known0, true, _) |
+            (CatalogRole::New, OverlapToken::Reader0, _, true) => {
+                Err(format!("the schedule leases {token:?} twice"))
+            }
+            (CatalogRole::New, OverlapToken::Known0, false, _) => {
+                let writer = self.admitted()?;
+                let lease = writer
+                    .register_known_root_v1(known_root)
+                    .map_err(|error| format!("a Known lease on the successor failed: {error}"))?;
+                match (lease.generation() == successor, holds_known_closure(writer, known_root)) {
+                    (true, true) => {}
+                    (on_successor, closed) => {
+                        return Err(format!(
+                            "the Known lease on the successor is unsound: on the successor \
+                             {on_successor}, closure held {closed}"
+                        ));
+                    }
+                }
+                self.known_after_reclaim |= self.crashed_after_overlap &&
+                    generation_presence(&self.old_files) == Presence::Absent;
+                self.known = Some(lease);
+                Ok(true)
+            }
+            (CatalogRole::New, OverlapToken::Reader0, _, false) => {
+                let pin = generations
+                    .acquire(successor)
+                    .map_err(|error| format!("a reader lease on the successor failed: {error}"))?;
+                let row = generations
+                    .retained_roots()
+                    .and_then(|roots| roots.register(reader_root, RetainedRootKind::Reader))
+                    .map_err(|error| format!("the reader root was not registered: {error}"))?;
+                self.reader = Some((row, pin));
+                Ok(true)
+            }
+        }
+    }
+
+    fn release(
+        &mut self,
+        token: OverlapToken,
+        generation: GenerationLeaseKeyV1,
+    ) -> Result<bool, String> {
+        match token {
+            OverlapToken::Known0 => match self.known.take() {
+                Some(mut lease) if lease.generation() == generation => {
+                    lease
+                        .release()
+                        .map_err(|error| format!("the Known lease was not released: {error}"))?;
+                    Ok(true)
+                }
+                held => {
+                    self.known = held;
+                    Ok(false)
+                }
+            },
+            OverlapToken::Reader0 => match self.reader.take() {
+                Some((mut row, mut pin)) if pin.key() == generation => {
+                    row.release()
+                        .map_err(|error| format!("the reader root was not released: {error}"))?;
+                    pin.release()
+                        .map_err(|error| format!("the reader lease was not released: {error}"))?;
+                    Ok(true)
+                }
+                held => {
+                    self.reader = held;
+                    Ok(false)
+                }
+            },
+        }
+    }
+
+    fn take_old_writer(&mut self) -> Result<GcWriter, String> {
+        let old = self.old;
+        if !self.observe()?.holds_old_pin() {
+            return Err("a publication without a lease on the old generation takes the model's \
+                        Reclaim step as well"
+                .to_owned());
+        }
+        self.admitted()?;
+        match self.writer.take() {
+            Some(writer) if GenerationLeaseKeyV1::from_catalog(writer.catalog()) == old => {
+                Ok(writer)
+            }
+            Some(_) | None => Err("the schedule publishes a second successor".to_owned()),
+        }
+    }
+
+    fn note_publication(&mut self) -> Result<(), String> {
+        let state = self.observe()?;
+        self.known_at_publish = state.known.is_some();
+        self.overlap_at_publish = state.known.is_some() && state.reader.is_some();
+        Ok(())
+    }
+
+    fn adopt_successor(&mut self, outcome: CompactionOutcome) -> Result<(), String> {
+        match outcome {
+            CompactionOutcome::Published(writer) => {
+                self.writer = Some(writer);
+                self.note_publication()
+            }
+            CompactionOutcome::RootNotCarried(row) => {
+                Err(format!("the compaction refused the carried root {row:?}"))
+            }
+            CompactionOutcome::Refused(reason) => {
+                Err(format!("the compaction was refused: {reason}"))
+            }
+        }
+    }
+
+    fn successor_presence(&self) -> Result<Presence, String> {
+        let pack = PackId::new(self.successor.active_pack())
+            .map_err(|error| format!("invalid successor pack: {error:?}"))?;
+        let index = IndexGenerationV1::new(self.successor.index_generation())
+            .map_err(|error| format!("invalid successor index generation: {error:?}"))?;
+        let present = [
+            self.root.join(pack_file_name(pack)).exists(),
+            self.root.join(index_file_name(index)).exists(),
+        ];
+        Ok(match present {
+            [true, true] => Presence::Present,
+            [false, false] => Presence::Absent,
+            [true, false] | [false, true] => Presence::Partial,
+        })
+    }
+
+    fn observe_copy_point(
+        &mut self,
+        publication: bool,
+    ) -> Result<(OverlapModelState, Presence), String> {
+        if publication {
+            self.note_publication()?;
+        }
+        Ok((self.observe()?, self.successor_presence()?))
+    }
+
+    fn successor_holds_closures(&mut self) -> Result<bool, String> {
+        let (successor, known_root, reader_root) =
+            (self.successor, self.known_root, self.reader_root);
+        let writer = self.admitted()?;
+        Ok(GenerationLeaseKeyV1::from_catalog(writer.catalog()) == successor &&
+            holds_known_closure(writer, known_root) &&
+            holds_known_closure(writer, reader_root))
+    }
+
+    fn apply(&mut self, action: OverlapAction) -> Result<bool, String> {
+        match (action, self.generations.clone()) {
+            (OverlapAction::Recover, None) => {
+                let directory = DurableDirectoryV1::open(self.root.as_path()).map_err(|error| {
+                    format!("the crashed store directory does not open: {error:?}")
+                })?;
+                self.generations = Some(directory.generation_leases());
+                Ok(true)
+            }
+            (OverlapAction::Recover, Some(_)) | (_, None) => Ok(false),
+            (OverlapAction::Crash, Some(_)) => {
+                let state = self.observe()?;
+                self.crashed_after_overlap |=
+                    state.overlap_at_publish && state.old_generation == Presence::Present;
+                self.writer = None;
+                self.known = None;
+                self.reader = None;
+                self.generations = None;
+                Ok(true)
+            }
+            (OverlapAction::AcquireOldPin(token), Some(generations)) => {
+                self.acquire_old(token, &generations)
+            }
+            (OverlapAction::AcquireNewPin(token), Some(generations)) => {
+                self.acquire_new(token, &generations)
+            }
+            (OverlapAction::ReleaseOldPin(token), Some(_)) => self.release(token, self.old),
+            (OverlapAction::ReleaseNewPin(token), Some(_)) => self.release(token, self.successor),
+            (OverlapAction::Publish, Some(_)) => {
+                let writer = self.take_old_writer()?;
+                self.adopt_successor(compact(writer))?;
+                Ok(true)
+            }
+            (OverlapAction::Reclaim, Some(_)) => {
+                self.writer = None;
+                Ok(request_reclamation(&self.root)? == ProbeOutcome::Reclaimed)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct OverlapSchedule {
+    name: &'static str,
+    store: KnownStoreSpec,
+    actions: &'static [OverlapAction],
+}
+
+struct OverlapHistory {
+    name: &'static str,
+    steps: Vec<(OverlapAction, bool, OverlapModelState)>,
+    halt: Option<String>,
+}
+
+const OVERLAP_SCHEDULES: [OverlapSchedule; 6] = [
+    OverlapSchedule {
+        name: "known-alone-keeps-the-old-generation",
+        store: known_store(3, 0, RetentionFormat::V2, 0, KnownRootChoice::AppointedRetention),
+        actions: &[
+            PIN_OLD_KNOWN,
+            PIN_OLD_READER,
+            OverlapAction::Publish,
+            DROP_OLD_READER,
+            OverlapAction::Reclaim,
+            PIN_NEW_READER,
+            OverlapAction::Crash,
+            OverlapAction::Recover,
+            OverlapAction::Reclaim,
+            PIN_NEW_KNOWN,
+            PIN_NEW_READER,
+            DROP_NEW_KNOWN,
+            DROP_NEW_READER,
+        ],
+    },
+    OverlapSchedule {
+        name: "reader-alone-at-publication",
+        store: known_store(2, 1, RetentionFormat::V2, 0, KnownRootChoice::CurrentState),
+        actions: &[
+            PIN_OLD_READER,
+            OverlapAction::Publish,
+            OverlapAction::Crash,
+            OverlapAction::Recover,
+            OverlapAction::Reclaim,
+            PIN_NEW_KNOWN,
+            DROP_NEW_KNOWN,
+        ],
+    },
+    OverlapSchedule {
+        name: "reclaimed-before-the-crash",
+        store: known_store(4, 0, RetentionFormat::V2, 1, KnownRootChoice::CurrentState),
+        actions: &[
+            PIN_OLD_KNOWN,
+            PIN_OLD_READER,
+            OverlapAction::Publish,
+            DROP_OLD_KNOWN,
+            DROP_OLD_READER,
+            OverlapAction::Reclaim,
+            PIN_OLD_KNOWN,
+            PIN_OLD_READER,
+            OverlapAction::Crash,
+            OverlapAction::Recover,
+            PIN_NEW_KNOWN,
+        ],
+    },
+    OverlapSchedule {
+        name: "known-alone-at-publication",
+        store: known_store(3, 1, RetentionFormat::V2, 0, KnownRootChoice::HistoricalState),
+        actions: &[
+            PIN_OLD_KNOWN,
+            OverlapAction::Publish,
+            OverlapAction::Reclaim,
+            OverlapAction::Crash,
+            OverlapAction::Recover,
+            OverlapAction::Reclaim,
+            PIN_NEW_KNOWN,
+        ],
+    },
+    OverlapSchedule {
+        name: "crash-before-publication",
+        store: known_store(3, 0, RetentionFormat::V2, 0, KnownRootChoice::CurrentState),
+        actions: &[
+            PIN_OLD_KNOWN,
+            PIN_OLD_READER,
+            OverlapAction::Crash,
+            OverlapAction::Recover,
+            PIN_NEW_KNOWN,
+            OverlapAction::Reclaim,
+            PIN_OLD_KNOWN,
+            OverlapAction::Publish,
+            DROP_OLD_KNOWN,
+            OverlapAction::Reclaim,
+            PIN_NEW_KNOWN,
+        ],
+    },
+    OverlapSchedule {
+        name: "known-moves-to-the-successor-before-the-crash",
+        store: known_store(4, 1, RetentionFormat::V2, 1, KnownRootChoice::AppointedRetention),
+        actions: &[
+            PIN_OLD_KNOWN,
+            PIN_OLD_READER,
+            OverlapAction::Publish,
+            DROP_OLD_KNOWN,
+            PIN_NEW_KNOWN,
+            OverlapAction::Crash,
+            OverlapAction::Recover,
+            OverlapAction::Reclaim,
+            PIN_NEW_KNOWN,
+            PIN_OLD_READER,
+        ],
+    },
+];
+
+fn drive_overlap_schedule(
+    schedule: OverlapSchedule,
+    steps: &mut Vec<(OverlapAction, bool, OverlapModelState)>,
+) -> Result<(), String> {
+    let scratch = trial_scratch("gc-overlap-history-");
+    let mut world = OverlapWorld::start(schedule.store, scratch.path())?;
+    let mut model = OverlapModelState::INITIAL;
+    let initial = world.observe()?;
+    if initial != model {
+        return Err(format!(
+            "the admitted runtime state {initial:?} is not the model's initial state"
+        ));
+    }
+    for (index, action) in schedule.actions.iter().copied().enumerate() {
+        let enabled = model.step(action);
+        let taken = world
+            .apply(action)
+            .map_err(|reason| format!("step {index} {action:?}: {reason}"))?;
+        let observed = world
+            .observe()
+            .map_err(|reason| format!("step {index} after {action:?}: {reason}"))?;
+        steps.push((action, taken, observed));
+        model = match (enabled, taken) {
+            (Some(next), true) => next,
+            (None, false) => model,
+            (Some(_), false) => {
+                return Err(format!(
+                    "step {index}: the runtime refused {action:?}, which the model enables in \
+                     {model:?}"
+                ));
+            }
+            (None, true) => {
+                return Err(format!(
+                    "step {index}: the runtime took {action:?}, which the model disables in \
+                     {model:?}"
+                ));
+            }
+        };
+        if observed != model {
+            return Err(format!(
+                "step {index}: after {action:?} the runtime state {observed:?} is not the model \
+                 state {model:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn run_overlap_schedule(schedule: OverlapSchedule) -> OverlapHistory {
+    let mut steps = Vec::with_capacity(schedule.actions.len());
+    let halt = drive_overlap_schedule(schedule, &mut steps).err();
+    OverlapHistory {
+        name: schedule.name,
+        steps,
+        halt,
+    }
+}
+
+#[test]
+fn the_overlap_witness_history_of_the_runtime_is_a_history_of_the_model() {
+    let histories = OVERLAP_SCHEDULES.map(|schedule| {
+        on_trial_thread(schedule.name, move || Ok(run_overlap_schedule(schedule))).unwrap_or_else(
+            |reason| OverlapHistory {
+                name: schedule.name,
+                steps: Vec::new(),
+                halt: Some(reason),
+            },
+        )
+    });
+    for history in &histories {
+        for (index, (action, _, state)) in history.steps.iter().enumerate() {
+            assert!(
+                state.witness_history_sound(),
+                "OverlapWitnessHistorySound is violated in schedule {} after step {index} \
+                 {action:?}: {state:?}",
+                history.name
+            );
+        }
+    }
+    for history in &histories {
+        if let Some(reason) = &history.halt {
+            panic!("schedule {} left the model: {reason}", history.name);
+        }
+    }
+    let steps = || histories.iter().flat_map(|history| history.steps.iter());
+    let witnessed = [
+        (
+            steps().any(|(_, _, state)| state.overlap_at_publish),
+            "a publication under a Known lease and a reader lease",
+        ),
+        (
+            steps()
+                .any(|(_, _, state)| state.catalog == CatalogRole::New && !state.known_at_publish),
+            "a publication without a Known lease",
+        ),
+        (
+            steps().any(|(_, _, state)| state.known_at_publish && !state.overlap_at_publish),
+            "a publication under a Known lease alone",
+        ),
+        (
+            steps().any(|(_, _, state)| state.crashed_after_overlap),
+            "a crash after the overlap while the old generation is present",
+        ),
+        (
+            steps().any(|(_, _, state)| {
+                state.crashed && state.overlap_at_publish && !state.crashed_after_overlap
+            }),
+            "a crash after the overlap once the old generation is reclaimed",
+        ),
+        (
+            steps().any(|(_, _, state)| state.known_after_reclaim),
+            "a new Known lease after the crash, the recovery and the reclamation",
+        ),
+        (
+            steps().any(|(_, _, state)| {
+                state.known == Some(CatalogRole::New) &&
+                    state.old_generation == Presence::Absent &&
+                    !state.known_after_reclaim
+            }),
+            "a new Known lease after a reclamation that no crash after an overlap preceded",
+        ),
+    ];
+    for (observed, description) in witnessed {
+        assert!(observed, "no schedule observed {description}");
+    }
+    for refused in [OverlapAction::Reclaim, PIN_OLD_KNOWN, PIN_OLD_READER, PIN_NEW_KNOWN] {
+        assert!(
+            steps().any(|(action, taken, _)| (*action, *taken) == (refused, false)),
+            "no schedule had the runtime refuse {refused:?}",
+        );
+    }
+}
+
+const OVERLAP_WITNESS_STORE: KnownStoreSpec =
+    known_store(3, 0, RetentionFormat::V2, 0, KnownRootChoice::AppointedRetention);
+
+const OVERLAP_WITNESS_COPY_POINTS: [(PublicationPoint, &str); 3] = [
+    (PublicationPoint::AfterPreflightBeforeCleanup, "StartCopy"),
+    (PublicationPoint::AfterCommitSync, "CopyOne"),
+    (PublicationPoint::AfterCatalogFileSyncBeforeDirectorySync, "Publish"),
+];
+
+type OverlapCopyObservation = (&'static str, Result<(OverlapModelState, Presence), String>);
+
+fn arm_overlap_copy_observation(
+    world: Rc<RefCell<OverlapWorld>>,
+    observed: Rc<RefCell<Vec<OverlapCopyObservation>>>,
+    index: usize,
+) {
+    let (point, action) = OVERLAP_WITNESS_COPY_POINTS[index];
+    let last = index + 1 == OVERLAP_WITNESS_COPY_POINTS.len();
+    arm_generation_checkpoint_publication_hook(point, move || {
+        let observation = world.borrow_mut().observe_copy_point(last);
+        observed.borrow_mut().push((action, observation));
+        if !last {
+            arm_overlap_copy_observation(world, observed, index + 1);
+        }
+    });
+}
+
+fn replay_overlap_step(
+    world: &Rc<RefCell<OverlapWorld>>,
+    model: &mut OverlapModelState,
+    action: OverlapAction,
+) -> Result<(), String> {
+    let expected = model
+        .step(action)
+        .ok_or_else(|| format!("{action:?}: the model disables the step in {model:?}"))?;
+    let mut state = world.borrow_mut();
+    match state.apply(action) {
+        Ok(true) => {}
+        Ok(false) => return Err(format!("{action:?}: the runtime refused the step")),
+        Err(reason) => return Err(format!("{action:?}: {reason}")),
+    }
+    let observed = state
+        .observe()
+        .map_err(|reason| format!("{action:?}: {reason}"))?;
+    if observed != expected {
+        return Err(format!(
+            "{action:?}: the runtime state {observed:?} is not the model state {expected:?}"
+        ));
+    }
+    *model = expected;
+    Ok(())
+}
+
+fn replay_overlap_witness() -> Result<(), String> {
+    let scratch = trial_scratch("gc-overlap-witness-");
+    let world = Rc::new(RefCell::new(OverlapWorld::start(OVERLAP_WITNESS_STORE, scratch.path())?));
+    let mut model = OverlapModelState::INITIAL;
+    let initial = world
+        .borrow()
+        .observe()
+        .map_err(|reason| format!("Init: {reason}"))?;
+    if initial != model {
+        return Err(format!(
+            "Init: the runtime state {initial:?} is not the model state {model:?}"
+        ));
+    }
+    replay_overlap_step(&world, &mut model, PIN_OLD_KNOWN)?;
+    replay_overlap_step(&world, &mut model, PIN_OLD_READER)?;
+    let published = model
+        .step(OverlapAction::Publish)
+        .ok_or_else(|| format!("Publish: the model disables the step in {model:?}"))?;
+    let expected_copy =
+        [(model, Presence::Absent), (model, Presence::Present), (published, Presence::Present)];
+    let copy = Rc::new(RefCell::new(Vec::with_capacity(OVERLAP_WITNESS_COPY_POINTS.len())));
+    arm_overlap_copy_observation(Rc::clone(&world), Rc::clone(&copy), 0);
+    let writer = world
+        .borrow_mut()
+        .take_old_writer()
+        .map_err(|reason| format!("StartCopy: {reason}"))?;
+    let outcome = compact(writer);
+    world
+        .borrow_mut()
+        .adopt_successor(outcome)
+        .map_err(|reason| format!("Publish: {reason}"))?;
+    let observed_copy = std::mem::take(&mut *copy.borrow_mut());
+    if observed_copy.len() != expected_copy.len() {
+        return Err(format!(
+            "Publish: the compaction passed {} of its {} observed points",
+            observed_copy.len(),
+            expected_copy.len()
+        ));
+    }
+    for ((action, observation), expected) in observed_copy.into_iter().zip(expected_copy) {
+        match observation {
+            Ok(observed) if observed == expected => {}
+            Ok(observed) => {
+                return Err(format!(
+                    "{action}: the runtime state and the successor files {observed:?} are not the \
+                     model's {expected:?}"
+                ));
+            }
+            Err(reason) => return Err(format!("{action}: {reason}")),
+        }
+    }
+    model = published;
+    let observed = world
+        .borrow()
+        .observe()
+        .map_err(|reason| format!("Publish: {reason}"))?;
+    if observed != model {
+        return Err(format!(
+            "Publish: after the compaction returned the runtime state {observed:?} is not the \
+             model state {model:?}"
+        ));
+    }
+    let carried = world.borrow_mut().successor_holds_closures();
+    match carried {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(
+                "Publish: the successor does not hold the closures of the leased roots".to_owned()
+            );
+        }
+        Err(reason) => return Err(format!("Publish: {reason}")),
+    }
+    for action in [OverlapAction::Crash, OverlapAction::Recover, OverlapAction::Reclaim] {
+        replay_overlap_step(&world, &mut model, action)?;
+    }
+    replay_overlap_step(&world, &mut model, PIN_NEW_KNOWN)?;
+    let closed = world.borrow_mut().successor_holds_closures();
+    match (model.known_after_reclaim, closed) {
+        (true, Ok(true)) => Ok(()),
+        (false, _) => Err(format!(
+            "{PIN_NEW_KNOWN:?}: the model's witness latch knownAfterReclaim is not set"
+        )),
+        (true, Ok(false)) => Err(format!(
+            "{PIN_NEW_KNOWN:?}: the successor does not hold the closure of the new Known lease"
+        )),
+        (true, Err(reason)) => Err(format!("{PIN_NEW_KNOWN:?}: {reason}")),
+    }
+}
+
+#[test]
+fn the_overlap_witness_replays_through_crash_recovery_reclamation_and_a_new_known_lease() {
+    if let Err(reason) = on_trial_thread("gc-overlap-witness-replay", replay_overlap_witness) {
+        panic!("the runtime does not replay the model's overlap witness: {reason}");
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RaceExpectation {
+    RefusesCompaction,
+    CarriedBySuccessor,
+    SealedOut,
+    PinsOldGeneration,
+}
+
+#[derive(Debug)]
+struct RaceRecord {
+    granted: bool,
+    leases_after_registration: usize,
+    published: bool,
+    catalog: CatalogRole,
+    refusal_names_the_lease: bool,
+    successor_holds_closure: bool,
+    old_generation: Presence,
+    registry_open_afterwards: bool,
+    published_after_release: bool,
+}
+
+const RACE_PLAN: [(PublicationPoint, KnownRootChoice, RaceExpectation); 9] = [
+    (
+        PublicationPoint::AfterPreflightBeforeCleanup,
+        KnownRootChoice::SupersededRetention,
+        RaceExpectation::RefusesCompaction,
+    ),
+    (
+        PublicationPoint::AfterCommitSync,
+        KnownRootChoice::SupersededRetention,
+        RaceExpectation::RefusesCompaction,
+    ),
+    (
+        PublicationPoint::BeforeCatalogCompareAndSwap,
+        KnownRootChoice::SupersededRetention,
+        RaceExpectation::RefusesCompaction,
+    ),
+    (
+        PublicationPoint::AfterPreflightBeforeCleanup,
+        KnownRootChoice::AppointedRetention,
+        RaceExpectation::CarriedBySuccessor,
+    ),
+    (
+        PublicationPoint::BeforeCatalogCompareAndSwap,
+        KnownRootChoice::CurrentState,
+        RaceExpectation::CarriedBySuccessor,
+    ),
+    (
+        PublicationPoint::AfterCatalogCasVerifiedBeforeSlotWrite,
+        KnownRootChoice::SupersededRetention,
+        RaceExpectation::SealedOut,
+    ),
+    (
+        PublicationPoint::AfterCatalogSlotWrite,
+        KnownRootChoice::SupersededRetention,
+        RaceExpectation::SealedOut,
+    ),
+    (
+        PublicationPoint::AfterCatalogSlotWrite,
+        KnownRootChoice::CurrentState,
+        RaceExpectation::SealedOut,
+    ),
+    (
+        PublicationPoint::AfterCatalogFileSyncBeforeDirectorySync,
+        KnownRootChoice::SupersededRetention,
+        RaceExpectation::PinsOldGeneration,
+    ),
+];
+
+fn precedes_catalog_slot_write(point: PublicationPoint) -> bool {
+    let position = |wanted: PublicationPoint| {
+        FORMAL_PUBLICATION_PHASE_ORDER
+            .iter()
+            .position(|candidate| *candidate == wanted)
+    };
+    match (position(point), position(PublicationPoint::AfterCatalogSlotWrite)) {
+        (Some(registered), Some(written)) => registered < written,
+        (None, _) | (_, None) => false,
+    }
+}
+
+fn run_race(point: PublicationPoint, choice: KnownRootChoice) -> Result<RaceRecord, String> {
+    let scratch = trial_scratch("gc-known-race-");
+    let root = scratch.path();
+    let KnownStore {
+        writer,
+        old,
+        successor,
+        old_files,
+        known_root,
+        reader_root,
+        ..
+    } = open_known_store(known_store(3, 0, RetentionFormat::V2, 1, choice), root)?;
+    let generations = writer.generation_leases();
+    let registration = Rc::new(RefCell::new(None));
+    arm_generation_checkpoint_publication_hook(point, {
+        let (generations, registration) = (generations.clone(), Rc::clone(&registration));
+        move || {
+            let granted = generations.register_known_root(known_root, old);
+            let leases = generations.active_lease_count_for_test();
+            *registration.borrow_mut() = Some((granted, leases));
+        }
+    });
+    let outcome = compact(writer);
+    let (granted, leases_after_registration) = registration
+        .borrow_mut()
+        .take()
+        .ok_or_else(|| format!("the compaction did not reach {point:?}"))?;
+    let lease = match granted {
+        Ok(lease) => Some(lease),
+        Err(KnownRootLeaseError::Registry(RetentionRegistryError::Sealed)) => None,
+        Err(error) => return Err(format!("the racing registration failed: {error}")),
+    };
+    let catalog = selected_generation_role(root, old, successor);
+    let (published, refusal_names_the_lease, successor_holds_closure) = match (&outcome, &lease) {
+        (CompactionOutcome::Published(published), _) => {
+            (true, false, holds_known_closure(published, known_root))
+        }
+        (CompactionOutcome::RootNotCarried(row), Some(lease)) => {
+            (false, (row.root(), row.lease_id()) == (known_root, lease.lease_id()), false)
+        }
+        (CompactionOutcome::RootNotCarried(row), None) => {
+            return Err(format!(
+                "the compaction refused {row:?} although the registration was sealed out"
+            ));
+        }
+        (CompactionOutcome::Refused(reason), _) => {
+            return Err(format!("the compaction was refused for another reason: {reason}"));
+        }
+    };
+    drop(outcome);
+    let old_generation = generation_presence(&old_files);
+    let registry_open_afterwards = generations
+        .retained_roots()
+        .and_then(|roots| roots.register(reader_root, RetainedRootKind::Reader))
+        .is_ok();
+    let granted = lease.is_some();
+    let published_after_release = match (published, lease) {
+        (false, Some(mut lease)) => {
+            lease
+                .release()
+                .map_err(|error| format!("the racing lease was not released: {error}"))?;
+            matches!(compact(admit_checkpoint(root)?), CompactionOutcome::Published(_))
+        }
+        (true, _) | (false, None) => false,
+    };
+    Ok(RaceRecord {
+        granted,
+        leases_after_registration,
+        published,
+        catalog,
+        refusal_names_the_lease,
+        successor_holds_closure,
+        old_generation,
+        registry_open_afterwards,
+        published_after_release,
+    })
+}
+
+fn run_interrupted_swap() -> Result<(CatalogRole, bool), String> {
+    let scratch = trial_scratch("gc-known-race-");
+    let root = scratch.path();
+    let KnownStore {
+        writer,
+        old,
+        successor,
+        known_root,
+        ..
+    } = open_known_store(
+        known_store(3, 0, RetentionFormat::V2, 0, KnownRootChoice::CurrentState),
+        root,
+    )?;
+    let generations = writer.generation_leases();
+    arm_generation_checkpoint_publication_failpoint(
+        PublicationPoint::AfterCatalogCasVerifiedBeforeSlotWrite,
+    );
+    match compact(writer) {
+        CompactionOutcome::Refused(_) => {}
+        CompactionOutcome::Published(_) => {
+            return Err("the failpoint did not interrupt the catalog swap".to_owned());
+        }
+        CompactionOutcome::RootNotCarried(row) => {
+            return Err(format!("the compaction refused {row:?} without a registration"));
+        }
+    }
+    Ok((
+        selected_generation_role(root, old, successor),
+        generations.register_known_root(known_root, old).is_ok(),
+    ))
+}
+
+#[test]
+fn a_registration_racing_a_compaction_is_carried_refuses_it_or_is_sealed_out() {
+    let races = RACE_PLAN.map(|(point, choice, expectation)| {
+        let outcome = on_trial_thread("gc-known-race-trial", move || run_race(point, choice));
+        (point, choice, expectation, outcome)
+    });
+    for (point, record) in races
+        .iter()
+        .filter_map(|(point, _, _, outcome)| outcome.as_ref().ok().map(|record| (point, record)))
+    {
+        assert!(
+            !(record.granted && precedes_catalog_slot_write(*point)) ||
+                record.catalog != CatalogRole::New ||
+                record.successor_holds_closure,
+            "a compaction published without the root registered at {point:?}: {record:?}",
+        );
+    }
+    for (point, choice, expectation, outcome) in &races {
+        let record = match outcome {
+            Ok(record) => record,
+            Err(reason) => panic!("the race at {point:?} with {choice:?} halted: {reason}"),
+        };
+        let as_expected = match expectation {
+            RaceExpectation::RefusesCompaction => {
+                record.granted &&
+                    !record.published &&
+                    record.catalog == CatalogRole::Old &&
+                    record.refusal_names_the_lease &&
+                    record.leases_after_registration == 1 &&
+                    record.registry_open_afterwards &&
+                    record.published_after_release
+            }
+            RaceExpectation::CarriedBySuccessor => {
+                record.granted &&
+                    record.published &&
+                    record.catalog == CatalogRole::New &&
+                    record.successor_holds_closure &&
+                    record.old_generation == Presence::Present &&
+                    record.registry_open_afterwards
+            }
+            RaceExpectation::SealedOut => {
+                !record.granted &&
+                    record.leases_after_registration == 0 &&
+                    record.published &&
+                    record.catalog == CatalogRole::New &&
+                    record.old_generation == Presence::Absent &&
+                    record.registry_open_afterwards
+            }
+            RaceExpectation::PinsOldGeneration => {
+                record.granted &&
+                    record.published &&
+                    record.catalog == CatalogRole::New &&
+                    !record.successor_holds_closure &&
+                    record.old_generation == Presence::Present
+            }
+        };
+        assert!(
+            as_expected,
+            "the race at {point:?} with {choice:?} did not end as {expectation:?}: {record:?}",
+        );
+    }
+    let interrupted = on_trial_thread("gc-known-race-interrupted-swap", run_interrupted_swap);
+    assert_eq!(
+        interrupted,
+        Ok((CatalogRole::Old, true)),
+        "an interrupted catalog swap left the root registry sealed",
     );
 }

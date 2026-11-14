@@ -38,8 +38,16 @@ use super::startup::{
     resolve_reclamation_candidate_v1,
 };
 use crate::rspace::persistence::canonical::CanonicalSink;
-use crate::rspace::persistence::closure::ClosureInventoryV1;
+use crate::rspace::persistence::closure::{
+    ClosureDomainV1, ClosureInventoryV1, StructuralClosureLedgerV1,
+};
 use crate::rspace::persistence::durable::PACK_HEADER_LEN_V1;
+use crate::rspace::persistence::retention::v2_reader::admit_retention_history_v2;
+use crate::rspace::persistence::retention::{
+    KnownRootLeaseError, KnownRootLeaseV1, RetainedRootRegistryV1, RetainedRootSealV1,
+    RetainedRootSnapshotV1, RetainedRootV1, RetentionManifestV1, RetentionManifestView,
+    RetentionRegistryError,
+};
 use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::wal::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GenerationCheckpointCommitRecordV1,
@@ -48,6 +56,7 @@ use crate::rspace::persistence::wal::{
     PreparedGenerationCheckpointV1, PreparedLogPackTransactionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
     TransactionCommitRecordV1,
 };
+use crate::rspace::persistence::{GenerationLeaseKeyV1, ObjectDigest, ObjectRefV1};
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,6 +247,11 @@ pub(crate) enum GenerationCheckpointPublicationErrorV1 {
     PublishedCatalogDirectory(DurableIoError),
     PublishedRecovery(Box<DurableStartupErrorV1>),
     PublishedAdmission(Box<DurableAdmissionErrorV1>),
+    RetainedRootRegistry(RetentionRegistryError),
+    RetainedRootManifest(Box<DurableAdmissionErrorV1>),
+    RetainedRootNotCarried {
+        root: RetainedRootV1,
+    },
 }
 
 /// Errors from the append-only portion of one incremental transaction.
@@ -402,6 +416,11 @@ impl GenerationCheckpointPublicationErrorV1 {
             Self::CatalogCompareAndSwap => {
                 GenerationCheckpointPublicationOutcomeV1::DefinitelyNotPublished
             }
+            Self::RetainedRootRegistry(_) |
+            Self::RetainedRootManifest(_) |
+            Self::RetainedRootNotCarried { .. } => {
+                GenerationCheckpointPublicationOutcomeV1::DefinitelyNotPublished
+            }
         }
     }
 }
@@ -453,6 +472,16 @@ impl Display for GenerationCheckpointPublicationErrorV1 {
                 formatter,
                 "published generation failed mandatory semantic admission: {error}"
             ),
+            Self::RetainedRootRegistry(error) => Display::fmt(error, formatter),
+            Self::RetainedRootManifest(error) => write!(
+                formatter,
+                "the appointed retention entries cannot seed the retained-root snapshot: {error}"
+            ),
+            Self::RetainedRootNotCarried { root } => write!(
+                formatter,
+                "a generation checkpoint of the admitted source would not carry retained root \
+                 {root:?}"
+            ),
         }
     }
 }
@@ -474,8 +503,15 @@ impl std::error::Error for GenerationCheckpointPublicationErrorV1 {
             Self::PublishedRecovery(error) => Some(error.as_ref()),
             Self::PublishedAdmission(error) => Some(error.as_ref()),
             Self::SuccessorIdentityMismatch { .. } | Self::CatalogCompareAndSwap => None,
+            Self::RetainedRootRegistry(error) => Some(error),
+            Self::RetainedRootManifest(error) => Some(error.as_ref()),
+            Self::RetainedRootNotCarried { .. } => None,
         }
     }
+}
+
+impl From<RetentionRegistryError> for GenerationCheckpointPublicationErrorV1 {
+    fn from(error: RetentionRegistryError) -> Self { Self::RetainedRootRegistry(error) }
 }
 
 impl From<DurableIoError> for GenerationCheckpointPublicationErrorV1 {
@@ -557,6 +593,123 @@ struct GenerationFilesDurableV1 {
     commit: CheckpointCommitDurableV1,
     successor: CatalogSlotV1,
     successor_image: [u8; CATALOG_IMAGE_LEN],
+    retained_roots: RetainedRootHandoffV1,
+}
+
+#[derive(Clone)]
+struct CheckpointCarriedObjectsV1 {
+    closure: StructuralClosureLedgerV1,
+    retention_manifest: Option<ObjectDigest>,
+}
+
+impl std::fmt::Debug for CheckpointCarriedObjectsV1 {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CheckpointCarriedObjectsV1")
+            .field("retention_manifest", &self.retention_manifest)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CheckpointCarriedObjectsV1 {
+    fn of<P: SemanticProfile>(source: &AdmittedCheckpointSourceV1<P>) -> Self {
+        let retention_manifest = match source.retention_metadata_v2() {
+            None => Some(
+                source
+                    .authority()
+                    .slot()
+                    .pack()
+                    .retention_manifest()
+                    .digest(),
+            ),
+            Some(_) => None,
+        };
+        Self {
+            closure: source.retained_closure().clone(),
+            retention_manifest,
+        }
+    }
+
+    fn carries(&self, digest: ObjectDigest) -> bool {
+        match (self.retention_manifest, self.closure.count(ClosureDomainV1::Retained, digest)) {
+            (_, 1..) => true,
+            (Some(manifest), 0) => manifest == digest,
+            (None, 0) => self.closure.count(ClosureDomainV1::Metadata, digest) != 0,
+        }
+    }
+
+    fn require(
+        &self,
+        roots: &[RetainedRootV1],
+    ) -> Result<(), GenerationCheckpointPublicationErrorV1> {
+        match roots
+            .iter()
+            .find(|root| !self.carries(root.root().digest()))
+        {
+            Some(root) => {
+                Err(GenerationCheckpointPublicationErrorV1::RetainedRootNotCarried { root: *root })
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RetainedRootHandoffV1 {
+    registry: RetainedRootRegistryV1,
+    carried: CheckpointCarriedObjectsV1,
+    snapshot: RetainedRootSnapshotV1,
+}
+
+impl RetainedRootHandoffV1 {
+    fn begin<P: SemanticProfile>(
+        lease: &DurableWriterLeaseV1,
+        source: &AdmittedCheckpointSourceV1<P>,
+    ) -> Result<Self, GenerationCheckpointPublicationErrorV1> {
+        let registry = lease.generation_leases().retained_roots()?;
+        let manifest = appointed_retention_manifest(source).map_err(|error| {
+            GenerationCheckpointPublicationErrorV1::RetainedRootManifest(Box::new(error))
+        })?;
+        let snapshot = registry.snapshot_with_manifest(&manifest)?;
+        let carried = CheckpointCarriedObjectsV1::of(source);
+        carried.require(snapshot.roots())?;
+        Ok(Self {
+            registry,
+            carried,
+            snapshot,
+        })
+    }
+
+    fn seal(&self) -> Result<RetainedRootSealV1, GenerationCheckpointPublicationErrorV1> {
+        let seal = self.registry.seal()?;
+        match self.registry.is_snapshot_current(&self.snapshot)? {
+            true => {}
+            false => self.carried.require(self.registry.snapshot()?.roots())?,
+        }
+        Ok(seal)
+    }
+}
+
+fn appointed_retention_manifest<P: SemanticProfile>(
+    source: &AdmittedCheckpointSourceV1<P>,
+) -> Result<RetentionManifestV1, DurableAdmissionErrorV1> {
+    match source.retention_metadata_v2() {
+        None => {
+            let view = RetentionManifestView::parse(source.retention_manifest_bytes())?;
+            let mut historical = Vec::with_capacity(view.historical().len());
+            for retained in view.historical() {
+                historical.push(retained?);
+            }
+            Ok(RetentionManifestV1::new(view.current(), historical)?)
+        }
+        Some(admitted) => {
+            let anchor = admitted.anchor();
+            let (historical, _) =
+                admit_retention_history_v2(source.verified_state().object_store(), anchor)?
+                    .into_parts();
+            Ok(RetentionManifestV1::new(anchor.current(), historical)?)
+        }
+    }
 }
 
 impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
@@ -618,7 +771,9 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
             lease.directory().path(),
         )?;
 
+        let retained_root_seal = durable.retained_roots.seal()?;
         publish_catalog_compare_and_swap(&mut lease, &authority, &durable)?;
+        drop((retained_root_seal, durable.retained_roots));
 
         #[cfg(test)]
         run_generation_checkpoint_publication_hook(
@@ -746,6 +901,7 @@ fn prepare_and_write_successor_generation<P: SemanticProfile>(
     let pack_header = PackHeaderV1::successor(current.store_id(), previous_terminal)?;
     let index_generation =
         IndexGenerationV1::new(current.pack().index_generation())?.successor()?;
+    let retained_roots = RetainedRootHandoffV1::begin(lease, source)?;
     let prepared = PreparedGenerationCheckpointV1::<P, _>::new(
         source,
         current.store_id(),
@@ -809,7 +965,7 @@ fn prepare_and_write_successor_generation<P: SemanticProfile>(
     let prepare_durable = write_and_sync_prepare(lease, pack_header, prepare_address, &prepared)?;
     let index_durable = write_and_sync_index(lease, &index_plan, prepare_durable)?;
     let commit_durable = append_and_sync_commit(lease, current, commit_address, index_durable)?;
-    prepare_successor_catalog(authority, current, &prepared, commit_durable)
+    prepare_successor_catalog(authority, current, &prepared, commit_durable, retained_roots)
 }
 
 pub(crate) fn require_incremental_retention_manifest<P: SemanticProfile>(
@@ -1134,6 +1290,19 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     ) -> Result<Self, GenerationCheckpointPublicationErrorV1> {
         self.publish_generation_checkpoint_v1(recovery_limits, wal_limits, admission_limits)
     }
+
+    pub(crate) fn register_known_root_v1(
+        &self,
+        root: ObjectRefV1,
+    ) -> Result<KnownRootLeaseV1, KnownRootLeaseError> {
+        let generation = GenerationLeaseKeyV1::from_catalog(self.catalog());
+        match self.get_object_bounded(&root.digest(), root.encoded_len())? {
+            Some(bytes) if bytes.len() as u64 == root.encoded_len() => self
+                .generation_leases()
+                .register_known_root(root, generation),
+            Some(_) | None => Err(KnownRootLeaseError::Absent { root, generation }),
+        }
+    }
 }
 
 pub(super) fn preflight_recovery_limits(
@@ -1420,6 +1589,7 @@ fn prepare_successor_catalog<P: SemanticProfile>(
     current: CatalogSlotV1,
     prepared: &PreparedGenerationCheckpointV1<'_, P, AdmittedCheckpointSourceV1<P>>,
     commit: CheckpointCommitDurableV1,
+    retained_roots: RetainedRootHandoffV1,
 ) -> Result<GenerationFilesDurableV1, GenerationCheckpointPublicationErrorV1> {
     let descriptor = prepared.descriptor();
     let pack = CatalogPackStateV1::new(
@@ -1448,6 +1618,7 @@ fn prepare_successor_catalog<P: SemanticProfile>(
         commit,
         successor,
         successor_image,
+        retained_roots,
     })
 }
 

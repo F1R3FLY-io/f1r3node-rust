@@ -8536,9 +8536,136 @@ fails.
 | GC-03 | Exact old pins protect (`ExactOldPinsProtected`). In every observed state, if a lease on the old generation, exact or alias, is held, the old generation is wholly present. Observed: an old pin held while the catalog selects the successor and the intent is pending; a reclamation request deferred by a pin; old pins taken only at `AfterCatalogSlotWrite` or `AfterCatalogFileSyncBeforeDirectorySync` keeping the old generation through the publication's own reclamation step (seen at `AfterCatalogDirectorySync`); and a pin on the reclaimed generation refused with `Retired`. | `exact_old_generation_pins_defer_reclamation_until_released` |
 | GC-04 | Crash keeps retry authority (`CrashRetryAuthority`). In every state observed from a process crash, at any of the 18 publication points or after a completed publication, until the recovery that follows returns, if the catalog selects the old generation, the old generation is wholly present. Observed: crashes with the catalog on the old generation before and after the intent is written, a crash after the catalog swap, and a second crash after a recovery of the old generation's authority. Every crashed trial then recovers, publishes again if the catalog still selects the old generation, and settles. | `crash_before_publication_keeps_the_old_generation_for_retry` |
 | GC-05 | Operation roots share one protection (`OperationRootRoleQuotient`). Reader, export and import roots, each registered in `RetainedRootRegistryV1` with a generation lease on the exact admitted generation, yield the same closure seeds, registry revisions, root and lease identities, snapshot currency, release results, old-generation presence and final store bytes under the three rotations of the roles, while the registry's rows record the roles. The seeds are the retention manifest's roots plus the roots of the operations not yet released; registration writes no durable byte; publication keeps the old generation exactly while an operation still holds it, the first restart keeps it exactly while an operation to be released after that restart holds it, and the second restart finds it reclaimed; the final directory and catalog slot equal the control's. Observed: a root registered twice, an operation root that the manifest already seeds, every release point, and an old generation kept across publication. | `reader_export_and_import_roots_share_one_protection_quotient` |
+| GC-06 | Known lease at publication (`KnownPublicationClosureProtected`). In each of nine trials a Known lease, registered through the admitted writer on an object of its generation, is active while that generation is compacted. Whenever the compaction publishes, the catalog selects the successor and the successor holds the closure of the leased root: the root object with its exact length and, read through the admitted successor, the structural closure of the state it names or of every state that the retention object lists. The trials lease the current state manifest, a historical state manifest, the appointed retention object (a V1 manifest or a V2 anchor) and a retention object that a data successor superseded, under both retention writers, with and without an earlier checkpoint and data successors. Every root but the superseded one is carried by the checkpoint, and its compaction publishes. A superseded retention object is present in the generation and carried by no checkpoint of it: its compaction is refused with `RetainedRootNotCarried`, which names the row of the lease, changes no byte of the store directory and leaves the catalog on the old generation; after the release the re-admitted store compacts, and the successor does not hold the object. | `a_known_lease_active_at_publication_is_carried_by_the_successor_or_refuses_the_compaction` |
+| GC-07 | Known lease and its exact generation (`KnownExactGenerationProtected`). In every observed state of four trials, a Known lease on the old generation implies that the old generation is wholly present with its original bytes, and a Known lease on the successor implies that the successor holds the closure of its root. A trial registers the lease through the writer and observes at the registration, at each of the 18 publication points of the compaction, after the publication, after a reclamation request, after a re-admission, after the release and after a second reclamation request. It then asks for a Known lease on the reclaimed generation and, through the writer admitted on the successor, for the carried root, for a reference to an object that no generation holds and for a retention object that a data successor superseded. Required in each trial: the first reclamation request is deferred under the lease and the second reclaims; the reclaimed generation is refused with `Retired`; the carried root is granted on the successor's exact key; each root that the successor does not hold is refused with `Absent`, which names the root and the successor; the lease is held on the old generation at all 18 points and under the successor's catalog. | `a_known_lease_keeps_its_exact_generation_and_is_refused_for_roots_outside_it` |
+| GC-08 | Sound overlap-witness history (`OverlapWitnessHistorySound`). Six schedules of the model's actions `AcquireOldPin`, `AcquireNewPin`, `ReleaseOldPin` and `ReleaseNewPin` for the tokens `known0` and `reader0`, `Publish`, `Reclaim`, `Crash` and `Recover` run against the store and against an executable projection of the model. At every step the store takes the action exactly when the projection enables it, and the state then observed equals the projection's state: crashed or not, the catalog, the old generation's presence, the reclamation intent, the generation that each token leases, and the history latches `knownAtPublish`, `overlapAtPublish`, `crashedAfterOverlap` and `knownAfterReclaim`, which the test computes by the model's update rules from the leases and files that the store shows at that step. Every observed state satisfies the three conjuncts of the invariant. Observed: a publication under both leases, under a Known lease alone and under no Known lease; a crash after the overlap with the old generation present and with it reclaimed; a new Known lease after the crash, the recovery and the reclamation, and one that no crash after an overlap preceded; and a refused step of each of `Reclaim`, `AcquireOldPin` for either token and `AcquireNewPin` for `known0`. | `the_overlap_witness_history_of_the_runtime_is_a_history_of_the_model` |
 | GC-09 | No durable replay or rollback obligation (`DurableExactGenerationProtected`). In the obligation trial only the owner's checkpoint makes durable writes, and they are exactly its publication: `catalog.v1` is rewritten and the pack and the index of the generation are appended to. A replay, a reset, a rollback, a `clear` and a spawn view each resolve their target, make no durable write and add exactly one generation lease. `ReclamationCandidateV1::new` accepts no ordered pair of the keys that the views read, so `reclaim.v1` stays absent: the only durable record of the store that names an old generation names it as reclaimable, never as protected. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
 | GC-10 | The successor holds the published closure (`PublishedClosureProtected`). In every trial of the shared sample in which the catalog selects the successor, every admission, re-admission and recovery that follows succeeds. Each of them reads the current state and every retained state through the successor's live packs and its index alone, and a refused one halts the trial, which fails the test. Observed: the recovery after a crash after the catalog swap, and the settling re-admission of every trial, after which no old file remains. | `crash_before_publication_keeps_the_old_generation_for_retry` |
 | GC-11 | Crash-phase quiescence (`CrashPhaseQuiescence`). In the obligation trial, a crash with live views on the old generation, after the publication of the successor, leaves no lease in the registry and changes neither `reclaim.v1` nor the old generation. The recovery that follows selects the successor, reclaims the old generation and removes the intent before the first lease is taken; the authority then holds one lease and its view a second. This is the order of the model's witness: `Crash`, `Recover`, `Reclaim`, then `AcquireNewPin`. | `only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash` |
+
+### Dynamic retained-root handoff to compaction (2026-11-13)
+
+Task 12439 (leaf GC3 of task 7944) makes compaction protect the roots that the
+directory's retained-root registry, `RetainedRootRegistryV1`, holds at run
+time, and couples each Known lease to its exact generation. Until this slice
+compaction (`compact_generation_v1`, through
+`publish_generation_checkpoint_v1`) copied the retained closure of the
+admitted source without reading the registry, and `snapshot_with_manifest` and
+`is_snapshot_current` had no caller outside tests. The owner's ruling bounds
+the slice: the GC algorithm changes only where the PathMap integration needs
+it, so what is reclaimable, the order of reclamation and the retention policy
+stay as they are, and the slice adds the registry's rows to what compaction
+must protect, a currency check at publication and the coupling, and nothing
+else.
+
+**Where the registry lives.** The directory's process-local generation-lease
+registry, `GenerationLeaseRegistryV1`, of which each directory identity has
+one, now holds the directory's `RetainedRootRegistryV1` (`retained_roots()`),
+so compaction reaches it through the writer lease.
+
+**The snapshot before the closure.** Before it prepares the successor,
+compaction calls `RetainedRootHandoffV1::begin`. It rebuilds the appointed
+retention entries of the admitted source (for a V1 source by parsing the
+manifest bytes, for a V2 source by admitting the retention history from its
+anchor), takes `snapshot_with_manifest`, and requires that the checkpoint of
+the admitted source carries every root of the snapshot. A root is carried when
+the retained closure of the admitted source holds its object; for a V1 source
+the appointed retention manifest is carried as well, and for a V2 source every
+object of the metadata closure. A root that is not carried refuses the
+compaction with `RetainedRootNotCarried` before any byte of the successor is
+written.
+
+**The currency check at publication.** Directly before the catalog
+compare-and-swap, `RetainedRootHandoffV1::seal` sets the registry's seal and
+asks `is_snapshot_current`, which compares the registry's revision, changed by
+every registration and release, and its rows with the snapshot. While the seal
+is set, `register` refuses with `Sealed`; releases are not affected. The seal
+is a flag under the registry's existing mutex, so no lock is held across file
+input or output. If the snapshot is no longer current, the registry's rows are
+read once more under the seal, where no registration can change them, and must
+meet the same requirement, so publication is decided on a current snapshot and
+never on a stale one. The seal and the handoff are dropped directly after the
+swap returns, also when it fails. A registration therefore either precedes the
+seal, and is carried or refuses the compaction, or meets the seal and is
+refused; none lands between the check and the publication.
+
+**The coupling of a Known lease.**
+`GenerationLeaseRegistryV1::register_known_root` acquires the lease of the
+generation's exact key before it registers the Known row, and
+`KnownRootLeaseV1::release` releases the row before the generation lease, as
+dropping the Known lease does. No Known row taken this way therefore exists
+without the lease of its generation, and reclamation defers to that lease as
+to any other. The admitted writer's `register_known_root_v1` grants the lease
+on the generation of its catalog, and only for an object that this generation
+holds with its exact encoded length; otherwise it refuses with `Absent`.
+
+**What a caller sees, and the cost.** A compaction may now refuse with
+`RetainedRootNotCarried`, with `RetainedRootRegistry` (a registry error: a
+poisoned mutex, or a seal that is already set) or with `RetainedRootManifest`
+(the appointed retention entries cannot be rebuilt). Each is raised before the
+catalog swap and reports `DefinitelyNotPublished`, so the old generation stays
+selected and the compaction can be tried again, for example after the lease
+that names the uncarried root is released. A registration that meets the seal
+fails with `Sealed` and can be tried again after the swap. Each compaction
+rebuilds the appointed retention entries once, takes one snapshot of the
+registry, clones the retained-closure ledger of the admitted source once and
+makes at most two closure lookups per root of the snapshot; under the seal it
+makes one currency comparison and, only for a stale snapshot, reads the rows
+once more with the same lookups.
+
+**Open question for the owner.** A lease can name a root that no checkpoint of
+the admitted source carries, in practice a retention object that a later data
+successor superseded. The handoff refuses such a compaction until the lease is
+released. Copying the root into the successor instead would add objects to the
+persisted checkpoint, a change of persisted bytes and of the GC algorithm that
+the owner's ruling excludes without a decision.
+
+**The tests.** GC-06, GC-07 and GC-08 are the rows above. Two more tests of
+the GC property module complete the slice.
+`the_overlap_witness_replays_through_crash_recovery_reclamation_and_a_new_known_lease`
+replays the model's overlap witness step by step: `AcquireOldPin` for `known0`
+and for `reader0`; `StartCopy`, `CopyOne` and `Publish` at three hook points
+of one compaction; `Crash`; `Recover`, which opens the crashed directory and
+takes its lease registry; `Reclaim`, which takes the writer lock and reads and
+resolves the reclamation intent; and `AcquireNewPin` for `known0`. After each
+step it compares the store's state with the model's, and each failure message
+names the model action.
+`a_registration_racing_a_compaction_is_carried_refuses_it_or_is_sealed_out`
+runs nine races, in each of which a Known lease is registered from one of six
+existing hook points of a compaction, and one compaction whose catalog swap a
+failpoint interrupts. It first requires that no compaction publishes without
+the root of a lease granted before the catalog slot is written. Then a
+registration before the seal is carried by the successor or refuses the
+compaction, which publishes once the lease is released; a registration in the
+swap window is refused with `Sealed`, and the old generation is reclaimed; a
+registration after the swap is granted on the old generation, which stays
+present. After the interrupted swap the catalog still selects the old
+generation and the registry accepts a registration again.
+
+**The controls.** Four textual faults, one at a time, against the GC property
+module:
+
+- With `begin` requiring nothing of the snapshot (`carried.require(&[])`), a
+  closure chosen from the manifest alone, only GC-06 fails, with
+  `KnownPublicationClosureProtected is violated`.
+- With the currency check answered as current whatever the registry holds,
+  only the racing test fails, with `a compaction published without the root
+  registered at`.
+- With `register_known_root` taking the generation lease in a fresh registry
+  of its own, GC-07, GC-08, the replay and the racing test fail, with
+  `KnownExactGenerationProtected is violated`, `left the model`, `the runtime
+  does not replay the model's overlap witness` and `did not end as`.
+- With the writer granting a Known lease for an object its generation does not
+  hold, only GC-07 fails, with `KnownExactGenerationProtected is violated`.
+
+The other tests of the module pass under each control.
+
+**Limits.** The registry and the leases are process-local and shared by device
+and inode only on Unix, as the generation leases are. A row registered through
+`register` directly, not through `register_known_root`, has no generation
+lease. The store keeps no history latches; GC-08 computes them from the leases
+and files it observes by the model's rules, and its derivation row states what
+that leaves falsifiable.
 
 ### Durable state transfer export (2026-11-11)
 
@@ -12817,6 +12944,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | GC-03 | `ExactOldPinsProtected` | `EXEC_ONLY` | P | Partially entailed (task 12437): `AcquireOldPin` requires `oldPresent`, and `Reclaim` requires `oldPins = {}`. The executable refinement obligation is that publication, startup and an explicit request all reclaim through `reclaim_reclamation_candidate`, which retires the old pack range only while no lease overlaps it, so that a lease on an older-epoch alias protects the same files, and that `acquire` then refuses a lease on the retired range with `Retired`. |
 | GC-04 | `CrashRetryAuthority` | `EXEC_ONLY` | P | Partially entailed (task 12437): `PublicationBeforeReclamation` implies the invariant, and `Crash` and `Recover` leave `catalog` and `oldPresent` unchanged. The executable refinement obligation is that a process crash at each of the 18 publication points or after publication, a recovery, a second crash and a second recovery never delete an old file while the catalog selects the old generation. The crash is simulated inside the test process: the writer, every lease and the registry handle are dropped, and the process-wide registry of a directory whose packs were retired stays. Loss of unsynchronized writes on power failure is not simulated. |
 | GC-05 | `OperationRootRoleQuotient` | `EXEC_ONLY` | P | Partially entailed (task 12437): the invariant states that the reader, export and import tokens have their roles, are not WAL ids, need the same object closure and the exact generation, and need no WAL bytes. The store realizes each role as a `RetainedRootRegistryV1` row with a generation lease on the exact admitted generation. The executable refinement obligation is that the role changes no closure seed, revision, lease identity, release, reclamation deferral or store byte. Reclamation does not consult the process-local `RetainedRootRegistryV1`, so the generation lease realizes `exactGeneration`; registration writes no durable byte and pins nothing beyond the exact generation, which realizes the false `walBytes`. |
+| GC-06 | `KnownPublicationClosureProtected` | `EXEC_ONLY` | P | Partially entailed (task 12439): `Publish` sets `knownAtPublish` exactly when `known0` holds a pin, and it requires the object closure of every active role, the Known role included, in `copied`. The executable refinement obligation is the handoff. A compaction takes `snapshot_with_manifest` of the directory's `RetainedRootRegistryV1` before it prepares the successor and requires that the checkpoint of the admitted source carries every row; directly before the catalog swap it seals the registry and, if the snapshot is no longer current, applies the same requirement to the rows registered since; it refuses with `RetainedRootNotCarried` instead of publishing. `copied` is observed as the objects that the admitted successor holds. A carried root has its closure carried because the ledger's retained union and its retention metadata closure are each closed under references; the test checks that by reading the successor, for the leased roots only. |
+| GC-07 | `KnownExactGenerationProtected` | `EXEC_ONLY` | P | Partially entailed (task 12439): `AcquireOldPin` requires `oldPresent`, `Reclaim` requires `oldPins = {}`, and `AcquireNewPin` requires the token's object closure in `copied`. The executable refinement obligation is the coupling of a Known lease to its generation. `register_known_root` acquires the generation lease of the exact key before it registers the Known row and releases the row before the lease, so that no Known row of this kind exists without the lease of its generation; reclamation defers to that lease as to any other, and `acquire` refuses a reclaimed generation with `Retired`. `register_known_root_v1` grants the lease on the generation of the writer's catalog, and only for an object that this generation holds with the stated length. A row registered directly in `RetainedRootRegistryV1` carries no generation lease and is outside this property. |
+| GC-08 | `OverlapWitnessHistorySound` | `EXEC_ONLY` | P | Partially entailed (task 12439): the invariant constrains four history latches, which the model sets in `Publish`, `Crash` and `AcquireNewPin`. The store keeps no such latches. The test computes them by the model's rules from the leases and files it observes, so the conjuncts that relate one latch to another hold by that construction; what the store can falsify is the agreement of every step with the model and the conjuncts on `catalog` and `oldPresent`. The executable refinement obligation is that agreement: the store takes an action exactly when the model enables it and then shows the model's state. The projection hides `copied` and, except for crashed, `phase`: `StartCopy`, `CopyOne`, `AbortCopy` and `RetryCopy` are stutter steps of it, and its behaviours are those of the model in which every object is copied before `Publish`. `durable`, `oldDurable` and the WAL window are not observed. |
 | GC-09 | `DurableExactGenerationProtected` | `EXEC_ONLY` | P | Partially entailed (task 12441): the invariant keeps the old generation present while `oldDurable`, the set of durable replay or rollback assignments to it, is not empty. Under the ruling of 2026-11-10 on decision GC5/GC7 (option (a)) no runtime request makes a durable assignment, so the refinement mapping realizes `oldDurable` as the empty set and the premise is never true. The executable refinement obligation is that no request can make one: only a checkpoint makes durable writes, exactly its publication; a view makes none; and `reclaim.v1`, the only durable record that names an old generation, holds an old and a successor key, which `ReclamationCandidateV1::new` accepts only when the successor has the larger epoch and starts after the old active pack, and no field for a kind, a root or a WAL position. While the process lives, the generation lease of a view's read handle protects the generation that the view reads (`durable_views_on_an_old_generation_defer_reclamation_until_dropped`); a crash ends the lease, and recovery then reclaims the generation. |
 | GC-10 | `PublishedClosureProtected` | `EXEC_ONLY` | P | Partially entailed (task 12441): with `durable` equal to `{"current", "retained"}` and `oldDurable` empty, `NewDurableRequiredObjects` is the closure of the current and retained states, so the invariant requires the successor to hold that closure once the catalog selects it. The executable refinement obligation is that admission and recovery read objects only through the live packs and the index of the selected slot, so that a successor that lacks an object of that closure is refused, and that no admission or recovery with the successor selected is refused. `copied` is not observed before the catalog swap, and the closure is not compared object by object. |
 | GC-11 | `CrashPhaseQuiescence` | `EXEC_ONLY` | P | Partially entailed (task 12441): the invariant disables every pin acquisition and release, every durable registration and release, and every WAL advance and rotation while the phase is crashed. A crashed process executes nothing, and its leases live only in its memory. The executable refinement obligation is the order of the model's witness: a crash leaves no lease and changes no file, and the recovery, which completes a pending reclamation, precedes the first lease. Enabledness is not observed: inside the crate, `GenerationLeaseRegistryV1::acquire` on a registry handle taken from a newly opened directory succeeds before any recovery. Outside the tests, leases are acquired only by a recovered authority, by the owner that it becomes and by the read handles of their cores, all of which exist only after a recovery. |
@@ -14131,6 +14261,29 @@ Rust files. No obligation registry hashes a file of this slice. No Rocq or
 TLA+ file changed, and no proof or model was run for this slice. No persisted
 byte, record kind, root, identity or wire message changed, and the crate has
 no new dependency. See the GC protection section.
+
+The 2026-11-13 dynamic-root handoff slice of task 7944 (task 12439) adds GC-06
+to GC-08, so the catalog/derivation/binding registry now contains **301** IDs.
+It binds `KnownPublicationClosureProtected`, `KnownExactGenerationProtected`
+and `OverlapWitnessHistorySound` to tests of the GC property module, which
+also replays the model's overlap witness and races a registration against a
+compaction. No file other than `retention.rs`, `durable/publication.rs`, the
+GC property module of the tests, their list of property bindings, this catalog
+and the GC protection matrix changes. On an export of the candidate tree, the
+GC property module, the durable publication module and the manifest test
+passed in debug and in release (64 passed, 1 ignored), and so did the library
+target (1040 passed, 10 ignored). The four controls of the section on the
+handoff were applied one at a time to the production files in the export, each
+run against the GC property module in debug and removed, and each failed
+exactly the tests that the section names, with their messages. Each faulted
+file was restored from the candidate tree, and the export was compared with
+that tree after the runs. Clippy of `rspace_plus_plus` with every target lists
+no finding in the files of this slice, and `rustfmt --check` passes on its
+Rust files. No obligation registry hashes a file of this slice. No Rocq or
+TLA+ file changed, and no proof or model was run for this slice. No persisted
+byte, record kind, root, identity or wire message changed, and the crate has
+no new dependency. See the section on the dynamic retained-root handoff to
+compaction.
 
 ## Caller-authority contract (2026-09-06)
 

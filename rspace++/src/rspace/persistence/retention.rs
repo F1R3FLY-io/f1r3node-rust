@@ -294,6 +294,7 @@ pub enum RetentionRegistryError {
     Poisoned,
     CounterOverflow,
     UnknownLease(u64),
+    Sealed,
 }
 
 impl Display for RetentionRegistryError {
@@ -302,6 +303,9 @@ impl Display for RetentionRegistryError {
             Self::Poisoned => f.write_str("retained-root registry lock is poisoned"),
             Self::CounterOverflow => f.write_str("retained-root registry counter overflow"),
             Self::UnknownLease(id) => write!(f, "unknown retained-root lease {id}"),
+            Self::Sealed => {
+                f.write_str("retained-root registry is sealed while a generation is published")
+            }
         }
     }
 }
@@ -313,11 +317,19 @@ struct RegistryState {
     revision: u64,
     next_lease_id: u64,
     roots: std::collections::BTreeMap<u64, RetainedRootV1>,
+    sealed: bool,
 }
 
 #[derive(Clone, Default)]
 pub struct RetainedRootRegistryV1 {
     state: Arc<Mutex<RegistryState>>,
+}
+
+impl std::fmt::Debug for RetainedRootRegistryV1 {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetainedRootRegistryV1")
+            .finish_non_exhaustive()
+    }
 }
 
 impl RetainedRootRegistryV1 {
@@ -330,6 +342,9 @@ impl RetainedRootRegistryV1 {
             .state
             .lock()
             .map_err(|_| RetentionRegistryError::Poisoned)?;
+        if state.sealed {
+            return Err(RetentionRegistryError::Sealed);
+        }
         let id = state
             .next_lease_id
             .checked_add(1)
@@ -422,12 +437,38 @@ impl RetainedRootRegistryV1 {
             .all(|candidate| state.roots.get(&candidate.lease_id) == Some(candidate)))
     }
 
+    pub(crate) fn seal(&self) -> Result<RetainedRootSealV1, RetentionRegistryError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| RetentionRegistryError::Poisoned)?;
+        if state.sealed {
+            return Err(RetentionRegistryError::Sealed);
+        }
+        state.sealed = true;
+        Ok(RetainedRootSealV1 {
+            registry: Arc::clone(&self.state),
+        })
+    }
+
     #[expect(
         dead_code,
         reason = "no code in the crate, unit tests included, calls this method yet"
     )]
     pub fn release(&self, lease: &mut RootLeaseV1) -> Result<(), RetentionRegistryError> {
         lease.release()
+    }
+}
+
+pub(crate) struct RetainedRootSealV1 {
+    registry: Arc<Mutex<RegistryState>>,
+}
+
+impl Drop for RetainedRootSealV1 {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.registry.lock() {
+            state.sealed = false;
+        }
     }
 }
 
@@ -544,6 +585,7 @@ struct GenerationLeaseState {
     next_lease_id: u64,
     leases: std::collections::BTreeMap<u64, GenerationLeaseKeyV1>,
     retired_pack_through: u64,
+    retained_roots: RetainedRootRegistryV1,
     #[cfg(unix)]
     directory_identity: Option<(u64, u64)>,
     _directory_guard: Option<std::fs::File>,
@@ -691,6 +733,29 @@ impl GenerationLeaseRegistryV1 {
     pub fn release(&self, lease: &mut GenerationLeaseV1) -> Result<(), GenerationLeaseError> {
         lease.release()
     }
+
+    pub(crate) fn retained_roots(&self) -> Result<RetainedRootRegistryV1, RetentionRegistryError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| RetentionRegistryError::Poisoned)?;
+        Ok(state.retained_roots.clone())
+    }
+
+    pub(crate) fn register_known_root(
+        &self,
+        root: ObjectRefV1,
+        generation: GenerationLeaseKeyV1,
+    ) -> Result<KnownRootLeaseV1, KnownRootLeaseError> {
+        let generation_lease = self.acquire(generation)?;
+        let root_lease = self
+            .retained_roots()?
+            .register(root, RetainedRootKind::Known)?;
+        Ok(KnownRootLeaseV1 {
+            root: root_lease,
+            generation: generation_lease,
+        })
+    }
 }
 
 pub struct GenerationLeaseV1 {
@@ -729,6 +794,71 @@ impl Drop for GenerationLeaseV1 {
             state.leases.remove(&self.lease_id);
         }
     }
+}
+
+pub(crate) struct KnownRootLeaseV1 {
+    root: RootLeaseV1,
+    generation: GenerationLeaseV1,
+}
+
+impl KnownRootLeaseV1 {
+    pub(crate) const fn lease_id(&self) -> u64 { self.root.lease_id() }
+
+    pub(crate) const fn generation(&self) -> GenerationLeaseKeyV1 { self.generation.key() }
+
+    pub(crate) fn release(&mut self) -> Result<(), KnownRootLeaseError> {
+        self.root.release()?;
+        self.generation.release()?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum KnownRootLeaseError {
+    Generation(GenerationLeaseError),
+    Registry(RetentionRegistryError),
+    Absent {
+        root: ObjectRefV1,
+        generation: GenerationLeaseKeyV1,
+    },
+    Read(Box<super::durable::DurableObjectReadErrorV1>),
+}
+
+impl Display for KnownRootLeaseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Generation(error) => Display::fmt(error, f),
+            Self::Registry(error) => Display::fmt(error, f),
+            Self::Absent { root, generation } => write!(
+                f,
+                "known root {root:?} is not an object of physical generation {generation:?}"
+            ),
+            Self::Read(error) => Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for KnownRootLeaseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Generation(error) => Some(error),
+            Self::Registry(error) => Some(error),
+            Self::Read(error) => Some(error.as_ref()),
+            Self::Absent { .. } => None,
+        }
+    }
+}
+
+impl From<GenerationLeaseError> for KnownRootLeaseError {
+    fn from(error: GenerationLeaseError) -> Self { Self::Generation(error) }
+}
+
+impl From<RetentionRegistryError> for KnownRootLeaseError {
+    fn from(error: RetentionRegistryError) -> Self { Self::Registry(error) }
+}
+
+impl From<super::durable::DurableObjectReadErrorV1> for KnownRootLeaseError {
+    fn from(error: super::durable::DurableObjectReadErrorV1) -> Self { Self::Read(Box::new(error)) }
 }
 
 #[cfg(test)]

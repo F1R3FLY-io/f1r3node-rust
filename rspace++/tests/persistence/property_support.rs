@@ -433,6 +433,12 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("GC-03", "exact_old_generation_pins_defer_reclamation_until_released"),
     ("GC-04", "crash_before_publication_keeps_the_old_generation_for_retry"),
     ("GC-05", "reader_export_and_import_roots_share_one_protection_quotient"),
+    (
+        "GC-06",
+        "a_known_lease_active_at_publication_is_carried_by_the_successor_or_refuses_the_compaction",
+    ),
+    ("GC-07", "a_known_lease_keeps_its_exact_generation_and_is_refused_for_roots_outside_it"),
+    ("GC-08", "the_overlap_witness_history_of_the_runtime_is_a_history_of_the_model"),
     ("GC-09", "only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash"),
     ("GC-10", "crash_before_publication_keeps_the_old_generation_for_retry"),
     ("GC-11", "only_a_checkpoint_writes_and_no_replay_or_rollback_obligation_survives_a_crash"),
