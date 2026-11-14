@@ -82,6 +82,90 @@
         "id": "SM-PROJ-09",
         "normal_suite_witnesses": [],
         "symbol": "extended_retained_prefix_mutant_is_a_false_negative"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-10",
+        "normal_suite_witnesses": [],
+        "symbol": "dynamic_projection_rules_respect_authority"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-11",
+        "normal_suite_witnesses": [],
+        "symbol": "dynamic_table_projection_preserves_spatial_success"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-12",
+        "normal_suite_witnesses": [],
+        "symbol": "dynamic_ignored_field_changes_never_change_acceptance"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-13",
+        "normal_suite_witnesses": [],
+        "symbol": "dynamic_declined_root_never_prunes"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-14",
+        "normal_suite_witnesses": [],
+        "symbol": "dynamic_table_query_filters_preserve_first_admissible_binding"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-15",
+        "normal_suite_witnesses": [],
+        "symbol": "dynamic_projection_preserves_ground_lanes"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-16",
+        "normal_suite_witnesses": [],
+        "symbol": "dynamic_projection_still_declines"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-17",
+        "normal_suite_witnesses": [],
+        "symbol": "new_uri_exact_mutant_is_a_false_negative"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-18",
+        "normal_suite_witnesses": [],
+        "symbol": "new_injections_exact_mutant_is_a_false_negative"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-19",
+        "normal_suite_witnesses": [],
+        "symbol": "receive_peek_exact_mutant_is_a_false_negative"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-20",
+        "normal_suite_witnesses": [],
+        "symbol": "receive_condition_exact_mutant_is_a_false_negative"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-21",
+        "normal_suite_witnesses": [],
+        "symbol": "match_case_free_count_exact_mutant_is_a_false_negative"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-22",
+        "normal_suite_witnesses": [],
+        "symbol": "receive_bind_remainder_exact_mutant_is_a_false_negative"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-23",
+        "normal_suite_witnesses": [],
+        "symbol": "receive_binds_ordered_mutant_is_a_false_negative"
       }
     ],
     "properties": [
@@ -259,7 +343,7 @@
   ],
   "scope_limit": "The canonical Connective owner Verus model constrains validated field-1 ranges by complete canonical source bytes, then proves binding, exact next range, and exhaustion under the audited StableConnectiveBodyOwner premise. The model does not verify the production Rust parser, pointer provenance, or unsafe-trait implementations; the generated debug/release property and concrete source audit bridge those premises. Its five Verus mutants test the proof gate. Finite TLC invariants and abstract Rocq theorems still require their proof engines. The registry checks source and runner wiring, not proof execution.",
   "source_sha256": {
-    "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v": "0dc16add5f9e86c4103d82a988538c6d743548391a522846e3dc73c4d194fd96",
+    "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v": "2a5c070b1cd1470827841e4d20c163f2014864200ef2dac1d847688265a94333",
     "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v": "ebffe192375bc10c146730d3acbde2dcda194b392b2af6f29a8d5304b58ee2cf",
     "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.cfg": "43b98ede952c2fb89fc503c073a9965f609f19646ebcccb96adf65c419660205",
     "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.tla": "33c9d71065829f5ca984ed10d1dde54a36302b3929ec3cdac7d597015ef1fe03",

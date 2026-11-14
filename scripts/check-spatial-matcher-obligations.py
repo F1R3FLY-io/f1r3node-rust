@@ -144,6 +144,20 @@ PROJECTION_CAPSTONES = [
     "locally_free_exact_mutant_is_a_false_negative",
     "cost_region_exact_mutant_is_a_false_negative",
     "extended_retained_prefix_mutant_is_a_false_negative",
+    "dynamic_projection_rules_respect_authority",
+    "dynamic_table_projection_preserves_spatial_success",
+    "dynamic_ignored_field_changes_never_change_acceptance",
+    "dynamic_declined_root_never_prunes",
+    "dynamic_table_query_filters_preserve_first_admissible_binding",
+    "dynamic_projection_preserves_ground_lanes",
+    "dynamic_projection_still_declines",
+    "new_uri_exact_mutant_is_a_false_negative",
+    "new_injections_exact_mutant_is_a_false_negative",
+    "receive_peek_exact_mutant_is_a_false_negative",
+    "receive_condition_exact_mutant_is_a_false_negative",
+    "match_case_free_count_exact_mutant_is_a_false_negative",
+    "receive_bind_remainder_exact_mutant_is_a_false_negative",
+    "receive_binds_ordered_mutant_is_a_false_negative",
 ]
 PROJECTION_PROPERTIES = [
     {
@@ -833,8 +847,8 @@ def self_test(sources):
     reject(
         sources,
         RUNNER,
-        "rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 9",
-        "rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 8",
+        "rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 23",
+        "rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 22",
         "projection closed-capstone gate absent",
     )
     reject(

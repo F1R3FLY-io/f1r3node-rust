@@ -121,8 +121,8 @@ matcher_ground_new_query_proofs() {
   rocq_check_modules "ground New candidate correspondence" \
     StackSafePDA.ConcreteNewQueryCorrespondence
   rocq_reject_placeholders theories/SchemaProjectionCorrespondence.v
-  rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 9 \
-    "table-driven query projection, index filters, and three false-negative mutants"
+  rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 23 \
+    "table-driven query projection, the full dynamic-root table, index filters, and ten false-negative mutants"
   rocq_check_modules "table-driven query projection correspondence" \
     StackSafePDA.SchemaProjectionCorrespondence
 }
