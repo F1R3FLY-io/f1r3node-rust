@@ -129,7 +129,13 @@ pub enum StateFetchResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngestInput {
-    /// Casper runs from an approved block at this height.
+    /// Casper runs from an approved block at this height. The anchor
+    /// here is a snapshot: block-store GC advances the effective
+    /// anchor on the Casper trait, but ingest stays on the initial
+    /// value so vouched below-approved blocks keep their
+    /// settled-history routing while vouched below-GC-anchor blocks
+    /// (on a genesis-rooted node they ARE this node's own history)
+    /// take the normal validation path.
     Attached {
         anchor_height: i64,
     },
@@ -235,8 +241,12 @@ enum Shape {
 /// the effects for the owner task to carry out.
 #[derive(Debug)]
 pub struct IngestState {
-    /// Height of the approved block, once casper runs: cited blocks at or
-    /// below it may be admitted as settled history.
+    /// Height of the approved block, once casper runs: cited blocks at
+    /// or below it may be admitted as settled history. Snapshot at
+    /// attach time — GC-advanced effective anchor is NOT reflected
+    /// here, so that a genesis-rooted node (approved block = 0) never
+    /// routes its OWN below-GC-anchor history through the
+    /// settled-admission path.
     anchor_height: Option<i64>,
     /// The most parents a valid block lists; `None` when unlimited.
     max_parents: Option<usize>,

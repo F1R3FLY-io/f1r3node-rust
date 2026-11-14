@@ -104,6 +104,12 @@ pub struct KeyValueDagRepresentation {
     pub(crate) history: Option<Arc<DagHistoryIndex>>,
     pub(crate) view_sequence: u64,
     pub(crate) view_max_height: Option<i64>,
+    /// Snapshot of the DAG's pruning cutoff carried from `DagState`.
+    /// Informational right now — no reader on this type — but kept so a
+    /// future walk-termination change can consult it without reaching
+    /// through the metadata-store lock.
+    #[allow(dead_code)]
+    pub(crate) pruning_cutoff: i64,
     pub(crate) dag_set: imbl::HashSet<BlockHash>,
     pub(crate) latest_messages_map: imbl::HashMap<Validator, BlockHash>,
     pub(crate) child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
@@ -148,6 +154,7 @@ pub struct DagFixture {
     pub history: Option<Arc<DagHistoryIndex>>,
     pub view_sequence: u64,
     pub view_max_height: Option<i64>,
+    pub pruning_cutoff: i64,
     pub dag_set: imbl::HashSet<BlockHash>,
     pub latest_messages_map: imbl::HashMap<Validator, BlockHash>,
     pub child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
@@ -175,6 +182,7 @@ impl DagFixture {
             history: None,
             view_sequence: self.view_sequence,
             view_max_height: self.view_max_height,
+            pruning_cutoff: self.pruning_cutoff,
             dag_set: self.dag_set,
             latest_messages_map: self.latest_messages_map,
             child_map: self.child_map,
@@ -234,6 +242,7 @@ impl KeyValueDagRepresentation {
             history: None,
             view_sequence: self.view_sequence,
             view_max_height: self.view_max_height,
+            pruning_cutoff: self.pruning_cutoff,
             dag_set: state.dag_set,
             latest_messages_map: self.latest_messages_map.clone(),
             child_map: state.child_map,
@@ -1574,6 +1583,27 @@ impl BlockDagKeyValueStorage {
             .clone()
     }
 
+    /// Non-panicking accessor: returns `None` for storages built without
+    /// persistence (test fixtures via `from_parts`). Used by launch code
+    /// that reads GC state from a fallback seed when the storage is
+    /// transactional and skips it otherwise.
+    pub fn try_gc_store(&self) -> Option<Arc<DagGcStore>> {
+        self.persistence.as_ref().map(|p| p.gc.clone())
+    }
+
+    /// Evict DAG metadata below `cutoff`. Called by block-store GC so
+    /// walks cannot descend into pruned bodies. Also persists the new
+    /// anchor via the GC store, so the cutoff survives restart and is
+    /// re-applied by `open_windowed`.
+    pub fn advance_pruning_cutoff(&self, cutoff: i64) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        self.block_metadata_index
+            .write()
+            .advance_pruning_cutoff(cutoff)?;
+        self.gc_store().advance_effective_anchor(cutoff)?;
+        Ok(())
+    }
+
     /// Record the shard's genesis block hash. Write-once: recording the same
     /// value again is a no-op; recording a DIFFERENT value is an error — two
     /// genesis identities on one node is a bootstrap-integrity violation,
@@ -1776,6 +1806,7 @@ impl BlockDagKeyValueStorage {
         let block_number_map = dag_state_guard.block_number_map.clone();
         let main_parent_map = dag_state_guard.main_parent_map.clone();
         let self_justification_map = dag_state_guard.self_justification_map.clone();
+        let pruning_cutoff = dag_state_guard.pruning_cutoff;
         let last_finalized_block = match &dag_state_guard.last_finalized_block {
             Some((hash, _)) => hash.clone(),
             None if allow_uninitialized => BlockHash::new(),
@@ -1804,6 +1835,7 @@ impl BlockDagKeyValueStorage {
             history: self.persistence.as_ref().map(|p| p.history.clone()),
             view_sequence,
             view_max_height,
+            pruning_cutoff,
             dag_set,
             latest_messages_map: latest_messages,
             child_map,

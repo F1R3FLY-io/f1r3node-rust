@@ -6,6 +6,7 @@
 //! plan's "Layout C" entry for the wider context.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
@@ -79,6 +80,12 @@ pub struct MultiParentCasperImpl {
     // TODO: this should be read from chain, for now read from startup options - OLD
     pub casper_shard_conf: CasperShardConf,
     pub approved_block: BlockMessage,
+    /// Live effective-anchor height. Initialized to the approved block's
+    /// height and advanced by block-store GC past the citation horizon.
+    /// Shared with block ingest (gates settled-history admission) and
+    /// validation (gates deferral vs. invalid-recording) so a single
+    /// store write updates every consumer.
+    pub effective_anchor: Arc<AtomicI64>,
     /// Escalates a persistent containment hold (the shard finalizing floors
     /// this node's LFB is not contained in) to a finality-divergence ERROR
     /// and metric. See `finalization_runner::DivergenceMonitor`.

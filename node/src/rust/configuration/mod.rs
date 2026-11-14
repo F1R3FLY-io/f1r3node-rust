@@ -1110,6 +1110,24 @@ mod embedded_defaults_tests {
         );
     }
 
+    /// Same class as `mergeable_gc_fallback_matches_shipped_default`: a sparse
+    /// operator conf omitting the key must land on the shipped default, not
+    /// on a quietly different serde fallback.
+    #[test]
+    fn block_store_gc_fallback_matches_shipped_default() {
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        assert!(cfg.casper.enable_block_store_gc, "shipped default");
+        assert_eq!(
+            cfg.casper.enable_block_store_gc,
+            casper::rust::casper_conf::default_enable_block_store_gc(),
+            "serde fallback must match the shipped default"
+        );
+    }
+
     /// I5: the stale-recovery interval must exceed the heartbeat tick, or
     /// the empty-frontier cap's per-validator exemption opens every tick.
     #[test]

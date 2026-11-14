@@ -4388,17 +4388,22 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
     conf.max_parent_depth = 3;
     conf.mergeable_channels_gc_depth_buffer = 1;
     let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
+    let effective_anchor = std::sync::atomic::AtomicI64::new(0);
     assert_eq!(
         mergeable_channels_gc::collect_garbage(
             &mut gc_sweep,
             &dag_storage,
             &block_store,
             &rm,
-            &conf
+            &conf,
+            &effective_anchor,
         )
         .await
         .unwrap(),
-        mergeable_channels_gc::GcProgress::Complete { deleted: 0 }
+        mergeable_channels_gc::GcProgress::Complete {
+            deleted: 0,
+            blocks_deleted: 0,
+        }
     );
     assert!(rm.has_mergeable_entry(&lagging_block).unwrap());
     assert!(dag.get_cached_floor(&chain_hash(TIP)).unwrap().is_none());
@@ -4427,12 +4432,13 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
             &block_store,
             &rm,
             &conf,
+            &effective_anchor,
         )
         .await
         .expect("collect_garbage")
         {
-            mergeable_channels_gc::GcProgress::Yielded { deleted: count } => deleted += count,
-            mergeable_channels_gc::GcProgress::Complete { deleted: count } => {
+            mergeable_channels_gc::GcProgress::Yielded { deleted: count, .. } => deleted += count,
+            mergeable_channels_gc::GcProgress::Complete { deleted: count, .. } => {
                 deleted += count;
                 completed = true;
                 break;
