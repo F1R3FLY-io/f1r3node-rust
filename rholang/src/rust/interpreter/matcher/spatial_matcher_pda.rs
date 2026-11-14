@@ -794,6 +794,14 @@ pub(super) fn match_ac_query_acceptance(target: Match, pattern: Match) -> Option
 }
 
 #[cfg(test)]
+pub(super) fn receive_ac_query_acceptance(target: Receive, pattern: Receive) -> Option<bool> {
+    direct_match_value_ac_query_acceptance(
+        MatchValue::Receive(target),
+        MatchValue::Receive(pattern),
+    )
+}
+
+#[cfg(test)]
 pub(super) fn receive_bind_ac_query_acceptance(
     target: ReceiveBind,
     pattern: ReceiveBind,

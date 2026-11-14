@@ -12,14 +12,17 @@
 
     [projection_rule] mirrors the Rust enum [ProjectionRule] constructor for
     constructor, and [projection_rules] is its table. The Rust table equals
-    [projection_rules] row for row, except that it takes the rows of
-    [Match], [MatchCase] and [New] from [dynamic_root_rows] (the full
-    dynamic-root table below); [scripts/check-spatial-matcher-obligations.py]
-    refuses any other difference between the two. [rule_lookup] returns the
-    first row of a (type, field) pair. The keys are unique
-    ([projection_rules_respect_authority]), so that row is the only one, the
-    row the Rust [binary_search_by] finds in the sorted table. [declines] is the
-    Rust [declines]: a type declines when one of its rows is [Decline].
+    [dynamic_projection_rules] (the full dynamic-root table below) row for
+    row: it takes the rows of the four dynamic roots and of [MatchCase] from
+    [dynamic_root_rows] and every other row from [projection_rules];
+    [scripts/check-spatial-matcher-obligations.py] refuses any other
+    difference between the two. [rule_lookup] returns the first row of a
+    (type, field) pair. The keys are unique
+    ([projection_rules_respect_authority] and
+    [dynamic_projection_rules_respect_authority]), so that row is the only
+    one, the row the Rust [binary_search_by] finds in the sorted table.
+    [declines] is the Rust [declines]: a type declines when one of its rows
+    is [Decline].
 
     ** The authority facts
 
@@ -94,13 +97,13 @@
     ([evaluate_new], [evaluate_receive], [evaluate_receive_bind],
     [evaluate_match] and [evaluate_match_case] in
     [rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs]). The Rust
-    table takes the rows of [New], [Match] and [MatchCase] from
-    [dynamic_root_rows] and still declines [Receive] and [ReceiveBind]. The
-    rows of [dynamic_root_rows] are written with [DynamicRootRow], so that
-    the drift check reads them apart from the rows written with the row
-    constructor: it compares the Rust table with [projection_rules] whose
-    rows of [Match], [MatchCase] and [New] are replaced by theirs in
-    [dynamic_root_rows].
+    table is [dynamic_projection_rules]: it takes the rows of all four roots
+    and of [MatchCase] from [dynamic_root_rows] and declines none of them.
+    The rows of [dynamic_root_rows] are written with [DynamicRootRow], so
+    that the drift check reads them apart from the rows written with the
+    row constructor: it compares the Rust table with [projection_rules]
+    whose rows of the four roots and of [MatchCase] are replaced by theirs
+    in [dynamic_root_rows], that is, with [dynamic_projection_rules].
 
     The source-audit seam grows by one fact:
     - (A3) the matcher never reads [New.uri], [New.injections],
@@ -2386,8 +2389,8 @@ Local Open Scope string_scope.
     constructor itself, so that the checker's table-drift guard, which reads
     every row written with the constructor as a row of [projection_rules],
     reads the rows of [dynamic_root_rows] apart: it compares the Rust table
-    with [projection_rules] whose rows of [Match], [MatchCase] and [New] are
-    replaced by theirs in [dynamic_root_rows]. *)
+    with [projection_rules] whose rows of the four dynamic roots and of
+    [MatchCase] are replaced by theirs in [dynamic_root_rows]. *)
 
 Definition DynamicRootRow (owner field : string) (rule : projection_rule)
     : projection_row :=

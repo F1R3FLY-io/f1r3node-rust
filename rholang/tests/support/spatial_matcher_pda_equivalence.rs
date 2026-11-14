@@ -57,8 +57,9 @@ use super::spatial_matcher_pda::{
     connective_candidate_positions_with_stats, encoded_expr_outer_route, if_target_index_shape,
     match_ac_query_acceptance, match_par_list_with_stats, match_par_with_concrete_region_stats,
     match_par_with_stats, match_par_with_transaction_stats, match_send_list_with_remainder_stats,
-    match_send_list_with_stats, new_ac_query_acceptance, receive_bind_ac_query_acceptance,
-    send_target_group_mask, send_target_index_shape, CandidateExpansionMode, EncodedExprOuterRoute,
+    match_send_list_with_stats, new_ac_query_acceptance, receive_ac_query_acceptance,
+    receive_bind_ac_query_acceptance, send_target_group_mask, send_target_index_shape,
+    CandidateExpansionMode, EncodedExprOuterRoute,
 };
 use crate::rust::interpreter::util::{filter_and_adjust_bitset, prepend_expr, prepend_new};
 
@@ -1076,33 +1077,67 @@ fn dynamic_direct_match_value_rows_accept_when_new_ignored_fields_differ() {
 }
 
 #[test]
-fn dynamic_direct_match_value_rows_decline_when_receive_bind_ignored_fields_differ() {
-    let target = ReceiveBind {
+fn dynamic_direct_match_value_rows_accept_when_receive_and_receive_bind_ignored_fields_differ() {
+    let target_bind = ReceiveBind {
         patterns: vec![new_gint_par(3, Vec::new(), false)],
         source: Some(new_gint_par(7, Vec::new(), false)),
         remainder: Some(Var::default()),
         free_count: 41,
         cost_region: None,
     };
-    let pattern = ReceiveBind {
+    let pattern_bind = ReceiveBind {
         patterns: vec![new_gint_par(3, Vec::new(), false)],
         source: Some(new_freevar_par(0, Vec::new())),
         remainder: None,
         free_count: 0,
         cost_region: None,
     };
+    let target = Receive {
+        binds: vec![target_bind.clone()],
+        body: Some(new_gint_par(9, Vec::new(), false)),
+        persistent: false,
+        peek: true,
+        bind_count: 2,
+        locally_free: vec![1],
+        connective_used: false,
+        condition: Some(new_gbool_par(true, Vec::new(), false)),
+        cost_region: None,
+    };
+    let pattern = Receive {
+        binds: vec![pattern_bind.clone()],
+        body: Some(new_freevar_par(1, Vec::new())),
+        persistent: false,
+        peek: false,
+        bind_count: 0,
+        locally_free: vec![2],
+        connective_used: true,
+        condition: None,
+        cost_region: None,
+    };
 
+    let mut oracle = RecursiveContext::new();
+    assert!(
+        oracle
+            .spatial_match(target_bind.clone(), pattern_bind.clone())
+            .is_some(),
+        "the authoritative ReceiveBind equation ignores remainder and free_count"
+    );
+    assert_eq!(
+        receive_bind_ac_query_acceptance(target_bind, pattern_bind),
+        Some(true),
+        "a dynamic direct MatchValue::ReceiveBind row must accept across its ignored fields"
+    );
     let mut oracle = RecursiveContext::new();
     assert!(
         oracle
             .spatial_match(target.clone(), pattern.clone())
             .is_some(),
-        "the authoritative ReceiveBind equation ignores remainder and free_count"
+        "the authoritative Receive equation ignores peek, bind_count, condition and root metadata"
     );
     assert_eq!(
-        receive_bind_ac_query_acceptance(target, pattern),
-        None,
-        "a dynamic direct MatchValue::ReceiveBind row must fall back to All, never constrain ignored fields"
+        receive_ac_query_acceptance(target, pattern),
+        Some(true),
+        "a dynamic direct MatchValue::Receive row must accept across its ignored fields"
     );
 }
 
@@ -1146,7 +1181,7 @@ fn dynamic_direct_match_value_rows_accept_when_match_case_ignored_fields_differ(
 }
 
 #[test]
-fn ground_direct_match_value_rows_project_new_and_match_and_decline_receive_bind() {
+fn ground_direct_match_value_rows_project_new_match_receive_and_receive_bind() {
     let new = New {
         bind_count: 1,
         p: Some(new_gint_par(7, Vec::new(), false)),
@@ -1163,7 +1198,19 @@ fn ground_direct_match_value_rows_project_new_and_match_and_decline_receive_bind
         free_count: 0,
         cost_region: None,
     };
-    assert_eq!(receive_bind_ac_query_acceptance(bind.clone(), bind), None);
+    assert_eq!(
+        receive_bind_ac_query_acceptance(bind.clone(), bind.clone()),
+        Some(true)
+    );
+    let receive = Receive {
+        binds: vec![bind],
+        body: Some(new_gint_par(9, Vec::new(), false)),
+        ..Default::default()
+    };
+    assert_eq!(
+        receive_ac_query_acceptance(receive.clone(), receive),
+        Some(true)
+    );
 
     let case = MatchCase {
         pattern: Some(new_gint_par(2, Vec::new(), false)),
@@ -3920,6 +3967,7 @@ enum GeneratedField {
     Injections(Vec<(&'static str, i64)>),
     Count(i32),
     Guard(Option<bool>),
+    Remainder(Option<i32>),
 }
 
 fn expression(instance: models::rhoapi::expr::ExprInstance) -> Expr {
@@ -3965,11 +4013,12 @@ fn projection_fixtures() -> Vec<ProjectionFixture> {
         condition: None,
         cost_region: None,
     };
+    let dynamic_bind = ReceiveBind {
+        source: Some(free(0)),
+        ..ground_bind.clone()
+    };
     let dynamic_receive = Receive {
-        binds: vec![ReceiveBind {
-            source: Some(free(0)),
-            ..ground_bind
-        }],
+        binds: vec![dynamic_bind.clone()],
         connective_used: true,
         ..ground_receive.clone()
     };
@@ -4098,7 +4147,7 @@ fn projection_fixtures() -> Vec<ProjectionFixture> {
             pattern: ProjectionRoot::Par(pattern_rows),
         },
         ProjectionFixture {
-            families: &["Receive", "ReceiveBind"],
+            families: &[],
             label: "ground Receive",
             target: ProjectionRoot::Receive(ground_receive.clone()),
             pattern: ProjectionRoot::Receive(ground_receive.clone()),
@@ -4108,6 +4157,18 @@ fn projection_fixtures() -> Vec<ProjectionFixture> {
             label: "dynamic Receive",
             target: ProjectionRoot::Receive(ground_receive),
             pattern: ProjectionRoot::Receive(dynamic_receive),
+        },
+        ProjectionFixture {
+            families: &["ReceiveBind"],
+            label: "ground ReceiveBind",
+            target: ProjectionRoot::ReceiveBind(ground_bind.clone()),
+            pattern: ProjectionRoot::ReceiveBind(ground_bind.clone()),
+        },
+        ProjectionFixture {
+            families: &["ReceiveBind"],
+            label: "dynamic ReceiveBind",
+            target: ProjectionRoot::ReceiveBind(ground_bind),
+            pattern: ProjectionRoot::ReceiveBind(dynamic_bind),
         },
         ProjectionFixture {
             families: &["New"],
@@ -4381,6 +4442,14 @@ fn observe_projection(target: &ProjectionRoot, pattern: &ProjectionRoot) -> Proj
                 Matcher.check_commit(pattern, &[&datum]),
             )
         }
+        (ProjectionRoot::ReceiveBind(target), ProjectionRoot::ReceiveBind(pattern)) => {
+            let mut context = SpatialMatcherContext::new();
+            let matched = context
+                .spatial_match(target.clone(), pattern.clone())
+                .is_some();
+            let free_map = std::mem::take(&mut context.free_map);
+            ProjectionVerdict::Spatial(matched.then_some(free_map))
+        }
         _ => {
             let mut context = SpatialMatcherContext::new();
             let matched = context
@@ -4412,7 +4481,9 @@ fn generated_field_values(
             .cloned()
             .map(GeneratedField::Region)
             .collect(),
-        ("Send", "persistent") | ("EZipper", "is_write_zipper") => {
+        ("Send" | "Receive", "persistent")
+        | ("Receive", "peek")
+        | ("EZipper", "is_write_zipper") => {
             vec![GeneratedField::Flag(false), GeneratedField::Flag(true)]
         }
         ("EMethod", "method_name") => {
@@ -4450,14 +4521,20 @@ fn generated_field_values(
                 GeneratedField::Injections(vec![("rho:io:stdout", 1)]),
             ]
         }
-        ("New", "bind_count") | ("MatchCase", "free_count") => {
+        ("New" | "Receive", "bind_count") | ("MatchCase" | "ReceiveBind", "free_count") => {
             vec![GeneratedField::Count(1), GeneratedField::Count(2)]
         }
-        ("MatchCase", "guard") => {
+        ("MatchCase", "guard") | ("Receive", "condition") => {
             vec![
                 GeneratedField::Guard(None),
                 GeneratedField::Guard(Some(true)),
                 GeneratedField::Guard(Some(false)),
+            ]
+        }
+        ("ReceiveBind", "remainder") => {
+            vec![
+                GeneratedField::Remainder(None),
+                GeneratedField::Remainder(Some(1)),
             ]
         }
         _ => return None,
@@ -4469,6 +4546,32 @@ fn vary_send(send: &mut Send, field: &str, value: &GeneratedField) {
         ("cost_region", GeneratedField::Region(region)) => send.cost_region = region.clone(),
         ("persistent", GeneratedField::Flag(flag)) => send.persistent = *flag,
         _ => panic!("Send.{field} has no generated value {value:?}"),
+    }
+}
+
+fn vary_receive(receive: &mut Receive, field: &str, value: &GeneratedField) {
+    match (field, value) {
+        ("cost_region", GeneratedField::Region(region)) => receive.cost_region = region.clone(),
+        ("persistent", GeneratedField::Flag(flag)) => receive.persistent = *flag,
+        ("peek", GeneratedField::Flag(flag)) => receive.peek = *flag,
+        ("bind_count", GeneratedField::Count(count)) => receive.bind_count = *count,
+        ("condition", GeneratedField::Guard(guard)) => {
+            receive.condition = guard.map(|flag| new_gbool_par(flag, Vec::new(), false))
+        }
+        _ => panic!("Receive.{field} has no generated value {value:?}"),
+    }
+}
+
+fn vary_receive_bind(bind: &mut ReceiveBind, field: &str, value: &GeneratedField) {
+    match (field, value) {
+        ("cost_region", GeneratedField::Region(region)) => bind.cost_region = region.clone(),
+        ("free_count", GeneratedField::Count(count)) => bind.free_count = *count,
+        ("remainder", GeneratedField::Remainder(level)) => {
+            bind.remainder = level.map(|level| Var {
+                var_instance: Some(models::rhoapi::var::VarInstance::FreeVar(level)),
+            })
+        }
+        _ => panic!("ReceiveBind.{field} has no generated value {value:?}"),
     }
 }
 
@@ -4525,13 +4628,14 @@ fn vary_projection_root(
                 .map(|datum| vary_zipper(datum, field, value))
                 .collect();
         }
-        (ProjectionRoot::Receive(receive), "Receive", GeneratedField::Region(region)) => {
-            receive.cost_region = region.clone()
-        }
-        (ProjectionRoot::Receive(receive), "ReceiveBind", GeneratedField::Region(region)) => {
+        (ProjectionRoot::Receive(receive), "Receive", _) => vary_receive(receive, field, value),
+        (ProjectionRoot::Receive(receive), "ReceiveBind", _) => {
             for bind in &mut receive.binds {
-                bind.cost_region = region.clone();
+                vary_receive_bind(bind, field, value);
             }
+        }
+        (ProjectionRoot::ReceiveBind(bind), "ReceiveBind", _) => {
+            vary_receive_bind(bind, field, value)
         }
         (ProjectionRoot::Expr(expr), "EMethod", GeneratedField::Name(name)) => {
             match &mut expr.expr_instance {

@@ -134,8 +134,7 @@ ROCQ_CAPSTONES = [
     "feasible_filter_preserves_reference_order_and_uniqueness",
     "partition_scratch_size_depends_only_on_distinct_endpoints",
 ]
-PROJECTED_DYNAMIC_ROOTS = ("Match", "MatchCase", "New")
-PENDING_DYNAMIC_ROOTS = ("Receive", "ReceiveBind")
+DYNAMIC_ROOTS = ("Match", "MatchCase", "New", "Receive", "ReceiveBind")
 PROJECTION_CAPSTONES = [
     "projection_rules_respect_authority",
     "table_projection_preserves_spatial_success",
@@ -502,9 +501,7 @@ def extract(sources):
     dynamic_rules = {(owner, field): rule for owner, field, rule in dynamic_rows}
     dynamic_owners = {owner for owner, _, _ in dynamic_rows}
     require(
-        len(dynamic_rules) == len(dynamic_rows)
-        and not set(PROJECTED_DYNAMIC_ROOTS) & set(PENDING_DYNAMIC_ROOTS)
-        and dynamic_owners == set(PROJECTED_DYNAMIC_ROOTS) | set(PENDING_DYNAMIC_ROOTS),
+        len(dynamic_rules) == len(dynamic_rows) and dynamic_owners == set(DYNAMIC_ROOTS),
         "Rocq dynamic-root table does not name exactly the dynamic roots once per field",
     )
     require(
@@ -513,7 +510,7 @@ def extract(sources):
         "Rocq dynamic-root table does not cover exactly the dynamic roots' fields",
     )
     implemented_rows = [
-        (owner, field, dynamic_rules[owner, field] if owner in PROJECTED_DYNAMIC_ROOTS else rule)
+        (owner, field, dynamic_rules[owner, field] if owner in DYNAMIC_ROOTS else rule)
         for owner, field, rule in theory_rows
     ]
     require(
@@ -883,8 +880,22 @@ def self_test(sources):
     reject(
         sources,
         PROJECTION_TABLE,
-        '("Receive", "binds", ProjectionRule::Decline),',
         '("Receive", "binds", ProjectionRule::UnorderedSeq),',
+        '("Receive", "binds", ProjectionRule::OrderedSeq),',
+        "Rocq projection table differs from projection_rules.rs",
+    )
+    reject(
+        sources,
+        PROJECTION_THEORY,
+        'DynamicRootRow "Receive" "peek" Ignored',
+        'DynamicRootRow "Receive" "peek" Exact',
+        "Rocq projection table differs from projection_rules.rs",
+    )
+    reject(
+        sources,
+        PROJECTION_TABLE,
+        '("ReceiveBind", "remainder", ProjectionRule::Ignored),',
+        '("ReceiveBind", "remainder", ProjectionRule::Decline),',
         "Rocq projection table differs from projection_rules.rs",
     )
     reject(

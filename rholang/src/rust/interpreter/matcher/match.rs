@@ -447,26 +447,16 @@ pub(super) fn rho_path_query_cursor_atom(
     None
 }
 
+#[derive(Clone, Copy)]
+enum SequenceElements {
+    Wildcard,
+    SafeExactPar,
+}
+
 fn compile_ordered_nested_query(
     root: ParCursor<'_>,
     captures: &mut PathMap<()>,
 ) -> Option<RhoMatchQuery> {
-    // These generated roots do not use protobuf equality once they become
-    // dynamic AC rows:
-    //
-    // - `Receive.binds` are matched by the unordered list PDA, not in their
-    //   encoded sequence order;
-    // - `ReceiveBind` ignores `remainder` and `free_count` while comparing
-    //   `patterns` and descending through `source`.
-    //
-    // RMP2 currently has no schema-semantic projection for those equations.
-    // Encoding the ignored fields as exact query bytes would reject values
-    // which the authoritative PDA accepts. Decline this query; the caller
-    // falls back to spatial matching when compilation cannot prove safety.
-    if declines(root.program().type_name) {
-        return None;
-    }
-
     if let ParCursor::Par(pattern) = root {
         is_single_expr_match_carrier(pattern).then_some(())?;
     }
@@ -477,7 +467,8 @@ fn compile_ordered_nested_query(
     let mut suppressed_nodes = 0usize;
     let mut ignored_field_depth = 0usize;
     let mut saw_hole = false;
-    let mut entered_par_eq_field = false;
+    let mut entered_field_elements: Option<SequenceElements> = None;
+    let mut open_sequences: Vec<(usize, SequenceElements)> = Vec::new();
     let mut owners: Vec<&RhoMatchProgram> = Vec::with_capacity(16);
 
     for event in RhoPathCursor::new(root) {
@@ -502,13 +493,21 @@ fn compile_ordered_nested_query(
             }
             continue;
         }
-        if std::mem::take(&mut entered_par_eq_field) {
-            match event {
-                RhoPathEvent::ParBag(_) => {}
-                RhoPathEvent::EnterNode {
-                    cursor: ParCursor::Par(par),
-                    ..
-                } if par_has_safe_exact_expr_path(par) => {}
+        if let Some(elements) = entered_field_elements.take() {
+            match (elements, event) {
+                (_, RhoPathEvent::EnterSequence(_)) => {
+                    open_sequences.push((owners.len(), elements));
+                    append_match_path_event(&mut exact, event);
+                    continue;
+                }
+                (SequenceElements::SafeExactPar, RhoPathEvent::ParBag(_)) => {}
+                (
+                    SequenceElements::SafeExactPar,
+                    RhoPathEvent::EnterNode {
+                        cursor: ParCursor::Par(par),
+                        ..
+                    },
+                ) if par_has_safe_exact_expr_path(par) => {}
                 _ => {
                     flush_exact_query_part(&mut parts, &mut exact);
                     parts.push(RhoMatchQueryPart::Wildcard);
@@ -517,9 +516,34 @@ fn compile_ordered_nested_query(
                 }
             }
         }
+        match (open_sequences.last().copied(), event) {
+            (Some((depth, _)), RhoPathEvent::LeaveSequence) if depth == owners.len() => {
+                open_sequences.pop();
+            }
+            (
+                Some((depth, SequenceElements::SafeExactPar)),
+                RhoPathEvent::EnterNode {
+                    cursor: ParCursor::Par(par),
+                    ..
+                },
+            ) if depth == owners.len() && par_has_safe_exact_expr_path(par) => {}
+            (Some((depth, _)), RhoPathEvent::EnterNode { .. }) if depth == owners.len() => {
+                flush_exact_query_part(&mut parts, &mut exact);
+                parts.push(RhoMatchQueryPart::Wildcard);
+                suppressed_nodes = 1;
+                continue;
+            }
+            _ => {}
+        }
 
-        match event {
-            RhoPathEvent::EnterNode { cursor, program } => {
+        let field_rule = match event {
+            RhoPathEvent::EnterField(field) => owners
+                .last()
+                .and_then(|owner| projection_rule(owner.type_name, field.name)),
+            _ => None,
+        };
+        match (event, field_rule) {
+            (RhoPathEvent::EnterNode { cursor, program }, _) => {
                 if let ParCursor::Par(par) = cursor {
                     if let Some(hole) = rho_match_hole(par) {
                         if !record_linear_capture(captures, &hole) {
@@ -580,14 +604,7 @@ fn compile_ordered_nested_query(
                 owners.push(program);
                 append_match_path_event(&mut exact, event);
             }
-            RhoPathEvent::EnterField(field)
-                if matches!(
-                    owners
-                        .last()
-                        .and_then(|owner| projection_rule(owner.type_name, field.name)),
-                    Some(ProjectionRule::Ignored)
-                ) =>
-            {
+            (RhoPathEvent::EnterField(_), Some(ProjectionRule::Ignored)) => {
                 append_match_path_event(&mut exact, event);
                 flush_exact_query_part(&mut parts, &mut exact);
                 parts.push(RhoMatchQueryPart::Wildcard);
@@ -596,18 +613,15 @@ fn compile_ordered_nested_query(
                 // scalar metadata uses this same field-boundary rule.
                 ignored_field_depth = 1;
             }
-            RhoPathEvent::EnterField(field)
-                if matches!(
-                    owners
-                        .last()
-                        .and_then(|owner| projection_rule(owner.type_name, field.name)),
-                    Some(ProjectionRule::ParEqSeq)
-                ) =>
-            {
+            (RhoPathEvent::EnterField(_), Some(ProjectionRule::ParEqSeq)) => {
                 append_match_path_event(&mut exact, event);
-                entered_par_eq_field = true;
+                entered_field_elements = Some(SequenceElements::SafeExactPar);
             }
-            RhoPathEvent::LeaveNode => {
+            (RhoPathEvent::EnterField(_), Some(ProjectionRule::UnorderedSeq)) => {
+                append_match_path_event(&mut exact, event);
+                entered_field_elements = Some(SequenceElements::Wildcard);
+            }
+            (RhoPathEvent::LeaveNode, _) => {
                 owners.pop();
                 append_match_path_event(&mut exact, event);
             }
@@ -622,7 +636,11 @@ fn compile_ordered_nested_query(
         || (!saw_hole
             && !matches!(
                 root,
-                ParCursor::Send(_) | ParCursor::New(_) | ParCursor::Match(_)
+                ParCursor::Send(_)
+                    | ParCursor::New(_)
+                    | ParCursor::Match(_)
+                    | ParCursor::Receive(_)
+                    | ParCursor::ReceiveBind(_)
             ))
     {
         return None;
