@@ -6,7 +6,8 @@ use pathmap::ring::{AlgebraicResult, COUNTER_IDENT, DistributiveLattice, Lattice
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::guarded_pathmap::{
-    DisposeValue, GuardedPathMap, GuardedReadCursor, GuardedWriteCursor, TeardownBarrier,
+    DisposeValue, ExclusiveRemoval, GuardedPathMap, GuardedReadCursor, GuardedWriteCursor,
+    TeardownBarrier,
 };
 use super::pathmap_codec::{CanonicalCompactTrieCursor, CompactTrieError};
 
@@ -619,14 +620,7 @@ impl Bag {
         let current = self.entries.get(path).copied()?;
         let removed = current.get().min(amount.get());
         if removed == current.get() {
-            let mut removal = Self::new();
-            removal
-                .insert_many(
-                    path,
-                    Multiplicity::new(removed).expect("a resident Bag count removes positively"),
-                )
-                .expect("a singleton removal Bag cannot overflow");
-            *self = self.subtract(&removal);
+            self.remove_exhausted(path, current);
             None
         } else {
             let next = Multiplicity(current.get() - removed);
@@ -659,12 +653,24 @@ impl Bag {
             self.exact_cardinality -= u128::from(amount.get());
             return Ok(Some(next));
         }
-        let mut removal = Self::new();
-        removal
-            .insert_many(path, amount)
-            .expect("a singleton removal Bag cannot overflow");
-        *self = self.subtract(&removal);
+        self.remove_exhausted(path, current);
         Ok(next)
+    }
+
+    fn remove_exhausted(&mut self, path: &[u8], current: Multiplicity) {
+        match self.entries.remove_exclusive_endpoint(path) {
+            ExclusiveRemoval::Removed => {
+                self.distinct_len -= 1;
+                self.exact_cardinality -= u128::from(current.get());
+            }
+            ExclusiveRemoval::Shared => {
+                let mut removal = Self::new();
+                removal
+                    .insert_many(path, current)
+                    .expect("a singleton removal Bag cannot overflow");
+                *self = self.subtract(&removal);
+            }
+        }
     }
 
     fn rebuild_without_prefix(&self, prefix: &[u8]) -> (Self, usize, u128) {

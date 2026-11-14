@@ -9,6 +9,7 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
@@ -112,6 +113,12 @@ struct BarrierPruneStats {
     retired_barriers: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExclusiveRemoval {
+    Removed,
+    Shared,
+}
+
 /// A copy-on-write `PathMap` version whose final owner tears it down without
 /// recursive traversal.
 ///
@@ -146,6 +153,7 @@ where
     // Final teardown consumes this certificate without invoking PathMap's
     // depth-recursive subtree count.
     value_count: usize,
+    exclusive: AtomicBool,
     dispose: D,
     // Policies are types rather than stored values, so barriers cost no bytes
     // in either the guard or the anchor.
@@ -159,6 +167,7 @@ where
     B: TeardownBarrier<V> + 'static,
 {
     fn clone(&self) -> Self {
+        self.exclusive.store(false, Ordering::Release);
         // Evaluation order is an ownership invariant.  Clone the policy before
         // the raw PathMap header so even a defective policy implementation
         // cannot strand a temporary nonempty map during this step.
@@ -169,6 +178,7 @@ where
             // Arc::make_mut.  Cloning a guard itself never clones this header.
             map: Some(map),
             value_count: self.value_count,
+            exclusive: AtomicBool::new(false),
             dispose,
             barrier: PhantomData,
         }
@@ -271,14 +281,14 @@ where
     D: DisposeValue<V>,
     B: TeardownBarrier<V> + 'static,
 {
-    pub fn new_with_barrier(dispose: D) -> Self { Self::from_map(PathMap::new(), dispose) }
+    pub fn new_with_barrier(dispose: D) -> Self { Self::from_map(dispose) }
 
-    fn from_map(map: PathMap<V>, dispose: D) -> Self {
-        let map = if map.is_empty() { PathMap::new() } else { map };
+    fn from_map(dispose: D) -> Self {
         Self {
             anchor: Arc::new(AnchorRoot {
-                map: Some(map),
+                map: Some(PathMap::new()),
                 value_count: 0,
+                exclusive: AtomicBool::new(true),
                 dispose,
                 barrier: PhantomData,
             }),
@@ -548,6 +558,29 @@ where
                 }
                 resume_unwind(payload)
             }
+        }
+    }
+
+    pub(crate) fn remove_exclusive_endpoint(&mut self, path: &[u8]) -> ExclusiveRemoval {
+        let exclusive = match Arc::get_mut(&mut self.anchor) {
+            Some(anchor) => *anchor.exclusive.get_mut(),
+            None => false,
+        };
+        match exclusive {
+            true => {
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    self.with_write_cursor(|mut cursor| {
+                        cursor.move_to_existing_value(path);
+                        let removed = cursor.inner.remove_val_and_prune();
+                        assert!(removed, "an exclusive guarded endpoint is removed exactly once");
+                    })
+                }));
+                match outcome {
+                    Ok(()) => ExclusiveRemoval::Removed,
+                    Err(_) => std::process::abort(),
+                }
+            }
+            false => ExclusiveRemoval::Shared,
         }
     }
 
@@ -1208,7 +1241,8 @@ mod tests {
     use proptest::prelude::*;
 
     use super::{
-        DisposeValue, DrainObserver, GuardedPathMap, TeardownBarrier, drain_pathmap_observed,
+        DisposeValue, DrainObserver, ExclusiveRemoval, GuardedPathMap, TeardownBarrier,
+        drain_pathmap_observed,
     };
 
     #[derive(Clone)]
@@ -1588,9 +1622,20 @@ mod tests {
                 assert_eq!(removed, 1);
             }
             "guarded_drop" => {
-                let spine = dense_spine(None);
                 let mut guarded =
-                    GuardedPathMap::<u64, _, DenseSpineBarrier>::from_map(spine, dispose);
+                    GuardedPathMap::<u64, _, DenseSpineBarrier>::new_with_barrier(dispose);
+                guarded.with_write_cursor(|mut cursor| {
+                    let mut path: Vec<u8> = Vec::with_capacity(DENSE_SPINE_LEVELS + 1);
+                    for _ in 0..DENSE_SPINE_LEVELS {
+                        for tooth in [1, 2] {
+                            path.push(tooth);
+                            cursor.move_to_path(&path);
+                            cursor.create_path();
+                            path.pop();
+                        }
+                        path.push(0);
+                    }
+                });
                 assert!(!guarded.set_val_at(vec![0u8; DENSE_SPINE_LEVELS], DENSE_SPINE_VALUE));
                 small_stack(move || drop(guarded));
             }
@@ -2463,6 +2508,108 @@ mod tests {
         assert!(!bag_source.contains(concat!("into_", "pathmap")));
         assert!(!bag_source.contains("use pathmap::PathMap"));
         assert!(!bag_source.contains("entries: PathMap<"));
+        let mutation_source = include_str!("pathmap_mutation.rs");
+        for scanned in [source, bag_source, mutation_source] {
+            assert!(!scanned.contains(concat!("is_", "shared")));
+        }
+    }
+
+    #[test]
+    fn exclusive_endpoint_removal_requires_a_unique_wrapper() {
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut guarded = guarded_probe_map(&tracking, &order);
+        assert!(!guarded.set_val_at([1, 2], Probe::tracked(1, &tracking)));
+        assert!(!guarded.set_val_at([1, 3], Probe::tracked(2, &tracking)));
+        assert!(!guarded.set_val_at([4], Probe::tracked(3, &tracking)));
+        let anchor = guarded.anchor_identity();
+
+        assert_eq!(
+            guarded.remove_exclusive_endpoint(&[1, 2]),
+            ExclusiveRemoval::Removed,
+            "a fresh unique guard removes its endpoint in place"
+        );
+        assert_eq!(guarded.anchor_identity(), anchor);
+        assert!(!guarded.path_exists([1, 2]));
+        assert_eq!(*order.lock().expect("the disposal order is not poisoned"), [1]);
+
+        let alias = guarded.clone();
+        assert_eq!(
+            guarded.remove_exclusive_endpoint(&[1, 3]),
+            ExclusiveRemoval::Shared,
+            "a live wrapper clone refuses the in-place removal"
+        );
+        for version in [&guarded, &alias] {
+            assert_eq!(version.anchor_identity(), anchor);
+            assert_eq!(version.get([1, 3]).map(|probe| probe.id), Some(2));
+            assert_eq!(version.get([4]).map(|probe| probe.id), Some(3));
+        }
+
+        drop(alias);
+        assert_eq!(
+            guarded.remove_exclusive_endpoint(&[1, 3]),
+            ExclusiveRemoval::Removed,
+            "dropping the wrapper clone restores the in-place removal"
+        );
+        assert_eq!(guarded.anchor_identity(), anchor);
+        assert!(!guarded.path_exists([1]));
+        assert_eq!(guarded.get([4]).map(|probe| probe.id), Some(3));
+        assert_eq!(tracking.clones.load(Ordering::Relaxed), 0);
+        assert_eq!(*order.lock().expect("the disposal order is not poisoned"), [1, 2]);
+    }
+
+    #[test]
+    fn header_clones_clear_exclusivity_on_both_versions() {
+        for (mutate_successor, keep_successor) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let tracking = Arc::new(ProbeTracking::default());
+            let order = Arc::new(Mutex::new(Vec::new()));
+            let mut source = guarded_probe_map(&tracking, &order);
+            assert!(!source.set_val_at([1, 2], Probe::tracked(1, &tracking)));
+            assert!(!source.set_val_at([1, 3], Probe::tracked(2, &tracking)));
+            let mut successor = source.clone();
+            let replaced = match mutate_successor {
+                true => successor.set_val_at([5], Probe::tracked(3, &tracking)),
+                false => source.set_val_at([5], Probe::tracked(3, &tracking)),
+            };
+            assert!(!replaced);
+            assert_ne!(source.anchor_identity(), successor.anchor_identity());
+            for version in [&mut source, &mut successor] {
+                assert_eq!(
+                    version.remove_exclusive_endpoint(&[1, 2]),
+                    ExclusiveRemoval::Shared,
+                    "a header clone clears exclusivity on the source and on the copy"
+                );
+            }
+
+            let mut survivor = match keep_successor {
+                true => {
+                    drop(source);
+                    successor
+                }
+                false => {
+                    drop(successor);
+                    source
+                }
+            };
+            let anchor = survivor.anchor_identity();
+            assert_eq!(
+                survivor.remove_exclusive_endpoint(&[1, 2]),
+                ExclusiveRemoval::Shared,
+                "a cleared version stays shared after the other version is dropped"
+            );
+            assert_eq!(survivor.anchor_identity(), anchor);
+            assert_eq!(survivor.get([1, 2]).map(|probe| probe.id), Some(1));
+
+            assert!(survivor.remove_val_at_and_prune([1, 2]));
+            assert_eq!(
+                survivor.remove_exclusive_endpoint(&[1, 3]),
+                ExclusiveRemoval::Removed,
+                "a rebuilt version is exclusive again"
+            );
+            assert!(!survivor.path_exists([1]));
+        }
     }
 }
 

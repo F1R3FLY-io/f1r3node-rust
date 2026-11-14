@@ -994,3 +994,107 @@ fn bag_algebra_old_new_resource_profile() {
         }
     }
 }
+
+const EXHAUSTION_POPULATION_KEY_BYTES: usize = 137;
+const EXHAUSTION_REMOVED_KEY_BYTES: usize = 264;
+
+fn exhaustion_population_key(ordinal: usize) -> Vec<u8> {
+    let mut key = Vec::with_capacity(EXHAUSTION_POPULATION_KEY_BYTES);
+    key.extend_from_slice(&[0xA5; 64]);
+    key.push(0x00);
+    key.extend_from_slice(&[0x3C; 64]);
+    key.extend_from_slice(&(ordinal as u64).to_be_bytes());
+    key
+}
+
+fn exhaustion_removed_key() -> Vec<u8> {
+    let mut key = Vec::with_capacity(EXHAUSTION_REMOVED_KEY_BYTES);
+    key.extend_from_slice(&[0xA5; 64]);
+    key.push(0xFF);
+    key.extend_from_slice(&[0x5A; 199]);
+    key
+}
+
+fn exhaustion_bag(population: usize, with_removed: bool) -> Bag {
+    let removed = exhaustion_removed_key();
+    Bag::try_from_sorted_unique(|writer| {
+        for ordinal in 0..population {
+            writer.push(&exhaustion_population_key(ordinal), Multiplicity::ONE)?;
+        }
+        match with_removed {
+            true => writer.push(&removed, Multiplicity::ONE),
+            false => Ok::<(), SortedUniqueBagError>(()),
+        }
+    })
+    .expect("the population keys ascend below the removed key")
+}
+
+fn exhaustion_delta(population: usize) -> BagDelta {
+    let mut delta = BagDelta::new();
+    for ordinal in 0..population {
+        delta
+            .record_addition(&exhaustion_population_key(ordinal), Multiplicity::ONE)
+            .expect("distinct population keys record independently");
+    }
+    delta
+        .record_addition(&exhaustion_removed_key(), Multiplicity::ONE)
+        .expect("the removed key records once");
+    delta
+}
+
+#[test]
+fn exhausting_single_key_removal_allocates_independently_of_bag_size() {
+    let observe = |population: usize| {
+        let removed = exhaustion_removed_key();
+        let expected = exhaustion_bag(population, false).compact_bytes();
+        let check = |bag: &Bag| {
+            assert_eq!(bag.count(&removed), 0);
+            assert_eq!(bag.distinct_len(), population);
+            assert_eq!(bag.compact_bytes(), expected);
+        };
+
+        let mut bag = exhaustion_bag(population, true);
+        let (outcome, try_calls, try_bytes) =
+            measure(|| bag.try_remove_many(&removed, Multiplicity::ONE));
+        assert_eq!(outcome, Ok(None));
+        check(&bag);
+
+        let mut bag = exhaustion_bag(population, true);
+        let (outcome, many_calls, many_bytes) =
+            measure(|| bag.remove_many(&removed, Multiplicity::ONE));
+        assert_eq!(outcome, None);
+        check(&bag);
+
+        let mut bag = exhaustion_bag(population, true);
+        let (outcome, remove_calls, remove_bytes) = measure(|| bag.remove(&removed));
+        assert_eq!(outcome, None);
+        check(&bag);
+
+        let mut bag = exhaustion_bag(population, true);
+        let ((), set_calls, set_bytes) = measure(|| bag.set_count(&removed, None));
+        check(&bag);
+
+        let mut delta = exhaustion_delta(population);
+        let (outcome, delta_calls, delta_bytes) =
+            measure(|| delta.record_removal(&removed, Multiplicity::ONE));
+        assert_eq!(outcome, Ok(()));
+        check(delta.additions());
+        assert!(delta.removals().is_empty());
+
+        [
+            (try_calls, try_bytes),
+            (many_calls, many_bytes),
+            (remove_calls, remove_bytes),
+            (set_calls, set_bytes),
+            (delta_calls, delta_bytes),
+        ]
+    };
+    let single = observe(16);
+    let wide = observe(4096);
+    assert_eq!(
+        wide, single,
+        "exhausting single-key removal allocations grew with the Bag size: (calls, bytes) for \
+         try_remove_many, remove_many, remove, set_count(None) and BagDelta cancellation at 4,096 \
+         resident keys, then at 16"
+    );
+}
