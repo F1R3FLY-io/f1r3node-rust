@@ -3257,6 +3257,39 @@ and entry count.
 
 Production matching is directional: receive patterns match produced data. Symmetric Martelli-Montanari unification is an experiment for contexts that genuinely require variables on both sides; it is not silently substituted for receive semantics. Ordered children use linear PDA traversal. Associative-commutative collections use multiplicity-aware residual Bags rather than expanded vectors.
 
+**Ruling (task 5638): ordinary RSpace matching needs no symmetric unification.** The question was
+whether any legal RSpace path needs open/open symmetric unification, that is, a most-general
+unifier: one substitution for the variables of both the pattern and the datum that makes the two
+equal and of which every other such substitution is an instance. Three facts already in the record
+settle it.
+
+1. Stored data are not proven ground at the generic RSpace boundary
+   ([corpus and groundness audit](#corpus-and-groundness-audit)), so a datum may be open: its
+   `locally_free` set, the de Bruijn indices of the variables it uses but does not bind, may be
+   nonempty.
+2. The spatial matcher binds pattern variables only and treats target variables as data. A target
+   `EVar` meets a pattern `EVar` by equality
+   (`rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs:3595-3597`; in the frozen
+   recursive oracle, `rholang/tests/support/spatial_matcher_oracle/spatial_matcher.rs:788`), and
+   every FreeMap write is keyed by a free-variable level of the pattern
+   (`spatial_matcher_pda.rs:1128`, `:1916`, `:2697`, `:3232`, `:5660`, `:6118` and `:6518`).
+3. A free-variable remainder captures only closed surplus. `ordered_pairs`
+   (`spatial_matcher_pda.rs:3481`) admits a `FreeVar` remainder only when every surplus `Par` has
+   an empty `locally_free` (lines 3493-3498), and a `Par`-level remainder refuses every target
+   component whose `locally_free` is not empty (`spatial_matcher_pda.rs:5646-5654` and
+   `:6072-6078`; in the list matcher the oracle shares,
+   `rholang/src/rust/interpreter/matcher/list_match.rs:96-105` and `:317`).
+
+Since every legal path matches a receive pattern against produced data with this matcher, an open
+datum is matched as data: no step solves for its variables, and no pattern variable captures them.
+No legal RSpace path requires a most-general unifier, so no unification kernel is selected and no
+kernel tournament is run; Martelli-Montanari unification
+([Martelli and Montanari, 1982](https://doi.org/10.1145/357162.357169)) remains the reference
+definition only. The test `free_variable_pattern_refuses_an_open_target_without_binding` in
+`rholang/tests/support/spatial_matcher_pda_equivalence.rs` pins the case: against a target whose
+`locally_free` is not empty, a free-variable pattern is refused by the PDA and by the frozen
+recursive oracle alike, and the PDA binds no variable.
+
 ### Matching lifecycle correspondence across arrival directions
 
 The same rendezvous can be reached when a receive arrives after its data or when its final datum

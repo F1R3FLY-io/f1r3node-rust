@@ -2730,6 +2730,23 @@ fn sole_freevar_binding_collapses_only_projection_equivalent_family_merges() {
 }
 
 #[test]
+fn free_variable_pattern_refuses_an_open_target_without_binding() {
+    let pattern = new_freevar_par(0, Vec::new());
+    let target = models::rust::utils::new_boundvar_par(0, Vec::new(), false);
+    assert!(!target.locally_free.is_empty());
+
+    let mut recursive = RecursiveContext::new();
+    let recursive_verdict = recursive
+        .spatial_match(target.clone(), pattern.clone())
+        .is_some();
+    let mut pda = SpatialMatcherContext::new();
+    let (pda_result, _) = match_par_with_transaction_stats(&mut pda, target, pattern);
+    assert_eq!(pda_result.is_some(), recursive_verdict);
+    assert!(!recursive_verdict, "the open target's verdict");
+    assert!(pda.free_map.is_empty(), "the open target's bindings");
+}
+
+#[test]
 fn byte_native_and_resident_candidate_compilers_emit_identical_domains() {
     let targets = (0..8)
         .map(|value| new_gint_par(value, Vec::new(), false))

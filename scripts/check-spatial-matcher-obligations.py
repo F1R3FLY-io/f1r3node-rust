@@ -324,7 +324,7 @@ def extract(sources):
         "PDA normal-suite module unregistered",
     )
     require(
-        "rholang_run_tests 61 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::"
+        "rholang_run_tests 62 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::"
         in runner,
         "PDA normal-suite lane absent",
     )
@@ -333,7 +333,7 @@ def extract(sources):
         "connective-isolation normal-suite lane absent",
     )
     require(
-        len(re.findall(r"(?m)^[ \t]*#\[test\]$", sources[PDA])) == 61,
+        len(re.findall(r"(?m)^[ \t]*#\[test\]$", sources[PDA])) == 62,
         "PDA normal-suite census changed",
     )
     require(

@@ -137,7 +137,7 @@ matcher_count_runtime() {
   rholang_run_tests 3 --test matcher_count_folds
   rholang_run_tests 16 --test matcher_connective_isolation
   rholang_run_tests 8 --test matcher_if_family
-  rholang_run_tests 61 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
+  rholang_run_tests 62 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
   rholang_run_tests 1 --lib rust::interpreter::matcher::ground_new_query_correspondence::
   rholang_run_tests 11 --lib rust::interpreter::matcher::par_count::byte_native_tests::
   TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
@@ -360,7 +360,7 @@ free_map_journal_mcrl2() {
 
 free_map_journal_runtime() {
   rholang_run_tests 7 --lib free_map_transaction::tests
-  rholang_run_tests 61 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
+  rholang_run_tests 62 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::
   rholang_run_tests 1 --test matcher_freemap_journal binding_journal_allocation_growth_is_subquadratic_on_success_and_deep_refusal
   rholang_run_tests 1 --test matcher_freemap_journal sole_freevar_captures_a_deep_target_without_decoding_its_suffix
   TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
@@ -1049,7 +1049,7 @@ if [[ "${1:-}" == "--free-map-journal" ]]; then
   pushd "$repo_root" >/dev/null
   free_map_journal_runtime
   popd >/dev/null
-  echo "stack-safe-pda: focused FreeMap journal four-backend and 70-test gate passed"
+  echo "stack-safe-pda: focused FreeMap journal four-backend and 71-test gate passed"
   exit 0
 fi
 
