@@ -21,6 +21,7 @@ All mathematical expressions use unicode and are quoted in backticks.
 | **`deploys_with_cost`** | The `HashableSet<DeployIdWithCost>` that **identifies** a chain; the `Eq`/`Hash` key — two chains are `Eq` iff their `deploys_with_cost` are equal (`deploy_chain_index.rs:136,142`). |
 | **`HashableSet<T>`** | A `HashSet<T>` wrapper with a **deterministic** `Ord` (shortlex over the sorted elements) and content-based `Eq`/`Hash`. Its `Ord` sorts, so it is independent of `HashSet` iteration order. |
 | **branch** | A set of mutually-dependent deploy chains; the merge partitions the merge-set into branches (`compute_branches`). |
+| **sibling chains** | The deploy chains of one source block. Each sibling carries the block's pre→post diff on every channel that it touches. Siblings that share a non-mergeable channel are thus not separable, and R-SIBLING rejects them together (issue #873). |
 | **multi-parent merge** | Combining the state changes of the several parent blocks a new block builds on into one merged base state. |
 | **base state** | The common state the branches' diffs are applied over. |
 | **pre-state hash** | The merged base-state root the block's deploys execute against; **recorded in the block** and **recomputed** by every validator. |
@@ -66,6 +67,7 @@ All mathematical expressions use unicode and are quoted in backticks.
 | **T-SPLIT** | `combine(fold user, fold system) = fold all` ⟹ the user/system split hides no conflict (P2). |
 | **T-RECOMPUTE** | Block validation recomputes the merge and rejects on any `(pre-state \| rejected-set)` mismatch — why determinism is load-bearing. |
 | **T-APPEND** | The comparator fix is append-only over `v0.4.16` ⟹ rolling-upgrade-safe. |
+| **T-SIBLING** | A removed chain takes with it each kept sibling that shares a non-mergeable channel with it, so no rejected or stale deploy effect reaches the merged state (S8). Rust `merging::rejected_sibling_chain_spec`. |
 
 ---
 
