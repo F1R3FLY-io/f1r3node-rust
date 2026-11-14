@@ -31,6 +31,7 @@ theories/StreamingCodecPDA.v
 theories/RMP2.v
 theories/SpatialMatcher.v
 theories/ConcreteNewQueryCorrespondence.v
+theories/SchemaProjectionCorrespondence.v
 theories/FreeMapJournal.v
 theories/AccountingDemand.v
 theories/ChannelImage.v

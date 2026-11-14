@@ -120,6 +120,11 @@ matcher_ground_new_query_proofs() {
     "ground New candidate projection and encoded-exact URI negative control"
   rocq_check_modules "ground New candidate correspondence" \
     StackSafePDA.ConcreteNewQueryCorrespondence
+  rocq_reject_placeholders theories/SchemaProjectionCorrespondence.v
+  rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 9 \
+    "table-driven query projection, index filters, and three false-negative mutants"
+  rocq_check_modules "table-driven query projection correspondence" \
+    StackSafePDA.SchemaProjectionCorrespondence
 }
 
 matcher_count_byte_native_proofs() {
@@ -1072,9 +1077,13 @@ fi
 
 if [[ "${1:-}" == "--ground-new-query-proofs" ]]; then
   pushd "$rocq_root" >/dev/null
+  for prerequisite in StackSafePDA SpatialMatcher RMP2 Bag RSpaceCommit; do
+    TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128 \
+      tlc_bounded "$coqc_bin" -Q theories StackSafePDA "theories/$prerequisite.v"
+  done
   matcher_ground_new_query_proofs
   popd >/dev/null
-  echo "stack-safe-pda: ground New query correspondence and URI negative control passed"
+  echo "stack-safe-pda: ground New and table-driven projection query correspondences passed"
   exit 0
 fi
 

@@ -18,6 +18,8 @@ OWNER_MUTANTS = "scripts/generate-canonical-connective-owner-mutant.py"
 CONNECTIVE_SOURCE = "models/src/rust/par_bag.rs"
 CONNECTIVE_PROPERTY = "models/tests/par_bag.rs"
 MATCHER_SOURCE = "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs"
+PROJECTION_TABLE = "rholang/src/rust/interpreter/matcher/projection_rules.rs"
+PROJECTION_THEORY = "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v"
 OWNER_INVARIANTS = [
     (
         "mismatched_owner_refused_before_position_transfer",
@@ -129,6 +131,17 @@ ROCQ_CAPSTONES = [
     "endpointwise_partitions_conserve_exact_mass",
     "feasible_filter_preserves_reference_order_and_uniqueness",
     "partition_scratch_size_depends_only_on_distinct_endpoints",
+]
+PROJECTION_CAPSTONES = [
+    "projection_rules_respect_authority",
+    "table_projection_preserves_spatial_success",
+    "ignored_field_changes_never_change_acceptance",
+    "declined_root_never_prunes",
+    "index_filters_preserve_first_admissible_binding",
+    "table_query_filters_preserve_first_admissible_binding",
+    "locally_free_exact_mutant_is_a_false_negative",
+    "cost_region_exact_mutant_is_a_false_negative",
+    "extended_retained_prefix_mutant_is_a_false_negative",
 ]
 WITNESSES = {
     "CompletedEquivalent": (
@@ -319,6 +332,40 @@ def extract(sources):
         "Rocq ten-closed-capstone gate absent",
     )
     require("matcher_count_proofs\n" in runner, "Rocq proof gate not invoked")
+    projection = sources[PROJECTION_THEORY]
+    table_rows = re.findall(
+        r'\(\s*"([A-Za-z][A-Za-z0-9]*)",\s*"([a-z][a-z0-9_]*)",\s*ProjectionRule::([A-Za-z]+),?\s*\)',
+        sources[PROJECTION_TABLE],
+    )
+    theory_rows = re.findall(
+        r'ProjectionRow "([A-Za-z][A-Za-z0-9]*)" "([a-z][a-z0-9_]*)" ([A-Za-z]+)',
+        projection,
+    )
+    require(
+        bool(table_rows) and theory_rows == table_rows,
+        "Rocq projection table differs from projection_rules.rs",
+    )
+    projection_prints = re.findall(
+        r"(?m)^Print Assumptions ([A-Za-z][A-Za-z0-9_]*)\.$", projection
+    )
+    require(
+        projection_prints == PROJECTION_CAPSTONES,
+        "missing, extra, or reordered projection capstone",
+    )
+    require(
+        len(projection_prints) == len(re.findall(r"(?m)^Print Assumptions\b", projection)),
+        "malformed projection capstone",
+    )
+    for symbol in projection_prints:
+        require(
+            len(re.findall(rf"(?m)^Theorem {re.escape(symbol)}[ \t]*:", projection)) == 1,
+            f"missing or duplicate projection theorem: {symbol}",
+        )
+    require(
+        "rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v "
+        f"{len(PROJECTION_CAPSTONES)}" in runner,
+        "projection closed-capstone gate absent",
+    )
     require(
         "mod spatial_matcher_pda_equivalence;" in sources[MODULE],
         "PDA normal-suite module unregistered",
@@ -467,6 +514,19 @@ def extract(sources):
             }
         ],
         "mcrl2_obligations": [],
+        "projection_rules": {
+            "table": PROJECTION_TABLE,
+            "theory": PROJECTION_THEORY,
+            "rows": len(table_rows),
+            "capstones": [
+                {
+                    "id": f"SM-PROJ-{index:02d}",
+                    "symbol": symbol,
+                    "classification": "proof_only",
+                }
+                for index, symbol in enumerate(projection_prints, 1)
+            ],
+        },
         "scope_limit": "The canonical Connective owner Verus model constrains validated field-1 ranges by complete canonical source bytes, then proves binding, exact next range, and exhaustion under the audited StableConnectiveBodyOwner premise. The model does not verify the production Rust parser, pointer provenance, or unsafe-trait implementations; the generated debug/release property and concrete source audit bridge those premises. Its five Verus mutants test the proof gate. Finite TLC invariants and abstract Rocq theorems still require their proof engines. The registry checks source and runner wiring, not proof execution.",
         "source_sha256": {
             path: hashlib.sha256(source.encode()).hexdigest()
@@ -580,6 +640,34 @@ def self_test(sources):
         '"unregistered_length_only": (',
         "canonical Connective owner mutant generator absent",
     )
+    reject(
+        sources,
+        PROJECTION_THEORY,
+        'ProjectionRow "Par" "locally_free" Ignored',
+        'ProjectionRow "Par" "locally_free" Exact',
+        "Rocq projection table differs from projection_rules.rs",
+    )
+    reject(
+        sources,
+        PROJECTION_TABLE,
+        '("Send", "cost_region", ProjectionRule::Ignored),',
+        '("Send", "cost_region", ProjectionRule::Exact),',
+        "Rocq projection table differs from projection_rules.rs",
+    )
+    reject(
+        sources,
+        PROJECTION_THEORY,
+        "Print Assumptions declined_root_never_prunes.\n",
+        "",
+        "missing, extra, or reordered projection capstone",
+    )
+    reject(
+        sources,
+        RUNNER,
+        "rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 9",
+        "rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 8",
+        "projection closed-capstone gate absent",
+    )
 
 
 def main():
@@ -593,6 +681,7 @@ def main():
         CONFIG, MODEL, ROCQ, RUNNER, MODULE, PDA, ISOLATION,
         OWNER_MODEL, OWNER_MUTANTS, CONNECTIVE_SOURCE, CONNECTIVE_PROPERTY,
         MATCHER_SOURCE,
+        PROJECTION_TABLE, PROJECTION_THEORY,
     }
     sources = {
         path: (ROOT / path).read_text(encoding="utf-8") for path in sorted(paths)

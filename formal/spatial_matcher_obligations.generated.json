@@ -18,6 +18,58 @@
     }
   ],
   "mcrl2_obligations": [],
+  "projection_rules": {
+    "capstones": [
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-01",
+        "symbol": "projection_rules_respect_authority"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-02",
+        "symbol": "table_projection_preserves_spatial_success"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-03",
+        "symbol": "ignored_field_changes_never_change_acceptance"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-04",
+        "symbol": "declined_root_never_prunes"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-05",
+        "symbol": "index_filters_preserve_first_admissible_binding"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-06",
+        "symbol": "table_query_filters_preserve_first_admissible_binding"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-07",
+        "symbol": "locally_free_exact_mutant_is_a_false_negative"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-08",
+        "symbol": "cost_region_exact_mutant_is_a_false_negative"
+      },
+      {
+        "classification": "proof_only",
+        "id": "SM-PROJ-09",
+        "symbol": "extended_retained_prefix_mutant_is_a_false_negative"
+      }
+    ],
+    "rows": 156,
+    "table": "rholang/src/rust/interpreter/matcher/projection_rules.rs",
+    "theory": "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v"
+  },
   "rocq_print_assumptions": [
     {
       "classification": "proof_only",
@@ -72,12 +124,14 @@
   ],
   "scope_limit": "The canonical Connective owner Verus model constrains validated field-1 ranges by complete canonical source bytes, then proves binding, exact next range, and exhaustion under the audited StableConnectiveBodyOwner premise. The model does not verify the production Rust parser, pointer provenance, or unsafe-trait implementations; the generated debug/release property and concrete source audit bridge those premises. Its five Verus mutants test the proof gate. Finite TLC invariants and abstract Rocq theorems still require their proof engines. The registry checks source and runner wiring, not proof execution.",
   "source_sha256": {
+    "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v": "0dc16add5f9e86c4103d82a988538c6d743548391a522846e3dc73c4d194fd96",
     "formal/rocq/stack_safe_pda/theories/SpatialMatcher.v": "ebffe192375bc10c146730d3acbde2dcda194b392b2af6f29a8d5304b58ee2cf",
     "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.cfg": "43b98ede952c2fb89fc503c073a9965f609f19646ebcccb96adf65c419660205",
     "formal/tlaplus/stack_safe_pda/SpatialMatcherEquivalence.tla": "33c9d71065829f5ca984ed10d1dde54a36302b3929ec3cdac7d597015ef1fe03",
     "formal/verus/canonical_connective_owner_cursor.rs": "1883e5782f84bf33959ca15e1c3d28f79116a07bb707ae7ea4f751a7fc9ca9c7",
     "models/src/rust/par_bag.rs": "2ec384dcbf4dea2ee9e95b1f2f76da3e543a9274bc0f77cbcf283cefb9238c5a",
     "models/tests/par_bag.rs": "89e5726b89dea6e89c7b633fa814c1dca6995e27d5c5f3e4b318ae87ec805074",
+    "rholang/src/rust/interpreter/matcher/projection_rules.rs": "6d95aac441b29d560c22d801ec14f45e9b8381f28e07d4de383b647c578cfe2f",
     "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "c6a5405c77ef04d10b91db8bf74a098540e3e149d92ae15ae2e472ec77c817c2",
     "rholang/tests/matcher_connective_isolation.rs": "96c232ae7f41f079f6a072d2c4586dd1ed15b8a95990d0b82f61466066ccb68c",
     "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "36170e6a34e5f18decd1c1e388ce8778c2bfafa4068c24e7ce82ddba5e6159ea",
