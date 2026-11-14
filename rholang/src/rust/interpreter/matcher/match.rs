@@ -556,7 +556,11 @@ fn compile_ordered_nested_query(
                         continue;
                     }
                     if !is_single_expr_match_carrier(par) {
-                        return None;
+                        flush_exact_query_part(&mut parts, &mut exact);
+                        parts.push(RhoMatchQueryPart::Wildcard);
+                        suppressed_nodes = 1;
+                        saw_hole = true;
+                        continue;
                     }
                     // RMP2 deliberately keeps nested Par values opaque. Scan
                     // the admitted singleton Expr only to distinguish a ground

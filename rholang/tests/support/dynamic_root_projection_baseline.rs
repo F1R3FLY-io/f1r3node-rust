@@ -4,20 +4,23 @@ mod planned_deep_fixture;
 
 use std::collections::BTreeMap;
 
-#[cfg(feature = "matcher-decline-counters")]
-use models::rhoapi::Send;
 use models::rhoapi::{
-    CostRegion, CostSignature, CostSignatureAtom, Match, MatchCase, New, Par, Receive, ReceiveBind,
-    Var,
+    CostRegion, CostSignature, CostSignatureAtom, Expr, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send, Var,
 };
+use models::rust::rholang::match_path::encode_match_path;
+use models::rust::rholang::match_schema_tables::ParCursor;
 use models::rust::utils::{
-    new_elist_par, new_freevar_par, new_gbool_par, new_gint_par, new_gstring_par,
+    new_elist_par, new_freevar_expr, new_freevar_par, new_gbool_par, new_gint_expr, new_gint_par,
+    new_gstring_par,
 };
+use pathmap::PathMap;
 use proptest::prelude::*;
-use rspace_plus_plus::rspace::rho_path::RhoPathQuery;
+use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathQuery};
 
 #[cfg(feature = "matcher-decline-counters")]
 use super::projection_rules::declines;
+use super::r#match::rho_path_query_cursor_atom;
 use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
 };
@@ -455,6 +458,116 @@ fn every_order_of_the_binds_is_accepted(
     Ok(())
 }
 
+fn obstacle_par(head: Expr, kind: u8, first: i16, second: i16) -> Par {
+    match kind {
+        0 | 1 => Par::default().with_exprs(vec![head, new_gint_expr(i64::from(second) + 65_536)]),
+        _ => Par::default().with_exprs(vec![head]).with_sends(vec![Send {
+            chan: Some(gint(i64::from(second))),
+            data: vec![gint(i64::from(first))],
+            ..Default::default()
+        }]),
+    }
+}
+
+fn multi_component_obstacle(
+    kind: u8,
+    first: i16,
+    second: i16,
+    level: i32,
+) -> (Par, Par, Option<u32>) {
+    let target = obstacle_par(new_gint_expr(i64::from(first)), kind, first, second);
+    match kind {
+        1 | 3 => (
+            target,
+            obstacle_par(new_freevar_expr(level), kind, first, second).with_connective_used(true),
+            Some(u32::try_from(level).expect("free-variable levels are nonnegative")),
+        ),
+        _ => (target.clone(), target, None),
+    }
+}
+
+fn nested_par_is_wildcarded<T>(
+    root: &str,
+    target: T,
+    pattern: T,
+    published: &[u32],
+    hidden: Option<u32>,
+    wrap: Option<fn(T) -> Par>,
+    connective_used: bool,
+) -> Result<(), TestCaseError>
+where
+    T: Clone,
+    for<'a> ParCursor<'a>: From<&'a T>,
+    SpatialMatcherContext: SpatialMatcher<T, T>,
+    RecursiveContext: RecursiveSpatialMatcher<T, T>,
+{
+    let mut captures = PathMap::new();
+    let Some(atom) = rho_path_query_cursor_atom(ParCursor::from(&pattern), false, &mut captures)
+    else {
+        return Err(TestCaseError::fail(format!(
+            "{root}: the query declines a root whose only obstacle is a multi-component nested Par"
+        )));
+    };
+    prop_assert_eq!(
+        captures.val_count(),
+        published.len(),
+        "{}: the query publishes other captures than the levels outside the wildcarded Par",
+        root
+    );
+    for level in published {
+        prop_assert!(
+            captures.contains(level.to_be_bytes()),
+            "{}: the query does not publish the outside level {}",
+            root,
+            level
+        );
+    }
+    if let Some(level) = hidden {
+        prop_assert!(
+            !captures.contains(level.to_be_bytes()),
+            "{}: the query publishes level {} from inside the wildcarded Par",
+            root,
+            level
+        );
+    }
+    let oracle = oracle_match(target.clone(), pattern.clone());
+    prop_assert!(
+        oracle.0.is_some(),
+        "{}: the recursive oracle must accept the ground instance of the pattern",
+        root
+    );
+    prop_assert_eq!(
+        direct_match(target.clone(), pattern.clone()),
+        oracle,
+        "{}: the PDA and the oracle disagree",
+        root
+    );
+    if let Some(wrap) = wrap {
+        let wrapped_target = wrap(target.clone());
+        let wrapped_pattern = wrap(pattern).with_connective_used(connective_used);
+        let wrapped_oracle = oracle_match::<Par>(wrapped_target.clone(), wrapped_pattern.clone());
+        prop_assert!(
+            wrapped_oracle.0.is_some(),
+            "{}: the recursive oracle must accept the Par that holds the root",
+            root
+        );
+        prop_assert_eq!(
+            direct_match::<Par>(wrapped_target, wrapped_pattern),
+            wrapped_oracle,
+            "{}: the PDA and the oracle disagree on the Par that holds the root",
+            root
+        );
+    }
+    let structure =
+        encode_structural_sequence([encode_match_path(ParCursor::from(&target)).as_slice()]);
+    prop_assert!(
+        RhoPathQuery::structural_sequence([atom], false).matches_structure(&structure),
+        "{}: the query rejected an oracle success across a multi-component nested Par",
+        root
+    );
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         failure_persistence: None,
@@ -653,6 +766,113 @@ proptest! {
             persistent,
             &pattern,
         )?;
+    }
+
+    #[test]
+    fn dynamic_root_query_wildcards_a_multi_component_nested_par(
+        root in 0_u8..5,
+        kind in 0_u8..4,
+        first in any::<i16>(),
+        second in any::<i16>(),
+        outside in any::<i16>(),
+        outside_is_hole in any::<bool>(),
+    ) {
+        const NO_LEVEL: &[u32] = &[];
+        const LEVEL_ZERO: &[u32] = &[0];
+        let (outside_hole, published) = match (root, outside_is_hole) {
+            (0 | 3, _) => (false, NO_LEVEL),
+            (1, hole) => (hole, NO_LEVEL),
+            (_, true) => (true, LEVEL_ZERO),
+            (_, false) => (false, NO_LEVEL),
+        };
+        let level = i32::from(outside_hole);
+        let (target_obstacle, pattern_obstacle, hidden) =
+            multi_component_obstacle(kind, first, second, level);
+        let connective_used = outside_hole || hidden.is_some();
+        let outside_target = gint(i64::from(outside));
+        let outside_pattern = ground_or_hole(outside, outside_hole, 0);
+        match root {
+            0 => nested_par_is_wildcarded(
+                "New",
+                new_root(target_obstacle),
+                new_root(pattern_obstacle),
+                published,
+                hidden,
+                Some(|value: New| Par::default().with_news(vec![value])),
+                connective_used,
+            )?,
+            1 => nested_par_is_wildcarded(
+                "Receive",
+                Receive {
+                    binds: vec![receive_bind_root(outside_target)],
+                    body: Some(target_obstacle),
+                    ..Default::default()
+                },
+                Receive {
+                    binds: vec![receive_bind_root(outside_pattern)],
+                    body: Some(pattern_obstacle),
+                    connective_used,
+                    ..Default::default()
+                },
+                published,
+                hidden,
+                Some(|value: Receive| Par::default().with_receives(vec![value])),
+                connective_used,
+            )?,
+            2 => nested_par_is_wildcarded(
+                "Match",
+                Match {
+                    target: Some(outside_target),
+                    cases: vec![MatchCase {
+                        pattern: Some(gint(5)),
+                        source: Some(target_obstacle),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                Match {
+                    target: Some(outside_pattern),
+                    cases: vec![MatchCase {
+                        pattern: Some(gint(5)),
+                        source: Some(pattern_obstacle),
+                        ..Default::default()
+                    }],
+                    connective_used,
+                    ..Default::default()
+                },
+                published,
+                hidden,
+                Some(|value: Match| Par::default().with_matches(vec![value])),
+                connective_used,
+            )?,
+            3 => nested_par_is_wildcarded(
+                "ReceiveBind",
+                receive_bind_root(target_obstacle),
+                receive_bind_root(pattern_obstacle),
+                published,
+                hidden,
+                None,
+                connective_used,
+            )?,
+            _ => nested_par_is_wildcarded(
+                "Send",
+                Send {
+                    chan: Some(outside_target),
+                    data: vec![target_obstacle],
+                    ..Default::default()
+                },
+                Send {
+                    chan: Some(outside_pattern),
+                    data: vec![pattern_obstacle],
+                    connective_used,
+                    ..Default::default()
+                },
+                published,
+                hidden,
+                Some(|value: Send| Par::default().with_sends(vec![value])),
+                connective_used,
+            )?,
+        }
     }
 }
 
