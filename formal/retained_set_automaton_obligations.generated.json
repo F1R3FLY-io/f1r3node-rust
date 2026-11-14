@@ -137,7 +137,7 @@
         ],
         "id": "RSA-PREMISE-02",
         "kind": "executable_witness",
-        "sha256": "ad85296cc9e2dc4b8daf0f92783c1fd62701b9546428f2fce1f9b6ff7b29f32c",
+        "sha256": "c819d1067021bdd972c7c429de3ed6c6f5883e20070af0376de0af7268e9da0e",
         "source": "rholang/tests/matcher/retained_path_index_test.rs",
         "test": "generated_ordered_queries_preserve_play_replay_results_logs_and_roots"
       }

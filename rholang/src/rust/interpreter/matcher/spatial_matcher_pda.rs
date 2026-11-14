@@ -871,6 +871,32 @@ pub(super) fn if_target_index_shape(targets: Vec<If>) -> (u64, usize) {
     (index.bag.cardinality(), index.bag.distinct_len())
 }
 
+#[cfg(test)]
+pub(super) fn send_target_group_mask(
+    targets: Vec<Send>,
+    query: &RhoPathQuery,
+) -> (Vec<([u8; 8], Vec<u8>)>, Option<PathMap<()>>) {
+    let targets = targets
+        .into_iter()
+        .map(MatchValue::Send)
+        .collect::<Vec<_>>();
+    let index = ListTargetIndex::from_targets(&targets)
+        .expect("test targets fit the Bag target-index representation");
+    let groups = index
+        .groups
+        .iter()
+        .map(|group| {
+            let id = index
+                .group_ids
+                .get(&group.key)
+                .copied()
+                .expect("every target group has a group id");
+            (id.path(), group.structure.clone())
+        })
+        .collect();
+    (groups, index.group_mask_matching(query))
+}
+
 pub(super) fn match_par_pair(
     context: &mut SpatialMatcherContext,
     target: (Par, Par),

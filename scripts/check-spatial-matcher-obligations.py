@@ -20,6 +20,8 @@ CONNECTIVE_PROPERTY = "models/tests/par_bag.rs"
 MATCHER_SOURCE = "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs"
 PROJECTION_TABLE = "rholang/src/rust/interpreter/matcher/projection_rules.rs"
 PROJECTION_THEORY = "formal/rocq/stack_safe_pda/theories/SchemaProjectionCorrespondence.v"
+POOL = "rspace++/tests/data_index/candidate_product_continuation.rs"
+RETAINED = "rholang/tests/matcher/retained_path_index_test.rs"
 OWNER_INVARIANTS = [
     (
         "mismatched_owner_refused_before_position_transfer",
@@ -142,6 +144,107 @@ PROJECTION_CAPSTONES = [
     "locally_free_exact_mutant_is_a_false_negative",
     "cost_region_exact_mutant_is_a_false_negative",
     "extended_retained_prefix_mutant_is_a_false_negative",
+]
+PROJECTION_PROPERTIES = [
+    {
+        "id": "SM-PROJ-PROP-01",
+        "theorem": "table_projection_preserves_spatial_success",
+        "target_source": PDA,
+        "target": "compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success",
+        "assertions": ["compare(label, target, pattern);"],
+        "helper_source": PDA,
+        "helper": "compare_with_entry_map",
+        "helper_assertions": [
+            '"{label}: a compiled RhoPath query rejected a recursive-oracle success"',
+            'assert_eq!(pda_verdict, recursive_verdict, "{label}: verdict");',
+        ],
+    },
+    {
+        "id": "SM-PROJ-PROP-02",
+        "theorem": "ignored_field_changes_never_change_acceptance",
+        "target_source": PDA,
+        "target": "ignored_projection_fields_are_inert_and_exact_fields_change_the_query",
+        "assertions": ["assert_projection_rows_are_respected(PROJECTION_RULES, &regions);"],
+        "helper_source": PDA,
+        "helper": "assert_projection_rows_are_respected",
+        "helper_assertions": [
+            "assert_projection_root_is_normalized(fixture.label, &fixture.target);",
+            "assert_projection_root_is_normalized(fixture.label, &fixture.pattern);",
+            "\"{}: the pattern's {owner}.{field} = {value:?} changed the projection\"",
+            "\"{}: the target's {owner}.{field} = {value:?} changed the projection\"",
+            '"{owner}.{field} is marked Exact, but no generated value changes its query"',
+        ],
+    },
+    {
+        "id": "SM-PROJ-PROP-03",
+        "theorem": "index_filters_preserve_first_admissible_binding",
+        "target_source": POOL,
+        "target": "continuation_arena_matches_the_legacy_pda_and_byte_oracle",
+        "assertions": ["fixture.assert_matches(query);"],
+        "helper_source": POOL,
+        "helper": "assert_matches",
+        "helper_assertions": [
+            "(*available && query.matches_structure(structure)).then_some(position)",
+            'assert_eq!(actual, expected, "arena traversal must equal the byte oracle");',
+        ],
+    },
+    {
+        "id": "SM-PROJ-PROP-04",
+        "theorem": "index_filters_preserve_first_admissible_binding",
+        "target_source": PDA,
+        "target": "list_target_group_mask_equals_the_structure_filter_over_every_group",
+        "assertions": [
+            ".filter(|(_, structure)| query.matches_structure(structure))",
+            '"the group mask must keep exactly the groups the structure filter keeps"',
+            '"the group mask dropped a group the structure filter keeps"',
+            '"only a query without a retained prefix may skip the group mask"',
+        ],
+        "helper_source": MATCHER_SOURCE,
+        "helper": "send_target_group_mask",
+        "helper_assertions": ["(groups, index.group_mask_matching(query))"],
+    },
+    {
+        "id": "SM-PROJ-PROP-05",
+        "theorem": None,
+        "target_source": PDA,
+        "target": "ground_send_query_equals_the_committed_golden_bytes",
+        "assertions": [
+            "RhoPathQueryAtom::Match(RhoMatchQuery::new(parts)),",
+            '"the ground Send query drifted from the committed golden bytes"',
+        ],
+        "helper_source": None,
+        "helper": None,
+        "helper_assertions": [],
+    },
+    {
+        "id": "SM-PROJ-PROP-06",
+        "theorem": "declined_root_never_prunes",
+        "target_source": PDA,
+        "target": "every_decline_rule_yields_no_query_and_the_oracle_verdict",
+        "assertions": [
+            '"{owner}.{field} is a Decline rule, but its pattern compiled a query"',
+            'compare(\n            &format!("declined {owner}.{field}"),\n            target.clone(),\n'
+            "            pattern.clone(),\n        );",
+            "Some(RhoPathQueryAtom::Exact(encode_par_match_atom(empty))),",
+        ],
+        "helper_source": PDA,
+        "helper": "compare_with_entry_map",
+        "helper_assertions": ['assert_eq!(pda_verdict, recursive_verdict, "{label}: verdict");'],
+    },
+    {
+        "id": "SM-PROJ-PROP-07",
+        "theorem": None,
+        "target_source": RETAINED,
+        "target": "depth_4096_pattern_compiles_and_matches_on_a_one_mebibyte_thread",
+        "assertions": [
+            ".stack_size(1024 * 1024)",
+            "const DEPTH: usize = 4_096;",
+            ".get(&pattern, &candidate)",
+        ],
+        "helper_source": None,
+        "helper": None,
+        "helper_assertions": [],
+    },
 ]
 WITNESSES = {
     "CompletedEquivalent": (
@@ -294,6 +397,35 @@ def nested_if_property_body(source):
     return body
 
 
+def projection_property_body(source, name):
+    if re.search(rf"(?m)^fn {re.escape(name)}\(\)", source):
+        return test_body(source, name)
+    marker = f"    fn {name}("
+    require(source.count(marker) == 1, f"missing or duplicate projection property: {name}")
+    start = source.index(marker)
+    macro = source.rfind("proptest! {", 0, start)
+    require(macro >= 0, f"projection property is outside proptest: {name}")
+    declaration = source[macro:start]
+    require(
+        "#[test]" in declaration and "#[ignore" not in declaration,
+        f"projection property is not an active normal-suite test: {name}",
+    )
+    end = source.find("\n    }\n}", start)
+    require(end >= 0, f"projection property boundary missing: {name}")
+    return source[start:end]
+
+
+def helper_body(source, name):
+    matches = list(
+        re.finditer(rf"(?m)^([ \t]*)(?:pub(?:\([a-z]+\))? )?fn {re.escape(name)}\(", source)
+    )
+    require(len(matches) == 1, f"missing or duplicate projection property helper: {name}")
+    start = matches[0].start()
+    end = source.find(f"\n{matches[0].group(1)}}}\n", start)
+    require(end >= 0, f"projection property helper boundary missing: {name}")
+    return source[start:end]
+
+
 def extract(sources):
     config = sources[CONFIG]
     model = sources[MODEL]
@@ -366,12 +498,26 @@ def extract(sources):
         f"{len(PROJECTION_CAPSTONES)}" in runner,
         "projection closed-capstone gate absent",
     )
+    property_ids = [entry["id"] for entry in PROJECTION_PROPERTIES]
+    require(len(property_ids) == len(set(property_ids)), "duplicate projection property id")
+    for entry in PROJECTION_PROPERTIES:
+        require(
+            entry["theorem"] is None or entry["theorem"] in projection_prints,
+            f"projection property bound to an unregistered theorem: {entry['id']}",
+        )
+        body = projection_property_body(sources[entry["target_source"]], entry["target"])
+        for fragment in entry["assertions"]:
+            require(fragment in body, f"stale projection property assertion: {entry['id']}")
+        if entry["helper"] is not None:
+            helper = helper_body(sources[entry["helper_source"]], entry["helper"])
+            for fragment in entry["helper_assertions"]:
+                require(fragment in helper, f"stale projection property assertion: {entry['id']}")
     require(
         "mod spatial_matcher_pda_equivalence;" in sources[MODULE],
         "PDA normal-suite module unregistered",
     )
     require(
-        "rholang_run_tests 62 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::"
+        "rholang_run_tests 66 --lib rust::interpreter::matcher::spatial_matcher_pda_equivalence::"
         in runner,
         "PDA normal-suite lane absent",
     )
@@ -380,7 +526,7 @@ def extract(sources):
         "connective-isolation normal-suite lane absent",
     )
     require(
-        len(re.findall(r"(?m)^[ \t]*#\[test\]$", sources[PDA])) == 62,
+        len(re.findall(r"(?m)^[ \t]*#\[test\]$", sources[PDA])) == 66,
         "PDA normal-suite census changed",
     )
     require(
@@ -522,9 +668,32 @@ def extract(sources):
                 {
                     "id": f"SM-PROJ-{index:02d}",
                     "symbol": symbol,
-                    "classification": "proof_only",
+                    "classification": "executable_refinement"
+                    if any(entry["theorem"] == symbol for entry in PROJECTION_PROPERTIES)
+                    else "proof_only",
+                    "normal_suite_witnesses": [
+                        entry["target"]
+                        for entry in PROJECTION_PROPERTIES
+                        if entry["theorem"] == symbol
+                    ],
                 }
                 for index, symbol in enumerate(projection_prints, 1)
+            ],
+            "properties": [
+                {
+                    "id": entry["id"],
+                    "theorem": entry["theorem"],
+                    "classification": "executable_refinement"
+                    if entry["theorem"] is not None
+                    else "executable_only",
+                    "target_source": entry["target_source"],
+                    "target": entry["target"],
+                    "assertions": list(entry["assertions"]),
+                    "helper_source": entry["helper_source"],
+                    "helper": entry["helper"],
+                    "helper_assertions": list(entry["helper_assertions"]),
+                }
+                for entry in PROJECTION_PROPERTIES
             ],
         },
         "scope_limit": "The canonical Connective owner Verus model constrains validated field-1 ranges by complete canonical source bytes, then proves binding, exact next range, and exhaustion under the audited StableConnectiveBodyOwner premise. The model does not verify the production Rust parser, pointer provenance, or unsafe-trait implementations; the generated debug/release property and concrete source audit bridge those premises. Its five Verus mutants test the proof gate. Finite TLC invariants and abstract Rocq theorems still require their proof engines. The registry checks source and runner wiring, not proof execution.",
@@ -668,6 +837,34 @@ def self_test(sources):
         "rocq_compile_with_closed_count theories/SchemaProjectionCorrespondence.v 8",
         "projection closed-capstone gate absent",
     )
+    reject(
+        sources,
+        PDA,
+        "    fn ignored_projection_fields_are_inert_and_exact_fields_change_the_query(",
+        "    fn renamed_projection_property(",
+        "missing or duplicate projection property",
+    )
+    reject(
+        sources,
+        RETAINED,
+        "#[test]\nfn depth_4096_pattern_compiles_and_matches_on_a_one_mebibyte_thread",
+        "#[test]\n#[ignore]\nfn depth_4096_pattern_compiles_and_matches_on_a_one_mebibyte_thread",
+        "ignored-only target",
+    )
+    reject(
+        sources,
+        POOL,
+        'assert_eq!(actual, expected, "arena traversal must equal the byte oracle");',
+        'assert_eq!(actual, actual, "arena traversal must equal the byte oracle");',
+        "stale projection property assertion",
+    )
+    reject(
+        sources,
+        PDA,
+        "assert_projection_rows_are_respected(PROJECTION_RULES, &regions);",
+        "assert_projection_rows_are_respected(&[], &regions);",
+        "stale projection property assertion",
+    )
 
 
 def main():
@@ -681,7 +878,7 @@ def main():
         CONFIG, MODEL, ROCQ, RUNNER, MODULE, PDA, ISOLATION,
         OWNER_MODEL, OWNER_MUTANTS, CONNECTIVE_SOURCE, CONNECTIVE_PROPERTY,
         MATCHER_SOURCE,
-        PROJECTION_TABLE, PROJECTION_THEORY,
+        PROJECTION_TABLE, PROJECTION_THEORY, POOL, RETAINED,
     }
     sources = {
         path: (ROOT / path).read_text(encoding="utf-8") for path in sorted(paths)

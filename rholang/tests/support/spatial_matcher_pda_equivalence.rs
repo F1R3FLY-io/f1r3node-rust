@@ -17,10 +17,11 @@ use models::rhoapi::connective::ConnectiveInstance::{
 };
 use models::rhoapi::expr::ExprInstance::EPathmapBody;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, CostBoundSignature, CostClauseRegion, CostRegion,
-    CostSignature, CostSignatureAtom, CostTokenStack, DeployId, DeployerId, EPathMap, ETuple, Expr,
-    GBigRational, GDeployId, GFixedPoint, GUnforgeable, If, KeyValuePair, Match, MatchCase, New,
-    PCost, Par, Receive, ReceiveBind, Send, Var, VarRef,
+    BindPattern, Bundle, Connective, ConnectiveBody, CostBoundSignature, CostClauseRegion,
+    CostRegion, CostSignature, CostSignatureAtom, CostTokenStack, DeployId, DeployerId, EMap,
+    EMethod, EPathMap, ETuple, EZipper, Expr, GBigRational, GDeployId, GFixedPoint, GUnforgeable,
+    If, KeyValuePair, ListParWithRandom, Match, MatchCase, New, PCost, Par, ParWithRandom, Receive,
+    ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
 use models::rust::par_bag::ParBag;
 use models::rust::par_construction::ParConstruction;
@@ -28,21 +29,24 @@ use models::rust::rholang::match_path::{encode_match_path, encode_par_match_atom
 use models::rust::rholang::match_schema::{RhoPathCursor, RhoPathEvent};
 use models::rust::rholang::match_schema_tables::{ParCursor, RHO_MATCH_REGISTRY};
 use models::rust::utils::{
-    new_elist_par, new_emap_par, new_eset_par, new_etuple_par, new_freevar_expr, new_freevar_par,
-    new_gbool_par, new_gbytearray_par, new_gint_par, new_gstring_par, new_guri_par,
-    new_wildcard_par,
+    new_elist_expr, new_elist_par, new_emap_expr, new_emap_par, new_eset_expr, new_eset_par,
+    new_etuple_par, new_freevar_expr, new_freevar_par, new_gbool_par, new_gbytearray_par,
+    new_gint_par, new_gstring_par, new_guri_par, new_wildcard_par, union,
 };
 use pathmap::PathMap;
 use proptest::prelude::*;
-use rspace_plus_plus::rspace::rho_path::{encode_structural_sequence, RhoPathQuery};
+use rspace_plus_plus::rspace::r#match::Match as _;
+use rspace_plus_plus::rspace::rho_path::{
+    encode_structural_sequence, RhoMatchQuery, RhoMatchQueryPart, RhoPathQuery, RhoPathQueryAtom,
+};
 
 use super::free_map_transaction::{
     assert_unwind_probe, panic_after_writes_for_test, unwind_probe_subject, BindingDelta,
     FreeMapTransaction, UnwindRollbackWitness,
 };
 use super::match_pars::{match_pars, try_match_pars, MatchParsDomainError};
-use super::projection_rules::{projection_rule, PROJECTION_RULES};
-use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom};
+use super::projection_rules::{projection_rule, ProjectionRule, PROJECTION_RULES};
+use super::r#match::{rho_path_query_atom, rho_path_query_cursor_atom, Matcher};
 use super::recursive_oracle::spatial_matcher::{
     SpatialMatcher as RecursiveSpatialMatcher, SpatialMatcherContext as RecursiveContext,
 };
@@ -54,8 +58,9 @@ use super::spatial_matcher_pda::{
     match_ac_query_acceptance, match_par_list_with_stats, match_par_with_concrete_region_stats,
     match_par_with_stats, match_par_with_transaction_stats, match_send_list_with_remainder_stats,
     match_send_list_with_stats, new_ac_query_acceptance, receive_bind_ac_query_acceptance,
-    send_target_index_shape, CandidateExpansionMode, EncodedExprOuterRoute,
+    send_target_group_mask, send_target_index_shape, CandidateExpansionMode, EncodedExprOuterRoute,
 };
+use crate::rust::interpreter::util::{filter_and_adjust_bitset, prepend_expr, prepend_new};
 
 #[test]
 fn encoded_expr_outer_route_rejects_only_proven_different_tags() {
@@ -3817,6 +3822,1070 @@ fn production_pda_has_no_whole_freemap_snapshot_or_unjournaled_write() {
         assert!(
             classifier.contains(required),
             "sole-FreeVar classification lost byte-native proof `{required}`"
+        );
+    }
+}
+
+#[derive(Clone)]
+enum ProjectionRoot {
+    Par(Par),
+    Send(Send),
+    Receive(Receive),
+    ReceiveBind(ReceiveBind),
+    New(New),
+    Match(Match),
+    If(If),
+    Expr(Expr),
+    Connective(Connective),
+    Var(Var),
+    Data(ListParWithRandom),
+    Continuation(TaggedContinuation),
+}
+
+impl ProjectionRoot {
+    fn cursor(&self) -> ParCursor<'_> {
+        match self {
+            Self::Par(value) => ParCursor::from(value),
+            Self::Send(value) => ParCursor::from(value),
+            Self::Receive(value) => ParCursor::from(value),
+            Self::ReceiveBind(value) => ParCursor::from(value),
+            Self::New(value) => ParCursor::from(value),
+            Self::Match(value) => ParCursor::from(value),
+            Self::If(value) => ParCursor::from(value),
+            Self::Expr(value) => ParCursor::from(value),
+            Self::Connective(value) => ParCursor::from(value),
+            Self::Var(value) => ParCursor::from(value),
+            Self::Data(value) => ParCursor::from(value),
+            Self::Continuation(value) => ParCursor::from(value),
+        }
+    }
+
+    fn spatial_par(&self) -> Par {
+        match self {
+            Self::Par(value) => value.clone(),
+            Self::Send(value) => Par::default().prepend_send(value.clone()),
+            Self::Receive(value) => Par::default().prepend_receive(value.clone()),
+            Self::New(value) => prepend_new(Par::default(), value.clone()),
+            Self::Match(value) => Par::default().prepend_match(value.clone()),
+            Self::If(value) => Par::default().prepend_if(value.clone()),
+            Self::Expr(value) => prepend_expr(Par::default(), value.clone(), 0),
+            Self::ReceiveBind(_)
+            | Self::Connective(_)
+            | Self::Var(_)
+            | Self::Data(_)
+            | Self::Continuation(_) => {
+                panic!(
+                    "a {} root has no spatial Par",
+                    self.cursor().program().type_name
+                )
+            }
+        }
+    }
+}
+
+struct ProjectionFixture {
+    families: &'static [&'static str],
+    label: &'static str,
+    target: ProjectionRoot,
+    pattern: ProjectionRoot,
+}
+
+#[derive(Debug, PartialEq)]
+enum ProjectionVerdict {
+    Spatial(Option<BTreeMap<i32, Par>>),
+    Data(Option<Vec<Par>>),
+    Commit(bool, bool),
+}
+
+#[derive(Debug, PartialEq)]
+struct ProjectionObservation {
+    query: Option<RhoPathQueryAtom>,
+    accepts_target: Option<bool>,
+    verdict: ProjectionVerdict,
+}
+
+#[derive(Clone, Debug)]
+enum GeneratedField {
+    Normalized,
+    Region(Option<CostRegion>),
+    Flag(bool),
+    Name(&'static str),
+    Path(Vec<Vec<u8>>),
+    Kind(u32),
+    Bytes(Vec<u8>),
+}
+
+fn expression(instance: models::rhoapi::expr::ExprInstance) -> Expr {
+    Expr {
+        expr_instance: Some(instance),
+    }
+}
+
+fn projection_fixtures() -> Vec<ProjectionFixture> {
+    use models::rhoapi::expr::ExprInstance::{EMethodBody, ETupleBody, EZipperBody};
+
+    let int = |value| new_gint_par(value, Vec::new(), false);
+    let free = |level| new_freevar_par(level, Vec::new());
+    let ground_send = send_value(int(7), vec![int(11)], false);
+    let target_rows = Par::default()
+        .prepend_send(send_value(int(7), vec![int(1)], false))
+        .prepend_send(send_value(int(8), vec![int(2)], false));
+    let pattern_rows = Par::default()
+        .prepend_send(send_value(free(0), vec![int(1)], true))
+        .prepend_send(send_value(free(1), vec![int(2)], true));
+    assert!(
+        pattern_rows
+            .decode_occurrences::<Send>()
+            .iter()
+            .all(|row| row.connective_used),
+        "the Send list rows must reach evaluate_send as dynamic rows"
+    );
+    let ground_bind = ReceiveBind {
+        patterns: vec![int(1)],
+        source: Some(int(7)),
+        remainder: None,
+        free_count: 0,
+        cost_region: None,
+    };
+    let ground_receive = Receive {
+        binds: vec![ground_bind.clone()],
+        body: Some(int(2)),
+        persistent: false,
+        peek: false,
+        bind_count: 0,
+        locally_free: Vec::new(),
+        connective_used: false,
+        condition: None,
+        cost_region: None,
+    };
+    let dynamic_receive = Receive {
+        binds: vec![ReceiveBind {
+            source: Some(free(0)),
+            ..ground_bind
+        }],
+        connective_used: true,
+        ..ground_receive.clone()
+    };
+    assert!(
+        dynamic_receive
+            .binds
+            .iter()
+            .all(|bind| bind.source.as_ref().is_some_and(Par::connective_used)),
+        "the ReceiveBind rows must reach evaluate_receive_bind as dynamic rows"
+    );
+    let new_scope_of = |p| New {
+        bind_count: 1,
+        p: Some(p),
+        uri: Vec::new(),
+        injections: BTreeMap::new(),
+        locally_free: Vec::new(),
+    };
+    let ground_match = Match {
+        target: Some(int(1)),
+        cases: vec![MatchCase {
+            pattern: Some(int(1)),
+            source: Some(int(2)),
+            free_count: 0,
+            guard: None,
+        }],
+        locally_free: Vec::new(),
+        connective_used: false,
+    };
+    let conditional_of = |condition, connective_used| If {
+        condition: Some(condition),
+        if_true: Some(int(1)),
+        if_false: Some(int(2)),
+        locally_free: Vec::new(),
+        connective_used,
+    };
+    let list_of = |first, connective_used| {
+        new_elist_expr(vec![first, int(2)], Vec::new(), connective_used, None)
+    };
+    let tuple_of = |first, connective_used| {
+        expression(ETupleBody(ETuple {
+            ps: vec![first, int(2)],
+            locally_free: Vec::new(),
+            connective_used,
+        }))
+    };
+    let set = new_eset_expr(vec![int(1)], Vec::new(), false, None);
+    let map = new_emap_expr(
+        vec![KeyValuePair {
+            key: Some(int(1)),
+            value: Some(int(2)),
+        }],
+        Vec::new(),
+        false,
+        None,
+    );
+    let pathmap = expression(EPathmapBody(EPathMap::default()));
+    let method_of = |target, connective_used| {
+        expression(EMethodBody(EMethod {
+            method_name: "nth".to_string(),
+            target: Some(target),
+            arguments: vec![int(0)],
+            locally_free: Vec::new(),
+            connective_used,
+        }))
+    };
+    let zipper_send = send_value(
+        int(7),
+        vec![prepend_expr(
+            Par::default(),
+            expression(EZipperBody(EZipper {
+                pathmap: None,
+                current_path: Vec::new(),
+                is_write_zipper: false,
+                locally_free: Vec::new(),
+                connective_used: false,
+                cursor_kind: 0,
+            })),
+            0,
+        )],
+        false,
+    );
+    let data_of = |par| ListParWithRandom {
+        pars: vec![par],
+        random_state: Vec::new(),
+        cost_region: None,
+    };
+    let continuation_of = |body| TaggedContinuation {
+        tagged_cont: Some(models::rhoapi::tagged_continuation::TaggedCont::ParBody(
+            ParWithRandom {
+                body: Some(body),
+                random_state: Vec::new(),
+            },
+        )),
+        guard: Some(new_gbool_par(true, Vec::new(), false)),
+        cost_region: None,
+        clause_regions: Vec::new(),
+    };
+    vec![
+        ProjectionFixture {
+            families: &["Send"],
+            label: "ground Send",
+            target: ProjectionRoot::Send(ground_send.clone()),
+            pattern: ProjectionRoot::Send(ground_send.clone()),
+        },
+        ProjectionFixture {
+            families: &["Send"],
+            label: "dynamic Send",
+            target: ProjectionRoot::Send(ground_send),
+            pattern: ProjectionRoot::Send(send_value(free(0), vec![int(11)], true)),
+        },
+        ProjectionFixture {
+            families: &["Par", "Send"],
+            label: "dynamic Send list rows",
+            target: ProjectionRoot::Par(target_rows),
+            pattern: ProjectionRoot::Par(pattern_rows),
+        },
+        ProjectionFixture {
+            families: &["Receive", "ReceiveBind"],
+            label: "ground Receive",
+            target: ProjectionRoot::Receive(ground_receive.clone()),
+            pattern: ProjectionRoot::Receive(ground_receive.clone()),
+        },
+        ProjectionFixture {
+            families: &["Receive", "ReceiveBind"],
+            label: "dynamic Receive",
+            target: ProjectionRoot::Receive(ground_receive),
+            pattern: ProjectionRoot::Receive(dynamic_receive),
+        },
+        ProjectionFixture {
+            families: &["New"],
+            label: "New",
+            target: ProjectionRoot::New(new_scope_of(int(5))),
+            pattern: ProjectionRoot::New(new_scope_of(free(0))),
+        },
+        ProjectionFixture {
+            families: &["Match"],
+            label: "ground Match",
+            target: ProjectionRoot::Match(ground_match.clone()),
+            pattern: ProjectionRoot::Match(ground_match),
+        },
+        ProjectionFixture {
+            families: &["If"],
+            label: "If",
+            target: ProjectionRoot::If(conditional_of(
+                new_gbool_par(true, Vec::new(), false),
+                false,
+            )),
+            pattern: ProjectionRoot::If(conditional_of(free(0), true)),
+        },
+        ProjectionFixture {
+            families: &["EList"],
+            label: "EList",
+            target: ProjectionRoot::Expr(list_of(int(1), false)),
+            pattern: ProjectionRoot::Expr(list_of(free(0), true)),
+        },
+        ProjectionFixture {
+            families: &["ETuple"],
+            label: "ETuple",
+            target: ProjectionRoot::Expr(tuple_of(int(1), false)),
+            pattern: ProjectionRoot::Expr(tuple_of(free(0), true)),
+        },
+        ProjectionFixture {
+            families: &["ESet"],
+            label: "ground ESet",
+            target: ProjectionRoot::Expr(set.clone()),
+            pattern: ProjectionRoot::Expr(set),
+        },
+        ProjectionFixture {
+            families: &["EMap"],
+            label: "ground EMap",
+            target: ProjectionRoot::Expr(map.clone()),
+            pattern: ProjectionRoot::Expr(map),
+        },
+        ProjectionFixture {
+            families: &["EPathMap"],
+            label: "empty EPathMap",
+            target: ProjectionRoot::Expr(pathmap.clone()),
+            pattern: ProjectionRoot::Expr(pathmap),
+        },
+        ProjectionFixture {
+            families: &["EMethod"],
+            label: "EMethod",
+            target: ProjectionRoot::Expr(method_of(int(9), false)),
+            pattern: ProjectionRoot::Expr(method_of(free(0), true)),
+        },
+        ProjectionFixture {
+            families: &["EZipper"],
+            label: "EZipper datum of a ground Send",
+            target: ProjectionRoot::Send(zipper_send.clone()),
+            pattern: ProjectionRoot::Send(zipper_send),
+        },
+        ProjectionFixture {
+            families: &["ListParWithRandom"],
+            label: "ListParWithRandom",
+            target: ProjectionRoot::Data(data_of(int(5))),
+            pattern: ProjectionRoot::Data(data_of(free(0))),
+        },
+        ProjectionFixture {
+            families: &["TaggedContinuation"],
+            label: "TaggedContinuation",
+            target: ProjectionRoot::Continuation(continuation_of(int(5))),
+            pattern: ProjectionRoot::Continuation(continuation_of(free(0))),
+        },
+    ]
+}
+
+fn par_summary<'a>(pars: impl IntoIterator<Item = &'a Par>) -> (Vec<u8>, bool) {
+    pars.into_iter().fold(
+        (Vec::new(), false),
+        |(locally_free, connective_used), par| {
+            (
+                union(locally_free, par.locally_free().to_vec()),
+                connective_used || par.connective_used(),
+            )
+        },
+    )
+}
+
+fn rebuilt_par(par: &Par) -> Par {
+    let mut rebuilt = Par::default();
+    for value in par.decode_occurrences::<Send>() {
+        rebuilt = rebuilt.prepend_send(value);
+    }
+    for value in par.decode_occurrences::<Receive>() {
+        rebuilt = rebuilt.prepend_receive(value);
+    }
+    for value in par.decode_occurrences::<New>() {
+        rebuilt = prepend_new(rebuilt, value);
+    }
+    for value in par.decode_occurrences::<Expr>() {
+        rebuilt = prepend_expr(rebuilt, value, 0);
+    }
+    for value in par.decode_occurrences::<Match>() {
+        rebuilt = rebuilt.prepend_match(value);
+    }
+    for value in par.decode_occurrences::<If>() {
+        rebuilt = rebuilt.prepend_if(value);
+    }
+    rebuilt
+}
+
+fn derived_summary_is_normalized(cursor: ParCursor<'_>) -> bool {
+    let count =
+        |value: i32| usize::try_from(value).expect("a generated binder count is nonnegative");
+    match cursor {
+        ParCursor::Par(par) => {
+            let rebuilt = rebuilt_par(par);
+            rebuilt == *par && rebuilt.locally_free() == par.locally_free()
+        }
+        ParCursor::Send(send) => {
+            par_summary(send.chan.iter().chain(&send.data))
+                == (send.locally_free.clone(), send.connective_used)
+        }
+        ParCursor::Receive(receive) => {
+            let (sources_free, sources_connective) =
+                par_summary(receive.binds.iter().filter_map(|bind| bind.source.as_ref()));
+            let (patterns_free, _) =
+                par_summary(receive.binds.iter().flat_map(|bind| &bind.patterns));
+            let (scope_free, scope_connective) =
+                par_summary(receive.body.iter().chain(&receive.condition));
+            let scope_free = filter_and_adjust_bitset(scope_free, count(receive.bind_count));
+            (
+                union(sources_free, union(patterns_free, scope_free)),
+                sources_connective || scope_connective,
+            ) == (receive.locally_free.clone(), receive.connective_used)
+        }
+        ParCursor::New(new) => {
+            filter_and_adjust_bitset(par_summary(&new.p).0, count(new.bind_count))
+                == new.locally_free
+        }
+        ParCursor::Match(matched) => {
+            let (target_free, target_connective) = par_summary(&matched.target);
+            let (locally_free, connective_used) = matched.cases.iter().fold(
+                (target_free, target_connective),
+                |(locally_free, connective_used), case| {
+                    let (scope_free, scope_connective) =
+                        par_summary(case.source.iter().chain(&case.guard));
+                    (
+                        union(
+                            union(locally_free, par_summary(&case.pattern).0),
+                            filter_and_adjust_bitset(scope_free, count(case.free_count)),
+                        ),
+                        connective_used || scope_connective,
+                    )
+                },
+            );
+            (locally_free, connective_used)
+                == (matched.locally_free.clone(), matched.connective_used)
+        }
+        ParCursor::If(conditional) => {
+            par_summary(
+                conditional
+                    .condition
+                    .iter()
+                    .chain(&conditional.if_true)
+                    .chain(&conditional.if_false),
+            ) == (
+                conditional.locally_free.clone(),
+                conditional.connective_used,
+            )
+        }
+        ParCursor::EList(list) => {
+            let (locally_free, connective_used) = par_summary(&list.ps);
+            (locally_free, connective_used || list.remainder.is_some())
+                == (list.locally_free.clone(), list.connective_used)
+        }
+        ParCursor::ETuple(tuple) => {
+            par_summary(&tuple.ps) == (tuple.locally_free.clone(), tuple.connective_used)
+        }
+        ParCursor::ESet(set) => {
+            let (locally_free, connective_used) = par_summary(&set.ps);
+            (locally_free, connective_used || set.remainder.is_some())
+                == (set.locally_free.clone(), set.connective_used)
+        }
+        ParCursor::EMap(map) => {
+            let (locally_free, connective_used) = par_summary(
+                map.kvs
+                    .iter()
+                    .flat_map(|pair| pair.key.iter().chain(&pair.value)),
+            );
+            (locally_free, connective_used || map.remainder.is_some())
+                == (map.locally_free.clone(), map.connective_used)
+        }
+        ParCursor::EPathMap(map) => {
+            (
+                map.entry_trie().union_locally_free().to_vec(),
+                map.entry_trie().any_connective_used() || map.remainder.is_some(),
+            ) == (map.locally_free.clone(), map.connective_used)
+        }
+        ParCursor::EMethod(method) => {
+            par_summary(method.target.iter().chain(&method.arguments))
+                == (method.locally_free.clone(), method.connective_used)
+        }
+        ParCursor::EZipper(zipper) => match zipper.pathmap {
+            None => zipper.locally_free.is_empty() && !zipper.connective_used,
+            Some(_) => panic!("the normalization check covers EZipper values without a PathMap"),
+        },
+        _ => true,
+    }
+}
+
+fn assert_cursor_is_normalized(
+    label: &str,
+    root: ParCursor<'_>,
+    pending: &mut Vec<OwnedGeneratedQueryRoot>,
+) {
+    for event in RhoPathCursor::new(root) {
+        match event {
+            RhoPathEvent::EnterNode { cursor, program } => assert!(
+                derived_summary_is_normalized(cursor),
+                "{label}: a generated {} is not normalized",
+                program.type_name
+            ),
+            RhoPathEvent::ParBag(bag) => enqueue_par_bag_components(bag, pending),
+            _ => {}
+        }
+    }
+}
+
+fn assert_projection_root_is_normalized(label: &str, root: &ProjectionRoot) {
+    let mut pending = Vec::new();
+    assert_cursor_is_normalized(label, root.cursor(), &mut pending);
+    while let Some(component) = pending.pop() {
+        assert_cursor_is_normalized(label, component.cursor(), &mut pending);
+    }
+}
+
+fn observe_projection(target: &ProjectionRoot, pattern: &ProjectionRoot) -> ProjectionObservation {
+    let query = rho_path_query_cursor_atom(pattern.cursor(), false, &mut PathMap::new());
+    let accepts_target = query.clone().map(|atom| {
+        RhoPathQuery::structural_sequence([atom], false).matches_structure(
+            &encode_structural_sequence([encode_match_path(target.cursor()).as_slice()]),
+        )
+    });
+    let verdict = match (target, pattern) {
+        (ProjectionRoot::Data(target), ProjectionRoot::Data(pattern)) => {
+            let bind = BindPattern {
+                patterns: pattern.pars.clone(),
+                remainder: None,
+                free_count: 1,
+            };
+            ProjectionVerdict::Data(Matcher.get(&bind, target).map(|matched| matched.pars))
+        }
+        (ProjectionRoot::Continuation(target), ProjectionRoot::Continuation(pattern)) => {
+            let datum = ListParWithRandom {
+                pars: vec![new_gint_par(5, Vec::new(), false)],
+                random_state: Vec::new(),
+                cost_region: None,
+            };
+            ProjectionVerdict::Commit(
+                Matcher.check_commit(target, &[&datum]),
+                Matcher.check_commit(pattern, &[&datum]),
+            )
+        }
+        _ => {
+            let mut context = SpatialMatcherContext::new();
+            let matched = context
+                .spatial_match(target.spatial_par(), pattern.spatial_par())
+                .is_some();
+            let free_map = std::mem::take(&mut context.free_map);
+            ProjectionVerdict::Spatial(matched.then_some(free_map))
+        }
+    };
+    ProjectionObservation {
+        query,
+        accepts_target,
+        verdict,
+    }
+}
+
+fn generated_field_values(
+    owner: &str,
+    field: &str,
+    regions: &[Option<CostRegion>],
+) -> Option<Vec<GeneratedField>> {
+    Some(match (owner, field) {
+        (_, "locally_free" | "connective_used") => vec![GeneratedField::Normalized],
+        (
+            "Send" | "Receive" | "ReceiveBind" | "ListParWithRandom" | "TaggedContinuation",
+            "cost_region",
+        ) => regions
+            .iter()
+            .cloned()
+            .map(GeneratedField::Region)
+            .collect(),
+        ("Send", "persistent") | ("EZipper", "is_write_zipper") => {
+            vec![GeneratedField::Flag(false), GeneratedField::Flag(true)]
+        }
+        ("EMethod", "method_name") => {
+            vec![GeneratedField::Name("nth"), GeneratedField::Name("length")]
+        }
+        ("EZipper", "current_path") => {
+            vec![
+                GeneratedField::Path(Vec::new()),
+                GeneratedField::Path(vec![vec![1]]),
+            ]
+        }
+        ("EZipper", "cursor_kind") => {
+            vec![
+                GeneratedField::Kind(0),
+                GeneratedField::Kind(1),
+                GeneratedField::Kind(2),
+            ]
+        }
+        ("ListParWithRandom", "random_state") => {
+            vec![
+                GeneratedField::Bytes(Vec::new()),
+                GeneratedField::Bytes(vec![1, 2, 3]),
+            ]
+        }
+        _ => return None,
+    })
+}
+
+fn vary_send(send: &mut Send, field: &str, value: &GeneratedField) {
+    match (field, value) {
+        ("cost_region", GeneratedField::Region(region)) => send.cost_region = region.clone(),
+        ("persistent", GeneratedField::Flag(flag)) => send.persistent = *flag,
+        _ => panic!("Send.{field} has no generated value {value:?}"),
+    }
+}
+
+fn vary_zipper(datum: &Par, field: &str, value: &GeneratedField) -> Par {
+    let exprs = datum
+        .decode_occurrences::<Expr>()
+        .into_iter()
+        .map(|mut expr| {
+            if let Some(models::rhoapi::expr::ExprInstance::EZipperBody(zipper)) =
+                &mut expr.expr_instance
+            {
+                match (field, value) {
+                    ("current_path", GeneratedField::Path(path)) => {
+                        zipper.current_path = path.clone()
+                    }
+                    ("cursor_kind", GeneratedField::Kind(kind)) => zipper.cursor_kind = *kind,
+                    ("is_write_zipper", GeneratedField::Flag(flag)) => {
+                        zipper.is_write_zipper = *flag
+                    }
+                    _ => panic!("EZipper.{field} has no generated value {value:?}"),
+                }
+            }
+            expr
+        })
+        .collect();
+    datum.with_exprs(exprs)
+}
+
+fn vary_projection_root(
+    root: &ProjectionRoot,
+    owner: &str,
+    field: &str,
+    value: &GeneratedField,
+) -> ProjectionRoot {
+    let mut varied = root.clone();
+    match (&mut varied, owner, value) {
+        (_, _, GeneratedField::Normalized) => {}
+        (ProjectionRoot::Send(send), "Send", _) => vary_send(send, field, value),
+        (ProjectionRoot::Par(par), "Send", _) => {
+            let sends = par
+                .decode_occurrences::<Send>()
+                .into_iter()
+                .map(|mut send| {
+                    vary_send(&mut send, field, value);
+                    send
+                })
+                .collect();
+            *par = par.with_sends(sends);
+        }
+        (ProjectionRoot::Send(send), "EZipper", _) => {
+            send.data = send
+                .data
+                .iter()
+                .map(|datum| vary_zipper(datum, field, value))
+                .collect();
+        }
+        (ProjectionRoot::Receive(receive), "Receive", GeneratedField::Region(region)) => {
+            receive.cost_region = region.clone()
+        }
+        (ProjectionRoot::Receive(receive), "ReceiveBind", GeneratedField::Region(region)) => {
+            for bind in &mut receive.binds {
+                bind.cost_region = region.clone();
+            }
+        }
+        (ProjectionRoot::Expr(expr), "EMethod", GeneratedField::Name(name)) => {
+            match &mut expr.expr_instance {
+                Some(models::rhoapi::expr::ExprInstance::EMethodBody(method)) => {
+                    method.method_name = name.to_string()
+                }
+                _ => panic!("the EMethod fixture holds no EMethod"),
+            }
+        }
+        (ProjectionRoot::Data(data), "ListParWithRandom", GeneratedField::Region(region)) => {
+            data.cost_region = region.clone()
+        }
+        (ProjectionRoot::Data(data), "ListParWithRandom", GeneratedField::Bytes(bytes)) => {
+            data.random_state = bytes.clone()
+        }
+        (
+            ProjectionRoot::Continuation(continuation),
+            "TaggedContinuation",
+            GeneratedField::Region(region),
+        ) => continuation.cost_region = region.clone(),
+        _ => panic!("{owner}.{field}: no fixture subject takes the generated value {value:?}"),
+    }
+    varied
+}
+
+fn assert_projection_rows_are_respected(
+    rules: &[(&str, &str, ProjectionRule)],
+    regions: &[Option<CostRegion>],
+) {
+    let fixtures = projection_fixtures();
+    for fixture in &fixtures {
+        assert_projection_root_is_normalized(fixture.label, &fixture.target);
+        assert_projection_root_is_normalized(fixture.label, &fixture.pattern);
+    }
+    let families = rules
+        .iter()
+        .filter(|&&(_, _, rule)| rule == ProjectionRule::Ignored)
+        .map(|&(owner, _, _)| owner)
+        .collect::<BTreeSet<_>>();
+    for family in families {
+        let subjects = fixtures
+            .iter()
+            .filter(|fixture| fixture.families.contains(&family))
+            .collect::<Vec<_>>();
+        assert!(
+            !subjects.is_empty(),
+            "{family} has an Ignored rule, but no fixture"
+        );
+        let observations = subjects
+            .iter()
+            .map(|fixture| observe_projection(&fixture.target, &fixture.pattern))
+            .collect::<Vec<_>>();
+        for &(owner, field, rule) in rules.iter().filter(|&&(owner, _, _)| owner == family) {
+            if !matches!(rule, ProjectionRule::Ignored | ProjectionRule::Exact) {
+                continue;
+            }
+            let values = generated_field_values(owner, field, regions)
+                .unwrap_or_else(|| panic!("{owner}.{field} has no generated values"));
+            let mut sensitive = false;
+            for (fixture, base) in subjects.iter().zip(&observations) {
+                for value in &values {
+                    let pattern = vary_projection_root(&fixture.pattern, owner, field, value);
+                    let changed = observe_projection(&fixture.target, &pattern);
+                    sensitive |= changed.query != base.query;
+                    if rule == ProjectionRule::Ignored {
+                        assert_eq!(
+                            changed, *base,
+                            "{}: the pattern's {owner}.{field} = {value:?} changed the projection",
+                            fixture.label
+                        );
+                        let target = vary_projection_root(&fixture.target, owner, field, value);
+                        assert_eq!(
+                            observe_projection(&target, &fixture.pattern),
+                            *base,
+                            "{}: the target's {owner}.{field} = {value:?} changed the projection",
+                            fixture.label
+                        );
+                    }
+                }
+            }
+            assert!(
+                rule != ProjectionRule::Exact || sensitive,
+                "{owner}.{field} is marked Exact, but no generated value changes its query"
+            );
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        failure_persistence: None,
+        ..ProptestConfig::with_cases(32)
+    })]
+
+    #[test]
+    fn ignored_projection_fields_are_inert_and_exact_fields_change_the_query(
+        metadata in prop::collection::vec(ignored_send_metadata(), 1..4),
+    ) {
+        let regions = metadata.into_iter().map(|(region, _)| region).collect::<Vec<_>>();
+        assert_projection_rows_are_respected(PROJECTION_RULES, &regions);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn list_target_group_mask_equals_the_structure_filter_over_every_group(
+        targets in prop::collection::vec((-2i64..3, -2i64..3, any::<bool>()), 1..9),
+        chan in prop::option::of(-2i64..3),
+        datum in prop::option::of(-2i64..3),
+        persistent in any::<bool>(),
+        whole_value_wildcard in any::<bool>(),
+    ) {
+        let int = |value| new_gint_par(value, Vec::new(), false);
+        let targets = targets
+            .into_iter()
+            .map(|(chan, datum, persistent)| Send {
+                persistent,
+                ..send_value(int(chan), vec![int(datum)], false)
+            })
+            .collect::<Vec<_>>();
+        let pattern = Send {
+            persistent,
+            ..send_value(
+                chan.map_or_else(|| new_freevar_par(0, Vec::new()), int),
+                vec![datum.map_or_else(|| new_freevar_par(1, Vec::new()), int)],
+                chan.is_none() || datum.is_none(),
+            )
+        };
+        let query = if whole_value_wildcard {
+            RhoPathQuery::structural_sequence([RhoPathQueryAtom::Wildcard], false)
+        } else {
+            let atom =
+                rho_path_query_cursor_atom(ParCursor::from(&pattern), false, &mut PathMap::new())
+                    .expect("a linear Send pattern compiles");
+            RhoPathQuery::structural_sequence([atom], false)
+        };
+        let (groups, mask) = send_target_group_mask(targets, &query);
+        match mask {
+            Some(mask) => {
+                let expected = groups
+                    .iter()
+                    .filter(|(_, structure)| query.matches_structure(structure))
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>();
+                prop_assert_eq!(
+                    mask.val_count(),
+                    expected.len(),
+                    "the group mask must keep exactly the groups the structure filter keeps"
+                );
+                for id in &expected {
+                    prop_assert!(
+                        mask.contains(id),
+                        "the group mask dropped a group the structure filter keeps"
+                    );
+                }
+            }
+            None => {
+                prop_assert!(
+                    query.retained_prefix().len() <= 1,
+                    "only a query without a retained prefix may skip the group mask"
+                );
+            }
+        }
+    }
+}
+
+const GROUND_SEND_QUERY_GOLDEN: &str = concat!(
+    "524d500201000f030000000101000103000000002900000000000000010000000000000001aa87b8",
+    "62258d602c1c9aff2639c2afe2899e8bf45c78844252e03f7c004f4590040300000009*040300000",
+    "00a*0402040300000002210000000000000001010001030000000029000000000000000100000000",
+    "0000000193ca20330dec18ceea80d45f5ae466ae38a9be25e15b347e6f185548ebbe62d104030000",
+    "0009*04030000000a*0402220403000000031000040300000005*040300000006*040300000007*0",
+    "402",
+);
+
+#[test]
+fn ground_send_query_equals_the_committed_golden_bytes() {
+    let send = send_value(
+        new_gint_par(7, Vec::new(), false),
+        vec![new_gint_par(11, Vec::new(), false)],
+        false,
+    );
+    let mut captures = PathMap::new();
+    let atom = rho_path_query_cursor_atom(ParCursor::from(&send), true, &mut captures)
+        .expect("a ground Send compiles to a query");
+    assert!(
+        captures.is_empty(),
+        "a ground Send query publishes no capture"
+    );
+    let parts = GROUND_SEND_QUERY_GOLDEN
+        .split('*')
+        .enumerate()
+        .flat_map(|(index, run)| {
+            let wildcard = (index > 0).then_some(RhoMatchQueryPart::Wildcard);
+            let exact = (!run.is_empty()).then(|| {
+                RhoMatchQueryPart::Exact(
+                    hex::decode(run).expect("the golden holds hexadecimal runs between wildcards"),
+                )
+            });
+            wildcard.into_iter().chain(exact)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        atom,
+        RhoPathQueryAtom::Match(RhoMatchQuery::new(parts)),
+        "the ground Send query drifted from the committed golden bytes"
+    );
+}
+
+#[test]
+fn every_decline_rule_yields_no_query_and_the_oracle_verdict() {
+    use models::rhoapi::expr::ExprInstance::EMapBody;
+
+    let int = |value| new_gint_par(value, Vec::new(), false);
+    let free = |level| new_freevar_par(level, Vec::new());
+    let expr_par = |expr| prepend_expr(Par::default(), expr, 0);
+    let dynamic_bind = ReceiveBind {
+        patterns: vec![int(1)],
+        source: Some(free(0)),
+        remainder: None,
+        free_count: 0,
+        cost_region: None,
+    };
+    let receive_of = |bind, connective_used| Receive {
+        binds: vec![bind],
+        body: Some(int(2)),
+        persistent: false,
+        peek: false,
+        bind_count: 0,
+        locally_free: Vec::new(),
+        connective_used,
+        condition: None,
+        cost_region: None,
+    };
+    let ground_receive = Par::default().prepend_receive(receive_of(
+        ReceiveBind {
+            source: Some(int(7)),
+            ..dynamic_bind.clone()
+        },
+        false,
+    ));
+    let dynamic_receive = Par::default().prepend_receive(receive_of(dynamic_bind.clone(), true));
+    let new_scope_of = |p| New {
+        bind_count: 1,
+        p: Some(p),
+        uri: Vec::new(),
+        injections: BTreeMap::new(),
+        locally_free: Vec::new(),
+    };
+    let match_of = |target, connective_used| Match {
+        target: Some(target),
+        cases: vec![MatchCase {
+            pattern: Some(int(1)),
+            source: Some(int(2)),
+            free_count: 0,
+            guard: None,
+        }],
+        locally_free: Vec::new(),
+        connective_used,
+    };
+    let set_of =
+        |element, connective_used| new_eset_expr(vec![element], Vec::new(), connective_used, None);
+    let map_of = |value, connective_used| {
+        expression(EMapBody(EMap {
+            kvs: vec![KeyValuePair {
+                key: Some(int(1)),
+                value: Some(value),
+            }],
+            locally_free: Vec::new(),
+            connective_used,
+            remainder: None,
+        }))
+    };
+    let either = || {
+        ConnOrBody(ConnectiveBody {
+            ps: vec![int(1), int(2)],
+        })
+    };
+    let pathmap = expression(EPathmapBody(EPathMap::default()));
+    let fixtures = [
+        (
+            "Connective",
+            ProjectionRoot::Connective(Connective {
+                connective_instance: Some(either()),
+            }),
+            int(2),
+            connective(either()),
+        ),
+        (
+            "EMap",
+            ProjectionRoot::Expr(map_of(free(0), true)),
+            expr_par(map_of(int(2), false)),
+            expr_par(map_of(free(0), true)),
+        ),
+        (
+            "EPathMap",
+            ProjectionRoot::Expr(pathmap.clone()),
+            expr_par(pathmap.clone()),
+            expr_par(pathmap),
+        ),
+        (
+            "ESet",
+            ProjectionRoot::Expr(set_of(free(0), true)),
+            expr_par(set_of(int(1), false)),
+            expr_par(set_of(free(0), true)),
+        ),
+        (
+            "Match",
+            ProjectionRoot::Match(match_of(free(0), true)),
+            Par::default().prepend_match(match_of(int(1), false)),
+            Par::default().prepend_match(match_of(free(0), true)),
+        ),
+        (
+            "New",
+            ProjectionRoot::New(new_scope_of(free(0))),
+            prepend_new(Par::default(), new_scope_of(int(5))),
+            prepend_new(Par::default(), new_scope_of(free(0))),
+        ),
+        (
+            "Receive",
+            ProjectionRoot::Receive(receive_of(dynamic_bind.clone(), true)),
+            ground_receive.clone(),
+            dynamic_receive.clone(),
+        ),
+        (
+            "ReceiveBind",
+            ProjectionRoot::ReceiveBind(dynamic_bind),
+            ground_receive,
+            dynamic_receive,
+        ),
+        (
+            "Var",
+            ProjectionRoot::Var(Var {
+                var_instance: Some(models::rhoapi::var::VarInstance::FreeVar(0)),
+            }),
+            int(5),
+            free(0),
+        ),
+    ];
+    for &(owner, field, rule) in PROJECTION_RULES {
+        if rule != ProjectionRule::Decline {
+            continue;
+        }
+        let (_, root, target, pattern) = fixtures
+            .iter()
+            .find(|fixture| fixture.0 == owner)
+            .unwrap_or_else(|| panic!("the Decline rule {owner}.{field} has no fixture"));
+        let mut captures = PathMap::new();
+        assert_eq!(
+            rho_path_query_cursor_atom(root.cursor(), false, &mut captures),
+            None,
+            "{owner}.{field} is a Decline rule, but its pattern compiled a query"
+        );
+        assert!(
+            captures.is_empty(),
+            "the declined {owner}.{field} query published captures"
+        );
+        compare(
+            &format!("declined {owner}.{field}"),
+            target.clone(),
+            pattern.clone(),
+        );
+    }
+
+    let empty_set = new_eset_par(Vec::new(), Vec::new(), false, None, Vec::new(), false);
+    let empty_map = new_emap_par(Vec::new(), Vec::new(), false, None, Vec::new(), false);
+    let singleton_set = new_eset_par(vec![int(1)], Vec::new(), false, None, Vec::new(), false);
+    let singleton_map = expr_par(map_of(int(2), false));
+    for (label, empty, other_empty, nonempty) in [
+        ("empty set", &empty_set, &empty_map, &singleton_set),
+        ("empty map", &empty_map, &empty_set, &singleton_map),
+    ] {
+        let mut captures = PathMap::new();
+        let atom = rho_path_query_atom(empty, &mut captures);
+        assert_eq!(
+            atom,
+            Some(RhoPathQueryAtom::Exact(encode_par_match_atom(empty))),
+            "the region compiler's {label} atom is the {label}'s exact match atom"
+        );
+        let query = RhoPathQuery::structural_sequence(atom, false);
+        let accepts = |par: &Par| {
+            query.matches_structure(&encode_structural_sequence([
+                encode_par_match_atom(par).as_slice()
+            ]))
+        };
+        assert!(accepts(empty), "the {label} atom rejects the {label}");
+        assert!(
+            !accepts(other_empty) && !accepts(nonempty),
+            "the {label} atom accepts a carrier other than the {label}"
+        );
+        compare(
+            &format!("{label} against itself"),
+            empty.clone(),
+            empty.clone(),
+        );
+        compare(
+            &format!("{label} against a nonempty carrier"),
+            nonempty.clone(),
+            empty.clone(),
         );
     }
 }

@@ -23,6 +23,10 @@ use rspace_plus_plus::rspace::rspace_interface::{ISpace, MaybeProduceResult};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
+#[allow(dead_code)]
+#[path = "../support/planned_deep_fixture.rs"]
+mod planned_deep_fixture;
+
 fn integer(value: i64) -> Par {
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::GInt(value)),
@@ -463,6 +467,37 @@ fn deep_region_query_scanner_is_stack_safe_for_a_dynamic_unary_chain() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn depth_4096_pattern_compiles_and_matches_on_a_one_mebibyte_thread() {
+    std::thread::Builder::new()
+        .name("depth-4096-spatial-match".to_string())
+        .stack_size(1024 * 1024)
+        .spawn(|| {
+            const DEPTH: usize = 4_096;
+            let matcher = Matcher;
+            let pattern = BindPattern {
+                patterns: vec![planned_deep_fixture::nested_list_pattern(DEPTH)],
+                remainder: None,
+                free_count: 1,
+            };
+            let candidate = datum(
+                Par::wrap_unary_elist(DEPTH, integer(99))
+                    .expect("canonical unary-list datum is representable"),
+            );
+            let query = matcher
+                .rho_path_query(&pattern)
+                .expect("a depth-4,096 linear pattern compiles to a query");
+            assert!(query.matches_structure(&candidate.rho_path_structure()));
+            let matched = matcher
+                .get(&pattern, &candidate)
+                .expect("the spatial matcher matches the depth-4,096 pattern");
+            assert_eq!(matched.pars, vec![integer(99)]);
+        })
+        .expect("spawn the 1 MiB depth-4,096 thread")
+        .join()
+        .expect("the depth-4,096 thread completes on its 1 MiB stack");
 }
 
 #[test]

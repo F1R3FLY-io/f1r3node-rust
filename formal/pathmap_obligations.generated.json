@@ -1,9 +1,9 @@
 {
   "classified_obligations": {
     "concrete_witness": 108,
-    "executable_only": 9,
-    "executable_refinement": 225,
-    "proof_only": 549
+    "executable_only": 11,
+    "executable_refinement": 234,
+    "proof_only": 545
   },
   "families": [
     {
@@ -7486,7 +7486,7 @@
       "checker": "scripts/check-retained-set-automaton-obligations.py",
       "family": "retained_set_automaton",
       "manifest": "formal/retained_set_automaton_obligations.generated.json",
-      "manifest_sha256": "c6cbaf76cdb4fd1ed01334493b5271a4083585e341e81c49961d9516aad75c71",
+      "manifest_sha256": "4d762cbcbacc1802a62121513bfa7f5001080f8ee7e8e125414d71ee90913a24",
       "obligations": {
         "causal_formal_mutants": [],
         "dedicated_tla_configurations": [],
@@ -7626,7 +7626,7 @@
               ],
               "id": "RSA-PREMISE-02",
               "kind": "executable_witness",
-              "sha256": "ad85296cc9e2dc4b8daf0f92783c1fd62701b9546428f2fce1f9b6ff7b29f32c",
+              "sha256": "c819d1067021bdd972c7c429de3ed6c6f5883e20070af0376de0af7268e9da0e",
               "source": "rholang/tests/matcher/retained_path_index_test.rs",
               "test": "generated_ordered_queries_preserve_play_replay_results_logs_and_roots"
             }
@@ -8158,7 +8158,7 @@
       "checker": "scripts/check-spatial-matcher-obligations.py",
       "family": "spatial_matcher",
       "manifest": "formal/spatial_matcher_obligations.generated.json",
-      "manifest_sha256": "16f0d68672bdef0fee0a77a9517429be91abcf1159410674751ad21812bc16fc",
+      "manifest_sha256": "2340d019dd3d6c8e90eb955efefc04c5e9a276aff675efad8ae78c971572c14a",
       "obligations": {
         "generated_properties": [
           {
@@ -8184,47 +8184,182 @@
             {
               "classification": "proof_only",
               "id": "SM-PROJ-01",
+              "normal_suite_witnesses": [],
               "symbol": "projection_rules_respect_authority"
             },
             {
-              "classification": "proof_only",
+              "classification": "executable_refinement",
               "id": "SM-PROJ-02",
+              "normal_suite_witnesses": [
+                "compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success"
+              ],
               "symbol": "table_projection_preserves_spatial_success"
             },
             {
-              "classification": "proof_only",
+              "classification": "executable_refinement",
               "id": "SM-PROJ-03",
+              "normal_suite_witnesses": [
+                "ignored_projection_fields_are_inert_and_exact_fields_change_the_query"
+              ],
               "symbol": "ignored_field_changes_never_change_acceptance"
             },
             {
-              "classification": "proof_only",
+              "classification": "executable_refinement",
               "id": "SM-PROJ-04",
+              "normal_suite_witnesses": [
+                "every_decline_rule_yields_no_query_and_the_oracle_verdict"
+              ],
               "symbol": "declined_root_never_prunes"
             },
             {
-              "classification": "proof_only",
+              "classification": "executable_refinement",
               "id": "SM-PROJ-05",
+              "normal_suite_witnesses": [
+                "continuation_arena_matches_the_legacy_pda_and_byte_oracle",
+                "list_target_group_mask_equals_the_structure_filter_over_every_group"
+              ],
               "symbol": "index_filters_preserve_first_admissible_binding"
             },
             {
               "classification": "proof_only",
               "id": "SM-PROJ-06",
+              "normal_suite_witnesses": [],
               "symbol": "table_query_filters_preserve_first_admissible_binding"
             },
             {
               "classification": "proof_only",
               "id": "SM-PROJ-07",
+              "normal_suite_witnesses": [],
               "symbol": "locally_free_exact_mutant_is_a_false_negative"
             },
             {
               "classification": "proof_only",
               "id": "SM-PROJ-08",
+              "normal_suite_witnesses": [],
               "symbol": "cost_region_exact_mutant_is_a_false_negative"
             },
             {
               "classification": "proof_only",
               "id": "SM-PROJ-09",
+              "normal_suite_witnesses": [],
               "symbol": "extended_retained_prefix_mutant_is_a_false_negative"
+            }
+          ],
+          "properties": [
+            {
+              "assertions": [
+                "compare(label, target, pattern);"
+              ],
+              "classification": "executable_refinement",
+              "helper": "compare_with_entry_map",
+              "helper_assertions": [
+                "\"{label}: a compiled RhoPath query rejected a recursive-oracle success\"",
+                "assert_eq!(pda_verdict, recursive_verdict, \"{label}: verdict\");"
+              ],
+              "helper_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+              "id": "SM-PROJ-PROP-01",
+              "target": "compiled_rho_path_query_is_a_superset_of_every_recursive_oracle_success",
+              "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+              "theorem": "table_projection_preserves_spatial_success"
+            },
+            {
+              "assertions": [
+                "assert_projection_rows_are_respected(PROJECTION_RULES, &regions);"
+              ],
+              "classification": "executable_refinement",
+              "helper": "assert_projection_rows_are_respected",
+              "helper_assertions": [
+                "assert_projection_root_is_normalized(fixture.label, &fixture.target);",
+                "assert_projection_root_is_normalized(fixture.label, &fixture.pattern);",
+                "\"{}: the pattern's {owner}.{field} = {value:?} changed the projection\"",
+                "\"{}: the target's {owner}.{field} = {value:?} changed the projection\"",
+                "\"{owner}.{field} is marked Exact, but no generated value changes its query\""
+              ],
+              "helper_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+              "id": "SM-PROJ-PROP-02",
+              "target": "ignored_projection_fields_are_inert_and_exact_fields_change_the_query",
+              "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+              "theorem": "ignored_field_changes_never_change_acceptance"
+            },
+            {
+              "assertions": [
+                "fixture.assert_matches(query);"
+              ],
+              "classification": "executable_refinement",
+              "helper": "assert_matches",
+              "helper_assertions": [
+                "(*available && query.matches_structure(structure)).then_some(position)",
+                "assert_eq!(actual, expected, \"arena traversal must equal the byte oracle\");"
+              ],
+              "helper_source": "rspace++/tests/data_index/candidate_product_continuation.rs",
+              "id": "SM-PROJ-PROP-03",
+              "target": "continuation_arena_matches_the_legacy_pda_and_byte_oracle",
+              "target_source": "rspace++/tests/data_index/candidate_product_continuation.rs",
+              "theorem": "index_filters_preserve_first_admissible_binding"
+            },
+            {
+              "assertions": [
+                ".filter(|(_, structure)| query.matches_structure(structure))",
+                "\"the group mask must keep exactly the groups the structure filter keeps\"",
+                "\"the group mask dropped a group the structure filter keeps\"",
+                "\"only a query without a retained prefix may skip the group mask\""
+              ],
+              "classification": "executable_refinement",
+              "helper": "send_target_group_mask",
+              "helper_assertions": [
+                "(groups, index.group_mask_matching(query))"
+              ],
+              "helper_source": "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs",
+              "id": "SM-PROJ-PROP-04",
+              "target": "list_target_group_mask_equals_the_structure_filter_over_every_group",
+              "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+              "theorem": "index_filters_preserve_first_admissible_binding"
+            },
+            {
+              "assertions": [
+                "RhoPathQueryAtom::Match(RhoMatchQuery::new(parts)),",
+                "\"the ground Send query drifted from the committed golden bytes\""
+              ],
+              "classification": "executable_only",
+              "helper": null,
+              "helper_assertions": [],
+              "helper_source": null,
+              "id": "SM-PROJ-PROP-05",
+              "target": "ground_send_query_equals_the_committed_golden_bytes",
+              "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+              "theorem": null
+            },
+            {
+              "assertions": [
+                "\"{owner}.{field} is a Decline rule, but its pattern compiled a query\"",
+                "compare(\n            &format!(\"declined {owner}.{field}\"),\n            target.clone(),\n            pattern.clone(),\n        );",
+                "Some(RhoPathQueryAtom::Exact(encode_par_match_atom(empty))),"
+              ],
+              "classification": "executable_refinement",
+              "helper": "compare_with_entry_map",
+              "helper_assertions": [
+                "assert_eq!(pda_verdict, recursive_verdict, \"{label}: verdict\");"
+              ],
+              "helper_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+              "id": "SM-PROJ-PROP-06",
+              "target": "every_decline_rule_yields_no_query_and_the_oracle_verdict",
+              "target_source": "rholang/tests/support/spatial_matcher_pda_equivalence.rs",
+              "theorem": "declined_root_never_prunes"
+            },
+            {
+              "assertions": [
+                ".stack_size(1024 * 1024)",
+                "const DEPTH: usize = 4_096;",
+                ".get(&pattern, &candidate)"
+              ],
+              "classification": "executable_only",
+              "helper": null,
+              "helper_assertions": [],
+              "helper_source": null,
+              "id": "SM-PROJ-PROP-07",
+              "target": "depth_4096_pattern_compiles_and_matches_on_a_one_mebibyte_thread",
+              "target_source": "rholang/tests/matcher/retained_path_index_test.rs",
+              "theorem": null
             }
           ],
           "rows": 156,
@@ -8293,9 +8428,11 @@
           "models/src/rust/par_bag.rs": "2ec384dcbf4dea2ee9e95b1f2f76da3e543a9274bc0f77cbcf283cefb9238c5a",
           "models/tests/par_bag.rs": "89e5726b89dea6e89c7b633fa814c1dca6995e27d5c5f3e4b318ae87ec805074",
           "rholang/src/rust/interpreter/matcher/projection_rules.rs": "6d95aac441b29d560c22d801ec14f45e9b8381f28e07d4de383b647c578cfe2f",
-          "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "c6a5405c77ef04d10b91db8bf74a098540e3e149d92ae15ae2e472ec77c817c2",
+          "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "936f98e443cc79c27c77352dfc280fafeb90c256e4199f3f01265236c799b9aa",
+          "rholang/tests/matcher/retained_path_index_test.rs": "c819d1067021bdd972c7c429de3ed6c6f5883e20070af0376de0af7268e9da0e",
           "rholang/tests/matcher_connective_isolation.rs": "96c232ae7f41f079f6a072d2c4586dd1ed15b8a95990d0b82f61466066ccb68c",
-          "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "36170e6a34e5f18decd1c1e388ce8778c2bfafa4068c24e7ce82ddba5e6159ea",
+          "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "e1023e31177585807bac5567ffc5deb0de31fdbeb27d22ea9c27f0883cb97059",
+          "rspace++/tests/data_index/candidate_product_continuation.rs": "90bb5c2c206e1feecc0f1f4aa8a1d8bedd36b7b3deab836b24f4b9e903e63c97",
           "scripts/generate-canonical-connective-owner-mutant.py": "876cbc6d6edb7a0aa330b1d2f4c141c68e8c4cae535600089182f70b3e29650c"
         },
         "tla_invariants": [
@@ -9233,6 +9370,6 @@
       }
     }
   ],
-  "global_obligation_ids": 907,
+  "global_obligation_ids": 914,
   "scope": "PathMap integration formal obligations and normal-suite refinement bindings"
 }
