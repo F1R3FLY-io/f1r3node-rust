@@ -111,6 +111,28 @@ This document captures user stories that drive feature development. User stories
 
 ## Planned Stories
 
+#### US-015: DePIN as the primary CI runner infrastructure
+
+> As a **CI maintainer**, I want **the ephemeral CI runners to use DePIN infrastructure first and OCI as the fallback, selected through a GitHub repository variable** so that **CI capacity does not depend on one cloud provider and its daily instance quota**.
+
+**Implemented in:** EPIC-031
+
+**Value Stream:** Release Assurance
+
+**Status:** In Progress
+
+**Acceptance Criteria:**
+- [ ] A repository variable selects the primary runner provider for the CI workflows that launch ephemeral runners. DePIN is the primary provider when the variable is not set. The value for OCI makes these workflows use OCI only.
+- [ ] With DePIN as the primary provider, the heavy Integration Pipeline runs on DePIN runners and publishes the same checks and evidence as on OCI.
+- [ ] If DePIN provisioning fails, the run falls back to OCI runners automatically. The run summary records the fallback, the failed provider, and the reason.
+- [ ] The merge recovery soaks continue to run on OCI runners. The variable does not change the soak provider.
+- [ ] A change of the variable takes effect on the next run, with no workflow edit.
+- [ ] A `depin-run` label on a pull request selects DePIN runners for that pull request, whatever the variable says. When the label is removed, the next run uses the provider of the variable.
+- [ ] Runner cleanup and cost limits apply to DePIN runners in the same way as to OCI runners.
+- [ ] docs/ci.md describes the variable, its values, and the credentials that each provider needs.
+
+---
+
 #### US-009: Bounded node behavior under resource faults
 
 > As a **node operator**, I want **bounded retries and log storage** so that **resource faults do not fill deployment disks**.
