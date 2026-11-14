@@ -1,0 +1,31 @@
+# Scope-Trapped Unforgeable GC — Formal Verification
+#
+# Mechanizes CLAIM-RHOLANG-001 (docs/claims/rholang-scope-trapped-gc.md):
+# the strict is_scope_trapped classifier admits only names N for which
+# every reachable state from `new x in P[N/x]` keeps N out of payloads
+# and out of any parked Receive body on a non-trapped channel, so the
+# sweep's deletion of N-keyed rspace entries is observationally
+# equivalent.
+#
+# Source: f1r3node-rust/rholang/src/rust/interpreter/garbage.rs,
+#         rholang/src/rust/interpreter/reduce.rs (eval_new),
+#         rholang/src/rust/interpreter/rho_runtime.rs (create_checkpoint),
+#         rspace++/src/rspace/rspace/ops_sweep.rs.
+# Companion claim: docs/claims/rholang-scope-trapped-gc.md
+# Companion TLA+:  formal/tlaplus/scope_trapped_gc/
+#
+# 2 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
+# Section Variables (Name, locally_free cache correctness, fresh-name
+# uniqueness as a quantification over N) become premises of the closed
+# capstone terms — "Rocq assumes what Rust enforces".
+#
+# Module dependency graph (→ = "depends on"):
+#
+#   ScopeTrapped  (standalone: syntax, classifier, semantics, invariant,
+#                  main theorem, sweep-soundness corollary)
+#   MainTheorem   → ScopeTrapped (closed capstone aliases)
+
+-Q theories ScopeTrappedGC
+
+theories/ScopeTrapped.v
+theories/MainTheorem.v

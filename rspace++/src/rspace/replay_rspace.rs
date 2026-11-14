@@ -36,6 +36,7 @@ use super::striped_locks::{self, ChannelLockGuard};
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 use crate::rspace::checkpoint::Checkpoint;
+use crate::rspace::gc_roots::GcRootRegistry;
 use crate::rspace::history::history_repository::HistoryRepository;
 use crate::rspace::hot_store::{HotStore, HotStoreInstances};
 use crate::rspace::internal::*;
@@ -72,6 +73,10 @@ pub struct ReplayRSpace<C, P, A, K> {
     // ported here — see #43. See striped_locks.rs for the shared scheme.
     phase_a_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<Vec<Arc<tokio::sync::Mutex<()>>>>,
+    // GC root pins. Mirrors `RSpace::gc_roots` — see docs in rspace.rs.
+    // Not automatically shared with the paired play RSpace; callers that need
+    // play/replay sweep symmetry must pin on both registries.
+    pub gc_roots: Arc<GcRootRegistry>,
 }
 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
@@ -212,6 +217,15 @@ where
             .expect("consume replay index lock")
             .clear();
         self.reset(&RadixHistory::empty_root_node_hash()).await
+    }
+
+    async fn sweep_channels(&self, trapped_channels: Vec<C>) -> Result<(), RSpaceError>
+    where C: 'async_trait {
+        crate::rspace::rspace::ops_sweep::locked_sweep(&**self.get_store(), trapped_channels)
+    }
+
+    fn gc_roots(&self) -> std::sync::Arc<crate::rspace::gc_roots::GcRootRegistry> {
+        self.gc_roots.clone()
     }
 
     async fn get_root(&self) -> Blake2b256Hash { self.get_history_repository().root() }
@@ -480,6 +494,7 @@ where
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),
             phase_b_locks: Self::new_striped_locks(),
+            gc_roots: GcRootRegistry::new(),
         }
     }
 
@@ -508,6 +523,7 @@ where
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Self::new_striped_locks(),
             phase_b_locks: Self::new_striped_locks(),
+            gc_roots: GcRootRegistry::new(),
         }
     }
 

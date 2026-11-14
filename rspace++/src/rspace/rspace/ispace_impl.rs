@@ -124,6 +124,15 @@ where
         self.reset(&RadixHistory::empty_root_node_hash()).await
     }
 
+    async fn sweep_channels(&self, trapped_channels: Vec<C>) -> Result<(), RSpaceError>
+    where C: 'async_trait {
+        super::ops_sweep::locked_sweep(&**self.get_store(), trapped_channels)
+    }
+
+    fn gc_roots(&self) -> std::sync::Arc<crate::rspace::gc_roots::GcRootRegistry> {
+        self.gc_roots.clone()
+    }
+
     async fn get_root(&self) -> Blake2b256Hash { self.get_history_repository().root() }
 
     async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.get_store().to_map() }
