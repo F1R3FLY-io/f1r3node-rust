@@ -1,7 +1,8 @@
-From Stdlib Require Import Bool List Arith Lia.
+From Stdlib Require Import Bool List Arith Lia NArith.
 From StackSafePDA Require Import
   PathMapPhysicalOwnership
   PathMapReversePruneTeardown
+  PathMapCanonicalStreamPublicationBase
   PathMapCanonicalStreamPublication
   TwoLevelRSpaceGuardedOwnership.
 
@@ -17,6 +18,8 @@ Module TwoLevelRSpaceGuardedOwnershipMutants.
 
 Module PO := PathMapPhysicalOwnership.
 Module TD := PathMapReversePruneTeardown.
+Module CB := PathMapCanonicalStreamPublicationBase.
+Module CP := PathMapCanonicalStreamPublication.
 
 Definition physical_fixture : PO.physical_anchor :=
   PO.PhysicalAnchor 7 PO.RootUninitialized [] [] 1 1 PO.WholeRootOwner.
@@ -73,7 +76,12 @@ Inductive guarded_mutation_action : Type :=
 | MutTeardownPublishesRoot
 | MutFailureResumes
 | MutFailureChangesLiveObservation
-| MutFailurePublishesAndRecursivelyDrops.
+| MutFailurePublishesAndRecursivelyDrops
+| MutOuterBatchRefusalWrites
+| MutOuterBatchUniqueRepublishes
+| MutOuterBatchSharedWritesAliasedRoot
+| MutOuterBatchDisposesUntouchedSlot
+| MutOuterBatchInstallsStaleEntries.
 
 Definition guarded_action_for
     (invariant : guarded_ownership_invariant_id) : guarded_mutation_action :=
@@ -119,6 +127,13 @@ Definition guarded_action_for
   | GuardInvFailurePreservesObservations => MutFailureChangesLiveObservation
   | GuardInvFailureNoPartialOrRecursiveDrop =>
       MutFailurePublishesAndRecursivelyDrops
+  | GuardInvOuterBatchRefusalPreservesWorld => MutOuterBatchRefusalWrites
+  | GuardInvOuterBatchUniqueInPlace => MutOuterBatchUniqueRepublishes
+  | GuardInvOuterBatchSharedForkPreservesAliases =>
+      MutOuterBatchSharedWritesAliasedRoot
+  | GuardInvOuterBatchDisposesOnlyReplacedSlots =>
+      MutOuterBatchDisposesUntouchedSlot
+  | GuardInvOuterBatchMatchesPublication => MutOuterBatchInstallsStaleEntries
   end.
 
 Inductive guarded_observation : Type :=
@@ -127,6 +142,108 @@ Inductive guarded_observation : Type :=
 | ObserveIdentifiers : list nat -> guarded_observation
 | ObserveFrames : list control_frame -> guarded_observation
 | ObserveFlag : bool -> guarded_observation.
+
+(** Fixtures and observations of the in-place outer batch.  The live root
+    (identity 17) is empty and the updated root (identity 19) holds one
+    entry.  The unique world has no external alias; the shared world has a
+    snapshot alias that holds root 17.  Each observation runs the batch, or
+    its mutant, on these worlds. *)
+Lemma outer_batch_empty_metadata_is_checked :
+  CB.checked_metadata [] =
+    Some {| CB.distinct_entries := 0; CB.total_cardinality := 0%N |}.
+Proof. reflexivity. Qed.
+
+Lemma outer_batch_one_entry_is_canonical :
+  CB.canonical_entries [([1], 1%N)].
+Proof.
+  apply CB.CanonicalEntriesCons.
+  - reflexivity.
+  - reflexivity.
+  - constructor.
+  - constructor.
+Qed.
+
+Lemma outer_batch_one_entry_metadata_is_checked :
+  CB.checked_metadata [([1], 1%N)] =
+    Some {| CB.distinct_entries := 1; CB.total_cardinality := 1%N |}.
+Proof. reflexivity. Qed.
+
+Definition outer_batch_live_root : CP.AtomicRootAuthority :=
+  {| CP.atomic_root_identity := 17;
+     CP.atomic_root_entries := [];
+     CP.atomic_root_image := CB.canonical_compressed_image [];
+     CP.atomic_root_metadata :=
+       {| CB.distinct_entries := 0; CB.total_cardinality := 0%N |};
+     CP.atomic_root_entries_canonical := CB.CanonicalEntriesNil;
+     CP.atomic_root_image_exact := eq_refl;
+     CP.atomic_root_metadata_exact := outer_batch_empty_metadata_is_checked |}.
+
+Definition outer_batch_updated_root : CP.AtomicRootAuthority :=
+  {| CP.atomic_root_identity := 19;
+     CP.atomic_root_entries := [([1], 1%N)];
+     CP.atomic_root_image := CB.canonical_compressed_image [([1], 1%N)];
+     CP.atomic_root_metadata :=
+       {| CB.distinct_entries := 1; CB.total_cardinality := 1%N |};
+     CP.atomic_root_entries_canonical := outer_batch_one_entry_is_canonical;
+     CP.atomic_root_image_exact := eq_refl;
+     CP.atomic_root_metadata_exact :=
+       outer_batch_one_entry_metadata_is_checked |}.
+
+Definition outer_batch_aliases (roots : list nat) : CP.ExternalAliasFootprint :=
+  {| CP.external_alias_root_identities := roots;
+     CP.external_alias_node_identities := [];
+     CP.external_alias_value_identities := [] |}.
+
+Definition outer_batch_world (roots : list nat) : CP.TransactionWorldV2 :=
+  {| CP.world_live_authority := outer_batch_live_root;
+     CP.world_external_aliases := outer_batch_aliases roots;
+     CP.world_staged_candidate := None;
+     CP.world_disposed_root_handles := [];
+     CP.world_disposed_nodes := [];
+     CP.world_disposed_values := [] |}.
+
+Definition unique_outer_world : CP.TransactionWorldV2 := outer_batch_world [].
+
+Definition shared_outer_world : CP.TransactionWorldV2 :=
+  outer_batch_world [17].
+
+Definition unique_outer_batch : CP.TransactionWorldV2 :=
+  in_place_outer_batch unique_outer_world outer_batch_updated_root [23].
+
+Definition outer_batch_live_identity (world : CP.TransactionWorldV2) : nat :=
+  CP.atomic_root_identity (CP.world_live_authority world).
+
+Definition observe_entries_and_disposed_values
+    (world : CP.TransactionWorldV2) : guarded_observation :=
+  ObserveCountPair
+    (length (CP.atomic_root_entries (CP.world_live_authority world)))
+    (length (CP.world_disposed_values world)).
+
+Definition observe_identity_and_retired_roots
+    (world : CP.TransactionWorldV2) : guarded_observation :=
+  ObserveCountPair (outer_batch_live_identity world)
+    (length (CP.world_disposed_root_handles world)).
+
+Definition observe_identity_held_by_the_alias
+    (world : CP.TransactionWorldV2) : guarded_observation :=
+  ObserveFlag
+    (existsb (Nat.eqb (outer_batch_live_identity world))
+      (CP.external_alias_root_identities
+        (CP.world_external_aliases shared_outer_world))).
+
+Definition observe_disposed_values
+    (world : CP.TransactionWorldV2) : guarded_observation :=
+  ObserveIdentifiers (CP.world_disposed_values world).
+
+Definition observe_published_entries
+    (world : CP.TransactionWorldV2) : guarded_observation :=
+  ObserveFlag
+    (if CB.entries_eq_dec
+          (CP.atomic_root_entries (CP.world_live_authority world))
+          (CP.atomic_root_entries
+            (CP.world_live_authority
+              (CP.publish_world unique_outer_world outer_batch_updated_root)))
+     then true else false).
 
 Definition reference_observation
     (action : guarded_mutation_action) : guarded_observation :=
@@ -206,6 +323,18 @@ Definition reference_observation
   | MutFailureResumes => ObserveFlag false
   | MutFailureChangesLiveObservation => ObserveCount 29
   | MutFailurePublishesAndRecursivelyDrops => ObserveCountPair 0 0
+  | MutOuterBatchRefusalWrites =>
+      observe_entries_and_disposed_values
+        (apply_outer_batch unique_outer_world None)
+  | MutOuterBatchUniqueRepublishes =>
+      observe_identity_and_retired_roots unique_outer_batch
+  | MutOuterBatchSharedWritesAliasedRoot =>
+      observe_identity_held_by_the_alias
+        (in_place_outer_batch shared_outer_world outer_batch_updated_root [23])
+  | MutOuterBatchDisposesUntouchedSlot =>
+      observe_disposed_values unique_outer_batch
+  | MutOuterBatchInstallsStaleEntries =>
+      observe_published_entries unique_outer_batch
   end.
 
 Definition mutated_observation
@@ -251,6 +380,23 @@ Definition mutated_observation
   | MutFailureResumes => ObserveFlag true
   | MutFailureChangesLiveObservation => ObserveCount 31
   | MutFailurePublishesAndRecursivelyDrops => ObserveCountPair 1 1
+  | MutOuterBatchRefusalWrites =>
+      observe_entries_and_disposed_values
+        (apply_outer_batch unique_outer_world
+          (Some (outer_batch_updated_root, [23])))
+  | MutOuterBatchUniqueRepublishes =>
+      observe_identity_and_retired_roots
+        (CP.publish_world unique_outer_world outer_batch_updated_root)
+  | MutOuterBatchSharedWritesAliasedRoot =>
+      observe_identity_held_by_the_alias
+        (in_place_outer_batch unique_outer_world outer_batch_updated_root [23])
+  | MutOuterBatchDisposesUntouchedSlot =>
+      observe_disposed_values
+        (in_place_outer_batch unique_outer_world outer_batch_updated_root
+          [23; 29])
+  | MutOuterBatchInstallsStaleEntries =>
+      observe_published_entries
+        (in_place_outer_batch unique_outer_world outer_batch_live_root [23])
   end.
 
 Definition guarded_ownership_mutant_is_causally_killed
@@ -269,7 +415,7 @@ Theorem guarded_ownership_mutant_catalog_is_total_unique_and_exact :
   NoDup guarded_ownership_invariant_catalog /\
   Forall guarded_ownership_mutant_is_causally_killed
     guarded_ownership_invariant_catalog /\
-  length guarded_ownership_invariant_catalog = 40.
+  length guarded_ownership_invariant_catalog = 45.
 Proof.
   destruct guarded_ownership_invariant_catalog_is_unique_complete_and_exact
     as [Hunique [_ Hlength]].

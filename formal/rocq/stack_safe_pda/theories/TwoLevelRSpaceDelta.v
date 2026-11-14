@@ -12,7 +12,10 @@ Set Implicit Arguments.
 (** Refinement of one flat, normalized production [BagDelta] into independent
     exact-channel inner-Bag updates.  Every prepared channel delta is derived
     from the same immutable outer authority; duplicate channel targets are
-    rejected before a single new outer root is published. *)
+    rejected before the outer authority is updated in place.  When another
+    version still shares the outer root, the update first copies the root
+    header, and that version keeps the old root
+    ([in_place_outer_batch] in TwoLevelRSpaceGuardedOwnership). *)
 Module TwoLevelRSpaceDelta.
 
 Definition channel_contents_or_empty

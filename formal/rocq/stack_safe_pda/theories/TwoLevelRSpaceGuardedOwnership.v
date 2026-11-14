@@ -896,6 +896,217 @@ Theorem zipper_navigation_closes_with_topology_derived_work_not_a_depth_cap :
   CP.moving_zipper_descents (CP.drive_destination_zipper work state) = [].
 Proof. apply CP.destination_zipper_closes_without_depth_cap. Qed.
 
+(** In-place outer delta batches.  [RSpaceDataStore::apply_delta] applies a
+    batch to the outer channel authority in place.  It no longer clones the
+    index, writes the clone and then replaces the live index with it, the
+    replacement whose drop drained the whole previous outer map.
+
+    - [in_place_outer_batch world updated replaced] installs the entries,
+      image and metadata of [updated] as the live authority.  It keeps the
+      external aliases, the staged candidate and the disposed nodes.  The
+      disposed values become [replaced] followed by the old ones, so only
+      the values of the replaced slots are disposed.
+    - A unique live root keeps its identity: the batch writes in place and
+      releases no root handle.  A live root that an external alias still
+      holds is copied first: the live authority takes a fresh identity, and
+      the alias keeps the old version.  The copy releases the live owner's
+      handle on the old root, as [Arc::make_mut] does, so the old identity
+      is put in front of the disposed root handles, the release that
+      [CP.publish_world] records ([outer_batch_released_root_handles]).
+    - [apply_outer_batch world None] is a refused batch.  Every error is
+      raised before the first write, so the world is unchanged.
+
+    Scope.  There is no abort transition after the first in-place write.  A
+    panic after it is fail-stop: it poisons the hot-store write lock, and
+    every later access stops the process.  That is [MachineFailStopped] of
+    the teardown machine above.  [GuardInvPublishSwapsAndRetiresOnce] and the
+    abort invariants still hold; they describe staged publication, not the
+    outer delta. *)
+Definition root_with_identity (root : CP.AtomicRootAuthority)
+    (new_identity : nat) : CP.AtomicRootAuthority :=
+  {| CP.atomic_root_identity := new_identity;
+     CP.atomic_root_entries := CP.atomic_root_entries root;
+     CP.atomic_root_image := CP.atomic_root_image root;
+     CP.atomic_root_metadata := CP.atomic_root_metadata root;
+     CP.atomic_root_entries_canonical := CP.atomic_root_entries_canonical root;
+     CP.atomic_root_image_exact := CP.atomic_root_image_exact root;
+     CP.atomic_root_metadata_exact := CP.atomic_root_metadata_exact root |}.
+
+Definition live_root_is_shared (world : CP.TransactionWorldV2) : bool :=
+  existsb (Nat.eqb (CP.atomic_root_identity (CP.world_live_authority world)))
+    (CP.external_alias_root_identities (CP.world_external_aliases world)).
+
+Definition outer_batch_released_root_handles (world : CP.TransactionWorldV2)
+    : list nat :=
+  if live_root_is_shared world
+  then [CP.atomic_root_identity (CP.world_live_authority world)]
+  else [].
+
+Definition in_place_outer_batch (world : CP.TransactionWorldV2)
+    (updated : CP.AtomicRootAuthority) (replaced : list nat)
+    : CP.TransactionWorldV2 :=
+  {| CP.world_live_authority :=
+       root_with_identity updated
+         (if live_root_is_shared world
+          then CP.allocate_fresh_candidate_identity
+                 (CP.world_live_authority world)
+                 (CP.world_external_aliases world)
+          else CP.atomic_root_identity (CP.world_live_authority world));
+     CP.world_external_aliases := CP.world_external_aliases world;
+     CP.world_staged_candidate := CP.world_staged_candidate world;
+     CP.world_disposed_root_handles :=
+       outer_batch_released_root_handles world
+         ++ CP.world_disposed_root_handles world;
+     CP.world_disposed_nodes := CP.world_disposed_nodes world;
+     CP.world_disposed_values := replaced ++ CP.world_disposed_values world |}.
+
+Definition apply_outer_batch (world : CP.TransactionWorldV2)
+    (outcome : option (CP.AtomicRootAuthority * list nat)%type)
+    : CP.TransactionWorldV2 :=
+  match outcome with
+  | None => world
+  | Some (updated, replaced) => in_place_outer_batch world updated replaced
+  end.
+
+Theorem refused_outer_batch_preserves_the_world :
+  forall world, apply_outer_batch world None = world.
+Proof. intro world. reflexivity. Qed.
+
+Theorem unique_outer_batch_keeps_its_identity_and_retires_no_root :
+  forall world updated replaced,
+    live_root_is_shared world = false ->
+    CP.atomic_root_identity
+      (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+      CP.atomic_root_identity (CP.world_live_authority world) /\
+    CP.world_disposed_root_handles (in_place_outer_batch world updated replaced) =
+      CP.world_disposed_root_handles world.
+Proof.
+  intros world updated replaced Hunique.
+  unfold in_place_outer_batch. rewrite Hunique.
+  unfold outer_batch_released_root_handles. rewrite Hunique.
+  split; reflexivity.
+Qed.
+
+Theorem shared_outer_batch_forks_a_fresh_identity_and_preserves_aliases :
+  forall world updated replaced,
+    live_root_is_shared world = true ->
+    CP.world_external_aliases (in_place_outer_batch world updated replaced) =
+      CP.world_external_aliases world /\
+    In (CP.atomic_root_identity (CP.world_live_authority world))
+      (CP.external_alias_root_identities (CP.world_external_aliases world)) /\
+    CP.fresh_candidate_identity (CP.world_live_authority world)
+      (CP.world_external_aliases world)
+      (CP.atomic_root_identity
+        (CP.world_live_authority (in_place_outer_batch world updated replaced))) /\
+    CP.world_disposed_root_handles (in_place_outer_batch world updated replaced) =
+      CP.atomic_root_identity (CP.world_live_authority world)
+        :: CP.world_disposed_root_handles world.
+Proof.
+  intros world updated replaced Hshared.
+  split; [reflexivity |]. split.
+  - unfold live_root_is_shared in Hshared.
+    apply existsb_exists in Hshared.
+    destruct Hshared as [alias_identity [Hin Hequal]].
+    apply Nat.eqb_eq in Hequal. rewrite Hequal. exact Hin.
+  - unfold in_place_outer_batch. rewrite Hshared. split.
+    + exact (@CP.allocated_candidate_identity_is_genuinely_outside_complete_footprint
+        (CP.world_live_authority world) (CP.world_external_aliases world)).
+    + unfold outer_batch_released_root_handles. rewrite Hshared. reflexivity.
+Qed.
+
+Theorem outer_batch_disposes_only_the_replaced_slot_values :
+  forall world updated replaced,
+    CP.world_disposed_values (in_place_outer_batch world updated replaced) =
+      replaced ++ CP.world_disposed_values world /\
+    CP.world_disposed_nodes (in_place_outer_batch world updated replaced) =
+      CP.world_disposed_nodes world /\
+    CP.world_disposed_root_handles (in_place_outer_batch world updated replaced) =
+      outer_batch_released_root_handles world
+        ++ CP.world_disposed_root_handles world.
+Proof.
+  intros world updated replaced. split.
+  - reflexivity.
+  - split; reflexivity.
+Qed.
+
+Theorem outer_batch_installs_the_published_entries :
+  forall world updated replaced,
+    CP.atomic_root_entries
+      (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+      CP.atomic_root_entries
+        (CP.world_live_authority (CP.publish_world world updated)) /\
+    CP.atomic_root_image
+      (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+      CP.atomic_root_image
+        (CP.world_live_authority (CP.publish_world world updated)) /\
+    CP.atomic_root_metadata
+      (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+      CP.atomic_root_metadata
+        (CP.world_live_authority (CP.publish_world world updated)) /\
+    CP.world_external_aliases (in_place_outer_batch world updated replaced) =
+      CP.world_external_aliases (CP.publish_world world updated).
+Proof.
+  intros world updated replaced.
+  split; [reflexivity |]. split; [reflexivity |]. split; reflexivity.
+Qed.
+
+Theorem in_place_outer_batch_is_refusal_atomic_and_publication_equivalent :
+  forall world updated replaced,
+    apply_outer_batch world None = world /\
+    (live_root_is_shared world = false ->
+     CP.atomic_root_identity
+       (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+       CP.atomic_root_identity (CP.world_live_authority world) /\
+     CP.world_disposed_root_handles (in_place_outer_batch world updated replaced) =
+       CP.world_disposed_root_handles world) /\
+    (live_root_is_shared world = true ->
+     CP.world_external_aliases (in_place_outer_batch world updated replaced) =
+       CP.world_external_aliases world /\
+     In (CP.atomic_root_identity (CP.world_live_authority world))
+       (CP.external_alias_root_identities (CP.world_external_aliases world)) /\
+     CP.fresh_candidate_identity (CP.world_live_authority world)
+       (CP.world_external_aliases world)
+       (CP.atomic_root_identity
+         (CP.world_live_authority (in_place_outer_batch world updated replaced))) /\
+     CP.world_disposed_root_handles (in_place_outer_batch world updated replaced) =
+       CP.atomic_root_identity (CP.world_live_authority world)
+         :: CP.world_disposed_root_handles world) /\
+    (CP.world_disposed_values (in_place_outer_batch world updated replaced) =
+       replaced ++ CP.world_disposed_values world /\
+     CP.world_disposed_nodes (in_place_outer_batch world updated replaced) =
+       CP.world_disposed_nodes world /\
+     CP.world_disposed_root_handles (in_place_outer_batch world updated replaced) =
+       outer_batch_released_root_handles world
+         ++ CP.world_disposed_root_handles world) /\
+    (CP.atomic_root_entries
+       (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+       CP.atomic_root_entries
+         (CP.world_live_authority (CP.publish_world world updated)) /\
+     CP.atomic_root_image
+       (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+       CP.atomic_root_image
+         (CP.world_live_authority (CP.publish_world world updated)) /\
+     CP.atomic_root_metadata
+       (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+       CP.atomic_root_metadata
+         (CP.world_live_authority (CP.publish_world world updated)) /\
+     CP.world_external_aliases (in_place_outer_batch world updated replaced) =
+       CP.world_external_aliases (CP.publish_world world updated)).
+Proof.
+  intros world updated replaced.
+  split; [exact (@refused_outer_batch_preserves_the_world world) |].
+  split;
+    [exact (@unique_outer_batch_keeps_its_identity_and_retires_no_root
+       world updated replaced) |].
+  split;
+    [exact (@shared_outer_batch_forks_a_fresh_identity_and_preserves_aliases
+       world updated replaced) |].
+  split;
+    [exact (@outer_batch_disposes_only_the_replaced_slot_values
+       world updated replaced) |].
+  exact (@outer_batch_installs_the_published_entries world updated replaced).
+Qed.
+
 Inductive guarded_ownership_invariant_id : Type :=
 | GuardInvOuterCloneOneEvent
 | GuardInvOuterCloneNoRawStorage
@@ -936,7 +1147,12 @@ Inductive guarded_ownership_invariant_id : Type :=
 | GuardInvTeardownNeverPublishes
 | GuardInvFailureTerminal
 | GuardInvFailurePreservesObservations
-| GuardInvFailureNoPartialOrRecursiveDrop.
+| GuardInvFailureNoPartialOrRecursiveDrop
+| GuardInvOuterBatchRefusalPreservesWorld
+| GuardInvOuterBatchUniqueInPlace
+| GuardInvOuterBatchSharedForkPreservesAliases
+| GuardInvOuterBatchDisposesOnlyReplacedSlots
+| GuardInvOuterBatchMatchesPublication.
 
 Definition guarded_ownership_invariant_catalog :
     list guarded_ownership_invariant_id :=
@@ -979,7 +1195,12 @@ Definition guarded_ownership_invariant_catalog :
     GuardInvTeardownNeverPublishes;
     GuardInvFailureTerminal;
     GuardInvFailurePreservesObservations;
-    GuardInvFailureNoPartialOrRecursiveDrop ].
+    GuardInvFailureNoPartialOrRecursiveDrop;
+    GuardInvOuterBatchRefusalPreservesWorld;
+    GuardInvOuterBatchUniqueInPlace;
+    GuardInvOuterBatchSharedForkPreservesAliases;
+    GuardInvOuterBatchDisposesOnlyReplacedSlots;
+    GuardInvOuterBatchMatchesPublication ].
 
 Definition guarded_ownership_invariant_binding
     (invariant : guarded_ownership_invariant_id) : Prop :=
@@ -1202,6 +1423,55 @@ Definition guarded_ownership_invariant_binding
             pubs /\
         machine_recursive_raw_drop_count
           (MachineState [] [] MachineFailStopped live snapshots pubs raw) = raw
+  | GuardInvOuterBatchRefusalPreservesWorld =>
+      forall world, apply_outer_batch world None = world
+  | GuardInvOuterBatchUniqueInPlace =>
+      forall world updated replaced,
+        live_root_is_shared world = false ->
+        CP.atomic_root_identity
+          (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+          CP.atomic_root_identity (CP.world_live_authority world) /\
+        CP.world_disposed_root_handles (in_place_outer_batch world updated replaced) =
+          CP.world_disposed_root_handles world
+  | GuardInvOuterBatchSharedForkPreservesAliases =>
+      forall world updated replaced,
+        live_root_is_shared world = true ->
+        CP.world_external_aliases (in_place_outer_batch world updated replaced) =
+          CP.world_external_aliases world /\
+        In (CP.atomic_root_identity (CP.world_live_authority world))
+          (CP.external_alias_root_identities (CP.world_external_aliases world)) /\
+        CP.fresh_candidate_identity (CP.world_live_authority world)
+          (CP.world_external_aliases world)
+          (CP.atomic_root_identity
+            (CP.world_live_authority (in_place_outer_batch world updated replaced))) /\
+        CP.world_disposed_root_handles (in_place_outer_batch world updated replaced) =
+          CP.atomic_root_identity (CP.world_live_authority world)
+            :: CP.world_disposed_root_handles world
+  | GuardInvOuterBatchDisposesOnlyReplacedSlots =>
+      forall world updated replaced,
+        CP.world_disposed_values (in_place_outer_batch world updated replaced) =
+          replaced ++ CP.world_disposed_values world /\
+        CP.world_disposed_nodes (in_place_outer_batch world updated replaced) =
+          CP.world_disposed_nodes world /\
+        CP.world_disposed_root_handles (in_place_outer_batch world updated replaced) =
+          outer_batch_released_root_handles world
+            ++ CP.world_disposed_root_handles world
+  | GuardInvOuterBatchMatchesPublication =>
+      forall world updated replaced,
+        CP.atomic_root_entries
+          (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+          CP.atomic_root_entries
+            (CP.world_live_authority (CP.publish_world world updated)) /\
+        CP.atomic_root_image
+          (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+          CP.atomic_root_image
+            (CP.world_live_authority (CP.publish_world world updated)) /\
+        CP.atomic_root_metadata
+          (CP.world_live_authority (in_place_outer_batch world updated replaced)) =
+          CP.atomic_root_metadata
+            (CP.world_live_authority (CP.publish_world world updated)) /\
+        CP.world_external_aliases (in_place_outer_batch world updated replaced) =
+          CP.world_external_aliases (CP.publish_world world updated)
   end.
 
 Theorem every_guarded_ownership_invariant_is_bound : forall invariant,
@@ -1264,13 +1534,18 @@ Proof.
   - intros live snapshots pubs raw after Hstep. inversion Hstep.
   - intros. split; reflexivity.
   - intros. split; reflexivity.
+  - exact @refused_outer_batch_preserves_the_world.
+  - exact @unique_outer_batch_keeps_its_identity_and_retires_no_root.
+  - exact @shared_outer_batch_forks_a_fresh_identity_and_preserves_aliases.
+  - exact @outer_batch_disposes_only_the_replaced_slot_values.
+  - exact @outer_batch_installs_the_published_entries.
 Qed.
 
 Theorem guarded_ownership_invariant_catalog_is_unique_complete_and_exact :
   NoDup guarded_ownership_invariant_catalog /\
   Forall guarded_ownership_invariant_binding
     guarded_ownership_invariant_catalog /\
-  length guarded_ownership_invariant_catalog = 40.
+  length guarded_ownership_invariant_catalog = 45.
 Proof.
   split.
   - unfold guarded_ownership_invariant_catalog.
@@ -1290,5 +1565,6 @@ Print Assumptions every_generated_teardown_schedule_completes.
 Print Assumptions every_reachable_machine_has_at_most_two_control_frames.
 Print Assumptions every_live_machine_step_strictly_decreases_ghost_work.
 Print Assumptions fail_stop_is_terminal_without_partial_publication_or_recursive_drop.
+Print Assumptions in_place_outer_batch_is_refusal_atomic_and_publication_equivalent.
 
 End TwoLevelRSpaceGuardedOwnership.

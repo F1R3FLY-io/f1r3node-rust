@@ -1829,7 +1829,7 @@ rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceRepresentation.v 5 \
   "the exact two-level RSpace representation authority"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceGuardedOwnership.v 6 \
+  theories/TwoLevelRSpaceGuardedOwnership.v 7 \
   "the exact two-level RSpace guarded-ownership authority"
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceCheckpointCodec.v 4 \
