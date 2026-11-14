@@ -447,7 +447,7 @@
       "checker": "scripts/check-bag-obligations.py",
       "family": "bag",
       "manifest": "formal/bag_obligations.generated.json",
-      "manifest_sha256": "bcfab640f9df80854f8678b482db9739f7d7029ac1328ef030fbfef1be7b691e",
+      "manifest_sha256": "c95ab1244dfaa9ee97af5f7f30eaee65230359b8c82fac2eaaf4ae6c6a1ea662",
       "obligations": {
         "boundary": "Concrete witnesses exercise Bag behavior; they do not prove Rocq/Verus refinement or arbitrary inputs.",
         "delegated_tla": {
@@ -871,7 +871,7 @@
           "formal/rocq/stack_safe_pda/theories/Bag.v": "0bd05b2b21e0f9ca97e1b92eed61c486eadc21933eb93fd12d0e5e1d89b6e874",
           "formal/tlaplus/stack_safe_pda/RSpaceBagCommit.cfg": "fa2822f1aa354c384d4f5af612fb012fad316cc6c22b6b37b881d4114104ad2f",
           "formal/verus/bag_checked_delta.rs": "a5eb3d5a136449b0a47c2d1fb75e012701fe01b0871f5a38e9af996b49f57bd4",
-          "rspace++/Cargo.toml": "7a72d841637de991fa99384e01c46e8cbd7ff857ec3cff9923f915c187d57daf",
+          "rspace++/Cargo.toml": "b2bb4651b743a60e1efe5b74558b98c50460450807902e1d70c6e612aad5e675",
           "rspace++/tests/bag_spec.rs": "72c2be48caa4486a9cec488d5467d39f377f71568ce7383e35f4e08bba49a493"
         },
         "verus_obligations": [
@@ -7650,7 +7650,7 @@
       "checker": "scripts/check-rho-path-v2-obligations.py",
       "family": "rho_path_v2",
       "manifest": "formal/rho_path_v2_obligations.generated.json",
-      "manifest_sha256": "670fd6e01c054550a169888991192877504839dfef5dd14d1481d8e4a4ea02d8",
+      "manifest_sha256": "d92b60b977e00e3d07f8d86c4d3d776ed92631152d887ecbc323717c963e1981",
       "obligations": {
         "boundary": "Rust witnesses exercise selected outer codec behaviors, not the abstract lifecycle, RCI2/RMP2 payload validity, or a formal Rust refinement proof.",
         "excluded_families": [
@@ -7794,7 +7794,7 @@
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.tla": "b2efa3f2d3b184600399f369bbd3d2120e70d3198c69014a64cdbb56a8a74e31",
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.cfg": "233a78a56eb2972e46742bdf983cef96cc92bb580a0cc763833a7a4781dc4766",
           "formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.tla": "678019bff3b23322cde42c7cde8482aaecb59188b1af8e338cafd1056455c12a",
-          "rspace++/Cargo.toml": "7a72d841637de991fa99384e01c46e8cbd7ff857ec3cff9923f915c187d57daf",
+          "rspace++/Cargo.toml": "b2bb4651b743a60e1efe5b74558b98c50460450807902e1d70c6e612aad5e675",
           "rspace++/tests/rho_path_spec.rs": "25d6ed6736474d4bbcd7e678038c459756e53f334f6fa9f53611eff25f2d7eae"
         },
         "tlc": {

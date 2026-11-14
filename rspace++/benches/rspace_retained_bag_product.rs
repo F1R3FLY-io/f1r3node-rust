@@ -34,6 +34,30 @@ impl Match<Exact, Vec<u8>, ()> for ExactMatcher {
     fn supports_rho_path_candidate_pruning(&self) -> bool { true }
 }
 
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+struct FlatDispatchMatcher;
+
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+impl Match<Exact, Vec<u8>, ()> for FlatDispatchMatcher {
+    fn get(&self, pattern: &Exact, datum: &Vec<u8>) -> Option<Vec<u8>> {
+        ExactMatcher.get(pattern, datum)
+    }
+
+    fn retained_pattern_path(&self, pattern: &Exact) -> Option<Vec<u8>> {
+        ExactMatcher.retained_pattern_path(pattern)
+    }
+
+    fn retained_datum_path(&self, datum: &Vec<u8>) -> Option<Vec<u8>> {
+        ExactMatcher.retained_datum_path(datum)
+    }
+
+    fn supports_rho_path_candidate_pruning(&self) -> bool {
+        ExactMatcher.supports_rho_path_candidate_pruning()
+    }
+
+    fn retained_flat_dispatch_experiment(&self) -> bool { true }
+}
+
 fn waiting(pattern: Exact) -> WaitingContinuation<Exact, ()> {
     WaitingContinuation {
         patterns: Arc::new(vec![pattern]),
@@ -123,6 +147,67 @@ impl Fixture {
     }
 }
 
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+impl Fixture {
+    fn multikey(cardinality: usize, shared_prefix: bool) -> Self {
+        let mut fixture = Self::new(cardinality, shared_prefix);
+        for index in 0..15usize {
+            let absent = if shared_prefix {
+                format!("resting/shared-prefix/absent-{index:08x}")
+            } else {
+                format!("{:02x}/x{index:07x}", index % 251)
+            };
+            fixture
+                .resting_bag
+                .insert(&RhoPathV1::relative_datum_key(
+                    absent.as_bytes(),
+                    b"stable/resting-identity",
+                ))
+                .expect("one absent resting occurrence");
+        }
+        assert_eq!(
+            fixture.resting_bag.distinct_len(),
+            16,
+            "the multikey Bag holds the resting key and 15 absent keys"
+        );
+        assert_eq!(
+            fixture.try_treatment(),
+            Some(cardinality - 1),
+            "multikey product preflight at cardinality {cardinality}, \
+             shared_prefix={shared_prefix}"
+        );
+        fixture
+    }
+
+    fn flat_dispatch(&self, cardinality: usize, shared_prefix: bool) -> Self {
+        let flat_dispatch = Self {
+            candidates: self.candidates.clone(),
+            automaton: RetainedSetAutomaton::compile(&FlatDispatchMatcher, &self.candidates),
+            resting_bag: self.resting_bag.clone(),
+            fresh: self.fresh.clone(),
+            resting: self.resting.clone(),
+        };
+        assert_eq!(
+            flat_dispatch.selection(),
+            self.selection(),
+            "flat-dispatch selection preflight at cardinality {cardinality}, \
+             shared_prefix={shared_prefix}"
+        );
+        assert_eq!(
+            flat_dispatch.try_treatment(),
+            Some(cardinality - 1),
+            "flat-dispatch candidate preflight at cardinality {cardinality}, \
+             shared_prefix={shared_prefix}"
+        );
+        flat_dispatch
+    }
+
+    fn selection(&self) -> Vec<bool> {
+        self.automaton
+            .matching_candidates_with_resting(&self.fresh, &[0], Some(&self.resting_bag))
+    }
+}
+
 fn bench_retained_bag_product(criterion: &mut Criterion) {
     for shared_prefix in [false, true] {
         let name = if shared_prefix {
@@ -139,6 +224,67 @@ fn bench_retained_bag_product(criterion: &mut Criterion) {
             });
             group.bench_function(BenchmarkId::new("pathmap", cardinality), |bencher| {
                 bencher.iter(|| black_box(fixture.treatment()))
+            });
+            #[cfg(feature = "retained-flat-dispatch-experiment")]
+            {
+                let flat_dispatch = fixture.flat_dispatch(cardinality, shared_prefix);
+                group.bench_function(BenchmarkId::new("flat_dispatch", cardinality), |bencher| {
+                    bencher.iter(|| black_box(flat_dispatch.treatment()))
+                });
+            }
+        }
+        group.finish();
+    }
+
+    #[cfg(feature = "retained-flat-dispatch-experiment")]
+    for shared_prefix in [false, true] {
+        let name = if shared_prefix {
+            "retained_bag_product_multikey_shared_prefix"
+        } else {
+            "retained_bag_product_multikey_diverse_prefix"
+        };
+        let mut group = criterion.benchmark_group(name);
+        for cardinality in [16usize, 256, 4_096] {
+            let pathmap = Fixture::multikey(cardinality, shared_prefix);
+            let flat_dispatch = pathmap.flat_dispatch(cardinality, shared_prefix);
+            group.throughput(Throughput::Elements(1));
+            group.bench_function(BenchmarkId::new("pathmap", cardinality), |bencher| {
+                bencher.iter(|| black_box(pathmap.treatment()))
+            });
+            group.bench_function(BenchmarkId::new("flat_dispatch", cardinality), |bencher| {
+                bencher.iter(|| black_box(flat_dispatch.treatment()))
+            });
+        }
+        group.finish();
+    }
+
+    #[cfg(feature = "retained-flat-dispatch-experiment")]
+    for shared_prefix in [false, true] {
+        let name = if shared_prefix {
+            "retained_automaton_compile_shared_prefix"
+        } else {
+            "retained_automaton_compile_diverse_prefix"
+        };
+        let mut group = criterion.benchmark_group(name);
+        for cardinality in [16usize, 256, 4_096] {
+            let fixture = Fixture::new(cardinality, shared_prefix);
+            drop(fixture.flat_dispatch(cardinality, shared_prefix));
+            group.throughput(Throughput::Elements(cardinality as u64));
+            group.bench_function(BenchmarkId::new("pathmap", cardinality), |bencher| {
+                bencher.iter(|| {
+                    black_box(RetainedSetAutomaton::compile(
+                        &ExactMatcher,
+                        black_box(&fixture.candidates),
+                    ))
+                })
+            });
+            group.bench_function(BenchmarkId::new("flat_dispatch", cardinality), |bencher| {
+                bencher.iter(|| {
+                    black_box(RetainedSetAutomaton::compile(
+                        &FlatDispatchMatcher,
+                        black_box(&fixture.candidates),
+                    ))
+                })
             });
         }
         group.finish();

@@ -63,6 +63,35 @@ impl Match<Pattern, String, String> for StringMatcher {
     fn supports_rho_path_candidate_pruning(&self) -> bool { self.retained_paths }
 }
 
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+struct FlatDispatchMatcher(StringMatcher);
+
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+impl Match<Pattern, String, String> for FlatDispatchMatcher {
+    fn get(&self, pattern: &Pattern, datum: &String) -> Option<String> {
+        self.0.get(pattern, datum)
+    }
+
+    fn retained_pattern_path(&self, pattern: &Pattern) -> Option<Vec<u8>> {
+        self.0.retained_pattern_path(pattern)
+    }
+
+    fn retained_datum_path(&self, datum: &String) -> Option<Vec<u8>> {
+        self.0.retained_datum_path(datum)
+    }
+
+    fn supports_rho_path_candidate_pruning(&self) -> bool {
+        self.0.supports_rho_path_candidate_pruning()
+    }
+
+    fn retained_flat_dispatch_experiment(&self) -> bool { true }
+}
+
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+thread_local! {
+    static FLAT_DISPATCH_SPACES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 type BenchSpace = RSpace<String, Pattern, String, String>;
 
 async fn create_space(retained_paths: bool) -> BenchSpace {
@@ -82,6 +111,14 @@ async fn create_space(retained_paths: bool) -> BenchSpace {
         .expect("history reader");
     let state: HotStoreState<String, Pattern, String, String> = HotStoreState::default();
     let hot_store = HotStoreInstances::create_from_hs_and_hr(state, reader.base());
+    #[cfg(feature = "retained-flat-dispatch-experiment")]
+    if FLAT_DISPATCH_SPACES.get() {
+        return RSpace::apply(
+            history,
+            hot_store,
+            Arc::new(Box::new(FlatDispatchMatcher(StringMatcher { retained_paths }))),
+        );
+    }
     RSpace::apply(history, hot_store, Arc::new(Box::new(StringMatcher { retained_paths })))
 }
 
@@ -306,6 +343,59 @@ fn waiting_receive_fixture(
     }
 }
 
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+fn flat_dispatch_waiting_receive_fixture(
+    cardinality: usize,
+    shared_prefix: bool,
+) -> ProduceFixture {
+    FLAT_DISPATCH_SPACES.set(true);
+    let fixture = waiting_receive_fixture(cardinality, shared_prefix, true);
+    FLAT_DISPATCH_SPACES.set(false);
+    fixture
+}
+
+#[cfg(feature = "retained-flat-dispatch-experiment")]
+fn preflight_flat_dispatch_waiting_receive(cardinality: usize, shared_prefix: bool) {
+    let pathmap = waiting_receive_fixture(cardinality, shared_prefix, true);
+    let flat_dispatch = flat_dispatch_waiting_receive_fixture(cardinality, shared_prefix);
+    let pathmap_result = pathmap
+        .runtime
+        .block_on(
+            pathmap
+                .space
+                .produce(pathmap.channel.clone(), pathmap.datum.clone(), false),
+        )
+        .expect("PathMap preflight produce must succeed");
+    let flat_dispatch_result = flat_dispatch
+        .runtime
+        .block_on(flat_dispatch.space.produce(
+            flat_dispatch.channel.clone(),
+            flat_dispatch.datum.clone(),
+            false,
+        ))
+        .expect("flat-dispatch preflight produce must succeed");
+    assert!(pathmap_result.is_some(), "a persistent receive must enable a COMM");
+    assert_eq!(
+        flat_dispatch_result, pathmap_result,
+        "flat-dispatch produce preflight at cardinality {cardinality}, \
+         shared_prefix={shared_prefix}"
+    );
+    assert_eq!(
+        flat_dispatch
+            .runtime
+            .block_on(flat_dispatch.space.take_event_log()),
+        pathmap.runtime.block_on(pathmap.space.take_event_log()),
+        "flat-dispatch event-log preflight at cardinality {cardinality}, \
+         shared_prefix={shared_prefix}"
+    );
+    assert_eq!(
+        flat_dispatch.runtime.block_on(flat_dispatch.space.to_map()),
+        pathmap.runtime.block_on(pathmap.space.to_map()),
+        "flat-dispatch to_map preflight at cardinality {cardinality}, \
+         shared_prefix={shared_prefix}"
+    );
+}
+
 fn bench_rspace_comm(criterion: &mut Criterion) {
     for shared_prefix in [false, true] {
         let name = if shared_prefix {
@@ -319,6 +409,15 @@ fn bench_rspace_comm(criterion: &mut Criterion) {
                 let fixture = waiting_receive_fixture(cardinality, shared_prefix, retained_paths);
                 group.throughput(Throughput::Elements(1));
                 group.bench_function(BenchmarkId::new(label, cardinality), |bencher| {
+                    bencher.iter_custom(|iterations| fixture.measure(iterations));
+                });
+            }
+            #[cfg(feature = "retained-flat-dispatch-experiment")]
+            {
+                preflight_flat_dispatch_waiting_receive(cardinality, shared_prefix);
+                let fixture = flat_dispatch_waiting_receive_fixture(cardinality, shared_prefix);
+                group.throughput(Throughput::Elements(1));
+                group.bench_function(BenchmarkId::new("flat_dispatch", cardinality), |bencher| {
                     bencher.iter_custom(|iterations| fixture.measure(iterations));
                 });
             }

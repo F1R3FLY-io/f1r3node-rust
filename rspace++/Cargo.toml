@@ -162,3 +162,8 @@ required-features = ["accepted-match-transition-experiment"]
 name = "rspace_accepted_match_profile"
 harness = false
 required-features = ["accepted-match-transition-experiment"]
+
+[[bench]]
+name = "rspace_retained_automaton_space"
+harness = false
+required-features = ["retained-flat-dispatch-experiment"]
