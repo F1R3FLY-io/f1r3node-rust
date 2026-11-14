@@ -278,16 +278,18 @@ where
                     }
                     None => {
                         sweep.pending_len = 0;
-                        // All bodies in this pass are deleted; evict DAG
-                        // metadata below the cutoff so subsequent walks
-                        // (`lookup`, `contains`) do not descend past the
-                        // anchor into blocks whose bodies are gone. The
-                        // atomic was raised at Delete entry so the race
-                        // between "body deleted, anchor still zero" is
-                        // already closed; this eviction tightens the walk
-                        // behavior to match.
+                        // All bodies in this pass are deleted. Persist the
+                        // advanced anchor so a restart resumes with
+                        // `guard_deferral` already permissive. Metadata is
+                        // left in the in-memory window (refresh_window
+                        // handles that on its own timing); evicting it here
+                        // would force downstream walks into disk fallback
+                        // for every reference to below-cutoff state, which
+                        // surfaced as test-patience timeouts in CI.
                         if pass.conf.enable_block_store_gc && pass.target >= 0 {
-                            storage.advance_pruning_cutoff(pass.target)?;
+                            storage
+                                .gc_store()
+                                .advance_effective_anchor(pass.target)?;
                         }
                         return Ok(GcProgress::Complete {
                             deleted,
