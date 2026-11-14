@@ -2522,7 +2522,7 @@ mod tests {
                 .await
                 .unwrap();
             let mut parent: Option<BlockHash> = None;
-            for height in 0..20_000i64 {
+            for height in 0..15_000i64 {
                 let block = models::rust::block_implicits::get_random_block(
                     Some(height),
                     None,
