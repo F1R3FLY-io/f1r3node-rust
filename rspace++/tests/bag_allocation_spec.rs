@@ -1098,3 +1098,81 @@ fn exhausting_single_key_removal_allocates_independently_of_bag_size() {
          resident keys, then at 16"
     );
 }
+
+fn delta_gate_datum(label: &str) -> Datum<CatalogValue> {
+    Datum {
+        a: Arc::new(CatalogValue(format!("delta-gate-{label}"))),
+        persist: false,
+        source: Produce::new(
+            Blake2b256Hash::new(label.as_bytes()),
+            Blake2b256Hash::new(b"delta-gate-fixture"),
+            false,
+        ),
+    }
+}
+
+fn delta_gate_target() -> String { format!("g1{}", "z".repeat(64)) }
+
+fn delta_gate_store(population: usize) -> RSpaceDataStore<String, CatalogValue> {
+    let mut store = RSpaceDataStore::new();
+    for i in 0..population {
+        store
+            .set_channel(format!("g0{}{i:016x}", "c".repeat(64)), [delta_gate_datum("resident")])
+            .expect("a population channel loads with one datum");
+    }
+    store
+        .set_channel(delta_gate_target(), [delta_gate_datum("target")])
+        .expect("the target channel loads with one datum");
+    assert!(store.pending_delta().is_empty(), "set_channel writes no pending delta");
+    store
+}
+
+#[test]
+fn one_channel_delta_allocates_independently_of_loaded_channel_count() {
+    let target = delta_gate_target();
+    let resident = RSpaceDataIndex::datum_path(&target, &delta_gate_datum("target"));
+    let added = RSpaceDataIndex::datum_path(&target, &delta_gate_datum("added"));
+    let cases: [(&[u8], bool, (u64, u64)); 3] = [
+        (added.as_slice(), true, (1, 1)),
+        (resident.as_slice(), false, (0, 0)),
+        (resident.as_slice(), true, (2, 0)),
+    ];
+    let counts = |store: &RSpaceDataStore<String, CatalogValue>| {
+        (store.index().count_path(&resident), store.index().count_path(&added))
+    };
+    let observe = |population: usize, aliased: bool| {
+        cases.map(|(path, addition, expected)| {
+            let mut store = delta_gate_store(population);
+            let mut delta = BagDelta::new();
+            let recorded = match addition {
+                true => delta.record_addition(path, Multiplicity::ONE),
+                false => delta.record_removal(path, Multiplicity::ONE),
+            };
+            recorded.expect("the gate delta records one change");
+            let alias = aliased.then(|| store.clone());
+            let (outcome, calls, bytes) = measure(|| store.apply_delta(&delta));
+            outcome.expect("the one-channel delta applies");
+            assert_eq!(counts(&store), expected);
+            assert_eq!(store.loaded_channel_count(), population + 1);
+            if let Some(alias) = alias {
+                assert_eq!(counts(&alias), (1, 0), "the alias keeps its version");
+                drop(alias);
+            }
+            (calls, bytes)
+        })
+    };
+    let single = [observe(16, false), observe(16, true)];
+    let wide = [observe(4096, false), observe(4096, true)];
+    assert_eq!(
+        wide[1], single[1],
+        "one-channel delta allocations with a live alias grew with the loaded channel count: \
+         (calls, bytes) of apply_delta for adding a new datum, removing the resident datum and \
+         adding a second copy of it, at 4,097 loaded channels, then at 17"
+    );
+    assert_eq!(
+        wide[0], single[0],
+        "one-channel delta allocations grew with the loaded channel count: (calls, bytes) of \
+         apply_delta for adding a new datum, removing the resident datum and adding a second copy \
+         of it, at 4,097 loaded channels, then at 17"
+    );
+}

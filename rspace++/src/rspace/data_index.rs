@@ -1420,9 +1420,6 @@ impl RSpaceDataIndex {
         Ok(was_loaded)
     }
 
-    /// Publish a precomputed set of exact channel replacements as one outer
-    /// copy-on-write authority transition.
-    ///
     /// Aggregate metadata is preflighted over the final state before the first
     /// outer-trie mutation.  This avoids both partial publication and false
     /// overflow caused by an arbitrary order of growing and shrinking
@@ -2127,12 +2124,6 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     }
 
     /// Atomically apply exact datum-identity multiplicity changes.
-    ///
-    /// Every absolute path is validated and partitioned at its schema-defined
-    /// exact channel boundary. Each channel-local delta is applied to a
-    /// copy-on-write inner Bag, aggregate metadata and candidate catalogs are
-    /// staged, and then one outer authority is published under the hot-store
-    /// write lock. Failure leaves every live authority and cache unchanged.
     pub fn apply_delta(&mut self, delta: &BagDelta) -> Result<(), DataIndexError> {
         if delta.is_empty() {
             return Ok(());
@@ -2164,8 +2155,6 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
             replacements.insert(marker.clone(), prepared);
         }
 
-        let mut candidate_index = self.index.clone();
-        candidate_index.replace_channels_at_markers(&replacements)?;
         let catalogs = self
             .candidate_catalogs
             .get_mut()
@@ -2180,7 +2169,10 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
                     .expect("a BagDelta datum path was validated before mutation");
                 let marker = &path[..view.channel_prefix_len()];
                 let relative_path = &path[view.channel_prefix_len()..];
-                let current_count = candidate_index.count_path(path);
+                let current_count = replacements
+                    .get(marker)
+                    .expect("every validated delta path has a prepared channel")
+                    .count(relative_path);
                 let previous_count = if is_addition {
                     current_count
                         .checked_sub(amount.get())
@@ -2215,14 +2207,14 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
                 .get_mut(marker.as_slice())
                 .and_then(Option::as_mut)
             {
-                Arc::make_mut(catalog).availability = candidate_index
-                    .channel_bag_at_marker(marker)
-                    .expect("a successfully changed channel is loaded")
+                Arc::make_mut(catalog).availability = replacements
+                    .get(marker)
+                    .expect("a successfully changed channel is prepared")
                     .clone();
             }
         }
 
-        self.index = candidate_index;
+        self.index.replace_channels_at_markers(&replacements)?;
         for (is_addition, changes) in [(true, delta.additions()), (false, delta.removals())] {
             changes.visit_prefix(b"", |path, amount| {
                 let result = if is_addition {
@@ -2649,6 +2641,77 @@ mod candidate_identity_order_tests {
             !tail[..end].contains("self.clone()"),
             "set_channel must prepare a channel-local Bag, not clone the whole store"
         );
+    }
+
+    #[test]
+    fn apply_delta_reuses_the_unique_outer_authority_anchor() {
+        let datum = |label: &str| Datum {
+            a: Arc::new(format!("delta-payload-{label}")),
+            persist: false,
+            source: crate::rspace::trace::event::Produce::new(
+                Blake2b256Hash::new(label.as_bytes()),
+                Blake2b256Hash::new(b"delta-produce-seq"),
+                false,
+            ),
+        };
+        let loaded = "loaded".to_owned();
+        let unloaded = "unloaded".to_owned();
+        let mut store = RSpaceDataStore::<String, String>::new();
+        store
+            .set_channel(loaded.clone(), [datum("resident")])
+            .expect("a resident channel loads");
+        let before = store.index.outer_anchor_identity();
+        let mut delta = BagDelta::new();
+        delta
+            .record_addition(
+                &RSpaceDataIndex::datum_path(&loaded, &datum("added")),
+                Multiplicity::ONE,
+            )
+            .expect("an addition to a loaded channel records");
+        delta
+            .record_removal(
+                &RSpaceDataIndex::datum_path(&loaded, &datum("resident")),
+                Multiplicity::ONE,
+            )
+            .expect("a removal from a loaded channel records");
+        delta
+            .record_addition(
+                &RSpaceDataIndex::datum_path(&unloaded, &datum("first")),
+                Multiplicity::ONE,
+            )
+            .expect("an addition to an unloaded channel records");
+
+        store
+            .apply_delta(&delta)
+            .expect("a valid two-channel delta applies");
+
+        assert_eq!(store.index().count(&loaded, &datum("added")), 1);
+        assert_eq!(store.index().count(&loaded, &datum("resident")), 0);
+        assert_eq!(store.index().count(&unloaded, &datum("first")), 1);
+        assert_eq!(store.loaded_channel_count(), 2);
+        assert_eq!(
+            store.index.outer_anchor_identity(),
+            before,
+            "apply_delta must update the unique outer authority in place"
+        );
+    }
+
+    #[test]
+    fn apply_delta_source_has_no_whole_index_clone_transaction() {
+        let source = include_str!("data_index.rs");
+        let start = source
+            .find("    pub fn apply_delta(")
+            .expect("apply_delta source boundary");
+        let tail = &source[start..];
+        let end = tail
+            .find("\n    pub fn channel_entries(")
+            .expect("next data-store method boundary");
+        let body = &tail[..end];
+        assert!(
+            !body.contains("self.index.clone()"),
+            "apply_delta must write the outer authority in place, not clone the whole index"
+        );
+        assert!(!body.contains("self.index = "), "apply_delta must not replace the whole index");
     }
 
     #[test]

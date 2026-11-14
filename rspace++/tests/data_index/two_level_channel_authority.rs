@@ -229,6 +229,74 @@ fn cloned_store_splits_only_the_mutated_outer_and_inner_authorities() {
 }
 
 #[test]
+fn cloned_store_delta_splits_only_the_mutated_outer_and_inner_authorities() {
+    let target = "target".to_owned();
+    let sibling = "sibling".to_owned();
+    let target_marker = marker(&target);
+    let sibling_marker = marker(&sibling);
+    let addition = RSpaceDataIndex::datum_path(&target, &datum(2));
+    for drop_mutated_first in [false, true] {
+        let mut left = RSpaceDataStore::new();
+        left.set_channel(target.clone(), [datum(1)])
+            .expect("the target channel loads");
+        left.set_channel(sibling.clone(), [datum(9)])
+            .expect("the sibling channel loads");
+        let right = left.clone();
+        let shared_outer = left.index().outer_anchor_identity();
+        let shared_target =
+            inner_anchor(&left, &target_marker).expect("the target channel is loaded");
+        let shared_sibling =
+            inner_anchor(&left, &sibling_marker).expect("the sibling channel is loaded");
+        assert_eq!(right.index().outer_anchor_identity(), shared_outer);
+        assert_eq!(inner_anchor(&right, &target_marker), Some(shared_target));
+        assert_eq!(inner_anchor(&right, &sibling_marker), Some(shared_sibling));
+        let mut delta = BagDelta::new();
+        delta
+            .record_addition(&addition, Multiplicity::ONE)
+            .expect("the delta records one addition");
+
+        left.apply_delta(&delta)
+            .expect("the delta applies to the mutated version");
+
+        assert_ne!(left.index().outer_anchor_identity(), shared_outer);
+        assert_eq!(right.index().outer_anchor_identity(), shared_outer);
+        assert_ne!(inner_anchor(&left, &target_marker), Some(shared_target));
+        assert_eq!(inner_anchor(&right, &target_marker), Some(shared_target));
+        assert_eq!(inner_anchor(&left, &sibling_marker), Some(shared_sibling));
+        assert_eq!(inner_anchor(&right, &sibling_marker), Some(shared_sibling));
+        let (survivor, survivor_keeps_shared_outer, target_counts) = match drop_mutated_first {
+            true => {
+                drop(left);
+                (right, true, (1, 0))
+            }
+            false => {
+                drop(right);
+                (left, false, (1, 1))
+            }
+        };
+        assert_eq!(
+            survivor.index().outer_anchor_identity() == shared_outer,
+            survivor_keeps_shared_outer
+        );
+        assert_eq!(
+            (
+                survivor.index().count(&target, &datum(1)),
+                survivor.index().count(&target, &datum(2)),
+            ),
+            target_counts
+        );
+        assert_eq!(
+            survivor
+                .channel_data(&sibling)
+                .expect("the sibling channel decodes"),
+            Some(vec![datum(9)])
+        );
+        assert_eq!(inner_anchor(&survivor, &sibling_marker), Some(shared_sibling));
+        assert_eq!(survivor.loaded_channel_count(), 2);
+    }
+}
+
+#[test]
 fn removing_the_last_datum_preserves_loaded_empty_authority() {
     let channel = "last-datum".to_owned();
     let value = datum(4);
@@ -304,7 +372,7 @@ fn multichannel_delta_publishes_all_touched_channels_and_preserves_untouched_anc
 
     store.apply_delta(&delta).unwrap();
 
-    assert_ne!(store.index().outer_anchor_identity(), old_outer);
+    assert_eq!(store.index().outer_anchor_identity(), old_outer);
     assert_eq!(store.channel_data(&left).unwrap(), Some(Vec::new()));
     assert_eq!(store.index().count(&right, &datum(2)), 1);
     assert_eq!(store.index().count(&right, &datum(3)), 2);
@@ -484,9 +552,29 @@ fn delta_publication_identity_distinguishes_success_empty_refusal_and_underflow(
 
     store.apply_delta(&success).unwrap();
 
-    assert_ne!(store.index().outer_anchor_identity(), before_success_outer);
+    assert_eq!(store.index().outer_anchor_identity(), before_success_outer);
     assert_ne!(inner_anchor(&store, &target_marker), Some(before_success_target),);
     assert_eq!(inner_anchor(&store, &sibling_marker), Some(before_success_sibling),);
+
+    let alias = store.clone();
+    let aliased_value = datum(5);
+    let before_aliased_outer = store.index().outer_anchor_identity();
+    let before_aliased_target =
+        inner_anchor(&store, &target_marker).expect("the target channel is loaded");
+    let mut aliased = BagDelta::new();
+    aliased
+        .record_addition(&RSpaceDataIndex::datum_path(&target, &aliased_value), Multiplicity::ONE)
+        .expect("the aliased delta records one addition");
+    store
+        .apply_delta(&aliased)
+        .expect("a delta applies while an alias holds the authority");
+    assert_ne!(store.index().outer_anchor_identity(), before_aliased_outer);
+    assert_eq!(alias.index().outer_anchor_identity(), before_aliased_outer);
+    assert_ne!(inner_anchor(&store, &target_marker), Some(before_aliased_target));
+    assert_eq!(inner_anchor(&alias, &target_marker), Some(before_aliased_target));
+    assert_eq!(alias.index().count(&target, &aliased_value), 0);
+    assert_eq!(store.index().count(&target, &aliased_value), 1);
+    drop(alias);
 
     let before_empty_outer = store.index().outer_anchor_identity();
     let before_empty_target = inner_anchor(&store, &target_marker);
