@@ -1,0 +1,87 @@
+{
+  "schema": "f1r3node.matcher-width-experiment-310.analysis.v1",
+  "recorded_at": "2026-11-14",
+  "raw_observations": "matcher-width-experiment-310-2026-11-14.tsv",
+  "raw_observations_sha256": "0cb887d5f2336ffaf02f925740ac5e962557e51c25843acf97bf7b8aeb189030",
+  "pgmcp": {
+    "experiment": 490,
+    "leaf": 14487,
+    "protocol_note": 4672
+  },
+  "protocol": {
+    "subjects": [
+      "spatial_epathmap_set_wide",
+      "spatial_epathmap_map_wide"
+    ],
+    "width": 65536,
+    "stack_bytes": 262144,
+    "warmup_pairs": 3,
+    "retained_pairs": 51,
+    "order": "odd AB / even BA",
+    "observation": "elapsed wall time of one gate_child process, spawn to exit",
+    "affinity_cpu": 1,
+    "memory_max_bytes": 8589934592,
+    "swap_max_bytes": 0,
+    "acceptance": "U_0.95(mean of the per-pair max(set_ratio, map_ratio)) < 1.05, ratio = treatment/control",
+    "optional_stopping": false,
+    "rerun": false
+  },
+  "provenance": {
+    "control_git_ref": "0c27a7c878e1c8382197cd2c53f1493ca3270c39",
+    "control_tree": "7ae729ca1fa633fd021e000f5583eb733ca07752",
+    "control_binary_sha256": "910323970186c7768c2a0fb8678bbe2890f435961d7ad881f7945dc4a6790b75",
+    "experiment_309_control_binary_sha256": "3df98025a0cdb1c60e6fcf12a45340da447d8821919fb455de6895b1b6920e42",
+    "control_rebuild_note": "rebuilt from the same commit with the same toolchain; the bytes differ from the 2026-08-23 build of experiments 307-309",
+    "treatment_git_ref": "d7c330b544eddcf8739ffbb8960f2c0bae70b7aa",
+    "treatment_tree": "32156de3b027d72fab24695936eaaa4e313c5bda",
+    "treatment_binary_sha256": "fdbe0d0eebeafbffa261c8b400b3bfc7449912e8b1cacabd870d0f53b4532dd7",
+    "build": "cargo test --release --locked --offline -p rholang --test stack_depth_gate --no-run; opt-level 3, no debug assertions, no overflow checks, no features, in both arms"
+  },
+  "host": {
+    "before": {
+      "governor": "performance",
+      "epp": "performance",
+      "boost": "1",
+      "smt": "0",
+      "kernel": "7.2.15-arch1-1",
+      "rustc": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)",
+      "load": "5.50 5.02 6.08 28/4965 2101826"
+    },
+    "after": {
+      "governor": "performance",
+      "epp": "performance",
+      "boost": "1",
+      "smt": "0",
+      "kernel": "7.2.15-arch1-1",
+      "rustc": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)",
+      "load": "6.37 5.98 5.91 4/4986 2417394"
+    },
+    "quiet_before": true,
+    "quiet_after": true
+  },
+  "statistics": {
+    "set": {
+      "n": 51,
+      "mean_ratio": 4.727243798024772,
+      "median_ratio": 4.91248510212376,
+      "sd": 0.44691274492474004,
+      "upper_one_sided_95": 4.832122439955183
+    },
+    "map": {
+      "n": 51,
+      "mean_ratio": 10.981016651860406,
+      "median_ratio": 11.068092450688278,
+      "sd": 0.326231215548056,
+      "upper_one_sided_95": 11.057574519655716
+    },
+    "worst": {
+      "n": 51,
+      "mean_ratio": 10.981016651860406,
+      "median_ratio": 11.068092450688278,
+      "sd": 0.326231215548056,
+      "upper_one_sided_95": 11.057574519655716
+    },
+    "verdict": "rejected"
+  },
+  "verdict": "rejected"
+}
