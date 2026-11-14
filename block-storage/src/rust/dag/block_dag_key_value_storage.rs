@@ -104,9 +104,11 @@ pub struct KeyValueDagRepresentation {
     pub(crate) history: Option<Arc<DagHistoryIndex>>,
     pub(crate) view_sequence: u64,
     pub(crate) view_max_height: Option<i64>,
-    /// Snapshot of the DAG's pruning cutoff. Below this height, `lookup`
-    /// returns `None` even though history records persist on disk — the
-    /// block is logically pruned and walks must terminate at the cutoff.
+    /// Snapshot of the DAG's pruning cutoff carried from `DagState`.
+    /// Informational right now — no reader on this type — but kept so a
+    /// future walk-termination change can consult it without reaching
+    /// through the metadata-store lock.
+    #[allow(dead_code)]
     pub(crate) pruning_cutoff: i64,
     pub(crate) dag_set: imbl::HashSet<BlockHash>,
     pub(crate) latest_messages_map: imbl::HashMap<Validator, BlockHash>,
