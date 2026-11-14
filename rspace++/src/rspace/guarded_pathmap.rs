@@ -2620,3 +2620,7 @@ mod two_phase_teardown_properties;
 #[cfg(test)]
 #[path = "../../tests/guarded_pathmap/stateful_retirement.rs"]
 mod stateful_retirement;
+
+#[cfg(test)]
+#[path = "../../tests/guarded_pathmap/exclusive_endpoint_removal.rs"]
+mod exclusive_endpoint_removal;
