@@ -280,3 +280,108 @@ fn moderate_query_and_early_teardown_fit_a_fixed_small_stack() {
 
 #[test]
 fn deep_query_and_early_teardown_fit_a_fixed_small_stack() { fixed_stack_probe(4_096, 256 * 1024); }
+
+fn shallow_leaves() -> Vec<(String, Par)> {
+    vec![
+        ("empty".to_string(), Par::default()),
+        ("finite".to_string(), finite()),
+        ("nan".to_string(), nan()),
+        (
+            "alternate-nan".to_string(),
+            double_bits(0x7ff8_0000_dead_beef),
+        ),
+        ("infinity".to_string(), double_bits(f64::INFINITY.to_bits())),
+        (
+            "not(nan)".to_string(),
+            par(ExprInstance::ENotBody(ENot { p: Some(nan()) })),
+        ),
+    ]
+}
+
+fn entry(key: Option<Par>, value: Option<Par>) -> KeyValuePair { KeyValuePair { key, value } }
+
+fn for_each_single_child_wrapper(children: &[(String, Par)], mut visit: impl FnMut(String, Par)) {
+    for (a_name, a) in children {
+        visit(format!("list[{a_name}]"), list(vec![a.clone()]));
+        visit(format!("tuple[{a_name}]"), tuple(vec![a.clone()]));
+        visit(format!("set[{a_name}]"), set(vec![a.clone()]));
+        visit(
+            format!("map[{a_name}: finite]"),
+            map(vec![entry(Some(a.clone()), Some(finite()))]),
+        );
+        visit(
+            format!("map[finite: {a_name}]"),
+            map(vec![entry(Some(finite()), Some(a.clone()))]),
+        );
+        visit(
+            format!("map[_: {a_name}]"),
+            map(vec![entry(None, Some(a.clone()))]),
+        );
+    }
+}
+
+fn for_each_two_child_wrapper(
+    left: &[(String, Par)],
+    right: &[(String, Par)],
+    mut visit: impl FnMut(String, Par),
+) {
+    for (a_name, a) in left {
+        for (b_name, b) in right {
+            visit(
+                format!("list[{a_name}, {b_name}]"),
+                list(vec![a.clone(), b.clone()]),
+            );
+            visit(
+                format!("tuple[{a_name}, {b_name}]"),
+                tuple(vec![a.clone(), b.clone()]),
+            );
+            visit(
+                format!("set[{a_name}, {b_name}]"),
+                set(vec![a.clone(), b.clone()]),
+            );
+            visit(
+                format!("map[{a_name}: {b_name}]"),
+                map(vec![entry(Some(a.clone()), Some(b.clone()))]),
+            );
+        }
+    }
+}
+
+#[test]
+fn every_generated_shallow_term_agrees_with_the_recursive_oracle() {
+    let leaves = shallow_leaves();
+    let siblings = [("finite".to_string(), finite()), ("nan".to_string(), nan())];
+    let mut level_one = Vec::with_capacity(leaves.len() * 6 + leaves.len() * leaves.len() * 4);
+    for_each_single_child_wrapper(&leaves, |name, value| level_one.push((name, value)));
+    for_each_two_child_wrapper(&leaves, &leaves, |name, value| {
+        level_one.push((name, value))
+    });
+    let mut children = Vec::with_capacity(leaves.len() + level_one.len());
+    children.extend(leaves.iter().cloned());
+    children.extend(level_one.iter().cloned());
+
+    let mut checked = 0u64;
+    let mut nan_positive = 0u64;
+    let mut check = |name: &str, value: &Par| {
+        let expected = recursive_oracle(value);
+        assert_eq!(
+            par_contains_nan_double(value),
+            expected,
+            "iterative parity for {name}"
+        );
+        checked += 1;
+        nan_positive += u64::from(expected);
+    };
+    for (name, value) in &children {
+        check(name, value);
+    }
+    for_each_single_child_wrapper(&children, |name, value| check(&name, &value));
+    for_each_two_child_wrapper(&children, &siblings, |name, value| check(&name, &value));
+    for_each_two_child_wrapper(&siblings, &children, |name, value| check(&name, &value));
+
+    assert_eq!(checked, 4_278, "terms enumerated to depth two");
+    assert_eq!(
+        nan_positive, 2_898,
+        "terms the recursive oracle reports as holding a NaN"
+    );
+}
