@@ -56,15 +56,13 @@ impl InlineIngest {
         let (handle, ports) = IngestHandle::open(block_store.clone(), dag.clone())?;
         let view = handle.view().clone();
         let mut state = IngestState::new(view.clone());
-        let effective_anchor = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
-            proto_util::block_number(&approved_block),
-        ));
+        let anchor_height = proto_util::block_number(&approved_block);
         let stores = Stores {
             dag: &dag,
             block_store: &block_store,
         };
         state.handle(
-            IngestInput::Attached { effective_anchor },
+            IngestInput::Attached { anchor_height },
             view.now_ms(),
             &stores,
         );

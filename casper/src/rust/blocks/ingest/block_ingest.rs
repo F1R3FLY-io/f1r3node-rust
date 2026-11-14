@@ -137,7 +137,8 @@ impl IngestHandle {
     /// Start ingesting for `casper`. Blocks arriving before this are dropped.
     pub async fn attach_casper(&self, casper: SharedCasper) -> Result<(), CasperError> {
         let approved_block = casper.get_approved_block()?.clone();
-        let effective_anchor = casper.effective_anchor_handle();
+        let anchor_height =
+            crate::rust::util::proto_util::block_number(&approved_block);
         let intake = Arc::new(Intake::new(
             self.block_store.clone(),
             self.dag.clone(),
@@ -148,7 +149,7 @@ impl IngestHandle {
             CasperError::RuntimeError("block ingest casper slot poisoned".to_string())
         })? = Some(Attached { casper, intake });
         self.inputs
-            .send(IngestInput::Attached { effective_anchor })
+            .send(IngestInput::Attached { anchor_height })
             .await
             .map_err(|_| CasperError::RuntimeError("block ingest has stopped".to_string()))
     }

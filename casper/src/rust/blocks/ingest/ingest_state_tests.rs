@@ -1,6 +1,4 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::atomic::AtomicI64;
-use std::sync::Arc;
 
 use block_storage::rust::pending_blocks::{PendingBlockLimits, PendingUsage};
 use comm::rust::peer_node::PeerNode;
@@ -226,7 +224,7 @@ fn a_cited_block_at_or_below_the_anchor_is_admitted_as_settled_history() {
     let dag = dag_with(&[0]);
     s.handle(
         IngestInput::Attached {
-            effective_anchor: Arc::new(AtomicI64::new(50)),
+            anchor_height: 50,
         },
         0,
         &dag,
@@ -254,7 +252,7 @@ fn a_block_below_the_anchor_that_the_node_requested_itself_is_offered_as_settled
     let dag = dag_with(&[0]);
     s.handle(
         IngestInput::Attached {
-            effective_anchor: Arc::new(AtomicI64::new(50)),
+            anchor_height: 50,
         },
         0,
         &dag,
@@ -270,7 +268,7 @@ fn a_held_block_below_the_anchor_that_the_node_then_requests_is_admitted_as_sett
     let dag = dag_with(&[0]);
     s.handle(
         IngestInput::Attached {
-            effective_anchor: Arc::new(AtomicI64::new(50)),
+            anchor_height: 50,
         },
         0,
         &dag,
@@ -294,7 +292,7 @@ fn a_held_block_below_the_anchor_that_a_bonded_block_then_cites_is_admitted_as_s
     let dag = dag_with(&[0]);
     s.handle(
         IngestInput::Attached {
-            effective_anchor: Arc::new(AtomicI64::new(50)),
+            anchor_height: 50,
         },
         0,
         &dag,
@@ -310,7 +308,7 @@ fn a_held_block_above_the_anchor_stays_held_for_validation_when_the_node_request
     let dag = dag_with(&[0]);
     s.handle(
         IngestInput::Attached {
-            effective_anchor: Arc::new(AtomicI64::new(50)),
+            anchor_height: 50,
         },
         0,
         &dag,
@@ -327,7 +325,7 @@ fn a_block_below_the_anchor_awaiting_a_state_root_is_admitted_as_settled_history
     let root = Blake2b256Hash::new(b"root");
     s.handle(
         IngestInput::Attached {
-            effective_anchor: Arc::new(AtomicI64::new(50)),
+            anchor_height: 50,
         },
         0,
         &dag,
@@ -358,7 +356,7 @@ fn a_block_below_the_anchor_requested_during_its_validation_is_admitted_as_settl
     let root = Blake2b256Hash::new(b"root");
     s.handle(
         IngestInput::Attached {
-            effective_anchor: Arc::new(AtomicI64::new(50)),
+            anchor_height: 50,
         },
         0,
         &dag,
@@ -385,7 +383,7 @@ fn a_block_that_settled_history_admission_declined_stays_held_for_validation_whe
     let dag = dag_with(&[0]);
     s.handle(
         IngestInput::Attached {
-            effective_anchor: Arc::new(AtomicI64::new(50)),
+            anchor_height: 50,
         },
         0,
         &dag,

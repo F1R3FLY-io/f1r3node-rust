@@ -1,6 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
 
 use block_storage::rust::pending_blocks::{PendingBlockLimits, PendingUsage};
 use comm::rust::peer_node::PeerNode;
@@ -129,15 +127,17 @@ pub enum StateFetchResult {
     Dropped(StateFetchDrop),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngestInput {
-    /// Casper runs behind this shared anchor. The handle lets block
-    /// ingest observe anchor advancement (post block-store GC) without
-    /// a re-attach: `at_or_below_anchor` reads the atomic live and
-    /// settled-history routing picks up the new floor on the next
-    /// receive.
+    /// Casper runs from an approved block at this height. The anchor
+    /// here is a snapshot: block-store GC advances the effective
+    /// anchor on the Casper trait, but ingest stays on the initial
+    /// value so vouched below-approved blocks keep their
+    /// settled-history routing while vouched below-GC-anchor blocks
+    /// (on a genesis-rooted node they ARE this node's own history)
+    /// take the normal validation path.
     Attached {
-        effective_anchor: Arc<AtomicI64>,
+        anchor_height: i64,
     },
     /// Intake stored a block on disk or in the pending area.
     Received(HeldMeta),
@@ -173,67 +173,6 @@ pub enum IngestInput {
     },
 }
 
-// The `Attached` variant carries an `Arc<AtomicI64>`, which does not implement
-// `PartialEq`. Hand-rolled equality compares the loaded anchor value so test
-// fixtures that assert on `IngestInput` keep working under the live-handle
-// refactor; every other variant is a value-equality comparison.
-impl PartialEq for IngestInput {
-    fn eq(&self, other: &Self) -> bool {
-        use std::sync::atomic::Ordering;
-        match (self, other) {
-            (
-                Self::Attached {
-                    effective_anchor: a,
-                },
-                Self::Attached {
-                    effective_anchor: b,
-                },
-            ) => a.load(Ordering::Relaxed) == b.load(Ordering::Relaxed),
-            (Self::Received(a), Self::Received(b)) => a == b,
-            (Self::Announced { hash: ha, peer: pa }, Self::Announced { hash: hb, peer: pb }) => {
-                ha == hb && pa == pb
-            }
-            (Self::Need { hash: a }, Self::Need { hash: b }) => a == b,
-            (Self::IntakeRefused(a), Self::IntakeRefused(b)) => a == b,
-            (
-                Self::Misbehaved {
-                    peer: pa,
-                    strike: sa,
-                },
-                Self::Misbehaved {
-                    peer: pb,
-                    strike: sb,
-                },
-            ) => pa == pb && sa == sb,
-            (Self::LocalMiss { hash: a }, Self::LocalMiss { hash: b }) => a == b,
-            (Self::Inserted { hash: a }, Self::Inserted { hash: b }) => a == b,
-            (
-                Self::Outcome {
-                    hash: ha,
-                    outcome: oa,
-                },
-                Self::Outcome {
-                    hash: hb,
-                    outcome: ob,
-                },
-            ) => ha == hb && oa == ob,
-            (
-                Self::StateFetch {
-                    root: ra,
-                    result: resa,
-                },
-                Self::StateFetch {
-                    root: rb,
-                    result: resb,
-                },
-            ) => ra == rb && resa == resb,
-            (Self::Tick { connected: a }, Self::Tick { connected: b }) => a == b,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for IngestInput {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
@@ -303,11 +242,13 @@ enum Shape {
 /// the effects for the owner task to carry out.
 #[derive(Debug)]
 pub struct IngestState {
-    /// Shared handle on the effective anchor height. `None` until casper
-    /// attaches; thereafter the handle advances when block-store GC
-    /// prunes past the citation horizon, so `at_or_below_anchor` picks
-    /// up the new floor without a re-attach.
-    effective_anchor: Option<Arc<AtomicI64>>,
+    /// Height of the approved block, once casper runs: cited blocks at
+    /// or below it may be admitted as settled history. Snapshot at
+    /// attach time — GC-advanced effective anchor is NOT reflected
+    /// here, so that a genesis-rooted node (approved block = 0) never
+    /// routes its OWN below-GC-anchor history through the
+    /// settled-admission path.
+    anchor_height: Option<i64>,
     /// The most parents a valid block lists; `None` when unlimited.
     max_parents: Option<usize>,
     /// Blocks inserted while a worker still validated them; their waiters
@@ -323,7 +264,7 @@ pub struct IngestState {
 impl IngestState {
     pub fn new(view: IngestView) -> Self {
         Self {
-            effective_anchor: None,
+            anchor_height: None,
             max_parents: None,
             inserted_while_working: HashSet::new(),
             reserved: HashSet::new(),
@@ -380,9 +321,7 @@ impl IngestState {
     ) -> Vec<Effect> {
         let mut effects = Vec::new();
         match input {
-            IngestInput::Attached { effective_anchor } => {
-                self.effective_anchor = Some(effective_anchor)
-            }
+            IngestInput::Attached { anchor_height } => self.anchor_height = Some(anchor_height),
             IngestInput::Received(meta) => self.received(meta, now_ms, stores, &mut effects),
             IngestInput::Announced { hash, peer } => {
                 if !stores.in_dag(&hash) && !self.tracker.contains(&hash) {
@@ -889,10 +828,8 @@ impl IngestState {
     }
 
     fn at_or_below_anchor(&self, height: i64) -> bool {
-        self.effective_anchor.as_ref().is_some_and(|anchor| {
-            let value = anchor.load(Ordering::Acquire);
-            value > 0 && height <= value
-        })
+        self.anchor_height
+            .is_some_and(|anchor| anchor > 0 && height <= anchor)
     }
 
     /// Needs and state roots no held block waits on any more are dropped.
