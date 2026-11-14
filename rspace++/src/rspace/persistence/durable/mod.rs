@@ -84,7 +84,7 @@ pub(crate) use io::{DurableDirectoryV1, DurableIoError};
 #[cfg(test)]
 pub(crate) use io::{
     DurableIoFailpointV1, arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
-    arm_reclamation_intent_write_prefix,
+    arm_reclamation_intent_write_prefix, armed_durable_io_failpoint,
 };
 #[cfg(test)]
 pub(crate) use io::{DurableWriterLeaseV1, FileLengthExpectation, index_file_name, pack_file_name};

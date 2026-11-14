@@ -70,6 +70,11 @@ pub(crate) fn arm_durable_io_failpoint(failpoint: DurableIoFailpointV1) {
 }
 
 #[cfg(test)]
+pub(crate) fn armed_durable_io_failpoint() -> Option<DurableIoFailpointV1> {
+    DURABLE_IO_FAILPOINT.get()
+}
+
+#[cfg(test)]
 pub(crate) fn arm_catalog_slot_write_prefix(prefix_len: usize) {
     assert!(
         prefix_len < CATALOG_SLOT_LEN,

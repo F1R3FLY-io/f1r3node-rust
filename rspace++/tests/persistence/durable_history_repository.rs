@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::panic::{catch_unwind, resume_unwind};
+use std::panic::resume_unwind;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -32,7 +32,7 @@ use crate::rspace::persistence::durable::journal_owner_hooks::{
 use crate::rspace::persistence::durable::{
     DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoFailpointV1, DurablePublishedCoreV1,
     DurableRSpaceAuthorityV1, DurableStateRootV1, SemanticallyAdmittedDurableWriterV1,
-    arm_durable_io_failpoint, index_file_name, pack_file_name,
+    arm_durable_io_failpoint, armed_durable_io_failpoint, index_file_name, pack_file_name,
 };
 use crate::rspace::persistence::{
     CanonicalDagNode, DurableStateReadHandleErrorV1, GenerationLeaseError, GenerationLeaseKeyV1,
@@ -63,7 +63,6 @@ const MAX_BATCHES: usize = 3;
 const MAX_BATCH_STEPS: usize = 6;
 const ABSENT_DIGEST: [u8; 32] = [0xA5; 32];
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
-const ARMED_FAILPOINT_REFUSAL: &str = "durable I/O failpoint already armed";
 const DIRECTORY_FAILPOINTS: [DurableIoFailpointV1; 16] = [
     DurableIoFailpointV1::PhysicalWrite,
     DurableIoFailpointV1::PhysicalSync,
@@ -139,14 +138,6 @@ fn stored_group<T: AsRef<str>>(channels: &[T]) -> usize {
 
 fn hash_of(digest: ObjectDigest) -> Blake2b256Hash {
     Blake2b256Hash::from_bytes(digest.as_bytes().to_vec())
-}
-
-fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
-    match (payload.downcast_ref::<&'static str>(), payload.downcast_ref::<String>()) {
-        (Some(text), _) => text,
-        (None, Some(text)) => text.as_str(),
-        (None, None) => "a panic without a text payload",
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -865,11 +856,7 @@ fn reset_performs_no_write_and_no_sync_under_every_directory_failpoint() {
                     .spawn(move || {
                         arm_durable_io_failpoint(failpoint);
                         let outcomes = reset_outcomes(sources, targets);
-                        let rearm = catch_unwind(move || arm_durable_io_failpoint(failpoint));
-                        let refusal = rearm
-                            .err()
-                            .map(|payload| panic_text(payload.as_ref()).to_owned());
-                        (failpoint, outcomes, refusal)
+                        (failpoint, outcomes, armed_durable_io_failpoint())
                     })
                     .join()
                     .expect("the failpoint thread completes"),
@@ -878,11 +865,11 @@ fn reset_performs_no_write_and_no_sync_under_every_directory_failpoint() {
         observations
     });
 
-    for (failpoint, outcomes, refusal) in &observations {
+    for (failpoint, outcomes, still_armed) in &observations {
         assert_eq!(outcomes, &baseline, "a reset changed its outcome with {failpoint:?} armed");
         assert_eq!(
-            refusal.as_deref(),
-            Some(ARMED_FAILPOINT_REFUSAL),
+            *still_armed,
+            Some(*failpoint),
             "a reset reached the {failpoint:?} failpoint and cleared it"
         );
     }
@@ -898,9 +885,7 @@ fn reset_performs_no_write_and_no_sync_under_every_directory_failpoint() {
                     poll_checkpoint_with(&mut lock(&owner), &gate, &hot, publication_limits())
                         .err()
                         .map(|error| format!("{error:?}"));
-                let cleared =
-                    catch_unwind(|| arm_durable_io_failpoint(DurableIoFailpointV1::PhysicalWrite))
-                        .is_ok();
+                let cleared = armed_durable_io_failpoint().is_none();
                 (refusal, cleared)
             })
             .join()

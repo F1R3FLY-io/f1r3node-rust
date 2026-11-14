@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::panic::catch_unwind;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -12,8 +11,8 @@ use super::durable_publication::install_checkpoint_image;
 use super::durable_recovery::{checkpoint_image_for_profile, limits};
 use super::durable_rspace_authority::{Profile, Store, poll_once, publication_limits};
 use super::owner_cross_base_checkpoint::{
-    ARMED_FAILPOINT_REFUSAL, Contents, DIRECTORY_FAILPOINTS, Step, Trial, View, apply_all,
-    continuation, directory_image, generated_steps, panic_text, read_contents, view_limits,
+    Contents, DIRECTORY_FAILPOINTS, Step, Trial, View, apply_all, continuation, directory_image,
+    generated_steps, read_contents, view_limits,
 };
 use super::owner_incarnation::journal_bags;
 use super::support::trial_scratch;
@@ -25,13 +24,14 @@ use crate::rspace::persistence::durable::{
     DurableAdmissionLimitsV1, DurableIoFailpointV1, DurableRSpaceAuthorityV1,
     DurableRSpaceTransactionError, DurableStateRootV1, GenerationCheckpointPublicationHookPointV1,
     ResolvedDurableStateV1, ViewBaseV1, ViewCheckpointLimitsV1, arm_durable_io_failpoint,
-    arm_generation_checkpoint_publication_failpoint, recover_read_authority,
+    arm_generation_checkpoint_publication_failpoint, armed_durable_io_failpoint,
+    recover_read_authority,
 };
 use crate::rspace::persistence::{LogPackDecodeLimits, SemanticProfile};
 
 type Owner = DurableRSpaceAuthorityV1<Profile>;
 type Answered = Result<ResolvedDurableStateV1, String>;
-type ArmedAnswer = (Option<DurableIoFailpointV1>, Answered, Quiet, Option<String>);
+type ArmedAnswer = (Option<DurableIoFailpointV1>, Answered, Quiet, Option<DurableIoFailpointV1>);
 
 const PRODUCTION_CAPACITY: usize = 4_096;
 const SMALL_CAPACITY: usize = 2;
@@ -194,10 +194,7 @@ fn answers_alone_and_under_every_failpoint(trial: &mut Trial, view: &View) -> Ve
                 .spawn(|| {
                     arm_durable_io_failpoint(failpoint);
                     let (reached, unchanged) = answered_without_a_walk(trial, view);
-                    let rearmed = catch_unwind(move || arm_durable_io_failpoint(failpoint))
-                        .err()
-                        .map(|payload| panic_text(payload.as_ref()).to_owned());
-                    (Some(failpoint), reached, unchanged, rearmed)
+                    (Some(failpoint), reached, unchanged, armed_durable_io_failpoint())
                 })
                 .join()
                 .expect("the failpoint thread completes")
@@ -212,10 +209,10 @@ fn assert_memoised_answers(answers: &[ArmedAnswer], memoised: ResolvedDurableSta
         DIRECTORY_FAILPOINTS.len() + 1,
         "a memoised transition is repeated once alone and once under every directory failpoint"
     );
-    for (failpoint, reached, unchanged, rearmed) in answers {
+    for (failpoint, reached, unchanged, still_armed) in answers {
         assert_eq!(
-            (reached, unchanged, rearmed.as_deref()),
-            (&Ok(memoised), &quiet(), failpoint.map(|_| ARMED_FAILPOINT_REFUSAL)),
+            (reached, unchanged, still_armed),
+            (&Ok(memoised), &quiet(), failpoint),
             "a memoised transition must be returned as the state of its first publication, within \
              a walk read budget of zero, without an effect, a write or a sync, with {failpoint:?} \
              armed and still armed afterwards"
@@ -275,9 +272,7 @@ fn a_memoised_transition_is_returned_without_a_write_a_sync_or_a_walk() {
                     .checkpoint_with(unmemoised.base, &unmemoised.hot, view_limits())
                     .err()
                     .map(|refusal| format!("{refusal:?}"));
-                let cleared =
-                    catch_unwind(|| arm_durable_io_failpoint(DurableIoFailpointV1::PhysicalWrite))
-                        .is_ok();
+                let cleared = armed_durable_io_failpoint().is_none();
                 (refusal, cleared)
             })
             .join()

@@ -42,8 +42,8 @@ use crate::rspace::persistence::durable::{
     DurableRSpaceTransactionError, DurableStateRootV1, DurableViewReaderV1,
     GenerationCheckpointPublicationHookPointV1, JournalPublicationPhaseV1, ResolvedDurableStateV1,
     ViewAttachmentRefusalV1, ViewBaseV1, ViewCheckpointLimitsV1, arm_durable_io_failpoint,
-    arm_generation_checkpoint_publication_failpoint, index_file_name, pack_file_name,
-    recover_read_authority,
+    arm_generation_checkpoint_publication_failpoint, armed_durable_io_failpoint, index_file_name,
+    pack_file_name, recover_read_authority,
 };
 use crate::rspace::persistence::{
     CATALOG_IMAGE_LEN, COMMIT_DISCRIMINATOR_LEN_V1, CanonicalBlob, CanonicalBlobKind,
@@ -81,7 +81,6 @@ const MAX_STEPS: usize = 6;
 const BASE_SELECTORS: usize = 8;
 const CATALOG_FILE: &str = "catalog.v1";
 const INTERRUPTION: &str = "the owner task stops at a journal owner hook point";
-pub(super) const ARMED_FAILPOINT_REFUSAL: &str = "durable I/O failpoint already armed";
 pub(super) const DIRECTORY_FAILPOINTS: [DurableIoFailpointV1; 16] = [
     DurableIoFailpointV1::PhysicalWrite,
     DurableIoFailpointV1::PhysicalSync,
@@ -1565,24 +1564,20 @@ fn an_empty_journal_and_an_unchanged_current_state_write_and_sync_nothing() {
                 .spawn(|| {
                     arm_durable_io_failpoint(failpoint);
                     let observed = outcomes(&mut trial);
-                    let rearm = catch_unwind(move || arm_durable_io_failpoint(failpoint));
-                    let refusal = rearm
-                        .err()
-                        .map(|payload| panic_text(payload.as_ref()).to_owned());
-                    (failpoint, observed, refusal)
+                    (failpoint, observed, armed_durable_io_failpoint())
                 })
                 .join()
                 .expect("the failpoint thread completes")
         }));
     }
-    for (failpoint, observed, refusal) in &observations {
+    for (failpoint, observed, still_armed) in &observations {
         assert_eq!(
             observed, &baseline,
             "a checkpoint changed its outcome with {failpoint:?} armed"
         );
         assert_eq!(
-            refusal.as_deref(),
-            Some(ARMED_FAILPOINT_REFUSAL),
+            *still_armed,
+            Some(*failpoint),
             "a checkpoint without effect reached the {failpoint:?} failpoint and cleared it"
         );
     }
@@ -1609,9 +1604,7 @@ fn an_empty_journal_and_an_unchanged_current_state_write_and_sync_nothing() {
                     .checkpoint(publishing.base, &publishing.hot)
                     .err()
                     .map(|refusal| format!("{refusal:?}"));
-                let cleared =
-                    catch_unwind(|| arm_durable_io_failpoint(DurableIoFailpointV1::PhysicalWrite))
-                        .is_ok();
+                let cleared = armed_durable_io_failpoint().is_none();
                 (refusal, cleared)
             })
             .join()
