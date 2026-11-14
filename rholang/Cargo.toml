@@ -106,6 +106,10 @@ phase7-depth-histograms = ["models/phase7-depth-histograms"]
 # Measurement-only access to exact ParBag protobuf projection counters and
 # explicit preparation controls for the repeated-owner egress experiment.
 protobuf-projection-experiment = ["models/protobuf-projection-experiment"]
+# MEASUREMENT-ONLY counters of the associative-commutative matcher rows whose
+# dynamic New, Receive, Match or ReceiveBind root declines its candidate query,
+# reported once per process at exit. The default build has no counter.
+matcher-decline-counters = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

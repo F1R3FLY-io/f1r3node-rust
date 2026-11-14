@@ -78,7 +78,7 @@
     "formal/verus/canonical_connective_owner_cursor.rs": "1883e5782f84bf33959ca15e1c3d28f79116a07bb707ae7ea4f751a7fc9ca9c7",
     "models/src/rust/par_bag.rs": "2ec384dcbf4dea2ee9e95b1f2f76da3e543a9274bc0f77cbcf283cefb9238c5a",
     "models/tests/par_bag.rs": "89e5726b89dea6e89c7b633fa814c1dca6995e27d5c5f3e4b318ae87ec805074",
-    "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "51e70145a53a2ec7e3cb1e23e40b56197c105b013f22c4e5209047d031072c4f",
+    "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "c6a5405c77ef04d10b91db8bf74a098540e3e149d92ae15ae2e472ec77c817c2",
     "rholang/tests/matcher_connective_isolation.rs": "96c232ae7f41f079f6a072d2c4586dd1ed15b8a95990d0b82f61466066ccb68c",
     "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "36170e6a34e5f18decd1c1e388ce8778c2bfafa4068c24e7ce82ddba5e6159ea",
     "scripts/generate-canonical-connective-owner-mutant.py": "876cbc6d6edb7a0aa330b1d2f4c141c68e8c4cae535600089182f70b3e29650c"

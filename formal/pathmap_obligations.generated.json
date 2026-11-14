@@ -8123,7 +8123,7 @@
       "checker": "scripts/check-spatial-matcher-obligations.py",
       "family": "spatial_matcher",
       "manifest": "formal/spatial_matcher_obligations.generated.json",
-      "manifest_sha256": "b8166490108201b08a7e97ef9180a2f0c4f2614aadccf75dc30e58e1f6ba7bcc",
+      "manifest_sha256": "1a6bee02414355c8d4ee1d964901c904fb0dabafac1de54c0b4261d935844ae1",
       "obligations": {
         "generated_properties": [
           {
@@ -8204,7 +8204,7 @@
           "formal/verus/canonical_connective_owner_cursor.rs": "1883e5782f84bf33959ca15e1c3d28f79116a07bb707ae7ea4f751a7fc9ca9c7",
           "models/src/rust/par_bag.rs": "2ec384dcbf4dea2ee9e95b1f2f76da3e543a9274bc0f77cbcf283cefb9238c5a",
           "models/tests/par_bag.rs": "89e5726b89dea6e89c7b633fa814c1dca6995e27d5c5f3e4b318ae87ec805074",
-          "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "51e70145a53a2ec7e3cb1e23e40b56197c105b013f22c4e5209047d031072c4f",
+          "rholang/src/rust/interpreter/matcher/spatial_matcher_pda.rs": "c6a5405c77ef04d10b91db8bf74a098540e3e149d92ae15ae2e472ec77c817c2",
           "rholang/tests/matcher_connective_isolation.rs": "96c232ae7f41f079f6a072d2c4586dd1ed15b8a95990d0b82f61466066ccb68c",
           "rholang/tests/support/spatial_matcher_pda_equivalence.rs": "36170e6a34e5f18decd1c1e388ce8778c2bfafa4068c24e7ce82ddba5e6159ea",
           "scripts/generate-canonical-connective-owner-mutant.py": "876cbc6d6edb7a0aa330b1d2f4c141c68e8c4cae535600089182f70b3e29650c"
@@ -8746,7 +8746,7 @@
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "76e0173bd9b94ed077f779c68e271b72e0529411dc9a016a0d0a3643f1939eb7",
+      "manifest_sha256": "60e61f5ea53c7b3c13e41db5c9f7a530babf527b7c4c6383d7697aeb0e708dcd",
       "obligations": {
         "controls": [
           {
@@ -9129,7 +9129,7 @@
           "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryNoFairnessMutant.cfg": "fff68d00330265d9e3e6d8799cba59903e57d663104d77f2e98e97295dd7da60",
           "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryTwoPublicationsWitness.cfg": "b75d1582adc827021b915bf2d3114492892743600a1f18a79795e5447b08ba90",
           "formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundaryUsableStagedOpenMutant.cfg": "248720144f4a3b3602af64bb2e463f04875d33ed62218ebac80b40e2a35ad2aa",
-          "rholang/Cargo.toml": "7a9445c7635ce8433f0b2ec38839448b59828d144a84de3f61826c415360e321",
+          "rholang/Cargo.toml": "a0e1edff08b6a62e1b7b51f314aeadc093fbb166bdf77ea9cc08c030cb4fad63",
           "rholang/tests/epathmap_replay_equivalence_spec.rs": "9925b245d2ebe4c6a5d9d0e1193058dcac9565168e7caa351c638c0d1f836849",
           "rspace++/libs/rspace_rhotypes/src/lib.rs": "a419f0b57104e280bd6ce584b0a4b6be9d7c74ae4b897e8bc527d4c5b16f9588",
           "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",

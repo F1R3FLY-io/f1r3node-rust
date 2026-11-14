@@ -517,6 +517,110 @@ fn update_list_relation_stats(update: impl FnOnce(&mut RelationalMatchStats)) {
     });
 }
 
+#[cfg(feature = "matcher-decline-counters")]
+mod dynamic_root_decline_counters {
+    use std::ffi::c_int;
+    use std::fmt;
+    use std::io::{self, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Once;
+
+    use models::rust::rholang::match_schema_tables::ParCursor;
+
+    use super::{CandidatePlanNodeKind, ListCandidatePlan, MatchValue};
+    use crate::rust::interpreter::matcher::projection_rules::declines;
+
+    static ROWS_COMPILED: AtomicU64 = AtomicU64::new(0);
+    static DECLINED_NEW: AtomicU64 = AtomicU64::new(0);
+    static DECLINED_RECEIVE: AtomicU64 = AtomicU64::new(0);
+    static DECLINED_MATCH: AtomicU64 = AtomicU64::new(0);
+    static DECLINED_RECEIVE_BIND: AtomicU64 = AtomicU64::new(0);
+    static EXIT_REPORT: Once = Once::new();
+
+    extern "C" {
+        fn atexit(callback: extern "C" fn()) -> c_int;
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct DynamicRootDeclineCounts {
+        pub rows_compiled: u64,
+        pub rows_declined: u64,
+        pub declined_new: u64,
+        pub declined_receive: u64,
+        pub declined_match: u64,
+        pub declined_receive_bind: u64,
+    }
+
+    impl fmt::Display for DynamicRootDeclineCounts {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "matcher-decline-counters rows_compiled={} rows_declined={} declined_new={} \
+                 declined_receive={} declined_match={} declined_receive_bind={}",
+                self.rows_compiled,
+                self.rows_declined,
+                self.declined_new,
+                self.declined_receive,
+                self.declined_match,
+                self.declined_receive_bind
+            )
+        }
+    }
+
+    pub fn dynamic_root_decline_counts() -> DynamicRootDeclineCounts {
+        let declined_new = DECLINED_NEW.load(Ordering::Relaxed);
+        let declined_receive = DECLINED_RECEIVE.load(Ordering::Relaxed);
+        let declined_match = DECLINED_MATCH.load(Ordering::Relaxed);
+        let declined_receive_bind = DECLINED_RECEIVE_BIND.load(Ordering::Relaxed);
+        DynamicRootDeclineCounts {
+            rows_compiled: ROWS_COMPILED.load(Ordering::Relaxed),
+            rows_declined: declined_new + declined_receive + declined_match + declined_receive_bind,
+            declined_new,
+            declined_receive,
+            declined_match,
+            declined_receive_bind,
+        }
+    }
+
+    extern "C" fn report_at_exit() {
+        let _ = writeln!(io::stderr(), "{}", dynamic_root_decline_counts());
+    }
+
+    fn register_exit_report() {
+        let status = unsafe { atexit(report_at_exit) };
+        assert_eq!(
+            status, 0,
+            "the matcher decline report registers for process exit"
+        );
+    }
+
+    pub(super) fn count_rows(patterns: &[MatchValue], plans: &[ListCandidatePlan]) {
+        EXIT_REPORT.call_once(register_exit_report);
+        ROWS_COMPILED.fetch_add(
+            u64::try_from(patterns.len()).expect("an AC row count fits in u64"),
+            Ordering::Relaxed,
+        );
+        for (pattern, plan) in patterns.iter().zip(plans) {
+            let (root, declined) = match pattern {
+                MatchValue::New(value) => (ParCursor::from(value), &DECLINED_NEW),
+                MatchValue::Receive(value) => (ParCursor::from(value), &DECLINED_RECEIVE),
+                MatchValue::Match(value) => (ParCursor::from(value), &DECLINED_MATCH),
+                MatchValue::ReceiveBind(value) => (ParCursor::from(value), &DECLINED_RECEIVE_BIND),
+                _ => continue,
+            };
+            if let (CandidatePlanNodeKind::All, true) = (
+                &plan.node(plan.root).kind,
+                declines(root.program().type_name),
+            ) {
+                declined.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "matcher-decline-counters")]
+pub use dynamic_root_decline_counters::{dynamic_root_decline_counts, DynamicRootDeclineCounts};
+
 #[cfg(test)]
 pub(super) fn match_par_list_with_stats(
     context: &mut SpatialMatcherContext,
@@ -698,6 +802,54 @@ pub(super) fn receive_bind_ac_query_acceptance(
         MatchValue::ReceiveBind(target),
         MatchValue::ReceiveBind(pattern),
     )
+}
+
+#[cfg(test)]
+fn direct_match_value_ac_query(pattern: MatchValue) -> Option<RhoPathQuery> {
+    let context = SpatialMatcherContext::new();
+    let mut captures = PathMap::new();
+    pattern.rho_path_query(&context, &mut captures)
+}
+
+#[cfg(test)]
+pub(super) fn new_ac_query(pattern: New) -> Option<RhoPathQuery> {
+    direct_match_value_ac_query(MatchValue::New(pattern))
+}
+
+#[cfg(test)]
+pub(super) fn receive_ac_query(pattern: Receive) -> Option<RhoPathQuery> {
+    direct_match_value_ac_query(MatchValue::Receive(pattern))
+}
+
+#[cfg(test)]
+pub(super) fn match_ac_query(pattern: Match) -> Option<RhoPathQuery> {
+    direct_match_value_ac_query(MatchValue::Match(pattern))
+}
+
+#[cfg(test)]
+pub(super) fn receive_bind_ac_query(pattern: ReceiveBind) -> Option<RhoPathQuery> {
+    direct_match_value_ac_query(MatchValue::ReceiveBind(pattern))
+}
+
+#[cfg(all(test, feature = "matcher-decline-counters"))]
+pub(super) fn match_dynamic_root_rows_against_themselves(
+    news: Vec<New>,
+    receives: Vec<Receive>,
+    matches: Vec<Match>,
+    binds: Vec<ReceiveBind>,
+    sends: Vec<Send>,
+) -> [Option<()>; 5] {
+    [
+        news.into_iter().map(MatchValue::New).collect::<Vec<_>>(),
+        receives.into_iter().map(MatchValue::Receive).collect(),
+        matches.into_iter().map(MatchValue::Match).collect(),
+        binds.into_iter().map(MatchValue::ReceiveBind).collect(),
+        sends.into_iter().map(MatchValue::Send).collect(),
+    ]
+    .map(|rows| {
+        let request = ListRequest::new(rows.clone(), rows, Merger::Identity, None, false);
+        drive_job(&mut SpatialMatcherContext::new(), Job::ListInit(request))
+    })
 }
 
 #[cfg(test)]
@@ -5677,6 +5829,8 @@ fn init_list(
         .iter()
         .map(|pattern| pattern.rho_path_candidate_plan(context.context(), &mut captures))
         .collect::<Box<[_]>>();
+    #[cfg(feature = "matcher-decline-counters")]
+    dynamic_root_decline_counters::count_rows(&patterns, &candidate_plans);
     let needs_target_index = request.remainder.is_some()
         || candidate_plans
             .iter()
