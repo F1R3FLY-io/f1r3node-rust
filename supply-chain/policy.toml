@@ -73,19 +73,19 @@ review-by = 2026-12-02
 package = "zip"
 versions = ["0.6.6"]
 owner = "@F1R3FLY-io/ci-maintainers"
-review-by = 2026-11-15
+review-by = 2026-12-02
 
 [exceptions.RUSTSEC-2026-0368]
 package = "zip"
 versions = ["0.6.6"]
 owner = "@F1R3FLY-io/ci-maintainers"
-review-by = 2026-11-15
+review-by = 2026-12-02
 
 [exceptions.RUSTSEC-2026-0369]
 package = "zip"
 versions = ["0.6.6"]
 owner = "@F1R3FLY-io/ci-maintainers"
-review-by = 2026-11-15
+review-by = 2026-12-02
 
 [exceptions.RUSTSEC-2026-0429]
 package = "zip"
@@ -149,4 +149,4 @@ review-by = 2026-11-26
 
 [yanked."zip@0.6.6"]
 owner = "@F1R3FLY-io/ci-maintainers"
-review-by = 2026-11-15
+review-by = 2026-12-02
