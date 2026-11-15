@@ -85,8 +85,32 @@ fn start_pass(
     let Some(floor) = cached_floor(&preliminary)? else {
         return Ok(None);
     };
-    let depth =
+    // The deepest block an honest validator can legally be asked to
+    // judge sits at `max_parent_depth + depth_buffer + deploy_lifespan`
+    // below LFB — see the derivation in
+    // `rspace_history_horizon.rs:lfs_min_block_number`:
+    // `Validate::block_summary`'s expiry scan starts from
+    // `max_block_number(parents) + 1 - deploy_lifespan`, with the
+    // parents themselves `max_parent_depth` behind, and the buffer
+    // widens the window to tolerate concurrent floor advancement. The
+    // mergeable-only GC survived with the narrower `max_parent_depth +
+    // depth_buffer` because mergeable channels are a per-block state
+    // entry, not read by scan walks. Body pruning is not: the
+    // proposer's prior-rejection walk (interpreter_util.rs:1709) and
+    // every walk that fetches a block body across the deploy-lifespan
+    // window reach this deeper floor. Pruning inside the window stalls
+    // the chain ("last state: Pending, rejection_count=0" deploys in
+    // CI). Scale the body prune horizon to match the deepest honest
+    // walk when body-store GC is enabled; keep the narrower
+    // mergeable-only depth when it is off so the mergeable-channel
+    // behavior does not regress.
+    let citation_depth =
         i64::from(conf.max_parent_depth) + i64::from(conf.mergeable_channels_gc_depth_buffer);
+    let depth = if conf.enable_block_store_gc {
+        citation_depth + conf.deploy_lifespan
+    } else {
+        citation_depth
+    };
     let state = store.reserve_discovery(floor.block_number.saturating_sub(depth))?;
     drop(preliminary);
     let dag = storage.get_representation()?;
