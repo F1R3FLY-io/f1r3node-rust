@@ -395,3 +395,27 @@ async fn admin_relink_works_and_is_bounded() {
     }
 }
 
+/// Fewer than quorum distinct admin signatures relink nothing. A repeated
+/// admin counts once.
+#[cfg_attr(not(feature = "integration_tests"), ignore)]
+#[tokio::test]
+async fn admin_relink_below_quorum_is_rejected() {
+    let client = test_client().await;
+    let (sk1, pk1) = fresh_keypair();
+    let nonce = fresh_nonce();
+    let name = client.register(&sk1, &nonce).await.expect("register");
+
+    let admin = admin_sk(0);
+    let (sk_new, _) = fresh_keypair();
+    for (label, admin_sks) in [("one admin", vec![admin]), ("one admin twice", vec![admin, admin])] {
+        let result = client.admin_relink(&admin_sks, &name, &sk_new, 0, b"evidence").await;
+        assert!(
+            matches!(result, Err(IdentityRegistryError::Rejected(ref r)) if r == "bad_signature"),
+            "expected bad_signature for {label}, got {result:?}"
+        );
+    }
+
+    let resolved = client.resolve_current(&name).await.expect("resolve");
+    assert_eq!(resolved.pk, uncompressed_pk_bytes(&pk1));
+    assert_eq!(resolved.seq, 0);
+}
