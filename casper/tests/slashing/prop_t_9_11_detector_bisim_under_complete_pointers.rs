@@ -39,7 +39,7 @@ proptest! {
     fn t_9_11_complete_pointer_views_match_child_cardinality(child_count in 0usize..=3) {
         run_async(async move {
             let fixture = DetectorFixture::new().await;
-            fixture.add_record(0, 0, &[]);
+            fixture.add_equivocation(0, 0);
 
             let mut justifications = Vec::new();
             for index in 0..child_count {

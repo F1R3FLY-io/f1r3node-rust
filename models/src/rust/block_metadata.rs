@@ -23,7 +23,10 @@ pub struct BlockMetadata {
     pub weight_map: BTreeMap<Bytes, TokenAmount>,
     pub block_number: i64,
     pub sequence_number: i32,
-    pub invalid: bool,
+    /// The sender's other block at `sequence_number`, set when this block is
+    /// held as an equivocation. The only kind of block stored invalid.
+    #[serde(with = "shared::rust::serde_option_bytes", default)]
+    pub equivocates: Option<Bytes>,
     pub directly_finalized: bool,
     pub finalized: bool,
     pub fault_tolerance_value: f32,
@@ -44,7 +47,7 @@ impl PartialEq for BlockMetadata {
             && self.weight_map == other.weight_map
             && self.block_number == other.block_number
             && self.sequence_number == other.sequence_number
-            && self.invalid == other.invalid
+            && self.equivocates == other.equivocates
             && self.directly_finalized == other.directly_finalized
             && self.finalized == other.finalized
             && self.merge_base == other.merge_base
@@ -65,7 +68,7 @@ impl std::hash::Hash for BlockMetadata {
         });
         self.block_number.hash(state);
         self.sequence_number.hash(state);
-        self.invalid.hash(state);
+        self.equivocates.hash(state);
         self.directly_finalized.hash(state);
         self.finalized.hash(state);
         self.merge_base.hash(state);
@@ -93,7 +96,7 @@ impl BlockMetadata {
                 .collect::<Result<_, String>>()?,
             block_number: proto.block_num,
             sequence_number: proto.seq_num,
-            invalid: proto.invalid,
+            equivocates: (!proto.equivocates.is_empty()).then_some(proto.equivocates),
             directly_finalized: proto.directly_finalized,
             finalized: proto.finalized,
             fault_tolerance_value: proto.fault_tolerance_value,
@@ -120,7 +123,7 @@ impl BlockMetadata {
                 .collect(),
             block_num: self.block_number,
             seq_num: self.sequence_number,
-            invalid: self.invalid,
+            equivocates: self.equivocates.clone().unwrap_or_default(),
             directly_finalized: self.directly_finalized,
             finalized: self.finalized,
             fault_tolerance_value: self.fault_tolerance_value,
@@ -152,9 +155,11 @@ impl BlockMetadata {
             .collect()
     }
 
+    pub fn is_invalid(&self) -> bool { self.equivocates.is_some() }
+
     pub fn from_block(
         b: &BlockMessage,
-        invalid: bool,
+        equivocates: Option<Bytes>,
         directly_finalized: Option<bool>,
         finalized: Option<bool>,
     ) -> Self {
@@ -168,7 +173,7 @@ impl BlockMetadata {
             weight_map: Self::weight_map(&b.body.state),
             block_number: b.body.state.block_number,
             sequence_number: b.seq_num,
-            invalid,
+            equivocates,
             // this value is not used anywhere down the call pipeline, so its safe to set it to false
             directly_finalized,
             finalized,
@@ -203,7 +208,7 @@ mod tests {
             ]),
             block_number: 7,
             sequence_number: 3,
-            invalid: false,
+            equivocates: Some(Bytes::from_static(b"sibling")),
             directly_finalized: true,
             finalized: true,
             fault_tolerance_value: 0.5,
@@ -294,7 +299,8 @@ mod tests {
     #[test]
     fn from_block_copies_block_fields_and_defaults_flags() {
         let block = get_random_block_default();
-        let metadata = BlockMetadata::from_block(&block, true, None, None);
+        let sibling = Bytes::from_static(b"sibling");
+        let metadata = BlockMetadata::from_block(&block, Some(sibling.clone()), None, None);
 
         assert_eq!(metadata.block_hash, block.block_hash);
         assert_eq!(metadata.parents, block.header.parents_hash_list);
@@ -303,7 +309,8 @@ mod tests {
         assert_eq!(metadata.block_number, block.body.state.block_number);
         assert_eq!(metadata.sequence_number, block.seq_num);
         assert_eq!(metadata.merge_base, block.body.merge_base);
-        assert!(metadata.invalid);
+        assert_eq!(metadata.equivocates, Some(sibling));
+        assert!(metadata.is_invalid());
         assert!(!metadata.directly_finalized);
         assert!(!metadata.finalized);
         assert_eq!(metadata.fault_tolerance_value, 0.0);
@@ -317,7 +324,8 @@ mod tests {
     #[test]
     fn from_block_honors_explicit_finalization_flags() {
         let block = get_random_block_default();
-        let metadata = BlockMetadata::from_block(&block, false, Some(true), Some(true));
+        let metadata = BlockMetadata::from_block(&block, None, Some(true), Some(true));
+        assert!(!metadata.is_invalid());
         assert!(metadata.directly_finalized);
         assert!(metadata.finalized);
     }

@@ -25,17 +25,17 @@ pub struct BlockMetadata {
     pub weight_map: BTreeMap<Validator, TokenAmount>,
     pub block_number: i64,
     pub sequence_number: i32,
-    pub invalid: bool,
+    pub equivocates: Option<BlockHash>,  // the sibling, when held as an equivocation
     pub directly_finalized: bool,
     pub finalized: bool,
     pub fault_tolerance_value: f32,  // cached normalized FT at finalization time
+    pub merge_base: BlockHash,
 }
 ```
 
-**`EquivocationRecord`** -- Tracks validator double-signing:
-- `equivocator: Validator`
-- `equivocation_base_block_seq_num: i32`
-- `equivocation_detected_block_hashes: BTreeSet<BlockHash>`
+**`BlockCommitment`** -- the fields a block's hash and signature cover, with
+the deploys reduced to their Merkle root. A slash's `EquivocationEvidence`
+is two of them, ordered by block hash.
 
 ## Deploy & Transfer Types (Protobuf)
 

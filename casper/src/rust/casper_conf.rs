@@ -139,6 +139,18 @@ pub struct CasperConf {
         default = "default_mergeable_channels_gc_depth_buffer"
     )]
     pub mergeable_channels_gc_depth_buffer: i32,
+
+    /// Delete finalized block bodies from the block store once no honest
+    /// validator can still cite them. Piggybacks on the mergeable-channels
+    /// GC pass: a block is deleted at the same horizon
+    /// (`floor.block_number - block.block_number > max-parent-depth +
+    /// mergeable-channels-gc-depth-buffer`, and every active validator has
+    /// moved past it). Requires `enable-mergeable-channel-gc` to be on.
+    #[serde(
+        rename = "enable-block-store-gc",
+        default = "default_enable_block_store_gc"
+    )]
+    pub enable_block_store_gc: bool,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -167,6 +179,12 @@ fn default_mergeable_channels_gc_interval() -> Duration {
 }
 
 fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
+
+/// Matches the shipped defaults.conf value: a sparse operator conf that
+/// omits the key must not silently disable block-store GC. Public so the
+/// node's config tests pin shipped-vs-fallback agreement.
+pub fn default_enable_block_store_gc() -> bool { true }
+
 fn default_dag_hot_window_depth() -> i64 { 1024 }
 
 /// Round robin dispatcher configuration

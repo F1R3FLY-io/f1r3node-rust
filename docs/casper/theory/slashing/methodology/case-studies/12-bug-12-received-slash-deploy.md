@@ -31,7 +31,7 @@ on the receive side; only the proposer's claim”*.
 ## 3 · Witness reproduction
 
 The fixture lives in
-[`casper/tests/slashing/integration_t_neglected_invalid_block.rs`](../../../../../../casper/tests/slashing/integration_t_neglected_invalid_block.rs)
+[`casper/tests/slashing/integration_t_neglected_invalid_block.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/504963ab546be84e50650ad81bb5df11965954ca/casper/tests/slashing/integration_t_neglected_invalid_block.rs)
 and the authorization-specific regression in
 [`casper/tests/slashing/slash_authorization_regressions.rs`](../../../../../../casper/tests/slashing/slash_authorization_regressions.rs);
 pre-fix the unauthorized SlashDeploy is accepted, post-fix it is
