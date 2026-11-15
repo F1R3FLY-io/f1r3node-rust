@@ -90,6 +90,9 @@ pub enum InvalidBlock {
     InvalidBlockNumber,
     InvalidRepeatDeploy,
     InvalidParents,
+    // InvalidJustifications: the block cites an equivocation whose contents
+    // are invalid.
+    InvalidJustifications,
     InvalidFollows,
     InvalidSequenceNumber,
     InvalidShardId,
@@ -260,6 +263,7 @@ impl InvalidBlock {
             //     NeglectedEquivocation: judged against the receiver's own
             //     view of other blocks, not the signed block alone.
             //   • InvalidTransaction / InvalidBondsCache / InvalidParents /
+            //     InvalidJustifications /
             //     InvalidFollows / InvalidRepeatDeploy / InvalidBlockNumber /
             //     InvalidSequenceNumber / InvalidShardId / InvalidBlockHash /
             //     DeployNotSigned / ContainsExpiredDeploy /
@@ -291,6 +295,7 @@ impl InvalidBlock {
             | InvalidBlock::InvalidBlockNumber
             | InvalidBlock::InvalidRepeatDeploy
             | InvalidBlock::InvalidParents
+            | InvalidBlock::InvalidJustifications
             | InvalidBlock::InvalidFollows
             | InvalidBlock::InvalidSequenceNumber
             | InvalidBlock::InvalidShardId

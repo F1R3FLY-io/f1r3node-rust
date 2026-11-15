@@ -54,6 +54,7 @@ Interactive mode is the default. A user-created worktree does not select agentic
 - Work in this checkout. Do not create a worktree without an explicit user request in interactive mode.
 - Get confirmation before moving files with Git or removing or pruning worktrees.
 - Get confirmation before stash mutations. Do not use stash `pop`, `drop`, `clear`, or `branch`.
+- Get confirmation before you create, switch, or delete a branch. Put follow-up work on the current branch unless the user selects another branch.
 - Do not commit or move another agent's changes.
 - Do not add assistant attribution, emoji, `Co-Authored-By`, or `Claude-Session` trailers. Disable harness co-author attribution.
 - Use the `[agent]` commit prefix in explicitly selected agentic mode.
