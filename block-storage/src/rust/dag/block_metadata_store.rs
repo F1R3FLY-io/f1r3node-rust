@@ -48,6 +48,11 @@ pub(crate) struct DagState {
     pub(crate) sequence: u64,
     pub(crate) max_height: Option<i64>,
     pub(crate) cutoff: i64,
+    /// Explicit pruning floor set by block-store GC. Distinguishes "evicted
+    /// from in-memory hot window" (recoverable from disk) from "logically
+    /// pruned" (lookup must return None). Only advances; monotone with
+    /// GC's `effective_anchor`.
+    pub(crate) pruning_cutoff: i64,
     pub(crate) total: u64,
     pub(crate) dag_set: imbl::HashSet<BlockHash>,
     pub(crate) child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
@@ -77,6 +82,7 @@ impl DagState {
             sequence: 0,
             max_height: None,
             cutoff: 0,
+            pruning_cutoff: 0,
             total: 0,
             dag_set: imbl::HashSet::new(),
             child_map: imbl::HashMap::new(),
@@ -190,12 +196,21 @@ impl BlockMetadataStore {
             .lfb
             .as_ref()
             .map_or(0, |(_, height)| height.saturating_sub(hot_window).max(0));
+        // Persist-aware pruning anchor; informational only right now since
+        // lookup/contains/scan_height_range don't gate on it. Stored on
+        // `state.pruning_cutoff` so a future walk-termination change can
+        // read it, but it MUST NOT inflate `state.cutoff` — that field is
+        // the hot-window residency floor, and widening it drops blocks
+        // the proposer still needs from the in-memory set (observed as
+        // `MissingBlock` during propose in CI).
+        let pruning_cutoff = persistence.gc.effective_anchor()?.unwrap_or(0).max(0);
         let mut state = DagState::new();
         state.last_finalized_block = progress.lfb.clone();
         state.sequence = progress.sequence;
         state.max_height = progress.max_height;
         state.total = progress.total;
         state.cutoff = cutoff;
+        state.pruning_cutoff = pruning_cutoff;
         let result = Self {
             store,
             dag_state: Arc::new(RwLock::new(state)),
@@ -279,13 +294,37 @@ impl BlockMetadataStore {
         if self.persistence.is_none() {
             return Ok(());
         }
-        let mut replacement = self.dag_state.read().clone();
-        let cutoff = replacement
+        let cutoff = self
+            .dag_state
+            .read()
             .last_finalized_block
             .as_ref()
             .map_or(0, |(_, height)| {
                 height.saturating_sub(self.hot_window).max(0)
             });
+        self.evict_below(cutoff)
+    }
+
+    /// Externally supplied floor: evicts the in-memory window up to
+    /// `cutoff`, matching `refresh_window`'s eviction shape but driven by
+    /// an explicit height rather than `lfb - hot_window`. Used by block-
+    /// store GC so walks cannot descend into pruned bodies — the pruning
+    /// cutoff is also published so `lookup` returns `None` below it, even
+    /// though history records persist on disk.
+    pub fn advance_pruning_cutoff(&mut self, cutoff: i64) -> Result<(), KvStoreError> {
+        if self.persistence.is_none() {
+            return Ok(());
+        }
+        self.evict_below(cutoff)?;
+        let mut state = self.dag_state.write();
+        if cutoff > state.pruning_cutoff {
+            state.pruning_cutoff = cutoff;
+        }
+        Ok(())
+    }
+
+    fn evict_below(&mut self, cutoff: i64) -> Result<(), KvStoreError> {
+        let mut replacement = self.dag_state.read().clone();
         if cutoff <= replacement.cutoff {
             return Ok(());
         }
@@ -539,6 +578,8 @@ impl BlockMetadataStore {
     // DAG state operations — all return O(1) clones via imbl structural sharing
 
     pub(crate) fn dag_state(&self) -> &Arc<RwLock<DagState>> { &self.dag_state }
+
+    pub fn pruning_cutoff(&self) -> i64 { self.dag_state.read().pruning_cutoff }
 
     pub fn dag_set(&self) -> imbl::HashSet<BlockHash> { self.dag_state.read().dag_set.clone() }
 

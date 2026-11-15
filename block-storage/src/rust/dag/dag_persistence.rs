@@ -20,6 +20,7 @@ const STATE: usize = 7;
 const SEQUENCES: usize = 9;
 const PROGRESS: &[u8] = b"dag.progress";
 const GC_SLOTS: DagGcSlots = DagGcSlots {
+    metadata: METADATA,
     state: STATE,
     retry: 8,
 };
@@ -217,6 +218,14 @@ impl DagPersistence {
                 Self::genesis_in(tx, &metadata.block_hash)?;
             }
             if approved {
+                if existing.is_some() && !metadata.finalized {
+                    DagGcStore::enqueue_if_claimed(
+                        tx,
+                        GC_SLOTS,
+                        &metadata.block_hash,
+                        metadata.block_number,
+                    )?;
+                }
                 metadata.finalized = true;
                 metadata.directly_finalized = true;
                 metadata.fault_tolerance_value = metadata.fault_tolerance_value.max(1.0);
@@ -285,6 +294,9 @@ impl DagPersistence {
                     return Err(KvStoreError::InvalidArgument(
                         "finality metadata disagrees with membership".into(),
                     ));
+                }
+                if !metadata.finalized {
+                    DagGcStore::enqueue_if_claimed(tx, GC_SLOTS, hash, metadata.block_number)?;
                 }
                 metadata.finalized = true;
                 metadata.fault_tolerance_value = metadata.fault_tolerance_value.max(ft);
