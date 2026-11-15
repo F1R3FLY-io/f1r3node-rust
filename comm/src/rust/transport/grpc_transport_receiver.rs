@@ -11,11 +11,12 @@ use models::routing::transport_layer_server::{TransportLayer, TransportLayerServ
 use models::routing::{Chunk, TlRequest, TlResponse};
 use prost::Message;
 use shared::rust::shared::recent_hash_filter::RecentHashFilter;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{oneshot, Mutex, OnceCell};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
 
 use super::f1r3fly_server::F1r3flyConnectInfo;
+use super::grpc_transport_server::Cancelable;
 use super::limited_buffer::{FlumeLimitedBuffer, LimitedBufferObservable};
 use super::messages::{Send as CommSend, StreamMessage};
 use super::packet_ops::StreamCache;
@@ -752,7 +753,7 @@ impl GrpcTransportReceiver {
         message_handlers: MessageHandlers,
         parallelism: usize,
         cache: StreamCache,
-    ) -> Result<JoinHandle<()>, CommError> {
+    ) -> Result<Cancelable, CommError> {
         use std::net::SocketAddr;
 
         use tonic::transport::Server;
@@ -796,6 +797,8 @@ impl GrpcTransportReceiver {
         let incoming = f1r3fly_server.incoming().await.map_err(|e| {
             CommError::ConfigError(format!("Failed to create F1r3fly incoming stream: {}", e))
         })?;
+
+        let (shutdown, shutdown_signal) = oneshot::channel::<()>();
 
         // Create the gRPC server with F1r3fly TLS configuration
         let server_task = tokio::spawn(async move {
@@ -845,7 +848,9 @@ impl GrpcTransportReceiver {
                     ssl_interceptor,
                 ))
                 // Use F1r3fly incoming stream instead of standard TLS configuration
-                .serve_with_incoming(incoming)
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = shutdown_signal.await;
+                })
                 .await;
 
             if let Err(e) = server_result {
@@ -853,9 +858,7 @@ impl GrpcTransportReceiver {
             }
         });
 
-        // The caller stops the server by aborting this handle, so it must be
-        // the server task itself.
-        Ok(server_task)
+        Ok(Cancelable::new(server_task, shutdown))
     }
 }
 

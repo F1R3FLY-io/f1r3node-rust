@@ -927,19 +927,45 @@ async fn a_stopped_server_dispatches_nothing() {
         .unwrap();
     let server = runtime.create_transport_layer_server(&remote);
     let dispatcher = TestProtocolDispatcher::new();
+    let callback = DispatcherCallback::new();
     server
         .start(
-            dispatcher.to_handler(remote.peer.clone(), None),
+            dispatcher.to_handler(remote.peer.clone(), Some(callback.clone())),
             TestStreamDispatcher::new().to_handler(remote.peer.clone(), None),
         )
         .await
         .unwrap();
+    let connected = runtime
+        .create_environment(get_free_port().await.unwrap())
+        .await
+        .unwrap();
+    let connected_transport: Arc<dyn TransportLayer> =
+        Arc::new(runtime.create_transport_layer(&connected).unwrap());
+    send_heartbeat(
+        connected_transport.clone(),
+        &connected.peer,
+        &remote.peer,
+        "test",
+    )
+    .await
+    .expect("heartbeat before the stop");
+    tokio::time::timeout(Duration::from_secs(5), callback.wait_until_dispatched())
+        .await
+        .expect("the running server dispatches the heartbeat");
     server.stop().await.unwrap();
 
-    let sent = heartbeat_from_a_new_peer(&runtime, &remote.peer, Duration::from_secs(3)).await;
-    assert!(
-        dispatcher.received().is_empty(),
-        "a stopped server dispatched a heartbeat (send result {sent:?})"
+    let on_open_connection = tokio::time::timeout(
+        Duration::from_secs(3),
+        send_heartbeat(connected_transport, &connected.peer, &remote.peer, "test"),
+    )
+    .await;
+    let from_new_peer =
+        heartbeat_from_a_new_peer(&runtime, &remote.peer, Duration::from_secs(3)).await;
+    assert_eq!(
+        dispatcher.received().len(),
+        1,
+        "a stopped server dispatched a heartbeat (open connection {on_open_connection:?}, \
+         new peer {from_new_peer:?})"
     );
 }
 
