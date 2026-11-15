@@ -29,8 +29,10 @@ The [task tracking guide](docs/task-tracking.md) explains it in full.
 ## Branching and Commits
 
 - Branch from `dev` and open pull requests against `dev`. Maintainers promote
-  `dev` → `master`. Hotfixes are the one exception — see Hotfixes below.
-- Branch prefixes: `feature/`, `fix/`, `docs/`, `perf/`, `ci/`, `chore/`, `hotfix/`.
+  `dev` → `master`. Hotfixes and release train items are the exceptions — see Hotfixes and
+  Release Train Items below.
+- Branch prefixes: `feature/`, `fix/`, `docs/`, `perf/`, `ci/`, `chore/`, `hotfix/`, and `ca/`
+  for release train items only.
 - The prefix sets the merge queue priority. From highest to lowest:
   1. Security fixes
   2. `fix/` into `dev` and `hotfix/` into `master`
@@ -64,6 +66,22 @@ promotion. Skipping that step is how a hotfix silently disappears from the next 
 Use this path sparingly. A hotfix reaches `master` without ever being integrated against the
 work already queued in `dev`, so it trades integration coverage for speed. Anything that can
 wait should go through `dev` like everything else.
+
+### Release Train Items
+
+The release train uses two long-lived branches: `ca-canary` and `ca-release`. A release train item is a change that targets `ca-canary` directly. Code from `dev` reaches `ca-canary` only through the `ca-sync` operation. A maintainer starts it with `just ca-sync`.
+
+To open a release train item:
+
+1. Branch from `ca-canary`.
+2. Name the branch `ca/<type>-<topic>`, for example `ca/feature-seal-limits` or `ca/fix-refund-payer`.
+3. Open the pull request against `ca-canary`.
+
+Do not merge `dev` into a release train item. If the item needs `dev` changes, ask a maintainer to run `ca-sync`. After the sync merges, merge `ca-canary` into the item branch.
+
+Do not use the `ca/sync-dev-` prefix. The `ca-sync` operation owns that prefix.
+
+Mergify queues a pull request into `ca-canary` only when its head starts with `ca/`. Mergify also adds `ci-heavy` only to these pull requests. A pull request with another head never enters a queue. GitHub cannot change the head of an open pull request. If the head is wrong, push the commits to a `ca/` branch and open a new pull request. See [Release train branches](docs/ci.md#release-train-branches).
 
 ## Release Pipeline
 
