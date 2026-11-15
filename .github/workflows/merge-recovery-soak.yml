@@ -375,6 +375,13 @@ env:
   #   missed #0 once the shared shard passed height 100. No other changes
   #   since 012bfda. Verified: descends from 012bfda; the test passes locally
   #   against the dev image.
+  # 2026-11-13: 4373258 -> ba59ca5 (system-integration main, the merge of PR
+  #   #186). Raises the deploy finalization timeout from 45 s to 105 s for the
+  #   floor-based verdict (#184, node #1026), keys the per-test log scan
+  #   window on record timestamps (#177), retries log reads across rotation
+  #   (#178) and repairs standalone recreation log ownership (#182). Verified:
+  #   descends from 4373258; unit tests, test_deployment and test_token_metadata
+  #   pass locally against the dev image on docker.
   # 2026-11-12: 4373258 -> 03f3fe8 (system-integration PR #175 head, which
   #   lands with this change). ShardConfig(deploy_queue=True) runs a deploy
   #   queue in front of each validator; test_load loads a queued shard and
@@ -392,7 +399,7 @@ env:
   #   reads the tip once for all submitters, and merges system-integration dev
   #   (105 s finalization timeout). Verified: descends from 03f3fe8; 610 unit
   #   tests pass; test_capacity passed twice on a soak-shaped VM against this
-  #   branch's node.
+  #   branch's node. 7673d5e contains both parents of ba59ca5.
   SYSTEM_INTEGRATION_REF: 7673d5e2f8d34d8705879289eb5af191ea429856
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
