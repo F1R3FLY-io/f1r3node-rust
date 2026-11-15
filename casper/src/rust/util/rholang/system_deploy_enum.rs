@@ -1,6 +1,8 @@
 // Enum wrapper for heterogeneous system deploys
 
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::dishonest_vote_deploy::DishonestVoteDeploy;
+use crate::rust::util::rholang::costacc::resolve_claims_deploy::ResolveClaimsDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 
 /// Enum to hold different types of system deploys in a homogeneous collection
@@ -8,6 +10,8 @@ use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 pub enum SystemDeployEnum {
     Slash(SlashDeploy),
     Close(CloseBlockDeploy),
+    ResolveClaims(ResolveClaimsDeploy),
+    DishonestVote(DishonestVoteDeploy),
 }
 
 impl SystemDeployEnum {

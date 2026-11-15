@@ -14,7 +14,7 @@ type Outcome = (
 );
 
 async fn process_in_order(genesis: &GenesisContext, blocks: &[BlockMessage]) -> Outcome {
-    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None)
         .await
         .unwrap();
     let receiver = &mut nodes[3];
@@ -60,7 +60,7 @@ async fn ready_blocks_reach_the_same_dag_and_verdicts_in_every_processing_order(
         .build_genesis_with_parameters(None)
         .await
         .expect("Failed to build genesis");
-    let mut producers = TestNode::create_network(genesis.clone(), 4, None, None, None, None)
+    let mut producers = TestNode::create_network(genesis.clone(), 4, None, None, None)
         .await
         .unwrap();
     let shard = genesis.genesis_block.shard_id.clone();

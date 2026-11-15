@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
+use models::rust::casper::protocol::casper_message::SystemDeployData;
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -44,6 +45,8 @@ impl SystemDeployTrait for CloseBlockDeploy {
     }
 
     fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn recorded_form(&self) -> SystemDeployData { SystemDeployData::create_close() }
 
     fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
 

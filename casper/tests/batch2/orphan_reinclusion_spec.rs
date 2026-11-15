@@ -65,7 +65,7 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {
@@ -268,25 +268,19 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
 #[serial]
 async fn foreign_orphaned_work_returns_by_owner_pool_reproposal() {
     let n_validators = 3usize;
-    let genesis_parameters =
+    let max_parent_depth = 3i32;
+    let mut genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
+    genesis_parameters.2.proof_of_stake.max_parent_depth = max_parent_depth;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let max_parent_depth = 3i32;
-    let mut nodes = TestNode::create_network(
-        genesis,
-        n_validators,
-        None,
-        None,
-        Some(max_parent_depth),
-        None,
-    )
-    .await
-    .expect("create_network");
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
+        .await
+        .expect("create_network");
     for node in nodes.iter_mut() {
         node.allow_empty_blocks = true;
     }

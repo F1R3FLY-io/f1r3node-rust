@@ -14,6 +14,7 @@ use block_storage::rust::deploy::key_value_deploy_storage::{
 };
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
@@ -152,6 +153,7 @@ fn reserve_deploy(
 pub(crate) async fn admit_handle_valid_block(
     this: &MultiParentCasperImpl,
     block: &BlockMessage,
+    parents: &[BlockMetadata],
 ) -> Result<KeyValueDagRepresentation, CasperError> {
     // User deploys are intentionally NOT purged from pending storage on mere
     // DAG acceptance. They are retained until the finalizer writes their
@@ -170,6 +172,18 @@ pub(crate) async fn admit_handle_valid_block(
         );
     }
     record_dag_cardinality_metrics(&updated_dag);
+
+    let fresh = crate::rust::economics::reward::fresh_in(
+        &updated_dag,
+        &block.sender,
+        &block.justifications,
+        block.body.state.block_number,
+        this.bucket_view.params().reward.previous_reach,
+    )?;
+    this.bucket_view
+        .observe(&crate::rust::economics::bucket_view::Observation::of(
+            block, parents, fresh,
+        ));
 
     // Publish BlockAdded event
     this.event_publisher
@@ -286,7 +300,7 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot(
     let latest_block_number = snapshot.dag.latest_block_number();
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         latest_block_number,
-        snapshot.on_chain_state.shard_conf.deploy_lifespan,
+        snapshot.on_chain_state.chain.deploy_lifespan,
     )?;
     // Pre-epoch system clock (operationally impossible on modern
     // systems, but per-correctness directive: handle the corner). A
@@ -348,7 +362,7 @@ pub(crate) async fn admit_list_pending_deploys(
     let latest_block_number = snapshot.dag.latest_block_number();
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         latest_block_number,
-        snapshot.on_chain_state.shard_conf.deploy_lifespan,
+        snapshot.on_chain_state.chain.deploy_lifespan,
     )?;
     let current_time_millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

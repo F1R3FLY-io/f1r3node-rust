@@ -56,6 +56,9 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
 use crate::rust::validator_identity::ValidatorIdentity;
 
+/// The sizing the engine is constructed with (see `engine::transition_to_initializing`).
+const SYNC_CHANNEL_CAPACITY: usize = 50;
+
 /// Shared by `Initializing::new` and `reinstall_sync_channels`, so a retry gets
 /// the same channel as the first attempt.
 const FLOOR_CACHE_CHANNEL_CAPACITY: usize = 4;
@@ -764,9 +767,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// and dropped when it returns. Its sender is replaced too: the old one
     /// feeds a dropped receiver, so the response to the retry would be lost.
     fn reinstall_sync_channels(&self) -> Result<(), CasperError> {
-        // The sizing the engine is constructed with (see `engine::transition_to_initializing`).
-        const SYNC_CHANNEL_CAPACITY: usize = 50;
-
         let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(SYNC_CHANNEL_CAPACITY);
         let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(SYNC_CHANNEL_CAPACITY);
         let (floor_cache_tx, floor_cache_rx) =
@@ -807,51 +807,21 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         &self,
         approved_block: &ApprovedBlock,
     ) -> Result<(), CasperError> {
-        // Starting minimum block height. When latest blocks are downloaded new minimum will be calculated.
         let block = &approved_block.candidate.block;
         let start_block_number = proto_util::block_number(block);
-        // Compute the LFS lower bound: take the lower (= older floor) of
-        // (a) deploy_lifespan window and (b) forward-horizon parent reach.
-        // See `rspace_history_horizon::lfs_min_block_number` for the rule
-        // and `casper/tests/util/rspace_history_horizon_test.rs` plus the
-        // module's `#[cfg(test)] mod tests` for the spec.
-        let unseeded_min_block_number =
-            crate::rust::util::rspace_history_horizon::lfs_min_block_number(
-                start_block_number,
-                self.casper_shard_conf.deploy_lifespan,
-                self.casper_shard_conf.max_parent_depth,
-                self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
-            );
-
-        // The anchor's floor cannot be derived from anything above the anchor,
-        // so the responder sent it. Widening the window here — before a single
-        // block is requested — is the only chance to do it: the requester
-        // accepts a block only if its height clears this bound, and the seed's
-        // blocks are useless to us unless we hold them.
-        let min_block_number_for_deploy_lifespan = match &approved_block.floor_seed {
-            Some(seed) => crate::rust::util::rspace_history_horizon::lfs_seeded_min_block_number(
-                unseeded_min_block_number,
-                seed.floor_number,
-                seed.frontier_number,
-            ),
-            None => unseeded_min_block_number,
-        };
-
-        // How deep rspace state and the mergeable replay reach. Shallower than
-        // the block floor by design — see `lfs_min_state_block_number`.
-        let min_state_block_number =
-            crate::rust::util::rspace_history_horizon::lfs_min_state_block_number(
-                start_block_number,
-                self.casper_shard_conf.max_parent_depth,
-                self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
-            );
+        // The look-back parameters live on chain and can only be read once the
+        // anchor's state is here, so the first window holds the anchor band
+        // alone and the second pass below reaches back as far as they ask.
+        let anchor_min_block_number = Self::block_window(
+            approved_block,
+            Some(0),
+            self.casper_shard_conf.mergeable_channels_gc_depth_buffer,
+        );
 
         tracing::info!(
-            "request_approved_state: start (block {}, min_height {}, state_min_height {}, unseeded_min_height {}, seeded {})",
+            "request_approved_state: start (block {}, min_height {}, seeded {})",
             PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-            min_block_number_for_deploy_lifespan,
-            min_state_block_number,
-            unseeded_min_block_number,
+            anchor_min_block_number,
             approved_block.floor_seed.is_some()
         );
 
@@ -895,7 +865,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &empty_queue,
                 response_message_rx,
                 self.block_message_queue_pending.clone(),
-                min_block_number_for_deploy_lifespan,
+                anchor_min_block_number,
                 lfs_request_timeout,
                 &mut block_requester,
             ),
@@ -945,34 +915,78 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let final_state_result = final_state_result?;
         tuple_space_result?;
 
-        // Now populate DAG with the final state (equivalent to evalMap in Scala)
-        if let Some(st) = final_state_result {
-            let anchor_height = proto_util::block_number(&approved_block.candidate.block);
-            let restored_min = st
-                .height_map
-                .keys()
-                .next()
-                .copied()
-                .unwrap_or(anchor_height);
-            let restored_max = st
-                .height_map
-                .keys()
-                .next_back()
-                .copied()
-                .unwrap_or(anchor_height);
-            self.populate_dag(st.lower_bound, st.height_map).await?;
-            // After the blocks are in, never before: the caches are keyed by
-            // hash, and a floor entry pointing at a block the DAG does not hold
-            // reads back as a missing block rather than as a floor.
-            self.seed_floor_caches(approved_block)?;
-            self.request_floor_cache(approved_block, restored_min, restored_max)
-                .await?;
-            establish_chain_identity(&self.block_dag_storage, &self.rp_conf_ask.chain_id)?;
-        } else {
-            tracing::warn!(
-                "request_approved_state: block_request_stream returned no final state (None)"
+        // The anchor's state is here, so the look-back parameters can be read
+        // from it rather than trusted from local configuration.
+        let chain = self
+            .runtime_manager
+            .chain_parameters(&block.body.state.post_state_hash)
+            .await?;
+        let depth_buffer = self.casper_shard_conf.mergeable_channels_gc_depth_buffer;
+        let min_block_number = Self::block_window(
+            approved_block,
+            chain.window_basis().block_retention_window(),
+            depth_buffer,
+        );
+
+        // The requester serves blocks it already holds from the store, so the
+        // second pass fetches only what lies below the first window.
+        let final_state_result = if min_block_number < anchor_min_block_number {
+            tracing::info!(
+                anchor_min_height = anchor_min_block_number,
+                required_min_height = min_block_number,
+                "request_approved_state: deepening the block window to the chain's parameters"
             );
-        }
+            let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(SYNC_CHANNEL_CAPACITY);
+            install_slot(&self.block_message_tx, block_tx, "block_message_tx")?;
+            self.block_message_queue_pending.store(0, Ordering::Relaxed);
+
+            let deeper = lfs_block_requester::stream(
+                approved_block,
+                &empty_queue,
+                block_rx,
+                self.block_message_queue_pending.clone(),
+                min_block_number,
+                lfs_request_timeout,
+                &mut block_requester,
+            )
+            .await?;
+            let mut stream = Box::pin(deeper);
+            let mut last_st = None;
+            while let Some(st) = stream.next().await {
+                last_st = Some(st);
+            }
+            last_st
+        } else {
+            final_state_result
+        };
+
+        // How deep rspace state and the mergeable replay reach. Shallower than
+        // the block floor by design — see `lfs_min_state_block_number`.
+        let min_state_block_number =
+            crate::rust::util::rspace_history_horizon::lfs_min_state_block_number(
+                start_block_number,
+                chain.max_parent_depth,
+                depth_buffer,
+            );
+
+        let st = completed_window(final_state_result)?;
+        let (Some(&restored_min), Some(&restored_max)) = (
+            st.height_map.keys().next(),
+            st.height_map.keys().next_back(),
+        ) else {
+            return Err(CasperError::RuntimeError(
+                "the completed block window holds no blocks, not even the approved block"
+                    .to_string(),
+            ));
+        };
+        self.populate_dag(st.lower_bound, st.height_map).await?;
+        // After the blocks are in, never before: the caches are keyed by
+        // hash, and a floor entry pointing at a block the DAG does not hold
+        // reads back as a missing block rather than as a floor.
+        self.seed_floor_caches(approved_block)?;
+        self.request_floor_cache(approved_block, restored_min, restored_max)
+            .await?;
+        establish_chain_identity(&self.block_dag_storage, &self.rp_conf_ask.chain_id)?;
 
         // Forward-horizon rspace history sync — ship rspace state for every
         // block from `min_state_block_number` up. That floor is the parent
@@ -991,7 +1005,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     &dag,
                     &self.block_store,
                     &approved_block.candidate.block,
-                    &self.casper_shard_conf,
+                    chain.max_parent_depth,
                     min_state_block_number,
                 )
                 .map_err(CasperError::from)?;
@@ -1101,6 +1115,33 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         tracing::info!("request_approved_state: transition_to_running completed");
 
         Ok(())
+    }
+
+    /// The lowest block number this node must hold to judge every block it may
+    /// legally be asked to judge, given the chain's retention window.
+    ///
+    /// The anchor's floor cannot be derived from anything above the anchor, so
+    /// the responder sent it, and the window widens to hold it: the requester
+    /// accepts a block only if its height clears this bound, and the seed's
+    /// blocks are useless unless held.
+    fn block_window(
+        approved_block: &ApprovedBlock,
+        retention_window: Option<i64>,
+        depth_buffer: u32,
+    ) -> i64 {
+        let unseeded = crate::rust::util::rspace_history_horizon::lfs_min_block_number(
+            proto_util::block_number(&approved_block.candidate.block),
+            retention_window,
+            depth_buffer,
+        );
+        match &approved_block.floor_seed {
+            Some(seed) => crate::rust::util::rspace_history_horizon::lfs_seeded_min_block_number(
+                unseeded,
+                seed.floor_number,
+                seed.frontier_number,
+            ),
+            None => unseeded,
+        }
     }
 
     fn validate_block(&self, block: &BlockMessage) -> bool { Validate::historical_block(block) }
@@ -1953,11 +1994,90 @@ fn blocks_for_dag(height_map: &BTreeMap<i64, HashSet<BlockHash>>) -> Vec<BlockHa
         .collect()
 }
 
+/// The block state a restore may go on from: one the requester finished. A
+/// node that ran short of the window could not judge what it may be asked to,
+/// so a restore that stopped early fails and is retried.
+fn completed_window(
+    state: Option<lfs_block_requester::ST<BlockHash>>,
+) -> Result<lfs_block_requester::ST<BlockHash>, CasperError> {
+    match state {
+        Some(state) if state.is_finished() => Ok(state),
+        Some(_) => Err(CasperError::RuntimeError(
+            "the block requester stopped before fetching the whole window".to_string(),
+        )),
+        None => Err(CasperError::RuntimeError(
+            "the block requester ended without a state".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn hash(tag: &[u8]) -> BlockHash { BlockHash::from(tag.to_vec()) }
+
+    /// A block numbered 0 is checked like any other, so a peer cannot pass off
+    /// forged content under a requested hash by numbering it 0.
+    #[test]
+    fn a_restored_block_numbered_zero_must_match_its_hash() {
+        use models::rust::casper::protocol::casper_message::{Body, Bond, F1r3flyState, Header};
+
+        let block_at = |number: i64| {
+            proto_util::unsigned_block_proto(
+                Body {
+                    state: F1r3flyState {
+                        pre_state_hash: hash(b"pre"),
+                        post_state_hash: hash(b"post"),
+                        bonds: vec![Bond {
+                            validator: hash(b"validator"),
+                            stake: 7.into(),
+                        }],
+                        block_number: number,
+                    },
+                    deploys: Vec::new(),
+                    rejected_deploys: Vec::new(),
+                    system_deploys: Vec::new(),
+                    extra_bytes: BlockHash::new(),
+                    applied_from_scope: Vec::new(),
+                    merge_base: BlockHash::new(),
+                    leaky_bucket_votes: Vec::new(),
+                },
+                Header {
+                    parents_hash_list: Vec::new(),
+                    timestamp: 0,
+                    version: 1,
+                    extra_bytes: BlockHash::new(),
+                    chain_id: BlockHash::new(),
+                },
+                Vec::new(),
+                "root".to_string(),
+                None,
+            )
+        };
+        let genesis = block_at(0);
+        assert!(Validate::historical_block(&genesis));
+
+        let mut forged = genesis.clone();
+        forged.body.state.bonds[0].stake = 1_000.into();
+        assert!(!Validate::historical_block(&forged), "forged genesis");
+
+        let mut renumbered = block_at(9);
+        renumbered.body.state.block_number = 0;
+        assert!(
+            !Validate::historical_block(&renumbered),
+            "a block renumbered 0"
+        );
+    }
+
+    #[test]
+    fn a_restore_goes_on_only_from_a_finished_block_state() {
+        let pending = lfs_block_requester::ST::new(HashSet::from([hash(b"a")]), None, None);
+        assert!(completed_window(Some(pending)).is_err());
+        assert!(completed_window(None).is_err());
+        let finished = lfs_block_requester::ST::new(HashSet::new(), None, None);
+        assert!(completed_window(Some(finished)).is_ok());
+    }
 
     /// Shipped floor entries are written only for blocks this node asked about
     /// AND holds. Anything else in the response is a peer trying to seed

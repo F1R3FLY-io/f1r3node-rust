@@ -53,6 +53,10 @@ impl Casper for AnchorCasper {
         unimplemented!("not exercised by settled-admission tests")
     }
 
+    fn bucket_view(&self) -> Arc<casper::rust::economics::bucket_view::BucketView> {
+        unimplemented!("not exercised by settled-admission tests")
+    }
+
     fn dag_contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> { Ok(false) }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.anchor) }
@@ -94,6 +98,7 @@ impl Casper for AnchorCasper {
     async fn handle_valid_block(
         &self,
         _block: &BlockMessage,
+        _parents: &[models::rust::block_metadata::BlockMetadata],
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         unimplemented!("not exercised by settled-admission tests")
     }

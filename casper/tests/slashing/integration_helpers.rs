@@ -195,6 +195,7 @@ pub async fn equivocate_block(
     // the replay invariant simple). The `block_number` and
     // `seq_num` match b1's; the sender is v0.
     let block_data = BlockData {
+        committee: Vec::new(),
         time_stamp: b1.header.timestamp,
         block_number: next_block_num,
         sender: validator_identity.public_key.clone(),
@@ -264,6 +265,7 @@ pub async fn equivocate_block(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        leaky_bucket_votes: Vec::new(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -341,6 +343,7 @@ pub async fn propose_with_explicit_justifications(
         .max()
         .unwrap_or(0);
     let block_data = BlockData {
+        committee: Vec::new(),
         time_stamp: parent_max_ts + 1,
         block_number: next_block_num,
         sender: validator_identity.public_key.clone(),
@@ -401,6 +404,7 @@ pub async fn propose_with_explicit_justifications(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        leaky_bucket_votes: Vec::new(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -484,6 +488,7 @@ pub async fn propose_with_block_mutation(
         .max()
         .unwrap_or(0);
     let block_data = BlockData {
+        committee: Vec::new(),
         time_stamp: parent_max_ts + 1,
         block_number: next_block_num,
         sender: validator_identity.public_key.clone(),
@@ -544,6 +549,7 @@ pub async fn propose_with_block_mutation(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        leaky_bucket_votes: Vec::new(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -609,6 +615,7 @@ pub async fn propose_neglecting_block(
         .max()
         .unwrap_or(0);
     let block_data = BlockData {
+        committee: Vec::new(),
         time_stamp: parent_max_ts + 1,
         block_number: next_block_num,
         sender: validator_identity.public_key.clone(),
@@ -669,6 +676,7 @@ pub async fn propose_neglecting_block(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        leaky_bucket_votes: Vec::new(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),

@@ -34,6 +34,7 @@
 // nine-module decomposition.
 pub(crate) mod block_admission;
 pub(crate) mod bond_cache;
+pub mod ejection_requests;
 pub(crate) mod events;
 pub(crate) mod finalization_runner;
 pub use finalization_runner::{DivergenceMonitor, FinalizationContext, Finalizer};

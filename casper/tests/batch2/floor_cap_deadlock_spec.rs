@@ -27,7 +27,9 @@ use crate::util::genesis_builder::GenesisBuilder;
 
 const SOLO_BLOCKS: usize = MAX_FLOOR_DISTANCE_BLOCKS as usize + 1;
 
-fn ftt() -> FtThreshold { FtThreshold::from_ppm(100_000) }
+const FTT_PPM: i64 = 100_000;
+
+fn ftt() -> FtThreshold { FtThreshold::from_ppm(FTT_PPM) }
 
 fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, TokenAmount> {
     pks.into_iter().map(|pk| (pk, 100u64.into())).collect()
@@ -39,8 +41,9 @@ struct StalledShard {
 }
 
 async fn stalled_two_validator_shard() -> StalledShard {
-    let parameters =
+    let mut parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(Some(equal_bonds), Some(2));
+    parameters.2.proof_of_stake.fault_tolerance_threshold_ppm = FTT_PPM;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
         .await

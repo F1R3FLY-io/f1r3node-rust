@@ -1070,13 +1070,13 @@ impl DeployService for DeployGrpcServiceV1Impl {
 
         let is_ready = self.is_ready.load(Ordering::Relaxed);
 
-        // Advertise the values admission and validity actually enforce — the
-        // chain-adopted ones; local conf only until casper is up.
+        // Advertise what admission and validity actually enforce — the chain's
+        // values; local conf only until casper is up.
         let (min_phlo_price, epoch_length) = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => (
-                casper.casper_shard_conf().min_phlo_price.clone(),
-                casper.casper_shard_conf().epoch_length,
-            ),
+            Some(casper) => {
+                let chain = casper.chain_parameters();
+                (chain.min_phlo_price.clone(), chain.epoch_length)
+            }
             None => (self.min_phlo_price.clone(), self.epoch_length),
         };
         let current_epoch = if epoch_length > 0 && lfb_number >= 0 {
@@ -1398,7 +1398,6 @@ mod tests {
                 service.node_discovery.clone(),
                 None,
                 100,
-                50,
                 service.is_ready.clone(),
             );
             let events = F1r3flyEvents::new();

@@ -16,6 +16,8 @@ impl DeployIndex {
     pub const SYS_SLASH_DEPLOY_COST: u64 = 0;
     pub const SYS_CLOSE_BLOCK_DEPLOY_COST: u64 = 0;
     pub const SYS_EMPTY_DEPLOY_COST: u64 = 0;
+    pub const SYS_RESOLVE_CLAIMS_DEPLOY_COST: u64 = 0;
+    pub const SYS_DISHONEST_VOTE_DEPLOY_COST: u64 = 0;
 
     // Trailing byte of a system deploy's 33-byte id, defined from the
     // system-deploy markers `is_system_deploy_id` recognizes.
@@ -23,6 +25,10 @@ impl DeployIndex {
     pub const SYS_CLOSE_BLOCK_DEPLOY_ID: &'static [u8] =
         &[crate::rust::system_deploy::CLOSE_BLOCK_MARKER];
     pub const SYS_EMPTY_DEPLOY_ID: &'static [u8] = &[crate::rust::system_deploy::HEARTBEAT_MARKER];
+    pub const SYS_RESOLVE_CLAIMS_DEPLOY_ID: &'static [u8] =
+        &[crate::rust::system_deploy::RESOLVE_CLAIMS_MARKER];
+    pub const SYS_DISHONEST_VOTE_DEPLOY_ID: &'static [u8] =
+        &[crate::rust::system_deploy::DISHONEST_VOTE_MARKER];
 
     pub fn new(
         sig: prost::bytes::Bytes,

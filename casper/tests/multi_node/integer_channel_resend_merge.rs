@@ -41,7 +41,7 @@ async fn a_second_integer_send_merged_as_a_side_parent_is_not_rejected() {
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 3, None, None, None)
         .await
         .unwrap();
     for node in nodes.iter_mut() {

@@ -167,7 +167,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
 
     // Two validators, no synchrony constraint, unlimited parents so the
     // multi-parent merge actually happens.
-    let mut nodes = TestNode::create_network(genesis, 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 2, None, None, None)
         .await
         .expect("create_network(2)");
     for node in nodes.iter_mut() {
@@ -588,7 +588,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
     let ctx = TestContext::new().await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
     for node in nodes.iter_mut() {

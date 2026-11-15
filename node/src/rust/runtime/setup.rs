@@ -631,6 +631,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             dummy_deploy_opt,
             runtime_manager.clone(),
             block_store.clone(),
+            block_dag_storage.clone(),
             deploy_storage_arc.clone(),
             rejected_deploy_buffer_arc.clone(),
             transport_layer.clone(),
@@ -1090,7 +1091,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             node_discovery.clone(),
             trigger_propose_f,
             conf.casper.genesis_block_data.epoch_length,
-            conf.casper.genesis_block_data.quarantine_length,
             is_ready.clone(),
         )
     };
@@ -1149,7 +1149,16 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                         );
                         return Ok(());
                     };
-                    let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
+                    let gc_horizon = mergeable_channels_gc::GcHorizon {
+                        max_allowed_depth: i64::from(gc_casper.chain_parameters().max_parent_depth)
+                            + i64::from(
+                                gc_casper
+                                    .casper_shard_conf()
+                                    .mergeable_channels_gc_depth_buffer,
+                            ),
+                        deploy_lifespan: gc_casper.chain_parameters().deploy_lifespan,
+                        delete_block_bodies: gc_casper.casper_shard_conf().enable_block_store_gc,
+                    };
                     let gc_effective_anchor = gc_casper.effective_anchor_handle();
 
                     loop {
@@ -1166,7 +1175,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                             &gc_block_dag_storage,
                                             &gc_block_store,
                                             &gc_runtime_manager,
-                                            &gc_casper_shard_conf,
+                                            gc_horizon,
                                             &gc_effective_anchor,
                                         ))
                                         .map_err(|e| CasperError::RuntimeError(e.to_string()))
@@ -1179,7 +1188,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                     &gc_block_dag_storage,
                                     &gc_block_store,
                                     &gc_runtime_manager,
-                                    &gc_casper_shard_conf,
+                                    gc_horizon,
                                     &gc_effective_anchor,
                                 )
                                 .await

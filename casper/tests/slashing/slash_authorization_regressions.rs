@@ -9,6 +9,7 @@ use std::sync::Arc;
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::chain_parameters::ChainParameters;
 use casper::rust::errors::CasperError;
 use casper::rust::slashing_authorization::{
     authorized_slash_candidates, checked_base_seq, checked_next_seq,
@@ -50,6 +51,7 @@ fn snapshot(fixture: &DetectorFixture) -> CasperSnapshot {
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
+            chain: ChainParameters::shipped(),
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
         },

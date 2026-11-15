@@ -17,6 +17,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDa
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::validator::Validator;
@@ -38,6 +39,19 @@ use crate::rust::validator_identity::ValidatorIdentity;
 impl Casper for MultiParentCasperImpl {
     async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
         self.ingest.need(hash).await
+    }
+
+    fn bucket_view(&self) -> Arc<crate::rust::economics::bucket_view::BucketView> {
+        self.bucket_view.clone()
+    }
+
+    async fn request_ejections(&self, snapshot: &CasperSnapshot) -> Result<(), CasperError> {
+        let Some(identity) = self.validator_id.as_ref() else {
+            return Ok(());
+        };
+        let own = Bytes::copy_from_slice(&identity.public_key.bytes);
+        let offers = self.bucket_view.proposal(&own).ejection_offers;
+        self.request_ejections_of(snapshot, &offers).await
     }
 
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
@@ -102,8 +116,9 @@ impl Casper for MultiParentCasperImpl {
     async fn handle_valid_block(
         &self,
         block: &BlockMessage,
+        parents: &[BlockMetadata],
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        super::block_admission::admit_handle_valid_block(self, block).await
+        super::block_admission::admit_handle_valid_block(self, block, parents).await
     }
 
     fn handle_invalid_block(
@@ -132,6 +147,7 @@ impl MultiParentCasper for MultiParentCasperImpl {
             self.block_dag_storage.clone(),
             self.block_store.clone(),
             &self.casper_shard_conf,
+            &self.chain_parameters,
             &self.approved_block,
         ))
     }
@@ -188,6 +204,10 @@ impl MultiParentCasper for MultiParentCasperImpl {
     fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.casper_shard_conf }
+
+    fn chain_parameters(&self) -> &crate::rust::chain_parameters::ChainParameters {
+        &self.chain_parameters
+    }
 
     fn rejected_deploy_buffer_contains_sig(&self, sig: &[u8]) -> Result<bool, CasperError> {
         self.rejected_deploy_buffer

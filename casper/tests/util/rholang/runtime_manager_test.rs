@@ -60,6 +60,7 @@ async fn compute_state(
             vec![deploy],
             Vec::new(), // No system deploys
             BlockData {
+                committee: Vec::new(),
                 time_stamp,
                 block_number: 0,
                 sender: genesis_context.validator_pks()[0].clone(),
@@ -87,6 +88,7 @@ async fn replay_compute_state(
             vec![processed_deploy],
             Vec::new(),
             &BlockData {
+                committee: Vec::new(),
                 time_stamp,
                 block_number: 0,
                 sender: genesis_context.validator_pks()[0].clone(),
@@ -418,6 +420,7 @@ async fn an_exhausted_play_budget_still_carries_exactly_one_deploy() {
                     deploys,
                     Vec::new(),
                     BlockData {
+                        committee: Vec::new(),
                         time_stamp,
                         block_number: 0,
                         sender: genesis_context.validator_pks()[0].clone(),
@@ -456,6 +459,7 @@ async fn an_ample_play_budget_carries_the_whole_pool() {
                     deploys,
                     Vec::new(),
                     BlockData {
+                        committee: Vec::new(),
                         time_stamp,
                         block_number: 0,
                         sender: genesis_context.validator_pks()[0].clone(),
@@ -494,6 +498,7 @@ where
     {
         runtime
             .set_block_data(BlockData {
+                committee: Vec::new(),
                 time_stamp: 0,
                 block_number: 0,
                 sender: genesis_context.validator_pks()[0].clone(),
@@ -520,6 +525,7 @@ where
             {
                 replay_runtime
                     .set_block_data(BlockData {
+                        committee: Vec::new(),
                         time_stamp: 0,
                         block_number: 0,
                         sender: genesis_context.validator_pks()[0].clone(),
@@ -883,6 +889,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                         ),
                     ],
                     BlockData {
+                        committee: Vec::new(),
                         time_stamp: time,
                         block_number: 0,
                         sender: genesis_context.validator_pks()[0].clone(),
@@ -904,6 +911,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     processed_deploys_0,
                     processed_sys_deploys_0,
                     &BlockData {
+                        committee: Vec::new(),
                         time_stamp: time,
                         block_number: 0,
                         sender: genesis_context.validator_pks()[0].clone(),
@@ -940,6 +948,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                         ),
                     ],
                     BlockData {
+                        committee: Vec::new(),
                         time_stamp: time,
                         block_number: 0,
                         sender: genesis_context.validator_pks()[0].clone(),
@@ -961,6 +970,7 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
                     processed_deploys_1,
                     processed_sys_deploys_1,
                     &BlockData {
+                        committee: Vec::new(),
                         time_stamp: time,
                         block_number: 0,
                         sender: genesis_context.validator_pks()[0].clone(),
@@ -1247,6 +1257,7 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
 
             let genesis_post_state = genesis_block.body.state.post_state_hash;
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: time as i64,
                 block_number: 0,
                 sender: genesis_context.validator_pks()[0].clone(),
@@ -1404,6 +1415,7 @@ async fn compute_state_should_charge_deploys_separately() {
 
             let genesis_post_state = genesis_block.body.state.post_state_hash;
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: time as i64,
                 block_number: 0,
                 sender: genesis_context.validator_pks()[0].clone(),
@@ -1636,6 +1648,7 @@ async fn invalid_replay(source: String) -> Result<StateHash, CasperError> {
 
             let gen_post_state = genesis_block.body.state.post_state_hash;
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: time,
                 block_number: 0,
                 sender: genesis_context.validator_pks()[0].clone(),
@@ -1754,6 +1767,7 @@ async fn joins_should_be_replayed_correctly() {
                 .as_millis() as i64;
 
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: time,
                 block_number: 1,
                 sender: genesis_context.validator_pks()[0].clone(),
@@ -1831,6 +1845,7 @@ async fn replay_on_independent_runtime_should_match_play_cost_for_duplicate_send
         .unwrap();
 
         let play_block_data = BlockData {
+            committee: Vec::new(),
             time_stamp: deploy.data.time_stamp,
             block_number: 1,
             sender: genesis_context.validator_pks()[0].clone(),
@@ -1939,6 +1954,7 @@ async fn cross_deploy_bridge_full_admin_flow() {
             vec![deploy1],
             Vec::new(),
             BlockData {
+                committee: Vec::new(),
                 time_stamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -2129,6 +2145,7 @@ in {{
                 vec![deploy],
                 Vec::new(),
                 BlockData {
+                    committee: Vec::new(),
                     time_stamp: SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
@@ -2276,12 +2293,15 @@ async fn bridge_query_survives_multi_parent_merge() {
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
-        shard_conf.max_parent_depth = 0;
-        shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
+            chain: casper::rust::chain_parameters::ChainParameters {
+                max_parent_depth: 0,
+                deploy_lifespan: 50,
+                ..casper::rust::chain_parameters::ChainParameters::shipped()
+            },
             bonds_map,
             active_validators: vec![validator.clone()],
         };
@@ -2648,12 +2668,15 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
-        shard_conf.max_parent_depth = 0;
-        shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
+            chain: casper::rust::chain_parameters::ChainParameters {
+                max_parent_depth: 0,
+                deploy_lifespan: 50,
+                ..casper::rust::chain_parameters::ChainParameters::shipped()
+            },
             bonds_map,
             active_validators: vec![validator.clone()],
         };
@@ -3235,6 +3258,7 @@ async fn parallel_replay_determinism() {
                 .as_millis() as i64;
 
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: time,
                 block_number: 0,
                 sender: genesis_context.validator_pks()[0].clone(),
@@ -3417,12 +3441,15 @@ async fn stale_diff_application_corrupts_merged_state() {
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
-        shard_conf.max_parent_depth = 0;
-        shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator.clone(), 100.into());
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
+            chain: casper::rust::chain_parameters::ChainParameters {
+                max_parent_depth: 0,
+                deploy_lifespan: 50,
+                ..casper::rust::chain_parameters::ChainParameters::shipped()
+            },
             bonds_map,
             active_validators: vec![validator.clone()],
         };
@@ -3836,19 +3863,20 @@ async fn fault_tolerance_threshold_ppm_round_trips_through_genesis() {
     // Two independent reads model two nodes with DIFFERENT local configs: the
     // local threshold is not an input to the read, so both adopt 330_000.
     let first = runtime_manager
-        .get_fault_tolerance_threshold_ppm(&post_state)
+        .chain_parameters(&post_state)
         .await
-        .expect("on-chain FTT query");
+        .expect("on-chain parameters query")
+        .fault_tolerance_threshold_ppm;
     let second = runtime_manager
-        .get_fault_tolerance_threshold_ppm(&post_state)
+        .chain_parameters(&post_state)
         .await
-        .expect("on-chain FTT query (second node)");
+        .expect("on-chain parameters query (second node)")
+        .fault_tolerance_threshold_ppm;
 
     assert_eq!(
-        first,
-        Some(330_000),
+        first, 330_000,
         "genesis must bake the protocol fault-tolerance threshold into the PoS \
-         contract and expose it via getFaultToleranceThresholdPpm"
+         contract and expose it via getChainParameters"
     );
     assert_eq!(
         first, second,
@@ -3868,12 +3896,11 @@ async fn consensus_parameters_round_trip_through_genesis() {
         mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
     };
 
-    // Values the test-genesis defaults (15, 50, 0, 1000) can never produce by accident.
+    // Values the test-genesis defaults (15, 50, 0) can never produce by accident.
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
-    parameters.2.proof_of_stake.min_phlo_price = (3).into();
-    parameters.2.proof_of_stake.epoch_length = 9;
+    parameters.2.proof_of_stake.min_phlo_price = 3.into();
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -3890,65 +3917,26 @@ async fn consensus_parameters_round_trip_through_genesis() {
     let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
 
     let read = runtime_manager
-        .get_consensus_parameters(&post_state)
+        .chain_parameters(&post_state)
         .await
-        .expect("on-chain consensus-parameters query");
+        .expect("on-chain parameters query");
 
     assert_eq!(
-        read,
-        Some(casper::rust::rholang::runtime::ConsensusParameters {
-            max_parent_depth: 21,
-            deploy_lifespan: 70,
-            min_phlo_price: 3.into(),
-            epoch_length: 9,
-        }),
+        (
+            read.max_parent_depth,
+            read.deploy_lifespan,
+            read.min_phlo_price
+        ),
+        (21, 70, 3.into()),
         "genesis must bake the consensus parameters into the PoS contract and \
-         expose them via getConsensusParameters"
+         expose them via getChainParameters"
     );
 }
 
-/// The read choke point's range gates: a chain carrying values the validity
-/// rules are undefined under must fail the read (and with it, startup) —
-/// never be adopted, never fall back to local configuration.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn consensus_parameters_read_rejects_out_of_range_values() {
-    use crate::util::genesis_builder::GenesisBuilder;
-    use crate::util::rholang::resources::{
-        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
-    };
-
-    // Casper tests bypass node-side startup validation, so genesis can bake
-    // a zero parent depth — exactly the hostile-chain shape the gate guards.
-    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
-    parameters.2.proof_of_stake.max_parent_depth = 0;
-
-    let genesis_context = GenesisBuilder::new()
-        .build_genesis_with_parameters(Some(parameters))
-        .await
-        .expect("genesis with out-of-range parameters");
-    let post_state = genesis_context
-        .genesis_block
-        .body
-        .state
-        .post_state_hash
-        .clone();
-
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
-    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
-
-    let read = runtime_manager.get_consensus_parameters(&post_state).await;
-    let err = read.expect_err("a zero maxParentDepth must fail the strict read");
-    assert!(
-        err.to_string().contains("maxParentDepth out of range"),
-        "the error must name the offending parameter, got: {err}"
-    );
-}
-
-/// The adoption gap this pins: a node whose LOCAL configuration diverges from
-/// the chain must still RUN the on-chain consensus parameters — local config
-/// is not a fork input. `hash_set_casper` is the single adoption point (the
-/// protocol-FTT precedent); before adoption, a divergent node would accept
-/// blocks its peers reject (parent spread, expiry, repeat window, phlo floor).
+/// A node runs the chain's parameters whatever its local configuration says:
+/// a casper built through `hash_set_casper` judges parent spread, expiry, the
+/// repeat window, the phlo floor and slash epochs by the values genesis fixed,
+/// and its local shard configuration has no field that could say otherwise.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     use std::sync::{Arc, Mutex};
@@ -3970,8 +3958,8 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
-    parameters.2.proof_of_stake.min_phlo_price = (3).into();
-    parameters.2.proof_of_stake.epoch_length = 9;
+    parameters.2.proof_of_stake.min_phlo_price = 3.into();
+    parameters.2.proof_of_stake.epoch_length = 997;
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -3999,12 +3987,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     let (ingest, _ports) = IngestHandle::open(block_store.clone(), block_dag_storage.clone())
         .expect("block ingest opens on a fresh DAG storage");
 
-    // Local conf diverges from the chain on every value.
-    let mut local_conf = CasperShardConf::new();
-    local_conf.max_parent_depth = 15;
-    local_conf.deploy_lifespan = 50;
-    local_conf.min_phlo_price = (1).into();
-    local_conf.epoch_length = 10000;
+    let local_conf = CasperShardConf::new();
 
     let casper = hash_set_casper(
         ingest,
@@ -4023,7 +4006,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     .await
     .expect("hash_set_casper");
 
-    let adopted = casper.casper_shard_conf();
+    let adopted = casper.chain_parameters();
     assert_eq!(
         (
             adopted.max_parent_depth,
@@ -4031,22 +4014,63 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
             adopted.min_phlo_price.clone(),
             adopted.epoch_length
         ),
-        (21, 70, 3.into(), 9),
-        "the on-chain consensus parameters must be adopted over local configuration"
+        (21, 70, 3.into(), 997),
+        "the casper runs the chain's parameters"
     );
 }
 
-/// Strict exploratory-query regression (PR #122 review r3588246166): the
-/// lenient exploratory path degrades a runtime EXECUTION FAILURE into an
-/// empty result — indistinguishable from "the queried contract method does
-/// not exist". For a consensus parameter (the protocol fault-tolerance
-/// threshold) that conflation silently routes a transient failure into the
-/// local-config fallback and re-opens node-local finalized-floor divergence.
-/// The strict variant used by `get_fault_tolerance_threshold_ppm` must
-/// PROPAGATE the failure instead, so node startup fails loudly rather than
-/// running divergent. This pins the contrast on the same failing term.
+/// A bonds read that cannot reach the PoS contract must error, not report an
+/// empty bond set: the empty answer is memoized per state hash, so proposer
+/// and validator would agree on it. The genesis pre-state has no PoS
+/// registered, which is the cheapest way to reach a query producing nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn strict_exploratory_query_propagates_execution_failure() {
+async fn a_bonds_read_without_pos_errors_rather_than_reporting_no_bonds() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let pre_state = genesis_block.body.state.pre_state_hash;
+            let result = runtime_manager.compute_bonds(&pre_state).await;
+            assert!(
+                result.is_err(),
+                "a bonds read that produces no result must error; reporting an \
+                 empty bond set would be cached as a real committee; got {:?}",
+                result
+            );
+        },
+    )
+    .await
+    .expect("with_runtime_manager");
+}
+
+/// Every consensus parameter MUST come from chain state: a node running its
+/// own copy would vote, finalize and adjudicate against figures its peers
+/// never agreed to, and the Rocq reconciliation theorem is stated on there
+/// being no fallback arm. A state that cannot answer must therefore fail the
+/// read. The genesis pre-state has no PoS registered, which is the cheapest
+/// way to reach a read that answers nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_chain_parameters_read_fails_where_the_chain_cannot_answer() {
+    with_runtime_manager(
+        |runtime_manager, _genesis_context, genesis_block| async move {
+            let pre_state = genesis_block.body.state.pre_state_hash;
+            let error = runtime_manager
+                .chain_parameters(&pre_state)
+                .await
+                .expect_err("a state with no PoS cannot supply the parameters");
+            assert!(
+                error.to_string().contains("getChainParameters"),
+                "the read fails at the getter, not earlier; got {error}"
+            );
+        },
+    )
+    .await
+    .expect("with_runtime_manager");
+}
+
+/// An exploratory query that fails to execute must error, never return an
+/// empty result — empty is a legitimate answer for some callers, so degrading
+/// a failure into one lets a transient fault read as a real value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_exploratory_query_propagates_execution_failure() {
     with_runtime_manager(
         |runtime_manager, _genesis_context, genesis_block| async move {
             let post_state = genesis_block.body.state.post_state_hash;
@@ -4058,27 +4082,12 @@ async fn strict_exploratory_query_propagates_execution_failure() {
             let runtime = runtime_manager.spawn_runtime().await.unwrap();
             let mut ops = RuntimeOps::new(runtime);
 
-            // Lenient path (display/API callers): degrades to an empty result.
-            let lenient = ops
-                .play_exploratory_par(failing_par.clone(), &post_state)
-                .await;
+            let result = ops.play_exploratory_par(failing_par, &post_state).await;
             assert!(
-                matches!(&lenient, Ok(pars) if pars.is_empty()),
-                "lenient exploratory path degrades execution failure to an empty \
-             result (the hazard the strict variant exists to avoid); got {:?}",
-                lenient
-            );
-
-            // Strict path (consensus reads): the same failure must propagate.
-            let strict = ops
-                .play_exploratory_par_strict(failing_par, &post_state)
-                .await;
-            assert!(
-                strict.is_err(),
-                "strict exploratory path must propagate an execution failure — \
-             degrading it to an empty result would be indistinguishable from \
-             'getter absent' and re-open node-local divergence; got {:?}",
-                strict
+                result.is_err(),
+                "an execution failure must propagate; an empty result would be \
+                 indistinguishable from a genuine absence; got {:?}",
+                result
             );
         },
     )
@@ -4136,6 +4145,7 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
             vec![deploy],
             Vec::new(),
             BlockData {
+                committee: Vec::new(),
                 time_stamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -4173,6 +4183,7 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
             extra_bytes: prost::bytes::Bytes::new(),
             applied_from_scope: vec![],
             merge_base: prost::bytes::Bytes::new(),
+            leaky_bucket_votes: Vec::new(),
         },
         justifications: vec![],
         sender: sender.bytes.clone(),
@@ -4229,7 +4240,6 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         BlockDagKeyValueStorage, InsertMode,
     };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-    use casper::rust::casper::CasperShardConf;
     use casper::rust::util::mergeable_channels_gc;
     use models::rust::casper::protocol::casper_message::{
         BlockMessage, Body, F1r3flyState, Header,
@@ -4287,6 +4297,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
             vec![deploy],
             Vec::new(),
             BlockData {
+                committee: Vec::new(),
                 time_stamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
@@ -4322,6 +4333,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
             extra_bytes: prost::bytes::Bytes::new(),
             applied_from_scope: vec![],
             merge_base: prost::bytes::Bytes::new(),
+            leaky_bucket_votes: Vec::new(),
         },
         justifications: vec![],
         sender: sender.bytes.clone(),
@@ -4384,9 +4396,12 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         .contains(&chain_hash(LAGGING_HEIGHT))
         .expect("cold membership"));
 
-    let mut conf = CasperShardConf::new();
-    conf.max_parent_depth = 3;
-    conf.mergeable_channels_gc_depth_buffer = 1;
+    // max_parent_depth 3 plus a GC depth buffer of 1.
+    let horizon = mergeable_channels_gc::GcHorizon {
+        max_allowed_depth: 4,
+        deploy_lifespan: 0,
+        delete_block_bodies: false,
+    };
     let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
     let effective_anchor = std::sync::atomic::AtomicI64::new(0);
     assert_eq!(
@@ -4395,7 +4410,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
             &dag_storage,
             &block_store,
             &rm,
-            &conf,
+            horizon,
             &effective_anchor,
         )
         .await
@@ -4431,7 +4446,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
             &dag_storage,
             &block_store,
             &rm,
-            &conf,
+            horizon,
             &effective_anchor,
         )
         .await
@@ -4452,7 +4467,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         "GC must collect the lagging block's mergeable data (it is {} below the \
          live floor, past the {}-block allowance)",
         TIP - LAGGING_HEIGHT,
-        conf.max_parent_depth + conf.mergeable_channels_gc_depth_buffer,
+        horizon.max_allowed_depth,
     );
     assert!(
         !rm.has_mergeable_entry(&lagging_block).unwrap(),

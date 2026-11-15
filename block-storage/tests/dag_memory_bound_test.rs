@@ -42,7 +42,6 @@ static MEASURING: Mutex<()> = Mutex::new(());
 
 const DAG_STORES: [&str; 17] = [
     "block-metadata",
-    "equivocation-tracker",
     "latest-messages",
     "dag-equivocations-v1",
     "floor-index",
@@ -52,6 +51,7 @@ const DAG_STORES: [&str; 17] = [
     "carrier-index",
     "carrier-index-meta",
     "genesis-hash",
+    "leaky-bucket-votes",
     "dag-membership-v1",
     "dag-height-v1",
     "dag-children-v1",

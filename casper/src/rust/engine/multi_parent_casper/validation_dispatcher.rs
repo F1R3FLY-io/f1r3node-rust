@@ -77,7 +77,7 @@ async fn derive_floor_context(
         &block.header.parents_hash_list,
         &latest_messages,
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-            this.casper_shard_conf.fault_tolerance_threshold_ppm,
+            this.chain_parameters.fault_tolerance_threshold_ppm,
         ),
     )
     .await
@@ -299,9 +299,9 @@ async fn validate_contents(
                 &this.approved_block,
                 snapshot,
                 &this.casper_shard_conf.shard_name,
-                this.casper_shard_conf.deploy_lifespan as i32,
+                this.chain_parameters.deploy_lifespan as i32,
                 this.casper_shard_conf.max_number_of_parents,
-                this.casper_shard_conf.max_parent_depth,
+                this.chain_parameters.max_parent_depth,
                 &this.block_store,
                 &this.runtime_manager,
                 this.casper_shard_conf.disable_validator_progress_check,
@@ -326,6 +326,28 @@ async fn validate_contents(
                 Err(ex) => return Ok(Either::Left(BlockError::from_validation_error(ex))),
             }
         }
+        // Ahead of replay: the bonds field is a replay input, since an
+        // ejection's electorate and seat check are the block's own committee.
+        let (bonds_cache_result, t3) = timed_step(
+            "bonds-cache",
+            BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
+            async {
+                Ok(Validate::bonds_cache_from_floor(
+                    block,
+                    &this.block_store,
+                    snapshot,
+                    &this.runtime_manager,
+                    floor_ctx.as_ref(),
+                )
+                .await)
+            },
+        )
+        .await?;
+        tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
+        if let Either::Left(block_error) = bonds_cache_result {
+            return Ok(Either::Left(block_error));
+        }
+
         let (validate_block_checkpoint_result, t2) = timed_step(
             "checkpoint",
             BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
@@ -349,24 +371,46 @@ async fn validate_contents(
                 InvalidBlock::InvalidTransaction,
             )));
         }
-
-        let (bonds_cache_result, t3) = timed_step(
-            "bonds-cache",
-            BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
-            async {
-                Ok(Validate::bonds_cache_from_floor(
-                    block,
-                    &this.block_store,
-                    snapshot,
-                    &this.runtime_manager,
-                    floor_ctx.as_ref(),
-                )
-                .await)
-            },
+        // After the checkpoint, which proves the recorded pre-state the votes
+        // and resolutions are judged against.
+        let Some(ctx) = floor_ctx.as_ref() else {
+            return Ok(Either::Left(BlockError::Invalid(
+                InvalidBlock::InvalidParents,
+            )));
+        };
+        let floor = match crate::rust::economics::claims::FloorView::read(
+            &snapshot.dag,
+            &this.runtime_manager,
+            ctx,
         )
-        .await?;
-        tracing::debug!(target: "f1r3fly.casper", "bonds-cache-validated");
-        if let Either::Left(block_error) = bonds_cache_result {
+        .await
+        {
+            Ok(floor) => floor,
+            Err(error) => return Ok(Either::Left(BlockError::from_validation_error(error))),
+        };
+        if let Either::Left(block_error) = Validate::leaky_bucket_claims(
+            block,
+            &this.runtime_manager,
+            &crate::rust::economics::claims::VoteHistory::new(
+                &this.block_dag_storage,
+                &this.block_store,
+                &snapshot.dag,
+            ),
+            &floor,
+            this.bucket_view.params(),
+        )
+        .await
+        {
+            return Ok(Either::Left(block_error));
+        }
+        if let Either::Left(block_error) = Validate::dishonest_votes(
+            block,
+            &snapshot.dag,
+            &this.block_store,
+            floor.number,
+            this.chain_parameters.window_basis().evidence_reach(),
+            &this.chain_parameters.leaky_bucket.reward,
+        ) {
             return Ok(Either::Left(block_error));
         }
         (Some(t2), Some(t3))
@@ -405,7 +449,7 @@ async fn validate_contents(
         async {
             Ok(Validate::phlo_price(
                 block,
-                &this.casper_shard_conf.min_phlo_price,
+                &this.chain_parameters.min_phlo_price,
             ))
         },
     )
@@ -417,7 +461,7 @@ async fn validate_contents(
     if let Either::Left(block_error) = phlo_price_result {
         tracing::warn!(
             "One or more deploys has phloPrice lower than {}",
-            this.casper_shard_conf.min_phlo_price
+            this.chain_parameters.min_phlo_price
         );
         return Ok(Either::Left(block_error));
     }
@@ -549,7 +593,7 @@ fn record_arrival_depth(this: &MultiParentCasperImpl, block: &BlockMessage) {
     let depth = frontier - block.body.state.block_number;
     metrics::histogram!(BLOCK_ARRIVAL_DEPTH_METRIC, "source" => CASPER_METRICS_SOURCE)
         .record(depth as f64);
-    let max_parent_depth = this.casper_shard_conf.max_parent_depth;
+    let max_parent_depth = this.chain_parameters.max_parent_depth;
     if depth > i64::from(max_parent_depth) {
         metrics::counter!(BLOCK_ARRIVED_UNCITABLE_METRIC, "source" => CASPER_METRICS_SOURCE)
             .increment(1);

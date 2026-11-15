@@ -25,6 +25,7 @@
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
+use casper::rust::economics::bucket_view::LeakyBucketProposal;
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
@@ -58,7 +59,7 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {
@@ -508,6 +509,8 @@ async fn reinstated_effect_must_not_be_executed_again() {
     let deploy_storage = nodes[2].deploy_storage.clone();
     let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
     let runtime_manager = nodes[2].runtime_manager.clone();
+    let block_dag_storage = nodes[2].block_dag_storage.clone();
+    let proposal = LeakyBucketProposal::abstaining(*nodes[2].casper.bucket_view().params()).fixed();
     let created = block_creator::create(
         &snapshot,
         &validator_identity,
@@ -516,7 +519,9 @@ async fn reinstated_effect_must_not_be_executed_again() {
         rejected_buffer,
         &runtime_manager,
         &mut nodes[2].block_store,
+        &block_dag_storage,
         casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
+        proposal,
     )
     .await
     .expect("create proposal B on the full frontier");
@@ -617,6 +622,9 @@ async fn floor_covered_effect_survives_a_late_record() {
         let deploy_storage = nodes[2].deploy_storage.clone();
         let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
         let runtime_manager = nodes[2].runtime_manager.clone();
+        let block_dag_storage = nodes[2].block_dag_storage.clone();
+        let proposal =
+            LeakyBucketProposal::abstaining(*nodes[2].casper.bucket_view().params()).fixed();
         let created = block_creator::create(
             &snapshot,
             &validator_identity,
@@ -625,7 +633,9 @@ async fn floor_covered_effect_survives_a_late_record() {
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
+            &block_dag_storage,
             casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
+            proposal,
         )
         .await
         .expect("create the joining merge J");
@@ -742,6 +752,9 @@ async fn the_floor_never_designates_a_state_missing_the_settled_effect() {
         let deploy_storage = nodes[2].deploy_storage.clone();
         let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
         let runtime_manager = nodes[2].runtime_manager.clone();
+        let block_dag_storage = nodes[2].block_dag_storage.clone();
+        let proposal =
+            LeakyBucketProposal::abstaining(*nodes[2].casper.bucket_view().params()).fixed();
         let created = block_creator::create(
             &snapshot,
             &validator_identity,
@@ -750,7 +763,9 @@ async fn the_floor_never_designates_a_state_missing_the_settled_effect() {
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
+            &block_dag_storage,
             casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
+            proposal,
         )
         .await
         .expect("create the joining merge");

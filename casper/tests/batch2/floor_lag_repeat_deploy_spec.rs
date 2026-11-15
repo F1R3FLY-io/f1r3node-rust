@@ -37,7 +37,7 @@ use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
-use crate::helper::test_node::{ShardOverrides, TestNode};
+use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 const DEPLOY_LIFESPAN: i64 = 3;
@@ -57,19 +57,17 @@ fn proposer_key(node: usize) -> PrivateKey {
 
 async fn three_validator_network() -> (Vec<TestNode>, String) {
     let n_validators = 3usize;
-    let genesis_parameters =
+    let mut genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
+    genesis_parameters.2.proof_of_stake.deploy_lifespan = DEPLOY_LIFESPAN;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .expect("genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let nodes = TestNode::create_network_with_overrides(genesis, n_validators, ShardOverrides {
-        deploy_lifespan: Some(DEPLOY_LIFESPAN),
-        ..Default::default()
-    })
-    .await
-    .expect("create_network");
+    let nodes = TestNode::create_network(genesis, n_validators, None, None, None)
+        .await
+        .expect("create_network");
     (nodes, shard_id)
 }
 
@@ -180,15 +178,13 @@ async fn block_carrying_again(
         &node.block_store,
         &parent_hashes,
         &latest_messages,
-        FtThreshold::from_ppm(
-            snapshot
-                .on_chain_state
-                .shard_conf
-                .fault_tolerance_threshold_ppm,
-        ),
+        FtThreshold::from_ppm(snapshot.on_chain_state.chain.fault_tolerance_threshold_ppm),
     )
     .await
     .expect("floor context");
+    let bonds = floor_committee(&runtime_manager, &floor_ctx.floor_state)
+        .await
+        .expect("floor committee");
 
     let block_number = snapshot.max_block_num + 1;
     let seq_num = snapshot
@@ -210,6 +206,7 @@ async fn block_carrying_again(
         block_number,
         sender: validator_identity.public_key.clone(),
         seq_num,
+        committee: bonds.clone(),
     };
     let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
@@ -250,9 +247,6 @@ async fn block_carrying_again(
     )
     .await
     .expect("deploy-less checkpoint");
-    let bonds = floor_committee(&runtime_manager, &floor_ctx.floor_state)
-        .await
-        .expect("floor committee");
 
     let body = Body {
         state: F1r3flyState {
@@ -267,6 +261,7 @@ async fn block_carrying_again(
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,
         merge_base: checkpoint.merge_base.unwrap_or_default(),
+        leaky_bucket_votes: Vec::new(),
     };
     let header = Header {
         parents_hash_list: parent_hashes,
@@ -301,7 +296,7 @@ async fn derived_floor(node: &TestNode, block: &BlockMessage) -> i64 {
         .await
         .expect("snapshot")
         .on_chain_state
-        .shard_conf
+        .chain
         .fault_tolerance_threshold_ppm;
     let latest_messages: BTreeMap<Validator, BlockHash> = block
         .justifications

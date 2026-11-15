@@ -600,6 +600,7 @@ const LEAF_REJECTED_DEPLOY: u8 = 0x13;
 const LEAF_APPLIED_FROM_SCOPE_SIG: u8 = 0x14;
 const LEAF_BOND: u8 = 0x15;
 const LEAF_JUSTIFICATION: u8 = 0x16;
+const LEAF_LEAKY_BUCKET_VOTE: u8 = 0x17;
 
 const MERKLE_PARAMS: crypto::rust::hash::merkle::MerkleParams =
     crypto::rust::hash::merkle::MerkleParams::new(INTERIOR_DOMAIN);
@@ -719,6 +720,23 @@ fn applied_from_scope_root(block: &BlockMessage) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
+/// Merkle root over the leaky-bucket votes, in body order.
+fn leaky_bucket_votes_root(block: &BlockMessage) -> [u8; 32] {
+    use prost::Message;
+    let leaves: Vec<[u8; 32]> = block
+        .body
+        .leaky_bucket_votes
+        .iter()
+        .map(|vote| {
+            crypto::rust::hash::merkle::hash_leaf_tagged(
+                LEAF_LEAKY_BUCKET_VOTE,
+                &vote.to_proto().encode_to_vec(),
+            )
+        })
+        .collect();
+    crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
+}
+
 /// Merkle root over the bonds, sorted by validator. Each leaf is
 /// `Blake2b256(LEAF_BOND || BondProto encoding)`, whose stake is 32 bytes.
 fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
@@ -765,6 +783,7 @@ fn header_preimage(commitment: &BlockCommitment) -> Vec<u8> {
             + 8   // block_number
             + 32  // rejected_root
             + 32  // applied_from_scope_root
+            + 32  // leaky_bucket_votes_root
             + commitment.merge_base.len()
             + commitment.body_extra_bytes.len()
             + commitment.sender.len()
@@ -788,6 +807,7 @@ fn header_preimage(commitment: &BlockCommitment) -> Vec<u8> {
     buf.extend_from_slice(&commitment.block_number.to_le_bytes());
     buf.extend_from_slice(&commitment.rejected_root);
     buf.extend_from_slice(&commitment.applied_from_scope_root);
+    buf.extend_from_slice(&commitment.leaky_bucket_votes_root);
     push_field(&mut buf, commitment.merge_base.as_ref());
     push_field(&mut buf, commitment.body_extra_bytes.as_ref());
     push_field(&mut buf, commitment.sender.as_ref());
@@ -827,6 +847,7 @@ pub fn block_commitment_with_leaves(
         block_number: state.block_number,
         rejected_root: rejected_root(block),
         applied_from_scope_root: applied_from_scope_root(block),
+        leaky_bucket_votes_root: leaky_bucket_votes_root(block),
         merge_base: block.body.merge_base.clone(),
         body_extra_bytes: block.body.extra_bytes.clone(),
         sender: block.sender.clone(),
@@ -1288,6 +1309,7 @@ mod merkle_block_hash_tests {
                 extra_bytes: Bytes::new(),
                 applied_from_scope: vec![],
                 merge_base: Bytes::new(),
+                leaky_bucket_votes: vec![],
             },
             justifications: vec![],
             sender: Bytes::from(vec![0u8; 33]),
@@ -1330,6 +1352,72 @@ mod merkle_block_hash_tests {
         let h_fast = hash_block_with_leaves(&b, &leaves);
         let h_slow = hash_block(&b);
         assert_eq!(h_fast, h_slow);
+    }
+
+    #[test]
+    fn every_change_to_the_votes_moves_the_block_hash() {
+        use models::rust::casper::protocol::casper_message::{
+            ClaimFamily, ClaimId, FreezeInterval, LeakyBucketVote, OverflowTestimony,
+        };
+        let claim = |family, seed: u8| ClaimId {
+            family,
+            target: Bytes::from(vec![seed; 33]),
+            opened_at: 7,
+            proposer: Bytes::from(vec![seed + 1; 33]),
+        };
+        let nay = LeakyBucketVote {
+            claim: claim(ClaimFamily::Overflow, 1),
+            yea: false,
+            testimony: Some(OverflowTestimony {
+                amount: 100.into(),
+                floor_number: 12,
+                claimed_total: 0.into(),
+                freezes: vec![FreezeInterval {
+                    from: 3,
+                    from_sequence: 2,
+                    rejoin: None,
+                }],
+            }),
+        };
+        let yea = LeakyBucketVote {
+            claim: claim(ClaimFamily::Eject, 4),
+            yea: true,
+            testimony: None,
+        };
+        let mut base = empty_block();
+        base.body.leaky_bucket_votes = vec![nay.clone(), yea.clone()];
+        let base_hash = hash_block(&base);
+
+        let mut mutations: Vec<(&str, Vec<LeakyBucketVote>)> = Vec::new();
+        mutations.push(("no votes", vec![]));
+        mutations.push(("one vote dropped", vec![nay.clone()]));
+        mutations.push(("reordered", vec![yea.clone(), nay.clone()]));
+        let mut flipped = yea.clone();
+        flipped.yea = false;
+        mutations.push(("yea flipped to nay", vec![nay.clone(), flipped]));
+        let mut other_claim = yea.clone();
+        other_claim.claim = claim(ClaimFamily::Eject, 9);
+        mutations.push(("vote moved to another claim", vec![
+            nay.clone(),
+            other_claim,
+        ]));
+        let mut amount = nay.clone();
+        amount.testimony.as_mut().unwrap().amount = 101.into();
+        mutations.push(("testimony amount", vec![amount, yea.clone()]));
+        let mut freezes = nay.clone();
+        freezes.testimony.as_mut().unwrap().freezes.clear();
+        mutations.push(("testimony freezes", vec![freezes, yea.clone()]));
+
+        let unchanged: Vec<&str> = mutations
+            .into_iter()
+            .filter(|(_, votes)| {
+                let mut b = base.clone();
+                b.body.leaky_bucket_votes = votes.clone();
+                hash_block(&b) == base_hash
+            })
+            .map(|(name, _)| name)
+            .collect();
+        assert!(unchanged.is_empty(), "the hash ignores: {unchanged:?}");
     }
 
     #[test]
@@ -1875,7 +1963,8 @@ mod merkle_block_hash_tests {
 
     /// Test 4 — strong determinism guard: no `map<_,_>` field exists
     /// on any protobuf message transitively reachable from
-    /// `ProcessedDeployProto` or `ProcessedSystemDeployProto`.  A
+    /// `ProcessedDeployProto`, `ProcessedSystemDeployProto` or
+    /// `LeakyBucketVoteProto`.  A
     /// `map<>` field under proto3 encodes map entries in
     /// implementation-dependent order, which would silently desync
     /// block hashes across validators.  This static check runs at
@@ -1887,14 +1976,15 @@ mod merkle_block_hash_tests {
     /// existing message — redesign the leaf-hash construction to
     /// canonicalize the map before hashing, or remove the map field.
     #[test]
-    fn processed_deploy_subtree_has_no_proto_map_fields() {
+    fn hashed_messages_have_no_proto_map_fields() {
         const CASPER_PROTO: &str =
             include_str!("../../../../models/src/main/protobuf/CasperMessage.proto");
         const RHOTYPES_PROTO: &str =
             include_str!("../../../../models/src/main/protobuf/RhoTypes.proto");
 
         // Transitive closure of messages reachable from
-        // ProcessedDeployProto and ProcessedSystemDeployProto.  Review
+        // ProcessedDeployProto, ProcessedSystemDeployProto and
+        // LeakyBucketVoteProto.  Review
         // when adding any new field to any of these messages.
         const REACHABLE_IN_CASPER: &[&str] = &[
             "ProcessedDeployProto",
@@ -1911,6 +2001,14 @@ mod merkle_block_hash_tests {
             "BlockCommitmentProto",
             "HeaderProto",
             "CloseBlockSystemDeployDataProto",
+            "ResolveClaimsSystemDeployDataProto",
+            "ClaimResolutionProto",
+            "ClaimIdProto",
+            "DishonestVoteSystemDeployDataProto",
+            "LeakyBucketVoteProto",
+            "OverflowTestimonyProto",
+            "FreezeIntervalProto",
+            "RejoinProto",
             "EventProto",
             "ProduceEventProto",
             "ConsumeEventProto",
@@ -1938,7 +2036,7 @@ mod merkle_block_hash_tests {
             assert!(
                 !stripped.contains("map<"),
                 "message `{name}` (RhoTypes.proto) contains a proto `map<>` field — see \
-                 processed_deploy_subtree_has_no_proto_map_fields docs for the fix path."
+                 hashed_messages_have_no_proto_map_fields docs for the fix path."
             );
         }
     }
@@ -2136,7 +2234,7 @@ mod merkle_block_hash_tests {
         // pre/post state hashes, sender = 33 zero bytes, timestamp =
         // 1_700_000_000_000, version = 1, shard_id = "test-shard",
         // sig_algorithm = "secp256k1".
-        const EXPECTED: &str = "602ea568b611a2a16415363ffd358f08afa358a231094bce24b755e8a6f631f2";
+        const EXPECTED: &str = "3c15d5b0085c3e12cdccb3209bc7de9efebf435f162e7f8f9d45522dd06d8fa8";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
     }
 
@@ -2176,7 +2274,7 @@ mod merkle_block_hash_tests {
     /// dropped from or reordered in the preimage changes it.
     #[test]
     fn hash_block_populated_golden_hex() {
-        const EXPECTED: &str = "32d5b2c9339bb446ea23c20cde55b24873ef5f03866a2545fbd8ad5ac7e38b03";
+        const EXPECTED: &str = "939685a05912a4b18593883f0cee46812846e3e62ba02754441a264850b8f9d9";
         assert_eq!(
             hex::encode(hash_block(&populated_block())),
             EXPECTED,

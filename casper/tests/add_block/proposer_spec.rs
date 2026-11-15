@@ -14,6 +14,7 @@ use casper::rust::errors::CasperError;
 use casper::rust::validator_identity::ValidatorIdentity;
 use casper::rust::ValidBlockProcessing;
 use crypto::rust::private_key::PrivateKey;
+use models::rust::block_implicits::get_random_block_default;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
@@ -74,6 +75,7 @@ impl StakeChecker for AlwaysNotEnoughBlocksStakeChecker {
     async fn check_enough_base_stake(
         &self,
         _: &CasperSnapshot,
+        _: &std::collections::HashSet<models::rust::validator::Validator>,
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
         Ok(CheckProposeConstraintsResult::not_enough_new_block())
     }
@@ -94,6 +96,7 @@ impl StakeChecker for OkProposeConstraintStakeChecker {
     async fn check_enough_base_stake(
         &self,
         _: &CasperSnapshot,
+        _: &std::collections::HashSet<models::rust::validator::Validator>,
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
         Ok(CheckProposeConstraintsResult::success())
     }
@@ -121,11 +124,15 @@ impl BlockCreator for SelectionRecordingBlockCreator {
         _: &ValidatorIdentity,
         _: Option<(PrivateKey, String)>,
         selection: casper::rust::blocks::proposer::proposer::DeploySelection,
+        _: casper::rust::economics::bucket_view::LeakyBucketDecision,
     ) -> Result<BlockCreatorResult, CasperError> {
         *self.0.lock().unwrap() = Some(selection);
-        use models::rust::block_implicits::get_random_block_default;
+        // The propose path resolves the created block's parents against the
+        // snapshot, and these fixtures do not model parent selection.
+        let mut block = get_random_block_default();
+        block.header.parents_hash_list.clear();
         Ok(BlockCreatorResult::Created(
-            get_random_block_default(),
+            block,
             prost::bytes::Bytes::new(),
             prost::bytes::Bytes::new(),
         ))
@@ -140,10 +147,12 @@ impl BlockCreator for TestBlockCreator {
         _: &ValidatorIdentity,
         _: Option<(PrivateKey, String)>,
         _: casper::rust::blocks::proposer::proposer::DeploySelection,
+        _: casper::rust::economics::bucket_view::LeakyBucketDecision,
     ) -> Result<BlockCreatorResult, CasperError> {
-        use models::rust::block_implicits::get_random_block_default;
+        let mut block = get_random_block_default();
+        block.header.parents_hash_list.clear();
         Ok(BlockCreatorResult::Created(
-            get_random_block_default(),
+            block,
             prost::bytes::Bytes::new(),
             prost::bytes::Bytes::new(),
         ))
@@ -184,6 +193,7 @@ impl ProposeEffectHandler for TestProposeEffectHandler {
         &mut self,
         _: Arc<dyn Casper + Send + Sync + 'static>,
         _: &BlockMessage,
+        _: &[models::rust::block_metadata::BlockMetadata],
     ) -> Result<(), CasperError> {
         Ok(())
     }
@@ -209,6 +219,7 @@ impl ProposeEffectHandler for TrackingProposeEffectHandler {
         &mut self,
         _: Arc<dyn Casper + Send + Sync + 'static>,
         _: &BlockMessage,
+        _: &[models::rust::block_metadata::BlockMetadata],
     ) -> Result<(), CasperError> {
         PROPOSE_EFFECT_VAR.store(self.value, Ordering::SeqCst);
         Ok(())

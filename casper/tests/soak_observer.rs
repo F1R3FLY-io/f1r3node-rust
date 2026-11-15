@@ -12,6 +12,7 @@ use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
+use casper::rust::chain_parameters::ChainParameters;
 use casper::rust::engine::engine::Engine;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::errors::CasperError;
@@ -45,7 +46,7 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::key_value_store::KeyValueStore;
 
-const STORES: [&str; 18] = [
+const STORES: [&str; 19] = [
     "block-metadata",
     "latest-messages",
     "dag-equivocations-v1",
@@ -55,6 +56,7 @@ const STORES: [&str; 18] = [
     "deploy-lifecycle-terminal",
     "carrier-index",
     "carrier-index-meta",
+    "leaky-bucket-votes",
     "genesis-hash",
     "blocks",
     "blocks-approved",
@@ -177,11 +179,7 @@ impl Fixture {
 
     fn casper(&self, supported: bool) -> Arc<AttachedCasper> {
         let mut conf = CasperShardConf::new();
-        conf.fault_tolerance_threshold_ppm = 1_000_000;
-        conf.fault_tolerance_threshold = -1.0;
-        conf.max_parent_depth = 12;
         conf.max_number_of_parents = 100;
-        conf.deploy_lifespan = 50;
         Arc::new(AttachedCasper {
             dag: self.dag.clone(),
             blocks: self.blocks.clone(),
@@ -225,6 +223,16 @@ impl Fixture {
     }
 }
 
+/// The chain these observer fixtures stand on.
+fn observed_chain() -> ChainParameters {
+    ChainParameters {
+        fault_tolerance_threshold_ppm: 1_000_000,
+        max_parent_depth: 12,
+        deploy_lifespan: 50,
+        ..ChainParameters::shipped()
+    }
+}
+
 struct AttachedCasper {
     dag: BlockDagKeyValueStorage,
     blocks: KeyValueBlockStore,
@@ -250,6 +258,7 @@ impl MultiParentCasper for AttachedCasper {
             self.dag.clone(),
             self.blocks.clone(),
             &self.conf,
+            &observed_chain(),
             &self.approved,
         ))
     }
@@ -257,7 +266,7 @@ impl MultiParentCasper for AttachedCasper {
         &self,
         _: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
-        panic!("observer read the equivocation tracker")
+        panic!("observer invoked consensus")
     }
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
         panic!("observer invoked consensus")
@@ -270,6 +279,7 @@ impl MultiParentCasper for AttachedCasper {
         panic!("observer invoked consensus")
     }
     fn casper_shard_conf(&self) -> &CasperShardConf { panic!("observer invoked consensus") }
+    fn chain_parameters(&self) -> &ChainParameters { panic!("observer invoked consensus") }
     fn get_validator(&self) -> Option<ValidatorIdentity> {
         panic!("observer read validator identity")
     }
@@ -287,6 +297,9 @@ impl MultiParentCasper for AttachedCasper {
 impl Casper for AttachedCasper {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         panic!("observer invoked the production snapshot")
+    }
+    fn bucket_view(&self) -> Arc<casper::rust::economics::bucket_view::BucketView> {
+        panic!("observer invoked consensus")
     }
     fn dag_contains(&self, _: &BlockHash) -> Result<bool, CasperError> {
         panic!("observer invoked consensus")
@@ -323,6 +336,7 @@ impl Casper for AttachedCasper {
     async fn handle_valid_block(
         &self,
         _: &BlockMessage,
+        _: &[models::rust::block_metadata::BlockMetadata],
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         panic!("observer invoked consensus")
     }
@@ -788,15 +802,12 @@ async fn metered_fork_choice_floor_matches_the_production_floor() {
 
 fn endpoint(fixture: &Fixture) -> CaptureEndpoint {
     let mut conf = CasperShardConf::new();
-    conf.fault_tolerance_threshold_ppm = 1_000_000;
-    conf.fault_tolerance_threshold = -1.0;
-    conf.max_parent_depth = 12;
     conf.max_number_of_parents = 100;
-    conf.deploy_lifespan = 50;
     CaptureEndpoint::new(
         fixture.dag.clone(),
         fixture.blocks.clone(),
         &conf,
+        &observed_chain(),
         &fixture.chain[0],
     )
 }
@@ -993,11 +1004,7 @@ async fn bounded_fork_choice_matches_the_production_estimator_on_the_capture() {
 async fn a_zero_parent_limit_gives_no_head_and_no_substitute() {
     use casper::rust::soak_observer::evaluation::ForkChoiceSelection;
     let fixture = fork_fixture().await;
-    let mut conf = CasperShardConf::new();
-    conf.fault_tolerance_threshold_ppm = 1_000_000;
-    conf.fault_tolerance_threshold = -1.0;
-    conf.max_parent_depth = 12;
-    conf.deploy_lifespan = 50;
+    let conf = CasperShardConf::new();
     assert_eq!(conf.max_number_of_parents, 0);
     let casper = Arc::new(AttachedCasper {
         dag: fixture.dag.clone(),
@@ -1027,11 +1034,7 @@ async fn a_zero_parent_limit_gives_no_head_and_no_substitute() {
 
 fn attached(fixture: &Fixture, approved: BlockMessage) -> Arc<AttachedCasper> {
     let mut conf = CasperShardConf::new();
-    conf.fault_tolerance_threshold_ppm = 1_000_000;
-    conf.fault_tolerance_threshold = -1.0;
-    conf.max_parent_depth = 12;
     conf.max_number_of_parents = 100;
-    conf.deploy_lifespan = 50;
     Arc::new(AttachedCasper {
         dag: fixture.dag.clone(),
         blocks: fixture.blocks.clone(),

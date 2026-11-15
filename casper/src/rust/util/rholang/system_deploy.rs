@@ -6,6 +6,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GDeployerId, GPrivate, GSysAuthToken, GUnforgeable, Par};
+use models::rust::casper::protocol::casper_message::SystemDeployData;
 use rholang::rust::interpreter::rho_type::Extractor;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -23,6 +24,10 @@ pub trait SystemDeployTrait: Send + Sync {
     ) -> Either<SystemDeployUserError, Self::Result>;
 
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// How this deploy is recorded in a block body. `Empty` for a sub-deploy
+    /// of a user deploy, which never appears in `body.system_deploys`.
+    fn recorded_form(&self) -> SystemDeployData;
 
     fn rand(&self) -> Blake2b512Random;
 

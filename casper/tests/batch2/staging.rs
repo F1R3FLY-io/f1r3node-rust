@@ -39,6 +39,11 @@ pub async fn mint_on_parents(
     let deploy_storage = node.deploy_storage.clone();
     let rejected_buffer = node.rejected_deploy_buffer.clone();
     let runtime_manager = node.runtime_manager.clone();
+    let block_dag_storage = node.block_dag_storage.clone();
+    let proposal = casper::rust::economics::bucket_view::LeakyBucketProposal::abstaining(
+        *node.casper.bucket_view().params(),
+    )
+    .fixed();
     let created = block_creator::create(
         &snapshot,
         &validator_identity,
@@ -47,7 +52,9 @@ pub async fn mint_on_parents(
         rejected_buffer,
         &runtime_manager,
         &mut node.block_store,
+        &block_dag_storage,
         casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
+        proposal,
     )
     .await
     .unwrap_or_else(|e| panic!("create[{label}] must succeed: {:?}", e));

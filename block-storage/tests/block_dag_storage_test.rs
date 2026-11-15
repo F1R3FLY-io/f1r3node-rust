@@ -2428,6 +2428,71 @@ async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_h
     );
 }
 
+/// A vote is findable for as long as the block carrying it is, restarts
+/// included. A block is stored as an equivocation only because its twin
+/// arrived first, so its votes are recorded too.
+#[test]
+fn votes_survive_a_restart_including_those_of_a_stored_equivocation() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::dag::vote_index::VoteEntry;
+    use models::rust::casper::protocol::casper_message::{ClaimFamily, ClaimId, LeakyBucketVote};
+
+    RUNTIME.block_on(async {
+        let genesis = genesis_block();
+        let claim = ClaimId {
+            family: ClaimFamily::Eject,
+            target: prost::bytes::Bytes::from(vec![7u8; 65]),
+            opened_at: 3,
+            proposer: prost::bytes::Bytes::from(vec![8u8; 65]),
+        };
+        let mut valid = chain_block(1, vec![genesis.block_hash.clone()]);
+        valid.body.leaky_bucket_votes = vec![LeakyBucketVote {
+            claim: claim.clone(),
+            yea: true,
+            testimony: None,
+        }];
+        let mut invalid = chain_block(1, vec![genesis.block_hash.clone()]);
+        invalid.body.leaky_bucket_votes = vec![LeakyBucketVote {
+            claim: claim.clone(),
+            yea: false,
+            testimony: None,
+        }];
+        assert_ne!(valid.sender, invalid.sender);
+
+        let mut kvm = InMemoryStoreManager::new();
+        {
+            let storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            storage.insert(&genesis, InsertMode::Approved).unwrap();
+            storage.insert(&valid, InsertMode::Normal).unwrap();
+            storage
+                .insert(&invalid, InsertMode::Equivocation {
+                    sibling: prost::bytes::Bytes::from(vec![0xEE; 32]),
+                })
+                .unwrap();
+        }
+        let restarted = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        assert_eq!(
+            restarted.leaky_bucket_votes(&claim, &valid.sender).unwrap(),
+            Some(vec![VoteEntry {
+                block_hash: valid.block_hash.to_vec(),
+                sequence_number: valid.seq_num,
+                yea: true,
+            }])
+        );
+        assert_eq!(
+            restarted
+                .leaky_bucket_votes(&claim, &invalid.sender)
+                .unwrap(),
+            Some(vec![VoteEntry {
+                block_hash: invalid.block_hash.to_vec(),
+                sequence_number: invalid.seq_num,
+                yea: false,
+            }])
+        );
+    });
+}
+
 #[tokio::test]
 async fn the_insert_observer_hears_each_inserted_block_once_in_every_mode() {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;

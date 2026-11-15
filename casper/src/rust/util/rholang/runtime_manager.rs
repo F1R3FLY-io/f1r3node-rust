@@ -38,6 +38,8 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteVector;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::rust::chain_parameters::ChainParameters;
+use crate::rust::economics::claims::ClaimBook;
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::metrics_constants::{
@@ -49,7 +51,7 @@ use crate::rust::metrics_constants::{
     RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
-use crate::rust::rholang::runtime::{ConsensusParameters, RuntimeOps};
+use crate::rust::rholang::runtime::{FloorState, RuntimeOps};
 use crate::rust::util::bounded_cache::BoundedCache;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::MAX_PARENT_MERGE_SCOPE_BLOCKS;
@@ -275,6 +277,8 @@ pub struct RuntimeManager {
     pub block_index_cache: Arc<BoundedCache<BlockHash, BlockIndex>>,
     pub active_validators_cache: Arc<BoundedCache<StateHash, Vec<Validator>>>,
     pub bonds_cache: Arc<BoundedCache<StateHash, Vec<Bond>>>,
+    pub floor_state_cache: Arc<BoundedCache<StateHash, FloorState>>,
+    pub claim_book_cache: Arc<BoundedCache<StateHash, ClaimBook>>,
     pub quarantined_cache: Arc<BoundedCache<StateHash, Vec<Bond>>>,
     /// Cache for merged parent post-state computation keyed by parent-set snapshot context.
     pub parents_post_state_cache:
@@ -426,6 +430,8 @@ impl RuntimeManager {
     const MAX_PARENTS_POST_STATE_CACHE_ENTRIES: usize = 64;
     const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 256;
     const MAX_BONDS_CACHE_ENTRIES: usize = 64;
+    const MAX_FLOOR_STATE_CACHE_ENTRIES: usize = 64;
+    const MAX_CLAIM_BOOK_CACHE_ENTRIES: usize = 64;
     const MAX_REPLAY_CACHE_ENTRIES: usize = 192;
     const MAX_REPLAY_CACHE_BYTES: usize = 32 * 1024 * 1024;
     const MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES: usize = 1_536;
@@ -463,9 +469,12 @@ impl RuntimeManager {
         all_logs
     }
 
+    /// Every deploy may read the block's committee, so it is an input to the
+    /// post-state alongside the deploys themselves.
     fn replay_payload_hash(
         usr_processed: &[ProcessedDeploy],
         sys_processed: &[ProcessedSystemDeploy],
+        committee: &[Bond],
         is_genesis: bool,
     ) -> Vec<u8> {
         #[inline]
@@ -516,6 +525,65 @@ impl RuntimeManager {
                         SystemDeployData::Empty => {
                             bytes.push(2);
                         }
+                        SystemDeployData::ResolveClaims {
+                            resolutions,
+                            grace_expiries,
+                            expiries,
+                            floor_hash,
+                            floor_number,
+                        } => {
+                            bytes.push(4);
+                            bytes.extend_from_slice(&(resolutions.len() as u64).to_le_bytes());
+                            for resolution in resolutions {
+                                let claim = &resolution.claim;
+                                bytes.push(match claim.family {
+                                    models::rust::casper::protocol::casper_message::ClaimFamily::Eject => 0,
+                                    models::rust::casper::protocol::casper_message::ClaimFamily::Rejoin => 1,
+                                    models::rust::casper::protocol::casper_message::ClaimFamily::Overflow => 2,
+                                });
+                                push_len_prefixed(&mut bytes, &claim.target);
+                                bytes.extend_from_slice(&claim.opened_at.to_le_bytes());
+                                push_len_prefixed(&mut bytes, &claim.proposer);
+                                bytes.push(match resolution.outcome {
+                                    models::rust::casper::protocol::casper_message::ClaimOutcome::Pass => 0,
+                                    models::rust::casper::protocol::casper_message::ClaimOutcome::Fail => 1,
+                                });
+                            }
+                            bytes.extend_from_slice(&(grace_expiries.len() as u64).to_le_bytes());
+                            for validator in grace_expiries {
+                                push_len_prefixed(&mut bytes, validator);
+                            }
+                            bytes.extend_from_slice(&(expiries.len() as u64).to_le_bytes());
+                            for claim in expiries {
+                                bytes.push(match claim.family {
+                                    models::rust::casper::protocol::casper_message::ClaimFamily::Eject => 0,
+                                    models::rust::casper::protocol::casper_message::ClaimFamily::Rejoin => 1,
+                                    models::rust::casper::protocol::casper_message::ClaimFamily::Overflow => 2,
+                                });
+                                push_len_prefixed(&mut bytes, &claim.target);
+                                bytes.extend_from_slice(&claim.opened_at.to_le_bytes());
+                                push_len_prefixed(&mut bytes, &claim.proposer);
+                            }
+                            push_len_prefixed(&mut bytes, floor_hash);
+                            bytes.extend_from_slice(&floor_number.to_le_bytes());
+                        }
+                        SystemDeployData::DishonestVote {
+                            accused,
+                            vote_block,
+                            claim,
+                        } => {
+                            bytes.push(5);
+                            push_len_prefixed(&mut bytes, accused);
+                            push_len_prefixed(&mut bytes, vote_block);
+                            bytes.push(match claim.family {
+                                models::rust::casper::protocol::casper_message::ClaimFamily::Eject => 0,
+                                models::rust::casper::protocol::casper_message::ClaimFamily::Rejoin => 1,
+                                models::rust::casper::protocol::casper_message::ClaimFamily::Overflow => 2,
+                            });
+                            push_len_prefixed(&mut bytes, &claim.target);
+                            bytes.extend_from_slice(&claim.opened_at.to_le_bytes());
+                            push_len_prefixed(&mut bytes, &claim.proposer);
+                        }
                     }
                 }
                 ProcessedSystemDeploy::Failed { error_msg, .. } => {
@@ -523,6 +591,15 @@ impl RuntimeManager {
                     push_len_prefixed(&mut bytes, error_msg.as_bytes());
                 }
             }
+        }
+        let seated: Vec<&Bond> = committee
+            .iter()
+            .filter(|bond| !bond.stake.is_zero())
+            .collect();
+        bytes.extend_from_slice(&(seated.len() as u64).to_le_bytes());
+        for bond in seated {
+            push_len_prefixed(&mut bytes, &bond.validator);
+            bytes.extend_from_slice(&bond.stake.to_wire());
         }
         bytes.push(u8::from(is_genesis));
         Blake2b256::hash(bytes)
@@ -746,6 +823,7 @@ impl RuntimeManager {
         // Block data used for mergeable key
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
+        let committee = block_data.committee.clone();
 
         let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
             .compute_state(
@@ -789,7 +867,7 @@ impl RuntimeManager {
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
             let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
+                Self::replay_payload_hash(&usr_processed, &sys_processed, &committee, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
                 let key = ReplayCacheKey::new(
@@ -851,6 +929,7 @@ impl RuntimeManager {
         // Block data used for mergeable key
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
+        let committee = block_data.committee.clone();
 
         let (state_hash, usr_deploy_res, sys_deploy_res) = runtime_ops
             .compute_state(
@@ -900,7 +979,7 @@ impl RuntimeManager {
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
             let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
+                Self::replay_payload_hash(&usr_processed, &sys_processed, &committee, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
                 let key = ReplayCacheKey::new(
@@ -1003,7 +1082,8 @@ impl RuntimeManager {
     ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
-        let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
+        let replay_payload_hash =
+            Self::replay_payload_hash(&terms, &system_deploys, &block_data.committee, is_genesis);
 
         // Step 1: Check replay cache (deterministic replay delta)
         let replay_cache_key = ReplayCacheKey::new(
@@ -1127,6 +1207,8 @@ impl RuntimeManager {
         Ok(computed)
     }
 
+    /// Cached per state hash. Only a successful read reaches the cache, so a
+    /// transient fault cannot leave an empty active set memoized.
     pub async fn get_active_validators(
         &self,
         start_hash: &StateHash,
@@ -1143,32 +1225,42 @@ impl RuntimeManager {
         Ok(computed)
     }
 
-    /// On-chain protocol fault-tolerance threshold (ppm) at `start_hash`, or
-    /// `None` when the chain's genesis predates the parameter. Read once at
-    /// casper construction (`hash_set_casper`) — not cached here.
-    pub async fn get_fault_tolerance_threshold_ppm(
-        &self,
-        start_hash: &StateHash,
-    ) -> Result<Option<i64>, CasperError> {
+    /// The parameters fixed at genesis, as the state at `hash` holds them.
+    /// Read once at adoption, so not cached here.
+    pub async fn chain_parameters(&self, hash: &StateHash) -> Result<ChainParameters, CasperError> {
         let runtime = self.spawn_runtime().await?;
-        let mut runtime_ops = RuntimeOps::new(runtime);
-        runtime_ops
-            .get_fault_tolerance_threshold_ppm(start_hash)
-            .await
+        RuntimeOps::new(runtime).get_chain_parameters(hash).await
     }
 
-    /// On-chain consensus parameters at `start_hash`, or `None` when the
-    /// chain's genesis predates them. Read once at casper construction
-    /// (`hash_set_casper`) — not cached here.
-    pub async fn get_consensus_parameters(
-        &self,
-        start_hash: &StateHash,
-    ) -> Result<Option<ConsensusParameters>, CasperError> {
+    /// Cached per floor state: block creation, validation and the finalization
+    /// effect all read the same floors, so each costs one evaluation. Only a
+    /// successful read is memoized.
+    pub async fn floor_state(&self, hash: &StateHash) -> Result<Arc<FloorState>, CasperError> {
+        if let Some(cached) = self.floor_state_cache.get(hash) {
+            return Ok(cached);
+        }
+
         let runtime = self.spawn_runtime().await?;
-        let mut runtime_ops = RuntimeOps::new(runtime);
-        runtime_ops.get_consensus_parameters(start_hash).await
+        let computed = Arc::new(RuntimeOps::new(runtime).get_floor_state(hash).await?);
+        self.floor_state_cache
+            .insert(hash.clone(), computed.clone());
+        Ok(computed)
     }
 
+    /// Cached per state: block creation and validation of the same block read
+    /// the same pre-state. Only a successful read is memoized.
+    pub async fn claim_book(&self, hash: &StateHash) -> Result<Arc<ClaimBook>, CasperError> {
+        if let Some(cached) = self.claim_book_cache.get(hash) {
+            return Ok(cached);
+        }
+
+        let runtime = self.spawn_runtime().await?;
+        let computed = Arc::new(RuntimeOps::new(runtime).get_claim_book(hash).await?);
+        self.claim_book_cache.insert(hash.clone(), computed.clone());
+        Ok(computed)
+    }
+
+    /// Cached per state hash; only a successful read is memoized.
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
         if let Some(cached) = self.bonds_cache.get(hash) {
             return Ok((*cached).clone());
@@ -1690,6 +1782,8 @@ impl RuntimeManager {
                 Self::MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES,
             )),
             bonds_cache: Arc::new(BoundedCache::new(Self::MAX_BONDS_CACHE_ENTRIES)),
+            floor_state_cache: Arc::new(BoundedCache::new(Self::MAX_FLOOR_STATE_CACHE_ENTRIES)),
+            claim_book_cache: Arc::new(BoundedCache::new(Self::MAX_CLAIM_BOOK_CACHE_ENTRIES)),
             quarantined_cache: Arc::new(BoundedCache::new(Self::MAX_BONDS_CACHE_ENTRIES)),
             parents_post_state_cache: Arc::new(BoundedCache::new(
                 Self::MAX_PARENTS_POST_STATE_CACHE_ENTRIES,
@@ -1815,6 +1909,90 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::{ExploratoryDeployConfig, ReplayLock, RuntimeManager, REPLAY_LOCK_PERMITS};
+
+    /// The replay cache is keyed on `(start_hash, sender, seq_num, payload
+    /// hash)` and caches the resulting post-state hash, so the payload hash is
+    /// the only part that separates two system deploys an equivocating
+    /// proposer could issue from one pre-state at one sequence number. Every
+    /// variant must therefore fold its own arguments in; one that folds in
+    /// only a discriminant would let the second block be validated against
+    /// the first block's post-state.
+    #[test]
+    fn the_replay_payload_hash_separates_system_deploys_by_their_arguments() {
+        use models::rust::casper::protocol::casper_message::{
+            ProcessedSystemDeploy, SystemDeployData,
+        };
+
+        let slash_against = |target: &'static [u8]| {
+            let mut block = models::rust::block_implicits::get_random_block_default();
+            block.extra_bytes = prost::bytes::Bytes::from_static(target);
+            let commitment = crate::rust::util::proto_util::block_commitment(&block);
+            vec![ProcessedSystemDeploy::Succeeded {
+                event_list: Vec::new(),
+                system_deploy: SystemDeployData::create_slash(
+                    models::rust::casper::protocol::casper_message::EquivocationEvidence {
+                        first: commitment.clone(),
+                        second: commitment,
+                    },
+                    crypto::rust::public_key::PublicKey::from_bytes(b"issuer"),
+                ),
+            }]
+        };
+
+        let one =
+            RuntimeManager::replay_payload_hash(&[], &slash_against(b"block-one"), &[], false);
+        let other =
+            RuntimeManager::replay_payload_hash(&[], &slash_against(b"block-two"), &[], false);
+        assert_ne!(one, other);
+
+        // A variant that folds in nothing but its discriminant is
+        // indistinguishable from another instance of itself — correct only
+        // where the deploy genuinely carries no arguments.
+        let close = vec![ProcessedSystemDeploy::Succeeded {
+            event_list: Vec::new(),
+            system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+        }];
+        assert_eq!(
+            RuntimeManager::replay_payload_hash(&[], &close, &[], false),
+            RuntimeManager::replay_payload_hash(&[], &close, &[], false)
+        );
+        assert_ne!(
+            RuntimeManager::replay_payload_hash(&[], &close, &[], false),
+            one,
+            "the discriminant must at least separate the variants"
+        );
+    }
+
+    /// Any deploy may read the block's committee, so two blocks that differ
+    /// only in committee reach different post-states.
+    #[test]
+    fn the_replay_payload_hash_separates_blocks_by_committee() {
+        use models::rust::casper::protocol::casper_message::{
+            Bond, ProcessedSystemDeploy, SystemDeployData,
+        };
+
+        let close = vec![ProcessedSystemDeploy::Succeeded {
+            event_list: Vec::new(),
+            system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+        }];
+        let hash = |stake: u64| {
+            RuntimeManager::replay_payload_hash(
+                &[],
+                &close,
+                &[Bond {
+                    validator: prost::bytes::Bytes::from_static(b"member"),
+                    stake: stake.into(),
+                }],
+                false,
+            )
+        };
+
+        assert_ne!(hash(5), hash(7));
+        assert_ne!(
+            hash(5),
+            RuntimeManager::replay_payload_hash(&[], &close, &[], false)
+        );
+    }
 
     #[test]
     fn exploratory_deploy_config_rejects_non_positive_values() {

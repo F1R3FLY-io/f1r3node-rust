@@ -48,7 +48,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockCommitment, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
+    ApprovedBlock, BlockCommitment, BlockMessage, Bond, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
@@ -57,6 +57,7 @@ use prost::Message;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::dag::dag_ops;
 use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::CasperSnapshot;
@@ -97,6 +98,15 @@ const DRIFT: i64 = 15000; // 15 seconds
 /// 78 call sites gain no readability from the rename. The unit struct
 /// stays.
 pub struct Validate;
+
+fn sorted_bonds(bonds: &[Bond]) -> Vec<(&Validator, &TokenAmount)> {
+    let mut sorted: Vec<(&Validator, &TokenAmount)> = bonds
+        .iter()
+        .map(|bond| (&bond.validator, &bond.stake))
+        .collect();
+    sorted.sort();
+    sorted
+}
 
 impl Validate {
     /// Verify a single signature with the named algorithm.
@@ -441,7 +451,7 @@ impl Validate {
                 &block.header.parents_hash_list,
                 &latest_messages,
                 crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                    s.on_chain_state.chain.fault_tolerance_threshold_ppm,
                 ),
             )
             .await
@@ -515,7 +525,7 @@ impl Validate {
                 &block.header.parents_hash_list,
                 &latest_messages,
                 crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                    s.on_chain_state.chain.fault_tolerance_threshold_ppm,
                 ),
             )
             .await
@@ -1008,25 +1018,25 @@ impl Validate {
 
     /// Agnostic of non-parent justifications
     pub fn block_number(b: &BlockMessage, s: &mut CasperSnapshot) -> ValidBlockProcessing {
-        let parents: Vec<BlockMetadata> = match proto_util::parent_hashes(b)
+        let parent_numbers: Vec<i64> = match proto_util::parent_hashes(b)
             .iter()
-            .map(|parent_hash| match s.dag.lookup(parent_hash) {
-                Ok(Some(parent_metadata)) => Ok(parent_metadata),
-                Ok(None) => Err(KvStoreError::KeyNotFound(format!(
-                    "Block dag store was missing {}",
-                    PrettyPrinter::build_string_bytes(parent_hash)
-                ))),
-                Err(e) => Err(e),
+            .map(|parent_hash| {
+                s.dag.block_number(parent_hash)?.ok_or_else(|| {
+                    KvStoreError::KeyNotFound(format!(
+                        "Block dag store was missing {}",
+                        PrettyPrinter::build_string_bytes(parent_hash)
+                    ))
+                })
             })
-            .collect::<Result<Vec<BlockMetadata>, KvStoreError>>()
+            .collect::<Result<Vec<i64>, KvStoreError>>()
         {
-            Ok(parents) => parents,
+            Ok(parent_numbers) => parent_numbers,
             Err(e) => return Either::Left(BlockError::from_validation_error(CasperError::from(e))),
         };
 
-        let max_block_number = parents
+        let max_block_number = parent_numbers
             .iter()
-            .fold(-1, |acc, parent| acc.max(parent.block_number));
+            .fold(-1, |acc, number| acc.max(*number));
 
         let number = proto_util::block_number(b);
         let result = max_block_number + 1 == number;
@@ -1034,7 +1044,7 @@ impl Validate {
         if result {
             Either::Right(ValidBlock::Valid)
         } else {
-            let log_message = if parents.is_empty() {
+            let log_message = if parent_numbers.is_empty() {
                 format!(
                     "block number {} is not zero, but block has no parents.",
                     number
@@ -1291,14 +1301,13 @@ impl Validate {
             .deploys
             .iter()
             .any(|pd| !is_system_deploy_id(&pd.deploy.sig));
-        // Slash deploys are liveness-critical recovery actions and must not be blocked
-        // by empty-block progress checks.
-        let has_slash_system_deploys = b.body.system_deploys.iter().any(|system_deploy| {
-            matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
-                system_deploy: SystemDeployData::Slash { .. },
-                ..
-            })
-        });
+        // Whether the block's own content settles this rule, independent of
+        // its parents. Classified in one exhaustive place so that a system
+        // deploy added later cannot land on the wrong side of it unnoticed.
+        let content_shows_progress = crate::rust::system_deploy::deploy_content_shows_progress(
+            has_user_deploys,
+            &b.body.system_deploys,
+        );
 
         let maybe_parent_hashes = proto_util::parent_hashes(b);
         let parent_hashes: Vec<BlockHash> = match maybe_parent_hashes {
@@ -1488,27 +1497,14 @@ impl Validate {
 
                 // Check if at least one parent is new (not in ancestor closure)
                 let has_new_parent = parent_hashes.iter().any(|p| !ancestor_set.contains(p));
-                // Heartbeat-empty block: no user deploys and only CloseBlock system deploy.
-                // Allow these to keep liveness when cluster is stale and parent frontier does not move.
-                let is_heartbeat_empty_block = !has_user_deploys
-                    && b.body.system_deploys.len() == 1
-                    && matches!(
-                        &b.body.system_deploys[0],
-                        ProcessedSystemDeploy::Succeeded {
-                            system_deploy: SystemDeployData::CloseBlockSystemDeployData,
-                            ..
-                        }
-                    );
-
                 // Validation logic:
-                // - Blocks with user deploys: always valid (users are paying for service)
-                // - Empty blocks: must have new parents (must show progress)
-                // - Slash-only blocks: always valid (network recovery action)
-                // - Heartbeat-empty blocks: valid to recover from stale/no-progress deadlocks
+                // - Blocks whose content shows progress: always valid — paying
+                //   users served, a consensus action landed, or the well-formed
+                //   empty block the heartbeat uses to break a stale frontier
+                // - Everything else: must cite a parent the proposer had not
+                //   already seen
                 // - disable_validator_progress_check: skip progress check (for standalone mode)
-                if has_user_deploys
-                    || has_slash_system_deploys
-                    || is_heartbeat_empty_block
+                if content_shows_progress
                     || is_genesis
                     || has_new_parent
                     || disable_validator_progress_check
@@ -1632,7 +1628,7 @@ impl Validate {
                 &block.header.parents_hash_list,
                 &latest_messages,
                 crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                    s.on_chain_state.chain.fault_tolerance_threshold_ppm,
                 ),
             )
             .await
@@ -1766,6 +1762,226 @@ impl Validate {
         }
     }
 
+    /// Every vote names a claim open at the block's pre-state that the
+    /// proposer may vote on and has not voted on before, and the block votes
+    /// on as many of those claims as the vote list bound allows, each nay on
+    /// an overflow claim carrying what the block's floor records.
+    /// The block resolves exactly the claims open at its pre-state whose
+    /// tally crossed at its floor, and expires exactly the graces of its
+    /// pre-state that its floor has passed and the claims whose deadline its
+    /// floor has reached, leaving out every one naming a validator the block
+    /// slashes.
+    pub async fn leaky_bucket_claims(
+        b: &BlockMessage,
+        runtime_manager: &RuntimeManager,
+        votes: &crate::rust::economics::claims::VoteHistory<'_>,
+        floor: &crate::rust::economics::claims::FloorView,
+        params: &crate::rust::economics::bucket_view::LeakyBucketParams,
+    ) -> ValidBlockProcessing {
+        let book = match runtime_manager
+            .claim_book(&b.body.state.pre_state_hash)
+            .await
+        {
+            Ok(book) => book,
+            Err(error) => return Either::Left(BlockError::from_validation_error(error)),
+        };
+        let records = &book.records;
+        let last_own_block = proto_util::creator_justification_block_message(b)
+            .map(|justification| justification.latest_block_hash);
+        let voter = crate::rust::economics::claims::Voter {
+            validator: &b.sender,
+            last_own_block: last_own_block.as_ref(),
+            block_number: b.body.state.block_number,
+        };
+        let owed = match votes.owed(records, &voter, params.claim_deadline_blocks) {
+            Ok(owed) => owed,
+            Err(error) => return Either::Left(BlockError::from_validation_error(error)),
+        };
+
+        let required = owed.len().min(params.vote_list_bound.get() as usize);
+        let owed_claims: HashMap<_, _> = owed
+            .iter()
+            .take(required)
+            .map(|record| (&record.claim, *record))
+            .collect();
+        let mut voted = HashSet::new();
+        for vote in &b.body.leaky_bucket_votes {
+            let Some(record) = owed_claims.get(&vote.claim) else {
+                tracing::warn!(
+                    "{}",
+                    Self::ignore(
+                        b,
+                        &format!(
+                            "vote on a claim that is not among the oldest it owes: {:?}",
+                            vote.claim
+                        )
+                    )
+                );
+                return Either::Left(BlockError::Invalid(InvalidBlock::InvalidLeakyBucketVote));
+            };
+            if !voted.insert(&vote.claim) {
+                tracing::warn!(
+                    "{}",
+                    Self::ignore(b, &format!("votes twice on {:?}", vote.claim))
+                );
+                return Either::Left(BlockError::Invalid(InvalidBlock::InvalidLeakyBucketVote));
+            }
+            let required = crate::rust::economics::claims::testimony(record, vote.yea, floor);
+            if vote.testimony != required {
+                tracing::warn!(
+                    "{}",
+                    Self::ignore(
+                        b,
+                        &format!(
+                            "vote on {:?} carries testimony {:?} where its floor requires {:?}",
+                            vote.claim, vote.testimony, required
+                        )
+                    )
+                );
+                return Either::Left(BlockError::Invalid(InvalidBlock::InvalidLeakyBucketVote));
+            }
+        }
+        if b.body.leaky_bucket_votes.len() != required {
+            tracing::warn!(
+                "{}",
+                Self::ignore(
+                    b,
+                    &format!(
+                        "carries {} votes where it owes {}",
+                        b.body.leaky_bucket_votes.len(),
+                        required
+                    )
+                )
+            );
+            return Either::Left(BlockError::Invalid(InvalidBlock::MissingLeakyBucketVotes));
+        }
+
+        let slashed: HashSet<Validator> = b
+            .body
+            .system_deploys
+            .iter()
+            .filter_map(|deploy| match deploy {
+                ProcessedSystemDeploy::Succeeded {
+                    system_deploy: SystemDeployData::Slash { evidence, .. },
+                    ..
+                } => Some(evidence.first.sender.clone()),
+                _ => None,
+            })
+            .collect();
+        let resolvable = book.without(&slashed);
+        let required = match votes.resolutions(&resolvable.records, floor) {
+            Ok(required) => required,
+            Err(error) => return Either::Left(BlockError::from_validation_error(error)),
+        };
+        let required_grace_expiries = resolvable.grace_expiries(floor.number);
+        let required_expiries =
+            resolvable.expiries(floor.number, params.claim_deadline_blocks, &required);
+        let nothing_required = required.is_empty()
+            && required_grace_expiries.is_empty()
+            && required_expiries.is_empty();
+        let carried: Vec<&SystemDeployData> = b
+            .body
+            .system_deploys
+            .iter()
+            .filter_map(|deploy| match deploy {
+                ProcessedSystemDeploy::Succeeded {
+                    system_deploy: data @ SystemDeployData::ResolveClaims { .. },
+                    ..
+                } => Some(data),
+                _ => None,
+            })
+            .collect();
+        let exact = match carried.as_slice() {
+            [] => nothing_required,
+            [SystemDeployData::ResolveClaims {
+                resolutions,
+                grace_expiries,
+                expiries,
+                floor_hash,
+                floor_number,
+            }] => {
+                !nothing_required
+                    && *resolutions == required
+                    && *grace_expiries == required_grace_expiries
+                    && *expiries == required_expiries
+                    && *floor_hash == floor.hash
+                    && *floor_number == floor.number
+            }
+            _ => false,
+        };
+        if !exact {
+            tracing::warn!(
+                "{}",
+                Self::ignore(
+                    b,
+                    &format!(
+                        "resolves {:?} where its floor requires {:?}, grace expiries {:?} \
+                         and claim expiries {:?}",
+                        carried, required, required_grace_expiries, required_expiries
+                    )
+                )
+            );
+            return Either::Left(BlockError::Invalid(InvalidBlock::InvalidClaimResolution));
+        }
+
+        Either::Right(ValidBlock::Valid)
+    }
+
+    /// Every dishonest-vote deploy the block carries names a different
+    /// accused, and its evidence proves the nay dishonest against the block's
+    /// floor.
+    pub fn dishonest_votes(
+        b: &BlockMessage,
+        dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
+        floor_number: i64,
+        reach: Option<i64>,
+        reward: &crate::rust::economics::reward::RewardParams,
+    ) -> ValidBlockProcessing {
+        let mut accused = HashSet::new();
+        for deploy in &b.body.system_deploys {
+            let ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    SystemDeployData::DishonestVote {
+                        accused: target,
+                        vote_block,
+                        claim,
+                    },
+                ..
+            } = deploy
+            else {
+                continue;
+            };
+            let accusation = crate::rust::economics::dishonest_vote::Accusation {
+                accused: target.clone(),
+                vote_block: vote_block.clone(),
+                claim: claim.clone(),
+            };
+            let proven = match crate::rust::economics::dishonest_vote::proves_dishonesty(
+                dag,
+                block_store,
+                &accusation,
+                floor_number,
+                reach,
+                reward,
+            ) {
+                Ok(proven) => proven,
+                Err(error) => return Either::Left(BlockError::from_validation_error(error)),
+            };
+            if !accused.insert(target) || !proven {
+                tracing::warn!(
+                    "{}",
+                    Self::ignore(
+                        b,
+                        &format!("carries evidence that proves nothing: {accusation:?}")
+                    )
+                );
+                return Either::Left(BlockError::Invalid(InvalidBlock::InvalidDishonestVote));
+            }
+        }
+        Either::Right(ValidBlock::Valid)
+    }
+
     pub async fn bonds_cache_from_floor(
         b: &BlockMessage,
         block_store: &KeyValueBlockStore,
@@ -1792,10 +2008,7 @@ impl Validate {
                     &parent_hashes,
                     &latest_messages,
                     crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                        snapshot
-                            .on_chain_state
-                            .shard_conf
-                            .fault_tolerance_threshold_ppm,
+                        snapshot.on_chain_state.chain.fault_tolerance_threshold_ppm,
                     ),
                 )
                 .await
@@ -1833,16 +2046,10 @@ impl Validate {
         // construction (PLAY≡REPLAY); a mismatching block-bonds set is rejected.
         match crate::rust::finality::floor::floor_committee(runtime_manager, &floor_state).await {
             Ok(committee) => {
-                let bonds_set: HashSet<_> = proto_util::bonds(b)
-                    .iter()
-                    .map(|bond| (bond.validator.clone(), bond.stake.clone()))
-                    .collect();
-                let committee_set: HashSet<_> = committee
-                    .iter()
-                    .map(|bond| (bond.validator.clone(), bond.stake.clone()))
-                    .collect();
-
-                if bonds_set == committee_set {
+                // Compared as sorted lists, not sets: a block listing one
+                // validator twice would otherwise pass, and the reward would be
+                // computed over a committee the floor does not hold.
+                if sorted_bonds(&proto_util::bonds(b)) == sorted_bonds(&committee) {
                     Either::Right(ValidBlock::Valid)
                 } else {
                     tracing::warn!(
@@ -1867,16 +2074,7 @@ impl Validate {
 
         match runtime_manager.compute_bonds(&tuplespace_hash).await {
             Ok(computed_bonds) => {
-                let bonds_set: HashSet<_> = bonds
-                    .iter()
-                    .map(|bond| (&bond.validator, bond.stake.clone()))
-                    .collect();
-                let computed_bonds_set: HashSet<_> = computed_bonds
-                    .iter()
-                    .map(|bond| (&bond.validator, bond.stake.clone()))
-                    .collect();
-
-                if bonds_set == computed_bonds_set {
+                if sorted_bonds(&bonds) == sorted_bonds(&computed_bonds) {
                     Either::Right(ValidBlock::Valid)
                 } else {
                     tracing::warn!(
@@ -1892,11 +2090,8 @@ impl Validate {
         }
     }
 
-    /// All of deploys must have greater or equal phloPrice than minPhloPrice
-    pub fn phlo_price(
-        b: &BlockMessage,
-        min_phlo_price: &shared::rust::token_amount::TokenAmount,
-    ) -> ValidBlockProcessing {
+    /// Every deploy pays at least minPhloPrice.
+    pub fn phlo_price(b: &BlockMessage, min_phlo_price: &TokenAmount) -> ValidBlockProcessing {
         if b.body.deploys.iter().all(|deploy| {
             deploy.deploy.data.validate_amounts().is_ok()
                 && deploy.deploy.data.phlo_price >= *min_phlo_price

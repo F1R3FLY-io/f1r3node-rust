@@ -75,10 +75,14 @@ pub struct MultiParentCasperImpl {
     /// happen synchronously inside the proposer (block_creator) and
     /// validator (validate.rs::repeat_deploy) — never across `.await`.
     pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    /// This node's subjective leaky-bucket view of every committee member's
+    /// earning capacity, driven from block admission.
+    pub bucket_view: Arc<crate::rust::economics::bucket_view::BucketView>,
+    pub ejection_requests: Arc<PlMutex<super::ejection_requests::EjectionRequests>>,
     pub validator_id: Option<ValidatorIdentity>,
     pub finalized_bond_cache: FinalizedBondCache,
-    // TODO: this should be read from chain, for now read from startup options - OLD
     pub casper_shard_conf: CasperShardConf,
+    pub chain_parameters: crate::rust::chain_parameters::ChainParameters,
     pub approved_block: BlockMessage,
     /// Live effective-anchor height. Initialized to the approved block's
     /// height and advanced by block-store GC past the citation horizon.

@@ -382,7 +382,21 @@ env:
   #   (#178) and repairs standalone recreation log ownership (#182). Verified:
   #   descends from 4373258; unit tests, test_deployment and test_token_metadata
   #   pass locally against the dev image on docker.
-  SYSTEM_INTEGRATION_REF: ba59ca583abfbff54787d743abee4242f5dd0600
+  # 2026-11-14: ba59ca5 -> 91ade94 (system-integration feat/leaky-bucket, PR
+  #   #183, not main). The leaky-bucket harness: production liveness profile
+  #   (quarantine above the node's minimum), the slashing suite on the merkle
+  #   block hash via pyf1r3fly feat/merkle-block-hash, and the twin-order
+  #   test. Must move to a main commit once #183 lands. Verified: merges SI
+  #   dev ef84178, whose tree is identical to ba59ca5; unit tests pass;
+  #   slashing 7/7 and liveness 3/3 consecutive pass locally on the
+  #   subprocess provider at b0dc4f4 (the branch before that merge) against
+  #   the feat/leaky-bucket binary.
+  # 2026-11-15: 91ade94 -> 29c5f42 (system-integration feat/leaky-bucket, PR
+  #   #183, not main). Runs the slashing, liveness and lifecycle suites on
+  #   their own xdist workers: serialized in the custom group they ran the
+  #   integration legs past the 90-minute job cap (run 43690433316). Verified:
+  #   descends from 91ade94; only the three xdist_group markers change.
+  SYSTEM_INTEGRATION_REF: 29c5f422dd5c761b0018b702e97238707aaf4c00
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

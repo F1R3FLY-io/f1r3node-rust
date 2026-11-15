@@ -6,6 +6,7 @@ pub mod dag_gc_store;
 pub(crate) mod dag_persistence;
 pub mod deploy_lifecycle_types;
 pub mod soak_snapshot;
+pub mod vote_index;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;

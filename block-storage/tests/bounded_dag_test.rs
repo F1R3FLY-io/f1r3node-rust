@@ -32,7 +32,6 @@ fn block(height: i64, parents: Vec<BlockHash>) -> BlockMessage {
 fn lmdb_manager(directory: &std::path::Path) -> Box<dyn KeyValueStoreManager> {
     let mapping = [
         "block-metadata",
-        "equivocation-tracker",
         "latest-messages",
         "dag-equivocations-v1",
         "floor-index",
@@ -42,6 +41,7 @@ fn lmdb_manager(directory: &std::path::Path) -> Box<dyn KeyValueStoreManager> {
         "carrier-index",
         "carrier-index-meta",
         "genesis-hash",
+        "leaky-bucket-votes",
         "dag-membership-v1",
         "dag-height-v1",
         "dag-children-v1",

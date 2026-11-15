@@ -24,7 +24,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::{ReadLimits, SnapshotError};
 use tokio::runtime::Runtime;
 
-const DAG_STORES: [&str; 16] = [
+const DAG_STORES: [&str; 17] = [
     "block-metadata",
     "latest-messages",
     "dag-equivocations-v1",
@@ -34,6 +34,7 @@ const DAG_STORES: [&str; 16] = [
     "deploy-lifecycle-terminal",
     "carrier-index",
     "carrier-index-meta",
+    "leaky-bucket-votes",
     "genesis-hash",
     "dag-membership-v1",
     "dag-height-v1",

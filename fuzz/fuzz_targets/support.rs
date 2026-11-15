@@ -134,6 +134,7 @@ pub fn block_with_system_deploys(
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
             merge_base: Bytes::new(),
+            leaky_bucket_votes: vec![],
         },
         justifications: vec![],
         sender,
@@ -244,6 +245,7 @@ pub fn snapshot(held: &[Held], max_block_num: i64, bonds: Vec<(Validator, i64)>)
                 shard_name: SHARD.to_string(),
                 ..CasperShardConf::new()
             },
+            chain: casper::rust::chain_parameters::ChainParameters::shipped(),
             bonds_map,
             active_validators,
         },

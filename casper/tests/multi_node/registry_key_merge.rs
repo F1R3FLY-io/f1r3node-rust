@@ -58,7 +58,7 @@ async fn merge_two_writes(key1: &str, key2: &str) -> (bool, bool) {
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 3, None, None, None)
         .await
         .unwrap();
     for node in nodes.iter_mut() {

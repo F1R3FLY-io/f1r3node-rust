@@ -80,6 +80,7 @@ async fn concurrent_pos_calls_in_one_block_do_not_trip_order_guard() {
             seq_num,
             block_number,
             sender: creator.clone(),
+            committee: genesis_context.genesis_block.body.state.bonds.clone(),
         };
         let system_deploys = vec![SystemDeployEnum::Close(CloseBlockDeploy {
             initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(

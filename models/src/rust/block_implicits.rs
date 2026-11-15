@@ -214,6 +214,7 @@ pub fn block_element_gen(
                         extra_bytes: prost::bytes::Bytes::new(),
                         applied_from_scope: Vec::new(),
                         merge_base: prost::bytes::Bytes::new(),
+                        leaky_bucket_votes: Vec::new(),
                     },
                     justifications,
                     sender: validator.into(),

@@ -14,9 +14,14 @@ struct TestContext {
 }
 
 impl TestContext {
-    async fn new() -> Self {
+    /// A genesis whose parent depth is `max_parent_depth`, or the default.
+    async fn new(max_parent_depth: Option<i32>) -> Self {
+        let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+        if let Some(depth) = max_parent_depth {
+            parameters.2.proof_of_stake.max_parent_depth = depth;
+        }
         let genesis = GenesisBuilder::new()
-            .build_genesis_with_parameters(None)
+            .build_genesis_with_parameters(Some(parameters))
             .await
             .unwrap();
 
@@ -38,20 +43,10 @@ impl TestContext {
         }
     }
 
-    async fn create_network(
-        &self,
-        max_parent_depth: Option<i32>,
-    ) -> Result<Vec<TestNode>, CasperError> {
+    async fn create_network(&self) -> Result<Vec<TestNode>, CasperError> {
         {
-            let mut nodes = TestNode::create_network(
-                self.genesis.clone(),
-                2,
-                None,
-                None,
-                max_parent_depth,
-                None,
-            )
-            .await?;
+            let mut nodes =
+                TestNode::create_network(self.genesis.clone(), 2, None, None, None).await?;
             // Heartbeat mode: non-leader proposers emit empty support blocks
             // instead of erroring NoNewDeploys under deploy-inclusion leadership.
             for node in nodes.iter_mut() {
@@ -64,8 +59,8 @@ impl TestContext {
 
 #[tokio::test]
 async fn estimator_should_obey_present_parent_depth_limitation() {
-    let ctx = TestContext::new().await;
-    let mut nodes = ctx.create_network(Some(2)).await.unwrap();
+    let ctx = TestContext::new(Some(2)).await;
+    let mut nodes = ctx.create_network().await.unwrap();
 
     let _b1 = nodes[0]
         .add_block_from_deploys(&[ctx.produce_deploys[0].clone()])
@@ -101,8 +96,8 @@ async fn estimator_should_obey_present_parent_depth_limitation() {
 
 #[tokio::test]
 async fn estimator_should_obey_absent_parent_depth_limitation() {
-    let ctx = TestContext::new().await;
-    let mut nodes = ctx.create_network(None).await.unwrap();
+    let ctx = TestContext::new(None).await;
+    let mut nodes = ctx.create_network().await.unwrap();
 
     let b1 = nodes[0]
         .add_block_from_deploys(&[ctx.produce_deploys[0].clone()])

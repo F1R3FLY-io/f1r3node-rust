@@ -47,6 +47,19 @@ pub async fn set(
                                 Err(illegal_argument_error("block_data_set"))
                             }
                         }
+                        "committee" => {
+                            let Some(committee) =
+                                rholang::rust::interpreter::system_processes::committee_of(
+                                    value_par,
+                                )
+                            else {
+                                return Err(illegal_argument_error("block_data_set"));
+                            };
+                            ctx.block_data.write().await.committee = committee;
+                            let result_par = vec![Par::default()];
+                            produce(&result_par, ack_channel).await?;
+                            Ok(result_par)
+                        }
                         _ => Err(illegal_argument_error("block_data_set")),
                     }
                 } else {

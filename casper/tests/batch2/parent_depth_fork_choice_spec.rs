@@ -38,7 +38,7 @@ async fn validator_ran_ahead_of_a_heavier_branch() -> RunawayView {
         .build_genesis_with_parameters(Some(parameters))
         .await
         .expect("genesis");
-    let mut nodes = TestNode::create_network(genesis, 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 3, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {
@@ -124,7 +124,7 @@ async fn the_main_parent_stays_the_fork_choice_head_when_the_own_tip_ran_past_th
         "staging: fork choice in A's view must head the branch two thirds of the stake supports"
     );
     let depth = own_tip.body.state.block_number - heavier_tip.body.state.block_number;
-    let limit = snapshot.on_chain_state.shard_conf.max_parent_depth as i64;
+    let limit = snapshot.on_chain_state.chain.max_parent_depth as i64;
     assert!(
         depth > limit,
         "staging: A's own tip must sit past the parent-depth limit above the head \

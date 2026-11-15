@@ -57,7 +57,7 @@ async fn netted_install_fire_pair_merges_as_a_noop() {
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {
@@ -193,7 +193,7 @@ async fn netted_install_fire_pair_merges_as_a_noop() {
         let ftt = casper::rust::safety::clique_oracle::FtThreshold::from_ppm(
             nodes[0]
                 .casper
-                .casper_shard_conf()
+                .chain_parameters()
                 .fault_tolerance_threshold_ppm,
         );
         let floor = casper::rust::finality::floor::floor_of_block(

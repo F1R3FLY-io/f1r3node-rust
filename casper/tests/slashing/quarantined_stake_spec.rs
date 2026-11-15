@@ -59,7 +59,7 @@ async fn quarantined(
 async fn an_equivocator_is_slashed_while_its_withdrawal_is_in_quarantine() {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
     parameters.2.proof_of_stake.epoch_length = 10;
-    parameters.2.proof_of_stake.quarantine_length = 40;
+    parameters.2.proof_of_stake.quarantine_length = 100;
     let validator_vaults: Vec<VaultAddress> = parameters
         .2
         .proof_of_stake
@@ -77,7 +77,7 @@ async fn an_equivocator_is_slashed_while_its_withdrawal_is_in_quarantine() {
         .await
         .expect("genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, 4, Some(0.0), None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 4, Some(0.0), None, None)
         .await
         .expect("network");
     for node in nodes.iter_mut() {
@@ -183,7 +183,7 @@ async fn an_equivocator_is_slashed_while_its_withdrawal_is_in_quarantine() {
     );
 
     let mut last = next;
-    for round in 0..120 {
+    for round in 0..200 {
         if quarantined(&nodes[1], &last, &leaving_key).await.is_none() {
             return;
         }

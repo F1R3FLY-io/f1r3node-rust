@@ -66,7 +66,7 @@ async fn multi_parent_casper_should_allow_uint256_bonding() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None)
         .await
         .expect("create 4-node network");
     let shard_id = genesis.genesis_block.shard_id.clone();
@@ -171,7 +171,7 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None)
         .await
         .expect("create 4-node network");
     let shard_id = genesis.genesis_block.shard_id.clone();
@@ -337,7 +337,7 @@ async fn a_finalized_bond_survives_an_epoch_boundary_merge() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 4, None, None, None)
         .await
         .expect("create 4-node network");
     let shard_id = genesis.genesis_block.shard_id.clone();

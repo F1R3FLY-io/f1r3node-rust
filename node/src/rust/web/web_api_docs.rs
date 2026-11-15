@@ -75,6 +75,7 @@ pub struct PublicApi;
         web_api_routes::estimate_cost_handler,
         reporting_routes::trace_handler,
         admin_web_api_routes::propose_handler,
+        admin_web_api_routes::validator_liveness_handler,
     ),
     info(
         title = "F1r3fly Node API (admin)",

@@ -247,7 +247,23 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
         metrics::counter!(verdict_metric, "source" => BLOCK_PROCESSOR_METRICS_SOURCE).increment(1);
         let outcome = match &status {
             Either::Right(_) => {
-                casper.handle_valid_block(block).await?;
+                // A block whose shape does not fit its main parent's bonds is
+                // dispatched on its main parent alone, so its other parents
+                // need not be in the DAG yet.
+                let dag = self.dag.get_representation()?;
+                let mut parents = Vec::with_capacity(block.header.parents_hash_list.len());
+                for parent in &block.header.parents_hash_list {
+                    match dag.lookup(parent)? {
+                        Some(metadata) => parents.push(metadata),
+                        None => {
+                            return Ok((
+                                Either::Left(BlockError::Undecidable(parent.clone())),
+                                WorkOutcome::AwaitingBlock(parent.clone()),
+                            ))
+                        }
+                    }
+                }
+                casper.handle_valid_block(block, &parents).await?;
                 self.announcer.announce(block);
                 WorkOutcome::Settled
             }
@@ -441,6 +457,7 @@ mod tests {
     use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
     use crypto::rust::signatures::signed::Signed;
     use models::rust::block_implicits::get_random_block;
+    use models::rust::block_metadata::BlockMetadata;
     use models::rust::casper::protocol::casper_message::DeployData;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -450,18 +467,25 @@ mod tests {
     use crate::rust::block_status::ValidBlock;
     use crate::rust::casper::{CasperSnapshot, DeployError};
 
-    struct StorageFailingCasper {
+    /// Returns `verdict` for every block and fails the test if the verdict's
+    /// effects are carried out.
+    struct VerdictCasper {
         anchor: BlockMessage,
         dag: BlockDagKeyValueStorage,
+        verdict: fn() -> Either<BlockError, ValidBlock>,
     }
 
     #[async_trait]
-    impl Casper for StorageFailingCasper {
+    impl Casper for VerdictCasper {
         async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
             Ok(CasperSnapshot::new(
                 self.dag.get_representation()?,
                 prost::bytes::Bytes::new(),
             ))
+        }
+
+        fn bucket_view(&self) -> Arc<crate::rust::economics::bucket_view::BucketView> {
+            unimplemented!("judge does not read the bucket view")
         }
 
         fn dag_contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> { Ok(false) }
@@ -489,9 +513,7 @@ mod tests {
             _block: &BlockMessage,
             _snapshot: &mut crate::rust::casper::CasperSnapshot,
         ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
-            Ok(Either::Left(BlockError::BlockException(
-                CasperError::KvStoreError(KvStoreError::IoError("disk read failed".into())),
-            )))
+            Ok((self.verdict)())
         }
 
         async fn validate_self_created(
@@ -507,8 +529,9 @@ mod tests {
         async fn handle_valid_block(
             &self,
             _block: &BlockMessage,
+            _parents: &[BlockMetadata],
         ) -> Result<KeyValueDagRepresentation, CasperError> {
-            panic!("a storage failure is not a valid verdict")
+            panic!("the block was handled as valid")
         }
 
         fn handle_invalid_block(
@@ -517,9 +540,17 @@ mod tests {
             _status: &InvalidBlock,
             _dag: &KeyValueDagRepresentation,
         ) -> Result<KeyValueDagRepresentation, CasperError> {
-            panic!("a storage failure must not record the block as invalid")
+            panic!("the block was recorded as invalid")
         }
     }
+
+    fn storage_failure() -> Either<BlockError, ValidBlock> {
+        Either::Left(BlockError::BlockException(CasperError::KvStoreError(
+            KvStoreError::IoError("disk read failed".into()),
+        )))
+    }
+
+    fn accepted() -> Either<BlockError, ValidBlock> { Either::Right(ValidBlock::Valid) }
 
     fn block(number: i64) -> BlockMessage {
         get_random_block(
@@ -540,8 +571,13 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn a_storage_failure_during_validation_is_retried_not_judged_invalid() {
+    async fn judged_by(
+        verdict: fn() -> Either<BlockError, ValidBlock>,
+    ) -> (
+        Validation<TransportLayerStub>,
+        Arc<dyn Casper + Send + Sync>,
+        BlockMessage,
+    ) {
         let mut manager = InMemoryStoreManager::new();
         let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
         let block_store = KeyValueBlockStore::create_from_kvm(&mut manager)
@@ -569,7 +605,17 @@ mod tests {
             create_rp_conf_ask(local, None, None),
             None,
         );
-        let casper: Arc<dyn Casper + Send + Sync> = Arc::new(StorageFailingCasper { anchor, dag });
+        let casper: Arc<dyn Casper + Send + Sync> = Arc::new(VerdictCasper {
+            anchor: anchor.clone(),
+            dag,
+            verdict,
+        });
+        (validation, casper, anchor)
+    }
+
+    #[tokio::test]
+    async fn a_storage_failure_during_validation_is_retried_not_judged_invalid() {
+        let (validation, casper, _) = judged_by(storage_failure).await;
         let received = block(1);
 
         assert!(matches!(
@@ -580,6 +626,20 @@ mod tests {
             validation.validate(casper, &received).await,
             WorkOutcome::Failed
         );
+    }
+
+    #[tokio::test]
+    async fn an_accepted_block_waits_for_a_parent_the_dag_does_not_hold() {
+        let (validation, casper, anchor) = judged_by(accepted).await;
+        let absent_parent = BlockHash::from(vec![9u8; 32]);
+        let mut received = block(1);
+        received.header.parents_hash_list = vec![anchor.block_hash, absent_parent.clone()];
+
+        let (verdict, outcome) = validation.judge(casper, &received).await.unwrap();
+        assert!(
+            matches!(verdict, Either::Left(BlockError::Undecidable(missing)) if missing == absent_parent)
+        );
+        assert_eq!(outcome, WorkOutcome::AwaitingBlock(absent_parent));
     }
 
     #[test]

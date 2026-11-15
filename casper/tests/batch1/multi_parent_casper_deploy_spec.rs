@@ -288,7 +288,7 @@ async fn block_api_rejects_deploy_from_keyless_read_only_node() {
         .build_genesis_with_parameters(None)
         .await
         .unwrap();
-    let nodes = TestNode::create_network(genesis.clone(), 1, None, None, None, Some(1))
+    let nodes = TestNode::create_network(genesis.clone(), 1, None, None, Some(1))
         .await
         .unwrap();
     let observer = &nodes[1];
@@ -511,7 +511,7 @@ async fn multi_parent_casper_should_not_create_a_block_with_a_repeated_deploy() 
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
 
@@ -621,16 +621,18 @@ async fn multi_parent_casper_should_succeed_if_given_enough_phlos_for_deploy() {
 
 #[tokio::test]
 async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min_phlo_price() {
+    let min_phlo_price = 1u64;
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    parameters.2.proof_of_stake.min_phlo_price = min_phlo_price.into();
     let genesis = GenesisBuilder::new()
-        .build_genesis_with_parameters(None)
+        .build_genesis_with_parameters(Some(parameters))
         .await
         .expect("Failed to build genesis");
 
     let node = TestNode::standalone(genesis.clone()).await.unwrap();
 
-    // The API reads the floor from the running casper's shard conf (1 in the
-    // test fixture), so an underpriced deploy is one below that value.
-    let min_phlo_price = 1i64;
+    // The API reads the floor from the chain, so an underpriced deploy is one
+    // below the value genesis fixed.
     let phlo_price = 0u64;
     let is_node_read_only = false;
     let shard_id = genesis.genesis_block.shard_id.clone();
@@ -702,7 +704,7 @@ async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
         .bonds
         .iter()
         .all(|bond| bond.stake > (i64::MAX as u64).into()));
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
     let deploy =
@@ -782,7 +784,7 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
         .build_genesis_with_parameters(Some(parameters))
         .await
         .unwrap();
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
     let recipient = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";

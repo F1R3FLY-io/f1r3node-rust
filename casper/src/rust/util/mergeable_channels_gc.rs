@@ -4,13 +4,12 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use models::rust::block_hash::BlockHash;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rust::casper::CasperShardConf;
 use crate::rust::finality::floor::Floor;
 
 mod job;
 #[cfg(any(test, feature = "test-utils"))]
 pub use job::collect_garbage_with;
-pub use job::{collect_garbage, GcProgress, GcSweep};
+pub use job::{collect_garbage, GcHorizon, GcProgress, GcSweep};
 
 /// Conditions 1 and 2 of `is_safe_to_delete`, plus the "has children" half of
 /// condition 3 — everything that can be decided about a candidate WITHOUT
@@ -22,7 +21,7 @@ fn reaches_ancestor_check(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
     floor: &Floor,
-    casper_shard_conf: &CasperShardConf,
+    max_allowed_depth: i64,
 ) -> Result<bool, KvStoreError> {
     // 1. Check if block is finalized. An orphan on a losing fork never
     //    satisfies this — permanently, not just for this pass — so the pass
@@ -45,9 +44,6 @@ fn reaches_ancestor_check(
     //    only delete less than before, never more.
     let block_meta = dag.lookup_unsafe(block_hash)?;
     let depth_from_floor = floor.block_number - block_meta.block_number;
-    let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
-
     if depth_from_floor <= max_allowed_depth {
         return Ok(false);
     }
@@ -62,10 +58,10 @@ fn is_safe_to_delete(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
     floor: &Floor,
-    casper_shard_conf: &CasperShardConf,
+    max_allowed_depth: i64,
     moved_past: Option<&HashSet<BlockHash>>,
 ) -> Result<bool, KvStoreError> {
-    if !reaches_ancestor_check(dag, block_hash, floor, casper_shard_conf)? {
+    if !reaches_ancestor_check(dag, block_hash, floor, max_allowed_depth)? {
         return Ok(false);
     }
 
@@ -674,13 +670,8 @@ mod tests {
         .build()
     }
 
-    /// max_allowed_depth = max_parent_depth + gc buffer = 4.
-    pub(super) fn conf() -> CasperShardConf {
-        let mut conf = CasperShardConf::new();
-        conf.max_parent_depth = 3;
-        conf.mergeable_channels_gc_depth_buffer = 1;
-        conf
-    }
+    /// max_parent_depth 3 plus a gc buffer of 1.
+    pub(super) fn depth() -> i64 { 4 }
 
     pub(super) fn floor_at(n: u8) -> Floor {
         Floor {
@@ -693,7 +684,7 @@ mod tests {
         dag: &KeyValueDagRepresentation,
         block_hash: &BlockHash,
         floor: &Floor,
-        conf: &CasperShardConf,
+        max_allowed_depth: i64,
     ) -> Result<bool, KvStoreError> {
         // Derived from the DAG exactly as `collect_garbage` does, so the depth
         // clause is exercised against a real citation set rather than a stub
@@ -702,7 +693,13 @@ mod tests {
         // to a whole `pending` set collapses to "this one height" here.
         let candidate_height = dag.lookup_unsafe(block_hash)?.block_number;
         let moved_past = moved_past_by_every_validator(dag, candidate_height)?;
-        is_safe_to_delete(dag, block_hash, floor, conf, moved_past.as_ref())
+        is_safe_to_delete(
+            dag,
+            block_hash,
+            floor,
+            max_allowed_depth,
+            moved_past.as_ref(),
+        )
     }
 
     /// THE regression. Mergeable data serves merges, and a merge reads it for
@@ -715,12 +712,11 @@ mod tests {
     #[test]
     fn a_block_above_the_floor_is_never_collected_however_far_the_tip_has_run() {
         let dag = linear_chain_dag();
-        let conf = conf();
         // Tip is TOP + 1 = 21, so block 12 is 9 below it — past the 4-block
         // allowance on the tip clock — but 2 ABOVE the floor at 10.
         assert_eq!(dag.latest_block_number(), TOP as i64 + 1);
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &hash(12), &floor_at(10), &conf)
+            !is_safe_to_delete_at_floor(&dag, &hash(12), &floor_at(10), depth())
                 .expect("safety check"),
             "block 12 sits above the floor at 10, so a merge based on that floor \
              still reads its mergeable data. Anchored on the tip it reads as \
@@ -735,9 +731,9 @@ mod tests {
     #[test]
     fn a_block_far_below_the_floor_is_still_collected() {
         let dag = linear_chain_dag();
-        let conf = conf();
         assert!(
-            is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), &conf).expect("safety check"),
+            is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), depth())
+                .expect("safety check"),
             "block 5 is 5 below the floor at 10, past the 4-block allowance, so \
              no merge can still need it and holding it forever leaks",
         );
@@ -752,9 +748,9 @@ mod tests {
         dag.fixture_mut()
             .latest_messages_map
             .insert(Bytes::from(vec![0x07u8; 65]), hash(0));
-        let conf = conf();
         assert!(
-            is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), &conf).expect("safety check"),
+            is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), depth())
+                .expect("safety check"),
             "a slot holding a block its validator never signed is bookkeeping, \
              not a position anything moved past; counting it collects nothing \
              for as long as that validator stays silent",
@@ -766,9 +762,8 @@ mod tests {
     #[test]
     fn the_allowance_boundary_is_measured_from_the_floor() {
         let dag = linear_chain_dag();
-        let conf = conf();
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &hash(6), &floor_at(10), &conf)
+            !is_safe_to_delete_at_floor(&dag, &hash(6), &floor_at(10), depth())
                 .expect("safety check"),
             "block 6 is exactly the 4-block allowance below the floor — retained",
         );
@@ -787,9 +782,8 @@ mod tests {
             meta.directly_finalized = false;
             bms.add(meta).expect("re-add metadata");
         }
-        let conf = conf();
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), &conf)
+            !is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), depth())
                 .expect("safety check"),
             "an unfinalized block's data may still be needed by a branch that wins",
         );
@@ -1011,7 +1005,7 @@ mod tests {
     fn a_finalized_block_merged_off_the_main_chain_is_collected_far_below_the_floor() {
         let (dag, side) = chain_with_a_merged_side_block();
         assert!(
-            is_safe_to_delete_at_floor(&dag, &side, &floor_at(10), &conf()).expect("safety check"),
+            is_safe_to_delete_at_floor(&dag, &side, &floor_at(10), depth()).expect("safety check"),
             "side3 is finalized, 7 below the floor at 10 and an ancestor of every \
              latest message through block 4, so no merge can still read its data; \
              keeping it forever leaks one block's mergeable data per merged sibling"
@@ -1022,7 +1016,7 @@ mod tests {
     fn below_a_fork_both_validators_are_past_the_block_and_it_collects() {
         let dag = forked_chain_dag();
         assert!(
-            is_safe_to_delete_at_floor(&dag, &hash(3), &floor_at(TOP), &conf())
+            is_safe_to_delete_at_floor(&dag, &hash(3), &floor_at(TOP), depth())
                 .expect("safety check"),
             "block 3 is below the fork point, so both validators have moved past it"
         );
@@ -1034,7 +1028,7 @@ mod tests {
         // Deep enough and finalized, so only the citation clause can refuse it:
         // validator B branched at 4 and has never cited block 6.
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &hash(6), &floor_at(TOP), &conf())
+            !is_safe_to_delete_at_floor(&dag, &hash(6), &floor_at(TOP), depth())
                 .expect("safety check"),
             "validator B sits on the side branch, so it has not moved past block 6 \
              and a merge from its view still reads that data"
@@ -1046,7 +1040,7 @@ mod tests {
         let dag = forked_chain_dag();
         let side5 = Bytes::from(b"side5".to_vec());
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &side5, &floor_at(TOP), &conf())
+            !is_safe_to_delete_at_floor(&dag, &side5, &floor_at(TOP), depth())
                 .expect("safety check"),
             "validator A never left the spine, so it has not moved past the branch"
         );

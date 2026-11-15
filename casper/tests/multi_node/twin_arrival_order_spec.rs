@@ -19,7 +19,7 @@ async fn network() -> (Vec<TestNode>, String) {
         .await
         .expect("genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, 4, Some(0.0), None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 4, Some(0.0), None, None)
         .await
         .expect("network");
     for node in nodes.iter_mut() {

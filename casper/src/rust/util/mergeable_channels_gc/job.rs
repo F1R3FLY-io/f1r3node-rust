@@ -11,7 +11,6 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rust::casper::CasperShardConf;
 use crate::rust::finality::floor::Floor;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -41,10 +40,37 @@ impl GcSweep {
     pub fn new() -> Self { Self::default() }
 }
 
+/// How deep below the finalized floor a pass reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GcHorizon {
+    /// `max-parent-depth` plus the GC depth buffer: no honest block cites a
+    /// block deeper than this below the floor.
+    pub max_allowed_depth: i64,
+    pub deploy_lifespan: i64,
+    /// Whether a collected block's stored body is deleted with its mergeable
+    /// data.
+    pub delete_block_bodies: bool,
+}
+
+impl GcHorizon {
+    /// Where discovery stops below the floor. A walk over the deploy-lifespan
+    /// window reads block bodies `deploy_lifespan` below a parent, and a
+    /// parent sits up to `max_allowed_depth` below the floor, so bodies are
+    /// deleted only past both; mergeable data is per-block state that no such
+    /// walk reads.
+    fn discovery_depth(&self) -> i64 {
+        if self.delete_block_bodies {
+            self.max_allowed_depth + self.deploy_lifespan
+        } else {
+            self.max_allowed_depth
+        }
+    }
+}
+
 struct Pass {
     dag: KeyValueDagRepresentation,
     floor: Floor,
-    conf: CasperShardConf,
+    horizon: GcHorizon,
     target: i64,
     discovery_start: i64,
     discovery_cursor: Option<Vec<u8>>,
@@ -79,39 +105,14 @@ fn cached_floor(dag: &KeyValueDagRepresentation) -> Result<Option<Floor>, KvStor
 fn start_pass(
     storage: &BlockDagKeyValueStorage,
     store: &DagGcStore,
-    conf: &CasperShardConf,
+    horizon: GcHorizon,
 ) -> Result<Option<Pass>, KvStoreError> {
     let preliminary = storage.get_representation()?;
     let Some(floor) = cached_floor(&preliminary)? else {
         return Ok(None);
     };
-    // The deepest block an honest validator can legally be asked to
-    // judge sits at `max_parent_depth + depth_buffer + deploy_lifespan`
-    // below LFB — see the derivation in
-    // `rspace_history_horizon.rs:lfs_min_block_number`:
-    // `Validate::block_summary`'s expiry scan starts from
-    // `max_block_number(parents) + 1 - deploy_lifespan`, with the
-    // parents themselves `max_parent_depth` behind, and the buffer
-    // widens the window to tolerate concurrent floor advancement. The
-    // mergeable-only GC survived with the narrower `max_parent_depth +
-    // depth_buffer` because mergeable channels are a per-block state
-    // entry, not read by scan walks. Body pruning is not: the
-    // proposer's prior-rejection walk (interpreter_util.rs:1709) and
-    // every walk that fetches a block body across the deploy-lifespan
-    // window reach this deeper floor. Pruning inside the window stalls
-    // the chain ("last state: Pending, rejection_count=0" deploys in
-    // CI). Scale the body prune horizon to match the deepest honest
-    // walk when body-store GC is enabled; keep the narrower
-    // mergeable-only depth when it is off so the mergeable-channel
-    // behavior does not regress.
-    let citation_depth =
-        i64::from(conf.max_parent_depth) + i64::from(conf.mergeable_channels_gc_depth_buffer);
-    let depth = if conf.enable_block_store_gc {
-        citation_depth + conf.deploy_lifespan
-    } else {
-        citation_depth
-    };
-    let state = store.reserve_discovery(floor.block_number.saturating_sub(depth))?;
+    let state =
+        store.reserve_discovery(floor.block_number.saturating_sub(horizon.discovery_depth()))?;
     drop(preliminary);
     let dag = storage.get_representation()?;
     let Some(floor) = cached_floor(&dag)? else {
@@ -120,7 +121,7 @@ fn start_pass(
     Ok(Some(Pass {
         dag,
         floor,
-        conf: conf.clone(),
+        horizon,
         target: state.claimed_ceiling.unwrap_or(-1),
         discovery_start: state
             .completed_ceiling
@@ -134,7 +135,7 @@ fn run_turn<F>(
     sweep: &mut GcSweep,
     storage: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
-    conf: &CasperShardConf,
+    horizon: GcHorizon,
     effective_anchor: &AtomicI64,
     delete: &mut F,
     page: usize,
@@ -147,7 +148,7 @@ where
     let mut blocks_deleted = 0;
     loop {
         match std::mem::take(&mut sweep.phase) {
-            Phase::Idle => match start_pass(storage, &store, conf)? {
+            Phase::Idle => match start_pass(storage, &store, horizon)? {
                 Some(pass) => sweep.phase = Phase::Discover(pass),
                 None => {
                     metrics::counter!("mergeable_channels_gc_floor_deferred").increment(1);
@@ -205,7 +206,12 @@ where
                         }
                         continue;
                     }
-                    if super::reaches_ancestor_check(&pass.dag, &hash, &pass.floor, &pass.conf)? {
+                    if super::reaches_ancestor_check(
+                        &pass.dag,
+                        &hash,
+                        &pass.floor,
+                        pass.horizon.max_allowed_depth,
+                    )? {
                         let height = pass.dag.block_number_unsafe(&hash)?;
                         minimum = Some(minimum.map_or(height, |lowest| lowest.min(height)));
                     }
@@ -242,7 +248,7 @@ where
                 // eviction (the latter runs at Complete), which is the
                 // valid state "anchor advanced, pruning not yet
                 // finished".
-                if pass.conf.enable_block_store_gc && pass.target >= 0 {
+                if pass.horizon.delete_block_bodies && pass.target >= 0 {
                     effective_anchor.fetch_max(pass.target, Ordering::Release);
                 }
                 sweep.phase = Phase::Delete {
@@ -264,7 +270,7 @@ where
                             &pass.dag,
                             &hash,
                             &pass.floor,
-                            &pass.conf,
+                            pass.horizon.max_allowed_depth,
                             moved_past.as_ref(),
                         )?
                     {
@@ -285,7 +291,7 @@ where
                         // dropping it here does not change any honest-path
                         // verdict — only a byzantine block that cites across
                         // this horizon can observe the deletion.
-                        if pass.conf.enable_block_store_gc && blocks.discard_stored(&hash)? {
+                        if pass.horizon.delete_block_bodies && blocks.discard_stored(&hash)? {
                             blocks_deleted += 1;
                         }
                     }
@@ -315,7 +321,7 @@ where
                         // would force downstream walks into disk fallback
                         // for every reference to below-cutoff state, which
                         // surfaced as test-patience timeouts in CI.
-                        if pass.conf.enable_block_store_gc && pass.target >= 0 {
+                        if pass.horizon.delete_block_bodies && pass.target >= 0 {
                             storage.gc_store().advance_effective_anchor(pass.target)?;
                         }
                         return Ok(GcProgress::Complete {
@@ -334,7 +340,7 @@ pub fn collect_garbage_with<F>(
     sweep: &mut GcSweep,
     storage: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
-    conf: &CasperShardConf,
+    horizon: GcHorizon,
     effective_anchor: &AtomicI64,
     delete: &mut F,
 ) -> Result<GcProgress, KvStoreError>
@@ -345,7 +351,7 @@ where
         sweep,
         storage,
         blocks,
-        conf,
+        horizon,
         effective_anchor,
         delete,
         GC_PAGE_SIZE,
@@ -362,7 +368,7 @@ pub async fn collect_garbage(
     storage: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
     runtime: &Arc<RuntimeManager>,
-    conf: &CasperShardConf,
+    horizon: GcHorizon,
     effective_anchor: &AtomicI64,
 ) -> Result<GcProgress, KvStoreError> {
     let started = std::time::Instant::now();
@@ -370,7 +376,7 @@ pub async fn collect_garbage(
         sweep,
         storage,
         blocks,
-        conf,
+        horizon,
         effective_anchor,
         &mut |block| {
             runtime
@@ -451,10 +457,18 @@ mod tests {
 
     /// Runs turns until the pass completes, replacing the sweep once mid-way
     /// through deletion, and returns the hashes `delete` saw.
+    fn horizon(delete_block_bodies: bool) -> GcHorizon {
+        GcHorizon {
+            max_allowed_depth: super::super::tests::depth(),
+            deploy_lifespan: 0,
+            delete_block_bodies,
+        }
+    }
+
     fn run_to_completion(
         storage: &BlockDagKeyValueStorage,
         blocks: &KeyValueBlockStore,
-        conf: &CasperShardConf,
+        horizon: GcHorizon,
         page: usize,
     ) -> HashSet<BlockHash> {
         let mut sweep = GcSweep::new();
@@ -466,7 +480,7 @@ mod tests {
                 &mut sweep,
                 storage,
                 blocks,
-                conf,
+                horizon,
                 &effective_anchor,
                 &mut |block| {
                     assert!(
@@ -498,14 +512,21 @@ mod tests {
         storage: &BlockDagKeyValueStorage,
         candidates: &[BlockHash],
         floor: &Floor,
-        conf: &CasperShardConf,
+        max_allowed_depth: i64,
     ) -> HashSet<BlockHash> {
         let dag = storage.get_representation().unwrap();
         let moved = super::super::moved_past_by_every_validator(&dag, 0).unwrap();
         candidates
             .iter()
             .filter(|hash| {
-                super::super::is_safe_to_delete(&dag, hash, floor, conf, moved.as_ref()).unwrap()
+                super::super::is_safe_to_delete(
+                    &dag,
+                    hash,
+                    floor,
+                    max_allowed_depth,
+                    moved.as_ref(),
+                )
+                .unwrap()
             })
             .cloned()
             .collect()
@@ -536,12 +557,20 @@ mod tests {
         dag.put_cached_floor(hash(20), hash(20)).unwrap();
         assert!(dag.resident_counts().blocks < 21);
         drop(dag);
-        let conf = super::super::tests::conf();
+        let max_allowed_depth = super::super::tests::depth();
         let all: Vec<_> = (0..=20).map(hash).collect();
-        let expected = reference(&storage, &all, &super::super::tests::floor_at(20), &conf);
+        let expected = reference(
+            &storage,
+            &all,
+            &super::super::tests::floor_at(20),
+            max_allowed_depth,
+        );
         assert!(!expected.is_empty());
 
-        assert_eq!(run_to_completion(&storage, &blocks, &conf, 3), expected);
+        assert_eq!(
+            run_to_completion(&storage, &blocks, horizon(false), 3),
+            expected
+        );
     }
 
     #[tokio::test]
@@ -600,12 +629,12 @@ mod tests {
         dag.put_cached_floor(id(28, 0), id(25, 0)).unwrap();
         assert!(dag.resident_counts().blocks < 20);
         drop(dag);
-        let conf = super::super::tests::conf();
+        let max_allowed_depth = super::super::tests::depth();
         let floor = Floor {
             hash: id(25, 0),
             block_number: 25,
         };
-        let expected = reference(&storage, &all, &floor, &conf);
+        let expected = reference(&storage, &all, &floor, max_allowed_depth);
         assert_eq!(
             expected.len(),
             61,
@@ -613,7 +642,10 @@ mod tests {
         );
         assert!(!expected.contains(&id(10, 9)), "the orphan never finalizes");
 
-        assert_eq!(run_to_completion(&storage, &blocks, &conf, 3), expected);
+        assert_eq!(
+            run_to_completion(&storage, &blocks, horizon(false), 3),
+            expected
+        );
     }
 
     fn queued(storage: &BlockDagKeyValueStorage) -> HashSet<BlockHash> {
@@ -673,9 +705,8 @@ mod tests {
             }
         }
         finalize_with_floor(&storage, 20).await;
-        let conf = super::super::tests::conf();
 
-        let deleted = run_to_completion(&storage, &blocks, &conf, 3);
+        let deleted = run_to_completion(&storage, &blocks, horizon(false), 3);
 
         let orphans: HashSet<_> = (1..=15).map(side).collect();
         assert!(deleted.is_disjoint(&orphans), "an orphan's data is kept");
@@ -706,9 +737,8 @@ mod tests {
             }
         }
         finalize_with_floor(&storage, 20).await;
-        let conf = super::super::tests::conf();
 
-        let first = run_to_completion(&storage, &blocks, &conf, 3);
+        let first = run_to_completion(&storage, &blocks, horizon(false), 3);
         assert!(!first.contains(&side(5)) && !first.contains(&side(6)));
         assert!(!queued(&storage).contains(&side(5)));
         assert!(!queued(&storage).contains(&side(6)));
@@ -728,7 +758,7 @@ mod tests {
             "a finalized candidate is never dropped"
         );
 
-        let second = run_to_completion(&storage, &blocks, &conf, 3);
+        let second = run_to_completion(&storage, &blocks, horizon(false), 3);
         assert!(second.contains(&side(5)) && second.contains(&side(6)));
     }
 
@@ -760,9 +790,8 @@ mod tests {
             .unwrap()
             .put_cached_floor(hash(20), hash(20))
             .unwrap();
-        let conf = super::super::tests::conf();
 
-        let deleted = run_to_completion(&storage, &blocks, &conf, 3);
+        let deleted = run_to_completion(&storage, &blocks, horizon(false), 3);
 
         assert!(!deleted.contains(&hash(5)), "there is no body to delete");
         assert!(deleted.contains(&hash(4)) && deleted.contains(&hash(6)));
@@ -791,7 +820,7 @@ mod tests {
     ) -> (
         BlockDagKeyValueStorage,
         KeyValueBlockStore,
-        CasperShardConf,
+        GcHorizon,
         Vec<BlockHash>,
     ) {
         let (storage, blocks) = open().await;
@@ -824,9 +853,7 @@ mod tests {
             .unwrap();
         drop(dag);
 
-        let mut conf = super::super::tests::conf();
-        conf.enable_block_store_gc = enable_block_store_gc;
-        (storage, blocks, conf, all)
+        (storage, blocks, horizon(enable_block_store_gc), all)
     }
 
     /// The block body stays on disk when the flag is off, even though the
@@ -835,14 +862,19 @@ mod tests {
     /// lose block bodies because of an unrelated upgrade.
     #[tokio::test]
     async fn block_bodies_are_retained_when_the_flag_is_off() {
-        let (storage, blocks, conf, all) = linear_chain_with_block_store(false).await;
-        let expected = reference(&storage, &all, &super::super::tests::floor_at(20), &conf);
+        let (storage, blocks, gc_horizon, all) = linear_chain_with_block_store(false).await;
+        let expected = reference(
+            &storage,
+            &all,
+            &super::super::tests::floor_at(20),
+            gc_horizon.max_allowed_depth,
+        );
         assert!(
             !expected.is_empty(),
             "the fixture must contain at least one collectable block"
         );
 
-        let collected = run_to_completion(&storage, &blocks, &conf, 3);
+        let collected = run_to_completion(&storage, &blocks, gc_horizon, 3);
         assert_eq!(collected, expected, "mergeable GC still runs");
 
         for hash in &expected {
@@ -859,14 +891,19 @@ mod tests {
     /// keep their bodies.
     #[tokio::test]
     async fn block_bodies_are_deleted_when_the_flag_is_on() {
-        let (storage, blocks, conf, all) = linear_chain_with_block_store(true).await;
-        let expected = reference(&storage, &all, &super::super::tests::floor_at(20), &conf);
+        let (storage, blocks, gc_horizon, all) = linear_chain_with_block_store(true).await;
+        let expected = reference(
+            &storage,
+            &all,
+            &super::super::tests::floor_at(20),
+            gc_horizon.max_allowed_depth,
+        );
         assert!(
             !expected.is_empty(),
             "the fixture must contain at least one collectable block"
         );
 
-        let collected = run_to_completion(&storage, &blocks, &conf, 3);
+        let collected = run_to_completion(&storage, &blocks, gc_horizon, 3);
         assert_eq!(collected, expected);
 
         for hash in &all {
@@ -887,7 +924,7 @@ mod tests {
     /// (e.g. deleting the body without counting it).
     #[tokio::test]
     async fn run_turn_reports_block_store_deletions() {
-        let (storage, blocks, conf, _all) = linear_chain_with_block_store(true).await;
+        let (storage, blocks, gc_horizon, _all) = linear_chain_with_block_store(true).await;
 
         let mut sweep = GcSweep::new();
         let mut total_blocks_deleted = 0usize;
@@ -898,7 +935,7 @@ mod tests {
                 &mut sweep,
                 &storage,
                 &blocks,
-                &conf,
+                gc_horizon,
                 &effective_anchor,
                 &mut |_block| Ok(true),
                 GC_PAGE_SIZE,
@@ -939,7 +976,7 @@ mod tests {
     /// metadata.
     #[tokio::test]
     async fn effective_anchor_advances_after_delete_phase() {
-        let (storage, blocks, conf, _all) = linear_chain_with_block_store(true).await;
+        let (storage, blocks, gc_horizon, _all) = linear_chain_with_block_store(true).await;
 
         let effective_anchor = AtomicI64::new(0);
         let mut sweep = GcSweep::new();
@@ -948,7 +985,7 @@ mod tests {
                 &mut sweep,
                 &storage,
                 &blocks,
-                &conf,
+                gc_horizon,
                 &effective_anchor,
                 &mut |_block| Ok(true),
                 GC_PAGE_SIZE,
@@ -977,7 +1014,7 @@ mod tests {
     /// RAM-residency change, not a logical pruning.
     #[tokio::test]
     async fn advance_pruning_cutoff_evicts_metadata() {
-        let (storage, blocks, conf, _all) = linear_chain_with_block_store(true).await;
+        let (storage, blocks, gc_horizon, _all) = linear_chain_with_block_store(true).await;
 
         let effective_anchor = AtomicI64::new(0);
         let mut sweep = GcSweep::new();
@@ -986,7 +1023,7 @@ mod tests {
                 &mut sweep,
                 &storage,
                 &blocks,
-                &conf,
+                gc_horizon,
                 &effective_anchor,
                 &mut |_block| Ok(true),
                 GC_PAGE_SIZE,
@@ -1015,7 +1052,7 @@ mod tests {
     /// settled history" mode.
     #[tokio::test]
     async fn effective_anchor_does_not_advance_when_body_pruning_is_off() {
-        let (storage, blocks, conf, _all) = linear_chain_with_block_store(false).await;
+        let (storage, blocks, gc_horizon, _all) = linear_chain_with_block_store(false).await;
 
         let effective_anchor = AtomicI64::new(0);
         let mut sweep = GcSweep::new();
@@ -1024,7 +1061,7 @@ mod tests {
                 &mut sweep,
                 &storage,
                 &blocks,
-                &conf,
+                gc_horizon,
                 &effective_anchor,
                 &mut |_block| Ok(true),
                 GC_PAGE_SIZE,

@@ -34,7 +34,7 @@ use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
-use crate::helper::test_node::{ShardOverrides, TestNode};
+use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
@@ -50,24 +50,19 @@ fn short(sig: &Bytes) -> String { hex::encode(&sig[..8.min(sig.len())]) }
 
 async fn three_node_network(deploy_lifespan: Option<i64>) -> (Vec<TestNode>, String) {
     let n_validators = 3usize;
-    let genesis_parameters =
+    let mut genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
+    if let Some(lifespan) = deploy_lifespan {
+        genesis_parameters.2.proof_of_stake.deploy_lifespan = lifespan;
+    }
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = match deploy_lifespan {
-        Some(lifespan) => {
-            TestNode::create_network_with_overrides(genesis, n_validators, ShardOverrides {
-                deploy_lifespan: Some(lifespan),
-                ..Default::default()
-            })
-            .await
-        }
-        None => TestNode::create_network(genesis, n_validators, None, None, None, None).await,
-    }
-    .expect("create_network");
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
+        .await
+        .expect("create_network");
     for node in nodes.iter_mut() {
         node.allow_empty_blocks = true;
     }
@@ -268,6 +263,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
         .expect("parents have timestamps")
         + 1;
     let block_data = BlockData {
+        committee: Vec::new(),
         time_stamp: now_millis,
         block_number: next_block_num,
         sender: validator_identity.public_key.clone(),
@@ -301,6 +297,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,
         merge_base: checkpoint.merge_base.unwrap_or_default(),
+        leaky_bucket_votes: Vec::new(),
     };
     let header = Header {
         parents_hash_list: snapshot
@@ -471,12 +468,7 @@ async fn validation_floor(node: &TestNode, block: &BlockMessage) -> Floor {
         &node.block_store,
         &block.header.parents_hash_list,
         &latest_messages,
-        FtThreshold::from_ppm(
-            snapshot
-                .on_chain_state
-                .shard_conf
-                .fault_tolerance_threshold_ppm,
-        ),
+        FtThreshold::from_ppm(snapshot.on_chain_state.chain.fault_tolerance_threshold_ppm),
     )
     .await
     .expect("floor derivation")

@@ -53,7 +53,7 @@ async fn foreign_chain_blocks_are_not_accepted_by_main_network() {
     let main_shard_id = main_genesis.genesis_block.shard_id.clone();
 
     // 3-node main network and a standalone rogue node (separate genesis, separate stores).
-    let mut main_nodes = TestNode::create_network(main_genesis, 3, None, None, None, None)
+    let mut main_nodes = TestNode::create_network(main_genesis, 3, None, None, None)
         .await
         .unwrap();
     let mut rogue_node = TestNode::standalone(rogue_genesis.clone()).await.unwrap();

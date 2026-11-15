@@ -20,6 +20,8 @@ use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
+use casper::rust::chain_parameters::ChainParameters;
+use casper::rust::economics::bucket_view::BucketView;
 use casper::rust::errors::CasperError;
 use casper::rust::protocol::{
     extract_packet_from_protocol, to_casper_message_proto, CasperMessageProto, PacketParseResult,
@@ -37,6 +39,7 @@ use crypto::rust::signatures::signed::Signed;
 use models::routing::Protocol;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, Justification,
 };
@@ -148,6 +151,10 @@ impl Casper for AcceptingCasper {
         Ok(self.snapshot.clone())
     }
 
+    fn bucket_view(&self) -> Arc<BucketView> {
+        unreachable!("block ingest does not read the bucket view")
+    }
+
     fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
         Ok(self.dag.contains(hash)?)
     }
@@ -191,6 +198,7 @@ impl Casper for AcceptingCasper {
     async fn handle_valid_block(
         &self,
         block: &BlockMessage,
+        _parents: &[BlockMetadata],
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         self.blocks.persist_block(block)?;
         Ok(self.dag.insert(block, InsertMode::Normal)?)
@@ -230,6 +238,8 @@ impl MultiParentCasper for AcceptingCasper {
     }
 
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
+
+    fn chain_parameters(&self) -> &ChainParameters { &self.snapshot.on_chain_state.chain }
 
     fn get_validator(&self) -> Option<ValidatorIdentity> { None }
 
@@ -563,7 +573,7 @@ async fn a_copy_with_forged_justifications_is_dropped_and_the_original_is_accept
         .await
         .expect("genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 2, None, None, None)
         .await
         .expect("network");
 

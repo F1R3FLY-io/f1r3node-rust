@@ -14,7 +14,7 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -162,7 +162,7 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing_and_add_t
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -217,7 +217,7 @@ async fn multi_parent_casper_should_handle_a_long_chain_of_block_requests_approp
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
 

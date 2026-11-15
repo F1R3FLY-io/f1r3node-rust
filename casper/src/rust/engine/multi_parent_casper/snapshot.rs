@@ -199,7 +199,7 @@ pub(crate) async fn compute_snapshot(
         valid_latest_msgs.values(),
         BlockMetadata::from_block(&this.approved_block, None, None, None),
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-            this.casper_shard_conf.fault_tolerance_threshold_ppm,
+            this.chain_parameters.fault_tolerance_threshold_ppm,
         ),
     )
     .await?;
@@ -210,7 +210,7 @@ pub(crate) async fn compute_snapshot(
             &fork_choice_floor,
             valid_latest_msgs.clone(),
             this.casper_shard_conf.max_number_of_parents,
-            Some(this.casper_shard_conf.max_parent_depth),
+            Some(this.chain_parameters.max_parent_depth),
         )
         .await?;
     // Fork choice's head is where its descent stops, which need not be anyone's
@@ -291,7 +291,7 @@ pub(crate) async fn compute_snapshot(
         parents_after_count_limit.truncate(cap);
     }
 
-    let parents = if this.casper_shard_conf.max_parent_depth != i32::MAX
+    let parents = if this.chain_parameters.max_parent_depth != i32::MAX
         && parents_after_count_limit.len() > 1
     {
         let mut parents_with_meta: Vec<(BlockMessage, BlockMetadata)> =
@@ -301,7 +301,7 @@ pub(crate) async fn compute_snapshot(
             parents_with_meta.push((b, meta));
         }
 
-        let depth = this.casper_shard_conf.max_parent_depth as i64;
+        let depth = this.chain_parameters.max_parent_depth as i64;
         // DEPTH CAP. The kept parents may span at most `max_parent_depth`
         // heights; wider is InvalidParents. The window is anchored on fork
         // choice's head, never on the highest parent: a proposer whose own tip
@@ -483,8 +483,7 @@ pub(crate) async fn compute_snapshot(
                     max_block_num
                 ))
             })?;
-            let earliest_block_number =
-                current_block_number - on_chain_state.shard_conf.deploy_lifespan;
+            let earliest_block_number = current_block_number - on_chain_state.chain.deploy_lifespan;
 
             // Propagate storage errors out of the walk. Silent
             // `.unwrap_or_default()` here is a correctness bug: a
@@ -682,6 +681,7 @@ pub(crate) async fn get_on_chain_state(
         let bm = &block.body.state.bonds;
         return Ok(OnChainCasperState {
             shard_conf: this.casper_shard_conf.clone(),
+            chain: this.chain_parameters.clone(),
             bonds_map: bm
                 .iter()
                 .map(|v| (v.validator.clone(), v.stake.to_bigint()))
@@ -716,6 +716,7 @@ pub(crate) async fn get_on_chain_state(
 
     Ok(OnChainCasperState {
         shard_conf: this.casper_shard_conf.clone(),
+        chain: this.chain_parameters.clone(),
         bonds_map: bm
             .iter()
             .map(|v| (v.validator.clone(), v.stake.to_bigint()))

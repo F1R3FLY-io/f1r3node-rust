@@ -1,0 +1,99 @@
+use std::collections::HashMap;
+
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
+use models::rhoapi::Par;
+use models::rust::block_hash::BlockHash;
+use models::rust::casper::protocol::casper_message::{ClaimId, SystemDeployData};
+use models::rust::utils::new_gstring_par;
+use models::rust::validator::Validator;
+use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNil, RhoString};
+use rspace_plus_plus::rspace::history::Either;
+
+use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
+use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
+
+/// Slashes `accused` for the nay on `claim` that `vote_block` carries. The
+/// contract acts on the accused alone; validation checks the evidence.
+#[derive(Clone)]
+pub struct DishonestVoteDeploy {
+    pub accused: Validator,
+    pub vote_block: BlockHash,
+    pub claim: ClaimId,
+    pub pk: PublicKey,
+    pub initial_rand: Blake2b512Random,
+}
+
+impl SystemDeployTrait for DishonestVoteDeploy {
+    type Output = (RhoBoolean, Either<RhoString, RhoNil>);
+    type Result = ();
+
+    fn source() -> &'static str {
+        r#"
+          new rl(`rho:registry:lookup`),
+          poSCh,
+          accused(`sys:casper:accused`),
+          sysAuthToken(`sys:casper:authToken`),
+          return(`sys:casper:return`)
+          in {
+            rl!(`rho:system:pos`, *poSCh) |
+            for(@(_, PoS) <- poSCh) {
+              @PoS!("slashDishonestVoter", *accused.hexToBytes(), *sysAuthToken, *return)
+            }
+        }"#
+    }
+
+    fn process_result(
+        value: <Self::Output as Extractor>::RustType,
+    ) -> Either<SystemDeployUserError, Self::Result> {
+        match value {
+            (true, _) => Either::Right(()),
+            (false, Either::Left(error_msg)) => Either::Left(SystemDeployUserError::new(error_msg)),
+            _ => Either::Left(SystemDeployUserError::new(
+                "Dishonest-vote slash failed unexpectedly".to_string(),
+            )),
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn recorded_form(&self) -> SystemDeployData {
+        SystemDeployData::DishonestVote {
+            accused: self.accused.clone(),
+            vote_block: self.vote_block.clone(),
+            claim: self.claim.clone(),
+        }
+    }
+
+    fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
+
+    fn env(&mut self) -> HashMap<String, Par> {
+        let mut env = HashMap::new();
+
+        let (d_key, d_value) = self.mk_deployer_id(&self.pk);
+        env.insert(d_key, d_value);
+
+        env.insert(
+            "sys:casper:accused".to_string(),
+            new_gstring_par(hex::encode(&self.accused), Vec::new(), false),
+        );
+
+        let (sys_key, sys_value) = self.mk_sys_auth_token();
+        env.insert(sys_key, sys_value);
+
+        let (ret_key, ret_value) = self.mk_return_channel();
+        env.insert(ret_key, ret_value);
+
+        env
+    }
+
+    fn return_channel(&mut self) -> Result<Par, CasperError> {
+        match self.env().get("sys:casper:return") {
+            Some(par) => Ok(par.clone()),
+            None => Err(CasperError::RuntimeError(
+                "Return channel not found. This is a compile time error.".to_string(),
+            )),
+        }
+    }
+}

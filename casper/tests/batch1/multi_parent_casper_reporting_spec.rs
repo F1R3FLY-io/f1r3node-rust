@@ -175,7 +175,7 @@ async fn reporting_a_slashing_block_replays_its_own_evidence() {
         .await
         .expect("Failed to build genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .expect("Failed to create network");
     let deploy = |nonce| {
@@ -296,7 +296,7 @@ async fn block_replay_proceeds_while_another_consensus_replay_runs() {
         .build_genesis_with_parameters(None)
         .await
         .expect("Failed to build genesis");
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .expect("Failed to create network");
     let deploy = construct_deploy::source_deploy_now(

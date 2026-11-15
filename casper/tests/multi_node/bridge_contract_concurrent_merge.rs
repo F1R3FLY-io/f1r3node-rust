@@ -70,7 +70,7 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
     // 3-validator network. Default unlimited max-parents; no synchrony
     // constraint. validators[0] = bridge1 proposer, validators[1] = bridge2
     // proposer, validators[2] = merge proposer.
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
     // Heartbeat mode: non-leader proposers emit empty support blocks instead

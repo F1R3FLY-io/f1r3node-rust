@@ -197,6 +197,7 @@ impl ConfigMapper<Options> for NodeConf {
                 run.max_number_of_parents,
             );
             Self::try_override_value(&mut self.casper.max_parent_depth, run.max_parent_depth);
+            Self::try_override_value(&mut self.casper.deploy_lifespan, run.deploy_lifespan);
             Self::try_override_value(
                 &mut self.casper.synchrony_constraint_threshold,
                 run.synchrony_constraint_threshold,
@@ -276,6 +277,25 @@ impl ConfigMapper<Options> for NodeConf {
             Self::try_override_value(
                 &mut self.casper.genesis_block_data.quarantine_length,
                 run.quarantine_length,
+            );
+            Self::try_override_value(
+                &mut self.casper.genesis_block_data.leaky_bucket_reward_rate_ppm,
+                run.leaky_bucket_reward_rate_ppm,
+            );
+            Self::try_override_value(
+                &mut self.casper.genesis_block_data.leaky_bucket_lambda_base_ppm,
+                run.leaky_bucket_lambda_base_ppm,
+            );
+            Self::try_override_value(
+                &mut self.casper.genesis_block_data.leaky_bucket_theta_eject_ppm,
+                run.leaky_bucket_theta_eject_ppm,
+            );
+            Self::try_override_value(
+                &mut self
+                    .casper
+                    .genesis_block_data
+                    .leaky_bucket_eject_observation_blocks,
+                run.leaky_bucket_eject_observation_blocks,
             );
             Self::try_override_value(
                 &mut self.casper.genesis_block_data.number_of_active_validators,
@@ -680,6 +700,7 @@ mod tests {
                 finalization_rate: Some(111111),
                 max_number_of_parents: Some(111111),
                 max_parent_depth: Some(111111),
+                deploy_lifespan: Some(111111),
                 fork_choice_stale_threshold: Some(Duration::from_secs(111111)),
                 fork_choice_check_if_stale_interval: Some(Duration::from_secs(111111)),
                 synchrony_constraint_threshold: Some(111111.0),
@@ -695,6 +716,10 @@ mod tests {
                 bond_maximum: Some(111111.into()),
                 epoch_length: Some(111111),
                 quarantine_length: Some(111111),
+                leaky_bucket_reward_rate_ppm: Some(50_000),
+                leaky_bucket_lambda_base_ppm: Some(5_000),
+                leaky_bucket_theta_eject_ppm: Some(800_000),
+                leaky_bucket_eject_observation_blocks: Some(10),
                 number_of_active_validators: Some(111111),
                 native_token_name: Some("F1R3CAP".to_string()),
                 native_token_symbol: Some("F1R3".to_string()),
@@ -840,6 +865,16 @@ mod tests {
                     epoch_length: 10000,
                     quarantine_length: 10000,
                     number_of_active_validators: 5,
+                    leaky_bucket_reward_rate_ppm: 630,
+                    leaky_bucket_lambda_base_ppm: 140,
+                    leaky_bucket_theta_eject_ppm: 900_000,
+                    leaky_bucket_eject_observation_blocks: 60,
+                    leaky_bucket_breadth_exponent: 2,
+                    leaky_bucket_recency_reference_ppm: 1_000_000,
+
+                    leaky_bucket_vote_list_bound: 32,
+                    leaky_bucket_max_overflow_claim_minimum_bonds: 10,
+                    leaky_bucket_failed_claim_fee_ppm: 1_000,
                     genesis_block_number: 0,
                     pos_multi_sig_public_keys: vec![],
                     pos_multi_sig_quorum: 0,
@@ -1059,6 +1094,7 @@ mod tests {
         assert_eq!(default_config.casper.finalization_rate, 111111);
         assert_eq!(default_config.casper.max_number_of_parents, 111111);
         assert_eq!(default_config.casper.max_parent_depth, 111111);
+        assert_eq!(default_config.casper.deploy_lifespan, 111111);
         assert_eq!(
             default_config.casper.fork_choice_stale_threshold,
             Duration::from_secs(111111)
@@ -1191,6 +1227,16 @@ mod tests {
         assert_eq!(
             default_config.casper.genesis_block_data.quarantine_length,
             111111
+        );
+        let genesis = &default_config.casper.genesis_block_data;
+        assert_eq!(
+            (
+                genesis.leaky_bucket_reward_rate_ppm,
+                genesis.leaky_bucket_lambda_base_ppm,
+                genesis.leaky_bucket_theta_eject_ppm,
+                genesis.leaky_bucket_eject_observation_blocks,
+            ),
+            (50_000, 5_000, 800_000, 10)
         );
         assert_eq!(
             default_config

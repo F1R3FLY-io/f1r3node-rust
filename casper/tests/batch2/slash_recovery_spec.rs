@@ -153,7 +153,7 @@ struct ParallelSlashes {
 }
 
 async fn parallel_slashes(ctx: &TestContext) -> ParallelSlashes {
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
 
@@ -382,7 +382,7 @@ async fn a_slash_the_merged_parents_carry_is_not_re_issued() {
 async fn slash_survives_merge_with_pre_slash_sibling() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
     // ONLY node 1 observes the equivocation → only node 1 will slash.
@@ -486,7 +486,7 @@ async fn a_view_lagging_its_finalized_frontier_slashes_and_peers_accept() {
     use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
     use casper::rust::blocks::proposer::proposer::DeploySelection;
     let ctx = TestContext::new().await;
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
     let deploy = |nonce: i32| {
@@ -552,7 +552,12 @@ async fn a_view_lagging_its_finalized_frontier_slashes_and_peers_accept() {
         nodes[1].rejected_deploy_buffer.clone(),
         &nodes[1].runtime_manager,
         &mut nodes[1].block_store.clone(),
+        &nodes[1].block_dag_storage,
         DeploySelection::Standard,
+        casper::rust::economics::bucket_view::LeakyBucketProposal::abstaining(
+            *nodes[1].casper.bucket_view().params(),
+        )
+        .fixed(),
     )
     .await
     .expect("block creation")
@@ -581,7 +586,7 @@ async fn a_view_lagging_its_finalized_frontier_slashes_and_peers_accept() {
 async fn slash_block_replays_with_its_own_slash_targets() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
 
@@ -680,7 +685,7 @@ async fn a_slash_lost_to_the_merge_is_issued_again_by_the_merge_proposer() {
     use crate::helper::bonding_util;
 
     let ctx = TestContext::with_bonds(validator_2_heaviest).await;
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
     let deploy = |nonce: i32| {

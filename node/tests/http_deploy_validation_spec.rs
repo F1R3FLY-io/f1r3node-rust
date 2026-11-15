@@ -81,7 +81,6 @@ fn app_state(engine_cell: EngineCell) -> AppState {
         node_discovery.clone(),
         None,
         100,
-        10,
         is_ready,
     );
     let events = F1r3flyEvents::new();

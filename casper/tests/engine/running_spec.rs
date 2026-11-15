@@ -79,6 +79,10 @@ mod tests {
 
         fn casper_shard_conf(&self) -> &CasperShardConf { self.inner.casper_shard_conf() }
 
+        fn chain_parameters(&self) -> &casper::rust::chain_parameters::ChainParameters {
+            self.inner.chain_parameters()
+        }
+
         fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
             self.inner.genesis_block_hash()
         }
@@ -106,6 +110,10 @@ mod tests {
     impl Casper for ValidatorAwareNoOpsCasper {
         async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
             self.inner.get_snapshot().await
+        }
+
+        fn bucket_view(&self) -> Arc<casper::rust::economics::bucket_view::BucketView> {
+            self.inner.bucket_view()
         }
 
         fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
@@ -158,11 +166,12 @@ mod tests {
         async fn handle_valid_block(
             &self,
             block: &BlockMessage,
+            parents: &[models::rust::block_metadata::BlockMetadata],
         ) -> Result<
             block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
             CasperError,
         > {
-            self.inner.handle_valid_block(block).await
+            self.inner.handle_valid_block(block, parents).await
         }
 
         fn handle_invalid_block(

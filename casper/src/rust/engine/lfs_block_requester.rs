@@ -294,7 +294,11 @@ struct StreamProcessor<'a, T: BlockRequesterOps> {
     requester: &'a mut T,
     st: Arc<Mutex<ST<BlockHash>>>,
     latest_messages: HashMap<BlockHash, Validator>,
-    response_hash_sender: mpsc::Sender<BlockHash>,
+    /// Requested blocks already in the store, waiting to be processed. The
+    /// stream loop both fills and drains this, so it must never wait on it.
+    held: VecDeque<BlockHash>,
+    /// What `held` contains, so a resend does not queue a block twice.
+    queued: HashSet<BlockHash>,
 }
 
 impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
@@ -302,14 +306,20 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
         requester: &'a mut T,
         st: Arc<Mutex<ST<BlockHash>>>,
         latest_messages: HashMap<BlockHash, Validator>,
-        response_hash_sender: mpsc::Sender<BlockHash>,
     ) -> Self {
         Self {
             requester,
             st,
             latest_messages,
-            response_hash_sender,
+            held: VecDeque::new(),
+            queued: HashSet::new(),
         }
+    }
+
+    fn next_held(&mut self) -> Option<BlockHash> {
+        let hash = self.held.pop_front()?;
+        self.queued.remove(&hash);
+        Some(hash)
     }
 
     async fn process_block(&mut self, block: &BlockMessage) -> Result<bool, CasperError> {
@@ -545,7 +555,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
     }
 
     /// Reads current state for next blocks and send the requests.
-    async fn request_next(&self, resend: bool) -> Result<(), CasperError> {
+    async fn request_next(&mut self, resend: bool) -> Result<(), CasperError> {
         let start_time = std::time::Instant::now();
 
         // Check if stream is finished (no more requests)
@@ -613,19 +623,15 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             hashes.len()
         );
 
-        // Enqueue hashes of existing blocks
         if !existing_hashes.is_empty() {
             tracing::info!(
                 "Found {} existing blocks in store, queueing for processing",
                 existing_hashes.len()
             );
             for hash in existing_hashes.iter() {
-                self.response_hash_sender
-                    .send(hash.clone())
-                    .await
-                    .map_err(|_| {
-                        CasperError::StreamError("Failed to enqueue existing hash".to_string())
-                    })?;
+                if self.queued.insert(hash.clone()) {
+                    self.held.push_back(hash.clone());
+                }
             }
         }
 
@@ -644,17 +650,25 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             );
 
             // Create parallel futures for all missing block requests
+            let requester = &*self.requester;
             let request_futures: Vec<_> = missing_blocks
                 .into_iter()
-                .map(
-                    |block_hash| async move { self.requester.request_for_block(&block_hash).await },
-                )
+                .map(|block_hash| async move { requester.request_for_block(&block_hash).await })
                 .collect();
 
             let request_count = request_futures.len();
 
-            // Execute all requests in parallel, short-circuit on first error
-            futures::future::try_join_all(request_futures).await?;
+            // A broadcast fails when any one peer is unreachable, though the
+            // rest received the request. The idle resend retries what no peer
+            // answers, so a failed send is no error of the stream's.
+            for result in futures::future::join_all(request_futures).await {
+                if let Err(e) = result {
+                    tracing::warn!(
+                        "Failed to send a block request: {:?}; will retry via idle-resend.",
+                        e
+                    );
+                }
+            }
 
             let request_duration = request_start.elapsed();
             tracing::info!(
@@ -718,8 +732,6 @@ pub async fn stream<'a, T: BlockRequesterOps>(
 
     // Queue to trigger processing of requests. `True` to resend requests.
     let (request_tx, request_rx) = mpsc::channel(2);
-    // Response queue for existing blocks in the store.
-    let (response_hash_tx, response_hash_rx) = mpsc::channel(1024);
 
     // Light the fire! / Starts the first request for block
     // - `false` means don't resend already requested blocks
@@ -728,7 +740,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
         .await
         .map_err(|_| CasperError::StreamError("Failed to send initial request".to_string()))?;
 
-    let processor = StreamProcessor::new(block_ops, st.clone(), latest_messages, response_hash_tx);
+    let processor = StreamProcessor::new(block_ops, st.clone(), latest_messages);
 
     // Task 6.2: Enhanced resource cleanup with proper channel management
     tracing::info!("LFS Block Requester stream initialized - starting processing");
@@ -743,7 +755,6 @@ pub async fn stream<'a, T: BlockRequesterOps>(
         processor,
         request_rx,
         request_tx,
-        response_hash_rx,
         initial_response_messages,
         response_message_receiver,
         response_queue_pending,
@@ -769,7 +780,6 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
     mut processor: StreamProcessor<'a, T>,
     mut request_queue: mpsc::Receiver<bool>,
     request_queue_sender: mpsc::Sender<bool>,
-    mut response_hash_queue: mpsc::Receiver<BlockHash>,
     initial_response_messages: &'a VecDeque<BlockMessage>,
     mut response_message_receiver: mpsc::Receiver<BlockMessage>,
     response_queue_pending: Arc<AtomicUsize>,
@@ -1047,7 +1057,7 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                     yield current_state;
                 }
 
-                Some(block_hash) = response_hash_queue.recv() => {
+                Some(block_hash) = async { processor.next_held() } => {
                     let permit = match response_semaphore.clone().acquire_owned().await {
                         Ok(permit) => permit,
                         Err(e) => {
@@ -1225,8 +1235,7 @@ mod window_tests {
         let state = ST::new(HashSet::from([block.block_hash.clone()]), None, Some(10));
         let (state, _) = state.get_next(false);
         let state = Arc::new(Mutex::new(state));
-        let (sender, mut receiver) = mpsc::channel(1);
-        let mut processor = StreamProcessor::new(&mut ops, state.clone(), HashMap::new(), sender);
+        let mut processor = StreamProcessor::new(&mut ops, state.clone(), HashMap::new());
 
         assert!(processor.process_block(&block).await.unwrap());
         assert!(!processor.process_block(&block).await.unwrap());
@@ -1236,7 +1245,7 @@ mod window_tests {
         );
         assert_eq!(processor.requester.blocks.len(), 1);
         assert!(processor.requester.requests.lock().unwrap().is_empty());
-        assert!(receiver.try_recv().is_err());
+        assert!(processor.held.is_empty());
         let state = state.lock().unwrap();
         assert!(state.is_finished());
         assert_eq!(state.finished, HashSet::from([block.block_hash]));
@@ -1255,8 +1264,7 @@ mod window_tests {
         let state = ST::new(HashSet::from([block.block_hash.clone()]), None, Some(10));
         let (state, _) = state.get_next(false);
         let state = Arc::new(Mutex::new(state));
-        let (sender, _receiver) = mpsc::channel(1);
-        let mut processor = StreamProcessor::new(&mut ops, state.clone(), HashMap::new(), sender);
+        let mut processor = StreamProcessor::new(&mut ops, state.clone(), HashMap::new());
 
         for invalid in [invalid_hash, invalid_signature] {
             assert!(!processor.process_block(&invalid).await.unwrap());
@@ -1293,15 +1301,13 @@ mod window_tests {
             let state = Arc::new(Mutex::new(state));
             let mut ops = ProgressBlockOps::default();
             let (request_tx, request_rx) = mpsc::channel(2);
-            let (hash_tx, hash_rx) = mpsc::channel(1);
             let (message_tx, message_rx) = mpsc::channel(1);
             let initial = VecDeque::new();
-            let processor = StreamProcessor::new(&mut ops, state, HashMap::new(), hash_tx);
+            let processor = StreamProcessor::new(&mut ops, state, HashMap::new());
             let stream = create_stream_with_processor(
                 processor,
                 request_rx,
                 request_tx,
-                hash_rx,
                 &initial,
                 message_rx,
                 Arc::new(AtomicUsize::new(1)),

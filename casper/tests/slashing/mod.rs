@@ -47,6 +47,7 @@ mod integration_t_invalid_transaction_block_exception;
 mod integration_t_slash_auth_storage_error;
 mod integration_t_valid_no_record;
 mod late_equivocation_liveness;
+mod late_joiner_equivocation;
 mod observer;
 mod oracle;
 mod oracle_adapter;

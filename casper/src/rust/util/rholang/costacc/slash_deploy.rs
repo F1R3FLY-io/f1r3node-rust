@@ -6,7 +6,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::EquivocationEvidence;
+use models::rust::casper::protocol::casper_message::{EquivocationEvidence, SystemDeployData};
 use models::rust::utils::new_gstring_par;
 use rholang::rust::interpreter::rho_type::{Extractor, RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
@@ -79,6 +79,10 @@ impl SystemDeployTrait for SlashDeploy {
     }
 
     fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn recorded_form(&self) -> SystemDeployData {
+        SystemDeployData::create_slash(self.evidence.clone(), self.pk.clone())
+    }
 
     fn rand(&self) -> Blake2b512Random { self.initial_rand.clone() }
 
