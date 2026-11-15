@@ -45,21 +45,25 @@ pub const ANNOUNCE_MAX_IN_FLIGHT: usize = 128;
 /// `Undecidable` and `AwaitingState` are the absence of a verdict, so they are
 /// what an attacker would want a crafted block to induce. They are acceptable
 /// only on a node whose history is cut short: a node restored from a sync
-/// anchor has nothing below it. A genesis-rooted node (approved block at
-/// height zero) holds every block and root it ever needed, so a missing one is
-/// local corruption and the block is judged.
+/// anchor has nothing below it, and a genesis-rooted node past block-store GC
+/// no longer holds history beneath the pruning cutoff. The effective anchor
+/// is the greater of the approved block's height and the furthest advance
+/// GC has made, so the exemption tracks reality rather than birth
+/// circumstance. A truly genesis-rooted node that has never GC'd stays at
+/// zero and records the deferral as `InvalidTransaction` — a missing block
+/// there is local corruption, not sync.
 pub(crate) fn guard_deferral(
     status: ValidBlockProcessing,
-    approved_block_number: i64,
+    effective_anchor_number: i64,
 ) -> ValidBlockProcessing {
     match status {
-        Either::Left(BlockError::Undecidable(hash)) if approved_block_number == 0 => {
+        Either::Left(BlockError::Undecidable(hash)) if effective_anchor_number == 0 => {
             Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(
                 hash,
                 MissingBlockContext::new("genesis-rooted node refuses deferral"),
             )))
         }
-        Either::Left(BlockError::AwaitingState(root)) if approved_block_number == 0 => {
+        Either::Left(BlockError::AwaitingState(root)) if effective_anchor_number == 0 => {
             Either::Left(BlockError::BlockException(CasperError::Other(format!(
                 "state root {} missing on a genesis-rooted node — local corruption, not sync",
                 root
@@ -79,12 +83,12 @@ pub(crate) fn guard_deferral(
 /// passes.
 pub(crate) fn admit_as_settled(
     block_number: i64,
-    approved_block_number: i64,
+    effective_anchor_number: i64,
     budget_remaining: bool,
     seq_below_senders_latest: bool,
 ) -> bool {
-    approved_block_number > 0
-        && block_number <= approved_block_number
+    effective_anchor_number > 0
+        && block_number <= effective_anchor_number
         && budget_remaining
         && seq_below_senders_latest
 }
@@ -200,7 +204,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
     ) -> Result<(ValidBlockProcessing, WorkOutcome), CasperError> {
         metrics::histogram!(BLOCK_SIZE_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(block.to_proto().encoded_len() as f64);
-        let approved_block_number = proto_util::block_number(casper.get_approved_block()?);
+        let effective_anchor_number = casper.effective_anchor_number();
         let mut snapshot = match IngestStep::ValidationSetup
             .time_async(casper.get_snapshot())
             .await
@@ -209,7 +213,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
             Err(CasperError::BlockNotHeld(missing, site)) => {
                 let guarded = guard_deferral(
                     Either::Left(BlockError::Undecidable(missing.clone())),
-                    approved_block_number,
+                    effective_anchor_number,
                 );
                 if !matches!(guarded, Either::Left(BlockError::Undecidable(_))) {
                     return Err(CasperError::BlockNotHeld(missing, site));
@@ -228,7 +232,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
         let status = IngestStep::Validation
             .time_async(casper.validate(block, &mut snapshot))
             .await?;
-        let status = match guard_deferral(status, approved_block_number) {
+        let status = match guard_deferral(status, effective_anchor_number) {
             // A storage failure says nothing about the block: it is retried,
             // never recorded as a verdict.
             Either::Left(BlockError::BlockException(CasperError::KvStoreError(error))) => {
@@ -347,7 +351,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
         casper: Arc<dyn Casper + Send + Sync>,
         block: &BlockMessage,
     ) -> Result<bool, CasperError> {
-        let approved_block_number = proto_util::block_number(casper.get_approved_block()?);
+        let effective_anchor_number = casper.effective_anchor_number();
         let seq_below_senders_latest = match self.dag.latest_message_hash(&block.sender)? {
             Some(latest_hash) => match self.dag.lookup(&latest_hash)? {
                 Some(latest) => block.seq_num < latest.sequence_number,
@@ -357,7 +361,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
         };
         if !admit_as_settled(
             proto_util::block_number(block),
-            approved_block_number,
+            effective_anchor_number,
             self.settled_admissions.load(Ordering::Relaxed) < SETTLED_ADMISSION_BUDGET,
             seq_below_senders_latest,
         ) {
@@ -397,7 +401,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
         tracing::info!(
             block = %PrettyPrinter::build_string_bytes(&block.block_hash),
             block_number = proto_util::block_number(block),
-            anchor_number = approved_block_number,
+            anchor_number = effective_anchor_number,
             admitted,
             "Admitted solicited block as settled history (below this node's sync anchor)"
         );
