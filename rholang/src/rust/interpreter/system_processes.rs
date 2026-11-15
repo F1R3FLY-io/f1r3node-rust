@@ -41,7 +41,7 @@ use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
 use crate::rust::interpreter::chromadb_service::{CollectionEntries, Metadata};
 #[cfg(feature = "chromadb")]
-use crate::rust::interpreter::rho_type::{Extractor, RhoNil};
+use crate::rust::interpreter::rho_type::{Extractor, RhoList, RhoNil};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
 // NOTE: Not implementing Logger
