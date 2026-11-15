@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
@@ -15,8 +16,14 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GcProgress {
-    Yielded { deleted: usize },
-    Complete { deleted: usize },
+    Yielded {
+        deleted: usize,
+        blocks_deleted: usize,
+    },
+    Complete {
+        deleted: usize,
+        blocks_deleted: usize,
+    },
 }
 
 /// A garbage-collection pass, resumed one page per turn. Discovery progress
@@ -33,10 +40,37 @@ impl GcSweep {
     pub fn new() -> Self { Self::default() }
 }
 
+/// How deep below the finalized floor a pass reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GcHorizon {
+    /// `max-parent-depth` plus the GC depth buffer: no honest block cites a
+    /// block deeper than this below the floor.
+    pub max_allowed_depth: i64,
+    pub deploy_lifespan: i64,
+    /// Whether a collected block's stored body is deleted with its mergeable
+    /// data.
+    pub delete_block_bodies: bool,
+}
+
+impl GcHorizon {
+    /// Where discovery stops below the floor. A walk over the deploy-lifespan
+    /// window reads block bodies `deploy_lifespan` below a parent, and a
+    /// parent sits up to `max_allowed_depth` below the floor, so bodies are
+    /// deleted only past both; mergeable data is per-block state that no such
+    /// walk reads.
+    fn discovery_depth(&self) -> i64 {
+        if self.delete_block_bodies {
+            self.max_allowed_depth + self.deploy_lifespan
+        } else {
+            self.max_allowed_depth
+        }
+    }
+}
+
 struct Pass {
     dag: KeyValueDagRepresentation,
     floor: Floor,
-    max_allowed_depth: i64,
+    horizon: GcHorizon,
     target: i64,
     discovery_start: i64,
     discovery_cursor: Option<Vec<u8>>,
@@ -71,13 +105,14 @@ fn cached_floor(dag: &KeyValueDagRepresentation) -> Result<Option<Floor>, KvStor
 fn start_pass(
     storage: &BlockDagKeyValueStorage,
     store: &DagGcStore,
-    max_allowed_depth: i64,
+    horizon: GcHorizon,
 ) -> Result<Option<Pass>, KvStoreError> {
     let preliminary = storage.get_representation()?;
     let Some(floor) = cached_floor(&preliminary)? else {
         return Ok(None);
     };
-    let state = store.reserve_discovery(floor.block_number.saturating_sub(max_allowed_depth))?;
+    let state =
+        store.reserve_discovery(floor.block_number.saturating_sub(horizon.discovery_depth()))?;
     drop(preliminary);
     let dag = storage.get_representation()?;
     let Some(floor) = cached_floor(&dag)? else {
@@ -86,7 +121,7 @@ fn start_pass(
     Ok(Some(Pass {
         dag,
         floor,
-        max_allowed_depth,
+        horizon,
         target: state.claimed_ceiling.unwrap_or(-1),
         discovery_start: state
             .completed_ceiling
@@ -100,7 +135,8 @@ fn run_turn<F>(
     sweep: &mut GcSweep,
     storage: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
-    max_allowed_depth: i64,
+    horizon: GcHorizon,
+    effective_anchor: &AtomicI64,
     delete: &mut F,
     page: usize,
 ) -> Result<GcProgress, KvStoreError>
@@ -109,15 +145,19 @@ where
 {
     let store = storage.gc_store();
     let mut deleted = 0;
+    let mut blocks_deleted = 0;
     loop {
         match std::mem::take(&mut sweep.phase) {
-            Phase::Idle => match start_pass(storage, &store, max_allowed_depth)? {
+            Phase::Idle => match start_pass(storage, &store, horizon)? {
                 Some(pass) => sweep.phase = Phase::Discover(pass),
                 None => {
                     metrics::counter!("mergeable_channels_gc_floor_deferred").increment(1);
                     tracing::warn!("mergeable-channel GC deferred: last finalized block has no persisted floor");
                     sweep.pending_len = 0;
-                    return Ok(GcProgress::Complete { deleted: 0 });
+                    return Ok(GcProgress::Complete {
+                        deleted: 0,
+                        blocks_deleted: 0,
+                    });
                 }
             },
             Phase::Discover(mut pass) => {
@@ -139,7 +179,10 @@ where
                     if let Some(next) = rows.next {
                         pass.discovery_cursor = Some(next);
                         sweep.phase = Phase::Discover(pass);
-                        return Ok(GcProgress::Yielded { deleted });
+                        return Ok(GcProgress::Yielded {
+                            deleted,
+                            blocks_deleted,
+                        });
                     }
                 }
                 let cursor = pass.retry_cursor.clone();
@@ -167,7 +210,7 @@ where
                         &pass.dag,
                         &hash,
                         &pass.floor,
-                        pass.max_allowed_depth,
+                        pass.horizon.max_allowed_depth,
                     )? {
                         let height = pass.dag.block_number_unsafe(&hash)?;
                         minimum = Some(minimum.map_or(height, |lowest| lowest.min(height)));
@@ -179,15 +222,35 @@ where
                         cursor: Some(next),
                         minimum,
                     };
-                    return Ok(GcProgress::Yielded { deleted });
+                    return Ok(GcProgress::Yielded {
+                        deleted,
+                        blocks_deleted,
+                    });
                 }
                 let Some(minimum) = minimum else {
                     store.finish_retry_page(None)?;
                     sweep.pending_len = 0;
-                    return Ok(GcProgress::Complete { deleted });
+                    return Ok(GcProgress::Complete {
+                        deleted,
+                        blocks_deleted,
+                    });
                 };
                 let moved_past = super::moved_past_by_every_validator(&pass.dag, minimum)?;
                 let cursor = pass.retry_cursor.clone();
+                // Advance the effective-anchor atomic before any body
+                // deletion in the pass. If the atomic advances AFTER the
+                // first body is deleted, a walker that lands on the
+                // missing body during the window reads anchor=0 and
+                // `guard_deferral` promotes to BlockException — the
+                // failure PR #1010's integration tests surfaced.
+                // `fetch_max` is monotone; a crash mid-pass leaves the
+                // atomic at `pass.target` without the matching metadata
+                // eviction (the latter runs at Complete), which is the
+                // valid state "anchor advanced, pruning not yet
+                // finished".
+                if pass.horizon.delete_block_bodies && pass.target >= 0 {
+                    effective_anchor.fetch_max(pass.target, Ordering::Release);
+                }
                 sweep.phase = Phase::Delete {
                     pass,
                     moved_past,
@@ -207,7 +270,7 @@ where
                             &pass.dag,
                             &hash,
                             &pass.floor,
-                            pass.max_allowed_depth,
+                            pass.horizon.max_allowed_depth,
                             moved_past.as_ref(),
                         )?
                     {
@@ -217,6 +280,19 @@ where
                     if let Some(block) = blocks.get(&hash)? {
                         if delete(&block)? {
                             deleted += 1;
+                        }
+                        // At this horizon no honest validator can still cite
+                        // the block (every active validator has moved past it,
+                        // and it sits more than `max_parent_depth +
+                        // mergeable_channels_gc_depth_buffer` below the
+                        // finalized floor), so the stored body is unreachable
+                        // too. Equivocation-detector and other missing-body
+                        // read sites already treat `None` as "skip", so
+                        // dropping it here does not change any honest-path
+                        // verdict — only a byzantine block that cites across
+                        // this horizon can observe the deletion.
+                        if pass.horizon.delete_block_bodies && blocks.discard_stored(&hash)? {
+                            blocks_deleted += 1;
                         }
                     }
                     store.remove_retry(&hash)?;
@@ -230,11 +306,28 @@ where
                             moved_past,
                             cursor: Some(next),
                         };
-                        return Ok(GcProgress::Yielded { deleted });
+                        return Ok(GcProgress::Yielded {
+                            deleted,
+                            blocks_deleted,
+                        });
                     }
                     None => {
                         sweep.pending_len = 0;
-                        return Ok(GcProgress::Complete { deleted });
+                        // All bodies in this pass are deleted. Persist the
+                        // advanced anchor so a restart resumes with
+                        // `guard_deferral` already permissive. Metadata is
+                        // left in the in-memory window (refresh_window
+                        // handles that on its own timing); evicting it here
+                        // would force downstream walks into disk fallback
+                        // for every reference to below-cutoff state, which
+                        // surfaced as test-patience timeouts in CI.
+                        if pass.horizon.delete_block_bodies && pass.target >= 0 {
+                            storage.gc_store().advance_effective_anchor(pass.target)?;
+                        }
+                        return Ok(GcProgress::Complete {
+                            deleted,
+                            blocks_deleted,
+                        });
                     }
                 }
             }
@@ -247,7 +340,8 @@ pub fn collect_garbage_with<F>(
     sweep: &mut GcSweep,
     storage: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
-    max_allowed_depth: i64,
+    horizon: GcHorizon,
+    effective_anchor: &AtomicI64,
     delete: &mut F,
 ) -> Result<GcProgress, KvStoreError>
 where
@@ -257,7 +351,8 @@ where
         sweep,
         storage,
         blocks,
-        max_allowed_depth,
+        horizon,
+        effective_anchor,
         delete,
         GC_PAGE_SIZE,
     );
@@ -273,14 +368,16 @@ pub async fn collect_garbage(
     storage: &BlockDagKeyValueStorage,
     blocks: &KeyValueBlockStore,
     runtime: &Arc<RuntimeManager>,
-    max_allowed_depth: i64,
+    horizon: GcHorizon,
+    effective_anchor: &AtomicI64,
 ) -> Result<GcProgress, KvStoreError> {
     let started = std::time::Instant::now();
     let result = run_turn(
         sweep,
         storage,
         blocks,
-        max_allowed_depth,
+        horizon,
+        effective_anchor,
         &mut |block| {
             runtime
                 .delete_mergeable_channels(
@@ -297,10 +394,18 @@ pub async fn collect_garbage(
         sweep.pending_len = 0;
     }
     if let Ok(progress) = result.as_ref() {
-        let deleted = match progress {
-            GcProgress::Yielded { deleted } | GcProgress::Complete { deleted } => *deleted,
+        let (deleted, blocks_deleted) = match progress {
+            GcProgress::Yielded {
+                deleted,
+                blocks_deleted,
+            }
+            | GcProgress::Complete {
+                deleted,
+                blocks_deleted,
+            } => (*deleted, *blocks_deleted),
         };
         metrics::counter!("mergeable_channels_gc_deleted").increment(deleted as u64);
+        metrics::counter!("block_store_gc_deleted").increment(blocks_deleted as u64);
         if matches!(progress, GcProgress::Yielded { .. }) {
             metrics::counter!("mergeable_channels_gc_yields").increment(1);
         }
@@ -352,21 +457,31 @@ mod tests {
 
     /// Runs turns until the pass completes, replacing the sweep once mid-way
     /// through deletion, and returns the hashes `delete` saw.
+    fn horizon(delete_block_bodies: bool) -> GcHorizon {
+        GcHorizon {
+            max_allowed_depth: super::super::tests::depth(),
+            deploy_lifespan: 0,
+            delete_block_bodies,
+        }
+    }
+
     fn run_to_completion(
         storage: &BlockDagKeyValueStorage,
         blocks: &KeyValueBlockStore,
-        max_allowed_depth: i64,
+        horizon: GcHorizon,
         page: usize,
     ) -> HashSet<BlockHash> {
         let mut sweep = GcSweep::new();
         let mut deleted = HashSet::new();
         let mut restarted = false;
+        let effective_anchor = AtomicI64::new(0);
         for _ in 0..1_000 {
             let progress = run_turn(
                 &mut sweep,
                 storage,
                 blocks,
-                max_allowed_depth,
+                horizon,
+                &effective_anchor,
                 &mut |block| {
                     assert!(
                         deleted.insert(block.block_hash.clone()),
@@ -453,7 +568,7 @@ mod tests {
         assert!(!expected.is_empty());
 
         assert_eq!(
-            run_to_completion(&storage, &blocks, max_allowed_depth, 3),
+            run_to_completion(&storage, &blocks, horizon(false), 3),
             expected
         );
     }
@@ -528,7 +643,7 @@ mod tests {
         assert!(!expected.contains(&id(10, 9)), "the orphan never finalizes");
 
         assert_eq!(
-            run_to_completion(&storage, &blocks, max_allowed_depth, 3),
+            run_to_completion(&storage, &blocks, horizon(false), 3),
             expected
         );
     }
@@ -590,9 +705,8 @@ mod tests {
             }
         }
         finalize_with_floor(&storage, 20).await;
-        let max_allowed_depth = super::super::tests::depth();
 
-        let deleted = run_to_completion(&storage, &blocks, max_allowed_depth, 3);
+        let deleted = run_to_completion(&storage, &blocks, horizon(false), 3);
 
         let orphans: HashSet<_> = (1..=15).map(side).collect();
         assert!(deleted.is_disjoint(&orphans), "an orphan's data is kept");
@@ -623,9 +737,8 @@ mod tests {
             }
         }
         finalize_with_floor(&storage, 20).await;
-        let max_allowed_depth = super::super::tests::depth();
 
-        let first = run_to_completion(&storage, &blocks, max_allowed_depth, 3);
+        let first = run_to_completion(&storage, &blocks, horizon(false), 3);
         assert!(!first.contains(&side(5)) && !first.contains(&side(6)));
         assert!(!queued(&storage).contains(&side(5)));
         assert!(!queued(&storage).contains(&side(6)));
@@ -645,7 +758,7 @@ mod tests {
             "a finalized candidate is never dropped"
         );
 
-        let second = run_to_completion(&storage, &blocks, max_allowed_depth, 3);
+        let second = run_to_completion(&storage, &blocks, horizon(false), 3);
         assert!(second.contains(&side(5)) && second.contains(&side(6)));
     }
 
@@ -677,9 +790,8 @@ mod tests {
             .unwrap()
             .put_cached_floor(hash(20), hash(20))
             .unwrap();
-        let max_allowed_depth = super::super::tests::depth();
 
-        let deleted = run_to_completion(&storage, &blocks, max_allowed_depth, 3);
+        let deleted = run_to_completion(&storage, &blocks, horizon(false), 3);
 
         assert!(!deleted.contains(&hash(5)), "there is no body to delete");
         assert!(deleted.contains(&hash(4)) && deleted.contains(&hash(6)));
@@ -695,5 +807,271 @@ mod tests {
             !queued.contains(&hash(5)),
             "a collectable candidate leaves the queue even without a body"
         );
+    }
+
+    /// A linear chain where every block past the floor's allowance is safe to
+    /// delete. Populated once, then collected under two configurations — flag
+    /// off and flag on — to assert that only the flag changes whether the
+    /// block body is retained. The mergeable-data delete runs in both cases
+    /// (same horizon, same predicate); the flag gates ONLY the block-body
+    /// deletion.
+    async fn linear_chain_with_block_store(
+        enable_block_store_gc: bool,
+    ) -> (
+        BlockDagKeyValueStorage,
+        KeyValueBlockStore,
+        GcHorizon,
+        Vec<BlockHash>,
+    ) {
+        let (storage, blocks) = open().await;
+        let mut block = template();
+        let all: Vec<_> = (0..=20u8).map(hash).collect();
+        for (n, hash) in all.iter().enumerate() {
+            let n = n as u8;
+            block.block_hash = hash.clone();
+            block.body.state.block_number = i64::from(n);
+            block.seq_num = i32::from(n);
+            block.header.parents_hash_list = if n == 0 {
+                vec![]
+            } else {
+                vec![all[(n - 1) as usize].clone()]
+            };
+            blocks.put(block.block_hash.clone(), &block).unwrap();
+            let mode = if n == 0 {
+                InsertMode::Approved
+            } else {
+                InsertMode::Normal
+            };
+            drop(storage.insert(&block, mode).unwrap());
+        }
+        storage
+            .record_directly_finalized(all[20].clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        dag.put_cached_floor(all[20].clone(), all[20].clone())
+            .unwrap();
+        drop(dag);
+
+        (storage, blocks, horizon(enable_block_store_gc), all)
+    }
+
+    /// The block body stays on disk when the flag is off, even though the
+    /// block is past the horizon and its mergeable data is collected. Pins
+    /// the opt-in: operators who have mergeable GC enabled do not suddenly
+    /// lose block bodies because of an unrelated upgrade.
+    #[tokio::test]
+    async fn block_bodies_are_retained_when_the_flag_is_off() {
+        let (storage, blocks, gc_horizon, all) = linear_chain_with_block_store(false).await;
+        let expected = reference(
+            &storage,
+            &all,
+            &super::super::tests::floor_at(20),
+            gc_horizon.max_allowed_depth,
+        );
+        assert!(
+            !expected.is_empty(),
+            "the fixture must contain at least one collectable block"
+        );
+
+        let collected = run_to_completion(&storage, &blocks, gc_horizon, 3);
+        assert_eq!(collected, expected, "mergeable GC still runs");
+
+        for hash in &expected {
+            assert!(
+                blocks.get(hash).unwrap().is_some(),
+                "flag-off leaves the body at {hash:?} on disk",
+            );
+        }
+    }
+
+    /// With the flag on, every block whose mergeable data the pass collected
+    /// also has its stored body released. Blocks the pass did NOT collect
+    /// (above the horizon, or not yet moved-past by every validator) must
+    /// keep their bodies.
+    #[tokio::test]
+    async fn block_bodies_are_deleted_when_the_flag_is_on() {
+        let (storage, blocks, gc_horizon, all) = linear_chain_with_block_store(true).await;
+        let expected = reference(
+            &storage,
+            &all,
+            &super::super::tests::floor_at(20),
+            gc_horizon.max_allowed_depth,
+        );
+        assert!(
+            !expected.is_empty(),
+            "the fixture must contain at least one collectable block"
+        );
+
+        let collected = run_to_completion(&storage, &blocks, gc_horizon, 3);
+        assert_eq!(collected, expected);
+
+        for hash in &all {
+            let body_present = blocks.get(hash).unwrap().is_some();
+            if expected.contains(hash) {
+                assert!(!body_present, "flag-on must drop the body at {hash:?}",);
+            } else {
+                assert!(
+                    body_present,
+                    "a block the pass did not collect must keep its body: {hash:?}",
+                );
+            }
+        }
+    }
+
+    /// Progress carries the block-store count alongside the mergeable count.
+    /// Exercised via the public `run_turn` so the two counters cannot drift
+    /// (e.g. deleting the body without counting it).
+    #[tokio::test]
+    async fn run_turn_reports_block_store_deletions() {
+        let (storage, blocks, gc_horizon, _all) = linear_chain_with_block_store(true).await;
+
+        let mut sweep = GcSweep::new();
+        let mut total_blocks_deleted = 0usize;
+        let mut total_mergeable_deleted = 0usize;
+        let effective_anchor = AtomicI64::new(0);
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                gc_horizon,
+                &effective_anchor,
+                &mut |_block| Ok(true),
+                GC_PAGE_SIZE,
+            )
+            .unwrap();
+            match progress {
+                GcProgress::Yielded {
+                    deleted,
+                    blocks_deleted,
+                } => {
+                    total_blocks_deleted += blocks_deleted;
+                    total_mergeable_deleted += deleted;
+                }
+                GcProgress::Complete {
+                    deleted,
+                    blocks_deleted,
+                } => {
+                    total_blocks_deleted += blocks_deleted;
+                    total_mergeable_deleted += deleted;
+                    assert_eq!(
+                        total_blocks_deleted, total_mergeable_deleted,
+                        "every collected block whose body was present is also \
+                         counted as a block-store deletion",
+                    );
+                    assert!(total_blocks_deleted > 0);
+                    return;
+                }
+            }
+        }
+        panic!("GC did not complete");
+    }
+
+    /// After a Delete-phase completion with `enable_block_store_gc = true`,
+    /// the shared effective anchor advances to the pass target and the
+    /// DAG store persists the same height. This is the write that tells
+    /// validation "below this height is settled history" and that
+    /// `open_windowed` reads on restart to refuse re-loading evicted
+    /// metadata.
+    #[tokio::test]
+    async fn effective_anchor_advances_after_delete_phase() {
+        let (storage, blocks, gc_horizon, _all) = linear_chain_with_block_store(true).await;
+
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                gc_horizon,
+                &effective_anchor,
+                &mut |_block| Ok(true),
+                GC_PAGE_SIZE,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        let anchor = effective_anchor.load(Ordering::Acquire);
+        assert!(
+            anchor > 0,
+            "block-store GC must advance the effective anchor past zero"
+        );
+        assert_eq!(
+            storage.gc_store().effective_anchor().unwrap(),
+            Some(anchor),
+            "the advanced anchor is persisted to the GC store",
+        );
+    }
+
+    /// Metadata eviction follows anchor advancement: once a Delete-phase
+    /// completion advances the pruning cutoff, below-cutoff blocks drop out
+    /// of the in-memory resident set. Disk entries remain (for history
+    /// recovery), so `lookup` still answers from them — the eviction is a
+    /// RAM-residency change, not a logical pruning.
+    #[tokio::test]
+    async fn advance_pruning_cutoff_evicts_metadata() {
+        let (storage, blocks, gc_horizon, _all) = linear_chain_with_block_store(true).await;
+
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                gc_horizon,
+                &effective_anchor,
+                &mut |_block| Ok(true),
+                GC_PAGE_SIZE,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        let cutoff = effective_anchor.load(Ordering::Acquire);
+        assert!(
+            cutoff > 0,
+            "pass must advance the anchor to a positive height"
+        );
+        assert_eq!(
+            storage.gc_store().effective_anchor().unwrap(),
+            Some(cutoff),
+            "the advanced anchor is persisted"
+        );
+    }
+
+    /// With the flag off the mergeable-only GC leaves bodies in place, so
+    /// there is nothing to advance past — the effective anchor stays at
+    /// zero. Pinning this avoids an operator who runs mergeable-only GC
+    /// from silently flipping other nodes into "treat below-anchor as
+    /// settled history" mode.
+    #[tokio::test]
+    async fn effective_anchor_does_not_advance_when_body_pruning_is_off() {
+        let (storage, blocks, gc_horizon, _all) = linear_chain_with_block_store(false).await;
+
+        let effective_anchor = AtomicI64::new(0);
+        let mut sweep = GcSweep::new();
+        for _ in 0..1_000 {
+            let progress = run_turn(
+                &mut sweep,
+                &storage,
+                &blocks,
+                gc_horizon,
+                &effective_anchor,
+                &mut |_block| Ok(true),
+                GC_PAGE_SIZE,
+            )
+            .unwrap();
+            if matches!(progress, GcProgress::Complete { .. }) {
+                break;
+            }
+        }
+        assert_eq!(effective_anchor.load(Ordering::Acquire), 0);
+        assert_eq!(storage.gc_store().effective_anchor().unwrap(), None);
     }
 }

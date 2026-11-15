@@ -4397,19 +4397,28 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         .expect("cold membership"));
 
     // max_parent_depth 3 plus a GC depth buffer of 1.
-    let max_allowed_depth: i64 = 4;
+    let horizon = mergeable_channels_gc::GcHorizon {
+        max_allowed_depth: 4,
+        deploy_lifespan: 0,
+        delete_block_bodies: false,
+    };
     let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
+    let effective_anchor = std::sync::atomic::AtomicI64::new(0);
     assert_eq!(
         mergeable_channels_gc::collect_garbage(
             &mut gc_sweep,
             &dag_storage,
             &block_store,
             &rm,
-            max_allowed_depth
+            horizon,
+            &effective_anchor,
         )
         .await
         .unwrap(),
-        mergeable_channels_gc::GcProgress::Complete { deleted: 0 }
+        mergeable_channels_gc::GcProgress::Complete {
+            deleted: 0,
+            blocks_deleted: 0,
+        }
     );
     assert!(rm.has_mergeable_entry(&lagging_block).unwrap());
     assert!(dag.get_cached_floor(&chain_hash(TIP)).unwrap().is_none());
@@ -4437,13 +4446,14 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
             &dag_storage,
             &block_store,
             &rm,
-            max_allowed_depth,
+            horizon,
+            &effective_anchor,
         )
         .await
         .expect("collect_garbage")
         {
-            mergeable_channels_gc::GcProgress::Yielded { deleted: count } => deleted += count,
-            mergeable_channels_gc::GcProgress::Complete { deleted: count } => {
+            mergeable_channels_gc::GcProgress::Yielded { deleted: count, .. } => deleted += count,
+            mergeable_channels_gc::GcProgress::Complete { deleted: count, .. } => {
                 deleted += count;
                 completed = true;
                 break;
@@ -4457,7 +4467,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         "GC must collect the lagging block's mergeable data (it is {} below the \
          live floor, past the {}-block allowance)",
         TIP - LAGGING_HEIGHT,
-        max_allowed_depth,
+        horizon.max_allowed_depth,
     );
     assert!(
         !rm.has_mergeable_entry(&lagging_block).unwrap(),

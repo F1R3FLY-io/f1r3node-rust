@@ -9,7 +9,7 @@ use crate::rust::finality::floor::Floor;
 mod job;
 #[cfg(any(test, feature = "test-utils"))]
 pub use job::collect_garbage_with;
-pub use job::{collect_garbage, GcProgress, GcSweep};
+pub use job::{collect_garbage, GcHorizon, GcProgress, GcSweep};
 
 /// Conditions 1 and 2 of `is_safe_to_delete`, plus the "has children" half of
 /// condition 3 — everything that can be decided about a candidate WITHOUT
@@ -645,6 +645,7 @@ mod tests {
         block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map,
@@ -902,6 +903,7 @@ mod tests {
         block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map,
