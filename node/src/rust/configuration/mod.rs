@@ -1110,6 +1110,24 @@ mod embedded_defaults_tests {
         );
     }
 
+    /// Same class as `mergeable_gc_fallback_matches_shipped_default`: a sparse
+    /// operator conf omitting the key must land on the shipped default, not
+    /// on a quietly different serde fallback.
+    #[test]
+    fn block_store_gc_fallback_matches_shipped_default() {
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        assert!(cfg.casper.enable_block_store_gc, "shipped default");
+        assert_eq!(
+            cfg.casper.enable_block_store_gc,
+            casper::rust::casper_conf::default_enable_block_store_gc(),
+            "serde fallback must match the shipped default"
+        );
+    }
+
     /// I5: the stale-recovery interval must exceed the heartbeat tick, or
     /// the empty-frontier cap's per-validator exemption opens every tick.
     #[test]
@@ -1281,13 +1299,13 @@ mod embedded_defaults_tests {
         let shipped = &cfg.casper.heartbeat_conf;
 
         assert!(shipped.enabled);
-        assert_eq!(shipped.check_interval, Duration::from_secs(5));
-        assert_eq!(shipped.max_lfb_age, Duration::from_secs(5));
+        assert_eq!(shipped.check_interval, Duration::from_secs(3));
+        assert_eq!(shipped.max_lfb_age, Duration::from_secs(3));
         assert_eq!(shipped.self_propose_cooldown, Duration::from_secs(3));
         assert_eq!(shipped.stale_recovery_min_interval, None);
         assert_eq!(
             shipped.resolved_stale_recovery_min_interval(),
-            Duration::from_millis(7_500)
+            Duration::from_millis(4_500)
         );
         assert_eq!(shipped.finality_progress_timeout, Duration::from_secs(30));
         assert_eq!(shipped.deploy_finalization_grace, Duration::from_secs(25));
@@ -1300,8 +1318,8 @@ mod embedded_defaults_tests {
             .load_str(
                 r#"
                 enabled = true
-                check-interval = 5 seconds
-                max-lfb-age = 5 seconds
+                check-interval = 3 seconds
+                max-lfb-age = 3 seconds
                 "#,
             )
             .expect("load sparse heartbeat conf")

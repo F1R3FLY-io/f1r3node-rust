@@ -189,16 +189,15 @@ pub(crate) async fn compute_snapshot(
     // The bonded-set ("most-slashed" intersection) parent filter that
     // previously occupied the else-arm below was removed. Committee/bonds
     // are now validated against the finalized floor
-    // (`Validate::bonds_cache_from_floor`) together with
-    // `neglected_invalid_block` — both validator-side and finalization-
-    // anchored. A proposer-side parent filter cannot be a consensus-safety
+    // (`Validate::bonds_cache_from_floor`), validator-side and
+    // finalization-anchored. A proposer-side parent filter cannot be a consensus-safety
     // mechanism (validators replay declared parents, not fork-choice), so it
     // was redundant. See docs/sealed-floor-merge-v2-status.md.
     let fork_choice_floor = crate::rust::finality::floor::fork_choice_floor(
         &dag,
         &this.block_store,
         valid_latest_msgs.values(),
-        BlockMetadata::from_block(&this.approved_block, false, None, None),
+        BlockMetadata::from_block(&this.approved_block, None, None, None),
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),
@@ -417,10 +416,10 @@ pub(crate) async fn compute_snapshot(
         // can reach nodes in a different order. LMM advances on
         // `seq_num >= sequence_number`, so the block that arrives second
         // wins, and two nodes can hold different blocks in the
-        // equivocator's slot. This is safe: `justification_follows` checks
-        // the set of validators, fork choice uses only valid latest
-        // messages, and slashing checks only that the latest message is
-        // invalid, not which invalid block it is.
+        // equivocator's slot. `justification_follows` checks the set of
+        // validators and fork choice uses only valid latest messages, so
+        // either block may be cited: `cite_no_twins` cites the one this node
+        // did not store as the twin.
         latest_msgs_hashes
             .iter()
             .filter(|(validator, _)| bonded_validators.contains_key(*validator))
@@ -561,15 +560,21 @@ pub(crate) async fn compute_snapshot(
     let mut invalid_blocks = HashMap::new();
     for justification in &justifications {
         if let Some(metadata) = dag.lookup(&justification.latest_block_hash)? {
-            if metadata.invalid {
+            if metadata.is_invalid() {
                 invalid_blocks.insert(metadata.block_hash, metadata.sender);
             }
         }
     }
     let last_finalized_block = dag.last_finalized_block();
     record_dag_cardinality_metrics(&dag);
+    let chain_id = this.block_dag_storage.genesis_hash()?.ok_or_else(|| {
+        CasperError::RuntimeError(
+            "the genesis hash is unknown, so the node's chain identity is unknown".to_string(),
+        )
+    })?;
 
-    Ok(CasperSnapshot {
+    let mut snapshot = CasperSnapshot {
+        chain_id,
         dag,
         last_finalized_block,
         parents,
@@ -580,7 +585,53 @@ pub(crate) async fn compute_snapshot(
         max_block_num,
         max_seq_nums,
         on_chain_state,
-    })
+    };
+    cite_no_twins(&mut snapshot)?;
+    Ok(snapshot)
+}
+
+/// A twin's contents are unjudged, and a node that received an invalid twin
+/// first refused it and can never hold it, so a block citing one may be a
+/// block that node can never add. An equivocator's slot therefore cites the
+/// sender's block at the twin's sequence number that is no twin: this node
+/// validated it, or holds it as settled history.
+fn cite_no_twins(snapshot: &mut CasperSnapshot) -> Result<(), CasperError> {
+    let cited_twins: Vec<Justification> = snapshot
+        .justifications
+        .iter()
+        .filter(|justification| {
+            snapshot
+                .invalid_blocks
+                .contains_key(&justification.latest_block_hash)
+        })
+        .cloned()
+        .collect();
+    for twin in cited_twins {
+        let twin_meta = snapshot.dag.lookup_unsafe(&twin.latest_block_hash)?;
+        let mut untwinned = Vec::new();
+        for hash in snapshot
+            .dag
+            .blocks_at(&twin_meta.sender, twin_meta.sequence_number)?
+        {
+            if !snapshot.dag.lookup_unsafe(&hash)?.is_invalid() {
+                untwinned.push(hash);
+            }
+        }
+        let honest = untwinned.into_iter().min().ok_or_else(|| {
+            CasperError::RuntimeError(format!(
+                "equivocation {} is held without a block of its sender at its sequence \
+                 number that is no equivocation",
+                PrettyPrinter::build_string_bytes(&twin.latest_block_hash)
+            ))
+        })?;
+        snapshot.invalid_blocks.remove(&twin.latest_block_hash);
+        snapshot.justifications.remove(&twin);
+        snapshot.justifications.insert(Justification {
+            validator: twin.validator,
+            latest_block_hash: honest,
+        });
+    }
+    Ok(())
 }
 
 pub(crate) async fn estimator(

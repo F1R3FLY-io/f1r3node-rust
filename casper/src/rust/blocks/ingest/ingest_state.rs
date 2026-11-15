@@ -129,7 +129,13 @@ pub enum StateFetchResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngestInput {
-    /// Casper runs from an approved block at this height.
+    /// Casper runs from an approved block at this height. The anchor
+    /// here is a snapshot: block-store GC advances the effective
+    /// anchor on the Casper trait, but ingest stays on the initial
+    /// value so vouched below-approved blocks keep their
+    /// settled-history routing while vouched below-GC-anchor blocks
+    /// (on a genesis-rooted node they ARE this node's own history)
+    /// take the normal validation path.
     Attached {
         anchor_height: i64,
     },
@@ -235,8 +241,12 @@ enum Shape {
 /// the effects for the owner task to carry out.
 #[derive(Debug)]
 pub struct IngestState {
-    /// Height of the approved block, once casper runs: cited blocks at or
-    /// below it may be admitted as settled history.
+    /// Height of the approved block, once casper runs: cited blocks at
+    /// or below it may be admitted as settled history. Snapshot at
+    /// attach time — GC-advanced effective anchor is NOT reflected
+    /// here, so that a genesis-rooted node (approved block = 0) never
+    /// routes its OWN below-GC-anchor history through the
+    /// settled-admission path.
     anchor_height: Option<i64>,
     /// The most parents a valid block lists; `None` when unlimited.
     max_parents: Option<usize>,
@@ -318,13 +328,15 @@ impl IngestState {
                 }
             }
             IngestInput::Need { hash } => {
-                if !stores.in_dag(&hash) && !self.tracker.contains(&hash) {
-                    self.scheduler.need_block(
-                        &hash,
-                        NeedOrigin::Requested,
-                        NeedFacts::default(),
-                        now_ms,
-                    );
+                if self.tracker.contains(&hash) {
+                    self.vouch_for_held(&hash);
+                } else if !stores.in_dag(&hash) {
+                    let facts = NeedFacts {
+                        vouched: true,
+                        ..NeedFacts::default()
+                    };
+                    self.scheduler
+                        .need_block(&hash, NeedOrigin::Requested, facts, now_ms);
                 }
             }
             IngestInput::IntakeRefused(refused) => {
@@ -443,12 +455,9 @@ impl IngestState {
             )
             .record(now_ms.saturating_sub(first_requested_ms) as f64 / 1_000.0);
         }
-        let settled = need.as_ref().is_some_and(|need| {
-            need.facts.cited_by_bonded
-                && self
-                    .anchor_height
-                    .is_some_and(|anchor| anchor > 0 && meta.height <= anchor)
-        });
+        let settled = need
+            .as_ref()
+            .is_some_and(|need| need.facts.vouched && self.at_or_below_anchor(meta.height));
         if meta.solicited {
             meta.pushed_by = None;
         }
@@ -678,9 +687,25 @@ impl IngestState {
             self.finish_insert(hash, now_ms, stores);
             return;
         }
-        let Some(meta) = self.tracker.meta(hash) else {
+        if !self.tracker.contains(hash) {
             return;
-        };
+        }
+        let no_verdict = matches!(
+            outcome,
+            WorkOutcome::AwaitingBlock(_) | WorkOutcome::AwaitingState(_) | WorkOutcome::Failed
+        );
+        if no_verdict {
+            if let Some(departure) = self.tracker.settle_if_vouched(hash) {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    block = %short(hash),
+                    "Block vouched for during its validation; it is admitted as settled history"
+                );
+                self.released(departure);
+                return;
+            }
+        }
+        let meta = self.tracker.meta(hash).expect("the block is held");
         let facts = citation(meta);
         match outcome {
             WorkOutcome::Settled => {}
@@ -768,14 +793,42 @@ impl IngestState {
         }
     }
 
-    /// Held blocks wait on `missing`: each one not itself held is needed.
+    /// Held blocks wait on `missing`: each one not itself held is needed, and a
+    /// vouched citation of one that is held may make it settled history.
     fn cite(&mut self, missing: &[BlockHash], facts: &NeedFacts, now_ms: u64) {
         for dependency in missing {
             if !self.tracker.contains(dependency) {
                 self.scheduler
                     .need_block(dependency, NeedOrigin::Cited, facts.clone(), now_ms);
+            } else if facts.vouched {
+                self.vouch_for_held(dependency);
             }
         }
+    }
+
+    /// A held block vouched for after it was held is admitted as settled
+    /// history instead of validated, if it is at or below the anchor.
+    fn vouch_for_held(&mut self, hash: &BlockHash) {
+        let Some(height) = self.tracker.meta(hash).map(|meta| meta.height) else {
+            return;
+        };
+        if !self.at_or_below_anchor(height) {
+            return;
+        }
+        if let Some(departure) = self.tracker.vouch(hash) {
+            tracing::debug!(
+                target: LOG_TARGET,
+                block = %short(hash),
+                height,
+                "Block vouched for while held; it is admitted as settled history"
+            );
+            self.released(departure);
+        }
+    }
+
+    fn at_or_below_anchor(&self, height: i64) -> bool {
+        self.anchor_height
+            .is_some_and(|anchor| anchor > 0 && height <= anchor)
     }
 
     /// Needs and state roots no held block waits on any more are dropped.
@@ -909,7 +962,7 @@ impl IngestState {
             let facts = NeedFacts {
                 height_hint: Some(meta.height),
                 trusted: meta.trusted,
-                cited_by_bonded: false,
+                vouched: false,
             };
             self.scheduler
                 .need_block(hash, NeedOrigin::Cited, facts, now_ms);
@@ -920,7 +973,7 @@ impl IngestState {
             let facts = NeedFacts {
                 height_hint: Some(meta.height),
                 trusted: meta.trusted,
-                cited_by_bonded: false,
+                vouched: false,
             };
             self.scheduler
                 .need_block(hash, NeedOrigin::Requested, facts, now_ms);
@@ -1086,7 +1139,7 @@ fn citation(meta: &HeldMeta) -> NeedFacts {
     NeedFacts {
         height_hint: Some(meta.height - 1),
         trusted: meta.trusted,
-        cited_by_bonded: meta.bonded_at_anchor,
+        vouched: meta.bonded_at_anchor,
     }
 }
 

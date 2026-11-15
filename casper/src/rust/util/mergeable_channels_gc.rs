@@ -25,9 +25,10 @@ fn reaches_ancestor_check(
     casper_shard_conf: &CasperShardConf,
 ) -> Result<bool, KvStoreError> {
     // 1. Check if block is finalized. An orphan on a losing fork never
-    //    satisfies this — permanently, not just for this pass — and that is
-    //    fine: it stays in `pending` and is retried, but never blocks any
-    //    other block's own check from succeeding.
+    //    satisfies this — permanently, not just for this pass — so the pass
+    //    drops it from the retry queue, and finalization queues it again if
+    //    it is ever finalized later. It never blocks any other block's own
+    //    check from succeeding.
     if !dag.is_finalized(block_hash)? {
         return Ok(false);
     }
@@ -633,7 +634,7 @@ mod tests {
                 weight_map: BTreeMap::new(),
                 block_number: n as i64,
                 sequence_number: n as i32,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: true,
                 finalized: true,
                 fault_tolerance_value: 1.0,
@@ -648,6 +649,7 @@ mod tests {
         block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map,
@@ -656,7 +658,6 @@ mod tests {
             block_number_map,
             main_parent_map,
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: hash(TOP),
             finalized_blocks_set,
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -854,7 +855,7 @@ mod tests {
                 weight_map: BTreeMap::new(),
                 block_number: height,
                 sequence_number: height as i32,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: true,
                 finalized: true,
                 fault_tolerance_value: 1.0,
@@ -908,6 +909,7 @@ mod tests {
         block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map,
@@ -916,7 +918,6 @@ mod tests {
             block_number_map,
             main_parent_map,
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: hash(TOP),
             finalized_blocks_set,
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -974,7 +975,7 @@ mod tests {
                 weight_map: BTreeMap::new(),
                 block_number: 3,
                 sequence_number: 1,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: false,
                 finalized: true,
                 fault_tolerance_value: 1.0,

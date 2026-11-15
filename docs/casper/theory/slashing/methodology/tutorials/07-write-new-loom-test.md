@@ -57,7 +57,7 @@ fn loom_t_<name>() {
 
 ## 3 · Example from this repo
 
-See [`casper/tests/slashing/loom_t_9_2_atomic_record.rs`](../../../../../../casper/tests/slashing/loom_t_9_2_atomic_record.rs)
+See [`casper/tests/slashing/loom_t_9_2_atomic_record.rs`](https://github.com/F1R3FLY-io/f1r3node-rust/blob/504963ab546be84e50650ad81bb5df11965954ca/casper/tests/slashing/loom_t_9_2_atomic_record.rs)
 — 200 lines, the canonical Bug #2 reproducer.
 
 ## 4 · Verification step

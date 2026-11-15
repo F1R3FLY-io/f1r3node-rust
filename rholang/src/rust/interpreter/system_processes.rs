@@ -1365,9 +1365,16 @@ impl SystemProcesses {
         };
 
         let data = deploy_data.read().await;
+        // The middle element is the deployer's pubkey as a plain ByteArray.
+        // Observational uses (URN construction, replay-protection hashes
+        // in Registry.rho::insertSigned) want the raw bytes; the canonical
+        // way to obtain a `GDeployerId` unforgeable is the
+        // `rho:system:deployerId` URN, resolved at normalization time from
+        // the deployer's own `new`-binding. Keeping the two surfaces
+        // distinct avoids callers reaching for whichever is nearest.
         let output = vec![
             Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
-            RhoDeployerId::create_par(data.deployer_id.bytes.as_ref().to_vec()),
+            RhoByteArray::create_par(data.deployer_id.bytes.as_ref().to_vec()),
             RhoDeployId::create_par(data.deploy_id.clone()),
         ];
 

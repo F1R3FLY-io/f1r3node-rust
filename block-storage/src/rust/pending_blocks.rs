@@ -24,9 +24,13 @@ pub struct PendingBlockLimits {
 }
 
 impl PendingBlockLimits {
-    pub fn low_water(limit: usize) -> usize { limit * LOW_WATER_PERCENT / 100 }
+    pub fn low_water(limit: usize) -> usize {
+        (limit as u128 * LOW_WATER_PERCENT as u128 / 100) as usize
+    }
 
-    pub fn unknown_sender_mark(limit: usize) -> usize { limit * UNKNOWN_SENDER_PERCENT / 100 }
+    pub fn unknown_sender_mark(limit: usize) -> usize {
+        (limit as u128 * UNKNOWN_SENDER_PERCENT as u128 / 100) as usize
+    }
 }
 
 impl Default for PendingBlockLimits {

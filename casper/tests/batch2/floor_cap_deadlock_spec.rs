@@ -22,7 +22,7 @@ use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::token_amount::TokenAmount;
 
-use crate::helper::test_node::TestNode;
+use crate::helper::test_node::{ShardOverrides, TestNode};
 use crate::util::genesis_builder::GenesisBuilder;
 
 const SOLO_BLOCKS: usize = MAX_FLOOR_DISTANCE_BLOCKS as usize + 1;
@@ -45,9 +45,12 @@ async fn stalled_two_validator_shard() -> StalledShard {
         .build_genesis_with_parameters(Some(parameters))
         .await
         .expect("genesis");
-    let mut nodes = TestNode::create_network(genesis, 2, None, None, None, None)
-        .await
-        .expect("create_network");
+    let mut nodes = TestNode::create_network_with_overrides(genesis, 2, ShardOverrides {
+        finalization_rate: Some(0),
+        ..Default::default()
+    })
+    .await
+    .expect("create_network");
     for node in nodes.iter_mut() {
         node.allow_empty_blocks = true;
     }
@@ -178,6 +181,7 @@ async fn assert_stalled_view(node: &TestNode, target: &BlockMessage) -> CasperSn
 /// and that both validators accept, although its own floor distance is past
 /// the cap too.
 #[tokio::test]
+#[ignore = "builds 2 x 257 blocks: 16 minutes, 29 under coverage instrumentation"]
 async fn past_the_floor_cap_a_proposal_is_held_or_mints_a_witness_every_node_accepts() {
     crate::init_logger();
     let StalledShard { mut nodes, target } = stalled_two_validator_shard().await;

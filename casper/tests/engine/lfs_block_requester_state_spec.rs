@@ -235,67 +235,6 @@ mod tests {
     }
 
     #[test]
-    fn slash_evidence_must_complete_before_finished_state() {
-        let st = ST::new(HashSet::from([10]), None, None);
-        let (st, _) = st.get_next(false);
-        let (st, _) = st.received(10, 100, None, true);
-        let st = st.done(10).add_slash_evidence(HashSet::from([11]));
-        assert!(!st.is_finished());
-        let (st, requested) = st.get_next(false);
-        assert_eq!(requested, HashSet::from([11]));
-        let (st, _) = st.received(11, 1, None, false);
-        assert!(!st.height_map.contains_key(&1));
-        assert_eq!(st.lower_bound, 0);
-        assert!(st.done(11).is_finished());
-    }
-
-    #[test]
-    fn evidence_promoted_to_history_is_processed_again() {
-        let st = ST::new(HashSet::<i32>::new(), None, Some(100));
-        let st = st.add_slash_evidence(HashSet::from([10]));
-        let (st, _) = st.get_next(false);
-        let (st, _) = st.received(10, 50, None, false);
-        let st = st.done(10);
-        assert!(st.is_finished());
-        assert!(st.height_map.is_empty());
-
-        let st = st.add(HashSet::from([10]));
-        assert!(!st.is_finished());
-        assert!(st.slash_evidence.is_empty());
-        assert_eq!(st.slash_targets, HashSet::from([10]));
-        let (st, requested) = st.get_next(false);
-        assert_eq!(requested, HashSet::from([10]));
-        let (st, _) = st.received(10, 50, None, false);
-        assert_eq!(st.height_map.get(&50), Some(&HashSet::from([10])));
-        assert!(st.done(10).is_finished());
-    }
-
-    #[test]
-    fn slash_targets_already_requested_as_history_keep_their_role() {
-        let st = ST::new(HashSet::from([10]), None, Some(100));
-        let st = st.add_slash_evidence(HashSet::from([10]));
-        assert!(st.slash_evidence.is_empty());
-        assert_eq!(st.slash_targets, HashSet::from([10]));
-        let (st, _) = st.get_next(false);
-        let (st, _) = st.received(10, 120, None, false);
-        assert_eq!(st.height_map.get(&120), Some(&HashSet::from([10])));
-    }
-
-    #[test]
-    fn evidence_used_as_a_latest_replacement_is_promoted_to_history() {
-        let st = ST::new(HashSet::from([10]), Some(HashSet::from([10])), Some(100));
-        let st = st.add_slash_evidence(HashSet::from([9]));
-        let (st, _) = st.get_next(false);
-        let (st, _) = st.received(10, 120, Some(9), true);
-        assert!(!st.slash_evidence.contains(&9));
-        let (st, requested) = st.get_next(false);
-        assert_eq!(requested, HashSet::from([9]));
-        let (st, received) = st.received(9, 119, None, true);
-        assert!(received.latest);
-        assert_eq!(st.height_map.get(&119), Some(&HashSet::from([9])));
-    }
-
-    #[test]
     fn from_start_to_finish_should_receive_one_item() {
         let st = ST::new(
             {

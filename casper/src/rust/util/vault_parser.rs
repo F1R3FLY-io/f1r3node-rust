@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -19,6 +20,8 @@ pub enum VaultParserError {
     },
     #[error("INVALID WALLET BALANCE `{balance}`. Please put positive number.")]
     InvalidBalance { balance: String },
+    #[error("DUPLICATE WALLET ADDRESS `{address}`. Each address may appear once.")]
+    DuplicateAddress { address: String },
     #[error("FAILED PARSING WALLETS FILE: {path}\n{source}")]
     ParsingFailed {
         path: String,
@@ -46,6 +49,7 @@ impl VaultParser {
 
         let line_regex = Regex::new(r"^([1-9a-zA-Z]+),([0-9]+)$").unwrap();
         let mut vaults = Vec::new();
+        let mut seen = HashSet::new();
 
         for line in content.lines() {
             let trimmed_line = line.split_once('#').map_or(line, |(data, _)| data).trim();
@@ -81,6 +85,11 @@ impl VaultParser {
                     source: Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, err)),
                 }
             })?;
+            if !seen.insert(vault_address.clone()) {
+                return Err(VaultParserError::DuplicateAddress {
+                    address: vault_address_str.to_string(),
+                });
+            }
 
             // Parse balance
             let initial_balance =
@@ -167,9 +176,14 @@ mod tests {
             VaultParser::parse(&path).unwrap()[0].initial_balance,
             TokenAmount::max()
         );
-        let shipped = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../docker/helm/f1r3fly/configs/common/wallets.txt");
-        assert!(!VaultParser::parse(&shipped).unwrap().is_empty());
+        for shipped in [
+            "../docker/helm/f1r3fly/configs/common/wallets.txt",
+            "../docker/genesis/wallets.txt",
+            "../run-local/genesis/standalone/wallets.txt",
+        ] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(shipped);
+            assert!(!VaultParser::parse(&path).unwrap().is_empty(), "{shipped}");
+        }
     }
 
     #[test]
@@ -189,6 +203,26 @@ mod tests {
         for vault in vaults {
             assert!(!vault.initial_balance.is_zero());
         }
+    }
+
+    #[test]
+    fn a_repeated_wallet_address_is_refused() {
+        let temp_dir = TempDir::new().unwrap();
+        let wallets_file = temp_dir.path().join("wallets.txt");
+        let address = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
+        fs::write(
+            &wallets_file,
+            format!(
+                "{address},100\n1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M,100\n{address},200\n"
+            ),
+        )
+        .unwrap();
+
+        let result = VaultParser::parse(&wallets_file);
+        assert!(
+            matches!(&result, Err(VaultParserError::DuplicateAddress { address: a }) if a == address),
+            "{result:?}"
+        );
     }
 
     #[test]

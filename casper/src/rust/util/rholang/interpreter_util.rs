@@ -541,8 +541,7 @@ pub async fn validate_block_checkpoint(
                 tracing::debug!(target: "f1r3fly.casper.replay_block", "replay-block-started");
                 let replay_start = std::time::Instant::now();
                 let replay_result =
-                    replay_block(incoming_pre_state_hash, block, &mut s.dag, runtime_manager)
-                        .await?;
+                    replay_block(incoming_pre_state_hash, block, runtime_manager).await?;
                 metrics::histogram!(BLOCK_PROCESSING_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .record(replay_start.elapsed().as_secs_f64());
                 tracing::debug!(target: "f1r3fly.casper.replay_block", "replay-block-finished");
@@ -557,7 +556,6 @@ pub async fn validate_block_checkpoint(
 async fn replay_block(
     initial_state_hash: StateHash,
     block: &BlockMessage,
-    dag: &mut KeyValueDagRepresentation,
     runtime_manager: &RuntimeManager,
 ) -> Result<Either<ReplayFailure, StateHash>, CasperError> {
     // Extract deploys and system deploys from the block
@@ -616,13 +614,10 @@ async fn replay_block(
         );
     }
 
-    // Invalid-blocks map (hash -> sender) for the PoS slash deploys: derived from
-    // this block's own recorded slash targets so it is byte-identical at block
-    // creation and replay (see proto_util::slashed_block_senders). A DAG-derived
-    // view is node-view-dependent and makes the slash deploy fail replay
-    // (ConsumeFailed) because the map is produced into a content-addressed COMM.
+    // The map is produced into a content-addressed COMM, so creation and replay
+    // must build it identically: it comes from the block's own slash evidence.
     let invalid_blocks: HashMap<BlockHash, Validator> =
-        proto_util::block_slash_invalid_blocks(dag, block)?;
+        proto_util::slash_evidence_senders(proto_util::slash_evidence(block));
 
     // Create block data and check if genesis
     let block_data = BlockData::from_block(block);
@@ -935,7 +930,6 @@ pub async fn compute_deploys_checkpoint(
 pub(crate) async fn ensure_scope_mergeable_present(
     block_store: &KeyValueBlockStore,
     runtime_manager: &RuntimeManager,
-    dag: &KeyValueDagRepresentation,
     scope: &HashSet<BlockHash>,
 ) -> Result<(), CasperError> {
     for hash in scope {
@@ -949,12 +943,8 @@ pub(crate) async fn ensure_scope_mergeable_present(
             continue;
         }
 
-        // The recompute replays the block; its invalid-blocks map must match the
-        // one validation/creation used (slashed_block_senders — the block's own
-        // slash targets) so the replay reproduces the block's post_state_hash and
-        // the entry is stored under the correct key.
         let invalid_blocks: HashMap<BlockHash, Validator> =
-            proto_util::block_slash_invalid_blocks(dag, &block)?;
+            proto_util::slash_evidence_senders(proto_util::slash_evidence(&block));
 
         runtime_manager
             .ensure_mergeable_entry(&block, invalid_blocks)
@@ -1688,13 +1678,8 @@ pub async fn compute_parents_post_state(
                 .cloned()
                 .collect();
             let ensure_mergeable_started = std::time::Instant::now();
-            ensure_scope_mergeable_present(
-                block_store,
-                runtime_manager,
-                &s.dag,
-                &mergeable_required,
-            )
-            .await?;
+            ensure_scope_mergeable_present(block_store, runtime_manager, &mergeable_required)
+                .await?;
             metrics::histogram!(PARENTS_POST_STATE_ENSURE_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .record(ensure_mergeable_started.elapsed().as_secs_f64());
             tracing::debug!(

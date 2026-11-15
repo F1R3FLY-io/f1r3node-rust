@@ -65,7 +65,10 @@ pub enum FetchAction {
 pub struct NeedFacts {
     pub height_hint: Option<i64>,
     pub trusted: bool,
-    pub cited_by_bonded: bool,
+    /// A block by a validator bonded at the anchor cites it, or this node's
+    /// proposer asked for it: the node's own chain names it, so at or below the
+    /// anchor it is settled history.
+    pub vouched: bool,
 }
 
 impl NeedFacts {
@@ -75,7 +78,7 @@ impl NeedFacts {
             (a, b) => a.or(b),
         };
         self.trusted |= other.trusted;
-        self.cited_by_bonded |= other.cited_by_bonded;
+        self.vouched |= other.vouched;
     }
 }
 
@@ -597,7 +600,7 @@ mod tests {
         NeedFacts {
             height_hint: Some(height),
             trusted,
-            cited_by_bonded: false,
+            vouched: false,
         }
     }
 

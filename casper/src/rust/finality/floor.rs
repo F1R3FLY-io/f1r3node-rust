@@ -1671,7 +1671,7 @@ mod frontier_determinism_tests {
             weight_map: wm,
             block_number: num,
             sequence_number: num as i32,
-            invalid: false,
+            equivocates: None,
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
@@ -1715,6 +1715,7 @@ mod frontier_determinism_tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -1723,7 +1724,6 @@ mod frontier_determinism_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -1782,6 +1782,7 @@ mod frontier_determinism_tests {
         let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -1790,7 +1791,6 @@ mod frontier_determinism_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -2262,7 +2262,7 @@ mod frontier_determinism_tests {
             weight_map,
             block_number: num,
             sequence_number: num as i32,
-            invalid: false,
+            equivocates: None,
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
@@ -2291,6 +2291,7 @@ mod frontier_determinism_tests {
         block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
             history: None,
             view_sequence: u64::MAX,
+            pruning_cutoff: 0,
             view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
@@ -2299,7 +2300,6 @@ mod frontier_determinism_tests {
             block_number_map: bnum,
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
-            invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
@@ -2354,6 +2354,7 @@ mod frontier_determinism_tests {
                 timestamp: 0,
                 version: 0,
                 extra_bytes: Bytes::new(),
+                chain_id: Bytes::new(),
             },
             body: Body {
                 state: F1r3flyState {

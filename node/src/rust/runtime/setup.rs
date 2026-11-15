@@ -350,28 +350,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         KeyValueBlockStore::create_from_kvm(&mut rnode_store_manager).await?
     };
 
-    // Last finalized Block storage
-    let last_finalized_storage = {
-        use block_storage::rust::finality::LastFinalizedKeyValueStorage;
-
-        LastFinalizedKeyValueStorage::create_from_kvm(&mut rnode_store_manager).await?
-    };
-
-    // Migrate LastFinalizedStorage to BlockDagStorage
-    let lfb_require_migration = last_finalized_storage.require_migration()?;
-    if lfb_require_migration {
-        use tracing::info;
-
-        info!("Migrating LastFinalizedStorage to BlockDagStorage.");
-        last_finalized_storage
-            .migrate_lfb(&mut rnode_store_manager, &block_store)
-            .await?;
-    }
-    info!(
-        lfb_migration = lfb_require_migration,
-        "LastFinalized storage checked"
-    );
-
     // Block DAG storage
     let block_dag_storage = {
         use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
@@ -559,7 +537,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 .map_err(|e| CasperError::Other(format!("Failed to get rspace stores: {}", e)))?;
             reporting_casper::rho_reporter(
                 &rspace_stores,
-                &block_dag_storage,
                 runtime_manager.replay_lock(),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )
@@ -1173,6 +1150,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                         return Ok(());
                     };
                     let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
+                    let gc_effective_anchor = gc_casper.effective_anchor_handle();
 
                     loop {
                         let progress = match tokio::runtime::Handle::try_current() {
@@ -1189,6 +1167,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                             &gc_block_store,
                                             &gc_runtime_manager,
                                             &gc_casper_shard_conf,
+                                            &gc_effective_anchor,
                                         ))
                                         .map_err(|e| CasperError::RuntimeError(e.to_string()))
                                 })?
@@ -1201,6 +1180,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                     &gc_block_store,
                                     &gc_runtime_manager,
                                     &gc_casper_shard_conf,
+                                    &gc_effective_anchor,
                                 )
                                 .await
                                 .map_err(|e| CasperError::RuntimeError(e.to_string()))?

@@ -76,6 +76,8 @@ The following flags override HOCON configuration at startup. CLI flags always ta
 | `--ceremony-master-mode` | `casper.genesis_ceremony.ceremony_master_mode = true` | Enable ceremony master mode (creates genesis block if none found) |
 | `--enable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = true` | Enable mergeable channel garbage collection |
 | `--disable-mergeable-channel-gc` | `casper.enable_mergeable_channel_gc = false` | Disable mergeable channel GC (takes precedence over `--enable-mergeable-channel-gc`) |
+| `--enable-block-store-gc` | `casper.enable_block_store_gc = true` | Delete finalized block bodies that no honest validator can still cite (piggybacks on the mergeable-channel GC pass) |
+| `--disable-block-store-gc` | `casper.enable_block_store_gc = false` | Disable block-store GC (takes precedence over `--enable-block-store-gc`) |
 | `--heartbeat-enabled` | `casper.heartbeat_conf.enabled = true` | Enable heartbeat block proposing for liveness |
 | `--heartbeat-disabled` | `casper.heartbeat_conf.enabled = false` | Disable heartbeat proposing (takes precedence over `--heartbeat-enabled`) |
 | `--heartbeat-check-interval` | `casper.heartbeat_conf.check_interval` | How often the heartbeat loop wakes to evaluate its decision tree |
@@ -97,6 +99,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 
 - `--ceremony-master-mode` unconditionally sets `casper.genesis_ceremony.ceremony_master_mode = true`.
 - `--disable-mergeable-channel-gc` / `--enable-mergeable-channel-gc` override `casper.enable_mergeable_channel_gc`. The disable flag is checked first; only if it is absent does the enable flag apply.
+- `--disable-block-store-gc` / `--enable-block-store-gc` follow the same pattern for `casper.enable_block_store_gc`. Has no effect when mergeable-channel GC is disabled, since the GC loop that drives it is not spawned.
 - `--heartbeat-disabled` / `--heartbeat-enabled` follow the same pattern for `casper.heartbeat_conf.enabled`.
 
 ## gRPC Services
@@ -382,8 +385,8 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 | HOCON key | Default | Purpose |
 |-----------|--------:|---------|
 | `heartbeat.enabled` | `true` | Enable the heartbeat proposer. It drives block and finalization cadence across validators, so multi-validator deployments leave it on; a single-node dev shard may set `false` and rely on `autopropose` or operator-triggered proposes |
-| `heartbeat.check-interval` | 5s | How often the loop evaluates its decision tree |
-| `heartbeat.max-lfb-age` | 5s | LFB age threshold above which stale-LFB recovery may fire |
+| `heartbeat.check-interval` | 3s | How often the loop evaluates its decision tree |
+| `heartbeat.max-lfb-age` | 3s | LFB age threshold above which stale-LFB recovery may fire |
 | `heartbeat.self-propose-cooldown` | 3s | Min interval between self-proposals; gates every routine lane (never the stale-recovery lane, which paces on the interval below) |
 | `heartbeat.stale-recovery-min-interval` | derived: 1.5 × `check-interval` | Pacing for stale-LFB recovery and the pending-deploy backstop: both the LFB's age and the validator's own silence must exceed it — at most one recovery proposal per validator per interval. The derived value opens on the second tick after a validator's own block; an explicit value must exceed `check-interval` (startup fails otherwise) |
 | `heartbeat.deploy-finalization-grace` | 25s | Grace window opened when pending deploys land; widens lag caps only — never bypasses the cooldown |
