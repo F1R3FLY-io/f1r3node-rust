@@ -28,7 +28,31 @@ use super::matcher::has_locally_free::HasLocallyFree;
 /// `docs/rholang/garbage-collection.md`.
 pub fn is_scope_trapped(idx: usize, par: &Par) -> bool { check_par(idx, par) }
 
+// `set_bits_until(_, 0)` in `substitute.rs` produces an empty bitset
+// whenever a sub-par is substituted with `env.shift == 0`, which is
+// indistinguishable from a genuinely-Nil subtree. Trusting the empty cache
+// as "no reference" turned H1 into a vacuous "trapped" verdict that the
+// sweep then acted on, retiring state-cell initializers (e.g., MakeMint's
+// `logStore!(Nil)`) that the enclosing contract body still peeks on —
+// surfaced by `bridge_vault_registration_test`. At eval_new entry, if the
+// body carries substantive structure (any send/receive/new/match/bundle/
+// conditional) but its cached `locally_free` is empty, treat the cache as
+// unreliable and report NOT-trapped. False negatives (missed sweeps) are
+// safe; false positives (sweeping live state) are not.
+fn par_lf_is_unreliably_empty(par: &Par) -> bool {
+    par.locally_free.is_empty()
+        && (!par.sends.is_empty()
+            || !par.receives.is_empty()
+            || !par.news.is_empty()
+            || !par.matches.is_empty()
+            || !par.bundles.is_empty()
+            || !par.conditionals.is_empty())
+}
+
 fn check_par(idx: usize, par: &Par) -> bool {
+    if par_lf_is_unreliably_empty(par) {
+        return false;
+    }
     if !bitset_contains(&par.locally_free, idx) {
         return true;
     }
