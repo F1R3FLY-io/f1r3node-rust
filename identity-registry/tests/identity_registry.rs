@@ -2,9 +2,9 @@
 // Requires:
 //   - A running F1R3FLY cluster on 127.0.0.1:40422 (gRPC internal)
 //   - F1R3FLY_SIGNING_KEY env var set to a 32-byte hex secp256k1 key with
-//     REV balance on that cluster. The admin relink test also signs with it,
-//     so it must be the default 1-of-1 genesis identity registry admin (the
-//     docker bootstrap key).
+//     REV balance on that cluster. It signs the deploys only.
+//   - The genesis identity registry admin set of docker/quorum.conf: 2 of
+//     ADMIN_SKS (`make firefly`).
 //
 // Run with: cargo test --features integration_tests -- --nocapture
 
@@ -62,12 +62,17 @@ fn fresh_nonce() -> [u8; NONCE_LEN] {
     buf
 }
 
-/// The default genesis admin set is 1-of-1 over the docker dev bootstrap
-/// key, which is also F1R3FLY_SIGNING_KEY.
-fn admin_sk() -> SecretKey {
-    let bytes = hex::decode(signing_key()).expect("F1R3FLY_SIGNING_KEY is not valid hex");
-    let arr: [u8; 32] = bytes.try_into().expect("F1R3FLY_SIGNING_KEY must be 32 bytes");
-    SecretKey::from_byte_array(arr).expect("F1R3FLY_SIGNING_KEY is not a valid secp256k1 key")
+/// The bootstrap, validator1 and validator2 dev keys of docker/.env.example.
+/// docker/quorum.conf makes their public keys the admin set, quorum 2.
+const ADMIN_SKS: [&str; 3] = [
+    "5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657",
+    "357cdc4201a5650830e0bc5a03299a30038d9934ba4c7ab73ec164ad82471ff9",
+    "2c02138097d019d263c1d5383fcaddb1ba6416a0f4e64e3a617fe3af45b7851d",
+];
+
+fn admin_sk(i: usize) -> SecretKey {
+    let arr: [u8; 32] = hex::decode(ADMIN_SKS[i]).unwrap().try_into().unwrap();
+    SecretKey::from_byte_array(arr).unwrap()
 }
 
 fn admin_pk(sk: &SecretKey) -> [u8; 65] {
@@ -310,9 +315,10 @@ async fn record_is_append_only() {
 
 // --- REG-AC9 -----------------------------------------------------------------
 
-/// The genesis admin can relink an identity, also with an offline admin_sign
-/// signature. History records the evidence and the signer. A stranger.s
-/// signature is rejected, also under the admin pk.
+/// A quorum of genesis admins can relink an identity, also with offline
+/// admin_sign signatures. History records the evidence and the signers. A
+/// stranger's signature does not count toward the quorum, also under an
+/// admin pk.
 #[cfg_attr(not(feature = "integration_tests"), ignore)]
 #[tokio::test]
 async fn admin_relink_works_and_is_bounded() {
@@ -321,12 +327,12 @@ async fn admin_relink_works_and_is_bounded() {
     let nonce = fresh_nonce();
     let name = client.register(&sk1, &nonce).await.expect("register");
 
-    // The genesis admin key meets the default 1-of-1 quorum (REG-D3).
-    let admin = admin_sk();
+    // Two admin keys meet the 2-of-3 quorum (REG-D3).
+    let admins = [admin_sk(0), admin_sk(1)];
     let (sk_new, pk_new) = fresh_keypair();
     let evidence = b"out_of_band_proof".to_vec();
     let new_seq = client
-        .admin_relink(&[admin], &name, &sk_new, 0, &evidence)
+        .admin_relink(&admins, &name, &sk_new, 0, &evidence)
         .await
         .expect("admin relink");
     assert_eq!(new_seq, 1);
@@ -336,34 +342,44 @@ async fn admin_relink_works_and_is_bounded() {
     assert_eq!(history[1].op, "admin_relink");
     assert_eq!(history[1].pk, uncompressed_pk_bytes(&pk_new));
     assert_eq!(history[1].admin_evidence.as_deref(), Some(&evidence[..]));
-    assert_eq!(history[1].admin_signers, Some(vec![admin_pk(&admin)]));
+    let mut signers = history[1].admin_signers.clone().expect("admin signers");
+    signers.sort();
+    let mut expected: Vec<_> = admins.iter().map(admin_pk).collect();
+    expected.sort();
+    assert_eq!(signers, expected);
 
-    // Offline path: the admin signs with admin_sign, and the deploy carries
-    // only the (pk, sig) pair.
+    // Offline path: each admin signs with admin_sign, and the deploy carries
+    // only the (pk, sig) pairs.
     let (sk_newer, pk_newer) = fresh_keypair();
-    let pair = admin_sign(&admin, &name, &uncompressed_pk_bytes(&pk_newer), 1, b"evidence2");
+    let pairs: Vec<_> = admins
+        .iter()
+        .map(|sk| admin_sign(sk, &name, &uncompressed_pk_bytes(&pk_newer), 1, b"evidence2"))
+        .collect();
     let new_seq = client
-        .admin_relink_with_sigs(&[pair], &name, &sk_newer, 1, b"evidence2")
+        .admin_relink_with_sigs(&pairs, &name, &sk_newer, 1, b"evidence2")
         .await
-        .expect("admin relink with offline signature");
+        .expect("admin relink with offline signatures");
     assert_eq!(new_seq, 2);
 
-    // A stranger's key, and a pair that claims the admin pk but carries a
-    // stranger's signature: both rejected.
+    // One admin plus a stranger's key, and one admin plus a pair that claims
+    // the other admin pk but carries a stranger's signature: both rejected.
     let (sk_stranger, _) = fresh_keypair();
     let (sk_newest, pk_newest) = fresh_keypair();
-    let (_, stranger_sig) =
-        admin_sign(&sk_stranger, &name, &uncompressed_pk_bytes(&pk_newest), 2, b"evidence3");
+    let pk_newest_bytes = uncompressed_pk_bytes(&pk_newest);
+    let admin_pair = admin_sign(&admins[0], &name, &pk_newest_bytes, 2, b"evidence3");
+    let (_, stranger_sig) = admin_sign(&sk_stranger, &name, &pk_newest_bytes, 2, b"evidence3");
     for (label, result) in [
         (
-            "stranger key",
-            client.admin_relink(&[sk_stranger], &name, &sk_newest, 2, b"evidence3").await,
+            "admin and stranger key",
+            client
+                .admin_relink(&[admins[0], sk_stranger], &name, &sk_newest, 2, b"evidence3")
+                .await,
         ),
         (
-            "admin pk with stranger sig",
+            "admin and admin pk with stranger sig",
             client
                 .admin_relink_with_sigs(
-                    &[(admin_pk(&admin), stranger_sig)],
+                    &[admin_pair, (admin_pk(&admins[1]), stranger_sig)],
                     &name,
                     &sk_newest,
                     2,
@@ -378,3 +394,4 @@ async fn admin_relink_works_and_is_bounded() {
         );
     }
 }
+

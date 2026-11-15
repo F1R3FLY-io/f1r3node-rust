@@ -1,27 +1,39 @@
 .PHONY: firefly clear-firefly build test \
         register rotate admin-relink admin-sign resolve-current resolve-history keygen
 
-# Spin up a local F1r3fly shard via the workspace's docker compose. Copies
-# docker/.env from the shipped example on first run.
+SHARD := F1R3FLY_RUST_IMAGE=f1r3fly-rust:local docker compose -f ../docker/shard.yml -f docker/quorum.yml
+
+# Spin up a local F1r3fly shard via the workspace's docker compose, from an
+# image built from this checkout. The docker/quorum.yml overlay sets a 2-of-3
+# identity registry admin quorum. Copies docker/.env from the shipped example
+# on first run.
 firefly:
 	@if [ ! -f ../docker/.env ] && [ -f ../docker/.env.example ]; then \
 		cp ../docker/.env.example ../docker/.env; \
 	fi
-	docker compose -f ../docker/shard.yml up
+	@if ! docker image inspect f1r3fly-rust:local >/dev/null 2>&1; then \
+		echo "Building f1r3fly-rust:local..."; \
+		cd .. && bash ./node/docker-commands.sh build-local; \
+	fi
+	$(SHARD) up
 
-# Stop the shard and wipe all node data volumes. Useful when finality has
+# Stop the shard, wipe all node data volumes and remove the local image, so
+# the next `make firefly` rebuilds it. Useful when finality has
 # fallen behind block production and the proposer starts refusing new blocks
 # because too many unfinalized blocks have piled up above the last finalized
 # tip. A fresh genesis resets the finalized tip to block 0 so reruns work
 # again. Run between test campaigns when deploys pile up.
 clear-firefly:
-	docker compose -f ../docker/shard.yml down -v
+	$(SHARD) down -v
+	-docker image rm f1r3fly-rust:local
 
 build:
 	cargo build --release
 
-# Identity registry REG-AC suite. Requires a running F1R3FLY cluster on
-# 127.0.0.1:40422 and F1R3FLY_SIGNING_KEY in the environment.
+# Identity registry REG-AC suite. Requires the `make firefly` cluster on
+# 127.0.0.1:40422 and F1R3FLY_SIGNING_KEY in the environment, a key with REV
+# balance that signs the deploys. The admin keys are the dev keys of
+# docker/quorum.conf.
 test:
 	cargo test --features integration_tests --test identity_registry -- --test-threads=1
 
