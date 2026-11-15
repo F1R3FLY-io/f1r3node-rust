@@ -11,14 +11,27 @@ use serde::Serialize;
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hot_store::HotStore;
 
-/// Drain every hot-store entry keyed on a channel in `trapped_channels`:
+/// Retire single-channel data rows keyed on a trapped channel.
 ///
-/// 1. Single-channel data rows keyed on a trapped channel.
-/// 2. Continuations whose channel list contains any trapped channel. For each
-///    removed continuation, every channel in the list has its join registration
-///    pruned — matching the contract of `remove_matched_datum_and_join` at
-///    ops_produce.rs:179.
-/// 3. Join index entries keyed directly on a trapped channel.
+/// Scope: datums only. Earlier revisions of this sweep also deleted
+/// continuations whose channel list contained a trapped channel, and the
+/// join-index entries keyed on a trapped channel (both as sibling pruning
+/// after continuation removal and as a defensive second pass). That was
+/// unsafe in a multi-parent setting: the casper merger
+/// (`rspace++/src/rspace/merger/state_change.rs:StateChange::new`) walks
+/// each deploy's recorded consumes, computes a history pointer from the
+/// hashed channel list, and looks up the matching join record in the pre-
+/// or post-state. Deleting joins made that lookup fail — the merger
+/// panics with "Tuple space inconsistency found: channel of consume does
+/// not contain join record corresponding to the consume channels." See
+/// `multi_parent_casper_should_estimate_parent_properly` regression.
+///
+/// Data rows are safe to drop because the merger reaches them by the
+/// channel's hash directly (no event-log replay needed) and treats a
+/// missing row as "no data on this channel" — consistent with the
+/// post-COMM state the H1-safety proof holds for. The join and
+/// continuation lookups are the ones with the lookup-via-event-log
+/// inverse, and those we now leave alone.
 ///
 /// Iterates `to_map()`'s snapshot in a deterministic (sorted) order so
 /// validators agree on the delta that reaches the radix trie.
@@ -51,22 +64,6 @@ where
             for idx in (0..row.data.len() as i32).rev() {
                 store.remove_datum(&channels[0], idx)?;
             }
-        }
-
-        let any_trapped = channels.iter().any(|c| trapped.contains(c));
-        if any_trapped && !row.wks.is_empty() {
-            for idx in (0..row.wks.len() as i32).rev() {
-                store.remove_continuation(channels, idx);
-            }
-            for c in channels {
-                store.remove_join(c, channels);
-            }
-        }
-    }
-
-    for chan in &trapped {
-        for join in store.get_joins(chan) {
-            store.remove_join(chan, &join);
         }
     }
 

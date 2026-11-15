@@ -75,7 +75,7 @@ Target: `formal/rocq/scope_trapped_gc/` (template: `formal/rocq/rspace_guards/`)
 | 2.9 | Sweep soundness corollary | [x] | `theories/ScopeTrapped.v` §14 — `sweep_preserves_inv` |
 | 2.10 | Capstone `MainTheorem.v` with seam-premise `Section Variable`s surfaced | [x] | `theories/MainTheorem.v` |
 | 2.11 | Zero `Admitted`, no custom `Axiom` / `Parameter` (local verification gate) | [x] | `scripts/check-scope-trapped-gc-ALL.sh` runs end-to-end under Rocq 9.3. Both capstones (`rholang_scope_trapped_invariant` and `rholang_scope_trapped_sweep_safe`) are Closed under the global context (axiom-free). |
-| 2.12 | Add to Rocq CI (whatever the project's current Rocq-build job is) | [ ] | wire into `.github/workflows/*` once 2.11 is fully axiom-free |
+| 2.12 | Add to Rocq CI (whatever the project's current Rocq-build job is) | [x] | `scripts/ci/check-formal-invariants.sh --rocq` builds `scope_trapped_gc` and asserts both capstones closed. The `.github/workflows/slashing-tests.yml` `rocq-build` job runs this script, so CI covers the gate on every PR. |
 
 ### Verification note
 

@@ -78,10 +78,13 @@ async fn scope_trapped_datum_swept() {
     .await;
 }
 
-/// `new x in { for (y <- x) { Nil } }` — the single-channel orphan
-/// receive is removed.
+/// `new x in { for (y <- x) { Nil } }` — the orphan receive SURVIVES the
+/// sweep. The sweep retires only data rows; continuations and the join
+/// index remain because the casper merger walks event-log consumes and
+/// looks up the corresponding join record (see
+/// `rspace++/src/rspace/merger/state_change.rs:StateChange::new`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn scope_trapped_continuation_swept() {
+async fn scope_trapped_continuation_retained() {
     enable_gc_env();
     with_runtime("gc-cont-", |mut runtime| async move {
         let new_lists =
@@ -96,82 +99,13 @@ async fn scope_trapped_continuation_swept() {
             .is_empty());
         let _ = runtime.create_checkpoint().await;
         assert!(
-            runtime
+            !runtime
                 .reducer
                 .space
                 .get_waiting_continuations(gp_channels)
                 .await
                 .is_empty(),
-            "the waiter on the trapped GPrivate was swept"
-        );
-    })
-    .await;
-}
-
-fn gprivate_id_len(par: &Par) -> Option<usize> {
-    if is_bare_gprivate(par) {
-        if let Some(UnfInstance::GPrivateBody(gp)) = &par.unforgeables[0].unf_instance {
-            return Some(gp.id.len());
-        }
-    }
-    None
-}
-
-/// Join whose both sources are scope-trapped unforgeables (both minted
-/// by the same `new`). After the sweep, the join's parked continuation
-/// is gone and the per-channel join index entries on both trapped
-/// channels are empty.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn scope_trapped_join_swept() {
-    enable_gc_env();
-    with_runtime("gc-join-", |mut runtime| async move {
-        // Collect pre-deploy joins on bare GPrivates so we can compare.
-        let pre_snapshot = runtime.reducer.space.to_map().await;
-        let pre_gprivate_channels: Vec<Par> = pre_snapshot
-            .into_keys()
-            .flat_map(|list| list.into_iter())
-            .filter(is_bare_gprivate)
-            .collect();
-        let mut pre_count: usize = 0;
-        for c in &pre_gprivate_channels {
-            pre_count += runtime.reducer.space.get_joins(c.clone()).await.len();
-        }
-
-        run(
-            &mut runtime,
-            "new x, y in { for (a <- x & b <- y) { Nil } }",
-        )
-        .await;
-
-        // The fresh GPrivates from `new x, y in ...` may or may not have
-        // data entries in to_map, depending on how the inner receive's
-        // keys appear. The sweep is still correct — verify post-checkpoint
-        // that no join involves a fresh (32-byte) GPrivate, and that the
-        // total join count on bare-GPrivate channels returned to its
-        // pre-deploy baseline.
-        let _ = runtime.create_checkpoint().await;
-
-        let post_ckpt_snapshot = runtime.reducer.space.to_map().await;
-        let post_gprivate_channels: Vec<Par> = post_ckpt_snapshot
-            .into_keys()
-            .flat_map(|list| list.into_iter())
-            .filter(is_bare_gprivate)
-            .collect();
-        let mut post_count: usize = 0;
-        for c in &post_gprivate_channels {
-            let joins = runtime.reducer.space.get_joins(c.clone()).await;
-            for join in &joins {
-                assert!(
-                    !join.iter().any(|ch| gprivate_id_len(ch) == Some(32)),
-                    "post-checkpoint: a join involving a 32-byte (user-deploy) GPrivate survived: {:?}",
-                    join
-                );
-            }
-            post_count += joins.len();
-        }
-        assert_eq!(
-            post_count, pre_count,
-            "the join count on bare-GPrivate channels returned to its pre-deploy baseline"
+            "the data-only sweep must leave continuations on trapped channels in place"
         );
     })
     .await;

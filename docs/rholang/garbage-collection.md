@@ -187,22 +187,54 @@ into a subtree that provably does not mention `idx`.
 | Checkpoint wiring | `rholang/src/rust/interpreter/rho_runtime.rs:create_checkpoint` | call `sweep_trapped` before `space.create_checkpoint` |
 | Replay invariance | `casper/src/rust/rholang/replay_runtime.rs` | replay reaches the same `create_checkpoint`, deterministic sweep. |
 
+## Scope: Data-Only Sweep
+
+The sweep in `locked_sweep` retires **data rows only** (step 1 of the
+original three-step design). Continuations and join index entries are
+left in place even when they are keyed on a trapped channel.
+
+**Why data only.** The casper merger
+(`rspace++/src/rspace/merger/state_change.rs:StateChange::new`) walks
+each deploy's event log and, for every recorded consume, computes a
+history pointer from the hashed channel list and looks up the matching
+join record in the pre- or post-state history reader. Deleting join
+records (or continuations whose sibling-prune would cascade into join
+deletion) breaks that lookup: the merger panics with "Tuple space
+inconsistency found: channel of consume does not contain join record
+corresponding to the consume channels." The
+`multi_parent_casper_should_estimate_parent_properly` regression
+exhibits this when the sweep runs with continuation+join pruning.
+
+**Why data rows are safe.** The merger reaches a data row via the
+channel's hash directly and treats a missing row as "no data on this
+channel" — consistent with the post-COMM state H1's safety theorem
+holds for. Nothing in the merger walks data entries through an inverse
+hash lookup the way it walks consumes through joins.
+
+**What this gives up.** Space savings: parked continuations on trapped
+channels (orphan receives) and their join registrations survive until
+some other layer prunes them. The dominant space cost on trapped names
+in practice is parked data (one row per `new x in { x!(v) }` pattern),
+so the data-only sweep still reclaims the bulk of the garbage it was
+designed to reach.
+
+**Future extension.** A proper deletion of continuations and joins
+requires either (a) teaching the merger to tolerate missing join
+records or (b) a trie-level GC pass that drops dead subtrees past the
+citation horizon (where the mergeable-channels GC already operates).
+Neither is in scope for H1; both are tracked in
+`garbage-collection-formalization-plan.md`.
+
 ## Limitations and Known Incomplete
 
-**Why the sweep is opt-in.** During development the casper
-multi-parent-block regression tests (for example
-`multi_parent_casper_should_estimate_parent_properly`) fail when the
-sweep runs over the full genesis + block-production flow, because the
-sweep removes rspace entries that a later system deploy (such as
-`CloseBlock` → `PoS!("closeBlock", …)`) depends on. H1 is sound in the
-Rholang-only sense formalized above, but the Rust runtime has an
-additional, out-of-syntax side channel: callers of
-`RuntimeOps::capture_results_with_name`, `play_exploratory_par`, etc.,
-predict fresh `GPrivate` ids from the deploy rng and read directly from
-`get_data_par`/`get_waiting_continuations`. Those readers can reach a
-"scope-trapped" entry even though the Rholang analysis proved no process
-can. Soaking H1 against every system-deploy and runtime-inspector path
-before flipping the default on is future work.
+**Why the sweep is opt-in.** Set `F1R3FLY_SCOPE_TRAPPED_GC=1` to enable
+the sweep inside `RhoRuntimeImpl::create_checkpoint`. The data-only
+narrowing clears the known multi-parent regression, but the sweep has
+not been validated against the full rholang + casper integration suite
+with the gate on. Flipping the default requires a soak against those
+tests plus coordinated validator-version rollout (the sweep changes
+committed state roots, so split enable/disable across validators
+would diverge consensus).
 
 **False negatives are the design choice.** Example:
 

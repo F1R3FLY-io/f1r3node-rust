@@ -551,15 +551,21 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn create_checkpoint(&mut self) -> Checkpoint {
         let start = Instant::now();
-        // Scope-trapped GC (opt-in). Set F1R3FLY_SCOPE_TRAPPED_GC=1 to
-        // retire rspace entries keyed on fresh GPrivates whose variable
-        // was used only in positions that keep it inside its original
-        // closure. Defaults off while the heuristic is still being
-        // validated against the system-contract corpus — the
-        // interaction between scope-trapped sweeps and persistent
-        // receives that embed those names in their continuation bodies
-        // needs further soak testing. See
-        // docs/rholang/garbage-collection.md.
+        // Scope-trapped GC (opt-in). Retires rspace data rows keyed on
+        // fresh GPrivates whose binder was used only in channel
+        // positions by H1 (see
+        // `rholang::interpreter::garbage::is_scope_trapped` and
+        // docs/rholang/garbage-collection.md). Continuations and join
+        // records are NOT swept — the casper merger walks event-log
+        // consumes and needs the matching join record to resolve a
+        // hashed channel list, so dropping joins triggers a
+        // "Tuple space inconsistency found" panic in
+        // `StateChange::new`.
+        //
+        // Set `F1R3FLY_SCOPE_TRAPPED_GC=1` to enable. Default remains
+        // off pending a full-suite soak with the sweep on; the
+        // narrowing clears the known merger regression but has not
+        // been validated against the entire casper suite.
         let drained = self.reducer.drain_trapped();
         if std::env::var("F1R3FLY_SCOPE_TRAPPED_GC").as_deref() == Ok("1") {
             // Rust-side callers (exploratory deploys, oracle readers, …) pin
