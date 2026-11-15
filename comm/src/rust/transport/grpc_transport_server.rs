@@ -39,8 +39,8 @@ impl Cancelable {
     }
 
     /// Shuts the server down and waits for it to end. The server closes every
-    /// connection before it ends, so once this returns nothing more is
-    /// dispatched and the port is free.
+    /// connection and its own listening socket before it ends, so once this
+    /// returns nothing more is dispatched.
     pub async fn stop(self) {
         let _ = self.shutdown.send(());
         if let Err(e) = self.task.await {
