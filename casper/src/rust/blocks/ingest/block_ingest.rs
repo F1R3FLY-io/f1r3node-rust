@@ -43,7 +43,6 @@ use crate::rust::metrics_constants::{
     BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC, BLOCK_PROCESSING_QUEUE_PENDING_METRIC,
     BLOCK_PROCESSOR_METRICS_SOURCE,
 };
-use crate::rust::util::proto_util;
 
 /// Network deliveries of a block the node asked for. Twice the outstanding
 /// fetch window: a broadcast can draw replies from several peers.
@@ -138,7 +137,7 @@ impl IngestHandle {
     /// Start ingesting for `casper`. Blocks arriving before this are dropped.
     pub async fn attach_casper(&self, casper: SharedCasper) -> Result<(), CasperError> {
         let approved_block = casper.get_approved_block()?.clone();
-        let anchor_height = proto_util::block_number(&approved_block);
+        let anchor_height = crate::rust::util::proto_util::block_number(&approved_block);
         let intake = Arc::new(Intake::new(
             self.block_store.clone(),
             self.dag.clone(),

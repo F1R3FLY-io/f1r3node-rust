@@ -1166,6 +1166,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                         return Ok(());
                     };
                     let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
+                    let gc_effective_anchor = gc_casper.effective_anchor_handle();
 
                     loop {
                         let progress = match tokio::runtime::Handle::try_current() {
@@ -1182,6 +1183,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                             &gc_block_store,
                                             &gc_runtime_manager,
                                             &gc_casper_shard_conf,
+                                            &gc_effective_anchor,
                                         ))
                                         .map_err(|e| CasperError::RuntimeError(e.to_string()))
                                 })?
@@ -1194,6 +1196,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                     &gc_block_store,
                                     &gc_runtime_manager,
                                     &gc_casper_shard_conf,
+                                    &gc_effective_anchor,
                                 )
                                 .await
                                 .map_err(|e| CasperError::RuntimeError(e.to_string()))?
