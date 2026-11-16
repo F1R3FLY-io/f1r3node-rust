@@ -196,7 +196,7 @@ struct FinalityLagStats {
 /// for per-shard control — when that happens the rename target is
 /// already in place.
 const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
-const USER_DEPLOY_BYTE_PROPOSAL_BUDGET: usize = 2 * 1024 * 1024;
+pub(crate) const USER_DEPLOY_BYTE_PROPOSAL_BUDGET: usize = 2 * 1024 * 1024;
 const USER_DEPLOY_BACKPRESSURE_BYTE_PROPOSAL_BUDGET: usize = 512 * 1024;
 const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 32;
 const RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS: i64 = 3;
@@ -3604,7 +3604,32 @@ pub async fn create_with_progress(
     let signed_block =
         validator_identity.sign_block_with_leaves(&unsigned_block, &block_hash_leaves);
     let sign_ms = sign_started.elapsed().as_millis();
-    let signed_block_bytes = signed_block.to_proto().encoded_len();
+    let (signed_block_bytes, service_sample) = {
+        let proto = signed_block.to_proto();
+        let sample = admission_candidates.map(|candidates| {
+            let mut sample = crate::rust::deploy_admission::LocalServiceSample {
+                included: 0,
+                has_remaining_demand: false,
+                record_bytes: 0,
+                phlo_limit: 0,
+            };
+            if let Some(body) = proto.body.as_ref() {
+                for (processed, encoded) in signed_block.body.deploys.iter().zip(&body.deploys) {
+                    if !candidates.contains(&processed.deploy.sig) {
+                        continue;
+                    }
+                    if let Some(deploy) = encoded.deploy.as_ref() {
+                        sample.included += 1;
+                        sample.record_bytes += block_storage::rust::deploy::key_value_deploy_storage::DeployMetadata::record_size(deploy.encoded_len()) as u128;
+                        sample.phlo_limit += deploy.phlo_limit.max(0) as u128;
+                    }
+                }
+            }
+            sample.has_remaining_demand = candidates.len() > sample.included;
+            sample
+        });
+        (proto.encoded_len(), sample)
+    };
     metrics::gauge!(BLOCK_CREATOR_PACKED_BLOCK_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
         .set(signed_block_bytes as f64);
 
@@ -3675,18 +3700,6 @@ pub async fn create_with_progress(
 
     RuntimeManager::trim_allocator();
 
-    let service_sample = admission_candidates.map(|candidates| {
-        let included = signed_block
-            .body
-            .deploys
-            .iter()
-            .filter(|processed| candidates.contains(&processed.deploy.sig))
-            .count();
-        crate::rust::deploy_admission::LocalServiceSample {
-            included,
-            has_remaining_demand: candidates.len() > included,
-        }
-    });
     Ok(BlockCreatorResult::Created(
         signed_block,
         pre_state_hash_for_result,

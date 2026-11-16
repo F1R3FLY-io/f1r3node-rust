@@ -111,6 +111,9 @@ pub struct CasperConf {
     )]
     pub max_user_deploys_per_block: u32,
 
+    #[serde(rename = "deploy-admission", default)]
+    pub deploy_admission: Option<crate::rust::deploy_admission::RetainedPoolLimits>,
+
     /// Enable background garbage collection for mergeable channels.
     /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
     /// When disabled (default), mergeable data is retained.

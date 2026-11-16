@@ -123,17 +123,16 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         block: &BlockMessage,
         sample: crate::rust::deploy_admission::LocalServiceSample,
     ) {
+        if self.casper_shard_conf.deploy_admission.is_some() {
+            return;
+        }
         if self
             .validator_id
             .as_ref()
             .is_some_and(|id| id.public_key.bytes == block.sender)
             && super::block_admission::admit_dag_contains(self, &block.block_hash)
         {
-            self.deploy_admission.observe(
-                block.seq_num,
-                sample.included,
-                sample.has_remaining_demand,
-            );
+            self.deploy_admission.observe_sample(block.seq_num, sample);
         }
     }
 

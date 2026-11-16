@@ -34,6 +34,269 @@ fn queued_deploy(
     .unwrap()
 }
 
+mod retained_admission_regressions {
+    use std::sync::Arc;
+
+    use block_storage::rust::deploy::key_value_deploy_storage::{
+        DeployMetadata, KeyValueDeployStorage,
+    };
+    use casper::rust::deploy_admission::RetainedPoolLimits;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+
+    use super::*;
+    use crate::helper::test_node::ShardOverrides;
+
+    async fn node_with_limits(max_records: usize, max_bytes: u64) -> TestNode {
+        let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+        let genesis = GenesisBuilder::new()
+            .build_genesis_with_parameters(Some(parameters))
+            .await
+            .unwrap();
+        TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
+            finalization_rate: Some(0),
+            deploy_admission: Some(RetainedPoolLimits {
+                max_records,
+                max_bytes,
+                max_inflight: 2,
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .remove(0)
+    }
+
+    #[tokio::test]
+    async fn explicit_capacity_admits_128_before_any_proposal_and_recovers_one_deleted_slot() {
+        let node = node_with_limits(128, 1024 * 1024).await;
+        let initial_height = node
+            .block_dag_storage
+            .get_representation()
+            .unwrap()
+            .latest_block_number();
+        let shard = &node.genesis.shard_id;
+        let first = queued_deploy(10_000, shard);
+        for timestamp in 10_000..10_128 {
+            let deploy = if timestamp == 10_000 {
+                first.clone()
+            } else {
+                queued_deploy(timestamp, shard)
+            };
+            assert!(
+                matches!(node.casper.deploy(deploy).unwrap(), Either::Right(_)),
+                "explicit capacity refused timestamp {timestamp}"
+            );
+        }
+        let dag = node.block_dag_storage.get_representation().unwrap();
+        assert_eq!(dag.latest_block_number(), initial_height);
+        assert_eq!(
+            node.deploy_storage
+                .metadata_snapshot()
+                .unwrap()
+                .entries
+                .len(),
+            128
+        );
+        let overflow = queued_deploy(10_128, shard);
+        assert!(matches!(
+            node.casper.deploy(overflow.clone()).unwrap(),
+            Either::Left(DeployError::PoolResourceBusy {
+                resource: "records",
+                required: 129,
+                limit: 128,
+            })
+        ));
+        assert!(!node.deploy_storage.contains_sig(&overflow.sig).unwrap());
+        assert!(node.deploy_storage.remove_by_sig(&first.sig).unwrap());
+        assert!(matches!(
+            node.casper.deploy(overflow.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        assert!(node.deploy_storage.contains_sig(&overflow.sig).unwrap());
+        assert_eq!(
+            node.deploy_storage
+                .metadata_snapshot()
+                .unwrap()
+                .entries
+                .len(),
+            128
+        );
+    }
+
+    #[tokio::test]
+    async fn included_pool_records_keep_their_charge_until_storage_removes_them() {
+        let mut node = node_with_limits(2, 1024 * 1024).await;
+        let admitted = [
+            queued_deploy(10, &node.genesis.shard_id),
+            queued_deploy(11, &node.genesis.shard_id),
+        ];
+        for deploy in &admitted {
+            assert!(matches!(
+                node.casper.deploy(deploy.clone()).unwrap(),
+                Either::Right(_)
+            ));
+        }
+        let BlockCreatorResult::Created(block, ..) = node.create_block(&[]).await.unwrap() else {
+            panic!("expected a block while admission is full");
+        };
+        assert_eq!(block.body.deploys.len(), admitted.len());
+        assert!(matches!(
+            node.process_block(block).await.unwrap(),
+            Either::Right(_)
+        ));
+        let dag = node.block_dag_storage.get_representation().unwrap();
+        for deploy in &admitted {
+            assert!(dag
+                .deploy_canonical_appearance(&deploy.sig)
+                .unwrap()
+                .is_some());
+            assert!(dag.deploy_terminal(&deploy.sig).unwrap().is_none());
+            assert!(node.deploy_storage.contains_sig(&deploy.sig).unwrap());
+        }
+        let candidate = queued_deploy(12, &node.genesis.shard_id);
+        let signals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = signals.clone();
+        let trigger: Arc<ProposeFunction> = Arc::new(move |_, _| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(ProposerResult::Empty) })
+        });
+        let error = BlockAPI::deploy(
+            &node.engine_cell,
+            candidate.clone(),
+            &Some(trigger),
+            false,
+            &node.genesis.shard_id,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<DeployError>(),
+            Some(DeployError::PoolResourceBusy {
+                resource: "records",
+                required: 3,
+                limit: 2,
+            })
+        ));
+        assert_eq!(signals.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!node.deploy_storage.contains_sig(&candidate.sig).unwrap());
+        assert!(matches!(
+            node.casper.deploy(admitted[0].clone()).unwrap(),
+            Either::Left(DeployError::DuplicateDeploy(_))
+        ));
+        assert!(node.deploy_storage.remove_by_sig(&admitted[0].sig).unwrap());
+        assert!(matches!(
+            node.casper.deploy(candidate.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        assert!(node.deploy_storage.contains_sig(&candidate.sig).unwrap());
+        assert_eq!(
+            node.deploy_storage
+                .metadata_snapshot()
+                .unwrap()
+                .entries
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn byte_exhaustion_and_an_oversized_record_have_different_refusals() {
+        let node = node_with_limits(128, 1024).await;
+        let deploy = |timestamp, payload_bytes| {
+            construct_deploy::source_deploy(
+                format!("@0!(\"{}\")", "x".repeat(payload_bytes)),
+                timestamp,
+                None,
+                None,
+                None,
+                None,
+                Some(node.genesis.shard_id.clone()),
+            )
+            .unwrap()
+        };
+        let first = deploy(20, 600);
+        let second = deploy(21, 600);
+        let oversized = deploy(22, 2048);
+        let first_bytes = DeployMetadata::from(&first).record_bytes as u128;
+        let second_bytes = DeployMetadata::from(&second).record_bytes as u128;
+        assert!(first_bytes <= 1024 && second_bytes <= 1024);
+        assert!(first_bytes + second_bytes > 1024);
+        assert!(matches!(
+            node.casper.deploy(first.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        assert!(matches!(node.casper.deploy(second.clone()).unwrap(),
+            Either::Left(DeployError::PoolResourceBusy {
+                resource: "record_bytes", required, limit: 1024,
+            }) if required == first_bytes + second_bytes));
+        assert!(matches!(
+            node.casper.deploy(oversized.clone()).unwrap(),
+            Either::Left(DeployError::RecordTooLarge { limit: 1024, .. })
+        ));
+        assert!(!node.deploy_storage.contains_sig(&second.sig).unwrap());
+        assert!(!node.deploy_storage.contains_sig(&oversized.sig).unwrap());
+        assert!(node.deploy_storage.remove_by_sig(&first.sig).unwrap());
+        assert!(matches!(
+            node.casper.deploy(second.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        assert_eq!(
+            node.deploy_storage
+                .metadata_snapshot()
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn independent_storage_changes_preserve_excess_records_and_refresh_admission() {
+        let node = node_with_limits(2, 1024 * 1024).await;
+        let first = queued_deploy(30, &node.genesis.shard_id);
+        assert!(matches!(
+            node.casper.deploy(first.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        let external = KeyValueDeployStorage::from_stores(
+            node.deploy_storage.store.raw_store().clone(),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        let second = queued_deploy(31, &node.genesis.shard_id);
+        let third = queued_deploy(32, &node.genesis.shard_id);
+        external.add(vec![second.clone(), third.clone()]).unwrap();
+        let candidate = queued_deploy(33, &node.genesis.shard_id);
+        assert!(matches!(
+            node.casper.deploy(candidate.clone()).unwrap(),
+            Either::Left(DeployError::PoolResourceBusy {
+                resource: "records",
+                required: 4,
+                limit: 2,
+            })
+        ));
+        assert_eq!(
+            node.deploy_storage
+                .metadata_snapshot()
+                .unwrap()
+                .entries
+                .len(),
+            3
+        );
+        assert!(external.contains_sig(&first.sig).unwrap());
+        assert!(!external.contains_sig(&candidate.sig).unwrap());
+        assert!(external.remove_by_sig(&second.sig).unwrap());
+        assert!(external.remove_by_sig(&third.sig).unwrap());
+        assert!(matches!(
+            node.casper.deploy(candidate.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        assert_eq!(external.metadata_snapshot().unwrap().entries.len(), 2);
+        assert!(external.contains_sig(&first.sig).unwrap());
+        assert!(external.contains_sig(&candidate.sig).unwrap());
+    }
+}
+
 #[tokio::test]
 async fn admission_refuses_position_twenty_five_without_a_proposal_and_recovers_after_drain() {
     let genesis = GenesisBuilder::new()
@@ -173,6 +436,144 @@ async fn included_pool_copies_do_not_block_fresh_admission() {
             capacity: 24
         })
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn measure_admission_retention_across_finality() {
+    use block_storage::rust::dag::deploy_lifecycle_types::TerminalState;
+
+    use crate::helper::test_node::ShardOverrides;
+
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let genesis_hash = genesis.genesis_block.block_hash.clone();
+    let shard = genesis.genesis_block.shard_id.clone();
+    let mut node = TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
+        finalization_rate: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap()
+    .remove(0);
+    let mut included = Vec::new();
+    println!("ADMISSION_RETAINED,phase,retained_records,encoded_bytes,terminal_records");
+    for round in 0..8 {
+        let mut batch = Vec::new();
+        for offset in 0..4 {
+            let deploy = queued_deploy(10_000 + round * 4 + offset, &shard);
+            assert!(matches!(
+                node.casper.deploy(deploy.clone()).unwrap(),
+                Either::Right(_)
+            ));
+            batch.push(deploy);
+        }
+        let BlockCreatorResult::Created(block, _, _, Some(sample)) =
+            node.create_block(&[]).await.unwrap()
+        else {
+            panic!("expected a created block and its admission sample");
+        };
+        assert_eq!(sample.included, batch.len());
+        assert_eq!(block.body.deploys.len(), batch.len());
+        assert!(block.body.deploys.iter().all(|deploy| !deploy.is_failed));
+        assert!(matches!(
+            node.process_block(block.clone()).await.unwrap(),
+            Either::Right(_)
+        ));
+        node.casper.observe_local_service(&block, sample);
+        included.extend(batch);
+
+        let dag = node.block_dag_storage.get_representation().unwrap();
+        assert_eq!(dag.last_finalized_block(), genesis_hash);
+        for deploy in &included {
+            assert!(dag
+                .deploy_canonical_appearance(&deploy.sig)
+                .unwrap()
+                .is_some());
+            assert!(dag.deploy_terminal(&deploy.sig).unwrap().is_none());
+            assert!(node.deploy_storage.contains_sig(&deploy.sig).unwrap());
+        }
+        let metadata = node.deploy_storage.metadata_snapshot().unwrap();
+        let bytes: u128 = metadata
+            .entries
+            .values()
+            .map(|entry| entry.record_bytes as u128)
+            .sum();
+        assert_eq!(metadata.entries.len(), included.len());
+        println!(
+            "ADMISSION_RETAINED,included-{},{},{bytes},0",
+            round + 1,
+            metadata.entries.len()
+        );
+    }
+    let mut pending = Vec::new();
+    for offset in 0..24 {
+        let deploy = queued_deploy(20_000 + offset, &shard);
+        assert!(matches!(
+            node.casper.deploy(deploy.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        pending.push(deploy);
+    }
+    let refused = queued_deploy(30_000, &shard);
+    assert!(matches!(
+        node.casper.deploy(refused.clone()).unwrap(),
+        Either::Left(DeployError::PoolBusy {
+            capacity: 24,
+            pending_ahead: 24,
+        })
+    ));
+    assert!(!node.deploy_storage.contains_sig(&refused.sig).unwrap());
+    let before = node.deploy_storage.metadata_snapshot().unwrap();
+    assert_eq!(before.entries.len(), included.len() + pending.len());
+    let before_bytes: u128 = before
+        .entries
+        .values()
+        .map(|entry| entry.record_bytes as u128)
+        .sum();
+    println!(
+        "ADMISSION_RETAINED,fresh-full,{},{before_bytes},0",
+        before.entries.len()
+    );
+
+    for _ in 0..8 {
+        node.casper.finalize().await.unwrap();
+    }
+    let dag = node.block_dag_storage.get_representation().unwrap();
+    assert_ne!(dag.last_finalized_block(), genesis_hash);
+    let mut terminal = 0;
+    for deploy in &included {
+        if let Some(record) = dag.deploy_terminal(&deploy.sig).unwrap() {
+            assert_eq!(record.state, TerminalState::Finalized);
+            assert!(!node.deploy_storage.contains_sig(&deploy.sig).unwrap());
+            terminal += 1;
+        } else {
+            assert!(node.deploy_storage.contains_sig(&deploy.sig).unwrap());
+        }
+    }
+    assert!(terminal > 0);
+    for deploy in &pending {
+        assert!(dag
+            .deploy_canonical_appearance(&deploy.sig)
+            .unwrap()
+            .is_none());
+        assert!(dag.deploy_terminal(&deploy.sig).unwrap().is_none());
+        assert!(node.deploy_storage.contains_sig(&deploy.sig).unwrap());
+    }
+    let after = node.deploy_storage.metadata_snapshot().unwrap();
+    assert_eq!(after.entries.len() + terminal, before.entries.len());
+    let after_bytes: u128 = after
+        .entries
+        .values()
+        .map(|entry| entry.record_bytes as u128)
+        .sum();
+    println!(
+        "ADMISSION_RETAINED,after-finality,{},{after_bytes},{terminal}",
+        after.entries.len()
+    );
 }
 
 #[tokio::test]
@@ -558,6 +959,98 @@ async fn propose_with_capacity(
         ProposeStatus::Success(_)
     ));
     result.block_message_opt.unwrap()
+}
+
+#[tokio::test]
+async fn resource_capacity_learns_heavier_deploys_after_a_probe_without_losing_refused_work() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let shard = &genesis.genesis_block.shard_id;
+    for high_phlo in [false, true] {
+        let node = TestNode::standalone(genesis.clone()).await.unwrap();
+        for timestamp in 0..8 {
+            assert!(matches!(
+                node.casper.deploy(queued_deploy(timestamp, shard)).unwrap(),
+                Either::Right(_)
+            ));
+        }
+        assert_eq!(
+            propose_with_capacity(&node, 128, None)
+                .await
+                .body
+                .deploys
+                .len(),
+            8
+        );
+        let light = queued_deploy(100, shard);
+        assert!(matches!(
+            node.casper.deploy(light.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        let term = if high_phlo {
+            "Nil".to_owned()
+        } else {
+            format!(
+                "new payload in {{ payload!(\"{}\") }}",
+                "a".repeat(16 * 1024)
+            )
+        };
+        let phlo = if high_phlo { 9_000_000 } else { 90_000 };
+        let heavy = construct_deploy::source_deploy(
+            term.clone(),
+            101,
+            Some(phlo),
+            None,
+            None,
+            Some(0),
+            Some(shard.clone()),
+        )
+        .unwrap();
+        assert!(matches!(
+            node.casper.deploy(heavy.clone()).unwrap(),
+            Either::Left(DeployError::PoolBusy { capacity: 24, .. })
+        ));
+        assert!(!node.deploy_storage.contains_sig(&heavy.sig).unwrap());
+        assert!(node.deploy_storage.contains_sig(&light.sig).unwrap());
+        node.deploy_storage.remove(vec![light]).unwrap();
+        assert!(matches!(
+            node.casper.deploy(heavy.clone()).unwrap(),
+            Either::Right(_)
+        ));
+        let block = propose_with_capacity(&node, 128, None).await;
+        assert!(block
+            .body
+            .deploys
+            .iter()
+            .any(|processed| processed.deploy.sig == heavy.sig));
+        assert!(node
+            .block_dag_storage
+            .get_representation()
+            .unwrap()
+            .deploy_canonical_appearance(&heavy.sig)
+            .unwrap()
+            .is_some());
+        assert!(matches!(
+            node.casper.deploy(queued_deploy(102, shard)).unwrap(),
+            Either::Right(_)
+        ));
+        let next_heavy = construct_deploy::source_deploy(
+            term,
+            103,
+            Some(phlo),
+            None,
+            None,
+            Some(0),
+            Some(shard.clone()),
+        )
+        .unwrap();
+        assert!(matches!(
+            node.casper.deploy(next_heavy).unwrap(),
+            Either::Right(_)
+        ));
+    }
 }
 
 #[tokio::test]
@@ -1736,6 +2229,8 @@ mod admission_regressions {
             casper::rust::deploy_admission::LocalServiceSample {
                 included: 0,
                 has_remaining_demand: true,
+                record_bytes: 0,
+                phlo_limit: 0,
             },
         );
         let candidate = signed_deploy(1, &genesis.genesis_block.shard_id);

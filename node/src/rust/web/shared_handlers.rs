@@ -33,9 +33,11 @@ use crate::rust::api::web_api::{
     DeployRequest, ExploreDeployRequest, RhoDataResponse, SimpleExploreDeployRequest, ViewMode,
     WebApi,
 };
+use crate::rust::api::{DeployIngressBusy, DeployRequestLimiter, DeployRequestPermit};
 
 #[derive(Clone)]
 pub struct AppState {
+    deploy_limiter: DeployRequestLimiter,
     pub admin_web_api: Arc<dyn AdminWebApi + Send + Sync + 'static>,
     pub web_api: Arc<dyn WebApi + Send + Sync + 'static>,
     pub block_report_api: Arc<BlockReportAPI>,
@@ -58,6 +60,7 @@ impl AppState {
         startup_events: StartupBuffer,
     ) -> Self {
         Self {
+            deploy_limiter: DeployRequestLimiter::default(),
             admin_web_api,
             web_api,
             block_report_api,
@@ -67,6 +70,11 @@ impl AppState {
             event_stream: event_consumer,
             startup_events,
         }
+    }
+
+    pub(crate) fn with_deploy_limiter(mut self, limiter: DeployRequestLimiter) -> Self {
+        self.deploy_limiter = limiter;
+        self
     }
 }
 
@@ -163,6 +171,25 @@ where E: Into<eyre::Error>
 
 /// Json extractor that returns rejection errors as JSON instead of plain text
 pub struct AppJson<T>(pub T);
+
+pub struct DeployJson(pub DeployRequest, DeployRequestPermit);
+
+impl FromRequest<AppState> for DeployJson {
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        let permit = state
+            .deploy_limiter
+            .try_acquire()
+            .map_err(|error| AppError(error.into()).into_response())?;
+        offload(move || async move {
+            let parsed = AppJson::<DeployRequest>::from_request(request, &()).await;
+            Ok(parsed.map(|AppJson(value)| Self(value, permit)))
+        })
+        .await
+        .map_err(|error| AppError(error).into_response())?
+    }
+}
 
 impl<T, S> FromRequest<S> for AppJson<T>
 where
@@ -262,14 +289,30 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
                 cause.to_string(),
             );
         }
-        if let Some(DeployError::PoolBusy { .. }) = cause.downcast_ref::<DeployError>() {
+        if let Some(DeployError::PoolBusy { .. } | DeployError::PoolResourceBusy { .. }) =
+            cause.downcast_ref::<DeployError>()
+        {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "deploy_pool_busy",
                 cause.to_string(),
             );
         }
+        if let Some(DeployError::RecordTooLarge { .. }) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "deploy_too_large",
+                cause.to_string(),
+            );
+        }
         if let Some(DeployError::AdmissionBusy) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_admission_busy",
+                cause.to_string(),
+            );
+        }
+        if cause.downcast_ref::<DeployIngressBusy>().is_some() {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "deploy_admission_busy",
@@ -514,6 +557,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
         (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
         (status = 503, description = "Deploy queue is full or admission state changed during retries (`deploy_pool_busy`, `deploy_admission_busy`)", body = ApiErrorResponse),
+        (status = 413, description = "Deploy record exceeds the configured pool byte limit (`deploy_too_large`)", body = ApiErrorResponse),
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
@@ -522,10 +566,15 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
 )]
 pub async fn deploy_handler(
     State(app_state): State<AppState>,
-    AppJson(request): AppJson<DeployRequest>,
+    DeployJson(request, permit): DeployJson,
 ) -> Response {
     let web_api = app_state.web_api.clone();
-    match offload(move || async move { web_api.deploy(request).await }).await {
+    match offload(move || async move {
+        let _permit = permit;
+        web_api.deploy(request).await
+    })
+    .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -833,6 +882,43 @@ mod tests {
                 classify(DeployError::InvalidFreshness),
                 (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
             );
+        }
+
+        #[tokio::test]
+        async fn a_record_above_the_pool_byte_limit_is_not_a_retryable_busy_error() {
+            let response = AppError(
+                DeployError::RecordTooLarge {
+                    record_bytes: 101,
+                    limit: 100,
+                }
+                .into(),
+            )
+            .into_response();
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_too_large");
+        }
+
+        #[tokio::test]
+        async fn aggregate_retained_resource_exhaustion_keeps_the_busy_contract() {
+            let response = AppError(
+                DeployError::PoolResourceBusy {
+                    resource: "record_bytes",
+                    required: 250,
+                    limit: 200,
+                }
+                .into(),
+            )
+            .into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_pool_busy");
         }
 
         #[tokio::test]

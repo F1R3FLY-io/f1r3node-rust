@@ -75,6 +75,7 @@ pub struct ShardOverrides {
     pub with_read_only_size: Option<usize>,
     pub deploy_lifespan: Option<i64>,
     pub finalization_rate: Option<i32>,
+    pub deploy_admission: Option<casper::rust::deploy_admission::RetainedPoolLimits>,
 }
 
 pub struct TestNode {
@@ -1039,6 +1040,7 @@ impl TestNode {
         let max_parent_depth = overrides.max_parent_depth;
         let deploy_lifespan = overrides.deploy_lifespan;
         let finalization_rate = overrides.finalization_rate;
+        let deploy_admission = overrides.deploy_admission;
 
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -1202,6 +1204,7 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
+            deploy_admission,
             casper_version: genesis.header.version,
             bond_minimum: 0.into(),
             bond_maximum: (i64::MAX as u64).into(),

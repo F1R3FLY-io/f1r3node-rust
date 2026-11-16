@@ -14,6 +14,7 @@ const INITIAL_DEPLOYS_PER_BLOCK: usize = 8;
 #[derive(Default)]
 struct ServiceSamples {
     inclusions: VecDeque<usize>,
+    resources: VecDeque<LocalServiceSample>,
     last_sequence: Option<i32>,
     recovery_budget: usize,
 }
@@ -29,12 +30,97 @@ impl ServiceSamples {
         };
         sampled_budget.max(self.recovery_budget)
     }
+
+    fn resource_limits(&self, capacity: usize) -> ResourceLimits {
+        let byte_ceiling =
+            (crate::rust::blocks::proposer::block_creator::USER_DEPLOY_BYTE_PROPOSAL_BUDGET
+                as u128)
+                .saturating_mul(DEPLOY_QUEUE_BLOCKS as u128);
+        let (count, bytes, phlo) =
+            self.resources
+                .iter()
+                .fold((0u128, 0u128, 0u128), |(count, bytes, phlo), sample| {
+                    (
+                        count.saturating_add(sample.included as u128),
+                        bytes.saturating_add(sample.record_bytes),
+                        phlo.saturating_add(sample.phlo_limit),
+                    )
+                });
+        if count == 0 {
+            return ResourceLimits {
+                count: capacity,
+                record_bytes: byte_ceiling,
+                phlo_limit: None,
+            };
+        }
+        ResourceLimits {
+            count: capacity,
+            record_bytes: bytes
+                .saturating_mul(capacity as u128 + u128::from(capacity != 0))
+                .div_ceil(count)
+                .min(byte_ceiling),
+            phlo_limit: Some(phlo.saturating_mul(capacity as u128).div_ceil(count)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct LocalServiceSample {
     pub included: usize,
     pub has_remaining_demand: bool,
+    pub record_bytes: u128,
+    pub phlo_limit: u128,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ResourceLimits {
+    pub count: usize,
+    pub record_bytes: u128,
+    pub phlo_limit: Option<u128>,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Deserialize,
+    serde::Serialize
+)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct RetainedPoolLimits {
+    pub max_records: usize,
+    pub max_bytes: u64,
+    pub max_inflight: usize,
+}
+
+impl From<RetainedPoolLimits> for ResourceLimits {
+    fn from(limits: RetainedPoolLimits) -> Self {
+        Self {
+            count: limits.max_records,
+            record_bytes: limits.max_bytes as u128,
+            phlo_limit: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ResourceUsage {
+    record_bytes: u128,
+    phlo_limit: u128,
+}
+
+impl ResourceUsage {
+    fn add(&mut self, deploy: &PendingDeploy) {
+        self.record_bytes += deploy.record_bytes as u128;
+        self.phlo_limit += deploy.phlo_limit as u128;
+    }
+
+    fn remove(&mut self, deploy: &PendingDeploy) {
+        self.record_bytes -= deploy.record_bytes as u128;
+        self.phlo_limit -= deploy.phlo_limit as u128;
+    }
 }
 
 #[derive(Default)]
@@ -76,12 +162,33 @@ impl DeployAdmission {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn observe(&self, sequence: i32, included: usize, has_remaining_demand: bool) {
+        self.observe_sample(sequence, LocalServiceSample {
+            included,
+            has_remaining_demand,
+            record_bytes: 0,
+            phlo_limit: 0,
+        });
+    }
+
+    pub(crate) fn observe_sample(&self, sequence: i32, sample: LocalServiceSample) {
         let mut samples = self.samples.lock();
         if samples.last_sequence.is_some_and(|last| sequence <= last) {
             return;
         }
         samples.last_sequence = Some(sequence);
+        let LocalServiceSample {
+            included,
+            has_remaining_demand,
+            ..
+        } = sample;
+        if included > 0 && sample.record_bytes > 0 {
+            if samples.resources.len() == SERVICE_SAMPLE_BLOCKS {
+                samples.resources.pop_front();
+            }
+            samples.resources.push_back(sample);
+        }
         if !has_remaining_demand {
             let budget = samples.queue_budget();
             let supported_budget = included.saturating_mul(DEPLOY_QUEUE_BLOCKS);
@@ -103,14 +210,18 @@ impl DeployAdmission {
         .record(included as f64);
     }
 
-    pub(crate) fn capacity(&self, shard_cap: usize) -> usize {
+    #[cfg(test)]
+    pub(crate) fn capacity(&self, shard_cap: usize) -> usize { self.limits(shard_cap).count }
+
+    pub(crate) fn limits(&self, shard_cap: usize) -> ResourceLimits {
+        let samples = self.samples.lock();
         if shard_cap == 0 {
-            return 0;
+            return samples.resource_limits(0);
         }
-        self.samples
-            .lock()
+        let capacity = samples
             .queue_budget()
-            .min(shard_cap.saturating_mul(DEPLOY_QUEUE_BLOCKS))
+            .min(shard_cap.saturating_mul(DEPLOY_QUEUE_BLOCKS));
+        samples.resource_limits(capacity)
     }
 }
 
@@ -157,17 +268,28 @@ enum Marker {
 struct Entry {
     deploy: PendingDeploy,
     marker: Marker,
+    persisted: bool,
 }
 
 struct State {
     entries: HashMap<DeployId, Entry>,
+    resources: ResourceUsage,
     valid: bool,
+}
+
+impl State {
+    fn remove(&mut self, signature: &[u8]) {
+        if let Some(entry) = self.entries.remove(signature) {
+            self.resources.remove(&entry.deploy);
+        }
+    }
 }
 
 pub struct AdmissionReservations {
     state: Mutex<State>,
     occupied: AtomicUsize,
     revision: AtomicU64,
+    retained: bool,
 }
 
 pub(crate) enum ReservationUpdate {
@@ -182,7 +304,21 @@ pub(crate) enum ReservationUpdate {
 pub enum ReserveError {
     Duplicate,
     NotFresh,
-    Full { occupied: usize, capacity: usize },
+    Full {
+        occupied: usize,
+        capacity: usize,
+    },
+    ResourceFull {
+        occupied: usize,
+        capacity: usize,
+        resource: &'static str,
+        used: u128,
+        limit: u128,
+    },
+    RecordTooLarge {
+        record_bytes: usize,
+        limit: u128,
+    },
     NeedsRefresh,
     CounterOverflow,
 }
@@ -212,24 +348,42 @@ impl AdmissionReservations {
         deploys: impl IntoIterator<Item = PendingDeploy>,
         window: FreshWindow,
     ) -> Result<Arc<Self>, ReserveError> {
+        Self::from_entries(deploys, Some(window))
+    }
+
+    pub(crate) fn from_retained(
+        deploys: impl IntoIterator<Item = PendingDeploy>,
+    ) -> Result<Arc<Self>, ReserveError> {
+        Self::from_entries(deploys, None)
+    }
+
+    fn from_entries(
+        deploys: impl IntoIterator<Item = PendingDeploy>,
+        window: Option<FreshWindow>,
+    ) -> Result<Arc<Self>, ReserveError> {
         let mut entries = HashMap::new();
+        let mut resources = ResourceUsage::default();
         for deploy in deploys {
-            if !window.contains(&deploy) {
+            if window.is_some_and(|window| !window.contains(&deploy)) {
                 continue;
             }
             if entries.contains_key(&deploy.signature) {
                 return Err(ReserveError::Duplicate);
             }
+            resources.add(&deploy);
             entries.insert(deploy.signature.clone(), Entry {
                 deploy,
                 marker: Marker::Pending,
+                persisted: true,
             });
         }
         Ok(Arc::new(Self {
             occupied: AtomicUsize::new(entries.len()),
             revision: AtomicU64::new(0),
+            retained: window.is_none(),
             state: Mutex::new(State {
                 entries,
+                resources,
                 valid: true,
             }),
         }))
@@ -291,12 +445,23 @@ impl AdmissionReservations {
         let mut changed = false;
         let fresh = match update {
             ReservationUpdate::Full(fresh) => {
+                let mut released = ResourceUsage::default();
                 state.entries.retain(|signature, entry| {
+                    if self.retained {
+                        let persisted = fresh.contains_key(signature);
+                        changed |= entry.persisted != persisted;
+                        entry.persisted = persisted;
+                    }
                     let keep = matches!(entry.marker, Marker::Reserved { .. })
                         || fresh.contains_key(signature);
                     changed |= !keep;
+                    if !keep {
+                        released.add(&entry.deploy);
+                    }
                     keep
                 });
+                state.resources.record_bytes -= released.record_bytes;
+                state.resources.phlo_limit -= released.phlo_limit;
                 fresh
             }
             ReservationUpdate::Delta { fresh, removals } => {
@@ -307,13 +472,18 @@ impl AdmissionReservations {
                     match state.entries.get_mut(&signature) {
                         Some(Entry {
                             marker: Marker::Reserved { excluded },
+                            persisted,
                             ..
                         }) => {
                             changed |= !*excluded;
                             *excluded = true;
+                            if self.retained {
+                                changed |= *persisted;
+                                *persisted = false;
+                            }
                         }
                         Some(_) => {
-                            state.entries.remove(&signature);
+                            state.remove(&signature);
                             changed = true;
                         }
                         None => {}
@@ -323,26 +493,38 @@ impl AdmissionReservations {
             }
         };
         for (signature, deploy) in fresh {
-            if !window.contains(&deploy) {
+            if !self.retained && !window.contains(&deploy) {
                 continue;
             }
             match state.entries.get_mut(&signature) {
-                Some(Entry {
-                    marker: Marker::Reserved { excluded },
-                    ..
-                }) => {
-                    changed |= *excluded;
-                    *excluded = false;
-                }
                 Some(entry) => {
+                    if let Marker::Reserved { excluded } = &mut entry.marker {
+                        changed |= *excluded;
+                        *excluded = false;
+                        if !self.retained {
+                            continue;
+                        }
+                    }
+                    changed |= !entry.persisted;
+                    entry.persisted = true;
                     changed |= entry.deploy != deploy;
+                    let previous_bytes = entry.deploy.record_bytes as u128;
+                    let previous_phlo = entry.deploy.phlo_limit as u128;
+                    let next_bytes = deploy.record_bytes as u128;
+                    let next_phlo = deploy.phlo_limit as u128;
                     entry.deploy = deploy;
+                    state.resources.record_bytes =
+                        state.resources.record_bytes - previous_bytes + next_bytes;
+                    state.resources.phlo_limit =
+                        state.resources.phlo_limit - previous_phlo + next_phlo;
                 }
                 None => {
                     changed = true;
+                    state.resources.add(&deploy);
                     state.entries.insert(signature, Entry {
                         deploy,
                         marker: Marker::Pending,
+                        persisted: true,
                     });
                 }
             }
@@ -372,6 +554,25 @@ impl AdmissionReservations {
         window: FreshWindow,
         expected_revision: Option<u64>,
     ) -> Result<Reservation, ReserveError> {
+        self.try_reserve_with_limits(
+            deploy,
+            ResourceLimits {
+                count: capacity,
+                record_bytes: u128::MAX,
+                phlo_limit: None,
+            },
+            window,
+            expected_revision,
+        )
+    }
+
+    pub(crate) fn try_reserve_with_limits(
+        self: &Arc<Self>,
+        deploy: PendingDeploy,
+        limits: ResourceLimits,
+        window: FreshWindow,
+        expected_revision: Option<u64>,
+    ) -> Result<Reservation, ReserveError> {
         let mut state = self.state.lock();
         if !state.valid || expected_revision.is_some_and(|revision| revision != self.revision()) {
             return Err(ReserveError::NeedsRefresh);
@@ -382,16 +583,49 @@ impl AdmissionReservations {
         if !window.contains(&deploy) {
             return Err(ReserveError::NotFresh);
         }
+        if self.retained && deploy.record_bytes as u128 > limits.record_bytes {
+            return Err(ReserveError::RecordTooLarge {
+                record_bytes: deploy.record_bytes,
+                limit: limits.record_bytes,
+            });
+        }
         self.expire_entries(&mut state, window);
         let occupied = self.occupied();
+        let capacity = limits.count;
         if occupied >= capacity {
             return Err(ReserveError::Full { occupied, capacity });
         }
+        let next_bytes = state.resources.record_bytes + deploy.record_bytes as u128;
+        let next_phlo = state.resources.phlo_limit + deploy.phlo_limit as u128;
+        if self.retained || occupied != 0 {
+            if next_bytes > limits.record_bytes {
+                return Err(ReserveError::ResourceFull {
+                    occupied,
+                    capacity,
+                    resource: "record_bytes",
+                    used: next_bytes,
+                    limit: limits.record_bytes,
+                });
+            }
+            if let Some(limit) = limits.phlo_limit {
+                if next_phlo > limit {
+                    return Err(ReserveError::ResourceFull {
+                        occupied,
+                        capacity,
+                        resource: "phlo_limit",
+                        used: next_phlo,
+                        limit,
+                    });
+                }
+            }
+        }
         self.occupied.store(occupied + 1, AtomicOrdering::Release);
+        state.resources.add(&deploy);
         let signature = deploy.signature.clone();
         state.entries.insert(signature.clone(), Entry {
             deploy,
             marker: Marker::Reserved { excluded: false },
+            persisted: false,
         });
         Ok(Reservation {
             book: self.clone(),
@@ -402,20 +636,23 @@ impl AdmissionReservations {
 
     pub fn exclude(&self, signature: &[u8]) -> Exclusion {
         let mut state = self.state.lock();
-        match state
-            .entries
-            .get_mut(signature)
-            .map(|entry| &mut entry.marker)
-        {
-            Some(Marker::Reserved { excluded, .. }) => {
+        match state.entries.get_mut(signature) {
+            Some(Entry {
+                marker: Marker::Reserved { excluded },
+                persisted,
+                ..
+            }) => {
+                if self.retained {
+                    *persisted = false;
+                }
                 if !*excluded {
                     *excluded = true;
                     self.advance_revision();
                 }
                 Exclusion::DeferredUntilWriteCompletes
             }
-            Some(Marker::Pending) => {
-                state.entries.remove(signature);
+            Some(_) => {
+                state.remove(signature);
                 self.release(1);
                 self.advance_revision();
                 Exclusion::Released
@@ -433,10 +670,14 @@ impl AdmissionReservations {
         if !state.valid {
             return Err(ReserveError::NeedsRefresh);
         }
-        if !window.contains(&deploy) {
+        if !self.retained && !window.contains(&deploy) {
             return Ok(false);
         }
         if let Some(entry) = state.entries.get_mut(&deploy.signature) {
+            if self.retained && !entry.persisted {
+                entry.persisted = true;
+                self.advance_revision();
+            }
             if let Marker::Reserved { excluded, .. } = &mut entry.marker {
                 if *excluded {
                     *excluded = false;
@@ -450,9 +691,11 @@ impl AdmissionReservations {
             .checked_add(1)
             .ok_or(ReserveError::CounterOverflow)?;
         self.occupied.store(count, AtomicOrdering::Release);
+        state.resources.add(&deploy);
         state.entries.insert(deploy.signature.clone(), Entry {
             deploy,
             marker: Marker::Pending,
+            persisted: true,
         });
         self.advance_revision();
         Ok(true)
@@ -462,7 +705,11 @@ impl AdmissionReservations {
     pub fn invalidate(&self) { self.state.lock().valid = false; }
 
     fn expire_entries(&self, state: &mut State, window: FreshWindow) {
+        if self.retained {
+            return;
+        }
         let mut removed = 0;
+        let mut released = ResourceUsage::default();
         let mut changed = false;
         state.entries.retain(|_, entry| {
             if window.contains(&entry.deploy) {
@@ -476,10 +723,13 @@ impl AdmissionReservations {
                 }
                 Marker::Pending => {
                     removed += 1;
+                    released.add(&entry.deploy);
                     false
                 }
             }
         });
+        state.resources.record_bytes -= released.record_bytes;
+        state.resources.phlo_limit -= released.phlo_limit;
         self.release(removed);
         if changed || removed != 0 {
             self.advance_revision();
@@ -509,8 +759,17 @@ impl Reservation {
                 Marker::Reserved { excluded } => excluded,
                 _ => panic!("Reservation marker is not reserved"),
             };
-            let result = if excluded || !window.contains(&entry.deploy) {
-                state.entries.remove(&self.signature);
+            let stale = excluded || !window.contains(&entry.deploy);
+            let result = if self.book.retained {
+                entry.persisted = true;
+                entry.marker = Marker::Pending;
+                if stale {
+                    CommitResult::Excluded
+                } else {
+                    CommitResult::Pending
+                }
+            } else if stale {
+                state.remove(&self.signature);
                 self.book.release(1);
                 CommitResult::Excluded
             } else {
@@ -531,18 +790,306 @@ impl Drop for Reservation {
             return;
         }
         let mut state = self.book.state.lock();
-        let owned = matches!(
-            state
-                .entries
-                .get(&self.signature)
-                .map(|entry| &entry.marker),
-            Some(Marker::Reserved { .. })
-        );
-        if owned {
-            state.entries.remove(&self.signature);
-            self.book.release(1);
-            self.book.advance_revision();
+        let Some(entry) = state.entries.get_mut(&self.signature) else {
+            return;
+        };
+        if !matches!(entry.marker, Marker::Reserved { .. }) {
+            return;
         }
+        if self.book.retained && entry.persisted {
+            entry.marker = Marker::Pending;
+        } else {
+            state.remove(&self.signature);
+            self.book.release(1);
+        }
+        self.book.advance_revision();
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    fn window() -> FreshWindow {
+        FreshWindow {
+            earliest_valid_after: -1,
+            latest_valid_after: 100,
+            now_millis: 10,
+        }
+    }
+
+    fn deploy(id: u8, record_bytes: usize, phlo_limit: u64) -> PendingDeploy {
+        PendingDeploy {
+            signature: vec![id],
+            valid_after_block_number: 0,
+            timestamp: id.into(),
+            expiration_timestamp: None,
+            record_bytes,
+            phlo_limit,
+        }
+    }
+
+    fn limits(record_bytes: u128, phlo_limit: u128) -> ResourceLimits {
+        ResourceLimits {
+            count: 24,
+            record_bytes,
+            phlo_limit: Some(phlo_limit),
+        }
+    }
+
+    fn reserve(
+        book: &Arc<AdmissionReservations>,
+        deploy: PendingDeploy,
+        limits: ResourceLimits,
+    ) -> Result<Reservation, ReserveError> {
+        book.try_reserve_with_limits(deploy, limits, window(), None)
+    }
+
+    #[test]
+    fn learned_resource_budgets_use_the_included_work_and_current_count_budget() {
+        let admission = DeployAdmission::default();
+        assert_eq!(admission.limits(128).count, 24);
+        assert_eq!(admission.limits(128).record_bytes, 6 * 1024 * 1024);
+        assert_eq!(admission.limits(128).phlo_limit, None);
+        admission.observe_sample(1, LocalServiceSample {
+            included: 8,
+            has_remaining_demand: true,
+            record_bytes: 800,
+            phlo_limit: 80,
+        });
+        let budget = admission.limits(128);
+        assert_eq!(
+            (budget.count, budget.record_bytes, budget.phlo_limit),
+            (24, 2500, Some(240))
+        );
+        admission.observe_sample(2, LocalServiceSample {
+            included: 1,
+            has_remaining_demand: false,
+            record_bytes: 1000,
+            phlo_limit: 1000,
+        });
+        let budget = admission.limits(128);
+        assert_eq!(
+            (budget.count, budget.record_bytes, budget.phlo_limit),
+            (24, 5000, Some(2880))
+        );
+        assert_eq!(admission.limits(0).count, 0);
+        assert_eq!(admission.limits(0).record_bytes, 0);
+    }
+
+    #[test]
+    fn resource_history_ignores_repeated_and_idle_observations_and_evicts_old_work() {
+        let admission = DeployAdmission::default();
+        let sample = LocalServiceSample {
+            included: 8,
+            has_remaining_demand: true,
+            record_bytes: 800,
+            phlo_limit: 80,
+        };
+        admission.observe_sample(2, sample);
+        admission.observe_sample(1, LocalServiceSample {
+            record_bytes: u128::MAX,
+            ..sample
+        });
+        admission.observe_sample(2, LocalServiceSample {
+            phlo_limit: u128::MAX,
+            ..sample
+        });
+        admission.observe_sample(3, LocalServiceSample {
+            included: 0,
+            has_remaining_demand: false,
+            record_bytes: 0,
+            phlo_limit: 0,
+        });
+        assert_eq!(admission.samples.lock().resources.len(), 1);
+        assert_eq!(admission.limits(128).record_bytes, 2500);
+        for sequence in 4..12 {
+            admission.observe_sample(sequence, LocalServiceSample {
+                record_bytes: 1600,
+                phlo_limit: 160,
+                ..sample
+            });
+        }
+        assert_eq!(admission.samples.lock().resources.len(), 8);
+        assert_eq!(admission.limits(128).record_bytes, 5000);
+        assert_eq!(admission.limits(128).phlo_limit, Some(480));
+    }
+
+    #[test]
+    fn small_record_size_variations_do_not_consume_an_extra_signature_position() {
+        let admission = DeployAdmission::default();
+        admission.observe_sample(1, LocalServiceSample {
+            included: 8,
+            has_remaining_demand: true,
+            record_bytes: 800,
+            phlo_limit: 80,
+        });
+        let book = AdmissionReservations::from_fresh([], window()).unwrap();
+        let budget = admission.limits(128);
+        for id in 0..24 {
+            reserve(&book, deploy(id, 101, 10), budget)
+                .unwrap()
+                .commit(window());
+        }
+        assert!(matches!(
+            reserve(&book, deploy(24, 101, 10), budget),
+            Err(ReserveError::Full { capacity: 24, .. })
+        ));
+    }
+
+    #[test]
+    fn byte_and_phlo_refusals_release_the_unwritten_work_on_drop() {
+        for (budget, second, resource) in [
+            (limits(150, 1000), deploy(2, 100, 10), "record_bytes"),
+            (limits(1000, 15), deploy(2, 100, 10), "phlo_limit"),
+        ] {
+            let book = AdmissionReservations::from_fresh([], window()).unwrap();
+            let first = reserve(&book, deploy(1, 100, 10), budget).unwrap();
+            assert!(
+                matches!(reserve(&book, second.clone(), budget), Err(ReserveError::ResourceFull { resource: cause, .. }) if cause == resource)
+            );
+            assert_eq!(book.occupied(), 1);
+            drop(first);
+            assert_eq!(book.state.lock().resources, ResourceUsage::default());
+            assert!(reserve(&book, second, budget).is_ok());
+        }
+    }
+
+    #[test]
+    fn an_empty_queue_admits_one_oversized_probe_but_zero_count_disables_it() {
+        let book = AdmissionReservations::from_fresh([], window()).unwrap();
+        let budget = limits(1, 1);
+        let probe = reserve(&book, deploy(1, 1000, 1000), budget).unwrap();
+        assert!(matches!(
+            reserve(&book, deploy(2, 1, 1), budget),
+            Err(ReserveError::ResourceFull { .. })
+        ));
+        drop(probe);
+        assert!(matches!(
+            reserve(&book, deploy(3, 1000, 1000), ResourceLimits {
+                count: 0,
+                ..budget
+            }),
+            Err(ReserveError::Full { capacity: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn deferred_exclusion_and_expiry_release_committed_resources_once() {
+        let book = AdmissionReservations::from_fresh([], window()).unwrap();
+        let held = reserve(&book, deploy(1, 100, 10), limits(100, 10)).unwrap();
+        assert_eq!(book.exclude(&[1]), Exclusion::DeferredUntilWriteCompletes);
+        assert_eq!(book.state.lock().resources.record_bytes, 100);
+        assert_eq!(held.commit(window()), CommitResult::Excluded);
+        assert_eq!(book.state.lock().resources, ResourceUsage::default());
+        let mut expiring = deploy(2, 200, 20);
+        expiring.expiration_timestamp = Some(11);
+        reserve(&book, expiring, limits(200, 20))
+            .unwrap()
+            .commit(window());
+        book.refresh_window(FreshWindow {
+            now_millis: 12,
+            ..window()
+        });
+        assert_eq!(book.state.lock().resources, ResourceUsage::default());
+        assert_eq!(book.occupied(), 0);
+    }
+
+    #[test]
+    fn reconciliation_accounts_for_replacement_removal_and_restored_accepted_work() {
+        let book = AdmissionReservations::from_fresh([deploy(1, 100, 10)], window()).unwrap();
+        let next = HashMap::from([(vec![1], deploy(1, 200, 20)), (vec![2], deploy(2, 300, 30))]);
+        book.reconcile(ReservationUpdate::Full(next), window(), book.revision())
+            .unwrap();
+        assert_eq!(book.state.lock().resources, ResourceUsage {
+            record_bytes: 500,
+            phlo_limit: 50
+        });
+        book.reconcile(
+            ReservationUpdate::Delta {
+                fresh: HashMap::new(),
+                removals: vec![vec![1]],
+            },
+            window(),
+            book.revision(),
+        )
+        .unwrap();
+        assert_eq!(book.state.lock().resources, ResourceUsage {
+            record_bytes: 300,
+            phlo_limit: 30
+        });
+        book.restore_accepted(deploy(3, 500, 50), window()).unwrap();
+        assert_eq!(book.state.lock().resources, ResourceUsage {
+            record_bytes: 800,
+            phlo_limit: 80
+        });
+        assert!(matches!(
+            reserve(&book, deploy(4, 1, 1), limits(100, 10)),
+            Err(ReserveError::ResourceFull { .. })
+        ));
+        book.exclude(&[2]);
+        book.exclude(&[3]);
+        assert_eq!(book.state.lock().resources, ResourceUsage::default());
+    }
+
+    #[test]
+    fn concurrent_arrivals_cannot_share_the_last_resource_allowance() {
+        let book = AdmissionReservations::from_fresh([deploy(0, 100, 10)], window()).unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = (1..=2)
+            .map(|id| {
+                let book = book.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    reserve(&book, deploy(id, 100, 10), limits(200, 20))
+                        .map(|reservation| reservation.commit(window()))
+                })
+            })
+            .collect();
+        barrier.wait();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(ReserveError::ResourceFull { .. })))
+                .count(),
+            1
+        );
+        assert_eq!(book.state.lock().resources, ResourceUsage {
+            record_bytes: 200,
+            phlo_limit: 20
+        });
+    }
+
+    #[test]
+    fn resource_totals_handle_maximum_metadata_values_and_keep_duplicate_priority() {
+        let book =
+            AdmissionReservations::from_fresh([deploy(1, usize::MAX, u64::MAX)], window()).unwrap();
+        let budget = ResourceLimits {
+            count: 2,
+            record_bytes: u128::MAX,
+            phlo_limit: Some(u128::MAX),
+        };
+        reserve(&book, deploy(2, usize::MAX, u64::MAX), budget)
+            .unwrap()
+            .commit(window());
+        assert_eq!(
+            book.state.lock().resources.record_bytes,
+            2 * usize::MAX as u128
+        );
+        assert_eq!(book.state.lock().resources.phlo_limit, 2 * u64::MAX as u128);
+        assert!(matches!(
+            reserve(&book, deploy(1, usize::MAX, u64::MAX), limits(1, 1)),
+            Err(ReserveError::Duplicate)
+        ));
+        book.exclude(&[1]);
+        book.exclude(&[2]);
+        assert_eq!(book.state.lock().resources, ResourceUsage::default());
     }
 }
 
@@ -786,6 +1333,8 @@ mod reservation_tests {
             valid_after_block_number: 0,
             timestamp: id.into(),
             expiration_timestamp: None,
+            record_bytes: 0,
+            phlo_limit: 0,
         }
     }
 
@@ -1142,5 +1691,244 @@ mod reservation_tests {
         assert!(!book.restore_accepted(deploy(1), window()).unwrap());
         assert_eq!(reserved.commit(window()), CommitResult::Pending);
         assert_eq!(book.occupied(), 1);
+    }
+}
+
+#[cfg(test)]
+mod retained_resource_tests {
+    use super::*;
+
+    fn deploy(id: u8, bytes: usize) -> PendingDeploy {
+        PendingDeploy {
+            signature: vec![id],
+            valid_after_block_number: 1,
+            timestamp: 0,
+            expiration_timestamp: None,
+            record_bytes: bytes,
+            phlo_limit: u64::MAX,
+        }
+    }
+
+    fn window() -> FreshWindow {
+        FreshWindow {
+            earliest_valid_after: 0,
+            latest_valid_after: 100,
+            now_millis: 10,
+        }
+    }
+
+    fn limits(count: usize, bytes: u64) -> ResourceLimits {
+        RetainedPoolLimits {
+            max_records: count,
+            max_bytes: bytes,
+            max_inflight: 2,
+        }
+        .into()
+    }
+
+    fn reconcile(book: &AdmissionReservations, rows: Vec<PendingDeploy>) {
+        let entries = rows
+            .into_iter()
+            .map(|row| (row.signature.clone(), row))
+            .collect();
+        book.reconcile(ReservationUpdate::Full(entries), window(), book.revision())
+            .unwrap();
+    }
+
+    #[test]
+    fn retained_limits_require_both_fields_and_reject_typographical_errors() {
+        let explicit =
+            serde_json::json!({"max-records": 128, "max-bytes": 4096, "max-inflight": 2});
+        let configured: RetainedPoolLimits = serde_json::from_value(explicit).unwrap();
+        assert_eq!(configured.max_records, 128);
+        assert_eq!(configured.max_bytes, 4096);
+        assert_eq!(configured.max_inflight, 2);
+        for invalid in [
+            serde_json::json!({"max-records": 128}),
+            serde_json::json!({"max-bytes": 4096}),
+            serde_json::json!({"max-records": 128, "max-bytes": 4096}),
+            serde_json::json!({"max-records": 128, "max-bytes": 4096, "max-record-byte": 4096}),
+        ] {
+            assert!(serde_json::from_value::<RetainedPoolLimits>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn stored_expired_records_still_consume_limits_after_reconstruction() {
+        let mut expired = deploy(1, 100);
+        expired.expiration_timestamp = Some(5);
+        let mut old = deploy(2, 150);
+        old.valid_after_block_number = -10;
+        let book = AdmissionReservations::from_retained([expired, old]).unwrap();
+        book.refresh_window(FreshWindow {
+            earliest_valid_after: 100,
+            ..window()
+        });
+        assert_eq!(book.occupied(), 2);
+        assert_eq!(book.state.lock().resources.record_bytes, 250);
+        assert!(matches!(
+            book.try_reserve_with_limits(deploy(3, 10), limits(2, 500), window(), None),
+            Err(ReserveError::Full {
+                occupied: 2,
+                capacity: 2
+            })
+        ));
+        reconcile(&book, vec![deploy(2, 150)]);
+        assert_eq!(book.occupied(), 1);
+        let reservation = book
+            .try_reserve_with_limits(deploy(3, 10), limits(2, 500), window(), None)
+            .unwrap();
+        assert_eq!(book.occupied(), 2);
+        drop(reservation);
+        assert_eq!(book.state.lock().resources.record_bytes, 150);
+    }
+
+    #[test]
+    fn an_empty_pool_cannot_bypass_its_byte_limit_and_duplicates_keep_priority() {
+        let book = AdmissionReservations::from_retained([]).unwrap();
+        assert!(matches!(
+            book.try_reserve_with_limits(deploy(1, 101), limits(2, 100), window(), None),
+            Err(ReserveError::RecordTooLarge {
+                record_bytes: 101,
+                limit: 100
+            })
+        ));
+        assert_eq!(book.occupied(), 0);
+        let reservation = book
+            .try_reserve_with_limits(deploy(1, 100), limits(2, 100), window(), None)
+            .unwrap();
+        assert_eq!(reservation.commit(window()), CommitResult::Pending);
+        assert!(matches!(
+            book.try_reserve_with_limits(deploy(1, 100), limits(0, 0), window(), None),
+            Err(ReserveError::Duplicate)
+        ));
+    }
+
+    #[test]
+    fn only_a_changed_storage_snapshot_releases_stored_resources() {
+        let rows = vec![deploy(1, 100), deploy(2, 100)];
+        let book = AdmissionReservations::from_retained(rows.clone()).unwrap();
+        reconcile(&book, rows);
+        assert!(matches!(
+            book.try_reserve_with_limits(deploy(3, 60), limits(4, 250), window(), None),
+            Err(ReserveError::ResourceFull {
+                resource: "record_bytes",
+                used: 260,
+                limit: 250,
+                ..
+            })
+        ));
+        reconcile(&book, vec![deploy(2, 100)]);
+        let reservation = book
+            .try_reserve_with_limits(deploy(3, 60), limits(4, 250), window(), None)
+            .unwrap();
+        assert_eq!(book.state.lock().resources.record_bytes, 160);
+        drop(reservation);
+        assert_eq!(book.state.lock().resources.record_bytes, 100);
+    }
+
+    #[test]
+    fn reconciliation_and_rollback_do_not_erase_an_independently_persisted_record() {
+        let book = AdmissionReservations::from_retained([]).unwrap();
+        let reservation = book
+            .try_reserve_with_limits(deploy(1, 100), limits(2, 300), window(), None)
+            .unwrap();
+        reconcile(&book, vec![deploy(1, 150)]);
+        assert_eq!(book.occupied(), 1);
+        assert_eq!(book.state.lock().resources.record_bytes, 150);
+        drop(reservation);
+        assert_eq!(book.occupied(), 1);
+        assert_eq!(book.state.lock().resources.record_bytes, 150);
+        assert!(matches!(
+            book.try_reserve_with_limits(deploy(1, 100), limits(2, 300), window(), None),
+            Err(ReserveError::Duplicate)
+        ));
+        reconcile(&book, vec![]);
+        assert_eq!(book.occupied(), 0);
+        assert_eq!(book.state.lock().resources.record_bytes, 0);
+    }
+
+    #[test]
+    fn a_write_that_expires_before_commit_remains_charged_until_removed() {
+        let mut row = deploy(1, 200);
+        row.expiration_timestamp = Some(20);
+        let book = AdmissionReservations::from_retained([]).unwrap();
+        let reservation = book
+            .try_reserve_with_limits(row.clone(), limits(2, 300), window(), None)
+            .unwrap();
+        assert_eq!(
+            reservation.commit(FreshWindow {
+                now_millis: 30,
+                ..window()
+            }),
+            CommitResult::Excluded
+        );
+        reconcile(&book, vec![row]);
+        assert_eq!(book.state.lock().resources.record_bytes, 200);
+        assert!(matches!(
+            book.try_reserve_with_limits(deploy(2, 200), limits(2, 300), window(), None),
+            Err(ReserveError::ResourceFull { .. })
+        ));
+        reconcile(&book, vec![]);
+        assert_eq!(book.state.lock().resources.record_bytes, 0);
+    }
+
+    #[test]
+    fn lower_limits_preserve_stored_records_and_stop_unwritten_reservations() {
+        let rows = vec![deploy(1, 100), deploy(2, 100)];
+        let book = AdmissionReservations::from_retained(rows.clone()).unwrap();
+        assert!(matches!(
+            book.try_reserve_with_limits(deploy(3, 100), limits(1, 200), window(), None),
+            Err(ReserveError::Full { .. })
+        ));
+        assert_eq!(book.occupied(), 2);
+        reconcile(&book, rows);
+        assert_eq!(book.occupied(), 2);
+        reconcile(&book, vec![]);
+        assert!(matches!(
+            book.try_reserve_with_limits(deploy(3, 100), limits(0, 200), window(), None),
+            Err(ReserveError::Full {
+                occupied: 0,
+                capacity: 0
+            })
+        ));
+        drop(
+            book.try_reserve_with_limits(deploy(3, 100), limits(1, 200), window(), None)
+                .unwrap(),
+        );
+        assert_eq!(book.occupied(), 0);
+    }
+
+    #[test]
+    fn distinct_concurrent_reservations_cannot_exceed_the_byte_budget() {
+        let book = AdmissionReservations::from_retained([]).unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = (1..=16)
+                .map(|id| {
+                    let book = book.clone();
+                    let barrier = barrier.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        book.try_reserve_with_limits(
+                            deploy(id, 100),
+                            limits(16, 300),
+                            window(),
+                            None,
+                        )
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 3);
+        assert_eq!(book.occupied(), 3);
+        assert_eq!(book.state.lock().resources.record_bytes, 300);
+        drop(results);
+        assert_eq!(book.occupied(), 0);
+        assert_eq!(book.state.lock().resources.record_bytes, 0);
     }
 }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
+use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
@@ -29,16 +30,33 @@ pub struct DeployMetadata {
     pub valid_after_block_number: i64,
     pub timestamp: i64,
     pub expiration_timestamp: Option<i64>,
+    pub record_bytes: usize,
+    pub phlo_limit: u64,
 }
 
 impl From<&Signed<DeployData>> for DeployMetadata {
     fn from(deploy: &Signed<DeployData>) -> Self {
+        Self::from_record(
+            deploy,
+            Self::record_size(DeployData::to_proto_ref(deploy).encoded_len()),
+        )
+    }
+}
+
+impl DeployMetadata {
+    pub fn from_record(deploy: &Signed<DeployData>, record_bytes: usize) -> Self {
         Self {
             signature: deploy.sig.to_vec(),
             valid_after_block_number: deploy.data.valid_after_block_number,
             timestamp: deploy.data.time_stamp,
             expiration_timestamp: deploy.data.expiration_timestamp,
+            record_bytes,
+            phlo_limit: deploy.data.phlo_limit.max(0) as u64,
         }
+    }
+
+    pub fn record_size(payload_bytes: usize) -> usize {
+        payload_bytes.saturating_add(super::deploy_codec::RECORD_OVERHEAD)
     }
 }
 
@@ -157,6 +175,10 @@ pub struct PreparedDeploy {
     key: BitVector,
     value: BitVector,
     metadata: DeployMetadata,
+}
+
+impl PreparedDeploy {
+    pub fn metadata(&self) -> &DeployMetadata { &self.metadata }
 }
 
 pub struct DeployRecordSnapshot {
@@ -297,10 +319,11 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         deploy: &Signed<DeployData>,
         value: BitVector,
     ) -> Result<PreparedDeploy, KvStoreError> {
+        let metadata = DeployMetadata::from_record(deploy, value.len());
         Ok(PreparedDeploy {
             key: self.store.encode_key(&deploy.sig.to_vec())?,
             value,
-            metadata: DeployMetadata::from(deploy),
+            metadata,
         })
     }
 
@@ -532,6 +555,55 @@ mod tests {
             PrivateKey::from_bytes(&[1; 32]),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn resource_metadata_reuses_prepared_record_sizes_and_survives_reopen() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let source = deploy(1);
+        let prepared = storage.prepare_checked(&source).unwrap();
+        let metadata = prepared.metadata().clone();
+        assert_eq!(metadata.record_bytes, prepared.value.len());
+        assert_eq!(metadata.phlo_limit, 100_000);
+        assert_eq!(metadata, DeployMetadata::from(&source));
+        storage.add_prepared(vec![prepared]).unwrap();
+        assert_eq!(
+            storage.metadata_snapshot().unwrap().entries[&source.sig.to_vec()],
+            metadata
+        );
+        let reopened = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        assert_eq!(
+            reopened.metadata_snapshot().unwrap().entries[&source.sig.to_vec()],
+            metadata
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_metadata_counts_encoded_parameters_in_the_stored_record() {
+        use models::rust::deploy_parameters::{DeployParameter, RholangValue};
+
+        let mut data = deploy(1).data;
+        data.parameters = vec![DeployParameter {
+            name: "payload".into(),
+            value: RholangValue::List(vec![
+                RholangValue::String("data".repeat(4096)),
+                RholangValue::Bytes(vec![1; 4096]),
+            ]),
+        }];
+        let source =
+            Signed::create(data, Box::new(Secp256k1), PrivateKey::from_bytes(&[1; 32])).unwrap();
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let prepared = storage.prepare_checked(&source).unwrap();
+        assert_eq!(prepared.metadata().record_bytes, prepared.value.len());
+        assert!(prepared.metadata().record_bytes > source.data.term.len() + 20_000);
+        storage.add_prepared(vec![prepared]).unwrap();
+        let reopened = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        assert_eq!(
+            reopened.metadata_snapshot().unwrap().entries[&source.sig.to_vec()],
+            DeployMetadata::from(&source)
+        );
     }
 
     #[tokio::test]

@@ -164,6 +164,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
     const MAX_REFRESH_ATTEMPTS: usize = 3;
     let mut refresh_changes = [None; MAX_REFRESH_ATTEMPTS];
     let shard_cap = this.casper_shard_conf.max_user_deploys_per_block as usize;
+    let retained_limits = this.casper_shard_conf.deploy_admission;
     for changed_component in &mut refresh_changes {
         let deploy_storage = this.deploy_storage.as_ref();
         let rejected_deploys = this.rejected_deploy_buffer.lock()?.clone();
@@ -184,7 +185,9 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             }
             Err(DeployPreparationError::Serialization(error)) => return Err(error.into()),
         };
-        let mut capacity = this.deploy_admission.capacity(shard_cap);
+        let mut limits = retained_limits
+            .map(Into::into)
+            .unwrap_or_else(|| this.deploy_admission.limits(shard_cap));
         let (cached_revision, cached_window, cached_book, observed_book_revision) = {
             let cache = this.deploy_admission.reservations.lock();
             let book = cache.book.clone();
@@ -211,7 +214,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
                 .saturating_add(this.casper_shard_conf.deploy_lifespan),
             now_millis,
         };
-        let metadata = PendingDeploy::from(&deploy);
+        let metadata = prepared.metadata().clone();
         if !window.allows_arrival(&metadata, dag.latest_block_number().saturating_add(1)) {
             return Ok(Either::Left(DeployError::InvalidFreshness));
         }
@@ -225,15 +228,20 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             previous.earliest_valid_after <= earliest_valid_after
                 && previous.now_millis <= now_millis
         });
-        let reusable = lifecycle.is_some() && cached_revision == Some(revision) && monotonic;
-        let incremental = lifecycle.is_some()
-            && monotonic
-            && cached_revision.is_some_and(|previous| {
-                previous.rejected == revision.rejected
-                    && previous.dag == generation
-                    && previous.lifecycle == lifecycle
-                    && pool.parent_generation == Some(previous.pool)
-            });
+        let reusable = if retained_limits.is_some() {
+            cached_revision.is_some_and(|previous| previous.pool == revision.pool)
+        } else {
+            lifecycle.is_some() && cached_revision == Some(revision) && monotonic
+        };
+        let incremental = cached_revision.is_some_and(|previous| {
+            pool.parent_generation == Some(previous.pool)
+                && (retained_limits.is_some()
+                    || (lifecycle.is_some()
+                        && monotonic
+                        && previous.rejected == revision.rejected
+                        && previous.dag == generation
+                        && previous.lifecycle == lifecycle))
+        });
         let is_fresh = |deploy: &PendingDeploy| -> Result<bool, KvStoreError> {
             deploy_is_fresh(&dag, &rejected, deploy, window)
         };
@@ -242,7 +250,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         } else {
             let mut fresh = std::collections::HashMap::new();
             let mut add_fresh = |deploy: &PendingDeploy| -> Result<(), KvStoreError> {
-                if is_fresh(deploy)? {
+                if retained_limits.is_some() || is_fresh(deploy)? {
                     fresh.insert(deploy.signature.clone(), deploy.clone());
                 }
                 Ok(())
@@ -272,13 +280,16 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         };
         let prepared_book = match (&cached_book, &update) {
             (None, Some(ReservationUpdate::Full(fresh))) => Some(
-                AdmissionReservations::from_fresh(fresh.values().cloned(), window).map_err(
-                    |error| {
-                        CasperError::RuntimeError(format!(
-                            "Admission reservation refresh failed: {error:?}"
-                        ))
-                    },
-                )?,
+                (if retained_limits.is_some() {
+                    AdmissionReservations::from_retained(fresh.values().cloned())
+                } else {
+                    AdmissionReservations::from_fresh(fresh.values().cloned(), window)
+                })
+                .map_err(|error| {
+                    CasperError::RuntimeError(format!(
+                        "Admission reservation refresh failed: {error:?}"
+                    ))
+                })?,
             ),
             _ => None,
         };
@@ -332,17 +343,23 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         cache.revision = Some(revision);
         cache.window = Some(window);
         cache.book = Some(book.clone());
-        if capacity == 0 && book.occupied() == 0 && shard_cap > 0 {
-            capacity = 1;
+        if retained_limits.is_none() && limits.count == 0 && book.occupied() == 0 && shard_cap > 0 {
+            limits.count = 1;
         }
-        let pending_ahead = book.pending_ahead(&metadata);
-        metrics::gauge!(DEPLOY_ADMISSION_PENDING_AHEAD_METRIC, "source" => CASPER_METRICS_SOURCE)
-            .set(pending_ahead as f64);
+        let capacity = limits.count;
+        let pending_ahead = if retained_limits.is_none() {
+            let ahead = book.pending_ahead(&metadata);
+            metrics::gauge!(DEPLOY_ADMISSION_PENDING_AHEAD_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .set(ahead as f64);
+            ahead
+        } else {
+            0
+        };
         metrics::gauge!(DEPLOY_ADMISSION_CAPACITY_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(capacity as f64);
-        let reservation = match book.try_reserve_at_revision(
+        let reservation = match book.try_reserve_with_limits(
             metadata.clone(),
-            capacity,
+            limits,
             window,
             Some(expected),
         ) {
@@ -351,14 +368,49 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
                 return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)))
             }
             Err(ReserveError::NotFresh) => return Ok(Either::Left(DeployError::InvalidFreshness)),
+            Err(ReserveError::RecordTooLarge {
+                record_bytes,
+                limit,
+            }) => {
+                return Ok(Either::Left(DeployError::RecordTooLarge {
+                    record_bytes,
+                    limit,
+                }));
+            }
             Err(ReserveError::NeedsRefresh) => {
                 *changed_component = Some("reservations");
                 continue;
             }
-            Err(ReserveError::Full { occupied, .. }) => {
+            Err(
+                error @ (ReserveError::Full { occupied, .. }
+                | ReserveError::ResourceFull { occupied, .. }),
+            ) => {
                 metrics::counter!(DEPLOY_ADMISSION_REFUSED_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
                 drop(cache);
+                tracing::debug!(
+                    target: "f1r3fly.casper.deploy_admission",
+                    refusal = ?error,
+                    record_byte_budget = %limits.record_bytes,
+                    declared_phlo_budget = ?limits.phlo_limit,
+                    "Deploy admission budget exhausted"
+                );
+                if retained_limits.is_some() {
+                    let (resource, required, limit) = match error {
+                        ReserveError::ResourceFull {
+                            resource,
+                            used,
+                            limit,
+                            ..
+                        } => (resource, used, limit),
+                        _ => ("records", occupied as u128 + 1, capacity as u128),
+                    };
+                    return Ok(Either::Left(DeployError::PoolResourceBusy {
+                        resource,
+                        required,
+                        limit,
+                    }));
+                }
                 this.deploy_admission
                     .log_pool_busy(capacity, pending_ahead, occupied);
                 return Ok(Either::Left(DeployError::PoolBusy {

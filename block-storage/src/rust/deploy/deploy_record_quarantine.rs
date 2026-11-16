@@ -183,7 +183,7 @@ impl DeployRecordQuarantine {
                             decoded += 1;
                             VerifiedMetadata {
                                 fingerprint,
-                                metadata: DeployMetadata::from(&deploy),
+                                metadata: DeployMetadata::from_record(&deploy, value.len()),
                             }
                         }
                     };

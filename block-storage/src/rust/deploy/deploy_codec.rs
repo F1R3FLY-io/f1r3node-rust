@@ -12,6 +12,7 @@ use super::key_value_deploy_storage::DeployPreparationError;
 
 const PREFIX: &[u8] = b"F1R3DEP\x02";
 const FINGERPRINT_LEN: usize = 32;
+pub(super) const RECORD_OVERHEAD: usize = PREFIX.len() + FINGERPRINT_LEN;
 
 pub(super) fn encode(deploy: &Signed<DeployData>) -> Result<BitVector, KvStoreError> {
     encode_checked(deploy).map_err(Into::into)

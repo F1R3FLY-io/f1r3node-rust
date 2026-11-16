@@ -1,6 +1,42 @@
 # Deploy admission specification
 
-## Admission
+## Explicit retained-resource policy
+
+An optional `casper.deploy-admission` configuration object selects the retained-resource policy.
+Require `max-records`, `max-bytes`, and `max-inflight`. Reject unknown fields in this object.
+Reject a zero `max-inflight` value or a value above the semaphore limit before starting the API servers.
+Keep the existing comparison policy when the object is absent.
+Do not derive these limits from service samples, declared phlo, or the proposer block limit.
+With sufficient byte capacity, an explicit record limit of 128 must admit 128 distinct deploys before any proposal.
+The next distinct deploy must receive a pool-busy refusal without persistence.
+Deleting one stored record must permit one replacement after metadata reconciliation.
+
+Count all verified pool records, including expired, included, rejected, and terminal copies until their removal.
+Count unwritten reservations against the same limits before persistence.
+Reconcile independent storage changes through the existing metadata generations and reservation revisions.
+Count a stored signature and its active reservation once.
+If another handle persists a reserved signature, preserve its resource charge when the original attempt rolls back.
+Do not release stored resources because a freshness window or terminal status changes.
+Reconstruct all occupancy after restart, even above the configured limits.
+Lower limits preserve accepted records and stop new admission until sufficient resources become available.
+
+Reject a candidate that exceeds the entire byte budget, including in an empty pool.
+Return HTTP 413 with `deploy_too_large` for this refusal.
+Return HTTP 503 with `deploy_pool_busy` when the aggregate count or byte budget is exhausted.
+Keep duplicate detection ahead of both resource refusals.
+An expired write remains charged until the storage removal succeeds and metadata reconciliation observes the removal.
+Keep block processing, proposal creation, and finalization independent of intake refusal.
+
+This policy limits encoded pool records. It does not bound LMDB page allocation, total node RSS, or contract execution cost.
+Share one submission semaphore across HTTP and both gRPC API servers.
+Acquire without waiting before JSON or protobuf decoding. Reject excess submissions through the existing admission-busy response.
+An ingress refusal precedes signature and duplicate checks. Retries must preserve the same signed deploy.
+Keep gRPC refusals in the existing service error envelope, including refusals before protobuf decoding.
+Hold the permit until blocking work completes, even when the request future is canceled.
+Release the permit after rejection, completion, or unwinding. Do not charge other endpoints or peer traffic.
+Validation against the current dev and external queue remains a later step.
+
+## Existing comparison policy
 
 Count every fresh pending signature against capacity, regardless of its selection position.
 Fresh entries exceed the earliest valid-after boundary and have not expired by time.
@@ -37,6 +73,25 @@ A zero shard cap always disables admission.
 Accept a fresh candidate only when occupancy is below capacity.
 Capacity reductions preserve accepted work.
 Use integer arithmetic without overflow.
+
+Track encoded record bytes and non-negative declared phlo limits alongside each fresh signature.
+Use the already prepared record length for intake and the raw record length during metadata reconciliation.
+Do not serialize a deploy again to calculate its reservation weight.
+Keep at most eight positive resource observations from successful local blocks.
+Use the same selection-time signatures as the inclusion sample and exclude unrelated or recovery deploys.
+For phlo, multiply count capacity by the mean declared limit per included deploy, and round up.
+For bytes, multiply the mean record size by count capacity plus one, and round up.
+The extra record allows small encoding-size variations. Zero count capacity still disables admission.
+Cap the normal byte budget at three proposer byte budgets.
+Use this ceiling before the first positive resource observation. Do not infer a phlo budget before observing service.
+Ignore duplicate sequences and zero-inclusion blocks when updating resource means.
+Check the signature count and both resource totals under the reservation lock before writing.
+Allow one resource probe only when the fresh queue is empty and count capacity is positive.
+Preserve all previously accepted resources when budgets decrease.
+Release the resources exactly once on rollback, inclusion, or expiry.
+Keep duplicate and freshness checks ahead of resource refusals.
+Return the existing retryable pool-busy response for a temporary resource-budget refusal.
+Resource accounting measures serialized records and declared allowances. It does not establish a resident-memory or CPU bound.
 
 Check duplicates before overload under the reservation lock.
 Reserve capacity before persistence.

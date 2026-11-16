@@ -58,9 +58,18 @@ pub enum DeployError {
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
     InvalidFreshness,
+    RecordTooLarge {
+        record_bytes: usize,
+        limit: u128,
+    },
     PoolBusy {
         pending_ahead: usize,
         capacity: usize,
+    },
+    PoolResourceBusy {
+        resource: &'static str,
+        required: u128,
+        limit: u128,
     },
     AdmissionBusy,
 }
@@ -84,6 +93,11 @@ impl Display for DeployError {
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
             DeployError::InvalidFreshness => write!(f, "Deploy is outside the admission validity window"),
+            DeployError::RecordTooLarge { record_bytes, limit } => write!(
+                f,
+                "Deploy record size {} exceeds the configured pool byte limit {}",
+                record_bytes, limit
+            ),
             DeployError::UnknownSignatureAlgorithm(alg) => {
                 write!(f, "Unknown signature algorithm '{}'", alg)
             }
@@ -95,6 +109,11 @@ impl Display for DeployError {
                 f,
                 "deploy_pool_busy: the fresh queue has reached the three-block capacity {}. Retry later or submit to another validator.",
                 capacity
+            ),
+            DeployError::PoolResourceBusy { resource, required, limit } => write!(
+                f,
+                "deploy_pool_busy: {} would require {}, above the configured limit {}. Retry later or submit to another validator.",
+                resource, required, limit
             ),
             DeployError::AdmissionBusy => write!(
                 f,
@@ -578,6 +597,7 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_enabled: bool,
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
+    pub deploy_admission: Option<crate::rust::deploy_admission::RetainedPoolLimits>,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -623,6 +643,7 @@ impl CasperShardConf {
             synchrony_finalized_baseline_enabled: true,
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
+            deploy_admission: None,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,

@@ -835,6 +835,39 @@ mod embedded_defaults_tests {
     }
 
     #[test]
+    fn retained_deploy_limits_require_an_explicit_complete_hocon_object() {
+        let load = |overrides: &str| {
+            hocon::HoconLoader::new()
+                .load_str(EMBEDDED_DEFAULTS)
+                .unwrap()
+                .load_str(overrides)
+                .unwrap()
+                .resolve::<NodeConf>()
+        };
+        assert_eq!(load("").unwrap().casper.deploy_admission, None);
+        let configured = load(
+            "casper.deploy-admission { max-records = 128, max-bytes = 4096, max-inflight = 2 }",
+        )
+        .unwrap();
+        assert_eq!(
+            configured.casper.deploy_admission,
+            Some(casper::rust::deploy_admission::RetainedPoolLimits {
+                max_records: 128,
+                max_bytes: 4096,
+                max_inflight: 2,
+            })
+        );
+        for incomplete in [
+            "casper.deploy-admission { max-records = 128 }",
+            "casper.deploy-admission { max-bytes = 4096 }",
+            "casper.deploy-admission { max-records = 128, max-bytes = 4096 }",
+            "casper.deploy-admission { max-records = 128, max-bytes = 4096, max-byte = 4096 }",
+        ] {
+            assert!(load(incomplete).is_err());
+        }
+    }
+
+    #[test]
     fn bigint_bond_limits_preserve_defaults_and_explicit_overrides() {
         let base: NodeConf = hocon::HoconLoader::new()
             .load_str(EMBEDDED_DEFAULTS)

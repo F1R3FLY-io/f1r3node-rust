@@ -1362,6 +1362,98 @@ mod router_tests {
 
     fn router() -> Router { WebApiRoutes::create_router().with_state(app_state()) }
 
+    #[tokio::test]
+    async fn ingress_shared_permit_rejects_both_http_deploy_routes_before_reading_the_body() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::rust::api::DeployRequestLimiter;
+        use crate::rust::web::routes::Routes;
+
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let permit = limiter.try_acquire().unwrap();
+        let router = Routes::create_main_routes(false, 1024)
+            .with_state(app_state().with_deploy_limiter(limiter.clone()));
+        for uri in ["/api/deploy", "/api/v1/deploy"] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let counter = reads.clone();
+            let body = Body::from_stream(futures::stream::once(async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, std::convert::Infallible>(tonic::codegen::Bytes::from_static(
+                    b"invalid json",
+                ))
+            }));
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["error"],
+                "deploy_admission_busy"
+            );
+            assert_eq!(reads.load(Ordering::SeqCst), 0);
+        }
+        let ready = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        drop(permit);
+        let invalid = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("content-type", "application/json")
+                    .body(Body::from("invalid json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert!(limiter.try_acquire().is_ok());
+    }
+
+    #[tokio::test]
+    async fn ingress_json_offload_preserves_body_limit_and_releases_its_slot() {
+        use crate::rust::api::DeployRequestLimiter;
+        use crate::rust::web::routes::Routes;
+
+        let limiter = DeployRequestLimiter::new(Some(1)).unwrap();
+        let router = Routes::create_main_routes(false, 16)
+            .with_state(app_state().with_deploy_limiter(limiter.clone()));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("content-type", "application/json")
+                    .body(Body::from(" ".repeat(17)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(limiter.try_acquire().is_ok());
+    }
+
     async fn get_response(uri: &str) -> (StatusCode, serde_json::Value) {
         let response = router()
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())

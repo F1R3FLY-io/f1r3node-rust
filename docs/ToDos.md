@@ -26,6 +26,28 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+### TASK-012-33: Bound retained deploy resources
+
+```yaml
+id: TASK-012-33
+epic_id: EPIC-012
+status: in_progress
+claimed_by: codex-session-a39fd0da
+claimed_at: 2026-11-16
+branch: admission-resource-capacity-review
+pr_base_branch: dev
+pull_request: 789
+acceptance:
+  - "Explicit count and byte limits include retained pool records and unwritten reservations without duplicate charges."
+  - "Expiry and inclusion do not release stored bytes before successful deletion."
+  - "Rollback, concurrent reservations, and storage reconciliation preserve exact resource accounting."
+  - "Configuration requires explicit limits and preserves the existing comparison policy when absent."
+  - "One HTTP and gRPC submission limit applies before decoding and survives cancellation until blocking work completes."
+  - "Focused tests, build, formatting, and Clippy pass on the final transferred revision."
+notes:
+  - "Numeric defaults, current-dev transfer, and joint queue validation remain separate steps."
+```
+
 ### TASK-031-1: Complete unsigned 256-bit token amount support
 
 ```yaml
