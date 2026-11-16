@@ -1,12 +1,14 @@
 // See rspace/src/main/scala/coop/rchain/rspace/ISpace.scala
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
+use super::gc_roots::GcRootRegistry;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
 use super::trace::Log;
@@ -169,6 +171,30 @@ pub trait ISpace<
     /** Clears the store.  Does not affect the history trie.
      */
     async fn clear(&self) -> Result<(), RSpaceError>;
+
+    /// Delete every hot-store entry keyed on a channel in
+    /// `trapped_channels`:
+    ///
+    /// - single-channel data rows keyed on a trapped channel are drained;
+    /// - continuations whose channel list contains any trapped channel are
+    ///   drained, and their sibling join registrations on every channel in the
+    ///   list are pruned;
+    /// - join index entries keyed on a trapped channel are pruned.
+    ///
+    /// Default is a no-op. `RSpace` and `ReplayRSpace` override with the
+    /// real sweep. Deletions flow through the normal hot-store delete path
+    /// and land in the radix trie on the next `create_checkpoint`.
+    async fn sweep_channels(&self, _trapped_channels: Vec<C>) -> Result<(), RSpaceError>
+    where C: 'async_trait {
+        Ok(())
+    }
+
+    /// Return the GC root registry for this space. Pinning a key here causes
+    /// `sweep_channels` to skip any trapped channel whose extracted key is
+    /// pinned. Default returns a fresh empty registry (never pins anything),
+    /// which matches the no-op default `sweep_channels`. `RSpace` and
+    /// `ReplayRSpace` override to return the space's owned registry.
+    fn gc_roots(&self) -> Arc<GcRootRegistry> { GcRootRegistry::new() }
 
     /// Return current history root hash without creating a checkpoint.
     async fn get_root(&self) -> Blake2b256Hash;

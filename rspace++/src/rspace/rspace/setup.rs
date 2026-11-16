@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{RSpace, RSpaceStore};
 use crate::rspace::errors::{HistoryRepositoryError, RSpaceError};
+use crate::rspace::gc_roots::GcRootRegistry;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository::{HistoryRepository, HistoryRepositoryInstances};
@@ -47,6 +48,7 @@ where
             ),
             phase_a_locks: striped_locks::new_striped_locks(),
             phase_b_locks: striped_locks::new_striped_locks(),
+            gc_roots: GcRootRegistry::new(),
         }
     }
 
