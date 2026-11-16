@@ -870,6 +870,7 @@ mod tests {
                 mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
                 mergeable_channels_gc_depth_buffer: 10,
                 enable_block_store_gc: false,
+                enable_history_pruning: false,
                 synchrony_recovery_stall_window: Duration::from_secs(60),
                 synchrony_recovery_cooldown: Duration::from_secs(20),
                 synchrony_recovery_max_bypasses: 2,

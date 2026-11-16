@@ -622,6 +622,14 @@ pub struct CasperShardConf {
     /// validator can still cite them. Shares the mergeable-channel GC
     /// horizon and predicate; requires `enable_mergeable_channel_gc = true`.
     pub enable_block_store_gc: bool,
+    /// Mark-and-sweep the `rspace/history` radix-trie LMDB env, deleting
+    /// nodes no retained state root can reach. Issue #923, Option D.
+    /// Default off: enabling mutates the trie-node store, and the sweep's
+    /// correctness envelope assumes a stable `compute_forward_horizon_roots`
+    /// enumeration — a soak run should confirm no `UnknownRootError`
+    /// regressions before flipping on by default. File does not shrink
+    /// after sweeping (LMDB holds freed pages for reuse).
+    pub enable_history_pruning: bool,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
@@ -669,6 +677,7 @@ impl CasperShardConf {
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
             enable_block_store_gc: false,
+            enable_history_pruning: false,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
