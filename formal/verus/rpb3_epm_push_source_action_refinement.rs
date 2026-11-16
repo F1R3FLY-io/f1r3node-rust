@@ -184,6 +184,7 @@ pub open spec fn epm_push_source_ready(
                 &&& observed.child.region_start == 0
                 &&& observed.child.cursor == 0
                 &&& observed.child.region_end == body.bytes.len()
+                &&& observed.child.region_end <= prior.admission.frames.last().region_end
                 &&& (kind != 1 || observed.child.program_type_id == 1)
                 &&& admission::admission_frame_wf(observed.child)
                 &&& admission::admission_state_wf(next.admission)

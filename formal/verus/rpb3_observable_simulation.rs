@@ -4317,6 +4317,39 @@ pub proof fn lemma_live_root_noscore_extract(
     lemma_live_root_noscore_frames(before, after, action);
 }
 
+pub proof fn lemma_epm_push_child_contained(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveEpmPush,
+    ensures
+        state_frames(after).last().region_end <= state_frames(before).last().region_end,
+{
+    hide(epm::act_plan_events);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::EpmPush { observed }, ..
+        } => {
+            let product = before->product;
+            let next = after->product;
+            let prior = crate::product_linked_top(product.source.product).unwrap();
+            let request = epm_push_source::epm_push_source_request(prior, observed.push).unwrap();
+            assert(epm_push_live::epm_push_live_after(product, observed) == Some(next));
+            assert(epm_push_source::epm_push_source_ready(product, observed.push));
+            assert(observed.push.child.region_end
+                <= prior.admission.frames.last().region_end);
+            assert(prior.admission == product.source.product.bridge.admission);
+            assert(state_frames(after).last() == epm::epm_assigned_child(
+                observed.push.child, epm::request_return_id(request),
+            ));
+        },
+        _ => {},
+    }
+}
+
 pub proof fn lemma_field_step_refines(
     before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
     action: dispatcher::IntegratedAction,

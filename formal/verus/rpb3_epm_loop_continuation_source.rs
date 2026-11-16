@@ -240,6 +240,7 @@ pub proof fn loop_internal_tick_preserves_image(
     requires loop_internal_tick(before, after, tick),
     ensures same_internal_score_and_source_image(before, after),
 {
+    hide(epm::act_plan_events);
     match tick {
         EpmLoopInternalTick::ScalarAfterDeclinedBatch { event } => {
             assert(unwind_product::live_runtime_internal_epm_unwind_step(
