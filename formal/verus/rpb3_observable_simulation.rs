@@ -4317,6 +4317,69 @@ pub proof fn lemma_live_root_noscore_extract(
     lemma_live_root_noscore_frames(before, after, action);
 }
 
+pub proof fn lemma_field_step_refines(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        arm_is_field(action_arm(action)),
+    ensures visible_step_refines(before, after, action),
+{
+    hide(dispatcher::integrated_step);
+    assert(before is Active) by {
+        reveal(dispatcher::integrated_step);
+    }
+    let frames = state_frames(before);
+    let moved = state_frames(after);
+    let score_len = state_score_len(before);
+    let arm = action_arm(action);
+    if arm is LiveContinue {
+        lemma_message_continue_extract(before, after, action);
+        lemma_message_field_refines(frames, moved, score_len);
+    } else if arm is LiveContinueIndexed {
+        lemma_message_continue_indexed_extract(before, after, action);
+        lemma_message_field_refines(frames, moved, score_len);
+    } else {
+        lemma_map_key_extract(before, after, action);
+        lemma_map_key_field_refines(frames, moved, score_len);
+    }
+}
+
+pub proof fn lemma_accept_step_shape(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        arm_is_accept(action_arm(action)),
+    ensures
+        accept_step(before, after),
+        visible_class(before, action) == Some(accept_class(state_frames(before).last().frame_kind)),
+{
+    hide(dispatcher::integrated_step);
+    let arm = action_arm(action);
+    if arm is LiveMessageChildComplete {
+        lemma_message_child_complete_extract(before, after, action);
+    } else if arm is LiveMapValueAccept {
+        lemma_map_value_accept_extract(before, after, action);
+    } else if arm is LiveMapEntryFinish {
+        lemma_map_entry_finish_extract(before, after, action);
+    } else if arm is LiveEpmMapValueAccept {
+        lemma_epm_map_value_accept_extract(before, after, action);
+    } else if arm is LiveEpmFinishAccept {
+        lemma_epm_finish_accept_extract(before, after, action);
+    } else if arm is PathChildReturn {
+        lemma_canonical_path_child_return_extract(before, after, action);
+    } else if arm is EpmRawParReturn {
+        lemma_epm_raw_par_return_extract(before, after, action);
+    } else {
+        lemma_epm_nested_return_extract(before, after, action);
+    }
+}
+
 pub proof fn lemma_accept_shape_refines(
     before: Seq<admission::AdmissionFrameState>, after: Seq<admission::AdmissionFrameState>,
     score_len: nat, score_after: nat,
@@ -4341,6 +4404,113 @@ pub proof fn lemma_accept_shape_refines(
         lemma_map_parent_accept_refines(before, after, score_len, score_after);
     } else {
         lemma_plain_parent_accept_refines(before, after, score_len, score_after);
+    }
+}
+
+pub proof fn lemma_accept_step_refines(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        arm_is_accept(action_arm(action)),
+    ensures visible_step_refines(before, after, action),
+{
+    hide(dispatcher::integrated_step);
+    let arm = action_arm(action);
+    if arm is LiveMessageChildComplete {
+        lemma_message_child_complete_extract(before, after, action);
+    } else if arm is LiveMapValueAccept {
+        lemma_map_value_accept_extract(before, after, action);
+    } else if arm is LiveMapEntryFinish {
+        lemma_map_entry_finish_extract(before, after, action);
+    } else if arm is LiveEpmMapValueAccept {
+        lemma_epm_map_value_accept_extract(before, after, action);
+    } else if arm is LiveEpmFinishAccept {
+        lemma_epm_finish_accept_extract(before, after, action);
+    } else if arm is PathChildReturn {
+        lemma_canonical_path_child_return_extract(before, after, action);
+    } else if arm is EpmRawParReturn {
+        lemma_epm_raw_par_return_extract(before, after, action);
+    } else {
+        lemma_epm_nested_return_extract(before, after, action);
+    }
+    assert(before is Active) by {
+        reveal(dispatcher::integrated_step);
+    }
+    lemma_accept_shape_refines(
+        state_frames(before), state_frames(after), state_score_len(before), state_score_len(after),
+    );
+}
+
+pub proof fn lemma_scored_step_refines(
+    before: dispatcher::IntegratedState, middle: dispatcher::IntegratedState,
+    after: dispatcher::IntegratedState, score_action: dispatcher::IntegratedAction,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, middle, score_action),
+        segment_score_arm(action_arm(score_action)),
+        dispatcher::integrated_step(middle, after, action),
+        visible_class(middle, action) == Some(observable::ObservableClass::MessageComplete),
+    ensures step_refines(before, after, observable::ObservableClass::MessageComplete),
+{
+    hide(dispatcher::integrated_step);
+    lemma_message_child_score_extract(before, middle, score_action);
+    dispatcher::integrated_step_preserves_wf(before, middle, score_action);
+    let arm = action_arm(action);
+    if arm is LiveRootComplete {
+        lemma_live_root_complete_extract(middle, after, action);
+    } else if arm is LiveRootCompleteNoScore {
+        lemma_live_root_noscore_extract(middle, after, action);
+    } else {
+        assert(arm_is_accept(arm));
+        lemma_accept_step_shape(middle, after, action);
+        lemma_score_then_accept_composes(
+            state_frames(before), state_frames(middle), state_frames(after),
+        );
+        assert(before is Active) by {
+            reveal(dispatcher::integrated_step);
+        }
+        let frames = state_frames(before);
+        lemma_accept_shape_refines(
+            frames, state_frames(after), state_score_len(before), state_score_len(after),
+        );
+    }
+}
+
+pub proof fn lemma_internal_prefix_preserves_projection(
+    states: Seq<dispatcher::IntegratedState>, actions: Seq<dispatcher::IntegratedAction>,
+    count: int,
+)
+    requires
+        dispatcher::integrated_trace(states, actions),
+        actions.len() > 0,
+        0 <= count <= actions.len(),
+        internal_prefix(actions, count),
+    ensures
+        project(states[count]) == project(states[0]),
+        dispatcher::integrated_wf(states[count]),
+        states[count] is Active,
+        count > 0 ==> state_frames(states[0]).last().frame_kind == 3,
+    decreases count,
+{
+    hide(dispatcher::integrated_step);
+    if count > 0 {
+        let previous = count - 1;
+        lemma_internal_prefix_preserves_projection(states, actions, previous);
+        assert(segment_internal_arm(action_arm(actions[previous])));
+        assert(dispatcher::integrated_step(states[previous], states[previous + 1], actions[previous]));
+        assert(previous + 1 == count);
+        lemma_internal_step_preserves_projection(states[previous], states[count], actions[previous]);
+        dispatcher::integrated_step_preserves_wf(states[previous], states[count], actions[previous]);
+    } else if actions.len() > 0 {
+        assert(dispatcher::integrated_step(states[count], states[count + 1], actions[count]));
+        assert(states[count] is Active) by {
+            reveal(dispatcher::integrated_step);
+        }
     }
 }
 
