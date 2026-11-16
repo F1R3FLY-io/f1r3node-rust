@@ -400,7 +400,13 @@ env:
   #   (105 s finalization timeout). Verified: descends from 03f3fe8; 610 unit
   #   tests pass; test_capacity passed twice on a soak-shaped VM against this
   #   branch's node. 7673d5e contains both parents of ba59ca5.
-  SYSTEM_INTEGRATION_REF: 7673d5e2f8d34d8705879289eb5af191ea429856
+  # 2026-11-16: 7673d5e -> 6afe9a0 (system-integration PR #175 head). Merges
+  #   system-integration PR #166 (session-scoped Docker names, so session
+  #   cleanup also removes deploy queue containers) and reads each deploy's
+  #   outcome when the read-only node finalizes it, so the capacity check no
+  #   longer reads blocks the block-store GC pruned. Verified: descends from
+  #   7673d5e; 616 unit tests pass.
+  SYSTEM_INTEGRATION_REF: 6afe9a0f80ad025f2dc3f9682d0d50855f3f0b7d
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
