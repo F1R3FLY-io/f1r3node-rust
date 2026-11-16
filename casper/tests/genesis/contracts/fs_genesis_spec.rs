@@ -87,8 +87,16 @@ fn fs_native_versioned_prefix_starts_with_filter_prefix() {
 /// drift tests).
 #[test]
 fn fs_native_filter_guard_discipline_pinned_across_crates() {
-    const CONSTRUCTION_NEEDLE: &str =
-        "filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true))";
+    const CONSTRUCTION_NEEDLES: [&str; 2] = [
+        "filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true))",
+        "fs_native_filtered: Arc::new(std::sync::atomic::AtomicBool::new(true))",
+    ];
+    const CONSTRUCTION_NEEDLE: &str = CONSTRUCTION_NEEDLES[0];
+    const GENESIS_DEFAULT_NEEDLES: [&str; 2] = [
+        "genesis_phase: Arc::new(std::sync::atomic::AtomicBool::new(false))",
+        "genesis: Arc::new(std::sync::atomic::AtomicBool::new(false))",
+    ];
+    const GENESIS_ENTRY_NEEDLE: &str = "enter_genesis_phase()";
     const GUARD_NEEDLE: &str = "FsNativeFilterGuard::disable";
 
     // Rholang-side construction sites.  Current (slice 5.44):
@@ -102,11 +110,23 @@ fn fs_native_filter_guard_discipline_pinned_across_crates() {
         "/../rholang/src/rust/interpreter/rho_runtime.rs",
     ];
     let mut construction_count = 0usize;
+    let mut genesis_default_count = 0usize;
     for rel in rholang_files {
         let path = format!("{}{}", env!("CARGO_MANIFEST_DIR"), rel);
         let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-        construction_count += src.matches(CONSTRUCTION_NEEDLE).count();
+        construction_count += CONSTRUCTION_NEEDLES
+            .iter()
+            .map(|needle| src.matches(needle).count())
+            .sum::<usize>();
+        genesis_default_count += GENESIS_DEFAULT_NEEDLES
+            .iter()
+            .map(|needle| src.matches(needle).count())
+            .sum::<usize>();
     }
+    assert_eq!(
+        genesis_default_count, EXPECTED_CONSTRUCTION_COUNT,
+        "every fresh-reducer construction must default the genesis phase to false"
+    );
     assert_eq!(
         construction_count, EXPECTED_CONSTRUCTION_COUNT,
         "Fresh-reducer construction site count drift: found {} \
@@ -137,10 +157,12 @@ fn fs_native_filter_guard_discipline_pinned_across_crates() {
         "/src/rust/reporting_casper.rs",
     ];
     let mut guard_count = 0usize;
+    let mut genesis_entry_count = 0usize;
     for rel in casper_files {
         let path = format!("{}{}", env!("CARGO_MANIFEST_DIR"), rel);
         let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
         guard_count += src.matches(GUARD_NEEDLE).count();
+        genesis_entry_count += src.matches(GENESIS_ENTRY_NEEDLE).count();
     }
     assert_eq!(
         guard_count, EXPECTED_GUARD_COUNT,
@@ -155,6 +177,10 @@ fn fs_native_filter_guard_discipline_pinned_across_crates() {
          EXPECTED_GUARD_COUNT in this test.  If the delta is \
          accidental, re-add the guard before merging.",
         guard_count, EXPECTED_GUARD_COUNT,
+    );
+    assert_eq!(
+        genesis_entry_count, EXPECTED_GUARD_COUNT,
+        "the genesis phase must be entered on exactly the genesis play, replay and reporting paths"
     );
 
     // Rholang-side filter-toggle call sites (slice 5.74).  The

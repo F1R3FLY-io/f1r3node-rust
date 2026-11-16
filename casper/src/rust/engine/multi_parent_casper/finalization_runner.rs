@@ -53,7 +53,6 @@
 //! each cycle, `settle_after_cycle` writes every verdict the floor of the
 //! persisted LFB decides and removes the pool copy of every terminal sig.
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -204,9 +203,12 @@ pub struct FinalizationContext {
     pub deploy_storage: Arc<KeyValueDeployStorage>,
     pub finalized_bond_cache: super::bond_cache::FinalizedBondCache,
     pub shard_conf: CasperShardConf,
+    pub v6: Option<Arc<crate::rust::v6::V6Engine>>,
 }
 
 impl FinalizationContext {
+    fn alin(&self) -> ALinPolicy { ALinPolicy::for_protocol(self.shard_conf.casper_version) }
+
     /// The exact threshold, never the `f32` display field: it decides finality.
     fn ftt(&self) -> crate::rust::safety::clique_oracle::FtThreshold {
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
@@ -221,11 +223,7 @@ impl FinalizationContext {
     }
 }
 
-/// Backstop only: floor-of-view rides the persisted floor/frontier caches, so a
-/// compute exceeding this is a stall to surface, not pace.
-const FINALIZER_COMPUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
-type CycleFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+type CycleFuture = std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>;
 type Cycle = Box<dyn Fn() -> CycleFuture + Send>;
 
 /// The one finalizer task of a casper instance. Its cycles run one at a time,
@@ -243,9 +241,12 @@ pub struct Finalizer {
 
 impl Finalizer {
     /// Starts the finalizer task of the casper instance `ctx` belongs to.
-    pub fn start(ctx: FinalizationContext) -> Self { Self::spawn(finalizer_cycle(ctx)) }
+    pub fn start(ctx: FinalizationContext) -> Self {
+        let max_timeout_reruns = ctx.shard_conf.finalizer_timeout_reruns;
+        Self::spawn(finalizer_cycle(ctx), max_timeout_reruns)
+    }
 
-    fn spawn(cycle: Cycle) -> Self {
+    fn spawn(cycle: Cycle, max_timeout_reruns: u32) -> Self {
         let wake = Arc::new(tokio::sync::Notify::new());
         let requested = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let in_cycle = Arc::new(AtomicBool::new(false));
@@ -253,6 +254,7 @@ impl Finalizer {
         let (stop, stopped) = tokio::sync::oneshot::channel();
         tokio::spawn(finalizer_loop(
             cycle,
+            max_timeout_reruns,
             wake.clone(),
             requested.clone(),
             in_cycle.clone(),
@@ -299,6 +301,7 @@ impl Finalizer {
 /// value at or above a caller's ticket started after that caller asked.
 async fn finalizer_loop(
     cycle: Cycle,
+    max_timeout_reruns: u32,
     wake: Arc<tokio::sync::Notify>,
     requested: Arc<std::sync::atomic::AtomicU64>,
     in_cycle: Arc<AtomicBool>,
@@ -306,23 +309,44 @@ async fn finalizer_loop(
     mut stopped: tokio::sync::oneshot::Receiver<()>,
 ) {
     use crate::rust::metrics_constants::{CASPER_METRICS_SOURCE, FINALIZER_RUN_RERUNS_METRIC};
+    let mut timeout_reruns = 0u32;
+    let mut resume = false;
     loop {
-        tokio::select! {
-            _ = wake.notified() => {}
-            _ = &mut stopped => return,
+        if resume {
+            if !matches!(
+                stopped.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ) {
+                return;
+            }
+        } else {
+            tokio::select! {
+                _ = wake.notified() => {}
+                _ = &mut stopped => return,
+            }
         }
         let started_with = requested.load(Ordering::SeqCst);
         in_cycle.store(true, Ordering::SeqCst);
         // A subtask, so a panicking cycle costs that cycle, not finality.
-        if let Err(join_err) = tokio::spawn(cycle()).await {
-            tracing::error!(
-                target: "f1r3fly.casper",
-                "finalizer cycle terminated abnormally: {}",
-                join_err
-            );
-        }
+        let timed_out = match tokio::spawn(cycle()).await {
+            Ok(timed_out) => timed_out,
+            Err(join_err) => {
+                tracing::error!(
+                    target: "f1r3fly.casper",
+                    "finalizer cycle terminated abnormally: {}",
+                    join_err
+                );
+                false
+            }
+        };
         in_cycle.store(false, Ordering::SeqCst);
-        if requested.load(Ordering::SeqCst) > started_with {
+        resume = timed_out && timeout_reruns < max_timeout_reruns;
+        if resume {
+            timeout_reruns += 1;
+        } else if !timed_out {
+            timeout_reruns = 0;
+        }
+        if resume || requested.load(Ordering::SeqCst) > started_with {
             metrics::counter!(FINALIZER_RUN_RERUNS_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
         }
@@ -332,32 +356,58 @@ async fn finalizer_loop(
 
 fn finalizer_cycle(ctx: FinalizationContext) -> Cycle {
     let memo = Arc::new(parking_lot::Mutex::new(LineageMemo::default()));
+    let oracle_cache = crate::rust::safety::clique_oracle::CliqueOracle::new_shared_cache(
+        ctx.shard_conf.finalizer_oracle_cache_bounds,
+    );
+    let cursor = crate::rust::finality::floor_runner::new_shared_cursor(
+        ctx.shard_conf.finalizer_cursor_max_invalidations,
+    );
     Box::new(move || {
         let ctx = ctx.clone();
         let memo = memo.clone();
+        let oracle_cache = oracle_cache.clone();
+        let cursor = cursor.clone();
         Box::pin(async move {
-            run_cycle(
-                FINALIZER_COMPUTE_TIMEOUT,
-                || compute_last_finalized_block(&ctx),
+            let yielded = AtomicBool::new(false);
+            let budget = crate::rust::finality::floor_runner::Budget::Until(
+                std::time::Instant::now() + ctx.shard_conf.finalizer_derivation_budget,
+            );
+            let timed_out = run_cycle(
+                ctx.shard_conf.finalizer_step_backstop,
+                || async {
+                    let derived =
+                        derive_last_finalized_block(&ctx, &oracle_cache, &cursor, budget).await;
+                    if matches!(derived, Ok(None)) {
+                        yielded.store(true, Ordering::SeqCst);
+                    }
+                    derived
+                },
+                |derived| adopt_derived(&ctx, derived),
                 |advanced| settle_after_cycle(ctx.clone(), memo, advanced),
             )
-            .await
+            .await;
+            timed_out || yielded.load(Ordering::SeqCst)
         })
     })
 }
 
-/// One finalizer cycle, generic over its two steps so its accounting is
-/// testable without a casper instance. `compute` runs under the timeout and
-/// reports whether the LFB advanced; `after` runs untimed with that answer, so
-/// a slow step after the advance is never abandoned midway.
-pub(crate) async fn run_cycle<E, F, Fut, A, AFut>(
+/// One finalizer cycle, generic over its three steps so its accounting is
+/// testable without a casper instance. Only `derive` runs under the timeout. A
+/// derivation that times out never reaches `commit`, and `commit` is never
+/// cancelled. `after` runs untimed with whether the LFB advanced. Returns
+/// whether the derivation timed out.
+pub(crate) async fn run_cycle<D, E, FD, FutD, FC, FutC, A, AFut>(
     timeout: std::time::Duration,
-    compute: F,
+    derive: FD,
+    commit: FC,
     after: A,
-) where
+) -> bool
+where
     E: std::fmt::Debug,
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<bool, E>>,
+    FD: FnOnce() -> FutD,
+    FutD: std::future::Future<Output = Result<D, E>>,
+    FC: FnOnce(D) -> FutC,
+    FutC: std::future::Future<Output = Result<bool, E>>,
     A: FnOnce(bool) -> AFut,
     AFut: std::future::Future<Output = ()>,
 {
@@ -366,7 +416,13 @@ pub(crate) async fn run_cycle<E, F, Fut, A, AFut>(
         FINALIZER_RUN_TIME_METRIC,
     };
     let cycle_started = std::time::Instant::now();
-    let outcome = tokio::time::timeout(timeout, compute()).await;
+    let derived = tokio::time::timeout(timeout, derive()).await;
+    let timed_out = derived.is_err();
+    let outcome = match derived {
+        Ok(Ok(derived)) => Ok(commit(derived).await),
+        Ok(Err(err)) => Ok(Err(err)),
+        Err(elapsed) => Err(elapsed),
+    };
     metrics::histogram!(FINALIZER_RUN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
         .record(cycle_started.elapsed().as_secs_f64());
     let advanced = match outcome {
@@ -381,13 +437,14 @@ pub(crate) async fn run_cycle<E, F, Fut, A, AFut>(
             metrics::counter!(FINALIZER_RUN_TIMEOUTS_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
             tracing::warn!(
-                "finalizer-run timed out after {:?}; skipping this cycle to avoid blocking propose",
+                "finalizer derivation timed out after {:?}; its oracle facts are kept for the rerun",
                 timeout
             );
             false
         }
     };
     after(advanced).await;
+    timed_out
 }
 
 /// The work after one cycle that reads the persisted LFB, on the blocking
@@ -500,40 +557,189 @@ fn settle_blocking(
 /// every block operation uses. It advances the LFB only to a floor that
 /// CAPTURES the current one, so the read surface never designates a state
 /// missing settled content.
-pub(crate) async fn compute_last_finalized_block(
+pub(crate) struct DerivedLfb {
+    current: crate::rust::finality::floor::Floor,
+    sigma: crate::rust::finality::floor_runner::SnapshotId,
+    adopt: Option<(crate::rust::finality::floor::Floor, f32)>,
+    started: std::time::Instant,
+}
+
+pub(crate) async fn derive_last_finalized_block(
     ctx: &FinalizationContext,
-) -> Result<bool, CasperError> {
-    use crate::rust::finality::floor::{floor_of_view, Floor};
+    oracle_cache: &Arc<crate::rust::safety::clique_oracle::SharedOracleCache>,
+    cursor: &Arc<crate::rust::finality::floor_runner::SharedCursor>,
+    budget: crate::rust::finality::floor_runner::Budget,
+) -> Result<Option<DerivedLfb>, CasperError> {
+    use crate::rust::finality::floor::Floor;
+    use crate::rust::finality::floor_runner::{Advance, Preparation};
+    use crate::rust::metrics_constants::{
+        CASPER_METRICS_SOURCE, FINALIZER_CURSOR_FREEZES_METRIC,
+        FINALIZER_CURSOR_INVALIDATIONS_METRIC, FINALIZER_CURSOR_RESUMES_METRIC,
+        FINALIZER_CURSOR_YIELDS_METRIC,
+    };
+    use crate::rust::safety::clique_oracle::{CliqueOracle, OracleCacheMeter};
 
     let started = std::time::Instant::now();
+    let mut slot = cursor.lock().await;
+    let mut fresh = ctx.block_dag_storage.get_representation()?;
+    if ctx.v6.is_some() {
+        fresh.last_finalized_block_hash = ctx.block_dag_storage.order_floor()?;
+    }
+    let lfb_hash = fresh.last_finalized_block();
+    let lfb_height = fresh.lookup_unsafe(&lfb_hash)?.block_number;
+    let current = Floor {
+        hash: lfb_hash,
+        block_number: lfb_height,
+    };
+    let metric = match slot.prepare(fresh, current, ctx.ftt())? {
+        Preparation::Fresh => None,
+        Preparation::Resumed => Some(FINALIZER_CURSOR_RESUMES_METRIC),
+        Preparation::Reset => Some(FINALIZER_CURSOR_INVALIDATIONS_METRIC),
+        Preparation::Frozen => Some(FINALIZER_CURSOR_FREEZES_METRIC),
+    };
+    if let Some(metric) = metric {
+        metrics::counter!(metric, "source" => CASPER_METRICS_SOURCE).increment(1);
+    }
+    let meter = OracleCacheMeter::new(oracle_cache.clone());
+    let Some((advance, sigma, current, dag)) = slot.advance(&meter, &ctx.block_store, budget).await
+    else {
+        return Ok(None);
+    };
+    let progress = slot
+        .cursor()
+        .map(|cursor| (cursor.steps_taken(), cursor.phase_name()));
+    let invalidations = slot.invalidations();
+    drop(slot);
+    let derivation = match advance {
+        Advance::Yielded => {
+            metrics::counter!(FINALIZER_CURSOR_YIELDS_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .increment(1);
+            if let Some((steps, phase)) = progress {
+                tracing::debug!(
+                    target: "f1r3fly.finalizer",
+                    steps,
+                    phase,
+                    invalidations,
+                    "finalizer derivation yielded at its budget; the cursor is kept"
+                );
+            }
+            return Ok(None);
+        }
+        Advance::Ready(derivation) => derivation,
+    };
+    let observer = ctx.observer.get().cloned();
+    if let Some(observer) = &observer {
+        emit_derivation(observer, observer.operation(), &derivation);
+    }
+    let adopt = match adoption(ctx, &current, derivation?) {
+        Some(new_lfb) => {
+            let ft_value = CliqueOracle::normalized_fault_tolerance(&new_lfb.hash, &dag)
+                .await
+                .map_err(CasperError::from)?;
+            Some((new_lfb, ft_value))
+        }
+        None => None,
+    };
+    Ok(Some(DerivedLfb {
+        current,
+        sigma,
+        adopt,
+        started,
+    }))
+}
+
+pub(crate) async fn adopt_derived(
+    ctx: &FinalizationContext,
+    derived: Option<DerivedLfb>,
+) -> Result<bool, CasperError> {
+    publish_pending_finalizations(ctx)?;
+    let state_moved = match &ctx.v6 {
+        Some(engine) => commit_state_floor(ctx, engine).await?,
+        None => false,
+    };
+    let Some(derived) = derived else {
+        return Ok(state_moved);
+    };
     let observer = ctx.observer.get().cloned();
     let operation = observer.as_ref().and_then(|observer| observer.operation());
     let observed = observer.as_ref().map(|observer| (observer, operation));
-    let dag = ctx.block_dag_storage.get_representation()?;
-    let current_hash = dag.last_finalized_block();
-    let current = Floor {
-        block_number: dag.lookup_unsafe(&current_hash)?.block_number,
-        hash: current_hash,
-    };
-
-    let derivation = floor_of_view(&dag, &ctx.block_store, &current, ctx.ftt()).await;
-    if let Some((observer, operation)) = observed {
-        emit_derivation(observer, operation, &derivation);
-    }
-    let adopted = match adoption(ctx, &current, derivation?) {
-        Some(new_lfb) => {
-            adopt(ctx, &dag, &current, &new_lfb, observed).await?;
-            true
+    let adopted = match &derived.adopt {
+        Some((new_lfb, ft_value)) => {
+            adopt(
+                ctx,
+                &derived.current,
+                derived.sigma,
+                new_lfb,
+                *ft_value,
+                observed,
+            )
+            .await?
         }
         None => false,
     };
+    if adopted || state_moved {
+        if let Some(engine) = &ctx.v6 {
+            engine.wake();
+        }
+    }
     tracing::debug!(
         target: "f1r3fly.casper.lfb.timing",
         "last_finalized_block timing: total_ms={}, new_lfb_found={}",
-        started.elapsed().as_millis(),
+        derived.started.elapsed().as_millis(),
         adopted
     );
-    Ok(adopted)
+    Ok(adopted || state_moved)
+}
+
+async fn commit_state_floor(
+    ctx: &FinalizationContext,
+    engine: &crate::rust::v6::V6Engine,
+) -> Result<bool, CasperError> {
+    use block_storage::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
+    if ctx.ftt().num <= 0 {
+        return Ok(false);
+    }
+    let Some(state) = engine.state_floor().await? else {
+        return Ok(false);
+    };
+    let dag = ctx.block_dag_storage.get_representation()?;
+    let ft_value =
+        crate::rust::safety::clique_oracle::CliqueOracle::normalized_fault_tolerance(&state, &dag)
+            .await
+            .map_err(CasperError::from)?;
+    let order = ctx.block_dag_storage.order_floor()?;
+    let outcome = ctx
+        .block_dag_storage
+        .commit_lfb(state.clone(), ft_value, |dag_now| {
+            let lfb = dag_now.last_finalized_block();
+            let on_chain = |lower: &BlockHash, upper: &BlockHash| {
+                dag_now.is_in_main_chain(lower, upper).unwrap_or(false)
+            };
+            if !on_chain(&state, &order) || !on_chain(&lfb, &state) {
+                return Err(CommitRefusal::StateChanged(
+                    "the state floor is not on the main chain between the LFB and the order floor"
+                        .to_string(),
+                ));
+            }
+            Ok(())
+        })
+        .map_err(CasperError::KvStoreError)?;
+    match outcome {
+        CommitOutcome::Committed(marker) => {
+            publish_finalization(ctx, &marker).map_err(CasperError::KvStoreError)?;
+            ctx.divergence_monitor.on_advance();
+            Ok(true)
+        }
+        CommitOutcome::Refused(refusal) => {
+            metrics::counter!(
+                crate::rust::metrics_constants::COMMIT_LFB_REFUSALS_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE,
+                "kind" => refusal.kind()
+            )
+            .increment(1);
+            Ok(false)
+        }
+    }
 }
 
 fn emit_derivation(
@@ -615,18 +821,15 @@ fn adoption(
 /// the persist succeeds.
 async fn adopt(
     ctx: &FinalizationContext,
-    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
     current: &crate::rust::finality::floor::Floor,
+    sigma: crate::rust::finality::floor_runner::SnapshotId,
     new_lfb: &crate::rust::finality::floor::Floor,
+    ft_value: f32,
     observed: Option<(&crate::rust::soak_observer::ObserverBinding, Option<u64>)>,
-) -> Result<(), CasperError> {
+) -> Result<bool, CasperError> {
+    use block_storage::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
+
     use crate::rust::soak_observer::EventKind;
-    let ft_value = crate::rust::safety::clique_oracle::CliqueOracle::normalized_fault_tolerance(
-        &new_lfb.hash,
-        dag,
-    )
-    .await
-    .map_err(CasperError::from)?;
     // `extends_previous_lfb` is true by construction (an adoption captures the
     // current LFB); soak dashboards alarm on the field, so it stays.
     tracing::info!(
@@ -654,32 +857,234 @@ async fn adopt(
     };
     emit(EventKind::EffectAttempt, None);
     let effect_started = std::time::Instant::now();
-    let persisted = ctx
-        .block_dag_storage
-        .record_directly_finalized(new_lfb.hash.clone(), ft_value, |finalized| {
-            process_finalized(ctx, finalized.clone(), &new_lfb.hash)
-        })
-        .await;
-    emit(EventKind::EffectReturn, Some(persisted.is_ok()));
-    persisted.map_err(CasperError::KvStoreError)?;
+    let ftt = ctx.ftt();
+    let alin = ctx.alin();
+    let outcome = if ctx.v6.is_some() {
+        use block_storage::rust::dag::finalization_commit::OrderOutcome;
+        ctx.block_dag_storage
+            .commit_order(new_lfb.hash.clone(), |dag_now, order_now| {
+                let mut ordered = dag_now.clone();
+                ordered.last_finalized_block_hash = order_now.clone();
+                validate_commit(
+                    &ordered,
+                    &ctx.block_store,
+                    current,
+                    sigma,
+                    new_lfb,
+                    ftt,
+                    alin,
+                )
+            })
+            .map(|outcome| match outcome {
+                OrderOutcome::Committed(_) => None,
+                OrderOutcome::Refused(refusal) => Some(CommitOutcome::Refused(refusal)),
+            })
+    } else {
+        ctx.block_dag_storage
+            .commit_lfb(new_lfb.hash.clone(), ft_value, |dag_now| {
+                validate_commit(
+                    dag_now,
+                    &ctx.block_store,
+                    current,
+                    sigma,
+                    new_lfb,
+                    ftt,
+                    alin,
+                )
+            })
+            .map(Some)
+    };
+    let persisted: Result<bool, KvStoreError> = match outcome {
+        Ok(None) => Ok(true),
+        Ok(Some(CommitOutcome::Committed(marker))) => {
+            publish_finalization(ctx, &marker).map(|()| true)
+        }
+        Ok(Some(CommitOutcome::Refused(refusal))) => {
+            metrics::counter!(
+                crate::rust::metrics_constants::COMMIT_LFB_REFUSALS_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE,
+                "kind" => refusal.kind()
+            )
+            .increment(1);
+            match &refusal {
+                CommitRefusal::ALinViolation(detail) => tracing::error!(
+                    target: "f1r3fly.finalizer",
+                    detail,
+                    "commit refused: A-LIN violation"
+                ),
+                other => tracing::info!(
+                    target: "f1r3fly.finalizer",
+                    refusal = ?other,
+                    candidate = %PrettyPrinter::build_string_bytes(&new_lfb.hash),
+                    "commit refused at validation; the next cycle derives again"
+                ),
+            }
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    };
+    emit(EventKind::EffectReturn, Some(matches!(persisted, Ok(true))));
+    let committed = persisted.map_err(CasperError::KvStoreError)?;
     tracing::debug!(
         target: "f1r3fly.casper.finalizer.effect.timing",
-        "record_directly_finalized_total_ms={}",
+        "commit_lfb_total_ms={}",
         effect_started.elapsed().as_millis()
     );
-    ctx.divergence_monitor.on_advance();
+    if committed {
+        ctx.divergence_monitor.on_advance();
+    }
+    Ok(committed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ALinPolicy {
+    Halt,
+    Alarm,
+}
+
+impl ALinPolicy {
+    pub fn for_protocol(casper_version: i64) -> Self {
+        if casper_version == crate::rust::v6::resource_policy::PROTOCOL_V6 {
+            ALinPolicy::Halt
+        } else {
+            ALinPolicy::Alarm
+        }
+    }
+}
+
+pub fn validate_commit(
+    dag_now: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    derived_against: &crate::rust::finality::floor::Floor,
+    sigma: crate::rust::finality::floor_runner::SnapshotId,
+    candidate: &crate::rust::finality::floor::Floor,
+    ftt: crate::rust::safety::clique_oracle::FtThreshold,
+    alin: ALinPolicy,
+) -> Result<(), block_storage::rust::dag::finalization_commit::CommitRefusal> {
+    use block_storage::rust::dag::finalization_commit::CommitRefusal;
+    let lfb_now = dag_now.last_finalized_block();
+    let lfb_height = dag_now
+        .block_number(&lfb_now)
+        .map_err(|error| {
+            CommitRefusal::StateChanged(format!("cannot read the current LFB height: {error}"))
+        })?
+        .ok_or_else(|| {
+            CommitRefusal::StateChanged("the current LFB is not in the DAG".to_string())
+        })?;
+    if lfb_now == candidate.hash || lfb_height >= candidate.block_number {
+        return Err(CommitRefusal::NotHigher { lfb_height });
+    }
+    if lfb_now != derived_against.hash {
+        let floor_now = crate::rust::finality::floor::Floor {
+            hash: lfb_now.clone(),
+            block_number: lfb_height,
+        };
+        let mut memo = crate::rust::finality::floor::IntroducedSigsMemo::new();
+        match crate::rust::finality::floor::state_contains_metered(
+            &shared::rust::dag::observation_work::NoopWork,
+            dag_now,
+            block_store,
+            candidate,
+            &floor_now,
+            &mut memo,
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(CommitRefusal::StateChanged(format!(
+                    "candidate {} does not contain the settled state of the current LFB {}",
+                    PrettyPrinter::build_string_bytes(&candidate.hash),
+                    PrettyPrinter::build_string_bytes(&lfb_now)
+                )))
+            }
+            Err(error) => {
+                return Err(CommitRefusal::StateChanged(format!(
+                    "containment against the current LFB is undecidable: {error}"
+                )))
+            }
+        }
+    }
+    if ftt.num <= 0 {
+        match crate::rust::finality::floor_runner::snapshot_id(dag_now, ftt) {
+            Ok(now) if now == sigma => {}
+            _ => {
+                return Err(CommitRefusal::StateChanged(
+                    "the snapshot changed under a non-positive fault-tolerance threshold"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+    match dag_now.is_in_main_chain(&lfb_now, &candidate.hash) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            let detail = format!(
+                "candidate {} at {} is not on the main-parent chain of the current LFB {} at {}",
+                PrettyPrinter::build_string_bytes(&candidate.hash),
+                candidate.block_number,
+                PrettyPrinter::build_string_bytes(&lfb_now),
+                lfb_height
+            );
+            metrics::counter!(
+                crate::rust::metrics_constants::COMMIT_LFB_ALIN_VIOLATIONS_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(1);
+            match alin {
+                ALinPolicy::Halt => Err(CommitRefusal::ALinViolation(detail)),
+                ALinPolicy::Alarm => {
+                    tracing::error!(target: "f1r3fly.finalizer", detail, "A-LIN violation at commit");
+                    Ok(())
+                }
+            }
+        }
+        Err(error) => Err(CommitRefusal::StateChanged(format!(
+            "the main-chain walk failed: {error}"
+        ))),
+    }
+}
+
+fn publish_finalization(
+    ctx: &FinalizationContext,
+    marker: &block_storage::rust::dag::finalization_commit::FinalizationCommitMarker,
+) -> Result<(), KvStoreError> {
+    process_finalized(
+        ctx,
+        &marker.finalized_in_order(),
+        &marker.directly.0,
+        marker.commit_epoch,
+    )?;
+    ctx.block_dag_storage
+        .mark_events_published(marker.commit_epoch)
+}
+
+fn publish_pending_finalizations(ctx: &FinalizationContext) -> Result<(), CasperError> {
+    for marker in ctx.block_dag_storage.pending_finalization_events()? {
+        metrics::counter!(
+            crate::rust::metrics_constants::FINALIZATION_EVENTS_REPLAYED_METRIC,
+            "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+        )
+        .increment(1);
+        tracing::info!(
+            target: "f1r3fly.finalizer",
+            commit_epoch = marker.commit_epoch,
+            lfb = %PrettyPrinter::build_string_bytes(&marker.directly.0),
+            "publishing the events of a committed finalization again"
+        );
+        publish_finalization(ctx, &marker)?;
+    }
     Ok(())
 }
 
 /// The effects of newly finalized blocks: the runtime's block-index cache
 /// entry is dropped and `BlockFinalised` is published for each.
-async fn process_finalized(
+fn process_finalized(
     ctx: &FinalizationContext,
-    finalized: HashSet<BlockHash>,
+    finalized: &[BlockHash],
     directly_finalized: &BlockHash,
+    commit_epoch: u64,
 ) -> Result<(), KvStoreError> {
     let started = std::time::Instant::now();
-    for block_hash in &finalized {
+    for block_hash in finalized {
         let block = ctx.block_store.get(block_hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
                 "finalized block {} not present in store",
@@ -689,7 +1094,7 @@ async fn process_finalized(
         ctx.runtime_manager.remove_block_index_cache(block_hash);
         log_finalized_deploys(&block, block_hash == directly_finalized);
         ctx.event_publisher
-            .publish(finalised_event(&block))
+            .publish(finalised_event(&block).with_commit_epoch(commit_epoch))
             .map_err(|e| KvStoreError::IoError(e.to_string()))?;
     }
     tracing::debug!(
@@ -932,6 +1337,7 @@ mod finalizer_run_metric_tests {
                         _ => Ok(true),
                     }
                 },
+                |derived| async move { Ok::<bool, &str>(derived) },
                 |advanced| {
                     advances.push(advanced);
                     async {}
@@ -950,6 +1356,70 @@ mod finalizer_run_metric_tests {
         assert_eq!(recorded.samples(FINALIZER_RUN_TIME_METRIC), 3);
         assert_eq!(recorded.counter(FINALIZER_RUN_FAILURES_METRIC), 1);
         assert_eq!(recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_timed_out_derivation_never_commits() {
+        let mut committed = false;
+        let mut advances = Vec::new();
+        let timed_out = run_cycle(
+            Duration::from_millis(50),
+            || async {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                Ok::<bool, &str>(true)
+            },
+            |derived| {
+                committed = true;
+                async move { Ok::<bool, &str>(derived) }
+            },
+            |advanced| {
+                advances.push(advanced);
+                async {}
+            },
+        )
+        .await;
+        assert!(timed_out);
+        assert!(
+            !committed,
+            "a derivation that timed out must not reach the commit"
+        );
+        assert_eq!(advances, vec![false]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_commit_slower_than_the_timeout_is_never_cancelled() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let finished = Arc::new(AtomicBool::new(false));
+        let mut advances = Vec::new();
+        let timed_out = run_cycle(
+            Duration::from_millis(50),
+            || async { Ok::<bool, &str>(true) },
+            |derived| {
+                let finished = finished.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    finished.store(true, Ordering::SeqCst);
+                    Ok::<bool, &str>(derived)
+                }
+            },
+            |advanced| {
+                advances.push(advanced);
+                async {}
+            },
+        )
+        .await;
+        assert!(!timed_out);
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "the commit ran to completion"
+        );
+        assert_eq!(advances, vec![true]);
+        assert_eq!(
+            Recorded::take(&snapshotter).counter(FINALIZER_RUN_TIMEOUTS_METRIC),
+            0
+        );
     }
 
     /// A mock cycle: counts its runs, holds each run until `gate` gets a
@@ -985,6 +1455,7 @@ mod finalizer_run_metric_tests {
                     started.notify_one();
                     gate.acquire().await.expect("gate open").forget();
                     assert!(!panic_on.contains(&run), "cycle {run} panics");
+                    false
                 })
             })
         }
@@ -1004,7 +1475,7 @@ mod finalizer_run_metric_tests {
         let snapshotter = recorder.snapshotter();
         let _guard = metrics::set_default_local_recorder(&recorder);
         let probe = Probe::new(&[]);
-        let finalizer = Finalizer::spawn(probe.cycle());
+        let finalizer = Finalizer::spawn(probe.cycle(), 3);
 
         finalizer.trigger();
         probe.started.notified().await;
@@ -1027,7 +1498,7 @@ mod finalizer_run_metric_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn finalize_waits_for_a_cycle_that_started_after_the_call() {
         let probe = Probe::new(&[]);
-        let finalizer = Finalizer::spawn(probe.cycle());
+        let finalizer = Finalizer::spawn(probe.cycle(), 3);
 
         finalizer.trigger();
         probe.started.notified().await;
@@ -1055,7 +1526,7 @@ mod finalizer_run_metric_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_panicking_cycle_does_not_stop_the_loop() {
         let probe = Probe::new(&[1]);
-        let finalizer = Finalizer::spawn(probe.cycle());
+        let finalizer = Finalizer::spawn(probe.cycle(), 3);
         probe.gate.add_permits(2);
 
         finalizer.trigger();
@@ -1067,11 +1538,80 @@ mod finalizer_run_metric_tests {
         assert_eq!(probe.runs(), 2);
     }
 
+    fn scripted_cycle(timeouts: &'static [bool], runs: Arc<AtomicU32>) -> Cycle {
+        Box::new(move || {
+            let runs = runs.clone();
+            Box::pin(async move {
+                let run = runs.fetch_add(1, Ordering::SeqCst) as usize;
+                timeouts.get(run).copied().unwrap_or(false)
+            })
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_timed_out_cycle_reruns_without_a_trigger_up_to_the_cap() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let runs = Arc::new(AtomicU32::new(0));
+        let finalizer = Finalizer::spawn(scripted_cycle(&[true; 8], runs.clone()), 3);
+
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(runs.load(Ordering::SeqCst), 4, "one cycle and three reruns");
+        assert_eq!(
+            Recorded::take(&snapshotter).counter(FINALIZER_RUN_RERUNS_METRIC),
+            3
+        );
+
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            5,
+            "the cap holds until a cycle finishes"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cycle_that_finishes_resets_the_rerun_count() {
+        let runs = Arc::new(AtomicU32::new(0));
+        let finalizer = Finalizer::spawn(
+            scripted_cycle(&[true, false, true, true, true, true, true], runs.clone()),
+            3,
+        );
+
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "the rerun finishes and no cycle follows"
+        );
+
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            6,
+            "a new timeout gets the full cap again"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_zero_cap_never_reruns() {
+        let runs = Arc::new(AtomicU32::new(0));
+        let finalizer = Finalizer::spawn(scripted_cycle(&[true; 4], runs.clone()), 0);
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn the_task_ends_when_the_finalizer_is_dropped() {
         let probe = Probe::new(&[]);
         probe.gate.add_permits(1);
-        let finalizer = Finalizer::spawn(probe.cycle());
+        let finalizer = Finalizer::spawn(probe.cycle(), 3);
         finalizer.run().await.expect("first cycle");
         assert!(
             Arc::strong_count(&probe.runs) > 1,

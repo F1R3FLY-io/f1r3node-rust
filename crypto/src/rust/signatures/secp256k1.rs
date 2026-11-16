@@ -625,4 +625,109 @@ mod tests {
         let cloned = secp256k1.box_clone();
         assert!(SignaturesAlg::eq(&secp256k1, cloned.as_ref()));
     }
+
+    const ORDER: [u8; 32] = [
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36,
+        0x41, 0x41,
+    ];
+
+    fn der_parts(der: &[u8]) -> ([u8; 32], [u8; 32]) {
+        let integer = |at: usize| -> (usize, [u8; 32]) {
+            assert_eq!(der[at], 0x02);
+            let len = der[at + 1] as usize;
+            let bytes = &der[at + 2..at + 2 + len];
+            let bytes = &bytes[bytes.len().saturating_sub(32)..];
+            let mut out = [0u8; 32];
+            out[32 - bytes.len()..].copy_from_slice(bytes);
+            (at + 2 + len, out)
+        };
+        let (next, r) = integer(2);
+        let (_, s) = integer(next);
+        (r, s)
+    }
+
+    fn der_integer(value: &[u8; 32], pad: usize) -> Vec<u8> {
+        let first = value.iter().position(|b| *b != 0).unwrap_or(31);
+        let mut body = vec![0u8; pad];
+        if value[first] & 0x80 != 0 {
+            body.push(0);
+        }
+        body.extend_from_slice(&value[first..]);
+        let mut out = vec![0x02, body.len() as u8];
+        out.extend(body);
+        out
+    }
+
+    fn der(r: &[u8; 32], s: &[u8; 32], pad_r: usize, long_length: bool) -> Vec<u8> {
+        let mut body = der_integer(r, pad_r);
+        body.extend(der_integer(s, 0));
+        let mut out = vec![0x30];
+        if long_length {
+            out.push(0x81);
+        }
+        out.push(body.len() as u8);
+        out.extend(body);
+        out
+    }
+
+    fn negate(s: &[u8; 32]) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let mut borrow = 0i16;
+        for i in (0..32).rev() {
+            let mut d = ORDER[i] as i16 - s[i] as i16 - borrow;
+            borrow = if d < 0 {
+                d += 256;
+                1
+            } else {
+                0
+            };
+            out[i] = d as u8;
+        }
+        out
+    }
+
+    #[test]
+    fn a_second_encoding_of_one_signature_does_not_verify() {
+        let secp256k1 = Secp256k1;
+        let (sk, pk) = secp256k1.new_key_pair();
+        let hash = Sha256::digest(b"one deploy").to_vec();
+        let signature = secp256k1.sign(&hash, &sk.bytes);
+        assert!(secp256k1.verify(&hash, &signature, &pk.bytes));
+        let (r, s) = der_parts(&signature);
+        assert_eq!(der(&r, &s, 0, false), signature);
+
+        assert_eq!(negate(&negate(&s)), s);
+        assert!(negate(&s) > s, "the signer emits the low-S form");
+        let high_s = der(&r, &negate(&s), 0, false);
+        assert!(
+            !secp256k1.verify(&hash, &high_s, &pk.bytes),
+            "a high-S signature"
+        );
+        assert!(
+            !secp256k1.verify(&hash, &der(&r, &s, 1, false), &pk.bytes),
+            "a padded integer"
+        );
+        assert!(
+            !secp256k1.verify(&hash, &der(&r, &s, 0, true), &pk.bytes),
+            "a long-form length"
+        );
+        let mut trailing = signature.clone();
+        trailing.push(0);
+        assert!(
+            !secp256k1.verify(&hash, &trailing, &pk.bytes),
+            "a trailing byte"
+        );
+
+        let eth = super::super::secp256k1_eth::Secp256k1Eth;
+        let mut rs = r.to_vec();
+        rs.extend_from_slice(&s);
+        assert!(eth.verify(&hash, &rs, &pk.bytes));
+        let mut high = r.to_vec();
+        high.extend_from_slice(&negate(&s));
+        assert!(
+            !eth.verify(&hash, &high, &pk.bytes),
+            "a high-S Ethereum signature"
+        );
+    }
 }

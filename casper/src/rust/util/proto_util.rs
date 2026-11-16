@@ -596,6 +596,7 @@ const TOP_DOMAIN: u8 = 0x02;
 const LEAF_PROCESSED_DEPLOY: u8 = 0x10;
 const LEAF_PROCESSED_SYSTEM_DEPLOY: u8 = 0x11;
 const LEAF_HEADER: u8 = 0x12;
+const V6_BODY_MARKER: u8 = 0x16;
 const LEAF_REJECTED_DEPLOY: u8 = 0x13;
 const LEAF_APPLIED_FROM_SCOPE_SIG: u8 = 0x14;
 const LEAF_BOND: u8 = 0x15;
@@ -790,6 +791,12 @@ fn header_preimage(commitment: &BlockCommitment) -> Vec<u8> {
     buf.extend_from_slice(&commitment.applied_from_scope_root);
     push_field(&mut buf, commitment.merge_base.as_ref());
     push_field(&mut buf, commitment.body_extra_bytes.as_ref());
+    if let Some(v6) = &commitment.v6 {
+        let v6_bytes = v6.to_proto().encode_to_vec();
+        buf.push(V6_BODY_MARKER);
+        buf.extend_from_slice(&(v6_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&v6_bytes);
+    }
     push_field(&mut buf, commitment.sender.as_ref());
     push_field(&mut buf, commitment.sig_algorithm.as_bytes());
     buf.extend_from_slice(&commitment.seq_num.to_le_bytes());
@@ -829,6 +836,7 @@ pub fn block_commitment_with_leaves(
         applied_from_scope_root: applied_from_scope_root(block),
         merge_base: block.body.merge_base.clone(),
         body_extra_bytes: block.body.extra_bytes.clone(),
+        v6: block.body.v6.clone(),
         sender: block.sender.clone(),
         sig_algorithm: block.sig_algorithm.clone(),
         seq_num: block.seq_num,
@@ -1217,6 +1225,8 @@ mod merkle_block_hash_tests {
             shard_id: "test-shard".to_string(),
             expiration_timestamp: None,
             parameters: vec![],
+            cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         };
         let signed = Signed::create(data, Secp256k1.box_clone(), sk).expect("sign deploy");
         ProcessedDeploy {
@@ -1288,6 +1298,7 @@ mod merkle_block_hash_tests {
                 extra_bytes: Bytes::new(),
                 applied_from_scope: vec![],
                 merge_base: Bytes::new(),
+                v6: None,
             },
             justifications: vec![],
             sender: Bytes::from(vec![0u8; 33]),
@@ -2138,6 +2149,35 @@ mod merkle_block_hash_tests {
         // sig_algorithm = "secp256k1".
         const EXPECTED: &str = "602ea568b611a2a16415363ffd358f08afa358a231094bce24b755e8a6f631f2";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
+    }
+
+    #[test]
+    fn the_v6_body_is_part_of_the_block_hash() {
+        use models::rust::casper::protocol::casper_message::{Attestation, V6Body};
+        let legacy = empty_block();
+        let mut empty_v6 = empty_block();
+        empty_v6.body.v6 = Some(V6Body::default());
+        let attested = |records: Vec<Bytes>| {
+            let mut b = empty_block();
+            b.body.v6 = Some(V6Body {
+                attestation: Some(Attestation {
+                    block_hash: Bytes::from_static(b"E"),
+                    root: Bytes::from_static(b"r"),
+                }),
+                records,
+            });
+            b
+        };
+        let one = attested(vec![Bytes::from_static(b"record-1")]);
+        let other = attested(vec![Bytes::from_static(b"record-2")]);
+        assert_ne!(hash_block(&legacy), hash_block(&empty_v6));
+        assert_ne!(hash_block(&empty_v6), hash_block(&one));
+        assert_ne!(hash_block(&one), hash_block(&other));
+        assert_eq!(hash_block(&one), hash_block(&one.clone()));
+        let commitment = block_commitment(&one);
+        let decoded = BlockCommitment::from_proto(commitment.to_proto()).unwrap();
+        assert_eq!(decoded, commitment);
+        assert_eq!(commitment_hash(&decoded), hash_block(&one));
     }
 
     /// A block with every field the hash commits to set.

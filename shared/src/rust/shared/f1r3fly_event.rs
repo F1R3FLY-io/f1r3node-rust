@@ -108,6 +108,8 @@ pub struct BlockFinalised {
     pub creator: String,
     #[serde(rename = "seq-num")]
     pub seq_number: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_epoch: Option<u64>,
 }
 
 /// Emitted after BlockFinalised when transfer extraction completes.
@@ -222,7 +224,18 @@ impl F1r3flyEvent {
             deploys,
             creator,
             seq_number,
+            commit_epoch: None,
         })
+    }
+
+    pub fn with_commit_epoch(self, epoch: u64) -> Self {
+        match self {
+            Self::BlockFinalised(finalised) => Self::BlockFinalised(BlockFinalised {
+                commit_epoch: Some(epoch),
+                ..finalised
+            }),
+            other => other,
+        }
     }
 
     pub fn transfers_available(
@@ -263,6 +276,28 @@ impl F1r3flyEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_commit_epoch_appears_in_json_only_when_set() {
+        let plain = sample_block_event(F1r3flyEvent::block_finalised);
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("commit-epoch").is_none());
+
+        let tagged = sample_block_event(F1r3flyEvent::block_finalised).with_commit_epoch(42);
+        let json = serde_json::to_value(&tagged).unwrap();
+        assert_eq!(json["commit-epoch"], 42);
+        assert_eq!(json["event"], "block-finalised");
+
+        let decoded: F1r3flyEvent =
+            serde_json::from_value(serde_json::to_value(&plain).unwrap()).unwrap();
+        assert!(matches!(
+            decoded,
+            F1r3flyEvent::BlockFinalised(BlockFinalised {
+                commit_epoch: None,
+                ..
+            })
+        ));
+    }
 
     fn sample_deploy() -> DeployEvent {
         DeployEvent::new("sig".to_string(), 100, "deployer-pk".to_string(), false)

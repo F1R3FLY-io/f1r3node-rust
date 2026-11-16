@@ -117,6 +117,7 @@ pub struct MultiParentCasperImpl {
     /// Cache for get_active_validators results keyed by post_state_hash bytes.
     /// Avoids re-reading from RSpace when the main parent block hasn't changed.
     pub active_validators_cache: Arc<tokio::sync::Mutex<HashMap<Vec<u8>, Vec<Validator>>>>,
+    pub v6: Option<Arc<crate::rust::v6::V6Engine>>,
     /// Final verdicts on the contents of equivocations held as parents.
     pub judged_twins: Arc<BoundedCache<BlockHash, Result<(), InvalidBlock>>>,
 }

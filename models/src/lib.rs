@@ -104,6 +104,110 @@ use crate::var::VarInstance;
 
 // See models/src/main/scala/coop/rchain/models/AlwaysEqual.scala
 
+impl PartialEq for CostSignature {
+    fn eq(&self, other: &Self) -> bool { self.value == other.value }
+}
+
+impl Hash for CostSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.value.hash(state); }
+}
+
+impl PartialEq for cost_signature::Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Ground(a), Self::Ground(b)) => a == b,
+            (Self::BoundLevel(a), Self::BoundLevel(b)) => a == b,
+            (Self::Quote(a), Self::Quote(b)) => a == b,
+            (Self::Compound(a), Self::Compound(b)) => a == b,
+            (Self::Name(a), Self::Name(b)) => a == b,
+            (Self::Unit(a), Self::Unit(b)) => a == b,
+            (Self::Signer(a), Self::Signer(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Hash for cost_signature::Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Ground(value) => {
+                0_u8.hash(state);
+                value.hash(state);
+            }
+            Self::BoundLevel(value) => {
+                1_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Quote(value) => {
+                2_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Compound(value) => {
+                3_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Name(value) => {
+                4_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Unit(value) => {
+                5_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Signer(value) => {
+                6_u8.hash(state);
+                value.hash(state);
+            }
+        }
+    }
+}
+
+impl PartialEq for CostSignatureCompound {
+    fn eq(&self, other: &Self) -> bool { self.elements == other.elements }
+}
+
+impl Hash for CostSignatureCompound {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.elements.hash(state); }
+}
+
+impl PartialEq for CostSignedTerm {
+    fn eq(&self, other: &Self) -> bool {
+        self.body == other.body && self.signature == other.signature && self.seal == other.seal
+    }
+}
+
+impl Hash for CostSignedTerm {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.body.hash(state);
+        self.signature.hash(state);
+        self.seal.hash(state);
+    }
+}
+
+impl PartialEq for ElaboratedSeal {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.origin == other.origin
+            && self.phlo_limit == other.phlo_limit
+    }
+}
+
+impl Hash for ElaboratedSeal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        self.origin.hash(state);
+        self.phlo_limit.hash(state);
+    }
+}
+
+impl PartialEq for CostStack {
+    fn eq(&self, other: &Self) -> bool { self.cells == other.cells }
+}
+
+impl Hash for CostStack {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.cells.hash(state); }
+}
+
 impl PartialEq for Par {
     fn eq(&self, other: &Self) -> bool {
         self.sends == other.sends
@@ -116,6 +220,8 @@ impl PartialEq for Par {
             && self.connectives == other.connectives
             && self.conditionals == other.conditionals
             && self.connective_used == other.connective_used
+            && self.cost_signed_terms == other.cost_signed_terms
+            && self.cost_stacks == other.cost_stacks
     }
 }
 
@@ -131,12 +237,16 @@ impl Hash for Par {
         self.connectives.hash(state);
         self.conditionals.hash(state);
         self.connective_used.hash(state);
+        self.cost_signed_terms.hash(state);
+        self.cost_stacks.hash(state);
     }
 }
 
 impl PartialEq for TaggedContinuation {
     fn eq(&self, other: &Self) -> bool {
-        self.tagged_cont == other.tagged_cont && self.guard == other.guard
+        self.tagged_cont == other.tagged_cont
+            && self.guard == other.guard
+            && self.seal == other.seal
     }
 }
 
@@ -144,6 +254,9 @@ impl Hash for TaggedContinuation {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.tagged_cont.hash(state);
         self.guard.hash(state);
+        if let Some(seal) = &self.seal {
+            seal.hash(state);
+        }
     }
 }
 
@@ -196,7 +309,9 @@ impl Hash for PCost {
 
 impl PartialEq for ListParWithRandom {
     fn eq(&self, other: &Self) -> bool {
-        self.pars == other.pars && self.random_state == other.random_state
+        self.pars == other.pars
+            && self.random_state == other.random_state
+            && self.seal == other.seal
     }
 }
 
@@ -204,6 +319,9 @@ impl Hash for ListParWithRandom {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.pars.hash(state);
         self.random_state.hash(state);
+        if let Some(seal) = &self.seal {
+            seal.hash(state);
+        }
     }
 }
 
@@ -286,6 +404,7 @@ impl PartialEq for ReceiveBind {
             && self.source == other.source
             && self.remainder == other.remainder
             && self.free_count == other.free_count
+            && self.cost_signature == other.cost_signature
     }
 }
 
@@ -295,6 +414,7 @@ impl Hash for ReceiveBind {
         self.source.hash(state);
         self.remainder.hash(state);
         self.free_count.hash(state);
+        self.cost_signature.hash(state);
     }
 }
 
@@ -1082,6 +1202,36 @@ impl Hash for UnfInstance {
             UnfInstance::GDeployerIdBody(a) => a.hash(state),
             UnfInstance::GSysAuthTokenBody(a) => a.hash(state),
         }
+    }
+}
+
+impl PartialEq for SealOrigin {
+    fn eq(&self, other: &Self) -> bool {
+        self.envelope == other.envelope
+            && self.signers == other.signers
+            && self.phlo_price == other.phlo_price
+    }
+}
+
+impl Hash for SealOrigin {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.envelope.hash(state);
+        self.signers.hash(state);
+        self.phlo_price.hash(state);
+    }
+}
+
+impl PartialEq for SealRecordProto {
+    fn eq(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.kind == other.kind && self.origin == other.origin
+    }
+}
+
+impl Hash for SealRecordProto {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.owner.hash(state);
+        self.kind.hash(state);
+        self.origin.hash(state);
     }
 }
 

@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use block_storage::rust::dag::block_dag_key_value_storage::V6_EXECUTOR_STATE_DB;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     DEPLOY_STORAGE_QUARANTINE_DB, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
 };
@@ -77,6 +78,10 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            Db::new(V6_EXECUTOR_STATE_DB.to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             Db::new("latest-messages".to_string(), None),
             dag_storage_env_config(),
         ),
@@ -120,6 +125,14 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             // WRITE-ONCE terminal deploy verdicts (Finalized/Expired/Failed),
             // written by the finality layer's lifecycle register.
             Db::new("deploy-lifecycle-terminal".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            Db::new("finalization-commit-marker".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            Db::new("lfb-pointer".to_string(), None),
             dag_storage_env_config(),
         ),
         (

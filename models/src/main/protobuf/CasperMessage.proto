@@ -354,6 +354,14 @@ message DeployDataProto {
   string language             = 12;//language (rholang or metta) of the source code
   int64 expirationTimestamp   = 13;//optional millisecond timestamp after which deploy is invalid (0 = no expiration)
   repeated DeployParameter parameters = 14;
+  repeated DeployCosignature cosignatures = 17;
+  repeated bytes requiredCosigners = 16;
+}
+
+message DeployCosignature {
+  bytes  cosigner     = 1;
+  bytes  sig          = 2;
+  string sigAlgorithm = 3;
 }
 
 message DeployParameter {
@@ -421,6 +429,7 @@ message BlockCommitmentProto {
   bytes deploysRoot          = 15;
   bytes sig                  = 16;
   bytes justificationsRoot   = 17;
+  V6BodyProto v6             = 18;
 }
 
 // Two blocks one sender signed at one sequence number, ordered by block hash.
@@ -468,6 +477,17 @@ message BodyProto {
   // pointers instead of a per-block re-derivation:
   // state(B) = state(mergeBase) + appliedFromScope + deploys.
   bytes mergeBase                                   = 7;
+  V6BodyProto v6                                    = 8;
+}
+
+message AttestationProto {
+  bytes blockHash = 1;
+  bytes root      = 2;
+}
+
+message V6BodyProto {
+  AttestationProto attestation = 1;
+  repeated bytes records       = 2;
 }
 
 message RejectedDeployProto{
@@ -501,6 +521,8 @@ message RChainStateProto {
 }
 
 message EventProto {
+  reserved 4;
+  reserved "refusal";
   oneof event_instance {
     ProduceEventProto produce = 1;
     ConsumeEventProto consume = 2;

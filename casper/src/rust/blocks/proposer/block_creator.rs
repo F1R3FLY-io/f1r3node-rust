@@ -2132,24 +2132,41 @@ fn deploy_inclusion_progress_staleness(
     }
 }
 
+pub(crate) struct BufferSnapshot {
+    deploys: HashSet<Signed<DeployData>>,
+    sigs: HashSet<Bytes>,
+}
+
+impl BufferSnapshot {
+    fn read(
+        rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    ) -> Result<Self, CasperError> {
+        let deploys = {
+            let guard = rejected_deploy_buffer.lock()?;
+            if guard.non_empty()? {
+                guard.read_all()?
+            } else {
+                HashSet::new()
+            }
+        };
+        let sigs = deploys.iter().map(|deploy| deploy.sig.clone()).collect();
+        Ok(Self { deploys, sigs })
+    }
+}
+
 fn fresh_local_deploy_stats(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
     stored_deploys: &HashSet<Signed<DeployData>>,
-    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    buffer: &BufferSnapshot,
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<FreshLocalDeployStats, CasperError> {
     if stored_deploys.is_empty() {
         return Ok(FreshLocalDeployStats::default());
     }
-    let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
-        .lock()?
-        .read_all()?
-        .into_iter()
-        .map(|deploy| deploy.sig)
-        .collect();
+    let buffered_sigs = &buffer.sigs;
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
@@ -2205,19 +2222,14 @@ fn in_scope_local_deploy_stats(
     block_number: i64,
     current_time_millis: i64,
     stored_deploys: &HashSet<Signed<DeployData>>,
-    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    buffer: &BufferSnapshot,
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<InScopeLocalDeployStats, CasperError> {
     if stored_deploys.is_empty() {
         return Ok(InScopeLocalDeployStats::default());
     }
-    let buffered_sigs: HashSet<Bytes> = rejected_deploy_buffer
-        .lock()?
-        .read_all()?
-        .into_iter()
-        .map(|deploy| deploy.sig)
-        .collect();
+    let buffered_sigs = &buffer.sigs;
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
@@ -2285,17 +2297,11 @@ fn rejected_buffer_has_recoverable_deploys(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
-    rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    buffer: &BufferSnapshot,
     block_store: &KeyValueBlockStore,
     floor_ctx: Option<&FloorContext>,
 ) -> Result<bool, CasperError> {
-    let buffered_deploys = {
-        let buffer_guard = rejected_deploy_buffer.lock()?;
-        if !buffer_guard.non_empty()? {
-            return Ok(false);
-        }
-        buffer_guard.read_all()?
-    };
+    let buffered_deploys = &buffer.deploys;
     if buffered_deploys.is_empty() {
         return Ok(false);
     }
@@ -2932,14 +2938,42 @@ pub async fn create_with_progress(
 
     let shard_id = casper_snapshot.on_chain_state.shard_conf.shard_name.clone();
 
+    let floor_paced = floor_ctx.as_ref().is_some_and(|ctx| {
+        let floor_distance = casper_snapshot.max_block_num - ctx.floor.block_number;
+        let engaged = crate::rust::util::rholang::interpreter_util::floor_pacing_engaged(
+            floor_distance,
+            casper_snapshot
+                .on_chain_state
+                .shard_conf
+                .proposal_pacing_floor_distance,
+        );
+        if engaged {
+            metrics::counter!(
+                crate::rust::metrics_constants::FLOOR_PACING_ENGAGED_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+            )
+            .increment(1);
+            tracing::info!(
+                target: "f1r3fly.casper.recovery",
+                floor_distance,
+                next_block = next_block_num,
+                "floor distance over the pacing threshold; proposing without user deploys"
+            );
+        }
+        engaged
+    });
+
     // Prepare deploys
-    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
+    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty
+        || floor_paced
+    {
         (HashSet::new(), 0usize, false)
     } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
             scope_has_unfinalized_user_deploys(casper_snapshot, block_store)?;
         let stored_deploys = deploy_storage.read_all()?;
+        let buffer = BufferSnapshot::read(&rejected_deploy_buffer)?;
         let storage_deploys_in_scope =
             storage_has_unresolved_in_scope_deploys(casper_snapshot, &stored_deploys);
         let stale_in_scope_work = user_deploys_in_scope || storage_deploys_in_scope;
@@ -2966,7 +3000,7 @@ pub async fn create_with_progress(
             next_block_num,
             now_millis,
             &stored_deploys,
-            &rejected_deploy_buffer,
+            &buffer,
             block_store,
             floor_ctx.as_ref(),
         )?;
@@ -2975,7 +3009,7 @@ pub async fn create_with_progress(
             next_block_num,
             now_millis,
             &stored_deploys,
-            &rejected_deploy_buffer,
+            &buffer,
             block_store,
             floor_ctx.as_ref(),
         )?;
@@ -2997,7 +3031,7 @@ pub async fn create_with_progress(
             casper_snapshot,
             next_block_num,
             now_millis,
-            &rejected_deploy_buffer,
+            &buffer,
             block_store,
             floor_ctx.as_ref(),
         )?;
@@ -3161,15 +3195,17 @@ pub async fn create_with_progress(
         .collect();
     let local_validator: Validator =
         prost::bytes::Bytes::copy_from_slice(&validator_identity.public_key.bytes);
-    let merge_pre_info = interpreter_util::compute_parents_post_state(
-        block_store,
-        parents.clone(),
-        casper_snapshot,
-        runtime_manager,
-        &latest_messages,
-        Some(&rejected_deploy_buffer),
-        floor_ctx.as_ref(),
-        Some(&local_validator),
+    let merge_pre_info = crate::rust::util::offload::off_async_workers(
+        interpreter_util::compute_parents_post_state(
+            block_store,
+            parents.clone(),
+            casper_snapshot,
+            runtime_manager,
+            &latest_messages,
+            Some(&rejected_deploy_buffer),
+            floor_ctx.as_ref(),
+            Some(&local_validator),
+        ),
     )
     .await?;
     metrics::histogram!(
@@ -3323,18 +3359,20 @@ pub async fn create_with_progress(
         let attempted_user_deploys = user_deploy_limit;
         let attempted_total_deploys = deploys.len();
 
-        match interpreter_util::compute_deploys_checkpoint(
-            block_store,
-            parents.clone(),
-            deploys,
-            system_deploys_converted.clone(),
-            casper_snapshot,
-            runtime_manager,
-            block_data.clone(),
-            invalid_blocks.clone(),
-            Some(&rejected_deploy_buffer),
-            floor_ctx.as_ref(),
-            Some(&local_validator),
+        match crate::rust::util::offload::off_async_workers(
+            interpreter_util::compute_deploys_checkpoint(
+                block_store,
+                parents.clone(),
+                deploys,
+                system_deploys_converted.clone(),
+                casper_snapshot,
+                runtime_manager,
+                block_data.clone(),
+                invalid_blocks.clone(),
+                Some(&rejected_deploy_buffer),
+                floor_ctx.as_ref(),
+                Some(&local_validator),
+            ),
         )
         .await
         {
@@ -3609,6 +3647,7 @@ fn package_block(
         // None = header-derivable (single-parent, genesis): recorded as
         // empty bytes per the field contract.
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
 
     let header = Header {
@@ -3934,6 +3973,8 @@ mod tests {
                     shard_id: "test".to_string(),
                     expiration_timestamp,
                     parameters: Vec::new(),
+                    cosignatures: Vec::new(),
+                    required_cosigners: Vec::new(),
                 },
                 Box::new(Secp256k1),
                 PrivateKey::from_bytes(&[1; 32]),
@@ -3971,7 +4012,7 @@ mod tests {
             100,
             10_000,
             &captured,
-            &rejected_deploy_buffer,
+            &BufferSnapshot::read(&rejected_deploy_buffer).unwrap(),
             &block_store,
             None,
         )
@@ -3981,7 +4022,7 @@ mod tests {
             100,
             10_000,
             &captured,
-            &rejected_deploy_buffer,
+            &BufferSnapshot::read(&rejected_deploy_buffer).unwrap(),
             &block_store,
             None,
         )
@@ -4038,7 +4079,7 @@ mod tests {
             100,
             10_000,
             &next_capture,
-            &rejected_deploy_buffer,
+            &BufferSnapshot::read(&rejected_deploy_buffer).unwrap(),
             &block_store,
             None,
         )
@@ -4061,6 +4102,123 @@ mod tests {
         .unwrap();
         assert!(next_prepared.deploys.contains(&later));
         assert!(!deploy_storage.contains_sig(&fresh.sig).unwrap());
+    }
+
+    #[tokio::test]
+    async fn buffer_snapshot_sigs_match_the_buffered_set() {
+        let mut kvm = InMemoryStoreManager::new();
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let buffered: Vec<_> = (0..3)
+            .map(|seed| {
+                crate::rust::util::construct_deploy::basic_deploy_data(
+                    seed,
+                    None,
+                    Some("test".to_string()),
+                )
+                .expect("buffered deploy")
+            })
+            .collect();
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(buffered.clone())
+            .expect("seed rejected buffer");
+
+        let buffer = BufferSnapshot::read(&rejected_deploy_buffer).expect("snapshot read succeeds");
+
+        let expected_sigs: HashSet<Bytes> =
+            buffered.iter().map(|deploy| deploy.sig.clone()).collect();
+        assert_eq!(
+            buffer.sigs, expected_sigs,
+            "buffered_sigs must be the sig projection of buffered",
+        );
+        assert_eq!(
+            buffer
+                .deploys
+                .iter()
+                .map(|d| d.sig.clone())
+                .collect::<HashSet<_>>(),
+            buffer.sigs,
+            "buffered.map(sig) must equal buffered_sigs",
+        );
+    }
+
+    #[tokio::test]
+    async fn buffer_snapshot_captures_the_buffer_and_not_the_pool() {
+        let mut kvm = InMemoryStoreManager::new();
+        let deploy_storage = Arc::new(
+            KeyValueDeployStorage::new(&mut kvm)
+                .await
+                .expect("deploy storage"),
+        );
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+
+        // Disjoint seeds ensure the stored and buffered sets never share a sig,
+        // so the snapshot's captured sides can be checked independently.
+        let stored: Vec<_> = [10, 11]
+            .iter()
+            .map(|seed| {
+                crate::rust::util::construct_deploy::basic_deploy_data(
+                    *seed,
+                    None,
+                    Some("test".to_string()),
+                )
+                .expect("stored deploy")
+            })
+            .collect();
+        let buffered: Vec<_> = [20, 21]
+            .iter()
+            .map(|seed| {
+                crate::rust::util::construct_deploy::basic_deploy_data(
+                    *seed,
+                    None,
+                    Some("test".to_string()),
+                )
+                .expect("buffered deploy")
+            })
+            .collect();
+        deploy_storage
+            .add(stored.clone())
+            .expect("seed deploy storage");
+        rejected_deploy_buffer
+            .lock()
+            .expect("rejected buffer lock")
+            .add(buffered.clone())
+            .expect("seed rejected buffer");
+
+        let buffer = BufferSnapshot::read(&rejected_deploy_buffer).expect("snapshot read succeeds");
+
+        let stored_set: HashSet<Signed<DeployData>> = stored.into_iter().collect();
+        let buffered_set: HashSet<Signed<DeployData>> = buffered.into_iter().collect();
+        assert_eq!(
+            buffer.deploys, buffered_set,
+            "buffered captures the rejected-deploy buffer",
+        );
+        assert!(
+            stored_set.is_disjoint(&buffer.deploys),
+            "distinct inputs must stay separated across the two captured sets",
+        );
+    }
+
+    #[tokio::test]
+    async fn buffer_snapshot_of_an_empty_buffer_is_empty() {
+        let mut kvm = InMemoryStoreManager::new();
+        let rejected_deploy_buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut kvm)
+                .await
+                .expect("rejected deploy buffer"),
+        ));
+        let buffer = BufferSnapshot::read(&rejected_deploy_buffer).expect("snapshot read succeeds");
+        assert!(buffer.deploys.is_empty());
+        assert!(buffer.sigs.is_empty());
     }
 
     #[tokio::test]
@@ -5792,7 +5950,7 @@ mod tests {
             &snapshot,
             20,
             now,
-            &rejected_deploy_buffer,
+            &BufferSnapshot::read(&rejected_deploy_buffer).unwrap(),
             &block_store,
             None
         )
@@ -5815,7 +5973,7 @@ mod tests {
             &snapshot,
             20,
             now,
-            &rejected_deploy_buffer,
+            &BufferSnapshot::read(&rejected_deploy_buffer).unwrap(),
             &block_store,
             None
         )
@@ -6438,7 +6596,7 @@ mod tests {
             300,
             10_000,
             &stored_deploys,
-            &rejected_deploy_buffer,
+            &BufferSnapshot::read(&rejected_deploy_buffer).unwrap(),
             &block_store,
             None,
         )
@@ -6545,7 +6703,7 @@ mod tests {
             300,
             10_000,
             &stored_deploys,
-            &rejected_deploy_buffer,
+            &BufferSnapshot::read(&rejected_deploy_buffer).unwrap(),
             &block_store,
             None,
         )
@@ -6658,7 +6816,7 @@ mod tests {
             301,
             10_000,
             &stored_deploys,
-            &rejected_deploy_buffer,
+            &BufferSnapshot::read(&rejected_deploy_buffer).unwrap(),
             &block_store,
             None,
         )
@@ -6752,7 +6910,7 @@ mod tests {
             300,
             10_000,
             &stored_deploys,
-            &rejected_deploy_buffer,
+            &BufferSnapshot::read(&rejected_deploy_buffer).unwrap(),
             &block_store,
             None,
         )

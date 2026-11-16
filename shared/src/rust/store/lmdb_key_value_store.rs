@@ -166,12 +166,27 @@ impl KeyValueStore for LmdbKeyValueStore {
         drop(reader);
         Ok(has_first)
     }
+
+    fn entry_count(&self) -> Result<Option<usize>, KvStoreError> {
+        let reader = self.env.read_txn()?;
+        let count = self.db.len(&reader)?;
+        drop(reader);
+        Ok(Some(count as usize))
+    }
 }
 
 /// One store's worth of key/value pairs to write, paired with the store to write them to.
 pub type StoreWrite<'a> = (&'a dyn KeyValueStore, Vec<(ByteBuffer, ByteBuffer)>);
 
 type LmdbStoreWrite<'a> = (&'a LmdbKeyValueStore, &'a Vec<(ByteBuffer, ByteBuffer)>);
+
+pub fn shares_one_lmdb_env(stores: &[&dyn KeyValueStore]) -> bool {
+    let lmdb: Option<Vec<&LmdbKeyValueStore>> = stores
+        .iter()
+        .map(|store| store.as_any().downcast_ref::<LmdbKeyValueStore>())
+        .collect();
+    lmdb.is_some_and(|stores| stores.windows(2).all(|w| Arc::ptr_eq(&w[0].env, &w[1].env)))
+}
 
 /// Writes to multiple stores in a single LMDB write transaction when they
 /// are all `LmdbKeyValueStore`s backed by the same `Env` — LMDB serialises
@@ -186,26 +201,22 @@ type LmdbStoreWrite<'a> = (&'a LmdbKeyValueStore, &'a Vec<(ByteBuffer, ByteBuffe
 /// `put` is itself a plain `write_txn` + `db.put` loop + `commit`, with no
 /// additional map-full/resize handling to lose.
 pub fn batched_put(writes: Vec<StoreWrite<'_>>) -> Result<(), KvStoreError> {
-    let lmdb_stores: Option<Vec<LmdbStoreWrite<'_>>> = writes
-        .iter()
-        .map(|(store, kv_pairs)| {
-            store
-                .as_any()
-                .downcast_ref::<LmdbKeyValueStore>()
-                .map(|s| (s, kv_pairs))
-        })
-        .collect();
-
-    let batchable_stores = match &lmdb_stores {
-        Some(stores)
-            if stores
-                .windows(2)
-                .all(|w| Arc::ptr_eq(&w[0].0.env, &w[1].0.env)) =>
-        {
-            Some(stores)
-        }
-        _ => None,
+    let stores: Vec<&dyn KeyValueStore> = writes.iter().map(|(store, _)| *store).collect();
+    let lmdb_stores: Option<Vec<LmdbStoreWrite<'_>>> = if shares_one_lmdb_env(&stores) {
+        writes
+            .iter()
+            .map(|(store, kv_pairs)| {
+                store
+                    .as_any()
+                    .downcast_ref::<LmdbKeyValueStore>()
+                    .map(|s| (s, kv_pairs))
+            })
+            .collect()
+    } else {
+        None
     };
+
+    let batchable_stores = lmdb_stores.as_ref();
 
     if let Some(stores) = batchable_stores {
         let Some((first, _)) = stores.first() else {
@@ -441,6 +452,17 @@ mod batched_put_tests {
     fn empty_input_is_a_noop() { batched_put(vec![]).unwrap(); }
 
     #[test]
+    fn shares_one_lmdb_env_only_for_lmdb_stores_on_one_env() {
+        let env = open_env();
+        let (a, b) = (open_store(&env, "a"), open_store(&env, "b"));
+        let other = open_store(&open_env(), "c");
+        let mem = InMemStore::new();
+        assert!(shares_one_lmdb_env(&[&a, &b]));
+        assert!(!shares_one_lmdb_env(&[&a, &other]));
+        assert!(!shares_one_lmdb_env(&[&a, &mem]));
+    }
+
+    #[test]
     fn single_store_batches_trivially() {
         let env = open_env();
         let a = open_store(&env, "a");
@@ -608,6 +630,18 @@ mod store_tests {
         assert_eq!(map.len(), 3);
         assert_eq!(map.get(b"k2".as_slice()), Some(&b"v2".to_vec()));
         store.print_store().unwrap();
+    }
+
+    #[test]
+    fn entry_count_tracks_puts_and_deletes() {
+        let store = open_store(&open_env(), "s");
+        assert_eq!(store.entry_count().unwrap(), Some(0));
+        store.put_one(b"a".to_vec(), b"v".to_vec()).unwrap();
+        store.put_one(b"b".to_vec(), b"v".to_vec()).unwrap();
+        store.put_one(b"a".to_vec(), b"w".to_vec()).unwrap();
+        assert_eq!(store.entry_count().unwrap(), Some(2));
+        store.delete(vec![b"a".to_vec()]).unwrap();
+        assert_eq!(store.entry_count().unwrap(), Some(1));
     }
 
     #[test]

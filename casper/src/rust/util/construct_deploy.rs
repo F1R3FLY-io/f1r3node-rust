@@ -65,6 +65,8 @@ pub fn source_deploy(
         shard_id,
         expiration_timestamp: None,
         parameters: Vec::new(),
+        cosignatures: Vec::new(),
+        required_cosigners: Vec::new(),
     };
 
     data.validate_amounts().map_err(CasperError::RuntimeError)?;

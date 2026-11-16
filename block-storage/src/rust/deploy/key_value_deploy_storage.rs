@@ -13,6 +13,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::{BitVector, ByteString};
 
 use super::deploy_record_quarantine::DeployRecordQuarantine;
+use super::offer_rejection::{OfferRejection, OfferRejectionLog};
 
 pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
 pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
@@ -49,10 +50,12 @@ impl DeployStoreName for RejectedDeployBufferName {
 pub struct KeyValueDeployStore<N: DeployStoreName> {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
     quarantine: DeployRecordQuarantine,
+    rejections: OfferRejectionLog,
     _name: PhantomData<N>,
 }
 
 pub struct PreparedDeploy {
+    sig: ByteString,
     key: BitVector,
     value: BitVector,
 }
@@ -123,6 +126,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
                 super::deploy_codec::decode,
             ),
             quarantine,
+            rejections: OfferRejectionLog::default(),
             _name: PhantomData,
         };
         storage.quarantine.restore_readable(&storage.store)?;
@@ -157,6 +161,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         value: BitVector,
     ) -> Result<PreparedDeploy, KvStoreError> {
         Ok(PreparedDeploy {
+            sig: deploy.sig.to_vec(),
             key: self.store.encode_key(&deploy.sig.to_vec())?,
             value,
         })
@@ -165,7 +170,10 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     pub fn add_prepared(&self, deploys: Vec<PreparedDeploy>) -> Result<(), KvStoreError> {
         let records = deploys
             .into_iter()
-            .map(|deploy| (deploy.key, deploy.value))
+            .map(|deploy| {
+                self.rejections.clear(&deploy.sig);
+                (deploy.key, deploy.value)
+            })
             .collect();
         self.store.raw_store().put(records)
     }
@@ -178,6 +186,9 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .store
             .raw_store()
             .put_one_if_absent(deploy.key.clone(), deploy.value)?;
+        if inserted {
+            self.rejections.clear(&deploy.sig);
+        }
         if !inserted && !self.quarantine.contains(&self.store, &deploy.key)? {
             return Err(KvStoreError::InvalidArgument(
                 "Deploy insertion was blocked by an invalid or concurrently changed record"
@@ -237,6 +248,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .raw_store()
             .put_one_if_absent(deploy.key.clone(), deploy.value.clone())?;
         Ok(if inserted {
+            self.rejections.clear(&deploy.sig);
             PreparedInsertResult::Inserted
         } else {
             PreparedInsertResult::Changed
@@ -290,6 +302,26 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
     pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
+
+    pub fn pending_count(&self) -> Result<Option<usize>, KvStoreError> {
+        self.store.raw_store().entry_count()
+    }
+}
+
+impl KeyValueDeployStorage {
+    pub fn record_rejection(&self, rejection: OfferRejection) -> Result<bool, KvStoreError> {
+        let removed = self.remove_by_sig(&rejection.deploy_id)?;
+        self.rejections.record(rejection);
+        Ok(removed)
+    }
+
+    pub fn rejection(&self, deploy_id: &[u8]) -> Option<OfferRejection> {
+        self.rejections.get(deploy_id)
+    }
+
+    pub fn set_rejection_log_bounds(&self, capacity: usize, reason_bytes: usize) {
+        self.rejections.set_bounds(capacity, reason_bytes)
+    }
 }
 
 #[cfg(test)]
@@ -317,11 +349,66 @@ mod tests {
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             Box::new(Secp256k1),
             PrivateKey::from_bytes(&[1; 32]),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn record_rejection_removes_the_offer_records_why_and_resubmission_clears_it() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let offer = deploy(1);
+        let id = offer.sig.to_vec();
+        let rejection = |reason: &str| OfferRejection {
+            deploy_id: id.clone(),
+            pre_state_root: Some(vec![9; 32]),
+            block_number: 7,
+            reason: reason.to_string(),
+        };
+        assert!(storage.add_if_absent(offer.clone()).unwrap());
+        assert!(storage
+            .record_rejection(rejection("no feasible assignment"))
+            .unwrap());
+        assert!(!storage.contains_sig(&id).unwrap());
+        assert_eq!(
+            storage.rejection(&id),
+            Some(rejection("no feasible assignment"))
+        );
+        assert!(!storage
+            .record_rejection(rejection("second decision"))
+            .unwrap());
+        assert_eq!(
+            storage.rejection(&id).map(|recorded| recorded.reason),
+            Some("second decision".to_string())
+        );
+        assert!(storage.add_if_absent(offer).unwrap());
+        assert_eq!(storage.rejection(&id), None);
+        assert!(storage.contains_sig(&id).unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_rejection_log_takes_configured_bounds() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        storage.set_rejection_log_bounds(2, 4);
+        for time_stamp in 1..=3 {
+            let offer = deploy(time_stamp);
+            storage
+                .record_rejection(OfferRejection {
+                    deploy_id: offer.sig.to_vec(),
+                    pre_state_root: None,
+                    block_number: time_stamp,
+                    reason: "too long a reason".to_string(),
+                })
+                .unwrap();
+        }
+        assert!(storage.rejection(&deploy(1).sig).is_none());
+        assert_eq!(storage.rejection(&deploy(3).sig).unwrap().reason, "too ");
     }
 
     #[tokio::test]
@@ -679,6 +766,8 @@ mod tests {
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             Box::new(Secp256k1),
             PrivateKey::from_bytes(&[1; 32]),
