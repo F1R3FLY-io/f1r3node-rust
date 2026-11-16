@@ -23,6 +23,8 @@ use std::time::Duration;
 pub struct ResolvedCurrent {
     pub pk: [u8; PK_LEN],
     pub seq: u64,
+    /// Block height at which the name was minted.
+    pub block_height: u64,
 }
 
 /// A single entry in the identity's append-only history list.
@@ -31,6 +33,8 @@ pub struct HistoryEntry {
     pub pk: [u8; PK_LEN],
     pub op: String,
     pub seq: u64,
+    /// Block height at which this entry was recorded.
+    pub block_height: u64,
     pub admin_evidence: Option<Vec<u8>>,
     pub admin_signers: Option<Vec<[u8; PK_LEN]>>,
 }
@@ -288,6 +292,7 @@ fn decode_resolve_current(
     let map = extract_emap(&value)?;
     let mut pk: Option<Vec<u8>> = None;
     let mut seq: Option<i64> = None;
+    let mut block_height: Option<i64> = None;
     for kv in &map.kvs {
         let key_par = kv
             .key
@@ -300,20 +305,29 @@ fn decode_resolve_current(
         match key.as_str() {
             "pk" => pk = Some(extract_gbytearray(value)?),
             "seq" => seq = Some(extract_gint(value)?),
+            "blockHeight" => block_height = Some(extract_gint(value)?),
             _ => {}
         }
     }
 
     let pk_bytes = pk.ok_or_else(|| IdentityRegistryError::ResponseParse("missing pk".into()))?;
     let seq_val = seq.ok_or_else(|| IdentityRegistryError::ResponseParse("missing seq".into()))?;
+    let block_height_val = block_height
+        .ok_or_else(|| IdentityRegistryError::ResponseParse("missing blockHeight".into()))?;
     if seq_val < 0 {
         return Err(IdentityRegistryError::ResponseParse(format!(
             "seq is negative: {seq_val}"
         )));
     }
+    if block_height_val < 0 {
+        return Err(IdentityRegistryError::ResponseParse(format!(
+            "blockHeight is negative: {block_height_val}"
+        )));
+    }
     Ok(ResolvedCurrent {
         pk: bytes_to_array::<PK_LEN>(pk_bytes, "pk")?,
         seq: seq_val as u64,
+        block_height: block_height_val as u64,
     })
 }
 
@@ -331,6 +345,7 @@ fn decode_history_entry(
     let mut pk: Option<Vec<u8>> = None;
     let mut op: Option<String> = None;
     let mut seq: Option<i64> = None;
+    let mut block_height: Option<i64> = None;
     let mut admin_evidence: Option<Vec<u8>> = None;
     let mut admin_signers: Option<Vec<[u8; PK_LEN]>> = None;
     for kv in &map.kvs {
@@ -346,6 +361,7 @@ fn decode_history_entry(
             "pk" => pk = Some(extract_gbytearray(value)?),
             "op" => op = Some(extract_gstring(value)?),
             "seq" => seq = Some(extract_gint(value)?),
+            "blockHeight" => block_height = Some(extract_gint(value)?),
             "admin_evidence" => admin_evidence = Some(extract_gbytearray(value)?),
             "admin_signers" => {
                 admin_signers = Some(
@@ -362,15 +378,23 @@ fn decode_history_entry(
     let pk_bytes = pk.ok_or_else(|| IdentityRegistryError::ResponseParse("missing pk".into()))?;
     let op_str = op.ok_or_else(|| IdentityRegistryError::ResponseParse("missing op".into()))?;
     let seq_val = seq.ok_or_else(|| IdentityRegistryError::ResponseParse("missing seq".into()))?;
+    let block_height_val = block_height
+        .ok_or_else(|| IdentityRegistryError::ResponseParse("missing blockHeight".into()))?;
     if seq_val < 0 {
         return Err(IdentityRegistryError::ResponseParse(format!(
             "seq is negative: {seq_val}"
+        )));
+    }
+    if block_height_val < 0 {
+        return Err(IdentityRegistryError::ResponseParse(format!(
+            "blockHeight is negative: {block_height_val}"
         )));
     }
     Ok(HistoryEntry {
         pk: bytes_to_array::<PK_LEN>(pk_bytes, "pk")?,
         op: op_str,
         seq: seq_val as u64,
+        block_height: block_height_val as u64,
         admin_evidence,
         admin_signers,
     })

@@ -82,7 +82,9 @@ fn admin_pk(sk: &SecretKey) -> [u8; 65] {
 // --- REG-AC1 -----------------------------------------------------------------
 
 /// A registration signed by a fresh keypair mints a name, and the name
-/// resolves to the registering key.
+/// resolves to the registering key and the height of the block that minted
+/// it. The height is the deploy's, so it must be a real on-chain block
+/// number rather than a value the payload could carry.
 #[cfg_attr(not(feature = "integration_tests"), ignore)]
 #[tokio::test]
 async fn register_mints_name_resolving_to_key() {
@@ -95,6 +97,11 @@ async fn register_mints_name_resolving_to_key() {
     let resolved = client.resolve_current(&name).await.expect("resolve");
     assert_eq!(resolved.pk, uncompressed_pk_bytes(&pk));
     assert_eq!(resolved.seq, 0);
+    assert!(
+        resolved.block_height > 0,
+        "expected a real block height for the minting block, got {}",
+        resolved.block_height
+    );
 }
 
 // --- REG-AC2 -----------------------------------------------------------------
@@ -301,7 +308,8 @@ async fn record_is_append_only() {
     assert_eq!(history.len(), 3);
 
     // All historical keys remain readable and in order, with the ops and
-    // seqs that produced them.
+    // seqs that produced them. Each entry carries a non-zero block height,
+    // and later entries record at a height no earlier than earlier ones.
     assert_eq!(history[0].pk, uncompressed_pk_bytes(&pk1));
     assert_eq!(history[0].op, "register");
     assert_eq!(history[0].seq, 0);
@@ -311,6 +319,9 @@ async fn record_is_append_only() {
     assert_eq!(history[2].pk, uncompressed_pk_bytes(&pk3));
     assert_eq!(history[2].op, "rotate");
     assert_eq!(history[2].seq, 2);
+    assert!(history[0].block_height > 0);
+    assert!(history[1].block_height >= history[0].block_height);
+    assert!(history[2].block_height >= history[1].block_height);
 }
 
 // --- REG-AC9 -----------------------------------------------------------------

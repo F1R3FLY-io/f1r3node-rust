@@ -76,8 +76,9 @@ Decision. Each record is a map with three fields.
   "current": the public key that can sign for this identity right now,
   "history": a list of every key ever linked to this identity, in order,
              each entry carrying the key, the operation that added it,
-             the sequence number at that point, and admin evidence and
-             admin signers when the operation was an admin relink,
+             the sequence number at that point, the height of the block
+             that recorded it, and admin evidence and admin signers when the
+             operation was an admin relink,
   "seq":     the sequence number, incremented once per mutation
 }
 ```

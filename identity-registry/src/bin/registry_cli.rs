@@ -227,17 +227,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::ResolveCurrent { name } => {
             let name_bytes = parse_hex_array::<NAME_LEN>(&name, "name")?;
             let resolved = client.resolve_current(&name_bytes).await?;
-            println!("pk:  {}", hex::encode(resolved.pk));
-            println!("seq: {}", resolved.seq);
+            println!("pk:           {}", hex::encode(resolved.pk));
+            println!("seq:          {}", resolved.seq);
+            println!("block_height: {}", resolved.block_height);
         }
         Command::ResolveHistory { name } => {
             let name_bytes = parse_hex_array::<NAME_LEN>(&name, "name")?;
             let history = client.resolve_history(&name_bytes).await?;
             for (i, entry) in history.iter().enumerate() {
                 println!("entry {i}:");
-                println!("  op:  {}", entry.op);
-                println!("  seq: {}", entry.seq);
-                println!("  pk:  {}", hex::encode(entry.pk));
+                println!("  op:           {}", entry.op);
+                println!("  seq:          {}", entry.seq);
+                println!("  pk:           {}", hex::encode(entry.pk));
+                println!("  block_height: {}", entry.block_height);
                 if let Some(ev) = &entry.admin_evidence {
                     println!("  admin_evidence: {}", hex::encode(ev));
                 }
