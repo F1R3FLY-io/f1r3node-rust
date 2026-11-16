@@ -50,6 +50,7 @@ pub fn rotate_term(
         .replace("{{reply_slot}}", reply_slot)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn admin_relink_term(
     uri: &str,
     name: &[u8],
