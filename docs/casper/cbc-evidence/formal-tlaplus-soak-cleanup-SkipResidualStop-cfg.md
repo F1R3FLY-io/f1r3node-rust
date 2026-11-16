@@ -7,7 +7,7 @@
 {
   "artifact": {
     "path": "formal/tlaplus/soak_cleanup/SkipResidualStop.cfg",
-    "commit": "34937babf8b85fd070e08e4cb46ed70ba486fb6b",
+    "commit": "b023b5bad9d20c625240202ebfe0ef321fc2cdbd",
     "commit_is_base": true,
     "working_tree": true
   },
@@ -17,13 +17,13 @@
   "scope": "bounded-segment-cleanup",
   "evidence": {
     "kind": "bounded-model-and-linux-fixture",
-    "ref": "docs/casper/cbc-evidence/runs/soak-cleanup-20261116-01/report.json"
+    "ref": "docs/casper/cbc-evidence/runs/soak-cleanup-20261116-02/report.json"
   },
   "waiver": null,
-  "verified_at": "2026-11-16T00:37:52Z",
+  "verified_at": "2026-11-16T05:09:53Z",
   "claim_id": "CLAIM-SOAK-CLEANUP-001",
   "schema": "cbc-claim/v1",
-  "verification_id": "cd223c35-eaa4-4039-8f90-7582bc48e70d",
+  "verification_id": "81151d86-2940-48ca-a526-f6ded884a700",
   "inputs": {
     "artifact": "formal/tlaplus/soak_cleanup/SkipResidualStop.cfg",
     "source_sha256": "8595e5fa25e28c0bb41727407e1c048e0cf60a93f1b0ad792a04a192b36e4481",
@@ -33,7 +33,7 @@
     }
   },
   "evidence_files": {
-    "docs/casper/cbc-evidence/runs/soak-cleanup-20261116-01/report.json": "30af2c721abc60cebf03f7b0fc024cc985c50b1c7ec3d9d85acfda456636b518"
+    "docs/casper/cbc-evidence/runs/soak-cleanup-20261116-02/report.json": "c7000d08281e7d08afacfaf6f2099b839a384581726ad6e8425c5915752ae0f2"
   }
 }
 ```
