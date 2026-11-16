@@ -4350,6 +4350,41 @@ pub proof fn lemma_epm_push_child_contained(
     }
 }
 
+pub proof fn lemma_scored_root_keeps_slot_count(
+    before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
+    action: dispatcher::IntegratedAction,
+)
+    requires
+        dispatcher::integrated_wf(before),
+        dispatcher::integrated_step(before, after, action),
+        action_arm(action) is LiveRootComplete,
+    ensures state_frames(after)[0].slot_count == state_frames(before)[0].slot_count,
+{
+    hide(dispatcher::integrated_step);
+    match action {
+        dispatcher::IntegratedAction::Live {
+            live_action: LiveRuntimeProductAction::RootComplete { returned }, ..
+        } => {
+            let pre = before->product;
+            let post = state_product(after);
+            let bridge = pre.source.product.bridge;
+            assert(before is Active
+                && live_frames(pre).len() == 1
+                && live_frames(post).len() == 1
+                && score_bridge::bridge_well_formed(bridge)
+                && admission::admission_state_wf(bridge.admission)
+                && score_bridge::bridge_score_finish_selected(bridge)
+                    == Some(post.source.product.bridge)) by {
+                reveal(dispatcher::integrated_step);
+                assert(crate::live_runtime_product_root_complete_step(pre, post, returned));
+                lemma_live_root_complete_product_frames(pre, post, returned);
+            }
+            score_bridge::bridge_score_finish_selected_preserves_slot_count(bridge);
+        },
+        _ => {},
+    }
+}
+
 pub proof fn lemma_field_step_refines(
     before: dispatcher::IntegratedState, after: dispatcher::IntegratedState,
     action: dispatcher::IntegratedAction,

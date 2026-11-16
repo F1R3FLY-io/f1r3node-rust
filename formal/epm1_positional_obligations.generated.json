@@ -153,7 +153,7 @@
     "formal/verus/epm1_positional_association.rs": "72130ff0aae6160e68594fe804a15d219d4bf18b9aa7e38d6c24cadb7ecb374c",
     "models/src/rust/epathmap_trie_codec.rs": "e2cfbd574381c723577e98d076a18933faf27b78a5b4c13eb49476c6f5d86e81",
     "models/src/rust/mod.rs": "9da24730ef273c25720e873e2b0287379d3d94c802aba26bf437cbecc1eb07d2",
-    "models/tests/formal_equivalence_manifest.rs": "8b8788965e9565f435d3b7d1e33774840b25285075727547c905d6e45472fd4d"
+    "models/tests/formal_equivalence_manifest.rs": "629973d9327f8eec6ecb501b6b0e96b9098e5aaee555493c75ff525f33b282be"
   },
   "tla_invariants": [
     {

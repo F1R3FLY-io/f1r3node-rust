@@ -2016,6 +2016,7 @@ proofs_rpb3_observable_simulation=(
   lemma_scored_step_refines
   lemma_internal_prefix_preserves_projection
   lemma_epm_push_child_contained
+  lemma_scored_root_keeps_slot_count
 )
 proofs_rpb3_path_parser_refinement=(
   initial_parser_source_snapshot_has_witness
@@ -2411,6 +2412,9 @@ proofs_rpb3_score_admission_bridge=(
   bridge_opaque_root_group_4_empty
   bridge_opaque_root_group_5_empty
   bridge_opaque_root_group_6_empty
+  bridge_score_other_family_steps_preserve_slot_count
+  bridge_score_group_6_steps_preserve_slot_count
+  bridge_score_finish_selected_preserves_slot_count
 )
 proofs_rpb3_score_arena_source_refinement=(
   runtime_children_len_projects
@@ -5303,7 +5307,7 @@ if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
   echo "rpb3-admission-cursor: observable simulation module failed" >&2
   exit 1
 fi
-if ! rg -q '^verification results:: 101 verified, 0 errors' "$observable_simulation_log"; then
+if ! rg -q '^verification results:: 102 verified, 0 errors' "$observable_simulation_log"; then
   cat "$observable_simulation_log"
   echo "rpb3-admission-cursor: observable simulation module did not verify" >&2
   exit 1

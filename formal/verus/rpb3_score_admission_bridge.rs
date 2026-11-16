@@ -8625,6 +8625,200 @@ pub proof fn bridge_score_finish_selected_preserves_checked(
     }
 }
 
+pub proof fn bridge_score_other_family_steps_preserve_slot_count(
+    before: ScoreAdmissionBridge,
+)
+    requires
+        before.admission.frames.last().family == admission::AdmissionFamily::Other,
+    ensures
+        match bridge_raw_par_step(before) {
+            None => true,
+            Some((next, _, _, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        match bridge_cost_atom_absent_step(before) {
+            None => true,
+            Some((next, _, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        match bridge_cost_atom_bytes_step(before) {
+            None => true,
+            Some((next, _, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        match bridge_cost_bound_step(before) {
+            None => true,
+            Some((next, _, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        match bridge_cost_atom_bound_forward_step(before) {
+            None => true,
+            Some((next, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        bridge_cost_signature_step(before).is_none(),
+        bridge_cost_region_step(before).is_none(),
+        bridge_cost_token_stack_step(before).is_none(),
+        bridge_bundle_step(before).is_none(),
+        bridge_if_step(before).is_none(),
+        bridge_send_step(before).is_none(),
+        bridge_match_step(before).is_none(),
+        bridge_absent_specialized_constructor_step(before).is_none(),
+        bridge_absent_connective_step(before).is_none(),
+        bridge_receive_bind_step(before).is_none(),
+        bridge_match_case_step(before).is_none(),
+        bridge_bool_oneof_step(before).is_none(),
+        bridge_expr_atom_step(before).is_none(),
+        bridge_expr_numeric_step(before).is_none(),
+        bridge_expr_big_rational_step(before).is_none(),
+        bridge_expr_fixed_point_step(before).is_none(),
+        bridge_sys_auth_token_step(before).is_none(),
+        bridge_new_empty_collections_step(before).is_none(),
+        bridge_new_one_injection_step(before).is_none(),
+        bridge_new_one_absent_injection_step(before).is_none(),
+        bridge_new_one_uri_step(before).is_none(),
+        bridge_new_collections_step(before).is_none(),
+        bridge_expr_payload_forward_step(before).is_none(),
+        match bridge_expr_structural_step(before) {
+            None => true,
+            Some((next, _, _, _, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        bridge_evar_step(before).is_none(),
+        match bridge_ordered_sequence_step(before) {
+            None => true,
+            Some((next, _, _, _, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        match bridge_emethod_step(before) {
+            None => true,
+            Some((next, _, _, _, _, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        match bridge_emap_finish_step(before) {
+            None => true,
+            Some((next, _, _, _, _, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        bridge_connective_not_step(before).is_none(),
+        bridge_connective_varref_step(before).is_none(),
+        bridge_connective_collection_step(before).is_none(),
+        bridge_unforgeable_bytes_step(before).is_none(),
+        bridge_receive_present_condition_step(before).is_none(),
+        bridge_receive_absent_condition_step(before).is_none(),
+        bridge_nonsemantic_step(before).is_none(),
+{
+    hide(bridge_append_unattached);
+    assert forall|bridge: ScoreAdmissionBridge, kind: score::ScoreNode|
+        #![trigger bridge_append_unattached(bridge, kind)]
+        match bridge_append_unattached(bridge, kind) {
+            None => true,
+            Some((next, _)) => next.admission.frames == bridge.admission.frames,
+        } by {
+        reveal(bridge_append_unattached);
+    }
+}
+
+pub proof fn bridge_score_group_6_steps_preserve_slot_count(
+    before: ScoreAdmissionBridge,
+)
+    ensures
+        match bridge_var_score_step(before) {
+            None => true,
+            Some((next, _)) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        match bridge_epathmap_owner_score_step(before) {
+            None => true,
+            Some(next) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+        match bridge_ezipper_score_step(before) {
+            None => true,
+            Some(next) => next.admission.frames.last().slot_count
+                == before.admission.frames.last().slot_count,
+        },
+{
+    hide(bridge_append_unattached);
+    assert forall|bridge: ScoreAdmissionBridge, kind: score::ScoreNode|
+        #![trigger bridge_append_unattached(bridge, kind)]
+        match bridge_append_unattached(bridge, kind) {
+            None => true,
+            Some((next, _)) => next.admission.frames == bridge.admission.frames,
+        } by {
+        reveal(bridge_append_unattached);
+    }
+}
+
+pub proof fn bridge_score_finish_selected_preserves_slot_count(
+    before: ScoreAdmissionBridge,
+)
+    requires
+        bridge_well_formed(before),
+        admission::admission_state_wf(before.admission),
+    ensures match bridge_score_finish_selected(before) {
+        None => true,
+        Some(after) => after.admission.frames.last().slot_count
+            == before.admission.frames.last().slot_count,
+    },
+{
+    hide(bridge_score_source_step);
+    bridge_score_finish_selected_preserves_checked(before);
+    if let Some(after) = bridge_score_finish_selected(before) {
+        let top_index = before.admission.frames.len() - 1;
+        let top = before.admission.frames[top_index];
+        let scored = after.admission.frames[top_index];
+        if top.family != admission::AdmissionFamily::Other {
+            assert(admission::admission_frame_wf(top));
+            assert(admission::admission_frame_wf(scored));
+            assert(admission::admission_family_slot_count(top.family).is_some());
+            return;
+        }
+        bridge_score_other_family_steps_preserve_slot_count(before);
+        bridge_score_group_6_steps_preserve_slot_count(before);
+        if let Some((next, _, _, _)) = bridge_raw_par_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some((next, _, _)) = bridge_cost_atom_absent_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some((next, _, _)) = bridge_cost_atom_bytes_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some((next, _, _)) = bridge_cost_bound_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some((next, _)) = bridge_cost_atom_bound_forward_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some((next, _, _, _, _)) = bridge_expr_structural_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some((next, _, _, _, _)) = bridge_ordered_sequence_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some((next, _, _, _, _, _)) = bridge_emethod_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some((next, _, _, _, _, _)) = bridge_emap_finish_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some((next, _)) = bridge_var_score_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some(next) = bridge_epathmap_owner_score_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        if let Some(next) = bridge_ezipper_score_step(before) {
+            if bridge_same(next, after) { return; }
+        }
+        assert(false) by {
+            reveal(bridge_score_source_step);
+            reveal(bridge_score_source_step_group_6);
+        }
+    }
+}
+
 pub proof fn bridge_score_source_step_group_6_top(
     before: ScoreAdmissionBridge, after: ScoreAdmissionBridge,
 )
