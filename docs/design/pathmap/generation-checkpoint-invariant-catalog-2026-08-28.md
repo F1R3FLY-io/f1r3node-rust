@@ -10199,16 +10199,23 @@ under its mutex, for every endpoint whose value differs between the current
 state and the view's base. That caller is `checkpoint_view_from_base` of the
 [cross-base view checkpoint](#cross-base-view-checkpoint-through-the-durable-owner-2026-11-12).
 
-**Interface.** `visit_state_difference(store, from, to, limits, visit)` takes
-one object store through which both states are readable (the caller holds the
-read handles of both), the `SemanticRoots` of the two states, four limits and
-a visitor. It calls `visit(namespace, path, from_value, to_value)` once for
-each endpoint of the data, continuation and join namespaces whose two values
-differ, including an endpoint that only one state holds; the other side is
-then `EndpointValue::Absent`. It writes nothing and takes no lease. An error
+**Interface.**
+`visit_state_difference(store, from, to, longest_current_key_bytes, limits, visit)`
+takes one object store through which both states are readable (the caller
+holds the read handles of both), the `SemanticRoots` of the two states, the
+length in bytes of the current state's longest logical key, two limits and a
+visitor. The current state is the from side at the walk's one caller, which
+passes `self.source.shape().maximum_logical_path_bytes()?`; the walk uses the
+number only to size its reservation (see **Reservation**). It calls
+`visit(namespace, path, from_value, to_value)` once for each endpoint of the
+data, continuation and join namespaces whose two values differ, including an
+endpoint that only one state holds; the other side is then
+`EndpointValue::Absent`. It writes nothing and takes no lease. An error
 returned by the visitor, a read error and a limit refusal each stop the walk
 and are returned typed, and the caller then publishes nothing. The report
-gives the consumed amount of each limit and the number of differences.
+gives the consumed amount of each limit, the frame and path capacities
+reserved before the first read, the peak number of frames and of path bytes,
+and the number of differences.
 
 **Walk.** A node of the canonical radix DAG holds a compressed prefix, an
 endpoint and its children by edge byte, and the walk parses it as
@@ -10216,23 +10223,81 @@ endpoint and its children by edge byte, and the walk parses it as
 no endpoint and continues with exactly one byte, and objects are content
 addressed, so equal references are equal subtrees. A namespace whose two
 roots are equal is skipped unread, and so is every pair of children with
-equal references under one path. The walk keeps an explicit worklist of
-pending subtrees and one shared path buffer, both reserved once from the
-limits; nothing recurses. A pending pair of different objects that start at
-one path is aligned along the two prefixes, and the position reached after
-their common bytes decides the step:
+equal references under one path. The walk keeps a stack of frames, one for
+each trie level that it is inside, and one shared path buffer; nothing
+recurses. A frame holds the node entered at its level, or the two nodes of an
+aligned pair; for each node the layout of its children and the position of
+the next child to take (see **Resuming**); and the length of the path at its
+level. Entering a node pushes its frame and descends at once into the highest
+child to be taken. When the walk comes back
+to a frame, it truncates the path to the frame's length, appends the edge
+byte of the next lower child and descends into it; a frame without a child
+left is popped. A pair of different objects that start at one path is
+aligned along the two prefixes, and the position reached after their common
+bytes decides the step:
 
 | Position after the common bytes | Step |
 |---|---|
-| Both nodes end | Compare the two endpoints. Merge the children by edge: equal references are skipped, different references are pushed as a pair, and a child on one side only is pushed as a one-sided subtree. |
-| The from node ends inside the to prefix | The to side holds no endpoint there, so a from endpoint is visited against `Absent`. From children off the to path are pushed as one-sided subtrees. The walk reads the from child on the to path and continues the alignment, or, if there is none, the rest of the to node is one-sided. |
+| Both nodes end | Compare the two endpoints. The pair's frame takes the children merged by edge: equal references are skipped, different references are taken as a pair, and a child on one side only as a one-sided subtree. |
+| The from node ends inside the to prefix | The to side holds no endpoint there, so a from endpoint is visited against `Absent`. The from node's frame keeps its children off the to path, to be taken as one-sided subtrees after the alignment has finished. The walk reads the from child on the to path and continues the alignment, or, if there is none, the rest of the to node is one-sided. |
 | The to node ends inside the from prefix | The mirror of the previous row. |
-| The two prefixes diverge | Both remainders are one-sided. The from remainder is pushed with the object already read, so it is not read again, and the to remainder is walked at once. |
+| The two prefixes diverge | Both remainders are one-sided. A frame keeps the from remainder with the object already read, so it is not read again, and the to remainder is walked at once. |
 
 A one-sided subtree visits each of its endpoints against `Absent` on the
 other side. A continuation's group is the literal ordered list of its
 channels in the endpoint path (ruling D1): `(a,b)` and `(b,a)` are two
 different endpoints, and the walk never sorts or rewrites a path.
+
+**Order.** A node's endpoint is visited before its children, and children
+are taken in descending edge order. When the from node ends inside the to
+prefix, the continued alignment and everything below it come before the from
+node's other children, and without a continuation the to remainder's subtree
+comes first; after a divergence the to remainder's subtree comes before the
+from remainder's. This is the order of the worklist of pending subtrees that
+the frames replaced (task 12424, 2026-11-16): the worklist pushed children in
+ascending order and popped the last one pushed first. A test-only copy of
+that worklist walk,
+[`pre_frame_walk.rs`](../../../rspace++/tests/persistence/state_difference/pre_frame_walk.rs),
+is the oracle of the differential test below.
+
+**Resuming.** A frame owns the object of its node, and a parsed view borrows
+the object it was parsed from, so a frame cannot keep its view. A node is
+validated exactly once, by the parse that enters it. The children are the
+last field of a node's bytes: up to 16 children are pairs of an edge byte and
+a reference in ascending edge order (the branch kinds Node4 and Node16); 17
+to 48 children are a 256-byte slot table, indexed by edge, followed by the
+references (Node48); more children are a 32-byte bitmap of the present edges
+followed by the references (Node256). From the parsed view the frame takes
+two `Copy` values of plain integers, defined in
+[`object.rs`](../../../rspace++/src/rspace/persistence/object.rs): the node's
+`DagChildrenLayout`, the offset and the number of its validated children in
+the object's bytes, and a `DagChildPosition`, the index and the edge of the
+next child to take, at first the highest. Neither has a constructor. Only a
+node view gives out a layout, and a node view is the result of the validating
+parse or of a rebuild from such a layout; only a children view gives out a
+position. A layout does not name its object: a frame keeps each layout beside
+the object that it was taken from and applies it to no other.
+
+When the walk comes back to a frame, `DagChildrenLayout::children` rebuilds
+the children view from the object and the layout in constant time. It slices
+the children at the recorded offset and requires the bytes to end with them,
+so bytes of any other length are refused with `Truncated` or `TrailingBytes`;
+it validates nothing again and is not a read. The frame takes the child at
+its position with `at`, in constant time, and moves the position to the next
+lower child with `below`. That step is constant time for the pairs; for a
+slot table or a bitmap it scans downward from the current edge to the next
+present one, so the steps of one node together sweep its table once. A pair's
+frame merges its two nodes downward by edge and passes over children with
+equal references, and the frame of a node that ended inside the other prefix
+passes over the continuation's edge, so one return to such a frame can take
+several steps; each child is still passed once. A from remainder's frame
+keeps the object, its layout and the offset reached in its prefix. It is
+resumed once, and `DagChildrenLayout::node` then rebuilds its node view in
+constant time: it decodes the prefix length and the endpoint again from their
+places before the children and examines no child. The walk therefore makes
+one validating parse for each object that it reads. The worklist walk made
+one more for the from node of each divergence, which it parsed again when it
+took the remainder from the worklist.
 
 **Cost.** A node occurrence of a state is a namespace, the path at which the
 node starts and the node's object reference; within one trie a start path
@@ -10242,24 +10307,69 @@ occurrence: a pair holds different objects at one start path, a node read
 while the other side is inside a prefix has no counterpart that starts at
 its path, and a one-sided subtree has none at all. Each start path of each
 side is reached once, and every unshared occurrence is reached. The walk
-therefore reads exactly the unshared occurrences, each once, and its time is
-linear in their canonical bytes, whatever the size of the shared part. A
-state compared with itself reads and reserves nothing. A bound by distinct
+therefore reads exactly the unshared occurrences, each once, whatever the size
+of the shared part, and its time is linear in their canonical bytes, since
+each node is validated once and the later steps of its frame together sweep
+its children once (see **Resuming**). A state compared with itself reads and
+reserves nothing. A bound by distinct
 objects would be unachievable: if state A holds subtree N at path p and K at
 q, and state B holds M at p and N at q, the objects that the states do not
 share are the two roots, K and M, but a walk must also read N to learn A's
 endpoints under p.
 
 **Limits.** `max_object_reads` and `max_object_read_bytes` bound the reads and
-their canonical bytes, `max_worklist` the pending subtrees and
-`max_path_bytes` the path buffer. Each read, push and append is checked
-before it happens and refused with `ResourceLimit`, naming the resource
-(`state difference object reads`, `state difference object read bytes`,
-`state difference worklist`, `state difference path bytes`) and the amount
-that it would have reached. The worklist and the path buffer are reserved
-from their limits, so a limit too large to reserve is refused with
-`AllocationFailure`. Each report field is the consumed amount of the limit of
-the same name, so limits equal to a report admit the same walk.
+their canonical bytes. Each read is checked before it happens and refused
+with `ResourceLimit`, naming the resource (`state difference object reads` or
+`state difference object read bytes`) and the amount that it would have
+reached. The report fields `object_reads` and `object_read_bytes` are the
+consumed amounts, so limits equal to a report admit the same walk. The frames
+and the path have no limit: under ruling Q2 of task 12424 (2026-11-16) the
+walk never refuses because of their size, and they cause a refusal only when
+the allocator cannot provide their memory, `AllocationFailure`.
+
+**Reservation.** Let $`L`$ be `longest_current_key_bytes`. Before its first
+read the walk reserves exactly $`L + 1`$ frames and $`L`$ path bytes with
+`try_reserve_exact`; an amount that does not fit `usize`, or a reservation
+that fails, is refused with `AllocationFailure` naming the requested amount.
+A frame or a path byte beyond the reservation is added with `try_reserve`,
+which grows the buffer geometrically, and is refused only with
+`AllocationFailure`. The report gives the requested amounts as
+`reserved_frames` and `reserved_path_bytes` and the peaks as `maximum_frames`
+and `maximum_path_bytes`; a peak at most its reserved amount means that the
+buffer never grew.
+
+**The bound.** The end path of a node is its start path followed by its
+prefix; the root starts at the empty path, and the child at edge $`b`$ of a
+node that ends at path $`e`$ starts at $`e`$ followed by $`b`$. In a canonical
+DAG a node other than the empty root holds an endpoint or at least two
+children, so its end path is a prefix of a key below it. Assume that neither
+state holds a key longer than $`L`$ bytes. Then:
+
+1. *The path never exceeds $`L`$ bytes.* The walk appends the common bytes and
+   the continuation byte of an alignment, which lie inside both prefixes; an
+   edge byte, which completes a child's start path; and the rest of a
+   one-sided node's prefix, which completes its end path. Every value of the
+   path is therefore at most the end path of a node that the walk has
+   entered, so at most $`L`$ bytes.
+2. *The frames' path lengths strictly increase from the bottom of the stack to
+   the top.* A frame records the path length when it is pushed. The first
+   frame pushed while entering a child comes after the child's edge byte was
+   appended at its parent frame's length. Between two frames pushed while
+   entering one node, at least one byte is appended: the continuation byte, or
+   the rest of the other node's prefix, which starts with the byte where the
+   two prefixes part. A from remainder's frame at length $`D`$ is replaced by
+   its one-sided frame at a length of at least $`D + 1`$, above frames shorter
+   than $`D`$.
+
+So the frames have pairwise different lengths in $`[0, L]`$: at most
+$`L + 1`$ frames and at most $`L`$ path bytes, exactly the reservation. The
+current state satisfies the assumption with its own longest key, and a base
+satisfies it unless it holds a longer key, which needs the current state's
+longest channel to have been deleted since that base; the frames and the path
+then grow as described above. Both bounds are attained: for current keys
+$`y, x, xx, \ldots, x^L`$, whose root branches at its first byte, and a base
+without $`x^L`$, the walk holds a frame at every length from $`0`$ to $`L`$
+at once, $`L + 1`$ frames, and the path reaches $`x^L`$.
 
 **The DF rows.** DF is the state difference family. DF-01 and DF-02 run two
 fixed schedules and then 32 generated ones, each published through a durable
@@ -10277,7 +10387,7 @@ two fixed schedules must together show every listed case.
 | DF-02 | Reads only unshared nodes. The node occurrences of each state are enumerated independently of the walk. For every ordered pair of states, the walk reads through a counting store exactly as many objects as its report counts, never more than the unshared node occurrences of the two states, and in fact exactly that many; a state against itself reads zero objects; and the visits are still exactly the endpoint difference. Observed: pairs of a state with itself, pairs that read objects, pairs that skip a namespace with equal roots, and pairs that skip a shared subtree below differing roots. | `a_difference_reads_only_the_nodes_the_two_states_do_not_share` |
 | DF-03 | Both orders of a group are distinct endpoints. A published state holds a continuation and its joins under the group `(a,b)` only, and its successor holds the same body under `(b,a)` only. In both directions the walk visits exactly two continuation endpoints, at two distinct paths, each below its own group's literal ordered prefix and decoding to that group's record, one only in from and one only in to; it visits the four join endpoints of the two groups and no data endpoint, six differences in all. | `both_orders_of_a_receive_group_are_visited_as_distinct_endpoints` |
 
-Four more tests bind no ID. Durable keys are RhoPath keys, which are
+Seven more tests bind no ID. Durable keys are RhoPath keys, which are
 prefix-free, so no durable state has an endpoint at the empty key or on a node
 with children.
 `arbitrary_canonical_pairs_visit_their_exact_difference_and_read_only_unshared_nodes`
@@ -10287,15 +10397,73 @@ and requires in both directions the exact difference and reads equal to the
 unshared occurrences. `every_limit_binds_exactly_and_refuses_one_below`
 predicts the fixed pair's 13 unshared occurrences, 13 reads and 9
 differences, admits the same walk at limits equal to the consumed amounts,
-refuses one below each with the exact `ResourceLimit`, walks a state against
-itself with zero limits, and refuses an unreservable worklist or path buffer.
-`read_and_visitor_errors_stop_the_walk_with_typed_errors` requires
+refuses one below each read limit with the exact `ResourceLimit`, walks a
+state against itself with zero limits and an unreservable longest key, and
+refuses the longest keys $`2^{64} - 1`$ and $`2^{63} - 1`$ with
+`AllocationFailure` for $`2^{64} - 1`$ and $`2^{63}`$ requested frames before
+any read. `read_and_visitor_errors_stop_the_walk_with_typed_errors` requires
 `MissingObject` for a withheld node, the store's own error for a failing
 read, the visitor's error after its first call, and `UnexpectedObjectKind`
 for a root that is a manifest.
 `a_twenty_thousand_node_deep_difference_is_walked_on_a_small_stack` walks two
 chains of 20 000 nodes that differ only in the deepest endpoint on a 256 KiB
-stack.
+stack, with 40 000 reads, 20 000 frames and a 19 999-byte path, exactly the
+reservation for the 19 999-byte longest key.
+`frame_walk_visits_exactly_what_the_pre_frame_walk_visits_in_the_same_order`
+compares the walk with the test-only copy of the worklist walk on three fixed
+pairs and 256 generated pairs of three-namespace states, in both directions:
+the visits are the same sequence, and the store reads, the report's reads,
+read bytes and differences and the peak path agree. It also counts the
+validating node parses of each walk with a test-only counter in `object.rs`:
+the frame walk makes exactly as many as it reads objects, and the worklist
+walk that many and one more for each divergence, where the divergences are
+counted from the key sets independently of both walks. Its generator edits
+random maps, empties one side, or draws two independent sparse maps, over
+short keys and keys with a 64-byte spine; or it edits a map, or draws two
+independent maps, of 17 to 95 keys that begin with an arbitrary byte, whose
+root has up to 95 children. The three fixed pairs together, and the generated
+pairs together, must show shared subtrees below differing roots, the three
+alignment cases, one-sided subtrees that branch, a namespace empty on one
+side only, a difference at a key of at least 64 bytes, and unshared nodes of
+17 to 48 children and of more than 48 children, which are the slot-table and
+the bitmap encoding.
+`the_current_longest_key_reservation_bounds_every_peak_and_is_attained`
+walks the keys $`y, x, \ldots, x^L`$ against the same keys without $`x^L`$
+for $`L`$ in 1, 2, 3, 17, 255, 256 and 1000 and requires peaks equal to the
+reservation, $`L + 1`$ frames and $`L`$ path bytes; for 256 generated pairs
+in both directions it requires an empty report for equal states and, for
+differing states, the reservation from the current state's longest key,
+peaks within it whenever the base's longest key is no longer, and then a
+peak path of exactly that key's length whenever a difference lies at the
+current state's longest key.
+`a_base_with_a_longer_key_grows_past_the_reservation_without_refusing`
+walks $`y, x, \ldots, x^L`$ against $`y, x, \ldots, x^{L + e}`$ for
+$`(L, e)`$ in $`(1, 1)`$, $`(16, 8)`$ and $`(64, 192)`$ and requires the
+visits and reads of the worklist walk, the reservation for $`L`$ and peaks of
+$`L + e + 1`$ frames and $`L + e`$ path bytes; for generated pairs whose base
+is longer it requires the visits of the worklist walk, the reservation for
+the current state's longest key, a peak path equal to the base's longest key
+and at most one frame more than that key's length.
+
+Three tests of
+[`object_codec.rs`](../../../rspace++/tests/persistence/object_codec.rs)
+cover the layout and the position by themselves.
+`a_rebuilt_view_equals_the_parsed_view_at_every_resume_position` generates a
+node for every child count from 0 to 256 with the lowest, the highest and a
+scattered choice of edges, over five endpoints and four prefix lengths, and
+requires that the node view and the children view rebuilt from the layout
+equal the parsed view, and that a resume at every position takes the same
+child from a freshly rebuilt view as from the parsed one.
+`a_children_layout_refuses_bytes_of_another_length` takes the child counts on
+both sides of every boundary between the branch kinds (0 and 1, 4 and 5, 16
+and 17, 48 and 49) and the maximum, 256. For each it requires `TrailingBytes`
+from the rebuild of either view for the node's bytes with one byte appended,
+`Truncated` for them without their last byte, `Truncated` from the rebuild of
+the children view for no bytes at all, and, for every node but the empty one,
+a refusal of the empty node's bytes.
+`only_a_validating_parse_is_counted_and_a_rebuild_is_not` requires that the
+counter counts each validating parse, a refused one included, and no rebuild
+and no step.
 
 ### Lazy durable hot-store bootstrap (2026-11-12)
 
@@ -11570,6 +11738,7 @@ checkpoint_view_from_base(permit, view, gate, hot, limits):   -- owner mutex hel
     batch := mutation_batch_from_observation(current.state, captured.observation)
     if the journal is empty: return view.state                     -- row 9
     visit_state_difference(store, roots(current.state), roots(view.state),
+                           maximum_logical_path_bytes(shape(current.state)),
                            limits.difference,
                            (namespace, path, c, x) ↦
                                batch.precede_endpoint(namespace, path, c, x))
@@ -13365,10 +13534,13 @@ owner slot copies the value when it is built and passes it to every view
 checkpoint. The store manager passes the constant
 `DURABLE_VIEW_CHECKPOINT_LIMITS` of
 [`lmdb_dir_store_manager.rs`](../../../rspace++/src/rspace/shared/lmdb_dir_store_manager.rs):
-unbounded publication limits and read counts, and $`2^{20}`$ worklist entries
-and $`2^{26}`$ path bytes for the walk. Those two cannot be unbounded,
-because the walk reserves its worklist and its path buffer in full before it
-starts. A walk that needs more is refused with a typed resource-limit error.
+unbounded publication limits and unbounded read limits for the walk. The
+walk's frames and its path buffer have no limit: the walk reserves them from
+the current state's longest key before its first read, grows them when the
+base holds a longer key, and refuses for them only with `AllocationFailure`,
+when their memory cannot be provided (see **Limits** and **Reservation**
+under
+[Retained state endpoint difference](#retained-state-endpoint-difference-2026-11-12)).
 
 **Lifetime of the owner.** The owner handle holds the owner slot strongly.
 The owner and the writer lease of the store directory therefore live until
@@ -13453,9 +13625,10 @@ contents.
   runs before the checkpoint takes the log, again as on the legacy path.
 - A failure of `view_at` or of the repository reset after the owner has
   published leaves the space on its old store and base.
-- The difference walk's limits are finite: a reachable state whose walk
-  needs more than $`2^{20}`$ worklist entries or $`2^{26}`$ path bytes is
-  refused, never corrupted.
+- The difference walk has no finite limit on this route: its read limits are
+  unbounded, and its frames and its path buffer are bounded by memory alone.
+  A reachable state whose walk cannot allocate them is refused with
+  `AllocationFailure`, never corrupted.
 - The owner's fsyncs run on the runtime thread; no `block_in_place` wraps
   them.
 

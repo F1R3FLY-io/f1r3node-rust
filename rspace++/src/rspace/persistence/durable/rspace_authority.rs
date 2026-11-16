@@ -924,6 +924,7 @@ where P::Channel: Clone + Hash + Eq
             self.source.verified_state().object_store(),
             current.roots(),
             view.state.roots(),
+            self.source.shape().maximum_logical_path_bytes()?,
             limits.difference,
             |namespace, path, current_value, base_value| {
                 mutation

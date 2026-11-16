@@ -506,6 +506,8 @@ impl<'a> CanonicalDagNodeView<'a> {
         domain: &'static [u8; OBJECT_DOMAIN_LEN],
         name: &'static str,
     ) -> Result<Self, CanonicalFormatError> {
+        #[cfg(test)]
+        VALIDATING_NODE_PARSES.set(VALIDATING_NODE_PARSES.get().saturating_add(1));
         let body = parse_envelope(bytes, domain, name)?;
         let mut cursor = ReadCursor::new(body);
         let prefix_len = cursor.read_len("node prefix")?;
@@ -1857,4 +1859,164 @@ pub(crate) fn validate_canonical_object_for(
         }
         _ => CanonicalObjectView::parse(bytes).map(CanonicalObjectView::kind),
     }
+}
+
+const ENVELOPE_HEADER_LEN: usize = OBJECT_ENVELOPE_HEADER_LEN as usize;
+const BRANCH_HEADER_LEN: usize = 1 + 8;
+
+#[cfg(test)]
+std::thread_local! {
+    static VALIDATING_NODE_PARSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_validating_node_parses() { VALIDATING_NODE_PARSES.set(0); }
+
+#[cfg(test)]
+pub(crate) fn validating_node_parses() -> u64 { VALIDATING_NODE_PARSES.get() }
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DagChildrenLayout {
+    offset: usize,
+    count: usize,
+}
+
+impl CanonicalDagNodeView<'_> {
+    pub(crate) fn children_layout(self) -> DagChildrenLayout {
+        let encoded_len = match self.children.encoding {
+            ChildEncoding::Pairs(pairs) => pairs.len(),
+            ChildEncoding::Node48 { slots, references } => slots.len() + references.len(),
+            ChildEncoding::Node256 { bitmap, references } => bitmap.len() + references.len(),
+        };
+        DagChildrenLayout {
+            offset: self.bytes.len() - encoded_len,
+            count: self.children.count,
+        }
+    }
+}
+
+impl DagChildrenLayout {
+    pub(crate) fn children(
+        self,
+        bytes: &[u8],
+    ) -> Result<DagChildrenView<'_>, CanonicalFormatError> {
+        let mut cursor = ReadCursor::new(bytes);
+        cursor.read_exact(self.offset)?;
+        self.read_children(cursor)
+    }
+
+    pub(crate) fn node(
+        self,
+        bytes: &[u8],
+    ) -> Result<CanonicalDagNodeView<'_>, CanonicalFormatError> {
+        let mut cursor = ReadCursor::new(bytes);
+        let mut head = ReadCursor::new(cursor.read_exact(self.offset)?);
+        head.read_exact(ENVELOPE_HEADER_LEN)?;
+        let prefix_len = head.read_len("node prefix")?;
+        let prefix = head.read_exact(prefix_len)?;
+        let endpoint = EndpointValue::parse(&mut head)?;
+        head.read_exact(BRANCH_HEADER_LEN)?;
+        head.finish()?;
+        let children = self.read_children(cursor)?;
+        Ok(CanonicalDagNodeView {
+            bytes,
+            prefix,
+            endpoint,
+            children,
+        })
+    }
+
+    fn read_children(
+        self,
+        mut cursor: ReadCursor<'_>,
+    ) -> Result<DagChildrenView<'_>, CanonicalFormatError> {
+        let kind = BranchKind::for_child_count(self.count);
+        let reference_len = self.count.saturating_mul(OBJECT_REF_LEN);
+        let encoding = match kind {
+            BranchKind::Leaf | BranchKind::Node4 | BranchKind::Node16 => {
+                ChildEncoding::Pairs(cursor.read_exact(self.count.saturating_mul(SMALL_CHILD_LEN))?)
+            }
+            BranchKind::Node48 => ChildEncoding::Node48 {
+                slots: cursor.read_exact(NODE48_SLOT_TABLE_LEN)?,
+                references: cursor.read_exact(reference_len)?,
+            },
+            BranchKind::Node256 => ChildEncoding::Node256 {
+                bitmap: cursor.read_exact(CHILD_BITMAP_LEN)?,
+                references: cursor.read_exact(reference_len)?,
+            },
+        };
+        cursor.finish()?;
+        Ok(DagChildrenView {
+            kind,
+            count: self.count,
+            encoding,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DagChildPosition {
+    index: u8,
+    edge: u8,
+}
+
+impl DagChildrenView<'_> {
+    pub(crate) fn highest(self) -> Option<DagChildPosition> {
+        self.position_under(self.count, NODE48_SLOT_TABLE_LEN)
+    }
+
+    pub(crate) fn below(self, position: DagChildPosition) -> Option<DagChildPosition> {
+        self.position_under(usize::from(position.index), usize::from(position.edge))
+    }
+
+    pub(crate) fn at(self, position: DagChildPosition) -> Option<DagChild> {
+        let index = usize::from(position.index);
+        if index >= self.count {
+            return None;
+        }
+        let target = match self.encoding {
+            ChildEncoding::Pairs(pairs) => {
+                let start = index * SMALL_CHILD_LEN + 1;
+                let mut cursor = ReadCursor::new(&pairs[start..start + OBJECT_REF_LEN]);
+                ObjectRefV1::parse(&mut cursor).expect("validated child reference")
+            }
+            ChildEncoding::Node48 { references, .. } |
+            ChildEncoding::Node256 { references, .. } => parse_reference_at(references, index),
+        };
+        Some(DagChild {
+            edge: position.edge,
+            target,
+        })
+    }
+
+    fn position_under(self, index_bound: usize, edge_bound: usize) -> Option<DagChildPosition> {
+        let index = index_bound.min(self.count).checked_sub(1)?;
+        let edge = match self.encoding {
+            ChildEncoding::Pairs(pairs) => usize::from(pairs[index * SMALL_CHILD_LEN]),
+            ChildEncoding::Node48 { slots, .. } => slots
+                .get(..edge_bound)?
+                .iter()
+                .rposition(|slot| *slot != ABSENT_NODE48_SLOT)?,
+            ChildEncoding::Node256 { bitmap, .. } => highest_edge_below(bitmap, edge_bound)?,
+        };
+        Some(DagChildPosition {
+            index: u8::try_from(index).ok()?,
+            edge: u8::try_from(edge).ok()?,
+        })
+    }
+}
+
+fn highest_edge_below(bitmap: &[u8], bound: usize) -> Option<usize> {
+    let (whole, bits) = (bound / 8, bound % 8);
+    let partial = bitmap
+        .get(whole)
+        .map_or(0, |byte| byte & ((1_u8 << bits) - 1));
+    let (byte_index, byte) = match partial {
+        0 => {
+            let byte_index = bitmap.get(..whole)?.iter().rposition(|byte| *byte != 0)?;
+            (byte_index, bitmap[byte_index])
+        }
+        partial => (whole, partial),
+    };
+    Some(byte_index * 8 + 7 - byte.leading_zeros() as usize)
 }

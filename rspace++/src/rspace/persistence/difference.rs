@@ -4,7 +4,8 @@ use super::canonical::{CanonicalFormatError, ObjectRefV1, checked_len};
 use super::closure::ClosureError;
 use super::manifest::{SemanticNamespace, SemanticRoots};
 use super::object::{
-    CanonicalDagNodeView, CanonicalObjectKind, CanonicalObjectView, DagChildrenView, EndpointValue,
+    CanonicalDagNodeView, CanonicalObjectKind, CanonicalObjectView, DagChild, DagChildPosition,
+    DagChildrenLayout, DagChildrenView, EndpointValue,
 };
 use super::semantic::load_reference;
 use super::store::ImmutableObjectStore;
@@ -13,15 +14,15 @@ use super::store::ImmutableObjectStore;
 pub(crate) struct StateDifferenceLimits {
     pub(crate) max_object_reads: u64,
     pub(crate) max_object_read_bytes: u64,
-    pub(crate) max_worklist: u64,
-    pub(crate) max_path_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StateDifferenceReport {
     pub(crate) object_reads: u64,
     pub(crate) object_read_bytes: u64,
-    pub(crate) maximum_worklist: u64,
+    pub(crate) reserved_frames: u64,
+    pub(crate) reserved_path_bytes: u64,
+    pub(crate) maximum_frames: u64,
     pub(crate) maximum_path_bytes: u64,
     pub(crate) differences: u64,
 }
@@ -30,6 +31,7 @@ pub(crate) fn visit_state_difference<S, F>(
     store: &S,
     from: SemanticRoots,
     to: SemanticRoots,
+    longest_current_key_bytes: u64,
     limits: StateDifferenceLimits,
     visit: F,
 ) -> Result<StateDifferenceReport, ClosureError<S::Error>>
@@ -45,7 +47,7 @@ where
     if from == to {
         return Ok(StateDifferenceReport::default());
     }
-    let mut walk = DifferenceWalk::reserve(store, limits, visit)?;
+    let mut walk = DifferenceWalk::reserve(store, longest_current_key_bytes, limits, visit)?;
     for ((namespace, from_root), (_, to_root)) in from.iter().into_iter().zip(to.iter()) {
         if from_root != to_root {
             walk.compare_namespace(namespace, from_root, to_root)?;
@@ -60,7 +62,8 @@ enum StateSide {
     To,
 }
 
-enum PendingSubtree<O> {
+#[derive(Clone, Copy)]
+enum ChildStep {
     Pair {
         from: ObjectRefV1,
         to: ObjectRefV1,
@@ -69,18 +72,64 @@ enum PendingSubtree<O> {
         side: StateSide,
         reference: ObjectRefV1,
     },
-    Remainder {
-        side: StateSide,
-        reference: ObjectRefV1,
-        object: O,
+}
+
+enum Step<O> {
+    Child(ChildStep),
+    FromRemainder {
+        node: O,
+        layout: DagChildrenLayout,
         offset: usize,
     },
 }
 
-struct PendingWork<O> {
-    subtree: PendingSubtree<O>,
-    parent_path_len: usize,
-    edge: Option<u8>,
+#[derive(Clone, Copy)]
+struct Opening {
+    layout: DagChildrenLayout,
+    next: Option<DagChildPosition>,
+}
+
+impl Opening {
+    fn of(node: CanonicalDagNodeView<'_>) -> Self {
+        Self {
+            layout: node.children_layout(),
+            next: node.children().highest(),
+        }
+    }
+
+    fn over<O>(self, node: O) -> Descent<O> {
+        Descent {
+            node,
+            layout: self.layout,
+            next: self.next,
+        }
+    }
+}
+
+struct Descent<O> {
+    node: O,
+    layout: DagChildrenLayout,
+    next: Option<DagChildPosition>,
+}
+
+enum Frame<O> {
+    Pair {
+        from: Descent<O>,
+        to: Descent<O>,
+        path_len: usize,
+    },
+    OneSided {
+        side: StateSide,
+        children: Descent<O>,
+        skipped: Option<u8>,
+        path_len: usize,
+    },
+    FromRemainder {
+        node: O,
+        layout: DagChildrenLayout,
+        offset: usize,
+        path_len: usize,
+    },
 }
 
 struct DifferenceWalk<'store, S, F>
@@ -89,7 +138,7 @@ where S: ImmutableObjectStore
     store: &'store S,
     limits: StateDifferenceLimits,
     visit: F,
-    work: Vec<PendingWork<S::Object>>,
+    frames: Vec<Frame<S::Object>>,
     path: Vec<u8>,
     report: StateDifferenceReport,
 }
@@ -106,30 +155,24 @@ where
 {
     fn reserve(
         store: &'store S,
+        longest_current_key_bytes: u64,
         limits: StateDifferenceLimits,
         visit: F,
     ) -> Result<Self, ClosureError<S::Error>> {
-        let mut work = Vec::new();
-        work.try_reserve_exact(capacity(limits.max_worklist, "state difference worklist")?)
-            .map_err(|_| {
-                ClosureError::Format(CanonicalFormatError::AllocationFailure {
-                    requested: limits.max_worklist,
-                })
-            })?;
-        let mut path = Vec::new();
-        path.try_reserve_exact(capacity(limits.max_path_bytes, "state difference path bytes")?)
-            .map_err(|_| {
-                ClosureError::Format(CanonicalFormatError::AllocationFailure {
-                    requested: limits.max_path_bytes,
-                })
-            })?;
+        let reserved_frames = longest_current_key_bytes.saturating_add(1);
+        let frames = reserved(reserved_frames)?;
+        let path = reserved(longest_current_key_bytes)?;
         Ok(Self {
             store,
             limits,
             visit,
-            work,
+            frames,
             path,
-            report: StateDifferenceReport::default(),
+            report: StateDifferenceReport {
+                reserved_frames,
+                reserved_path_bytes: longest_current_key_bytes,
+                ..StateDifferenceReport::default()
+            },
         })
     }
 
@@ -139,38 +182,43 @@ where
         from_root: ObjectRefV1,
         to_root: ObjectRefV1,
     ) -> Result<(), ClosureError<S::Error>> {
-        self.push(
-            PendingSubtree::Pair {
-                from: from_root,
-                to: to_root,
-            },
-            0,
-            None,
-        )?;
-        while let Some(pending) = self.work.pop() {
-            self.path.truncate(pending.parent_path_len);
-            if let Some(edge) = pending.edge {
-                self.append(&[edge])?;
-            }
-            match pending.subtree {
-                PendingSubtree::Pair { from, to } => self.align(namespace, from, to)?,
-                PendingSubtree::Whole { side, reference } => {
-                    let object = self.read(reference)?;
-                    let node = parse_node(object.as_ref(), reference)?;
-                    self.one_sided(namespace, side, node, 0)?;
-                }
-                PendingSubtree::Remainder {
-                    side,
-                    reference,
-                    object,
-                    offset,
-                } => {
-                    let node = parse_node(object.as_ref(), reference)?;
-                    self.one_sided(namespace, side, node, offset)?;
-                }
+        self.path.clear();
+        let mut step = Step::Child(ChildStep::Pair {
+            from: from_root,
+            to: to_root,
+        });
+        loop {
+            self.enter(namespace, step)?;
+            match self.resume()? {
+                Some(next) => step = next,
+                None => return Ok(()),
             }
         }
-        Ok(())
+    }
+
+    fn enter(
+        &mut self,
+        namespace: SemanticNamespace,
+        step: Step<S::Object>,
+    ) -> Result<(), ClosureError<S::Error>> {
+        match step {
+            Step::Child(ChildStep::Pair { from, to }) => self.align(namespace, from, to),
+            Step::Child(ChildStep::Whole { side, reference }) => {
+                let object = self.read(reference)?;
+                let node = parse_node(object.as_ref(), reference)?;
+                let opening = self.open_one_sided(namespace, side, node, 0)?;
+                self.push_one_sided(side, object, opening)
+            }
+            Step::FromRemainder {
+                node: object,
+                layout,
+                offset,
+            } => {
+                let node = layout.node(object.as_ref()).map_err(ClosureError::Format)?;
+                let opening = self.open_one_sided(namespace, StateSide::From, node, offset)?;
+                self.push_one_sided(StateSide::From, object, opening)
+            }
+        }
     }
 
     fn align(
@@ -195,19 +243,33 @@ where
             match (from_rest.get(common).copied(), to_rest.get(common).copied()) {
                 (None, None) => {
                     self.compare(namespace, from_node.endpoint(), to_node.endpoint())?;
-                    return self.merge_children(from_node.children(), to_node.children());
+                    let (from_opening, to_opening) = (Opening::of(from_node), Opening::of(to_node));
+                    let path_len = self.path.len();
+                    return self.push_frame(Frame::Pair {
+                        from: from_opening.over(from_object),
+                        to: to_opening.over(to_object),
+                        path_len,
+                    });
                 }
                 (None, Some(next)) => {
                     self.compare(namespace, from_node.endpoint(), EndpointValue::Absent)?;
-                    let Some(continued) =
-                        self.push_children_except(StateSide::From, from_node.children(), next)?
-                    else {
-                        return self.one_sided(
+                    let continued = from_node.children().get(next);
+                    let opening = Opening::of(from_node);
+                    let path_len = self.path.len();
+                    self.push_frame(Frame::OneSided {
+                        side: StateSide::From,
+                        children: opening.over(from_object),
+                        skipped: Some(next),
+                        path_len,
+                    })?;
+                    let Some(continued) = continued else {
+                        let opening = self.open_one_sided(
                             namespace,
                             StateSide::To,
                             to_node,
                             to_offset + common,
-                        );
+                        )?;
+                        return self.push_one_sided(StateSide::To, to_object, opening);
                     };
                     self.append(&[next])?;
                     to_offset += common + 1;
@@ -218,15 +280,23 @@ where
                 }
                 (Some(next), None) => {
                     self.compare(namespace, EndpointValue::Absent, to_node.endpoint())?;
-                    let Some(continued) =
-                        self.push_children_except(StateSide::To, to_node.children(), next)?
-                    else {
-                        return self.one_sided(
+                    let continued = to_node.children().get(next);
+                    let opening = Opening::of(to_node);
+                    let path_len = self.path.len();
+                    self.push_frame(Frame::OneSided {
+                        side: StateSide::To,
+                        children: opening.over(to_object),
+                        skipped: Some(next),
+                        path_len,
+                    })?;
+                    let Some(continued) = continued else {
+                        let opening = self.open_one_sided(
                             namespace,
                             StateSide::From,
                             from_node,
                             from_offset + common,
-                        );
+                        )?;
+                        return self.push_one_sided(StateSide::From, from_object, opening);
                     };
                     self.append(&[next])?;
                     from_offset += common + 1;
@@ -236,117 +306,98 @@ where
                     to_offset = 0;
                 }
                 (Some(_), Some(_)) => {
-                    let parent_path_len = self.path.len();
-                    self.push(
-                        PendingSubtree::Remainder {
-                            side: StateSide::From,
-                            reference: from_reference,
-                            object: from_object,
-                            offset: from_offset + common,
-                        },
-                        parent_path_len,
-                        None,
-                    )?;
-                    return self.one_sided(namespace, StateSide::To, to_node, to_offset + common);
+                    let layout = from_node.children_layout();
+                    let path_len = self.path.len();
+                    self.push_frame(Frame::FromRemainder {
+                        node: from_object,
+                        layout,
+                        offset: from_offset + common,
+                        path_len,
+                    })?;
+                    let opening =
+                        self.open_one_sided(namespace, StateSide::To, to_node, to_offset + common)?;
+                    return self.push_one_sided(StateSide::To, to_object, opening);
                 }
             }
         }
     }
 
-    fn merge_children(
-        &mut self,
-        from: DagChildrenView<'_>,
-        to: DagChildrenView<'_>,
-    ) -> Result<(), ClosureError<S::Error>> {
-        let parent_path_len = self.path.len();
-        let mut from_children = from.iter();
-        let mut to_children = to.iter();
-        let mut from_child = from_children.next();
-        let mut to_child = to_children.next();
+    fn resume(&mut self) -> Result<Option<Step<S::Object>>, ClosureError<S::Error>> {
         loop {
-            match (from_child, to_child) {
-                (None, None) => return Ok(()),
-                (Some(child), None) => {
-                    self.push_whole(StateSide::From, child.target, parent_path_len, child.edge)?;
-                    from_child = from_children.next();
+            let taken = match self.frames.last_mut() {
+                None => return Ok(None),
+                Some(Frame::FromRemainder { .. }) => None,
+                Some(Frame::Pair { from, to, path_len }) => take_differing_child(from, to)
+                    .map_err(ClosureError::Format)?
+                    .map(|(edge, step)| (*path_len, edge, step)),
+                Some(Frame::OneSided {
+                    side,
+                    children,
+                    skipped,
+                    path_len,
+                }) => take_child(children, *skipped)
+                    .map_err(ClosureError::Format)?
+                    .map(|child| {
+                        (*path_len, child.edge, ChildStep::Whole {
+                            side: *side,
+                            reference: child.target,
+                        })
+                    }),
+            };
+            match taken {
+                Some((path_len, edge, step)) => {
+                    self.path.truncate(path_len);
+                    self.append(&[edge])?;
+                    return Ok(Some(Step::Child(step)));
                 }
-                (None, Some(child)) => {
-                    self.push_whole(StateSide::To, child.target, parent_path_len, child.edge)?;
-                    to_child = to_children.next();
+                None => {
+                    if let Some(Frame::FromRemainder {
+                        node,
+                        layout,
+                        offset,
+                        path_len,
+                    }) = self.frames.pop()
+                    {
+                        self.path.truncate(path_len);
+                        return Ok(Some(Step::FromRemainder {
+                            node,
+                            layout,
+                            offset,
+                        }));
+                    }
                 }
-                (Some(from_entry), Some(to_entry)) => match from_entry.edge.cmp(&to_entry.edge) {
-                    Ordering::Less => {
-                        self.push_whole(
-                            StateSide::From,
-                            from_entry.target,
-                            parent_path_len,
-                            from_entry.edge,
-                        )?;
-                        from_child = from_children.next();
-                    }
-                    Ordering::Greater => {
-                        self.push_whole(
-                            StateSide::To,
-                            to_entry.target,
-                            parent_path_len,
-                            to_entry.edge,
-                        )?;
-                        to_child = to_children.next();
-                    }
-                    Ordering::Equal => {
-                        if from_entry.target != to_entry.target {
-                            self.push(
-                                PendingSubtree::Pair {
-                                    from: from_entry.target,
-                                    to: to_entry.target,
-                                },
-                                parent_path_len,
-                                Some(from_entry.edge),
-                            )?;
-                        }
-                        from_child = from_children.next();
-                        to_child = to_children.next();
-                    }
-                },
             }
         }
     }
 
-    fn push_children_except(
-        &mut self,
-        side: StateSide,
-        children: DagChildrenView<'_>,
-        continuation: u8,
-    ) -> Result<Option<ObjectRefV1>, ClosureError<S::Error>> {
-        let parent_path_len = self.path.len();
-        let mut continued = None;
-        for child in children.iter() {
-            if child.edge == continuation {
-                continued = Some(child.target);
-            } else {
-                self.push_whole(side, child.target, parent_path_len, child.edge)?;
-            }
-        }
-        Ok(continued)
-    }
-
-    fn one_sided(
+    fn open_one_sided(
         &mut self,
         namespace: SemanticNamespace,
         side: StateSide,
         node: CanonicalDagNodeView<'_>,
         offset: usize,
-    ) -> Result<(), ClosureError<S::Error>> {
+    ) -> Result<Opening, ClosureError<S::Error>> {
         self.append(&node.prefix()[offset..])?;
         match side {
             StateSide::From => self.compare(namespace, node.endpoint(), EndpointValue::Absent)?,
             StateSide::To => self.compare(namespace, EndpointValue::Absent, node.endpoint())?,
         }
-        let parent_path_len = self.path.len();
-        for child in node.children().iter() {
-            self.push_whole(side, child.target, parent_path_len, child.edge)?;
-        }
-        Ok(())
+        Ok(Opening::of(node))
+    }
+
+    fn push_one_sided(
+        &mut self,
+        side: StateSide,
+        node: S::Object,
+        opening: Opening,
+    ) -> Result<(), ClosureError<S::Error>> {
+        let path_len = self.path.len();
+        self.push_frame(Frame::OneSided {
+            side,
+            children: opening.over(node),
+            skipped: None,
+            path_len,
+        })
     }
 
     fn compare(
@@ -394,35 +445,20 @@ where
         load_reference(self.store, reference)
     }
 
-    fn push_whole(
-        &mut self,
-        side: StateSide,
-        reference: ObjectRefV1,
-        parent_path_len: usize,
-        edge: u8,
-    ) -> Result<(), ClosureError<S::Error>> {
-        self.push(PendingSubtree::Whole { side, reference }, parent_path_len, Some(edge))
-    }
-
-    fn push(
-        &mut self,
-        subtree: PendingSubtree<S::Object>,
-        parent_path_len: usize,
-        edge: Option<u8>,
-    ) -> Result<(), ClosureError<S::Error>> {
-        let attempted = checked_len(self.work.len(), "state difference worklist")
+    fn push_frame(&mut self, frame: Frame<S::Object>) -> Result<(), ClosureError<S::Error>> {
+        let attempted = checked_len(self.frames.len(), "state difference frames")
             .map_err(ClosureError::Format)?
             .checked_add(1)
             .ok_or(ClosureError::Format(CanonicalFormatError::CounterOverflow(
-                "state difference worklist",
+                "state difference frames",
             )))?;
-        check_limit("state difference worklist", self.limits.max_worklist, attempted)?;
-        self.work.push(PendingWork {
-            subtree,
-            parent_path_len,
-            edge,
-        });
-        self.report.maximum_worklist = self.report.maximum_worklist.max(attempted);
+        self.frames.try_reserve(1).map_err(|_| {
+            ClosureError::Format(CanonicalFormatError::AllocationFailure {
+                requested: attempted,
+            })
+        })?;
+        self.frames.push(frame);
+        self.report.maximum_frames = self.report.maximum_frames.max(attempted);
         Ok(())
     }
 
@@ -436,11 +472,111 @@ where
             )))?;
         let attempted =
             checked_len(attempted, "state difference path bytes").map_err(ClosureError::Format)?;
-        check_limit("state difference path bytes", self.limits.max_path_bytes, attempted)?;
+        self.path.try_reserve(bytes.len()).map_err(|_| {
+            ClosureError::Format(CanonicalFormatError::AllocationFailure {
+                requested: attempted,
+            })
+        })?;
         self.path.extend_from_slice(bytes);
         self.report.maximum_path_bytes = self.report.maximum_path_bytes.max(attempted);
         Ok(())
     }
+}
+
+fn children_of<O: AsRef<[u8]>>(
+    node: &O,
+    layout: DagChildrenLayout,
+) -> Result<DagChildrenView<'_>, CanonicalFormatError> {
+    layout.children(node.as_ref())
+}
+
+fn child_at(
+    children: DagChildrenView<'_>,
+    next: Option<DagChildPosition>,
+) -> Option<(DagChildPosition, DagChild)> {
+    let position = next?;
+    Some((position, children.at(position)?))
+}
+
+fn one_sided_step(side: StateSide, child: DagChild) -> (u8, ChildStep) {
+    (child.edge, ChildStep::Whole {
+        side,
+        reference: child.target,
+    })
+}
+
+fn take_child<O: AsRef<[u8]>>(
+    descent: &mut Descent<O>,
+    skipped: Option<u8>,
+) -> Result<Option<DagChild>, CanonicalFormatError> {
+    let Some(mut position) = descent.next else {
+        return Ok(None);
+    };
+    let children = children_of(&descent.node, descent.layout)?;
+    loop {
+        descent.next = children.below(position);
+        match children.at(position) {
+            Some(child) if Some(child.edge) != skipped => return Ok(Some(child)),
+            _ => match descent.next {
+                Some(lower) => position = lower,
+                None => return Ok(None),
+            },
+        }
+    }
+}
+
+fn take_differing_child<O: AsRef<[u8]>>(
+    from: &mut Descent<O>,
+    to: &mut Descent<O>,
+) -> Result<Option<(u8, ChildStep)>, CanonicalFormatError> {
+    if let (None, None) = (from.next, to.next) {
+        return Ok(None);
+    }
+    let from_children = children_of(&from.node, from.layout)?;
+    let to_children = children_of(&to.node, to.layout)?;
+    loop {
+        match (child_at(from_children, from.next), child_at(to_children, to.next)) {
+            (None, None) => return Ok(None),
+            (Some((position, child)), None) => {
+                from.next = from_children.below(position);
+                return Ok(Some(one_sided_step(StateSide::From, child)));
+            }
+            (None, Some((position, child))) => {
+                to.next = to_children.below(position);
+                return Ok(Some(one_sided_step(StateSide::To, child)));
+            }
+            (Some((from_position, from_child)), Some((to_position, to_child))) => {
+                match from_child.edge.cmp(&to_child.edge) {
+                    Ordering::Greater => {
+                        from.next = from_children.below(from_position);
+                        return Ok(Some(one_sided_step(StateSide::From, from_child)));
+                    }
+                    Ordering::Less => {
+                        to.next = to_children.below(to_position);
+                        return Ok(Some(one_sided_step(StateSide::To, to_child)));
+                    }
+                    Ordering::Equal => {
+                        from.next = from_children.below(from_position);
+                        to.next = to_children.below(to_position);
+                        if from_child.target != to_child.target {
+                            return Ok(Some((from_child.edge, ChildStep::Pair {
+                                from: from_child.target,
+                                to: to_child.target,
+                            })));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn reserved<T, E>(requested: u64) -> Result<Vec<T>, ClosureError<E>> {
+    let refusal = || ClosureError::Format(CanonicalFormatError::AllocationFailure { requested });
+    let capacity = usize::try_from(requested).map_err(|_| refusal())?;
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(capacity).map_err(|_| refusal())?;
+    Ok(buffer)
 }
 
 fn parse_node<E>(
@@ -462,15 +598,6 @@ fn common_prefix_len(left: &[u8], right: &[u8]) -> usize {
         .zip(right)
         .take_while(|(left_byte, right_byte)| left_byte == right_byte)
         .count()
-}
-
-fn capacity<E>(limit: u64, field: &'static str) -> Result<usize, ClosureError<E>> {
-    usize::try_from(limit).map_err(|_| {
-        ClosureError::Format(CanonicalFormatError::LengthOutOfRange {
-            field,
-            value: limit,
-        })
-    })
 }
 
 fn check_limit<E>(

@@ -77,7 +77,6 @@ fn without_a_walk() -> ViewCheckpointLimitsV1 {
         difference: StateDifferenceLimits {
             max_object_reads: 0,
             max_object_read_bytes: 0,
-            ..limits.difference
         },
         ..limits
     }

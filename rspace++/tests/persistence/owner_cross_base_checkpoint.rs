@@ -517,8 +517,6 @@ pub(super) fn view_limits() -> ViewCheckpointLimitsV1 {
         difference: StateDifferenceLimits {
             max_object_reads: 1 << 20,
             max_object_read_bytes: 1 << 30,
-            max_worklist: 1 << 12,
-            max_path_bytes: 1 << 16,
         },
     }
 }
@@ -1297,8 +1295,6 @@ fn cross_base_publication(shared: usize) -> CrossBasePublication {
         difference: StateDifferenceLimits {
             max_object_reads,
             max_object_read_bytes: 1 << 16,
-            max_worklist: 16,
-            max_path_bytes: 1 << 12,
         },
     };
     let untouched = directory_image(trial.path());

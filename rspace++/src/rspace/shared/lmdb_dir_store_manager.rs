@@ -43,9 +43,6 @@ pub const TB: usize = 1024 * GB;
 
 pub const DURABLE_RSPACE_DIRECTORY_NAME: &str = "durable";
 
-const DURABLE_DIFFERENCE_WORKLIST_ENTRIES: u64 = 1 << 20;
-const DURABLE_DIFFERENCE_PATH_BYTES: u64 = 1 << 26;
-
 const DURABLE_VIEW_CHECKPOINT_LIMITS: ViewCheckpointLimitsV1 = ViewCheckpointLimitsV1 {
     publication: DurableRSpacePublicationLimitsV1 {
         transaction: DagTransactionLimits::UNBOUNDED,
@@ -57,8 +54,6 @@ const DURABLE_VIEW_CHECKPOINT_LIMITS: ViewCheckpointLimitsV1 = ViewCheckpointLim
     difference: StateDifferenceLimits {
         max_object_reads: u64::MAX,
         max_object_read_bytes: u64::MAX,
-        max_worklist: DURABLE_DIFFERENCE_WORKLIST_ENTRIES,
-        max_path_bytes: DURABLE_DIFFERENCE_PATH_BYTES,
     },
 };
 

@@ -1,11 +1,75 @@
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 
 use super::support::{encode, node, nonzero, synthetic_ref};
+use crate::rspace::persistence::object::{reset_validating_node_parses, validating_node_parses};
 use crate::rspace::persistence::{
     BranchKind, CanonicalBlob, CanonicalBlobKind, CanonicalBlobView, CanonicalDagNode,
     CanonicalDagNodeView, CanonicalEncode, CanonicalFormatError, CanonicalObjectView,
-    CanonicalSink, EndpointValue,
+    CanonicalSink, DagChild, EndpointValue,
 };
+
+const MAXIMUM_CHILDREN: usize = 256;
+const BRANCH_BOUNDARIES: [usize; 9] = [0, 1, 4, 5, 16, 17, 48, 49, 256];
+const GENERATED_PREFIX_LENGTHS: [usize; 4] = [0, 1, 40, 300];
+const SCATTER_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+const SCATTER_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
+const SCATTER_INCREMENT: u64 = 1_442_695_040_888_963_407;
+
+fn scattered_edges(count: usize) -> Vec<u8> {
+    let mut edges: Vec<u8> = (0..=u8::MAX).collect();
+    let mut state = SCATTER_SEED ^ u64::try_from(count).expect("a child count fits u64");
+    for last in (1..edges.len()).rev() {
+        state = state
+            .wrapping_mul(SCATTER_MULTIPLIER)
+            .wrapping_add(SCATTER_INCREMENT);
+        let draw = usize::try_from(state >> 33).expect("a 31-bit draw fits usize");
+        edges.swap(last, draw % (last + 1));
+    }
+    edges.truncate(count);
+    edges.sort_unstable();
+    edges
+}
+
+fn edge_selections(count: usize) -> [Vec<u8>; 3] {
+    let edge = |value: usize| u8::try_from(value).expect("an edge fits one byte");
+    [
+        (0..count).map(edge).collect(),
+        (MAXIMUM_CHILDREN - count..MAXIMUM_CHILDREN)
+            .map(edge)
+            .collect(),
+        scattered_edges(count),
+    ]
+}
+
+fn generated_node(variant: usize, edges: &[u8]) -> CanonicalDagNode {
+    let endpoints = [
+        EndpointValue::Absent,
+        EndpointValue::ValueFree,
+        EndpointValue::Unit,
+        EndpointValue::Multiplicity(nonzero(17)),
+        EndpointValue::Content(synthetic_ref(91)),
+    ];
+    let endpoint = match (edges.len(), endpoints[variant % endpoints.len()]) {
+        (1, EndpointValue::Absent) => EndpointValue::Unit,
+        (_, endpoint) => endpoint,
+    };
+    let prefix_len = match (edges.len(), endpoint) {
+        (0, EndpointValue::Absent) => 0,
+        _ => GENERATED_PREFIX_LENGTHS[variant % GENERATED_PREFIX_LENGTHS.len()],
+    };
+    let prefix: Vec<u8> = (0..prefix_len)
+        .map(|index| u8::try_from(index % 251).expect("a prefix byte fits one byte"))
+        .collect();
+    let children: Vec<DagChild> = edges
+        .iter()
+        .map(|&edge| DagChild {
+            edge,
+            target: synthetic_ref(edge),
+        })
+        .collect();
+    CanonicalDagNode::new(prefix, endpoint, children).expect("a generated node is canonical")
+}
 
 #[test]
 fn empty_node_has_fixed_little_endian_bytes() {
@@ -239,4 +303,140 @@ fn malformed_child_tables_and_noncompressed_nodes_fail_closed() {
         node(&[], EndpointValue::Absent, 1).expect_err("uncompressed unary node is invalid"),
         CanonicalFormatError::CompressibleUnaryNode
     );
+}
+
+#[test]
+fn a_rebuilt_view_equals_the_parsed_view_at_every_resume_position() {
+    let mut kinds = BTreeSet::new();
+    let mut resumes = 0usize;
+    for count in 0..=MAXIMUM_CHILDREN {
+        for (selection, edges) in edge_selections(count).into_iter().enumerate() {
+            let value = generated_node(count * 3 + selection, &edges);
+            let bytes = encode(&value);
+            let parsed = CanonicalDagNodeView::parse(&bytes).expect("a generated node parses");
+            let expected = value.children().to_vec();
+            assert_eq!(parsed.children().iter().collect::<Vec<_>>(), expected);
+            kinds.insert(parsed.children().kind() as u8);
+
+            let layout = parsed.children_layout();
+            let node = layout
+                .node(&bytes)
+                .expect("the node view is rebuilt from the same bytes");
+            assert_eq!(
+                (node.prefix(), node.endpoint(), node.object_ref()),
+                (parsed.prefix(), parsed.endpoint(), parsed.object_ref()),
+                "the rebuilt node view of {count} children has the parsed prefix and endpoint"
+            );
+            let children = layout
+                .children(&bytes)
+                .expect("the children view is rebuilt from the same bytes");
+            for rebuilt in [node.children(), children] {
+                assert_eq!(
+                    (rebuilt.kind(), rebuilt.len(), rebuilt.is_empty()),
+                    (parsed.children().kind(), count, count == 0)
+                );
+                assert_eq!(rebuilt.iter().collect::<Vec<_>>(), expected);
+                for edge in 0..=u8::MAX {
+                    assert_eq!(rebuilt.get(edge), parsed.children().get(edge));
+                }
+            }
+
+            let mut position = parsed.children().highest();
+            for child in expected.iter().rev() {
+                let resumed = layout
+                    .children(&bytes)
+                    .expect("a resume rebuilds the children view");
+                let current = position.expect("a position for every child not yet taken");
+                assert_eq!(
+                    (resumed.at(current), parsed.children().at(current)),
+                    (Some(*child), Some(*child)),
+                    "the child at a resume position of a node of {count} children"
+                );
+                let lower = resumed.below(current);
+                assert_eq!(
+                    lower.and_then(|next| resumed.at(next)),
+                    parsed
+                        .children()
+                        .below(current)
+                        .and_then(|next| parsed.children().at(next)),
+                    "the next lower position of a node of {count} children"
+                );
+                position = lower;
+                resumes += 1;
+            }
+            assert!(position.is_none(), "no position is left below the lowest child");
+        }
+    }
+    assert_eq!(
+        kinds.into_iter().collect::<Vec<_>>(),
+        [
+            BranchKind::Leaf as u8,
+            BranchKind::Node4 as u8,
+            BranchKind::Node16 as u8,
+            BranchKind::Node48 as u8,
+            BranchKind::Node256 as u8,
+        ],
+        "every branch encoding is generated"
+    );
+    assert_eq!(
+        resumes,
+        3 * (0..=MAXIMUM_CHILDREN).sum::<usize>(),
+        "every position of every generated node is resumed"
+    );
+}
+
+#[test]
+fn a_children_layout_refuses_bytes_of_another_length() {
+    let empty = encode(&CanonicalDagNode::empty());
+    for count in BRANCH_BOUNDARIES {
+        let bytes = encode(&generated_node(count, &scattered_edges(count)));
+        let layout = CanonicalDagNodeView::parse(&bytes)
+            .expect("a generated node parses")
+            .children_layout();
+        let mut longer = bytes.clone();
+        longer.push(0);
+        let shorter = &bytes[..bytes.len() - 1];
+        assert!(matches!(
+            layout.children(&longer),
+            Err(CanonicalFormatError::TrailingBytes { .. })
+        ));
+        assert!(matches!(layout.node(&longer), Err(CanonicalFormatError::TrailingBytes { .. })));
+        assert!(matches!(layout.children(shorter), Err(CanonicalFormatError::Truncated { .. })));
+        assert!(matches!(layout.node(shorter), Err(CanonicalFormatError::Truncated { .. })));
+        assert!(matches!(layout.children(&[]), Err(CanonicalFormatError::Truncated { .. })));
+        if bytes.len() != empty.len() {
+            assert!(layout.children(&empty).is_err());
+            assert!(layout.node(&empty).is_err());
+        }
+    }
+}
+
+#[test]
+fn only_a_validating_parse_is_counted_and_a_rebuild_is_not() {
+    let bytes = encode(&generated_node(2, &scattered_edges(49)));
+    reset_validating_node_parses();
+    assert_eq!(validating_node_parses(), 0);
+    let parsed = CanonicalDagNodeView::parse(&bytes).expect("a generated node parses");
+    assert_eq!(validating_node_parses(), 1);
+    CanonicalObjectView::parse(&bytes).expect("a generated node parses as an object");
+    assert_eq!(validating_node_parses(), 2);
+    assert!(CanonicalDagNodeView::parse(&bytes[..bytes.len() - 1]).is_err());
+    assert_eq!(validating_node_parses(), 3, "a refused parse is counted too");
+
+    let layout = parsed.children_layout();
+    let node = layout.node(&bytes).expect("the node view is rebuilt");
+    let children = layout
+        .children(&bytes)
+        .expect("the children view is rebuilt");
+    let mut position = children.highest();
+    let mut taken = 0usize;
+    while let Some(current) = position {
+        assert!(children.at(current).is_some());
+        position = children.below(current);
+        taken += 1;
+    }
+    assert_eq!((taken, node.children().len()), (49, 49));
+    assert_eq!(validating_node_parses(), 3, "a rebuild and a resume validate nothing");
+    reset_validating_node_parses();
+    assert_eq!(validating_node_parses(), 0);
 }
